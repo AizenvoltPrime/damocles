@@ -208,3 +208,57 @@ describe('the conflict bar', () => {
     expect(vi.mocked(api.resolveConflict).mock.calls).toEqual([[{ documentId: 'd-a', action: 'revert' }], [{ documentId: 'd-a', action: 'overwrite' }]]);
   });
 });
+
+describe('a design preview tab', () => {
+  const designTab: ShellEditorTab = {
+    id: 'dp1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', dirty: false, readOnly: false, conflict: false,
+    designPreview: {
+      designId: 'c-1a2b', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', status: 'ready', width: 1280, state: 'default', provenance: false,
+      info: { breakpoints: [{ name: 'xl', width: 1280 }], primary: 1280, checked: [], journey: [], states: [], tweaks: null },
+    },
+  };
+
+  async function mountDesignTab(itemId?: string) {
+    const api = fakeShellApi([], {
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [designTab], activeTabId: designTab.id })),
+      requestOverlay: vi.fn(async () => (itemId ? { kind: 'menu' as const, itemId } : { kind: 'dismissed' as const })),
+    });
+    const store = createEditorStore(api);
+    await store.start();
+    const scm = createScmStore(api.scm);
+    await scm.start();
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [], hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+    mounted.push(wrapper);
+    await flushPromises();
+    return { wrapper, api };
+  }
+
+  it('shows the monitor icon in the design hue and the screen title, and drags no file', async () => {
+    const { wrapper } = await mountDesignTab();
+    const tab = wrapper.get('[data-testid="editor-tab"]');
+    expect(tab.attributes('data-kind')).toBe('designPreview');
+    expect(tab.get('[data-testid="editor-tab-title"]').text()).toBe('S1 · Contacts');
+    const icon = tab.get('svg');
+    expect(icon.classes().join(' ')).toContain('monitor');
+    expect(icon.attributes('style')).toContain('var(--d-design)');
+    expect(tab.attributes('draggable')).toBe('false');
+  });
+
+  it('offers Open in browser, Expand, Mention and Copy path in its menu, and sends Open in browser as the user\'s click', async () => {
+    const { wrapper, api } = await mountDesignTab('openInBrowser');
+    await wrapper.get('[data-testid="editor-tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 });
+    await flushPromises();
+
+    const request = vi.mocked(api.requestOverlay).mock.calls[0]![0];
+    if (request.kind !== 'menu') throw new Error('not a menu');
+    expect(request.items.filter((item) => item.kind === 'item').map((item) => ('id' in item ? item.id : undefined))).toEqual(['close', 'closeOthers', 'closeRight', 'closeAll', 'openInBrowser', 'focusOverlay', 'mention', 'copyPath']);
+    expect(api.designPreviewAction).toHaveBeenCalledWith({ tabId: 'dp1', action: 'openInBrowser' });
+  });
+
+  it('copies its path through main', async () => {
+    const { wrapper, api } = await mountDesignTab('copyPath');
+    await wrapper.get('[data-testid="editor-tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 });
+    await flushPromises();
+    expect(api.editorTab).toHaveBeenCalledWith({ action: 'copyPath', tabId: 'dp1' });
+  });
+});

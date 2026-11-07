@@ -14,6 +14,17 @@ describe('piMessagesToHistoryAgentMessages', () => {
     expect(old).not.toHaveProperty('durationMs');
   });
 
+  it("reads an AskUserQuestion option's string preview from an older session as markdown", () => {
+    const options = [{ label: 'A', description: 'a', preview: '# Old' }, { label: 'B', description: 'b' }];
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'q1', name: 'AskUserQuestion', arguments: { questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options }] } }] },
+    ]);
+    expect(out[0]!.contentBlocks[0]).toMatchObject({
+      type: 'tool_use',
+      input: { questions: [{ options: [{ label: 'A', preview: { kind: 'markdown', content: '# Old' } }, { label: 'B' }] }] },
+    });
+  });
+
   it('maps user + assistant messages and pairs tool results back to their tool-call id', () => {
     const messages = [
       { role: 'user', content: 'do the thing' },

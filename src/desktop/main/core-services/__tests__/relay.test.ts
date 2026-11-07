@@ -217,3 +217,46 @@ it('relays to core no page message that main diverts', async () => {
   expect(diverted).toEqual([{ type: 'startVoiceRecording' }]);
   expect(relayed()).toEqual(['getSettings']);
 });
+
+// PD-35: a core's design.openPreview is a tab of that core's chat; main's host services open nothing outside for it.
+it('serves design.openPreview with a tab of the chat and never opens a URL', async () => {
+  const main = createFakePlatform();
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-relay-'));
+  dirs.push(userData);
+  const loopback = createLoopback();
+  const endpoint = createMainEndpoint(loopback.main, () => undefined);
+  const previews: unknown[][] = [];
+  const host = createHostServices({
+    endpoint,
+    platform: main,
+    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    state: createDesktopKeyValueState(userData, () => undefined),
+    terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
+    ...hostExtras(),
+    openDesignPreview: (...args) => {
+      previews.push(args);
+    },
+    resolveProxy: async () => 'DIRECT',
+    createView: () => {
+      throw new Error('no view');
+    },
+    git: { available: true },
+    e2eHooks: false,
+    log: () => undefined,
+  });
+  cleanups.push(host);
+  const init = parseCoreInit(structuredClone(host.init));
+  if (init === INVALID) throw new Error("main's init does not parse");
+  const core = createCorePlatform(loopback.core, init, () => ({
+    capabilities: () => main.capabilities,
+    settings: main.settings,
+    fileWatchers: main.fileWatchers,
+    confinement: main.confinement,
+    logSinks: main.logSinks,
+    paths: main.paths,
+  }));
+  cleanups.push({ dispose: () => core.dispose() }, { dispose: () => endpoint.close('closed') });
+  await core.designPreview!.open('panel-1', 'contacts-1a2b3c4d', 'screens/S1.html');
+  expect(previews).toEqual([['panel-1', 'contacts-1a2b3c4d', 'screens/S1.html']]);
+  expect(main.shell.openedExternal).toEqual([]);
+});

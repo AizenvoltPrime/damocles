@@ -2,8 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs helper, no types
-import { SERVER_TARGETS as SCRIPT_TARGETS, serverArtifact } from '../../../../../scripts/server-targets.mjs';
+import { SERVER_TARGETS as SCRIPT_TARGETS, serverArtifact } from '../../../../../scripts/server-targets.ts';
 import { readServerManifest, SERVER_MANIFEST_FILE } from '../server-manifest';
 import { appVersionOf, parseServerManifest, SERVER_TARGETS, serverVersionsOf, type ServerManifest } from '../server-manifest-format';
 
@@ -30,11 +29,11 @@ function desktopDir(content?: string): string {
 }
 
 describe('the server manifest', () => {
-  it('names the targets scripts/server-targets.mjs builds', () => {
-    expect([...SERVER_TARGETS].sort()).toEqual(Object.keys(SCRIPT_TARGETS as object).sort());
+  it('names the targets scripts/server-targets.ts builds', () => {
+    expect([...SERVER_TARGETS].sort()).toEqual(Object.keys(SCRIPT_TARGETS).sort());
   });
 
-  it('parses what build-server.mjs writes', () => {
+  it('parses what build-server.ts writes', () => {
     expect(parseServerManifest(full('3.7.0'))).toEqual(full('3.7.0'));
   });
 

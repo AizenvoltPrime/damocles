@@ -160,6 +160,19 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       });
     },
 
+    resolveDesignVersionDecision: (msg, ctx) => {
+      if (msg.type !== "resolveDesignVersionDecision" || typeof msg.promptId !== "string") return;
+      if (msg.choice !== "replan" && msg.choice !== "finishFirst") return;
+      ctx.permissionHandler.resolveDesignVersionDecision(msg.promptId, msg.choice);
+    },
+
+    resolveDesignApproval: (msg, ctx) => {
+      if (msg.type !== "resolveDesignApproval" || typeof msg.promptId !== "string") return;
+      if (msg.choice !== "approve" && msg.choice !== "changes" && msg.choice !== "stop") return;
+      if (msg.feedback !== undefined && typeof msg.feedback !== "string") return;
+      ctx.permissionHandler.resolveDesignApproval(msg.promptId, msg.choice, msg.feedback);
+    },
+
     extensionUiResponse: (msg, ctx) => {
       if (msg.type !== "extensionUiResponse") return;
       // A settings view answers only the host prompts redirected to it, never a PiSession dialog.

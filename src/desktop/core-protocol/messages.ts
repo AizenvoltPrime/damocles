@@ -20,11 +20,18 @@ import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS
 import type { PageSpec } from '../../shared/panel-html';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { UserProfile } from '../../shared/types/memory';
+import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type JourneyStep } from '../../shared/types/design';
+import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_OUTLINE_CHARS, MAX_JOURNEY_STEPS, parseJourneySteps } from '../../shared/design-journey';
+import { MAX_TWEAK_CONTROLS, MAX_TWEAK_STOPS, MIN_TWEAK_CONTROLS, MIN_TWEAK_STOPS, TWEAK_TOKEN_NAME } from '../../shared/design-tweaks';
+import { MAX_CHANGED_PATHS, MAX_CONSOLE_ERRORS, MAX_OVERFLOWING, MAX_PROBE_ELEMENTS, MAX_PROBE_LINE_CHARS, MAX_PROBE_PX, MAX_PROBE_WIDTHS, MAX_RENDER_SCALE, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH, RENDER_FRAME_HEIGHT } from '../../shared/design-render';
+import { MAX_DESIGN_ID_CHARS } from '../../shared/design-paths';
+import { MAX_MARKUP_JSON_CHARS } from '../../shared/design-markup';
 import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
 import { EDITOR_HARD_MAX_DOCUMENT_BYTES, WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
 import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
 import type { LocalizedText } from '../../shared/localized-text';
+import { MAX_IMAGE_BASE64_LENGTH } from '../../shared/types/content';
 
 export const MAX_ID_CHARS = 128;
 // secret and memento keys
@@ -58,6 +65,8 @@ export interface PanelCreate {
   readonly column?: number;
   // a browser page's chat, by its view id
   readonly owner?: string;
+  // a design chat's parent chat, by its view id
+  readonly parent?: string;
 }
 
 /** A folder a chat may work in, as WorkspaceFolderRegistry resolves it, with its checked-out branch. */
@@ -109,6 +118,10 @@ export interface Call<P, R> {
   readonly params: P;
   readonly result: R;
 }
+
+/** The params and the result of request M of a request table. */
+export type Params<T, M extends keyof T> = T[M] extends Call<infer P, unknown> ? P : never;
+export type Result<T, M extends keyof T> = T[M] extends Call<unknown, infer R> ? R : never;
 
 /** Requests core sends and main serves: the proxied services and the writes of the mirrored ones. */
 export interface CoreRequests {
@@ -190,6 +203,17 @@ export interface CoreRequests {
   // answers once what core posted to the view before is within the flow window of the host's queue toward the page; with
   // viewKey, of that one view's page only, else of every view's
   'views.drained': Call<{ readonly viewId: string; readonly viewKey?: string }, void>;
+  // the preview tab of a design file in the design chat panelId names, opened or shown; relPath is below the design folder
+  'design.openPreview': Call<{ readonly panelId: string; readonly designId: string; readonly relPath: string }, void>;
+  // a render of a design file a chat of this core holds, in a fresh offscreen page of the client (PD-41); main reads its
+  // bytes through design.read; state: a declared state, null for the default; scale: an upper bound
+  'design.capture': Call<{ readonly designId: string; readonly relPath: string; readonly width: number; readonly state: string | null; readonly scale: number }, DesignCapture>;
+  // the visible data-ds elements and the overflow at each width, and with sweepTo the overflow sweep from 320 px to it
+  'design.probe': Call<{ readonly designId: string; readonly relPath: string; readonly widths: readonly number[]; readonly state: string | null; readonly sweepTo?: number }, DesignProbeResult>;
+  // the journey's steps in a fresh offscreen page per width (PD-13, PD-45); outline: each page's DOM outline where its run ended
+  'design.journey': Call<{ readonly designId: string; readonly relPath: string; readonly widths: readonly number[]; readonly state: string | null; readonly steps: readonly JourneyStep[]; readonly outline?: boolean }, DesignJourneyRun>;
+  // the steps replayed in the live preview tab of relPath in design chat panelId, opened or shown; answers once the replay ended
+  'design.replayJourney': Call<{ readonly panelId: string; readonly designId: string; readonly relPath: string; readonly state: string | null; readonly steps: readonly JourneyStep[]; readonly reducedMotion: boolean }, void>;
 }
 
 export type { BrokerAnswer, BrowserToolAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
@@ -264,7 +288,7 @@ export interface MainRequests {
   'chats.whenWorktreeDiscarded': Call<{ readonly panelId: string }, void>;
   // D33's busy rule over the project's loaded chats, its worktrees' included
   'chats.projectBusy': Call<{ readonly projectKey: string }, boolean>;
-  // whether another holder keeps the session from opening here; announce tells the user, offering a takeover (chat.takeover)
+  // whether another holder keeps the session from opening here; announce tells the user, offering a takeover (chat.takeover), and on a local core shows a chat holding it
   'chats.leaseRefusal': Call<{ readonly sessionId: string; readonly announce: boolean }, boolean>;
   'catalog.list': Call<{ readonly projectKey: string; readonly complete: boolean }, readonly unknown[]>;
   'catalog.search': Call<{ readonly projectKey: string; readonly query: string }, readonly unknown[]>;
@@ -303,6 +327,16 @@ export interface MainRequests {
   'scm.commit': Call<{ readonly repoId: string; readonly message: string; readonly variant: unknown; readonly saved: readonly string[]; readonly branchName?: string }, ScmCommitOutcome>;
   'scm.ignoredIn': Call<{ readonly projectKey: string; readonly relativeDir: string; readonly entries: readonly { readonly name: string; readonly dir: boolean }[] }, readonly string[]>;
   'scm.commitBlob': Call<{ readonly repoId: string; readonly commit: string; readonly path: string }, Uint8Array | 'tooLarge' | undefined>;
+  // a file of a design a chat of this core holds (its role or own link), never another folder; nothing: not held, missing or outside
+  'design.read': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewFile | 'tooLarge' | undefined>;
+  // a held design's widths and one screen's declared states; nothing: not held, or the screen cannot be read
+  'design.info': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewInfo | undefined>;
+  // a preview's markup (PD-12) to design chat panelId: png is base64 with no data: prefix, json the shell's MarkupJsonInput,
+  // both parsed by core; the markup's F<n>, or why core refused it
+  'design.markup': Call<{ readonly panelId: string; readonly png: string; readonly json: unknown }, { readonly feedbackId: string } | { readonly refused: LocalizedText }>;
+  // a tweak the user kept (PD-13) in design chat panelId: core checks it against the chat's latest DeclareTweaks and sends
+  // "Keep: <label> → <token>" as its own prompt
+  'design.tweak': Call<{ readonly panelId: string; readonly tweakId: string; readonly value: string }, { readonly kept: true } | { readonly refused: LocalizedText }>;
   // D24's message over the repository's changes, on the Background model
   'scm.generateMessage': Call<{ readonly repoId: string }, unknown>;
   // a read of an open repository (scm-calls.ts REPOSITORY_CALLS)
@@ -409,6 +443,8 @@ export interface CoreEvents {
   'user.mcpChanged': object;
   // a daemon's core: a URL an agent shell printed, for the daemon's port detection
   'ports.urlSeen': { readonly host: 'localhost' | '127.0.0.1' | '0.0.0.0'; readonly port: number };
+  // files of a held design a Write or Edit changed, debounced; '/' separated below the design folder
+  'design.changed': { readonly designId: string; readonly paths: readonly string[] };
 }
 
 export interface MainEvents {
@@ -710,6 +746,7 @@ const panelCreate: Parser<PanelCreate> = obj({
   localResourceRoots: arr(filePath, MAX_ACTIONS),
   column,
   owner: opt(id),
+  parent: opt(id),
 });
 const folderTarget: Parser<FolderTargetEntry> = obj({
   key: filePath,
@@ -736,7 +773,7 @@ const chatEntry: Parser<ChatEntry> = obj({
   permissions: chatPermissions,
 });
 // A prompt id is a provider's tool call id, of no fixed length, so it takes a key's bound.
-const pendingKind = oneOf(['approval', 'question', 'plan', 'input', 'signIn'] as const);
+const pendingKind = oneOf(['approval', 'question', 'plan', 'input', 'signIn', 'designVersion', 'designApproval'] as const);
 const promptOwner = either(
   obj({ kind: oneOf(['main'] as const) }),
   either(
@@ -916,6 +953,61 @@ const pageSpec: Parser<PageSpec> = either(
   obj({ kind: oneOf(['browser'] as const), toolbar: bool }),
 );
 
+const designWidth = int(1, 100_000);
+const designId = nonEmpty(MAX_DESIGN_ID_CHARS);
+const tokenName: Parser<string> = (raw) => (typeof raw === 'string' && TWEAK_TOKEN_NAME.test(raw) ? raw : INVALID);
+const designPreviewInfo: Parser<DesignPreviewInfo> = obj({
+  path: filePath,
+  screenId: nullable(label),
+  title: nullable(label),
+  breakpoints: arr(obj({ name: id, width: designWidth }), MAX_ACTIONS),
+  primary: designWidth,
+  checked: arr(designWidth, MAX_ACTIONS),
+  journey: arr(designWidth, MAX_ACTIONS),
+  states: arr(id, MAX_ACTIONS),
+  tweaks: opt(nullable(obj({
+    toolCallId: key,
+    controls: arr(obj({
+      id,
+      label,
+      property: tokenName,
+      kind: oneOf(['swatch', 'segment'] as const),
+      stops: arr(obj({ token: tokenName, value: label }), MAX_TWEAK_STOPS, MIN_TWEAK_STOPS),
+      locked: nullable(obj({ decisionId: id, value: label })),
+    }), MAX_TWEAK_CONTROLS, MIN_TWEAK_CONTROLS),
+  }))),
+});
+
+const renderWidth = int(MIN_RENDER_WIDTH, MAX_RENDER_WIDTH);
+const px = (raw: unknown): number | typeof INVALID => (typeof raw === 'number' && Number.isFinite(raw) && Math.abs(raw) <= MAX_PROBE_PX ? raw : INVALID);
+const probeLine = str(MAX_PROBE_LINE_CHARS);
+const renderScaleOf: Parser<number> = (raw) => (typeof raw === 'number' && raw > 0 && raw <= MAX_RENDER_SCALE ? raw : INVALID);
+const probeText = nullable(probeLine);
+const designProbeResult: Parser<DesignProbeResult> = obj({
+  widths: arr(obj({
+    width: renderWidth,
+    contentHeight: px,
+    scrollWidth: px,
+    clientWidth: px,
+    overflow: bool,
+    overflowing: arr(obj({ element: probeLine, width: px }), MAX_OVERFLOWING),
+    elements: arr(obj({ tag: id, id: probeText, component: probeText, variant: probeText, bind: probeText, rect: obj({ x: px, y: px, w: px, h: px }), visible: bool }), MAX_PROBE_ELEMENTS),
+  }), MAX_PROBE_WIDTHS),
+  consoleErrors: arr(probeLine, MAX_CONSOLE_ERRORS),
+  sweep: opt(obj({ from: renderWidth, to: renderWidth, step: int(1, MAX_RENDER_WIDTH), overflowAt: arr(obj({ width: renderWidth, scrollWidth: px }), MAX_RENDER_WIDTH) })),
+});
+
+// a journey's steps, validated again on the receiving side as they were by core's tool (parseJourneySteps)
+const journeySteps: Parser<readonly JourneyStep[]> = (raw) => {
+  const parsed = parseJourneySteps(raw);
+  return 'steps' in parsed ? parsed.steps : INVALID;
+};
+const journeyStepResult = obj({ ok: bool, hiddenAt: opt(renderWidth), failure: opt(oneOf(JOURNEY_FAILURES)), message: opt(str(MAX_JOURNEY_MESSAGE_CHARS)) });
+const designJourneyRun: Parser<DesignJourneyRun> = obj({
+  widths: arr(obj({ width: renderWidth, passed: bool, steps: arr(journeyStepResult, MAX_JOURNEY_STEPS), outline: opt(str(MAX_JOURNEY_OUTLINE_CHARS)) }), MAX_PROBE_WIDTHS),
+  consoleErrors: arr(probeLine, MAX_CONSOLE_ERRORS),
+});
+
 const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'secrets.get': method(obj({ key }), maybe(message)),
   'secrets.store': method(obj({ key, value: message }), done),
@@ -1013,6 +1105,14 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.mcp.resources': method(obj({ clientId: id, server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
   'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
   'views.drained': method(obj({ viewId: id, viewKey }), done),
+  'design.openPreview': method(obj({ panelId: id, designId, relPath: filePath }), done),
+  'design.capture': method(
+    obj({ designId, relPath: filePath, width: renderWidth, state: nullable(id), scale: renderScaleOf }),
+    obj({ png: bytes(MAX_DATA_CHARS), cssWidth: renderWidth, cssHeight: int(1, RENDER_FRAME_HEIGHT), contentHeight: int(0, MAX_PROBE_PX), scale: renderScaleOf }),
+  ),
+  'design.probe': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), sweepTo: opt(renderWidth) }), designProbeResult),
+  'design.journey': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), steps: journeySteps, outline: opt(bool) }), designJourneyRun),
+  'design.replayJourney': method(obj({ panelId: id, designId, relPath: filePath, state: nullable(id), steps: journeySteps, reducedMotion: bool }), done),
 };
 
 const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
@@ -1086,6 +1186,10 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id) }), commitOutcome),
   'scm.ignoredIn': method(obj({ projectKey: filePath, relativeDir: str(MAX_PATH_CHARS), entries: arr(obj({ name: filePath, dir: bool }), MAX_ITEMS) }), arr(filePath, MAX_ITEMS)),
   'scm.commitBlob': method(obj({ repoId: id, commit: label, path: filePath }), maybe(either(oneOf(['tooLarge'] as const), bytes(MAX_DATA_CHARS)))),
+  'design.read': method(obj({ designId, relPath: filePath }), maybe(either(oneOf(['tooLarge'] as const), obj({ bytes: bytes(MAX_DATA_CHARS), fidelity: nullable(oneOf(['static', 'interactive'] as const)) })))),
+  'design.info': method(obj({ designId, relPath: filePath }), maybe(designPreviewInfo)),
+  'design.markup': method(obj({ panelId: id, png: str(MAX_IMAGE_BASE64_LENGTH), json: data(MAX_MARKUP_JSON_CHARS) }), either(obj({ feedbackId: id }), obj({ refused: localizedMessage }))),
+  'design.tweak': method(obj({ panelId: id, tweakId: id, value: tokenName }), either(obj({ kept: yes }), obj({ refused: localizedMessage }))),
   'scm.generateMessage': method(obj({ repoId: id }), value),
   'scm.repo': method(obj({ repoId: id, method: oneOf(REPOSITORY_CALLS), args: callArgs }), value),
   'worktrees.call': method(obj({ method: oneOf(WORKTREE_CALLS), args: callArgs }), value),
@@ -1147,6 +1251,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'user.clientAuthChanged': nothing,
     'user.mcpChanged': nothing,
     'ports.urlSeen': obj({ host: oneOf(['localhost', '127.0.0.1', '0.0.0.0'] as const), port: int(1, 65535) }),
+    'design.changed': obj({ designId, paths: arr(filePath, MAX_CHANGED_PATHS) }),
   },
   mirrors: {
     chats: obj({ panelId: id, entry: opt(chatEntry) }),

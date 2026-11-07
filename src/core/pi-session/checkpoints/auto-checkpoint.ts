@@ -36,6 +36,8 @@ export interface AutoCheckpointProducerOptions {
   /** Resolves the conversation's legacy per-session repo for v2 entries. */
   sessionFile: string;
   cwd: string;
+  /** False for a folder that is no git project (a design folder, PD-39); defaults to true. */
+  capturesTracked?: boolean;
   /** Read at every snapshot and restore, so a settings change applies to the next one. */
   maxFileSizeBytes: () => number;
   createTurnId: () => string;
@@ -104,7 +106,7 @@ export class AutoCheckpointProducer {
 
   constructor(options: AutoCheckpointProducerOptions) {
     this.options = options;
-    this.folder = folderRepoFor(options.cwd);
+    this.folder = folderRepoFor(options.cwd, options.capturesTracked ?? true);
   }
 
   /** Queue `fn` behind every earlier git step of this producer; a rejected step never stalls the queue. */

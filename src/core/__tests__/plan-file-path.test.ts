@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
-import { computePlanFilePath, isPlanFilePath, DAMOCLES_PLANS_DIR } from '../paths';
+import { computePlanFilePath, isFileBelow, isPlanFilePath, planFileStem, DAMOCLES_PLANS_DIR } from '../paths';
 import { slugify } from '@shared/utils';
 
 describe('slugify', () => {
@@ -80,5 +80,31 @@ describe('isPlanFilePath', () => {
     expect(isPlanFilePath(path.join(DAMOCLES_PLANS_DIR, 'notes.txt'))).toBe(false);
     expect(isPlanFilePath(path.join(path.dirname(DAMOCLES_PLANS_DIR), 'evil.md'))).toBe(false);
     expect(isPlanFilePath('')).toBe(false);
+  });
+});
+
+describe('isFileBelow', () => {
+  const dir = path.join(DAMOCLES_PLANS_DIR, '..', 'designs', 'contacts-abcd1234');
+
+  it('accepts a file below the folder and refuses the folder itself, a sibling and a climb out', () => {
+    expect(isFileBelow(dir, path.join(dir, 'screens', 'S1.html'))).toBe(true);
+    expect(isFileBelow(dir, dir)).toBe(false);
+    expect(isFileBelow(dir, `${dir}-other${path.sep}a.html`)).toBe(false);
+    expect(isFileBelow(dir, path.join(dir, '..', 'x.html'))).toBe(false);
+    expect(isFileBelow(dir, '')).toBe(false);
+  });
+
+  it('is the rule isPlanFilePath applies to the plans folder, which then also needs .md', () => {
+    const plan = path.join(DAMOCLES_PLANS_DIR, 'a-12345678.md');
+    expect(isFileBelow(DAMOCLES_PLANS_DIR, plan)).toBe(isPlanFilePath(plan));
+    expect(isFileBelow(DAMOCLES_PLANS_DIR, path.join(DAMOCLES_PLANS_DIR, 'notes.txt'))).toBe(true);
+    expect(isPlanFilePath(path.join(DAMOCLES_PLANS_DIR, 'notes.txt'))).toBe(false);
+  });
+});
+
+describe('planFileStem', () => {
+  it('is the plan file name without .md, which a design folder of the same session takes', () => {
+    const id = 'abcdef1234567890';
+    expect(`${planFileStem(id, 'Add the feature')}.md`).toBe(path.basename(computePlanFilePath(id, 'Add the feature')));
   });
 });

@@ -15,14 +15,15 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from '
 import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { isEntryPoint } from '../../../scripts/entry-point.mjs';
-import { npmCliPath } from '../../../scripts/npm-cli.mjs';
+import { isEntryPoint } from '../../../scripts/entry-point.ts';
+import { npmCliPath } from '../../../scripts/npm-cli.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const REFERENCE_TAG = 'remote-protocol-ref';
 // The commit the owner tagged as the oldest protocol peer.
 export const REFERENCE_COMMIT = '0c58749c';
-const FETCH_GRAMMARS = join('scripts', 'fetch-grammars.mjs');
+// A reference tree from before the scripts became TypeScript has the .mjs form.
+const FETCH_GRAMMARS = [join('scripts', 'fetch-grammars.ts'), join('scripts', 'fetch-grammars.mjs')];
 const GRAMMARS = join('resources', 'grammars');
 
 function option(args, name) {
@@ -49,15 +50,30 @@ export function refProblem(ref, root = ROOT) {
   return `the tag ${REFERENCE_TAG} is not in this clone. The owner creates and pushes it: git tag ${REFERENCE_TAG} ${REFERENCE_COMMIT} && git push origin ${REFERENCE_TAG}. A CI checkout needs fetch-depth: 0 to get tags.`;
 }
 
+/** The package a fetch-grammars script pins (`PKG`) and the grammar files it takes from it (`WASM_FILES`); undefined when it names either in no form this reads. */
+export function grammarPin(text) {
+  const source = text.replaceAll('\r\n', '\n');
+  const pkg = /^const PKG = '([^']+)';$/m.exec(source)?.[1];
+  const list = /^const WASM_FILES = \[([^\]]*)\];$/m.exec(source)?.[1];
+  if (pkg === undefined || list === undefined) return undefined;
+  return { pkg, files: [...list.matchAll(/'([^']+\.wasm)'/g)].map((match) => match[1]) };
+}
+
+function treePin(dir) {
+  const script = FETCH_GRAMMARS.map((file) => join(dir, file)).find((file) => existsSync(file));
+  return script === undefined ? undefined : grammarPin(readFileSync(script, 'utf8'));
+}
+
 /**
- * Copies this tree's grammars into the reference tree when its fetch script is this tree's, so its fetch:grammars finds every
- * file present and downloads nothing; with another script it fetches its own. Returns the names of the files copied.
+ * Copies this tree's grammars into the reference tree when both fetch scripts pin the same package, so its fetch:grammars
+ * finds every file present and downloads nothing; only the files on both lists are copied, and the reference tree fetches
+ * the rest itself. Returns the names of the files copied.
  */
 export function seedGrammars(out, root = ROOT) {
-  const script = (dir) => (existsSync(join(dir, FETCH_GRAMMARS)) ? readFileSync(join(dir, FETCH_GRAMMARS), 'utf8').replaceAll('\r\n', '\n') : undefined);
-  const theirs = script(out);
-  if (theirs === undefined || theirs !== script(root) || !existsSync(join(root, GRAMMARS))) return [];
-  const names = readdirSync(join(root, GRAMMARS)).filter((name) => name.endsWith('.wasm'));
+  const theirs = treePin(out);
+  const ours = treePin(root);
+  if (theirs === undefined || ours === undefined || theirs.pkg !== ours.pkg) return [];
+  const names = theirs.files.filter((name) => ours.files.includes(name) && existsSync(join(root, GRAMMARS, name)));
   mkdirSync(join(out, GRAMMARS), { recursive: true });
   for (const name of names) copyFileSync(join(root, GRAMMARS, name), join(out, GRAMMARS, name));
   return names;

@@ -11,6 +11,8 @@ const { t } = useI18n();
 
 defineProps<{
   open: boolean;
+  /** In a design chat the fork is a separate, unlinked design (PD-36), started from a copy of the current files. */
+  design?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -31,10 +33,10 @@ function handleOpenUpdate(next: boolean): void {
     <AlertDialogContent class="max-w-md gap-0 overflow-hidden p-0">
       <ConfirmDialogLayout
         :icon="History"
-        :title="t('compactMarker.rewindBeforeConfirm.title')"
-        :description="t('compactMarker.rewindBeforeConfirm.description')"
+        :title="design ? t('compactMarker.rewindBeforeConfirm.design.title') : t('compactMarker.rewindBeforeConfirm.title')"
+        :description="design ? t('compactMarker.rewindBeforeConfirm.design.description') : t('compactMarker.rewindBeforeConfirm.description')"
         :cancel-label="t('compactMarker.rewindBeforeConfirm.cancel')"
-        :confirm-label="t('compactMarker.rewindBeforeConfirm.confirm')"
+        :confirm-label="design ? t('compactMarker.rewindBeforeConfirm.design.confirm') : t('compactMarker.rewindBeforeConfirm.confirm')"
         @cancel="emit('cancel')"
         @confirm="emit('confirm')"
       />

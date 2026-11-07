@@ -5,21 +5,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
-// @ts-expect-error -- plain .mjs helper, no types
-import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageBuild, packageEntries, packageInfo, serverClosure, serverFlavor, serverManifest, serverRoots, serverVersionOf, selfTestExternals } from '../build-server.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { FIXED_MTIME, gzipHeader, readTarGz, readZip, tarGz, zip } from '../server-archive.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { SERVER_TARGETS, serverArtifact } from '../server-targets.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { DESKTOP_ONLY_PACKAGES } from '../sync-vscodeignore.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { EXTENSION_EXTERNALS } from '../extension-externals.mjs';
+import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageBuild, packageEntries, packageInfo, serverClosure, serverFlavor, serverManifest, serverRoots, serverVersionOf, selfTestExternals } from '../build-server.ts';
+import { FIXED_MTIME, gzipHeader, readTarGz, readZip, tarGz, zip, type ArchiveEntry } from '../server-archive.ts';
+import { SERVER_TARGETS, serverArtifact, type ServerTarget, type ServerTargetName } from '../server-targets.ts';
+import { DESKTOP_ONLY_PACKAGES } from '../sync-vscodeignore.ts';
+import { EXTENSION_EXTERNALS } from '../extension-externals.ts';
 import { isVersionText } from '../../src/remote/handshake';
 import { aligns, elf, NODE_LINUX_X64 } from './elf-fixture';
 
-type Entry = { path: string; mode: number; data?: Buffer; source?: string; type?: string };
-type Spec = { platform: string; arch: string; libc: string | null; natives: string[]; ptyPrebuild: string };
+type Spec = Pick<ServerTarget, 'platform' | 'arch' | 'libc' | 'natives' | 'ptyPrebuild'>;
 
 const FAKE_LINUX: Spec = { platform: 'linux', arch: 'x64', libc: 'glibc', natives: ['@vscode/ripgrep-linux-x64', '@parcel/watcher-linux-x64-glibc'], ptyPrebuild: 'linux-x64' };
 const FAKE_WINDOWS: Spec = { platform: 'win32', arch: 'x64', libc: null, natives: ['@vscode/ripgrep-win32-x64', '@koromix/koffi-win32-x64'], ptyPrebuild: 'win32-x64' };
@@ -72,7 +66,7 @@ describe('the node_modules closure', () => {
   });
 
   it('walks the real closure without a desktop-only or platform package left in it', () => {
-    const { portable } = serverClosure((SERVER_TARGETS as Record<string, Spec>)['linux-x64']) as { portable: string[] };
+    const { portable } = serverClosure(SERVER_TARGETS['linux-x64']);
     expect(portable).toEqual(expect.arrayContaining(['@earendil-works/pi-coding-agent', 'patchright', 'patchright-core', 'node-pty', '@parcel/watcher']));
     expect(portable.filter((name) => /^(electron|electron-updater|@electron\/|@xterm\/|@parcel\/watcher-|@vscode\/ripgrep-|@koromix\/)/.test(name))).toEqual([]);
   });
@@ -92,7 +86,7 @@ describe('the package file list', () => {
   });
 
   it('lists the launchers, dist without maps, the portable closure with one node-pty prebuild, and the root files', () => {
-    const entries = packageEntries({ spec: FAKE_LINUX, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty', 'zod'] }) as Entry[];
+    const entries = packageEntries({ spec: FAKE_LINUX, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty', 'zod'] });
     expect(entries.map((entry) => entry.path).sort()).toEqual([
       'LICENSE', 'THIRD-PARTY-NOTICES.md', 'bin/damocles-server', 'bin/helpers/browser.sh', 'bin/remote-cli/damocles', 'dist/askpass/askpass.sh', 'dist/core-host.js', 'dist/daemon.js',
       'l10n/bundle.l10n.json', 'node_modules/node-pty/lib/index.js', 'node_modules/node-pty/package.json', 'node_modules/node-pty/prebuilds/linux-x64/pty.node',
@@ -106,14 +100,14 @@ describe('the package file list', () => {
   });
 
   it('keeps the Windows prebuild without its debug symbols, and adds the .cmd launcher and the damocles command\'s sh forms for Git Bash', () => {
-    const entries = packageEntries({ spec: FAKE_WINDOWS, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty'] }) as Entry[];
+    const entries = packageEntries({ spec: FAKE_WINDOWS, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty'] });
     const paths = entries.map((entry) => entry.path);
     expect(paths.filter((path) => path.startsWith('node_modules/node-pty/prebuilds/'))).toEqual(['node_modules/node-pty/prebuilds/win32-x64/conpty.node']);
     expect(paths).toContain('bin/damocles-server.cmd');
     // from resources/server-bin: the sh forms Git Bash, MSYS2 and Cygwin run, the .cmd, and no .cmd BROWSER (targetEntries adds browser.exe)
     expect(paths.filter((path) => /^bin\/(remote-cli|helpers)\//.test(path))).toEqual(['bin/remote-cli/damocles', 'bin/remote-cli/damocles.cmd', 'bin/helpers/browser.sh']);
-    expect(entries.find((entry) => entry.path === 'bin/remote-cli/damocles')?.source).toMatch(/resources[\\/]server-bin[\\/]remote-cli[\\/]damocles$/);
-    expect(launchers(FAKE_WINDOWS)[0].data.toString()).toContain('node/node.exe');
+    expect(entries.find((entry) => entry.path === 'bin/remote-cli/damocles')).toMatchObject({ source: expect.stringMatching(/resources[\\/]server-bin[\\/]remote-cli[\\/]damocles$/) });
+    expect(launchers(FAKE_WINDOWS)[0]?.data.toString()).toContain('node/node.exe');
   });
 
   it('marks only the launcher, Node, rg, spawn-helper and the askpass scripts executable', () => {
@@ -124,25 +118,25 @@ describe('the package file list', () => {
   it('takes node and its license from a Node archive, and an npm tarball\'s files under node_modules', () => {
     const top = 'node-v24.22.0-linux-x64';
     const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: elf(NODE_LINUX_X64) }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }, { path: `${top}/bin/npm`, mode: 0o755, data: Buffer.from('') }]);
-    expect((nodeEntries(FAKE_LINUX, `${top}.tar.gz`, archive) as Entry[]).map((entry) => [entry.path, entry.mode])).toEqual([['node/LICENSE', 0o644], ['node/node', 0o755]]);
+    expect((nodeEntries(FAKE_LINUX, `${top}.tar.gz`, archive)).map((entry) => [entry.path, entry.mode])).toEqual([['node/LICENSE', 0o644], ['node/node', 0o755]]);
     const winTop = 'node-v24.22.0-win-x64';
     const winArchive = zip([{ path: `${winTop}/node.exe`, mode: 0o644, data: Buffer.from('MZ') }, { path: `${winTop}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }]);
-    expect((nodeEntries(FAKE_WINDOWS, `${winTop}.zip`, winArchive) as Entry[]).map((entry) => entry.path)).toEqual(['node/LICENSE', 'node/node.exe']);
+    expect((nodeEntries(FAKE_WINDOWS, `${winTop}.zip`, winArchive)).map((entry) => entry.path)).toEqual(['node/LICENSE', 'node/node.exe']);
     const tarball = tarGz([{ path: 'package/bin/rg', mode: 0o755, data: Buffer.from('rg') }, { path: 'package/package.json', mode: 0o644, data: Buffer.from('{}') }, { path: 'package/x.js.map', mode: 0o644, data: Buffer.from('') }]);
-    expect((npmPackageEntries('@vscode/ripgrep-linux-x64', tarball) as Entry[]).map((entry) => [entry.path, entry.mode])).toEqual([
+    expect((npmPackageEntries('@vscode/ripgrep-linux-x64', tarball)).map((entry) => [entry.path, entry.mode])).toEqual([
       ['node_modules/@vscode/ripgrep-linux-x64/bin/rg', 0o755], ['node_modules/@vscode/ripgrep-linux-x64/package.json', 0o644],
     ]);
   });
 
   it('clamps the PT_LOAD alignment of the x64 Linux and Alpine Node to 4 KiB, which WSL 1 needs, and of no other target\'s', () => {
     const shipped = elf(NODE_LINUX_X64);
-    const nodeOf = (target: string) => {
+    const nodeOf = (target: ServerTargetName) => {
       const top = `node-${target}`;
       const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: shipped }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }]);
-      return (nodeEntries(SERVER_TARGETS[target], `${top}.tar.gz`, archive) as Entry[]).find((entry) => entry.path === 'node/node')!.data!;
+      return (nodeEntries(SERVER_TARGETS[target], `${top}.tar.gz`, archive)).find((entry) => entry.path === 'node/node')!.data;
     };
-    for (const target of ['linux-x64', 'alpine-x64']) expect({ target, aligns: aligns(nodeOf(target)) }).toEqual({ target, aligns: [0x1, 0x1000, 0x1000, 0x1000, 0x1000, 0x1000, 0x1000, 0x10] });
-    for (const target of ['linux-arm64', 'alpine-arm64', 'darwin-x64', 'darwin-arm64']) expect({ target, same: nodeOf(target).equals(shipped) }).toEqual({ target, same: true });
+    for (const target of ['linux-x64', 'alpine-x64'] as const) expect({ target, aligns: aligns(nodeOf(target)) }).toEqual({ target, aligns: [0x1, 0x1000, 0x1000, 0x1000, 0x1000, 0x1000, 0x1000, 0x10] });
+    for (const target of ['linux-arm64', 'alpine-arm64', 'darwin-x64', 'darwin-arm64'] as const) expect({ target, same: nodeOf(target).equals(shipped) }).toEqual({ target, same: true });
     expect(clampsLoadAlign(SERVER_TARGETS['win32-x64'])).toBe(false);
   });
 
@@ -155,7 +149,7 @@ describe('the package file list', () => {
 
 describe('the server version', () => {
   const info = { name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: ['zod'], packages: ['zod'] };
-  const entries: Entry[] = [
+  const entries: ArchiveEntry[] = [
     { path: 'bin/damocles-server', mode: 0o755, data: Buffer.from('#!/bin/sh\n') },
     { path: 'dist/daemon.js', mode: 0o644, data: Buffer.from('daemon') },
     { path: 'package.json', mode: 0o644, data: Buffer.from('{"version":"1.0.0"}') },
@@ -168,7 +162,7 @@ describe('the server version', () => {
   });
 
   it('changes with one byte, one mode, one path or one field of server-package.json', () => {
-    const changed = (at: number, entry: Partial<Entry>) => entries.map((each, i) => (i === at ? { ...each, ...entry } : each));
+    const changed = (at: number, entry: Partial<ArchiveEntry>) => entries.map((each, i) => (i === at ? { ...each, ...entry } : each));
     expect(packageBuild(changed(1, { data: Buffer.from('daemoN') }), info)).not.toBe(build);
     expect(packageBuild(changed(1, { mode: 0o755 }), info)).not.toBe(build);
     expect(packageBuild(changed(1, { path: 'dist/daemon2.js' }), info)).not.toBe(build);
@@ -221,7 +215,7 @@ describe('the manifest', () => {
     expect(manifest.packages['linux-x64']).toMatchObject({ file: serverArtifact('linux-x64', VERSION), serverVersion: serverVersion('linux-x64') });
     expect(manifest.packages['win32-x64']).toMatchObject({ file: serverArtifact('win32-x64', VERSION), serverVersion: serverVersion('win32-x64') });
     expect(serverManifest(dir, VERSION, ['linux-x64'], { published: true }).published).toBe(true);
-    const source = readFileSync(join(__dirname, '..', 'build-server.mjs'), 'utf8');
+    const source = readFileSync(join(__dirname, '..', 'build-server.ts'), 'utf8');
     expect(source.match(/writeManifest\([^)]*\);/g)).toEqual(['writeManifest(manifestDir, version, targets, true);', 'writeManifest(OUT_DIR, version, built, false);']);
   });
 
@@ -237,7 +231,7 @@ describe('the manifest', () => {
 });
 
 describe('the archives are reproducible', () => {
-  const entries: Entry[] = [
+  const entries: [ArchiveEntry, ArchiveEntry, ArchiveEntry] = [
     { path: 'z/last.txt', mode: 0o644, data: Buffer.from('z') },
     { path: 'bin/damocles-server', mode: 0o755, data: Buffer.from('#!/bin/sh\n') },
     { path: `node_modules/${'deep/'.repeat(40)}file.js`, mode: 0o644, data: Buffer.alloc(700, 1) },
@@ -252,7 +246,7 @@ describe('the archives are reproducible', () => {
     expect(tar.toString('utf8', 0, 19)).toBe('bin/damocles-server');
     expect([octal(100, 8), octal(108, 8), octal(116, 8), octal(136, 12)]).toEqual([0o755, 0, 0, FIXED_MTIME]);
     expect(tar.toString('ascii', 257, 263)).toBe('ustar\0');
-    expect((readTarGz(archive) as Entry[]).map((entry) => [entry.path, entry.mode, entry.data!.length])).toEqual([
+    expect((readTarGz(archive)).map((entry) => [entry.path, entry.mode, entry.data.length])).toEqual([
       ['bin/damocles-server', 0o755, 10], [`node_modules/${'deep/'.repeat(40)}file.js`, 0o644, 700], ['z/last.txt', 0o644, 1],
     ]);
   });
@@ -264,7 +258,7 @@ describe('the archives are reproducible', () => {
 
   it('writes a zip with Unix modes and the fixed time that its reader round-trips', () => {
     const archive = zip(entries);
-    expect((readZip(archive) as Entry[]).map((entry) => [entry.path, entry.mode, entry.data!.toString('utf8').length])).toEqual([
+    expect((readZip(archive)).map((entry) => [entry.path, entry.mode, entry.data.toString('utf8').length])).toEqual([
       ['bin/damocles-server', 0o755, 10], [`node_modules/${'deep/'.repeat(40)}file.js`, 0o644, 700], ['z/last.txt', 0o644, 1],
     ]);
     // the first local header's DOS time and date: 2000-01-01 00:00

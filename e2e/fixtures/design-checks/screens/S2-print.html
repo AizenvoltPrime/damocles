@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en" data-ds-screen="S2" data-ds-states="default">
+<head><meta charset="utf-8"><title>Print</title><link rel="stylesheet" href="../tokens.css"></head>
+<body style="margin: 0">
+<main style="padding: 16px">
+  <h1 style="color: var(--color-primary)">Print</h1>
+  <button data-ds-component="Button">Add contact</button>
+</main>
+<script>
+  // A page that asks to print as it loads; a native print dialog in a hidden window would hold main's event loop.
+  window.print();
+  document.execCommand('print');
+  window.addEventListener('load', () => window.print());
+</script>
+</body>
+</html>

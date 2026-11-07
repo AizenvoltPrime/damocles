@@ -119,6 +119,15 @@ describe('requestPlanApproval', () => {
     expect(streamingStore.messages.flatMap((m) => m.toolCalls ?? []).find((t) => t.id === 'p3')?.metadata).toEqual({ planVersion: 3 });
     expect(usePermissionStore().pendingPlanApproval).toEqual({ toolUseId: 'p3', planContent: '1. Ship', planVersion: 3 });
   });
+
+  it('keeps the linked design the approval would record for the overlay\'s strip', () => {
+    const ctx = { stores: { permissionStore: usePermissionStore(), streamingStore: useStreamingStore() } } as unknown as HandlerContext;
+    const designLink = { designId: 'd-1', title: 'Contacts', folder: '/d', version: 1, screens: 1, decisions: 2, warnings: [], journeysPassed: null };
+
+    createPermissionHandlers().requestPlanApproval!({ type: 'requestPlanApproval', toolUseId: 'p4', planContent: '1. Ship', planVersion: 1, designLink, owner: MAIN }, ctx);
+
+    expect(usePermissionStore().pendingPlanApproval?.designLink).toEqual(designLink);
+  });
 });
 
 describe('permissionAutoResolved', () => {

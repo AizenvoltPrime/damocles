@@ -741,6 +741,17 @@ describe('integration sub-rows', () => {
     expect(posted).toContainEqual({ type: 'setMemoryProfile', enabled: false });
     expect(posted).toContainEqual({ type: 'setBrowserHeadless', headless: false });
   });
+
+  it('the design mode switch shows once core lists the group and toggles its tool group', async () => {
+    groups(false, false);
+    await open(NO_HOST_SETTINGS, 'integrations');
+    expect(row('damocles.design.enabled')).toBeNull();
+
+    useSettingsStore().setToolsSnapshot({ groups: [{ group: 'design', enabled: false, available: true }], tools: [] });
+    await nextTick();
+    row('damocles.design.enabled')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    expect(posted).toContainEqual({ type: 'toggleToolGroup', group: 'design', enabled: true });
+  });
 });
 
 describe('auto-compact rows', () => {

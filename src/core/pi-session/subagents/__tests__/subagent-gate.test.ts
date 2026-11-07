@@ -15,7 +15,7 @@ function ev(toolName: string, toolCallId: string, input: Record<string, unknown>
 function makeGate(plan: boolean) {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} }));
   const ctx: GatePermissionContext = {
-    permissionHandler: { canUseTool, decide: vi.fn(() => 'allow' as const), matchRule: vi.fn(async () => null), isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
+    permissionHandler: { canUseTool, decide: vi.fn(() => 'allow' as const), matchRule: vi.fn(async () => null), isPlanFile: isPlanFilePath, sessionCwd: () => process.cwd() } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => plan,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
   };

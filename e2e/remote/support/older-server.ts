@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { readTarGz } from '../../../scripts/server-archive.mjs';
+import { readTarGz } from '../../../scripts/server-archive.ts';
 import { LINUX_TARGET } from './release-mirror';
 import { runProgram, TARGET_HOME, type SshdFixture } from './sshd';
 

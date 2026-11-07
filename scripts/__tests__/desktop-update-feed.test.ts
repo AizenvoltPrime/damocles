@@ -3,8 +3,8 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { feedFile, startFeedServer } from '../desktop-update-feed.mjs';
-import { overrideYaml, parseFlatYaml, writeOverride } from '../desktop-update-override.mjs';
+import { feedFile, startFeedServer } from '../desktop-update-feed.ts';
+import { overrideYaml, parseFlatYaml, writeOverride } from '../desktop-update-override.ts';
 
 const PACKAGED_YML = 'owner: AizenvoltPrime\nrepo: damocles\nprovider: github\nchannel: latest-x64\nupdaterCacheDirName: damocles-updater\n';
 

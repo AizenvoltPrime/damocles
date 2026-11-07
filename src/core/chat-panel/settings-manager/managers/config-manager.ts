@@ -328,6 +328,8 @@ export class ConfigManager {
     permissionHandler: PermissionHandler,
     mode: PermissionMode
   ): Promise<void> {
+    // A design chat's mode is fixed at default (PD-25); the caller republishes the settings, which shows it unchanged.
+    if (permissionHandler.modeFixed()) return;
     permissionHandler.setPermissionMode(mode);
     await session.setPermissionMode(mode);
   }

@@ -3,13 +3,13 @@ import { setActivePinia, createPinia } from 'pinia';
 import { useQuestionStore } from '../useQuestionStore';
 import type { Question, PendingQuestionInfo } from '@shared/types/permissions';
 
-const opt = (label: string, preview?: string) => ({ label, description: `${label} desc`, ...(preview && { preview }) });
+const opt = (label: string, content?: string) => ({ label, description: `${label} desc`, ...(content && { preview: { kind: 'markdown' as const, content } }) });
 
 const singleSelectQuestion = (overrides: Partial<Question> = {}): Question => ({
   question: 'Which one?',
   header: 'Q1',
   multiSelect: false,
-  options: [opt('A'), opt('B'), opt('C', '<b>preview-c</b>')],
+  options: [opt('A'), opt('B'), opt('C', '**preview-c**')],
   ...overrides,
 });
 
@@ -17,7 +17,7 @@ const multiSelectQuestion = (overrides: Partial<Question> = {}): Question => ({
   question: 'Which features?',
   header: 'Q2',
   multiSelect: true,
-  options: [opt('X', '<i>preview-x</i>'), opt('Y'), opt('Z')],
+  options: [opt('X', '_preview-x_'), opt('Y'), opt('Z')],
   ...overrides,
 });
 
@@ -70,21 +70,44 @@ describe('useQuestionStore.compiledAnswers', () => {
 describe('useQuestionStore.compiledAnnotations', () => {
   beforeEach(() => setActivePinia(createPinia()));
 
-  it('emits preview for single-select selected option', () => {
+  it('emits the typed preview of the single-select selected option', () => {
     const store = useQuestionStore();
     const q = singleSelectQuestion();
     store.setQuestion(pending([q]));
     store.toggleOption(q.question, 'C', false);
     expect(store.compiledAnnotations).toEqual({
-      [q.question]: { preview: '<b>preview-c</b>' },
+      [q.question]: { preview: { kind: 'markdown', content: '**preview-c**' } },
     });
   });
 
-  it('omits preview for multi-select even when selected options have previews', () => {
+  it('emits a preview the desktop bridge can structured-clone, as the design grid chooses it without advancing', () => {
+    const store = useQuestionStore();
+    const q = singleSelectQuestion({ options: [{ label: 'Cards', description: '', preview: { kind: 'design', path: 'variants/b/screens/S1.html' } }, opt('B')] });
+    store.setQuestion(pending([q]));
+    store.chooseOption(q.question, 'Cards');
+
+    expect(store.currentTabIndex).toBe(0);
+    const annotations = store.compiledAnnotations!;
+    expect(structuredClone(annotations)).toEqual({ [q.question]: { preview: { kind: 'design', path: 'variants/b/screens/S1.html' } } });
+  });
+
+  it('emits every selected multi-select option\'s preview by its label, as structured-cloneable copies', () => {
+    const store = useQuestionStore();
+    const q = multiSelectQuestion({ options: [opt('X', '_preview-x_'), opt('Y'), opt('Z', '_preview-z_')] });
+    store.setQuestion(pending([q]));
+    store.toggleOption(q.question, 'X', true);
+    store.toggleOption(q.question, 'Y', true);
+    store.toggleOption(q.question, 'Z', true);
+    expect(structuredClone(store.compiledAnnotations)).toEqual({
+      [q.question]: { previews: { X: { kind: 'markdown', content: '_preview-x_' }, Z: { kind: 'markdown', content: '_preview-z_' } } },
+    });
+  });
+
+  it('emits no multi-select preview when no selected option has one', () => {
     const store = useQuestionStore();
     const q = multiSelectQuestion();
     store.setQuestion(pending([q]));
-    store.toggleOption(q.question, 'X', true);
+    store.toggleOption(q.question, 'Y', true);
     expect(store.compiledAnnotations).toBeUndefined();
   });
 
@@ -106,7 +129,7 @@ describe('useQuestionStore.compiledAnnotations', () => {
     store.toggleOption(q.question, 'C', false);
     store.setAnnotationNotes(q.question, 'note');
     expect(store.compiledAnnotations).toEqual({
-      [q.question]: { preview: '<b>preview-c</b>', notes: 'note' },
+      [q.question]: { preview: { kind: 'markdown', content: '**preview-c**' }, notes: 'note' },
     });
   });
 

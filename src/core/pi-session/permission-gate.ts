@@ -7,12 +7,15 @@ import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL, TOOL_AGENT, LIVE_OUTPUT_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
+import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL, TOOL_AGENT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
+import { DESIGN_PI_TOOL_NAMES, DESIGN_TOOLS_WITHOUT_FOLDER_WRITES } from '../design/rule-set';
+import { designFilesWriteBlock, designWriteBlock, provenReadOnlyShell, type DesignScope } from '../design/design-write-rule';
+import { log } from '../logger';
 import { userScopeToolNames } from './tools/deferred-tools';
 import { browserClosedReason, relayedMcpUnreachableReason, userScopeReach } from '../user-scope';
 import { relayedServerOfTool } from './mcp/relayed-tool-names';
@@ -22,6 +25,7 @@ import type { ResourceReadReach } from './mcp/content';
 import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
 import { describeStoppedBeforeRun } from './tools/cancellable-shell';
 import type { ToolCallHookOutcome } from './hooks/dispatch';
+import type { DesignPromptInputs } from './agent-start';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
 const NEVER_ABORT: AbortSignal = new AbortController().signal;
@@ -126,6 +130,10 @@ export interface PanelGateContext {
   shellCancel: ShellCancelRegistry;
   /** D62: set while the chat works in its chat worktree; read per call, since a hand-off moves the chat. */
   worktreeIsolation?: () => WorktreeIsolation | undefined;
+  /** A design chat's posture (PD-4, PD-25), for it and every agent it starts; read per call. */
+  designScope?: () => DesignScope | undefined;
+  /** The design sections' inputs (a design chat's folder and rule set, a parent's own link), read per turn. */
+  designPrompt?: () => DesignPromptInputs;
 }
 
 /** What the gate needs of a panel's turn checkpoint. */
@@ -169,7 +177,7 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope'> & {
   /**
    * Apply plan mode's shell rule to this caller in every mode: a command `readonly-shell.ts` proves
    * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
@@ -191,7 +199,8 @@ const SPAWN_TOOLS: ReadonlySet<string> = new Set<string>([TOOL_AGENT, 'create_te
  * Whether a call may change `folder` and so must wait for the turn's checkpoint baseline. Read-only
  * tools, read-only-annotated MCP tools, provably read-only shell commands, the in-process coordination
  * tools (none writes into the folder), and an Edit or Write of the plan file or of a path outside the
- * folder never wait; spawn tools, other writes, other shell and anything unknown do.
+ * folder never wait; spawn tools, other writes, other shell and anything unknown do. A design tool waits unless it writes
+ * nothing into a design folder (PD-42).
  */
 export function waitsForCheckpointBaseline(piToolName: string, input: Record<string, unknown>, isMcpReadOnly: ((name: string) => boolean) | undefined, folder: string): boolean {
   const damoclesName = mapPiToolName(piToolName);
@@ -203,6 +212,7 @@ export function waitsForCheckpointBaseline(piToolName: string, input: Record<str
     const target = path.resolve(folder, filePath);
     return !isPlanFilePath(target) && isInsideFolder(target, folder);
   }
+  if (DESIGN_PI_TOOL_NAMES.has(damoclesName)) return !DESIGN_TOOLS_WITHOUT_FOLDER_WRITES.has(damoclesName);
   const category = toolCategory(damoclesName);
   if (category === 'read') return false;
   if (damoclesName.startsWith('mcp__')) return !(isMcpReadOnly?.(damoclesName) ?? false);
@@ -296,6 +306,8 @@ async function decideToolCall(
   // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
   const isMcp = damoclesName.startsWith('mcp__');
   const mcpReadOnly = isMcp && (panel.isMcpReadOnly?.(damoclesName) ?? false);
+  // A design chat's MCP call that is not read-only (PD-25): no hook, YOLO or allow rule approves it, and a deny rule denies it.
+  const onlyUserApproves = isMcp && !mcpReadOnly && panel.designScope?.() !== undefined;
 
   // PreToolUse hooks run INSIDE the single gate handler, before the gate decides (Section 3.3). `allow`
   // skips the gate entirely (force-allow); `deny`/exit-2 blocks; `updatedInput` mutates `event.input` in
@@ -330,11 +342,16 @@ async function decideToolCall(
     return undefined;
   };
 
-  // D62 applies in every mode and before a hook's force-allow, to the input as a hook rewrote it.
+  // D62, a design chat's posture and one writer per design file apply in every mode and before a hook's force-allow, to the
+  // input as a hook rewrote it.
   const isolationBlock = (): ToolCallEventResult | undefined => {
+    const design = panel.designScope?.();
     const isolation = panel.worktreeIsolation?.();
-    if (!isolation) return undefined;
-    const blocked = worktreeIsolationBlock(damoclesName, normalizeToolInput(event.toolName, event.input as Record<string, unknown>), isolation);
+    if (!design && !isolation && category !== 'write') return undefined;
+    const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
+    const blocked = (design ? designWriteBlock(damoclesName, input, design, mcpReadOnly) : undefined)
+      ?? (category === 'write' ? designFilesWriteBlock(input, panel.permissionHandler.sessionCwd()) : undefined)
+      ?? (isolation ? worktreeIsolationBlock(damoclesName, input, isolation) : undefined);
     return blocked === undefined ? undefined : { block: true, reason: formatPolicyBlockReason(blocked) };
   };
 
@@ -376,8 +393,12 @@ async function decideToolCall(
       if (result.decision === 'allow') {
         const isolated = isolationBlock();
         if (isolated) return isolated;
-        preToolUse.onDecision(damoclesName, 'allow', result.reason, false);
-        return proceed();
+        // A hook's allow in a design chat still leaves a non-read-only MCP call to `gateVerdict`, which asks the user (PD-4, PD-25).
+        if (!onlyUserApproves) {
+          preToolUse.onDecision(damoclesName, 'allow', result.reason, false);
+          return proceed();
+        }
+        log('[PermissionGate] a PreToolUse hook allowed %s, which only the user can approve in a design chat', damoclesName);
       }
     }
   }
@@ -390,13 +411,17 @@ async function decideToolCall(
   const mcpTool = isMcp ? panel.mcpToolIdentity?.(damoclesName) : mcpResourceIdentity(damoclesName, input);
 
   // The full approval flow: the prompt for gating tools and unknown tools, and for any call an ask rule names.
-  const askUser = async (call: GatedCall): Promise<ToolCallEventResult | undefined> => {
+  const askUser = async (call: GatedCall, requiresUser: boolean): Promise<ToolCallEventResult | undefined> => {
     const stopped = stoppedByUser();
     if (stopped) return stopped;
     const result = await panel.permissionHandler.canUseTool(
       damoclesName,
       input,
-      { ...buildCanUseToolContext(event.toolCallId, callSignal, parentToolUseId, mcpTool), rule: call.rule, runsUnasked: () => runsUnasked(call, panel) },
+      {
+        ...buildCanUseToolContext(event.toolCallId, callSignal, parentToolUseId, mcpTool),
+        runsUnasked: () => runsUnasked(call, panel),
+        ...(requiresUser ? { requiresUser: true as const, rule: call.rule } : { rule: call.rule }),
+      },
     );
     // A Stop withdraws the prompt, which settles as an unasked deny, so this check must come first.
     const stoppedDuringPrompt = stoppedByUser();
@@ -418,10 +443,13 @@ async function decideToolCall(
 
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return proceed();
 
-  const call: GatedCall = { name: damoclesName, input, mcpReadOnly, rule: await panel.permissionHandler.matchRule(damoclesName, input, mcpTool) };
+  const rule = onlyUserApproves
+    ? await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, { ignoreBypass: true })
+    : await panel.permissionHandler.matchRule(damoclesName, input, mcpTool);
+  const call: GatedCall = { name: damoclesName, input, mcpReadOnly, rule };
   const verdict = gateVerdict(call, panel);
   if (verdict.kind === 'block') return { block: true, reason: formatPolicyBlockReason(verdict.reason) };
-  return verdict.kind === 'run' ? proceed() : askUser(call);
+  return verdict.kind === 'run' ? proceed() : askUser(call, verdict.requiresUser === true);
 }
 
 /** The server an MCP resource tool call names, so `mcp__<server>` rules cover it as one of that server's tools. */
@@ -438,15 +466,19 @@ export interface GatedCall {
   input: Record<string, unknown>;
   /** Whether it is a read-only-annotated MCP tool. */
   mcpReadOnly: boolean;
-  /** The settings rule it matched when it reached the gate, null when none did or YOLO was on. */
+  /** The settings rule it matched when it reached the gate, null when none did, or YOLO was on and the call is not one only the user approves. */
   rule: PermissionBehavior | null;
 }
 
-/** Run the call, block it with a policy reason, or hand it to the approval flow (`canUseTool`). */
-export type GateVerdict = { kind: 'run' } | { kind: 'block'; reason: string } | { kind: 'approval' };
+/**
+ * Run the call, block it with a policy reason, or hand it to the approval flow (`canUseTool`). `requiresUser`: only the user's
+ * answer approves it, which YOLO does not give (a design chat's MCP call that is not read-only, PD-25).
+ */
+export type GateVerdict = { kind: 'run' } | { kind: 'block'; reason: string } | { kind: 'approval'; requiresUser?: true };
 
 const RUN: GateVerdict = { kind: 'run' };
 const APPROVAL: GateVerdict = { kind: 'approval' };
+const USER_APPROVAL: GateVerdict = { kind: 'approval', requiresUser: true };
 const SETTINGS_RULE_DENY = 'Permission denied by a rule in your Damocles settings';
 
 /**
@@ -462,6 +494,19 @@ export function gateVerdict(call: GatedCall, panel: GatePermissionContext): Gate
   // and an ask rule prompts. Web tools are NOT here — they are in `READ_ONLY_TOOLS`, so they fall
   // through to the read branch.
   if (GATEABLE_MODULE_NAMES.has(name)) return byRule();
+
+  // Design tools run by settings rule; they are not module tools, which never wait for the checkpoint baseline (PD-42).
+  if (DESIGN_PI_TOOL_NAMES.has(name)) return byRule();
+
+  // A design chat (PD-4, PD-25); `designWriteBlock` already refused writes outside its folder and unproven shell commands.
+  if (panel.designScope?.()) {
+    if (name === TOOL_BASH || name === TOOL_POWERSHELL) {
+      return provenReadOnlyShell(name, input) ? byRule() : { kind: 'block', reason: 'A design chat runs only shell commands proven read-only.' };
+    }
+    if (name === TOOL_EDIT || name === TOOL_WRITE) return byRule();
+    if (name === TOOL_GENERATE_IMAGE) return APPROVAL;
+    if (name.startsWith('mcp__') && !call.mcpReadOnly) return rule === 'deny' ? { kind: 'block', reason: SETTINGS_RULE_DENY } : USER_APPROVAL;
+  }
 
   // Plan mode blocks the write-category tools. A shell command `readonly-shell.ts` proves read-only
   // auto-runs; any other goes through canUseTool like default mode (prompt, settings rules, YOLO), so
@@ -532,5 +577,5 @@ export function gateVerdict(call: GatedCall, panel: GatePermissionContext): Gate
  */
 export function runsUnasked(call: GatedCall, panel: GatePermissionContext): boolean {
   const verdict = gateVerdict(call, panel);
-  return verdict.kind === 'run' || (verdict.kind === 'approval' && panel.permissionHandler.decide(call.name, call.input, call.rule) === 'allow');
+  return verdict.kind === 'run' || (verdict.kind === 'approval' && panel.permissionHandler.decide(call.name, call.input, call.rule, verdict.requiresUser === true) === 'allow');
 }

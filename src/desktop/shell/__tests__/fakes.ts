@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type FilesClipboardChanged, type FilesTransferProgress, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DesignReplayProgress, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type FilesClipboardChanged, type FilesTransferProgress, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
 import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HeldMemoryResult, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsAttached, OverlaySettingsAway, OverlaySettingsAwayState, OverlaySettingsPage, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult, WslDistroInfo } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesPortsApi, PortsView } from '../../preload/ports-channels';
@@ -259,6 +259,9 @@ export type FakeShellApi = DamoclesShellApi & {
   editorResync: (documentId: string) => void;
   editorFocus: (tabId: string) => void;
   editorReveal: (reveal: EditorReveal) => void;
+  designReplay: (progress: DesignReplayProgress) => void;
+  // main's damocles:shell:design:closed, a design tab closed for good
+  designClosed: (tabId: string) => void;
   filesChanged: (change: FilesChanged) => void;
   filesTransferProgress: (progress: FilesTransferProgress) => void;
   filesClipboardChanged: (change: FilesClipboardChanged) => void;
@@ -303,6 +306,8 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
   const editorResync = emitter<string>();
   const editorFocus = emitter<string>();
   const editorReveal = emitter<EditorReveal>();
+  const designReplay = emitter<DesignReplayProgress>();
+  const designClosed = emitter<string>();
   const filesChanged = emitter<FilesChanged>();
   const filesTransferProgress = emitter<FilesTransferProgress>();
   const filesClipboardChanged = emitter<FilesClipboardChanged>();
@@ -407,6 +412,19 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     browserAction: vi.fn(async () => {}),
     navigateBrowser: vi.fn(async () => true),
     reportBrowserBounds: vi.fn(),
+    setDesignPreview: vi.fn(async () => {}),
+    designPreviewAction: vi.fn(async () => {}),
+    reportDesignPreviewBounds: vi.fn(),
+    onDesignReplay: vi.fn(designReplay.listen),
+    designFreeze: vi.fn(async () => { throw new Error('no freeze scripted'); }),
+    designMarkupEnter: vi.fn(async () => {}),
+    designMarkupExit: vi.fn(async () => {}),
+    designMarkupSend: vi.fn(async () => ({ feedbackId: 'F1' })),
+    designTweakApply: vi.fn(async () => {}),
+    designTweakReset: vi.fn(async () => {}),
+    designTweakKeep: vi.fn(async () => {}),
+    designLastFrame: vi.fn(async (): Promise<string | null> => null),
+    onDesignPreviewClosed: vi.fn(designClosed.listen),
     listFiles: vi.fn(async () => ({ ok: true as const, entries: [] })),
     createFile: vi.fn(async () => ({ ok: true as const, relativePath: 'new.ts' })),
     renameFile: vi.fn(async () => ({ ok: true as const, relativePath: 'renamed.ts' })),
@@ -472,6 +490,8 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     editorResync: editorResync.emit,
     editorFocus: editorFocus.emit,
     editorReveal: editorReveal.emit,
+    designReplay: designReplay.emit,
+    designClosed: designClosed.emit,
     filesChanged: filesChanged.emit,
     filesTransferProgress: filesTransferProgress.emit,
     filesClipboardChanged: filesClipboardChanged.emit,

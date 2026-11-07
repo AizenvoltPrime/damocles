@@ -138,7 +138,7 @@ SOFTWARE.
 
 ## Material Icon Theme
 
-The desktop app's Material file icons (`src/desktop/shell/material-icons.ts`) are the SVG icons of the material-icon-theme npm package, bundled to `dist/desktop-shell/file-icons/` with this licence beside them, and its file and folder associations, generated into `src/desktop/shell/generated/file-icons.json` by `scripts/generate-file-icons.mjs`.
+The desktop app's Material file icons (`src/desktop/shell/material-icons.ts`) are the SVG icons of the material-icon-theme npm package, bundled to `dist/desktop-shell/file-icons/` with this licence beside them, and its file and folder associations, generated into `src/desktop/shell/generated/file-icons.json` by `scripts/generate-file-icons.ts`.
 
 - **Source**: https://github.com/material-extensions/vscode-material-icon-theme
 
@@ -157,7 +157,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## pi-anthropic-auth
 
-Each server package ships the pi extension `@gotgenes/pi-anthropic-auth` at the commit pinned in `src/core/pi-session/subscription-pin.ts`, in `dist/subscription-plugin/` with this licence beside it. A daemon's core sends a Claude subscription request through it when the client behind the request chose the included allowance.
+Each server package ships the pi extension `@gotgenes/pi-anthropic-auth` at the commit pinned in `src/core/pi-session/subscription-pin.json`, in `dist/subscription-plugin/` with this licence beside it. A daemon's core sends a Claude subscription request through it when the client behind the request chose the included allowance.
 
 - **Source**: https://github.com/gotgenes/pi-anthropic-auth
 
@@ -451,7 +451,7 @@ SOFTWARE.
 
 ## pi (agent runtime)
 
-Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` and `@earendil-works/pi-mcp` packages ship in the VSIX and the desktop app as real `node_modules` (kept external and loaded via dynamic `import()`, not bundled into `dist/extension.js`). They are the agent engine behind every session — provider auth, the streaming agent loop, tool dispatch, the extension plumbing Damocles builds on, and (pi-mcp) the MCP client protocol, transports and OAuth. Listed here for attribution and MIT compliance because the published packages declare `"license": "MIT"` but do not carry their own `LICENSE` file.
+Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` and `@earendil-works/pi-mcp` packages ship in the VSIX and the desktop app as real `node_modules` (kept external and loaded via dynamic `import()`, not bundled into `dist/extension.cjs`). They are the agent engine behind every session — provider auth, the streaming agent loop, tool dispatch, the extension plumbing Damocles builds on, and (pi-mcp) the MCP client protocol, transports and OAuth. Listed here for attribution and MIT compliance because the published packages declare `"license": "MIT"` but do not carry their own `LICENSE` file.
 
 - **Source**: https://github.com/earendil-works/pi
 - **Packages**: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-mcp`
@@ -585,7 +585,7 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/desktop/main/remote/ports/port-forwarding.ts` (port attributes by port or range with an exact port over a range, the onAutoForward actions, restoring forwards per workspace and their two-week expiry) from `src/vs/workbench/services/remote/common/tunnelModel.ts` (`PortsAttributes`, `TUNNELS_TO_RESTORE`, `RESTORE_EXPIRATION_TIME`, `restoreForwarded`), and the fallback to output-only forwarding after the automatic-forward threshold and its Undo from `src/vs/workbench/contrib/remote/browser/remoteExplorer.ts` (`AutomaticPortForwarding`)
   - `src/desktop/main/remote/ports/ports-controller.ts` (Change Local Port's digits-only, 1 to 65535 check, and Forward a Port's `host:port` input) from `src/vs/workbench/contrib/remote/browser/tunnelView.ts` (`ChangeLocalPortAction`, `ForwardPortAction`)
   - `src/remote/mux.ts` and `src/remote/tunnel-pipe.ts` (one stream per forwarded TCP connection, the daemon connecting the loopback form of the bound address) from `src/vs/platform/remote/common/remoteAgentConnection.ts` (`ConnectionType.Tunnel`) and `src/vs/server/node/remoteExtensionHostAgentServer.ts`
-  - `scripts/elf-load-align.mjs` (every PT_LOAD `p_align` above 4 KiB of an x86-64 ELF executable clamped to 4 KiB, by a walk of its 56-byte program headers) from `build/gulpfile.reh.ts` (`patchElfLoadAlign`)
+  - `scripts/elf-load-align.ts` (every PT_LOAD `p_align` above 4 KiB of an x86-64 ELF executable clamped to 4 KiB, by a walk of its 56-byte program headers) from `build/gulpfile.reh.ts` (`patchElfLoadAlign`)
   - `resources/bin/damocles` and `damocles.cmd` (the app's binary run as Node on `cli.js` with `ELECTRON_RUN_AS_NODE`, the WSL branch that passes it through `WSLENV`, and the Git Bash, MSYS2 and Cygwin branch that names `cli.js` with `cygpath -m`) from `resources/win32/bin/code.sh`, `code.cmd`, `resources/linux/bin/code.sh` and `resources/darwin/bin/code.sh`
   - `resources/server-bin/remote-cli/damocles`, `damocles.cmd` and `helpers/browser.sh` (the server's own Node running the remote command, and `BROWSER` handing the address to the client) from `resources/server/bin/remote-cli/code-linux.sh`, `code.cmd` and `resources/server/bin/helpers/browser-linux.sh`, with `code.sh`'s `cygpath -m` branch for Git Bash, MSYS2 and Cygwin on a Windows host
 ```
@@ -659,7 +659,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## MCP TypeScript SDK
 
-`@earendil-works/pi-mcp` adapts OAuth code from the MCP TypeScript SDK and ships the SDK's license as `LICENSES/modelcontextprotocol-typescript-sdk.txt`, which the VSIX and the desktop app keep. Damocles also ports the SDK's stdio environment allowlist (`DEFAULT_INHERITED_ENV_VARS` and `getDefaultEnvironment()`, from `@modelcontextprotocol/sdk` 1.29.0 `dist/esm/client/stdio.js`) into `src/core/pi-session/mcp/stdio-env.ts`, which esbuild bundles into `dist/extension.js` and `dist/desktop/main.js`. The SDK package itself is a development dependency and does not ship.
+`@earendil-works/pi-mcp` adapts OAuth code from the MCP TypeScript SDK and ships the SDK's license as `LICENSES/modelcontextprotocol-typescript-sdk.txt`, which the VSIX and the desktop app keep. Damocles also ports the SDK's stdio environment allowlist (`DEFAULT_INHERITED_ENV_VARS` and `getDefaultEnvironment()`, from `@modelcontextprotocol/sdk` 1.29.0 `dist/esm/client/stdio.js`) into `src/core/pi-session/mcp/stdio-env.ts`, which esbuild bundles into `dist/extension.cjs` and `dist/desktop/main.js`. The SDK package itself is a development dependency and does not ship.
 
 - **Source**: https://github.com/modelcontextprotocol/typescript-sdk (`@modelcontextprotocol/sdk`)
 
@@ -758,7 +758,7 @@ SOFTWARE.
 ## Bundled web-extraction libraries (WebFetch)
 
 `WebFetch`'s extraction pipeline (`src/core/pi-session/web-access/extract.ts`) depends on four npm
-packages that esbuild bundles directly into `dist/extension.js` (they are not externals), so their code
+packages that esbuild bundles directly into `dist/extension.cjs` (they are not externals), so their code
 physically ships in the VSIX. Listed here for attribution and marketplace compliance.
 
 - **@mozilla/readability** (v0.6.0) — Apache-2.0 — https://github.com/mozilla/readability
@@ -1055,7 +1055,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## smol-toml
 
-Bundled and minified into `dist/extension.js`; used to read `~/.codex/config.toml`.
+Bundled and minified into `dist/extension.cjs`; used to read `~/.codex/config.toml`.
 BSD-3-Clause requires this notice in binary redistributions.
 
 https://github.com/squirrelchat/smol-toml
@@ -1094,7 +1094,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 These npm packages ship inside the VSIX, the desktop app or both. esbuild bundles the first eight into the bundle each entry names (they are not externals; Vite also bundles jsdiff into the webview and the desktop shell), Vite bundles Monaco into the desktop app's `dist/webview/assets/monaco-*`, and electron-builder ships the last two as `node_modules` in the desktop app. Listed here for attribution and license compliance.
 
 - **proper-lockfile** (v4.1.2) — MIT, Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> — https://github.com/moxystudio/node-proper-lockfile
-  — cross-process locks for config, auth and session-lease writes; bundled into `dist/extension.js` and `dist/desktop/main.js`.
+  — cross-process locks for config, auth and session-lease writes; bundled into `dist/extension.cjs` and `dist/desktop/main.js`.
 - **graceful-fs** (v4.2.11) — ISC, Copyright (c) 2011-2022 Isaac Z. Schlueter, Ben Noordhuis, and Contributors — https://github.com/isaacs/node-graceful-fs
   — proper-lockfile's file system layer; bundled with it.
 - **signal-exit** (v3.0.7) — ISC, Copyright (c) 2015, Contributors — https://github.com/tapjs/signal-exit
@@ -1106,9 +1106,9 @@ These npm packages ship inside the VSIX, the desktop app or both. esbuild bundle
 - **picomatch** (v4.0.7) — MIT, Copyright (c) 2017-present, Jon Schlinkert. — https://github.com/micromatch/picomatch
   — glob matching for the desktop file watchers; bundled into `dist/desktop/main.js`.
 - **ignore** (v7.0.12) — MIT, Copyright (c) 2013 Kael Zhang <i@kael.me>, contributors — https://github.com/kaelzhang/node-ignore
-  — gitignore-style path matching for permission rules; bundled into `dist/extension.js` and `dist/desktop/main.js`.
+  — gitignore-style path matching for permission rules; bundled into `dist/extension.cjs` and `dist/desktop/main.js`.
 - **jsdiff** (`diff`, v8.0.4) — BSD-3-Clause, Copyright (c) 2009-2015, Kevin Decker <kpdecker@gmail.com> — https://github.com/kpdecker/jsdiff
-  — line and patch diffs: bundled into `dist/extension.js` and `dist/desktop/main.js` (tool patches, edit proposals and chat review), the chat webview (`dist/webview/`) and the desktop shell, its quick diff worker included.
+  — line and patch diffs: bundled into `dist/extension.cjs` and `dist/desktop/main.js` (tool patches, edit proposals and chat review), the chat webview (`dist/webview/`) and the desktop shell, its quick diff worker included.
 - **monaco-editor** (v0.57.0) — MIT, Copyright (c) 2016 - present Microsoft Corporation — https://github.com/microsoft/monaco-editor
   — the desktop app's file and diff editor. Monaco vendors further components (among them marked and DOMPurify); their notices are in Monaco's `ThirdPartyNotices.txt`, which the desktop app ships as `resources/monaco-editor-ThirdPartyNotices.txt`, and DOMPurify's license comment stays in the bundle.
 - **electron-updater** (v6.8.9) — MIT, Copyright (c) 2015 Loopline Systems — https://github.com/electron-userland/electron-builder
@@ -1288,7 +1288,7 @@ SOFTWARE.
 
 ## Node.js (remote server packages) — MIT and bundled licenses
 
-Each remote server package (`damocles-server-<version>-<target>`) runs on its own Node.js: the `node` binary of the release the desktop app's Electron embeds, from nodejs.org (or unofficial-builds.nodejs.org for Alpine's musl builds), pinned by SHA-256 in `scripts/server-targets.mjs`.
+Each remote server package (`damocles-server-<version>-<target>`) runs on its own Node.js: the `node` binary of the release the desktop app's Electron embeds, from nodejs.org (or unofficial-builds.nodejs.org for Alpine's musl builds), pinned by SHA-256 in `scripts/server-targets.ts`.
 
 - **Source**: https://github.com/nodejs/node
 - **License**: MIT, Copyright Node.js contributors, Copyright Joyent, Inc. and other Node contributors. The package ships the release's own `LICENSE` file as `node/LICENSE`, which holds Node.js's license and the licenses of the third-party code compiled into the binary (V8, libuv, OpenSSL, ICU, zlib and others).
@@ -1302,7 +1302,7 @@ The memory injection gate bundles the Porter stems of the 49,104 most frequent s
 - **Source data**: Google Books Ngram Viewer, English 1-grams, version 20120701 (years 1950 to 2012), by Google, https://storage.googleapis.com/books/ngrams/books/datasetsv3.html
 - **Intermediate list**: top-english-wordlists by david47k, https://github.com/david47k/top-english-wordlists (commit b7585f32cee8e140001054ad5b0bbf373245c360, `top_english_words_lower_50000.txt`)
 - **License**: both the dataset and the compilation are licensed under Creative Commons Attribution 3.0 Unported (CC-BY-3.0), https://creativecommons.org/licenses/by/3.0/
-- **Modifications**: filtered to lowercase `[a-z]{2,}` tokens, deduplicated and reduced to Porter stems by `scripts/generate-reference-words.mjs`. The source is a ranked word list with no frequency counts, and only the rank order is kept.
+- **Modifications**: filtered to lowercase `[a-z]{2,}` tokens, deduplicated and reduced to Porter stems by `scripts/generate-reference-words.ts`. The source is a ranked word list with no frequency counts, and only the rank order is kept.
 - **Attribution**: "English word frequencies from top-english-wordlists by david47k, derived from the Google Books Ngram dataset by Google, both licensed under CC-BY-3.0." The same attribution ships in the extension bundle as a legal comment.
 
 ---
@@ -1312,7 +1312,7 @@ The memory injection gate bundles the Porter stems of the 49,104 most frequent s
 The memory injection gate bundles the Porter stems of 3,682 software words absent from the English list above (`reference-stems.generated.ts`, generated from `software-reference.generated.ts`), such as `repo`, `json` and `regex`, so that everyday software vocabulary is not mistaken for a name.
 
 - **Source**: cspell-dicts by Street Side Software, https://github.com/streetsidesoftware/cspell-dicts (commit 1d7d9f649f61c9402050a3a56450337bf165c1ba): `@cspell/dict-software-terms` 5.4.5 (`software-terms.txt`, `coding-terms.txt`, `computing-acronyms.txt`, `software-tools.txt`, `software-services.txt`, `network-protocols.txt`, `network-os.txt`, `cybersecurity-terms.txt`) and `@cspell/dict-filetypes` 3.0.18 (`filetypes.txt`)
-- **Modifications**: comments and forbidden-word entries removed, lowercased, filtered to `[a-z]{2,}` tokens, deduplicated, words already in the English list removed, and reduced to Porter stems, by `scripts/generate-reference-words.mjs`. The same license notice ships in the extension bundle as a legal comment.
+- **Modifications**: comments and forbidden-word entries removed, lowercased, filtered to `[a-z]{2,}` tokens, deduplicated, words already in the English list removed, and reduced to Porter stems, by `scripts/generate-reference-words.ts`. The same license notice ships in the extension bundle as a legal comment.
 
 ```
 The MIT License (MIT)
@@ -1452,6 +1452,40 @@ The model provider logos in `src/webview/components/icons/provider-logos.ts` (An
 MIT License
 
 Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## open-codesign — MIT
+
+Design mode's skills and its parity judge are adapted from open-codesign.
+
+- **Source**: https://github.com/OpenCoworkAI/open-codesign
+- **Design skills**: the four skills in `design-skills/*.md` (accessibility-states, empty-states, loading-skeleton, responsive-layout), compiled into `src/core/design/skills.generated.ts`, are adapted from `apps/desktop/resources/templates/skills/*.md`.
+- **Parity judge**: the 12 questions of `PARITY_CHECKS` and the status thresholds of `parityStatus` in `src/core/design/parity.ts` are adapted from `STANDARD_VISUAL_PARITY_CHECKS` and `visualParityStatusFromChecks` in `packages/core/src/tools/verify-ui-kit-visual-parity.ts`.
+
+```
+MIT License
+
+Copyright (c) 2026 OpenCoworkAI Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

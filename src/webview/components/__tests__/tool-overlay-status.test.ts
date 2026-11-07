@@ -7,7 +7,7 @@ import type { ToolCall } from '@shared/types/session';
 import ToolOverlay from '../ToolOverlay.vue';
 import McpToolOverlay from '../McpToolOverlay.vue';
 import { i18n } from '@/i18n';
-import en from '@/i18n/locales/en.json';
+import en from '@/i18n/locales/en.json' with { type: 'json' };
 
 vi.mock('@/composables/usePlatformBridge', () => ({
   usePlatformBridge: () => ({ postMessage: () => {}, onMessage: () => () => {}, getState: () => undefined, setState: () => {} }),

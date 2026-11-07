@@ -24,6 +24,7 @@ import { effortBadgeApplies, PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../folder-runtime';
 import type { CheckpointBaselineGate } from '../permission-gate';
 import type { WorktreeIsolation } from '../worktree-isolation';
+import type { DesignScope } from '../../design/design-write-rule';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
@@ -130,6 +131,8 @@ export interface SubagentEngine {
   checkpointBaseline?: CheckpointBaselineGate;
   /** D62: the parent chat's isolation, which its agents share because they run in its folder. */
   worktreeIsolation?: () => WorktreeIsolation | undefined;
+  /** A design chat's posture (PD-25), which its agents inherit: the write rule, the shell block, the browser read set. */
+  designScope?: () => DesignScope | undefined;
   /** The gate's cancel handle for one agent, delivering a note to that agent as its shell tools do. */
   shellCancelFor: (agentId: string) => ShellCancelRegistry;
   postMessage: (message: ExtensionToWebviewMessage) => void;
@@ -765,6 +768,7 @@ export class AgentManager {
       isPlanMode: this.engine.isPlanMode,
       ...(this.engine.checkpointBaseline ? { checkpointBaseline: this.engine.checkpointBaseline } : {}),
       ...(this.engine.worktreeIsolation ? { worktreeIsolation: this.engine.worktreeIsolation } : {}),
+      ...(this.engine.designScope ? { designScope: this.engine.designScope } : {}),
       shellCancel: this.engine.shellCancelFor(record.id),
       postMessage: this.engine.postMessage,
       // An agent with no write tool (Explore/Plan, or any read-only user agent) keeps that guarantee in
@@ -772,7 +776,7 @@ export class AgentManager {
       readOnlyShell: toolset.readOnly,
       parentToolUseId,
       stopSignal: record.abortController!.signal,
-      deferrableToolNames: loadableToolNames(deferredToolNames(eligibleToolNames, mcp.deferrable), userScopeReach()),
+      deferrableToolNames: loadableToolNames(deferredToolNames(eligibleToolNames, mcp.deferrable), userScopeReach(), this.engine.designScope?.() !== undefined),
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
       // included, falls through to full approval.

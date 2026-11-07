@@ -6,7 +6,7 @@ import { processLauncher } from "../../process-launcher";
 import { VOICE_EXTRACT_WORKER_MARKER, type ExtractEvent, type ExtractWorkerData } from "./extract-protocol";
 import type { GpuDetection } from "./gpu-detect";
 import { requireVoiceRuntimePlatform, type PbsTriple } from "./supported-platforms";
-import tarballChecksums from "./tarball-checksums.json";
+import tarballChecksums from "./tarball-checksums.json" with { type: "json" };
 import { errorTextOf, l, verbatim, withDetail } from "../../l10n";
 import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 import { CancelledError, DownloadHttpError, downloadToPartial } from "../download";

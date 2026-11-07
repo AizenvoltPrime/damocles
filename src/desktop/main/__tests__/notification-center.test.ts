@@ -126,6 +126,26 @@ describe('notification center: prompts', () => {
     expect(ran).toEqual([{ kind: 'team', chat: CHAT, teamId: 'team-9' }, { kind: 'attention', chat: CHAT, attention: 'question' }]);
   });
 
+  it('raises a design version prompt as a question whose action focuses the chat\'s question card', async () => {
+    const notifications = center();
+    notifications.activity('host-1', activity(prompt('design-version:1', 'designVersion')));
+    await settle();
+
+    expect(notifications.state().entries.map((entry) => entry.body.kind)).toEqual(['question']);
+    notifications.resolveToast(shown[0]!.id, TOAST_OPEN_ACTION);
+    expect(ran).toEqual([{ kind: 'attention', chat: CHAT, attention: 'question' }]);
+  });
+
+  it('raises a design approval prompt as an approval whose action focuses the chat\'s approval card', async () => {
+    const notifications = center();
+    notifications.activity('host-1', activity(prompt('designapproval-1', 'designApproval')));
+    await settle();
+
+    expect(notifications.state().entries.map((entry) => entry.body.kind)).toEqual(['approval']);
+    notifications.resolveToast(shown[0]!.id, TOAST_OPEN_ACTION);
+    expect(ran).toEqual([{ kind: 'attention', chat: CHAT, attention: 'approval' }]);
+  });
+
   it('gives a remote host\'s entries and showing toasts its new name and color once it was renamed or recolored', async () => {
     const remote: ChatRef = { ...CHAT, host: 'prod-1' };
     const notifications = center({ describeChat: async () => remote });

@@ -23,6 +23,7 @@ describe('desktop host capabilities', () => {
       worktrees: true,
       bypassPermissions: true,
       globalMemoryOnServer: false,
+      designPreview: true,
     });
   });
 });

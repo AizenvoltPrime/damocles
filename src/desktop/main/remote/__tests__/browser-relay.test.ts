@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BrowserToolAnswer } from '../../../../shared/remote-user';
 import { interceptPattern, relayBrowserTool, typedRemoteAddress, type BrowserRelayDeps } from '../browser-relay';
+import { PARITY_CAPTURE_TOOL } from '../../../../core/design/parity-capture';
 
 function relay(overrides: Partial<BrowserRelayDeps> = {}) {
   const forwards: Array<{ host: string; port: number }> = [];
@@ -43,6 +44,16 @@ describe('a remote chat\'s browser tool on this computer', () => {
     const answer = await relayBrowserTool(deps, request('BrowserOpen', { url: 'http://10.0.0.5:8080/' }), new AbortController().signal);
     expect(answer.isError).toBe(true);
     expect(answer.content[0]).toMatchObject({ type: 'text' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("moves DesignParity's capture address to its forward and guards it as an open", async () => {
+    const { deps, run } = relay();
+    await relayBrowserTool(deps, { viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5173/contacts', width: 768 } }, new AbortController().signal);
+    expect(run).toHaveBeenCalledWith({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5174/contacts', width: 768 } }, expect.any(AbortSignal));
+    run.mockClear();
+    const refused = await relayBrowserTool(deps, { viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://10.0.0.5:8080/', width: 768 } }, new AbortController().signal);
+    expect(refused.isError).toBe(true);
     expect(run).not.toHaveBeenCalled();
   });
 

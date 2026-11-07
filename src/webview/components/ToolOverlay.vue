@@ -806,6 +806,7 @@ function handleFilePathClick(filePath: string): void {
               />
             </template>
             <ToolResultImages
+              class="pl-2"
               :tool="tool"
               :owner="owner"
               @open="lightboxImageUrl = $event"

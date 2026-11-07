@@ -2350,7 +2350,7 @@ describe('worktree isolation (D62)', () => {
 
   it('applies in the gate in every mode, YOLO included, and before a hook\'s force-allow', async () => {
     const context = {
-      permissionHandler: { matchRule: async () => undefined, canUseTool: async () => ({ behavior: 'allow' }), getPermissionMode: () => 'bypassPermissions', turnPermissionMode: () => 'bypassPermissions', getDangerouslySkipPermissions: () => true },
+      permissionHandler: { matchRule: async () => undefined, canUseTool: async () => ({ behavior: 'allow' }), getPermissionMode: () => 'bypassPermissions', turnPermissionMode: () => 'bypassPermissions', getDangerouslySkipPermissions: () => true, sessionCwd: () => iso.workingFolder },
       isPlanMode: () => false,
       shellCancel: { admit: () => undefined, releaseAdmitted: () => undefined, takeCancellation: () => undefined },
       worktreeIsolation: () => iso,

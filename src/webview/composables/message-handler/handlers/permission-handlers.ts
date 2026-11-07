@@ -129,6 +129,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         toolUseId: msg.toolUseId,
         planContent: msg.planContent,
         ...(msg.planVersion !== undefined && { planVersion: msg.planVersion }),
+        ...(msg.designLink !== undefined && { designLink: msg.designLink }),
       });
     },
 

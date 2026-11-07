@@ -1,4 +1,4 @@
-import table from './generated/file-icons.json';
+import table from './generated/file-icons.json' with { type: 'json' };
 import type { ThemeKind } from '../preload/panel-channels';
 
 // vite.shell.config.ts emits each icon to dist/desktop-shell/<MATERIAL_ICON_DIR>/<icon>.svg, which the app protocol serves.

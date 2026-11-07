@@ -1,5 +1,7 @@
 import type { Agent, AgentTurnContext, AgentTurnDecision } from '@earendil-works/pi-agent-core';
 import { log } from '../logger';
+import { TOOL_FINISH_DESIGN, TOOL_START_DESIGN } from '../../shared/tool-names';
+import { parseFinishDesignUnapprovedDetails } from '../../shared/types/design';
 
 /**
  * A Damocles opinion about whether pi should end the run after the completed turn. `undefined` is the
@@ -15,6 +17,23 @@ export const BUDGET_STOP_HOOK: unique symbol = Symbol('damocles.budgetStop');
 
 /** Team terminal tools (`team_standby`, `team_report_complete`), installed per agent run (US-024b). */
 export const TEAM_TERMINAL_HOOK: unique symbol = Symbol('damocles.teamTerminalTool');
+
+/** StartDesign and FinishDesign end their turn (PD-28), installed per `bindSession`. */
+export const DESIGN_TERMINAL_HOOK: unique symbol = Symbol('damocles.designTerminalTool');
+
+const DESIGN_TURN_ENDING_TOOLS: ReadonlySet<string> = new Set([TOOL_START_DESIGN, TOOL_FINISH_DESIGN]);
+
+/**
+ * The design chat's turn ends after it (PD-28): StartDesign or FinishDesign succeeded, or the user answered FinishDesign's approval
+ * with Stop. A request for changes is an error result the designer keeps working on, so it never ends the turn.
+ */
+export function designTurnEnds(turn: Pick<AgentTurnContext, 'message' | 'toolResults'>): boolean {
+  const ending = new Set(turn.message.content.flatMap((block) => (block.type === 'toolCall' && DESIGN_TURN_ENDING_TOOLS.has(block.name) ? [block.id] : [])));
+  return turn.toolResults.some((result) => ending.has(result.toolCallId) && (!result.isError || parseFinishDesignUnapprovedDetails(result.details)?.approval === 'stopped'));
+}
+
+/** A design version that arrived after the plan approval pauses the parent at its next turn boundary (PD-29), installed per `bindSession`. */
+export const DESIGN_VERSION_PAUSE_HOOK: unique symbol = Symbol('damocles.designVersionPause');
 
 interface DeciderRegistry {
   /** pi's own `finishTurn`, captured once at first install. */

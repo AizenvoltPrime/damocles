@@ -11,6 +11,7 @@ import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import { inGreek } from '../../../__mocks__/greek-locale';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
+import { useDesignStore } from '@/stores/useDesignStore';
 import { elementAttachmentBus } from '@/composables/useElementAttachments';
 import type { ImageAttachment } from '@/composables/useImageAttachments';
 import type { ElementAttachment } from '@shared/types/browser';
@@ -516,6 +517,44 @@ describe('Shift+Tab in the composer', () => {
   });
 });
 
+// A design chat's mode is fixed at default (PD-25): its chip names Design, and neither a click nor Shift+Tab changes the mode.
+describe('the Design mode chip', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useDesignStore().setState({
+      designId: 'contacts-1a2b3c4d', title: 'Design · Contacts', folder: '/home/u/.damocles/designs/contacts-1a2b3c4d', parentSessionId: 'p1', parentTitle: 'Contacts',
+      status: 'draft', version: null, fidelity: null, decisions: [], ruleSet: 'full', enabled: true, superseded: false, supersededBy: null,
+    }, null);
+  });
+
+  it('shows Design as the disabled mode button with its tooltip text, and never cycles', async () => {
+    const wrapper = composer();
+    const chip = wrapper.get('[data-testid="composer-mode"]');
+
+    expect(chip.attributes('data-mode')).toBe('design');
+    expect(chip.element.tagName).toBe('BUTTON');
+    expect(chip.attributes('type')).toBe('button');
+    expect(chip.attributes('aria-disabled')).toBe('true');
+    expect(chip.attributes()).not.toHaveProperty('disabled');
+    expect(chip.text()).toBe('Design');
+    expect(document.getElementById(chip.attributes('aria-describedby')!)?.textContent).toBe('Design chats write only their design folder.');
+
+    await chip.trigger('click');
+    await wrapper.get('textarea').trigger('keydown', { key: 'Tab', shiftKey: true });
+    expect(wrapper.emitted('changeMode')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('leaves Shift+Tab to move focus back, since the mode never cycles', () => {
+    const wrapper = composer();
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    wrapper.get('textarea').element.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    wrapper.unmount();
+  });
+});
+
 /** A mode or YOLO change re-checks the open approval prompts, which exist only while a turn runs. */
 describe('mode and YOLO controls while a turn runs', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -623,5 +662,82 @@ describe('the voice button after a language switch', () => {
       await applyLocale('en');
       wrapper.unmount();
     }
+  });
+});
+
+describe('an image the design preview captured', () => {
+  const CAPTURED = { mimeType: 'image/png' as const, data: 'CCCC', width: 1280, height: 900 };
+
+  it('joins the draft through the composerAddImage handler and keeps its origin marker into the send', async () => {
+    const { createInputHandlers } = await import('@/composables/message-handler/handlers/input-handlers');
+    const wrapper = composer();
+    const ctx = { refs: { chatInputRef: { value: wrapper.vm } } } as unknown as HandlerContext;
+
+    createInputHandlers().composerAddImage!({ type: 'composerAddImage', image: CAPTURED, origin: 'designPreview' }, ctx);
+    await wrapper.vm.$nextTick();
+    const textarea = await type(wrapper, 'Tighten this');
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('send')).toEqual([[
+      [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CCCC' }, origin: 'designPreview' },
+        { type: 'text', text: 'Tighten this' },
+      ],
+      expect.any(Boolean),
+      [],
+    ]]);
+    wrapper.unmount();
+  });
+
+  it('waits for a composer that has not mounted yet and joins its draft as it mounts, keeping the image out of every store', async () => {
+    const { createInputHandlers } = await import('@/composables/message-handler/handlers/input-handlers');
+    const { useUIStore } = await import('@/stores/useUIStore');
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const ctx = { refs: { chatInputRef: { value: null } }, stores: { uiStore: useUIStore() } } as unknown as HandlerContext;
+
+    createInputHandlers().composerAddImage!({ type: 'composerAddImage', image: CAPTURED, origin: 'designPreview' }, ctx);
+    expect(JSON.stringify(pinia.state.value)).not.toContain('CCCC');
+
+    const wrapper = composer();
+    await wrapper.vm.$nextTick();
+    const textarea = await type(wrapper, 'This one');
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+    expect((wrapper.emitted('send')![0]![0] as Record<string, unknown>[])[0]).toEqual({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CCCC' }, origin: 'designPreview' });
+    wrapper.unmount();
+
+    // Taken once: a composer that mounts later starts empty.
+    const later = composer();
+    expect((later.vm as unknown as { isEmpty: boolean }).isEmpty).toBe(true);
+    later.unmount();
+  });
+
+  it('says the screenshot was not attached when the chat is read-only, whose card takes the composer\'s place for good', async () => {
+    const { toast } = await import('vue-sonner');
+    const error = vi.spyOn(toast, 'error').mockImplementation(() => 0);
+    const { createInputHandlers } = await import('@/composables/message-handler/handlers/input-handlers');
+    const ctx = { refs: { chatInputRef: { value: null } }, stores: { uiStore: { historyReadOnly: true } } } as unknown as HandlerContext;
+
+    createInputHandlers().composerAddImage!({ type: 'composerAddImage', image: CAPTURED, origin: 'designPreview' }, ctx);
+    expect(error).toHaveBeenCalledWith('This chat takes no messages, so the screenshot was not attached');
+
+    const wrapper = composer();
+    expect((wrapper.vm as unknown as { isEmpty: boolean }).isEmpty).toBe(true);
+    wrapper.unmount();
+    error.mockRestore();
+  });
+
+  it('sends an image the user attached without any origin', async () => {
+    seeded.images = [{ id: 'img-1', dataUrl: 'data:image/png;base64,AAAA', base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 }];
+    const wrapper = composer();
+    const textarea = await type(wrapper, 'Like this');
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+
+    const content = wrapper.emitted('send')![0]![0] as Record<string, unknown>[];
+    expect(content[0]).not.toHaveProperty('origin');
+    wrapper.unmount();
   });
 });

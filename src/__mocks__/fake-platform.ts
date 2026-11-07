@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import picomatch from 'picomatch';
 import type { AppPaths, WorkerName } from '../platform/app-paths';
 import type { ClipboardService } from '../platform/clipboard-service';
+import type { DesignHost } from '../platform/design-host';
 import type { DialogService, InputBoxOptions, PickFileOptions, PickFolderOptions, QuickPickItem, QuickPickOptions } from '../platform/dialog-service';
 import type { Disposable } from '../platform/disposable';
 import type { ActiveEditorContext, DiffRequest, DiffView, EditorService, OpenFileOptions, OpenUntitledOptions } from '../platform/editor-service';
@@ -134,6 +135,13 @@ export interface FakeShellService extends ShellService {
   readonly openedExternal: readonly string[];
   readonly openedFolders: readonly string[];
   readonly revealedPaths: readonly string[];
+}
+
+export interface FakeDesignHost extends DesignHost {
+  /** Every openInBrowser call, oldest first. */
+  readonly opened: readonly { readonly designId: string; readonly folder: string; readonly relPath: string }[];
+  /** Every closeDesign call's design id, oldest first. */
+  readonly closed: readonly string[];
 }
 
 export interface FakeHostLifecycle extends HostLifecycle {
@@ -275,6 +283,8 @@ export interface FakePlatform extends Platform {
   readonly window: FakeWindowService;
   readonly lifecycle: FakeHostLifecycle;
   readonly logSinks: FakeLogSinkFactory;
+  /** Unset where `capabilities.designPreview` holds, as on desktop, which opens designs from its own UI. */
+  readonly design?: FakeDesignHost;
 }
 
 function listenerSet<A extends unknown[]>(): {
@@ -576,6 +586,24 @@ function createShell(): FakeShellService {
     revealPath: (p) => {
       revealedPaths.push(p);
       return Promise.resolve();
+    },
+  };
+}
+
+// It opens `http://127.0.0.1/d/<designId>/<relPath>` through the fake shell; VS Code's URL has a port and a token in place of the id.
+function createDesignHost(shell: FakeShellService): FakeDesignHost {
+  const opened: { designId: string; folder: string; relPath: string }[] = [];
+  const closed: string[] = [];
+  return {
+    opened,
+    closed,
+    openInBrowser: async (designId, folder, relPath) => {
+      opened.push({ designId, folder, relPath });
+      const url = `http://127.0.0.1/d/${designId}/${relPath}`;
+      return (await shell.openExternal(url)) ? url : undefined;
+    },
+    closeDesign: (designId) => {
+      closed.push(designId);
     },
   };
 }
@@ -933,7 +961,7 @@ function createWindow(chatBrowserPane: boolean): FakeWindowService {
   };
 }
 
-// Worker file names match the esbuild outfiles in esbuild.config.mjs.
+// Worker file names match the esbuild outfiles in esbuild.config.ts.
 const WORKER_FILES: Readonly<Record<WorkerName, string>> = {
   compass: 'compass-worker.js',
   usageStats: 'usage-stats-worker.js',
@@ -961,8 +989,10 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
     global: createMemento(init.globalState),
     workspace: createMemento(init.workspaceState),
   };
+  const shell = createShell();
+  const capabilities = { ...VSCODE_HOST_CAPABILITIES, ...init.capabilities };
   return {
-    capabilities: { ...VSCODE_HOST_CAPABILITIES, ...init.capabilities },
+    capabilities,
     settings: createSettingsStore(init.settings),
     secrets: createFakeSecretsStore(init.secrets, init.secretsPersistent ?? true),
     state,
@@ -975,12 +1005,13 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
     appInfo: { version: init.version ?? '0.0.0-test', host: init.host ?? 'vscode' },
     localization: createLocalization(init.language ?? 'en'),
     clipboard: createClipboard(),
-    shell: createShell(),
+    shell,
     dialogs: createDialogs(),
     editor: createEditor(),
     window: createWindow(init.chatBrowserPane ?? false),
     lifecycle: createLifecycle(),
     logSinks: createLogSinks(),
+    ...(capabilities.designPreview ? {} : { design: createDesignHost(shell) }),
   };
 }
 

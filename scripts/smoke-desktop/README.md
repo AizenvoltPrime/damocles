@@ -6,7 +6,7 @@ The controller launches `dist/desktop/main.js` on a hermetic home of its own, se
 
 ## Hermetic home
 
-Each `--launch` replaces `$SMOKE_DIR/run/` with a new copy and starts the app with `h/` there as its home (`HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_*`), `ud/` as its profile (`--user-data-dir`) and `tmp/` as its temp folder, as the e2e suite does (`e2e/desktop/support/hermetic.ts`). `--relaunch` quits the app and starts it again on the same `run/`, so chats, panels, settings and sessions carry over as they do for a user. The app gets an allowlist of OS variables plus proxy and CA variables; provider keys and other variables from your shell do not reach it. Everything the app writes under `~` (`~/.damocles` settings, sessions, worktree registry, memory, plans, usage, pi's agent folder, git and shell caches) lands in `h/`. `hermetic.mjs` holds the seeding, `session.mjs` the launches and the cleanup.
+Each `--launch` replaces `$SMOKE_DIR/run/` with a new copy and starts the app with `h/` there as its home (`HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_*`), `ud/` as its profile (`--user-data-dir`) and `tmp/` as its temp folder, as the e2e suite does (`e2e/desktop/support/hermetic.ts`). `--relaunch` quits the app and starts it again on the same `run/`, so chats, panels, settings and sessions carry over as they do for a user. The app gets an allowlist of OS variables plus proxy and CA variables; provider keys and other variables from your shell do not reach it. Everything the app writes under `~` (`~/.damocles` settings, sessions, worktree registry, memory, plans, usage, pi's agent folder, git and shell caches) lands in `h/`. `hermetic.ts` holds the seeding, `session.ts` the launches and the cleanup.
 
 Before `run/` is deleted, by `--quit` or by the next `--launch`, the runner deletes `h/` (which holds the copied sign-in) and then copies the main and core logs (`ud/logs`) to `$SMOKE_DIR/logs/`, so the logs of a run that crashed survive the next launch. `--quit` deletes `run/` even when the app does not close: after 20 seconds, or when closing it fails, the runner kills the app's process tree and cleans up anyway. If the controller itself is killed, the home stays until the next `--launch` or `--quit`. Screenshots stay in `$SMOKE_DIR/shots/`.
 
@@ -31,12 +31,12 @@ Keys you saved in Damocles itself live in your profile's `secrets.json` (safeSto
 
 1. Build: `npm run build && npm run build:desktop`.
 2. Start the controller in the background:
-   - PowerShell: `Start-Process node -ArgumentList scripts/smoke-desktop/controller.mjs -WindowStyle Hidden`
-   - bash: `node scripts/smoke-desktop/controller.mjs &`
-3. `node scripts/smoke-desktop/post.mjs --launch`
-4. Write a step file and post it: `node scripts/smoke-desktop/post.mjs step.js`
-5. To check what survives a quit and relaunch, post `node scripts/smoke-desktop/post.mjs --relaunch`, which quits the app and starts it again on the same home. Its answer says `"closed": "quit"` for a clean quit; `"killed"` means the app did not quit within 20 seconds (a quit dialog about running terminals or unsaved editors may have been open) and was killed, so what follows is crash recovery, not a clean relaunch. Give it a longer timeout (`--relaunch 90`) when a hang is possible. After the app exits on its own, `--relaunch` starts it again on the home it left.
-6. Finish with `node scripts/smoke-desktop/post.mjs --quit`, which closes the app, deletes the home and stops the controller.
+   - PowerShell: `Start-Process node -ArgumentList scripts/smoke-desktop/controller.ts -WindowStyle Hidden`
+   - bash: `node scripts/smoke-desktop/controller.ts &`
+3. `node scripts/smoke-desktop/post.ts --launch`
+4. Write a step file and post it: `node scripts/smoke-desktop/post.ts step.js`
+5. To check what survives a quit and relaunch, post `node scripts/smoke-desktop/post.ts --relaunch`, which quits the app and starts it again on the same home. Its answer says `"closed": "quit"` for a clean quit; `"killed"` means the app did not quit within 20 seconds (a quit dialog about running terminals or unsaved editors may have been open) and was killed, so what follows is crash recovery, not a clean relaunch. Give it a longer timeout (`--relaunch 90`) when a hang is possible. After the app exits on its own, `--relaunch` starts it again on the home it left.
+6. Finish with `node scripts/smoke-desktop/post.ts --quit`, which closes the app, deletes the home and stops the controller.
 
 `--log` prints the app's recent console output. The scratch folder is `$SMOKE_DIR`, by default `<tmp>/damocles-smoke`: it holds `run/` while a session lasts, `shots/`, the last finished run's `logs/` and the controller's token. `SMOKE_PORT` changes the port (default 9555).
 
@@ -54,13 +54,13 @@ await shot(t, 'shell-prompt');
 return { options: await prompt(t).getByRole('option').allInnerTexts(), running: await running(t) };
 ```
 
-`helpers.mjs` lists every helper: `home` (the app's hermetic home), `active`, `newChat` (File > New Chat), `goTo`, `addProject`, `runMenuItem` (an application menu item by its id in `src/desktop/main/commands.ts`), `prepare` (YOLO off, a mode, a model and effort), `setMode`, `setYolo`, `setModel`, `send`, `slash`, `prompt`, `answerQuestion`, `waitCard` (desktop pop-up cards), `running`, `tail`, `shot`, `state`, `shell`, `overlay`, `popup`, and `app()` for the Electron main process.
+`helpers.ts` lists every helper: `home` (the app's hermetic home), `active`, `newChat` (File > New Chat), `goTo`, `addProject`, `runMenuItem` (an application menu item by its id in `src/desktop/main/commands.ts`), `prepare` (YOLO off, a mode, a model and effort), `setMode`, `setYolo`, `setModel`, `send`, `slash`, `prompt`, `answerQuestion`, `waitCard` (desktop pop-up cards), `running`, `tail`, `shot`, `state`, `shell`, `overlay`, `popup`, and `app()` for the Electron main process.
 
 Use a scratch copy of a project, never your own checkout: the agent really edits files.
 
 ## Lessons
 
-- Keep each step under a minute (`post.mjs` gives up after 55 seconds). Start long work in one step and check it with short status steps; a step that waits on a model can hang the caller.
+- Keep each step under a minute (`post.ts` gives up after 55 seconds). Start long work in one step and check it with short status steps; a step that waits on a model can hang the caller.
 - Models act differently each run, so check each result (screenshots, `tail`, the session files under `h.home()`'s `.damocles/pi/agent/sessions/`) before the next step, and adjust the prompt rather than the assertion.
 - The model control is a dropdown menu (`menuitemradio`), and the composer's Stop is the button labelled `Stop (Esc)`; a running shell card has `Stop, then add an optional note`.
 - A chat opens in the home folder only while no project is listed.

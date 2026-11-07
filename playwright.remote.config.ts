@@ -1,15 +1,16 @@
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { defineConfig } from '@playwright/test';
 import { packagedAppPath } from './e2e/desktop/support/packaged-app';
-import { devElectronDist } from './scripts/dev-electron-binary.mjs';
+import { devElectronDist } from './scripts/dev-electron-binary.ts';
 
 // Playwright launches require('electron'); on Windows that is the branded copy the desktop build step writes.
 if (process.platform === 'win32' && packagedAppPath() === undefined) {
-  process.env.ELECTRON_OVERRIDE_DIST_PATH = devElectronDist(path.dirname(require.resolve('electron/package.json')));
+  process.env.ELECTRON_OVERRIDE_DIST_PATH = devElectronDist(path.dirname(createRequire(import.meta.url).resolve('electron/package.json')));
 }
 
 const PROJECT = packagedAppPath() === undefined ? 'dev' : 'packaged';
-// The target suites scripts/test-remote.mjs was asked for by --grep; every other target suite stays out of the run.
+// The target suites scripts/test-remote.ts was asked for by --grep; every other target suite stays out of the run.
 const TARGET_TAGS = ['@windows-target', '@darwin-target'];
 const named = (process.env['DAMOCLES_E2E_REMOTE_TARGETS'] ?? '').split(',').filter((tag) => tag !== '');
 const excluded = [...TARGET_TAGS.filter((tag) => !named.includes(tag)), '@packaged'];

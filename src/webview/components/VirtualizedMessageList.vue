@@ -6,6 +6,7 @@ import type { ImageBlock } from '@shared/types/content';
 import { useSessionStore } from '@/stores/useSessionStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useMessageHighlightStore } from '@/stores/useMessageHighlightStore';
+import { useDesignStore } from '@/stores/useDesignStore';
 import { useVirtualizedMessages } from '@/composables/useVirtualizedMessages';
 import { useScrollEngine } from '@/composables/useScrollEngine';
 import { useLiveArrivals } from '@/composables/useLiveArrivals';
@@ -15,6 +16,7 @@ import VirtualItemWrapper from './VirtualItemWrapper.vue';
 import StickyUserHeader from './StickyUserHeader.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
+import { holdResultImageUrl } from '@/utils/result-image-cache';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useSettingWrite } from './settings/settings-writes';
 import { remPx } from '@/composables/useRemPx';
@@ -67,6 +69,7 @@ const cacheMissNoticesRef = toRef(props, 'cacheMissNotices');
 const compactionAbortedNoticesRef = toRef(props, 'compactionAbortedNotices');
 const thinkingDroppedNoticesRef = toRef(props, 'thinkingDroppedNotices');
 const streamingIdRef = toRef(props, 'streamingMessageId');
+const designStore = useDesignStore();
 
 const { items } = useVirtualizedMessages({
   messages: messagesRef,
@@ -74,6 +77,7 @@ const { items } = useVirtualizedMessages({
   cacheMissNotices: cacheMissNoticesRef,
   compactionAbortedNotices: compactionAbortedNoticesRef,
   thinkingDroppedNotices: thinkingDroppedNoticesRef,
+  designCards: computed(() => designStore.cards),
   streamingMessageId: streamingIdRef,
 });
 
@@ -227,9 +231,21 @@ function canRewindTo(message: ChatMessage): boolean {
   return !uiStore.historyReadOnly && message.role === 'user' && !!message.sdkMessageId && (props.checkpointMessages?.has(message.sdkMessageId) ?? false);
 }
 
-function openLightbox(block: ImageBlock): void {
-  lightboxImageUrl.value = imageBlockToDataUrl(block);
+let releaseLightboxImage: () => void = () => undefined;
+
+// A tool card's image is a cached object URL, held while the lightbox shows it, since the card's row may unmount meanwhile.
+function openLightbox(image: string | ImageBlock): void {
+  releaseLightboxImage();
+  releaseLightboxImage = typeof image === 'string' ? holdResultImageUrl(image) : () => undefined;
+  lightboxImageUrl.value = typeof image === 'string' ? image : imageBlockToDataUrl(image);
 }
+
+function closeLightbox(): void {
+  releaseLightboxImage();
+  releaseLightboxImage = () => undefined;
+  lightboxImageUrl.value = null;
+}
+onUnmounted(() => releaseLightboxImage());
 
 function onScroll(): void {
   engine.onScroll();
@@ -391,7 +407,7 @@ onUnmounted(() => {
     <ImageLightbox
       :open="lightboxImageUrl !== null"
       :image-url="lightboxImageUrl ?? ''"
-      @close="lightboxImageUrl = null"
+      @close="closeLightbox"
     />
   </div>
 </template>

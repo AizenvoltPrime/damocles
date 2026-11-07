@@ -1,7 +1,7 @@
 import { createI18n } from 'vue-i18n';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import { LOCALE_HOLD_BOUND_MS } from '@shared/locale-hold';
-import en from './locales/en.json';
+import en from './locales/en.json' with { type: 'json' };
 
 type SupportedLocale = 'en' | 'el';
 type CoreCatalog = Readonly<Record<string, string>>;
@@ -21,7 +21,7 @@ export const i18n = createI18n({
 
 // English ships in the entry and core's English is each catalog key itself; any other language is its own lazy chunk.
 const LOADERS: Readonly<Record<Exclude<SupportedLocale, 'en'>, () => Promise<readonly [typeof en, CoreCatalog]>>> = {
-  el: () => Promise.all([import('./locales/el.json'), import('../../../l10n/bundle.l10n.el.json')]).then(([view, core]) => [view.default, core.default] as const),
+  el: () => Promise.all([import('./locales/el.json', { with: { type: 'json' } }), import('../../../l10n/bundle.l10n.el.json', { with: { type: 'json' } })]).then(([view, core]) => [view.default, core.default] as const),
 };
 
 const coreCatalogs = new Map<string, CoreCatalog>();

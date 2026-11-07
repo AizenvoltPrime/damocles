@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Check, ChevronDown, Folder, Pencil, Search, Tag, Trash2, X } from 'lucide-vue-next';
+import { Check, ChevronDown, Folder, Palette, Pencil, Search, Tag, Trash2, X } from 'lucide-vue-next';
 import { storeToRefs } from 'pinia';
 import DeleteSessionModal from './DeleteSessionModal.vue';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -350,14 +350,24 @@ onUnmounted(() => {
             data-testid="session-select"
             @click="handleSelect(session.id)"
           >
+            <Palette
+              v-if="session.design"
+              class="-mx-0.75 size-3 shrink-0 text-(--d-design)"
+              aria-hidden="true"
+              data-testid="session-design-icon"
+            />
             <span
+              v-else
               class="size-1.5 shrink-0 rounded-full"
               :class="selectedSessionId === session.id ? 'bg-(--d-accent)' : 'bg-(--d-faint)'"
               aria-hidden="true"
             />
             <span class="flex min-w-0 flex-1 flex-col">
               <span class="flex min-w-0 items-center gap-1.5">
-                <span class="truncate">{{ getDisplayName(session) }}</span>
+                <span class="truncate"><span
+                  v-if="session.design"
+                  class="sr-only"
+                >{{ t('design.sessionLabel') }}, </span>{{ getDisplayName(session) }}</span>
                 <span
                   v-if="session.tag"
                   class="shrink-0 rounded-5 border border-(--d-border2) px-1.5 text-10.5/4 text-(--d-muted)"

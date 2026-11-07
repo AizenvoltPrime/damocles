@@ -69,7 +69,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       try {
-        const history = await historyManager.extractRewindHistory(ctx.folder.fsPath, currentSessionId, ctx.session.fileCheckpoints);
+        const history = await historyManager.extractRewindHistory(ctx.folder.fsPath, currentSessionId, ctx.session.fileCheckpoints, ctx.session.checkpointFolder());
         postMessage(ctx.reply, { type: "rewindHistory", prompts: history.items, restorePoints: history.restorePoints, canFork: true });
       } catch (err) {
         log("[MessageRouter] Error extracting rewind history:", err);
@@ -91,7 +91,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
       } else if (!sessionId) {
         log("[HistoryHandlers] no skipped list for %o: the panel has no session", target);
       } else {
-        const read = await historyManager.readSkippedFiles(ctx.folder.fsPath, sessionId, target);
+        const read = await historyManager.readSkippedFiles(ctx.folder.fsPath, sessionId, target, ctx.session.checkpointFolder());
         if (read.ok) files = read.value;
         else log("[HistoryHandlers] reading the skipped list for %o failed: %s", target, read.error);
       }

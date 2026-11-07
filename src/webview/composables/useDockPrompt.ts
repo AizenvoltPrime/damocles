@@ -33,7 +33,8 @@ export function useDockPromptDigits(card: MaybeRefOrGetter<HTMLElement | null | 
 
 // Dispatched on a dock prompt's options list by `focusDockPrompt`.
 const FOCUS_OPTIONS_EVENT = 'damocles:focus-dock-options';
-const FORM_FIELD = 'input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role="checkbox"]';
+// A reka radiogroup root is a tab stop that passes focus to its checked radio, else its first, even before any radio has had focus.
+const FORM_FIELD = 'input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role="checkbox"], [role="radiogroup"][tabindex="0"], [role="radio"][tabindex="0"]';
 const FOCUSABLE = 'button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**

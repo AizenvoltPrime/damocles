@@ -15,6 +15,7 @@ import { settingsFolderOf, type FolderTarget } from "../workspace-folders/folder
 import type { SettingsFolder } from "../../platform/settings-store";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 import type { EffortLevel } from "../../shared/types/settings";
+import type { DesignPanels, DesignSeed } from "../design/tools/start-design";
 
 export interface SessionManagerConfig {
   getEnabledMcpServers: (folderKey: string) => McpScope;
@@ -87,6 +88,7 @@ export class SessionManager {
     folder: FolderTarget,
     onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>,
     forkContext?: ForkContext,
+    design?: { seed?: DesignSeed; panels: DesignPanels; republishSettings: () => void },
   ): Promise<ChatSession> {
     if (!this.getMcpConfigLoaded()) await this.loadMcpConfig();
 
@@ -167,6 +169,8 @@ export class SessionManager {
       teamService,
       ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
       ...(forkContext !== undefined ? { forkContext } : {}),
+      ...(design?.seed ? { design: design.seed } : {}),
+      ...(design ? { designPanels: design.panels, republishSettings: design.republishSettings } : {}),
       ...(onAssistantTextFinal !== undefined ? { onAssistantTextFinal: (text: string) => onAssistantTextFinal(text, panelId) } : {}),
     });
     return piSession;

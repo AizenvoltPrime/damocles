@@ -8,7 +8,7 @@ import { openProjectChat } from './support/screenshots';
 import { chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 
 const GIT_MISSING = 'Git was not found on PATH, so source control, checkpoints and rewind are turned off. Install Git and restart Damocles.';
-const MCP_SERVER = path.join(__dirname, 'support', 'mcp-stdio-server.cjs');
+const MCP_SERVER = path.join(import.meta.dirname, 'support', 'mcp-stdio-server.cjs');
 
 /** The current PATH minus every directory that holds a git executable. */
 function pathWithoutGit(): string {

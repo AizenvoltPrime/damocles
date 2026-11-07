@@ -1,6 +1,7 @@
 import type { Ref } from "vue";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "@shared/types/messages";
-import type { UserContentBlock } from "@shared/types/content";
+import type { UserContentBlock, UserImageOrigin } from "@shared/types/content";
+import type { DesignPreviewImage } from "@shared/types/design";
 import type { LocalizedText } from "@shared/localized-text";
 import type { useUIStore } from "@/stores/useUIStore";
 import type { useSettingsStore } from "@/stores/useSettingsStore";
@@ -64,6 +65,7 @@ export interface ChatInputExposed {
   settleSteer: (requestId: string, delivered: boolean) => void;
   restoreQueued: (blocks: readonly UserContentBlock[]) => void;
   appendPrompt: (text: string) => void;
+  addCapturedImage: (image: DesignPreviewImage, origin: UserImageOrigin) => void;
 }
 
 export interface RefContext {

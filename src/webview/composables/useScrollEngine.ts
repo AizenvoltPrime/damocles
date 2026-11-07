@@ -69,6 +69,9 @@ function estimateThinkingHeight(item: VirtualItem): number {
 const ERROR_NOTICE_REM = 1 + 1.125 + 0.125 + 0.8125 * 1.5 + 0.125 + 0.78125 * (4 / 3);
 const AUTH_NOTICE_DETAILS_REM = 0.125 + 1.25;
 const NOTICE_BORDER_PX = 2;
+// DesignResultCard with two decision rows and its action row; DesignBriefNote with a two-line brief.
+const DESIGN_RESULT_REM = 11;
+const DESIGN_BRIEF_REM = 4.5;
 
 function estimateErrorHeight(item: VirtualItem): number {
   const failure = item.message.authFailure;
@@ -87,6 +90,8 @@ function estimateHeight(item: VirtualItem, containerWidth: number): number {
   if (item.type === 'error-message') return estimateErrorHeight(item);
   if (item.type === 'refusal-message') return 110;
   if (item.type === 'background-label') return 32;
+  if (item.type === 'design-result') return remPx(DESIGN_RESULT_REM);
+  if (item.type === 'design-brief') return remPx(DESIGN_BRIEF_REM);
 
   if (!isReady()) {
     if (item.type === 'user-message') return 80;

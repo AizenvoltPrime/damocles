@@ -4,7 +4,7 @@ import type { WebContents } from 'electron';
 
 vi.mock('electron', () => ({ protocol: {} }));
 
-import { hardenWebContents, loadAppPage } from '../security';
+import { hardenWebContents, loadAppPage, registerDesignContents } from '../security';
 
 function contents(): EventEmitter & { openHandler?: (details: { url: string }) => { action: string }; loadURL: () => Promise<void> } {
   const fake = Object.assign(new EventEmitter(), {
@@ -19,6 +19,49 @@ function contents(): EventEmitter & { openHandler?: (details: { url: string }) =
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('hardenWebContents', () => {
+  it('keeps a design view within its own view-token origin and opens nothing outside, registered after construction (PD-7)', () => {
+    const web = contents();
+    const opened: string[] = [];
+    // app.on('web-contents-created') hardens the contents as it is built, before the view registers it
+    hardenWebContents(web as unknown as WebContents, async (url) => {
+      opened.push(url);
+      return true;
+    }, () => undefined);
+    registerDesignContents(web as unknown as WebContents, 'damocles-design://0123456789abcdef0123456789abcdef');
+
+    const navigation = (url: string) => ({ url, preventDefault: vi.fn() });
+    const sameOrigin = navigation('damocles-design://0123456789abcdef0123456789abcdef/screens/S2.html');
+    const otherView = navigation('damocles-design://fedcba9876543210fedcba9876543210/screens/S1.html');
+    const web1 = navigation('https://example.com/');
+    const file = navigation('file:///C:/Windows/win.ini');
+    const app = navigation('app://damocles/shell/index.html');
+    web.emit('will-navigate', sameOrigin);
+    for (const event of [otherView, web1, file, app]) web.emit('will-navigate', event);
+    const redirect = navigation('https://example.com/');
+    web.emit('will-redirect', redirect);
+
+    expect(sameOrigin.preventDefault).not.toHaveBeenCalled();
+    for (const event of [otherView, web1, file, app, redirect]) expect(event.preventDefault, event.url).toHaveBeenCalled();
+    expect(web.openHandler!({ url: 'https://example.com/' })).toEqual({ action: 'deny' });
+    expect(web.openHandler!({ url: 'damocles-design://0123456789abcdef0123456789abcdef/screens/S2.html' })).toEqual({ action: 'deny' });
+    expect(opened).toEqual([]);
+  });
+
+  it('logs a design view\'s blocked navigations once, so a page navigating away in a loop cannot flood the log', () => {
+    const first = contents();
+    const second = contents();
+    const lines: string[] = [];
+    for (const [web, token] of [[first, 'a'.repeat(32)], [second, 'b'.repeat(32)]] as const) {
+      hardenWebContents(web as unknown as WebContents, async () => true, (line) => lines.push(line));
+      registerDesignContents(web as unknown as WebContents, `damocles-design://${token}`);
+    }
+    const blocked = Array.from({ length: 50 }, () => ({ url: 'https://example.com/', preventDefault: vi.fn() }));
+    for (const event of blocked) first.emit('will-navigate', event);
+    second.emit('will-redirect', { url: 'https://example.com/', preventDefault: vi.fn() });
+    expect(blocked.every((event) => event.preventDefault.mock.calls.length === 1)).toBe(true);
+    expect(lines).toHaveLength(2);
+  });
+
   it('judges a navigation by the event url, allowing only the page main loaded', async () => {
     const web = contents();
     const opened: string[] = [];

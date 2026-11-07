@@ -398,4 +398,37 @@ describe('first open adopts the launcher\'s initial page (no orphan tab)', () =>
 
     service.dispose();
   });
+
+  it("waits for the last tab's teardown before it launches again, so two contexts never share the profile", async () => {
+    const service = new BrowserService(createFakePlatform());
+    priv(service).userDataDir = '/tmp/damocles-relaunch';
+    priv(service).iconCacheDir = '/tmp/damocles-relaunch/icons';
+    priv(service).downloadManager.downloadsDir = '/tmp/damocles-relaunch/dl';
+    const events: string[] = [];
+    let closed!: () => void;
+    const context = (initial: unknown, close: () => Promise<void>) => ({
+      exposeBinding: vi.fn(async () => {}),
+      addInitScript: vi.fn(async () => {}),
+      on: () => {},
+      pages: () => [initial],
+      newPage: vi.fn(async () => fakePage('http://second')),
+      newCDPSession: async () => ({ on: () => {}, send: vi.fn(async () => ({ frameId: 'f', loaderId: 'l' })) }),
+      close,
+    });
+    const page = () => ({ on: () => {}, url: () => 'about:blank', close: vi.fn(async () => {}), opener: async () => null, evaluate: async () => 'Mozilla/5.0 Chrome/120' });
+    const first = page();
+    vi.mocked(launchBrowserContext)
+      .mockImplementationOnce(async () => { events.push('launch 1'); return context(first, () => new Promise<void>((resolve) => { closed = () => { events.push('closed 1'); resolve(); }; })) as never; })
+      .mockImplementationOnce(async () => { events.push('launch 2'); return context(page(), async () => {}) as never; });
+    await service.openForScope(PRIMARY, 'http://a');
+
+    priv(service).handlePageClosed(first);
+    const reopened = service.openForScope(PRIMARY, 'http://b');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toEqual(['launch 1']);
+    closed();
+    await reopened;
+    expect(events).toEqual(['launch 1', 'closed 1', 'launch 2']);
+    service.dispose();
+  });
 });

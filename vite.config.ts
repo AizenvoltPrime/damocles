@@ -5,8 +5,8 @@ import { resolve } from 'path';
 import type { GetModuleInfo, OutputBundle, PreRenderedAsset, PreRenderedChunk } from 'rollup';
 
 // The one dynamic import that loads the editor overlay; every file reachable only through it ships as assets/monaco-*,
-// which .vscodeignore and scripts/sync-vscodeignore.mjs --check keep out of the VSIX.
-const MONACO_ENTRY = resolve(__dirname, 'src/webview/components/editor/EditorOverlayHost.vue').replace(/\\/g, '/');
+// which .vscodeignore and scripts/sync-vscodeignore.ts --check keep out of the VSIX.
+const MONACO_ENTRY = resolve(import.meta.dirname, 'src/webview/components/editor/EditorOverlayHost.vue').replace(/\\/g, '/');
 const MONACO_PREFIX = 'monaco-';
 
 // Module ids reachable only through MONACO_ENTRY; set at buildEnd, read while chunks and assets are named.
@@ -52,7 +52,7 @@ function isMonacoAsset(asset: PreRenderedAsset): boolean {
     return true;
   }
   return asset.originalFileNames.length > 0
-    && asset.originalFileNames.every((file) => resolve(__dirname, 'src/webview', file).replace(/\\/g, '/').includes('/node_modules/monaco-editor/'));
+    && asset.originalFileNames.every((file) => resolve(import.meta.dirname, 'src/webview', file).replace(/\\/g, '/').includes('/node_modules/monaco-editor/'));
 }
 
 function monacoChunkNaming(): Plugin {
@@ -114,7 +114,7 @@ export default defineConfig({
     // Preload links would be blocked by the webview CSP; each chunk's static imports fetch its dependencies.
     modulePreload: false,
     rollupOptions: {
-      input: resolve(__dirname, 'src/webview/index.html'),
+      input: resolve(import.meta.dirname, 'src/webview/index.html'),
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: (chunk) => (isMonacoChunk(chunk) ? `assets/${MONACO_PREFIX}[name].js` : 'assets/[name].js'),
@@ -164,8 +164,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@shared': resolve(__dirname, 'src/shared'),
-      '@': resolve(__dirname, 'src/webview'),
+      '@shared': resolve(import.meta.dirname, 'src/shared'),
+      '@': resolve(import.meta.dirname, 'src/webview'),
     },
   },
 });

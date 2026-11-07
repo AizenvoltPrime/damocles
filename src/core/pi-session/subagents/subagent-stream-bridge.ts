@@ -284,15 +284,16 @@ export class SubagentStreamBridge {
           const resultText = joinResultText(event.result);
           const details = (event.result as { details?: unknown } | undefined)?.details;
           const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
+          // The details go first, so a card never shows its end status without them, as in the main chat's adapter.
           // A stopped call lands as completed, and its marker alone tells the card apart from a success.
           if (event.isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
-            ended.push({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText, parentToolUseId, ...duration });
             // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
             if (metadata && Object.keys(metadata).length > 0) ended.push({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
+            ended.push({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText, parentToolUseId, ...duration });
           } else {
             const imageCount = resultImageCount(event.result);
-            ended.push({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
             if (metadata) ended.push({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
+            ended.push({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
           }
         }
         // pi stores a parallel batch's results only once all of them ended, so a view joining before then is sent the end.

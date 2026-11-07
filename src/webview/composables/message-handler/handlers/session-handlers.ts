@@ -3,6 +3,7 @@ import { i18n } from "@/i18n";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
+import { useDesignStore } from "@/stores/useDesignStore";
 import type { HandlerContext, HandlerRegistry, HandlerOutcome } from "../types";
 import { beginReplayIngest } from "@/utils/perf";
 import { settingsViewHandlers } from "./settings-handlers";
@@ -25,6 +26,7 @@ function resetConversationStores(ctx: HandlerContext): void {
   useBackgroundTaskStore().$reset();
   useTeamStore().$reset();
   useConsolidationStore().$reset();
+  useDesignStore().resetConversation();
   uiStore.collapseTool();
   sessionStore.clearSessionData();
   sessionStore.setCurrentSession(null);
@@ -35,6 +37,8 @@ function resetConversationState(ctx: HandlerContext): void {
   const { bridge } = ctx;
 
   resetConversationStores(ctx);
+  // The next session publishes its own design state once it binds.
+  useDesignStore().setState(null, null);
   sessionStore.setResumedSession(null);
   sessionStore.setSelectedSession(null);
   bridge.setState({ ...bridge.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });

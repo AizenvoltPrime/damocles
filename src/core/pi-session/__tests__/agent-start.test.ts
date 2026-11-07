@@ -48,6 +48,7 @@ import {
   resolveSkillFileReadTool,
   type DamoclesSystemPromptInputs,
 } from '../agent-start';
+import { designRuleSet } from '../../design/rule-set';
 import { installFakePlatform } from '../../../__mocks__/fake-platform';
 import { CONTEXT_INJECTION_CUSTOM_TYPE } from '../live-injections';
 import { DAMOCLES_MID_STREAM_ENTRY } from '../session-store/constants';
@@ -370,6 +371,32 @@ describe('renderSections', () => {
     expect(renderSections({ preamble: 'BASE', sections: { damocles_memory: 'M', damocles_tone: 'T' } })).toBe(
       'BASE\n\n<damocles_memory>\nM\n</damocles_memory>\n\n<damocles_tone>\nT\n</damocles_tone>',
     );
+  });
+});
+
+describe('buildAgentStartResult — design sections (PD-14, PD-17)', () => {
+  const folder = '/home/u/.damocles/designs/contacts-abcd1234';
+
+  it("reads the design chat's section from the panel each turn, constant across turns and in place of plan mode's", async () => {
+    const { panel } = makePanel({ plan: true });
+    panel.designPrompt = () => ({ design: { folder, ruleSet: designRuleSet({ designPreview: true }) } });
+    const first = event();
+    await runAgentStart(first, panel, 'sess-1');
+    const second = event();
+    await runAgentStart(second, panel, 'sess-1');
+    expect(second.systemPromptOptions.sections).toEqual(first.systemPromptOptions.sections);
+    expect(Object.keys(first.systemPromptOptions.sections)).toContain('damocles_design');
+    expect('damocles_plan_mode' in first.systemPromptOptions.sections).toBe(false);
+  });
+
+  it("adds the parent's link section once the link exists", async () => {
+    const { panel } = makePanel({});
+    const ev = event();
+    await runAgentStart(ev, panel, 'sess-1');
+    expect('damocles_design_link' in ev.systemPromptOptions.sections).toBe(false);
+    panel.designPrompt = () => ({ designLink: { folder } });
+    await runAgentStart(ev, panel, 'sess-1');
+    expect(ev.systemPromptOptions.sections.damocles_design_link).toContain(folder);
   });
 });
 

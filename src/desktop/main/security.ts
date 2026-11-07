@@ -70,18 +70,47 @@ export function restrictPermissions(session: Session): void {
   session.setDevicePermissionHandler(() => false);
 }
 
-// Applied to every WebContents the app creates: no popups, no <webview>, no navigation or redirect away from the page main loaded; web links open in the OS browser.
+// The WebContents of design preview views, by the origin (damocles-design://<viewToken>) each may navigate within.
+const designContents = new WeakMap<WebContents, string>();
+
+// Called right after the view is constructed, before its first load; hardenWebContents reads it at each event.
+export function registerDesignContents(contents: WebContents, origin: string): void {
+  designContents.set(contents, origin);
+}
+
+// A design page's script can try to navigate away in a loop, so each design view logs only its first blocked navigation.
+const designNavigationLogged = new WeakSet<WebContents>();
+
+// Node's URL reports origin 'null' for a scheme it does not know, so the origin is spelled from the scheme and host.
+export function designOriginOf(url: string): string | undefined {
+  if (!URL.canParse(url)) return undefined;
+  const parsed = new URL(url);
+  return parsed.host === '' ? undefined : `${parsed.protocol}//${parsed.host}`.toLowerCase();
+}
+
+// Applied to every WebContents the app creates: no popups, no <webview>, no navigation or redirect away from the page main
+// loaded; web links open in the OS browser. A design view (PD-7) opens nothing outside and navigates only within its origin.
 export function hardenWebContents(contents: WebContents, openExternal: (url: string) => Promise<boolean>, log: (line: string) => void): void {
   const openOutside = (url: string): void => {
     openExternal(url).catch((err: unknown) => log(`[security] could not open ${loggableUrl(url)}: ${err instanceof Error ? err.message : String(err)}`));
   };
   contents.setWindowOpenHandler(({ url }) => {
-    if (isHttpUrl(url)) openOutside(url);
+    if (designContents.has(contents)) log(`[security] denied a design's window.open to ${loggableUrl(url)}`);
+    else if (isHttpUrl(url)) openOutside(url);
     else log(`[security] denied window.open to ${loggableUrl(url)}`);
     return { action: 'deny' };
   });
   const lockNavigation = (event: { readonly url: string; preventDefault(): void }): void => {
     const { url } = event;
+    const design = designContents.get(contents);
+    if (design !== undefined) {
+      if (designOriginOf(url) === design) return;
+      event.preventDefault();
+      if (designNavigationLogged.has(contents)) return;
+      designNavigationLogged.add(contents);
+      log(`[security] blocked a design's navigation to ${loggableUrl(url)}; this view's further ones are not logged`);
+      return;
+    }
     // contents.getURL() already reports the pending URL here, so it cannot be the reference.
     if (isAppUrl(url) && url === loadedPages.get(contents)) return;
     event.preventDefault();

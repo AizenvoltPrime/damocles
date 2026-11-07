@@ -5,6 +5,7 @@ import { PermissionHandler } from '../../permission-handler';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { PLAN_VERSION_DETAIL_KEY } from '../../../shared/types/session';
+import { DESIGN_VERSION_DETAIL_KEY } from '../../../shared/types/design';
 import { planVersionOnBranch } from '../plan-version';
 import { createPlanModeTools } from '../tools/plan-mode-tools';
 import { reconstructMessages } from '../session-store/history-loader';
@@ -143,7 +144,7 @@ describe('ExitPlanMode records its version', () => {
     approve = true;
     handler.setPermissionMode('plan');
     const approved = await exit.execute('p4', {}, new AbortController().signal, undefined, ctx);
-    expect(approved.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: 4 });
+    expect(approved.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: 4, [DESIGN_VERSION_DETAIL_KEY]: null });
     expect(approved.isError).toBeUndefined();
     expect(requests.map((r) => [r.toolUseId, r.planVersion])).toEqual([['p3', 3], ['p4', 4]]);
   });
@@ -172,14 +173,14 @@ describe('ExitPlanMode records its version', () => {
     plan = '1. Do it';
     planCall(sm, 'shown');
     const sentBack = await exit.execute('shown', {}, new AbortController().signal, undefined, ctx);
-    expect(sentBack.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: 1 });
+    expect(sentBack.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: 1, [DESIGN_VERSION_DETAIL_KEY]: null });
     expect(requests.map((r) => [r.toolUseId, r.planVersion])).toEqual([['shown', 1]]);
     planResult(sm, 'shown', sentBack.details as Record<string, number>, true);
 
     handler.setPermissionMode('default');
     planCall(sm, 'outside');
     const outside = await exit.execute('outside', {}, new AbortController().signal, undefined, ctx);
-    expect(outside.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: null });
+    expect(outside.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: null, [DESIGN_VERSION_DETAIL_KEY]: null });
   });
 
   it('keeps the number of a plan the user was shown and then stopped, words the stop as one, and counts it', async () => {
@@ -234,5 +235,87 @@ describe('ExitPlanMode records its version', () => {
 
     const tools = reconstructMessages(sm.getBranch()).messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []));
     expect(tools.map((tool) => [tool.id, tool.metadata?.[PLAN_VERSION_DETAIL_KEY]])).toEqual([['legacy', undefined], ['p2', 2]]);
+  });
+});
+
+describe('ExitPlanMode records the design version its plan is approved against (PD-16)', () => {
+  const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+  type Exit = { execute: (id: string, params: unknown, signal: AbortSignal, onUpdate: undefined, ctx: unknown) => Promise<{ details: unknown; isError?: boolean }> };
+  const DESIGN = 'contacts-abcd1234';
+
+  function linkedParent(): SessionManager {
+    const sm = SessionManager.inMemory('/work');
+    prompt(sm, 'design then plan');
+    sm.appendCustomEntry('damocles.design-link', { v: 1, designId: DESIGN, folder: 'ignored', parentSessionId: sm.getSessionId(), title: 'Contacts' });
+    return sm;
+  }
+
+  const deliver = (sm: SessionManager, version: number, warnings: unknown[] = []): void => {
+    sm.appendCustomMessageEntry('damocles-design-result', `Design finished v${version}`, true, {
+      designId: DESIGN, version, folder: '/designs/contacts', title: 'Contacts', screens: ['S1', 'S2'], decisions: [{ id: 'D1', title: 'Fidelity', chosen: 'Static' }],
+      check: { errors: 0, warnings }, journeys: [], previousVersion: version > 1 ? version - 1 : null, changes: [],
+    });
+  };
+
+  function exitWith(answer: (msg: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>, handler: PermissionHandler) => void): { exit: Exit; requests: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>[]; handler: PermissionHandler } {
+    const requests: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>[] = [];
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setPermissionMode('plan');
+    handler.setPlanContentResolver(async () => '1. Do it');
+    handler.setPostMessage((msg) => {
+      if (msg.type !== 'requestPlanApproval') return;
+      requests.push(msg);
+      answer(msg, handler);
+    });
+    return { exit: createPlanModeTools(pi, handler)[1] as unknown as Exit, requests, handler };
+  }
+
+  it('stamps the latest version delivered on the branch on every outcome, and shows the linked design on the approval', async () => {
+    const sm = linkedParent();
+    deliver(sm, 1);
+    deliver(sm, 2, [{ rule: 'tokens.raw', severity: 'warning', screen: 'S1', element: 'h1', message: 'raw color' }]);
+    let approve = false;
+    const { exit, requests, handler } = exitWith((msg, h) => h.resolvePlanApproval(msg.toolUseId, approve));
+
+    planCall(sm, 'p1');
+    const sentBack = await exit.execute('p1', {}, new AbortController().signal, undefined, { sessionManager: sm });
+    expect(sentBack).toMatchObject({ isError: true, details: { [PLAN_VERSION_DETAIL_KEY]: 1, [DESIGN_VERSION_DETAIL_KEY]: { designId: DESIGN, version: 2 } } });
+    planResult(sm, 'p1', sentBack.details as Record<string, number>, true);
+
+    approve = true;
+    handler.setPermissionMode('plan');
+    planCall(sm, 'p2');
+    const approved = await exit.execute('p2', {}, new AbortController().signal, undefined, { sessionManager: sm });
+    expect(approved.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: 2, [DESIGN_VERSION_DETAIL_KEY]: { designId: DESIGN, version: 2 } });
+    expect(requests[1]?.designLink).toEqual({
+      designId: DESIGN, title: 'Contacts', folder: expect.stringContaining(DESIGN), version: 2, screens: 2, decisions: 1,
+      warnings: [{ rule: 'tokens.raw', severity: 'warning', screen: 'S1', element: 'h1', message: 'raw color' }], journeysPassed: null,
+    });
+
+    handler.setPermissionMode('default');
+    planCall(sm, 'outside');
+    const outside = await exit.execute('outside', {}, new AbortController().signal, undefined, { sessionManager: sm });
+    expect(outside.details).toEqual({ [PLAN_VERSION_DETAIL_KEY]: null, [DESIGN_VERSION_DETAIL_KEY]: { designId: DESIGN, version: 2 } });
+  });
+
+  it('stamps null and shows no linked design with no own link, or with a link and no delivered version', async () => {
+    const { exit, requests } = exitWith((msg, h) => h.resolvePlanApproval(msg.toolUseId, true));
+    const plain = SessionManager.inMemory('/work');
+    prompt(plain, 'plan it');
+    planCall(plain, 'p1');
+    expect((await exit.execute('p1', {}, new AbortController().signal, undefined, { sessionManager: plain })).details).toMatchObject({ [DESIGN_VERSION_DETAIL_KEY]: null });
+
+    const linked = linkedParent();
+    planCall(linked, 'p2');
+    expect((await exit.execute('p2', {}, new AbortController().signal, undefined, { sessionManager: linked })).details).toMatchObject({ [DESIGN_VERSION_DETAIL_KEY]: null });
+
+    // A fork's inherited link is inert (PD-37).
+    const fork = SessionManager.inMemory('/work');
+    prompt(fork, 'forked');
+    fork.appendCustomEntry('damocles.design-link', { v: 1, designId: DESIGN, folder: 'ignored', parentSessionId: 'the-source-chat', title: 'Contacts' });
+    deliver(fork, 1);
+    planCall(fork, 'p3');
+    expect((await exit.execute('p3', {}, new AbortController().signal, undefined, { sessionManager: fork })).details).toMatchObject({ [DESIGN_VERSION_DETAIL_KEY]: null });
+    expect(requests.map((r) => r.designLink)).toEqual([undefined, undefined, undefined]);
   });
 });

@@ -65,6 +65,18 @@ const NAME_BY_KEY: Record<string, string> = Object.fromEntries(BROWSER_SPECS.map
 const piName = (key: string): string => NAME_BY_KEY[key]!;
 
 export const BROWSER_PI_TOOL_NAMES: readonly string[] = BROWSER_SPECS.map((s) => s.name);
+/** The browser tools a design chat and its agents may load: reads only, never a click, a keystroke or a script (PD-25). */
+export const DESIGN_BROWSER_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'BrowserOpen', 'BrowserNavigate', 'BrowserScreenshot', 'BrowserQuery', 'BrowserElement', 'BrowserConsole', 'BrowserNetwork',
+  'BrowserAccessibility', 'BrowserHover', 'BrowserScroll', 'BrowserWait', 'BrowserSnapshot', 'BrowserTabs', 'BrowserDownloads', 'BrowserClose',
+]);
+
+const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_PI_TOOL_NAMES);
+
+/** Whether a design chat, or an agent it started, may have tool `name`: any tool but a browser tool that acts on the page. */
+export function designBrowserAllows(name: string): boolean {
+  return !BROWSER_TOOLS.has(name) || DESIGN_BROWSER_TOOL_NAMES.has(name);
+}
 
 export const BROWSER_TOOL_CATALOG: readonly ToolCatalogEntry[] = BROWSER_SPECS.map((s) => ({
   name: s.name,

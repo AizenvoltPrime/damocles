@@ -5,6 +5,8 @@ import type {
   PendingPlanApproval,
   PendingSkillApproval,
   PendingElicitation,
+  PendingDesignVersion,
+  PendingDesignApproval,
   PostMessageFn,
   PermissionMode,
   PermissionRequiredNotifier,
@@ -81,6 +83,8 @@ export class PermissionState {
   pendingSkillApprovals: Map<string, PendingSkillApproval> = new Map();
   pendingElicitations: Map<string, PendingElicitation> = new Map();
   pendingSignIns: Map<string, PendingSignIn> = new Map();
+  pendingDesignVersions: Map<string, PendingDesignVersion> = new Map();
+  pendingDesignApprovals: Map<string, PendingDesignApproval> = new Map();
   /** The exact message each live prompt was posted with, in the order they were raised, so a webview
    *  reload can put the same dialogs back on screen without rebuilding a payload. */
   pendingPromptRequests: Map<string, ExtensionToWebviewMessage> = new Map();
@@ -111,6 +115,8 @@ export class PermissionState {
     if (this.pendingPlanApprovals.has(id)) return 'plan';
     if (this.pendingForms.has(id) || this.pendingElicitations.has(id)) return 'input';
     if (this.pendingSignIns.has(id)) return 'signIn';
+    if (this.pendingDesignVersions.has(id)) return 'designVersion';
+    if (this.pendingDesignApprovals.has(id)) return 'designApproval';
     return undefined;
   }
 
@@ -214,10 +220,38 @@ export class PermissionState {
 
   removePendingSignIn(requestId: string): PendingSignIn | undefined {
     const signIn = this.pendingSignIns.get(requestId);
-    this.pendingSignIns.delete(requestId);
+    if (!this.pendingSignIns.delete(requestId)) return undefined;
     this.pendingPromptRequests.delete(requestId);
     this.onPendingChanged?.();
     return signIn;
+  }
+
+  addPendingDesignVersion(promptId: string, prompt: PendingDesignVersion): void {
+    this.pendingDesignVersions.set(promptId, prompt);
+    this.pendingPromptRequests.set(promptId, prompt.request);
+    this.onPendingChanged?.();
+  }
+
+  removePendingDesignVersion(promptId: string): PendingDesignVersion | undefined {
+    const prompt = this.pendingDesignVersions.get(promptId);
+    if (!this.pendingDesignVersions.delete(promptId)) return undefined;
+    this.pendingPromptRequests.delete(promptId);
+    this.onPendingChanged?.();
+    return prompt;
+  }
+
+  addPendingDesignApproval(promptId: string, prompt: PendingDesignApproval): void {
+    this.pendingDesignApprovals.set(promptId, prompt);
+    this.pendingPromptRequests.set(promptId, prompt.request);
+    this.onPendingChanged?.();
+  }
+
+  removePendingDesignApproval(promptId: string): PendingDesignApproval | undefined {
+    const prompt = this.pendingDesignApprovals.get(promptId);
+    if (!this.pendingDesignApprovals.delete(promptId)) return undefined;
+    this.pendingPromptRequests.delete(promptId);
+    this.onPendingChanged?.();
+    return prompt;
   }
 
   clearAll(): void {
@@ -257,6 +291,19 @@ export class PermissionState {
     const signIns = [...this.pendingSignIns.values()];
     this.pendingSignIns.clear();
     for (const signIn of signIns) signIn.cancel();
+    const designVersions = [...this.pendingDesignVersions.values()];
+    this.pendingDesignVersions.clear();
+    for (const prompt of designVersions) {
+      prompt.cleanup();
+      prompt.resolve(undefined);
+    }
+    const designApprovals = [...this.pendingDesignApprovals];
+    this.pendingDesignApprovals.clear();
+    for (const [promptId, prompt] of designApprovals) {
+      prompt.cleanup();
+      this.postMessageToWebview?.({ type: 'designApprovalClosed', promptId });
+      prompt.resolve(undefined);
+    }
     this.pendingPromptRequests.clear();
 
     this.autoApprovedSkills.clear();

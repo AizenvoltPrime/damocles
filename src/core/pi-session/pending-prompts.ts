@@ -113,6 +113,8 @@ function summaryOf(request: ExtensionToWebviewMessage, cwd: string): LocalizedTe
       return asked(request.message);
     case 'extensionUiRequest':
       return asked(request.title);
+    case 'requestDesignApproval':
+      return request.hasParent ? l('send the design to its main chat') : l('make a version of the design');
     default:
       return undefined;
   }

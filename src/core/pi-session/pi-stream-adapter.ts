@@ -943,18 +943,19 @@ export class PiStreamAdapter {
 
   private toolEndMessages(toolUseId: string, toolName: string, result: unknown, isError: boolean, metadata: Record<string, unknown> | undefined, durationMs: number | undefined): ExtensionToWebviewMessage[] {
     const duration = durationMs === undefined ? {} : { durationMs };
+    // The details go first, so a card never shows its end status without them (the subagent bridge does the same).
     // A stopped call lands as completed, and its marker alone tells the card apart from a success.
     if (isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
       // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
       return [
-        { type: 'toolFailed', toolUseId, toolName, error: joinResultText(result), ...duration },
         ...(metadata && Object.keys(metadata).length > 0 ? [{ type: 'toolMetadata' as const, toolUseId, metadata }] : []),
+        { type: 'toolFailed', toolUseId, toolName, error: joinResultText(result), ...duration },
       ];
     }
     const imageCount = resultImageCount(result);
     return [
-      { type: 'toolCompleted', toolUseId, toolName, result: joinResultText(result), ...duration, ...(imageCount > 0 ? { imageCount } : {}) },
       ...(metadata ? [{ type: 'toolMetadata' as const, toolUseId, metadata }] : []),
+      { type: 'toolCompleted', toolUseId, toolName, result: joinResultText(result), ...duration, ...(imageCount > 0 ? { imageCount } : {}) },
     ];
   }
 

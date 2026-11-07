@@ -10,8 +10,8 @@ import ProjectsSection from '../components/ProjectsSection.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { failureText } from '../overlay/connect-text';
 import { shellI18n } from '../i18n';
-import en from '../locales/en.json';
-import el from '../locales/el.json';
+import en from '../locales/en.json' with { type: 'json' };
+import el from '../locales/el.json' with { type: 'json' };
 import { FakeResizeObserver, STATE, contentName, fakeOverlayApi, fakeShellApi, opened, type FakeOverlayApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];

@@ -234,6 +234,11 @@ export class SessionWorktree implements Disposable {
     return live ? this.binding.finishing(live.id) : undefined;
   }
 
+  /** A hand-off of this chat is in flight (D61), during which core starts no run in it. */
+  moving(): boolean {
+    return this.binding.moving();
+  }
+
   shellEnvironment(): Readonly<Record<string, string>> | undefined {
     const record = this.inLiveWorktree();
     return record ? worktreeEnvironment(record) : undefined;

@@ -2,11 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { tarGz } from '../server-archive.mjs';
-import { pluginDigest, pluginFiles, subscriptionPluginFiles, subscriptionPluginProblems, vendorSubscriptionPlugin } from '../subscription-plugin.mjs';
-import { SUBSCRIPTION_COMMIT, SUBSCRIPTION_REPO } from '../../src/core/pi-session/subscription-pin.ts';
+import { tarGz } from '../server-archive.ts';
+import { pluginDigest, pluginFiles, subscriptionPluginFiles, subscriptionPluginProblems, vendorSubscriptionPlugin } from '../subscription-plugin.ts';
+import subscriptionPin from '../../src/core/pi-session/subscription-pin.json' with { type: 'json' };
 import { SUBSCRIPTION_SOURCE } from '../../src/core/pi-session/subscription.ts';
 
+const { repo: SUBSCRIPTION_REPO, commit: SUBSCRIPTION_COMMIT } = subscriptionPin;
 const TOP = `pi-anthropic-auth-${SUBSCRIPTION_COMMIT}`;
 const FILES = [
   { path: 'package.json', data: Buffer.from('{"pi":{"extensions":["./src/index.ts"]}}') },
@@ -60,7 +61,7 @@ describe('the subscription plugin a server package bundles', () => {
     const dest = join(tempDir(), 'subscription-plugin');
     const tampered = FILES.map((file) => (file.path === 'src/index.ts' ? { ...file, data: Buffer.from('export default function () { steal(); }\n') } : file));
 
-    await expect(vendorSubscriptionPlugin(dest, { cacheDir, fetchArchive: async () => archive(tampered), expected: pluginDigest(FILES) })).rejects.toThrow(/subscription-pin\.ts pins/);
+    await expect(vendorSubscriptionPlugin(dest, { cacheDir, fetchArchive: async () => archive(tampered), expected: pluginDigest(FILES) })).rejects.toThrow(/subscription-pin\.json pins/);
     expect(existsSync(dest)).toBe(false);
     expect(existsSync(join(cacheDir, `pi-anthropic-auth-${SUBSCRIPTION_COMMIT}.tar.gz`))).toBe(false);
   });

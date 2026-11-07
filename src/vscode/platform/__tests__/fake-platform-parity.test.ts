@@ -11,6 +11,7 @@ import { REPO_ROOT } from '../../../__mocks__/source-tree';
 import { renderVsCode } from '../localization-service';
 import { createVsCodePlatform } from '../index';
 import { VSCODE_HOST_CAPABILITIES } from '../../../shared/types/messages';
+import { createVsCodeDesignHost } from '../design-host';
 
 // Tests of core code trust the fake to deliver what the VS Code host delivers.
 function setWorkspaceFolders(fsPaths: readonly string[]): void {
@@ -142,6 +143,7 @@ describe('host capabilities parity', () => {
       worktrees: false,
       bypassPermissions: true,
       globalMemoryOnServer: false,
+      designPreview: false,
     });
   });
 
@@ -183,5 +185,17 @@ describe('host capabilities parity', () => {
         expect(createVsCodePlatform(contextOfKind(vscode.ExtensionKind.UI)).capabilities).toStrictEqual(VSCODE_HOST_CAPABILITIES);
       });
     });
+  });
+});
+
+describe('design host parity', () => {
+  it('the fake platform opens designs in the browser as the VS Code platform does', () => {
+    const vsCode = createVsCodeDesignHost(createFakePlatform().shell);
+    try {
+      const members = (host: object): string[] => Object.keys(host).filter((key) => key !== 'dispose' && typeof (host as Record<string, unknown>)[key] === 'function').sort();
+      expect(members(createFakePlatform().design!)).toEqual(members(vsCode));
+    } finally {
+      vsCode.dispose();
+    }
   });
 });

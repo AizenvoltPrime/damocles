@@ -9,6 +9,8 @@ import UserMessageImageChip from "./UserMessageImageChip.vue";
 import TerminalAttachmentChip from "./TerminalAttachmentChip.vue";
 import CommitAttachmentChip from "./CommitAttachmentChip.vue";
 import McpResourceAttachmentChip from "./McpResourceAttachmentChip.vue";
+import MarkupMessage from "./design/MarkupMessage.vue";
+import ReferenceNotes from "./design/ReferenceNotes.vue";
 import { ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, Pin, RotateCcw, X } from "lucide-vue-next";
 import { formatClock } from "@/utils/clock";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
@@ -51,6 +53,13 @@ const imageBlocks = computed<ImageBlock[]>(() => {
   return props.message.contentBlocks.filter(isImageBlock);
 });
 
+const references = computed(() => props.message.designReferences ?? []);
+// The images core saved as references show in their notes, the rest as chips.
+const chipImages = computed(() => {
+  const saved = new Set(references.value.map((reference) => reference.imageIndex));
+  return imageBlocks.value.filter((_, index) => !saved.has(index));
+});
+
 const isInjectedOrQueued = computed(() => !USER_PROMPT_FILTER(props.message));
 
 const { flashedMessageId } = storeToRefs(useMessageHighlightStore());
@@ -76,7 +85,8 @@ const COLLAPSED_REM = 10;
 const cardRef = ref<HTMLElement | null>(null);
 const contentRef = ref<HTMLElement | null>(null);
 const naturalHeight = ref<number>(0);
-const isOverflowing = computed(() => naturalHeight.value > COLLAPSED_REM * parseFloat(getComputedStyle(document.documentElement).fontSize));
+// A markup card shows whole: its image and marks are the message.
+const isOverflowing = computed(() => !props.message.designMarkup && naturalHeight.value > COLLAPSED_REM * parseFloat(getComputedStyle(document.documentElement).fontSize));
 const isCollapsed = computed(() => !props.expanded && isOverflowing.value);
 
 const surfaceClass = computed(() =>
@@ -319,19 +329,32 @@ onUnmounted(() => {
               />
             </template>
           </div>
+          <MarkupMessage
+            v-if="message.designMarkup"
+            :note="message.designMarkup"
+            :content="message.content"
+            :image="imageBlocks[0]"
+            @open-lightbox="emit('openLightbox', $event)"
+          />
+          <ReferenceNotes
+            v-if="!message.designMarkup && references.length > 0"
+            :references="references"
+            :images="imageBlocks"
+            @open-lightbox="emit('openLightbox', $event)"
+          />
           <div
-            v-if="imageBlocks.length > 0"
+            v-if="!message.designMarkup && chipImages.length > 0"
             class="mb-2 flex flex-wrap gap-1.5"
           >
             <UserMessageImageChip
-              v-for="(img, index) in imageBlocks"
+              v-for="(img, index) in chipImages"
               :key="index"
               :block="img"
               @open-lightbox="emit('openLightbox', $event)"
             />
           </div>
           <MarkdownRenderer
-            v-if="message.content"
+            v-if="message.content && !message.designMarkup"
             :content="message.content"
             class="text-(--d-text)"
           />

@@ -18,6 +18,9 @@
 // relaxation, `noPropertyAccessFromIndexSignature`, is purely syntactic: `noUncheckedIndexedAccess`
 // still widens an index-signature read to `T | undefined` whether it is written `o.k` or `o['k']`.
 //
+// `scripts/__tests__` are here too. They and some src tests import the scripts by their `.ts` path, as Node runs them
+// (scripts/tsconfig.json), and a few import a JavaScript module a tool loads as-is (eslint.config.mjs), typed by `allowJs`.
+//
 // `npm run typecheck` runs this, so it is a gate at zero. Suppressing a finding here (a cast that
 // erases the mismatch, a dropped assertion) buys a green run at the cost of the thing it exists for.
 {
@@ -28,16 +31,28 @@
     "declarationMap": false,
     "isolatedDeclarations": false,
     "noPropertyAccessFromIndexSignature": false,
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "rootDir": ".",
     "paths": {
       "@shared/*": ["./src/shared/*"],
       "@/*": ["./src/webview/*"],
       "@xterm/xterm": ["./types/xterm-headless.d.ts"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "scripts/__tests__/**/*"],
   "exclude": [
     "node_modules",
     "dist",
+    // Tests of end-to-end support code that needs the DOM lib, each in an e2e tsconfig's include.
+    "scripts/__tests__/e2e-async-children.test.ts",
+    "scripts/__tests__/e2e-file-holders.test.ts",
+    "scripts/__tests__/e2e-foreground-bound.test.ts",
+    "scripts/__tests__/e2e-foreground-queue.test.ts",
+    "scripts/__tests__/e2e-pointer.test.ts",
+    "scripts/__tests__/e2e-review-shots.test.ts",
+    "scripts/__tests__/reference-package.test.ts",
+    "scripts/__tests__/release-mirror.test.ts",
     "src/webview",
     // Renderer code with the DOM lib, checked by tsconfig.desktop-preload.json.
     "src/desktop/preload",

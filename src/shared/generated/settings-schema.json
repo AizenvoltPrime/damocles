@@ -257,6 +257,11 @@
         },
         "description": "Per-server control of MCP resources, keyed by server name. \"off\" keeps the resource tools away from the server, \"deferred\" lets them reach it once ToolSearch loads them, and \"direct\" loads list_mcp_resources, list_mcp_resource_templates and read_mcp_resource from the first turn. A server with no entry takes its value from its config: Off for exposeResources false or exposure hidden, Always loaded for exposure direct, otherwise deferred. Local beats project beats user, per server; project and local values apply only in a trusted folder."
       },
+      "damocles.design.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable design mode: StartDesign opens a linked design chat that writes only its design folder under ~/.damocles/designs. User settings only."
+      },
       "damocles.team.enabled": {
         "type": "boolean",
         "default": false,
@@ -1988,6 +1993,12 @@
           ]
         },
         "description": "Per-server control of MCP resources, keyed by server name. \"off\" keeps the resource tools away from the server, \"deferred\" lets them reach it once ToolSearch loads them, and \"direct\" loads list_mcp_resources, list_mcp_resource_templates and read_mcp_resource from the first turn. A server with no entry takes its value from its config: Off for exposeResources false or exposure hidden, Always loaded for exposure direct, otherwise deferred. Local beats project beats user, per server; project and local values apply only in a trusted folder."
+      },
+      "damocles.design.enabled": {
+        "not": {},
+        "errorMessage": "damocles.design.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.design.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nEnable design mode: StartDesign opens a linked design chat that writes only its design folder under ~/.damocles/designs. User settings only."
       },
       "damocles.team.enabled": {
         "type": "boolean",

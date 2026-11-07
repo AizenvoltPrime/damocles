@@ -31,6 +31,8 @@ export {
   type MentionTargetData,
   type MirrorTopics,
   type PanelCreate,
+  type Params,
+  type Result,
   type ScmCommitOutcome,
   type ScmMirrorPatch,
   type ScmRepositoryEntry,
@@ -47,12 +49,12 @@ export type CoreEndpoint = Endpoint<CoreToMain, MainToCore>;
 
 // onViolation: what this side does with a message outside the contract; without it the violation is thrown (in process, tests).
 // actor: only a daemon and its core pass one (endpoint.ts EndpointOptions.actor). render: desktop main's, which puts core's
-// error text in main's language (errors.ts errorCodec).
+// error text in main's language (errors.ts errorCodec). Both sides check what they send (checkOutgoing): a request, answer or
+// event outside the contract would end the other side's channel where it is parsed, and with it core or a client's connection.
 export function createMainEndpoint(transport: CoreTransport, log: (line: string) => void, onViolation?: (error: CoreProtocolError) => void, actor?: ActorContext, render?: (text: LocalizedText) => string): MainEndpoint {
-  return createEndpoint({ transport, outgoing: MAIN_TO_CORE, incoming: CORE_TO_MAIN, log, errors: render ? errorCodec(render) : ERROR_CODEC, ...(onViolation ? { onViolation } : {}), ...(actor ? { actor } : {}) });
+  return createEndpoint({ transport, outgoing: MAIN_TO_CORE, incoming: CORE_TO_MAIN, log, errors: render ? errorCodec(render) : ERROR_CODEC, checkOutgoing: true, ...(onViolation ? { onViolation } : {}), ...(actor ? { actor } : {}) });
 }
 
 export function createCoreEndpoint(transport: CoreTransport, log: (line: string) => void, onViolation?: (error: CoreProtocolError) => void, actor?: ActorContext): CoreEndpoint {
-  // a request or answer of core outside the contract would end core where the other side parses it
   return createEndpoint({ transport, outgoing: CORE_TO_MAIN, incoming: MAIN_TO_CORE, log, errors: ERROR_CODEC, checkOutgoing: true, ...(onViolation ? { onViolation } : {}), ...(actor ? { actor } : {}) });
 }

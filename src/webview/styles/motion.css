@@ -197,7 +197,7 @@
 
 /* reka-ui content keyed on data-state; reka keeps the node mounted until the closed animation ends. */
 .d-popper[data-state="open"],.d-popper[data-state="delayed-open"],.d-popper[data-state="instant-open"]{animation:d-pop .16s var(--ease-out)}
-.d-popper[data-state="closed"]{animation:d-pop-out .12s ease-in both}
+.d-popper[data-state="closed"]{animation:d-pop-out .12s ease-in both;pointer-events:none}
 .d-popper[data-side="top"][data-state="open"],.d-popper[data-side="top"][data-state="delayed-open"],.d-popper[data-side="top"][data-state="instant-open"]{animation-name:d-pop-top}
 .d-popper[data-side="top"][data-state="closed"]{animation-name:d-pop-top-out}
 .d-dialog[data-state="open"]{animation:o-zoom .26s var(--ease-out)}
@@ -213,7 +213,7 @@
 
 /* A pressed control may shrink; hover never moves anything. */
 .d-press{transition:transform .1s var(--ease-out),color .15s,background-color .15s,border-color .15s,filter .15s,opacity .15s}
-.d-press:active:not(:disabled){transform:scale(.97)}
+.d-press:active:not(:disabled,[aria-disabled="true"]){transform:scale(.97)}
 
 /* Attention ring around a rounded box; the colour is the box's currentColor. Needs no wrapper. */
 .d-ring{position:relative;isolation:isolate}

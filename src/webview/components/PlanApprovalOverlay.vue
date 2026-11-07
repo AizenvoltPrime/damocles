@@ -3,8 +3,10 @@ import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { ClipboardList, Check, Pencil, SendHorizontal, Zap } from 'lucide-vue-next';
+import type { PlanApprovalDesignLink } from '@shared/types/design';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
+import DesignPlanStrip from './design/DesignPlanStrip.vue';
 import { useSessionStore, useSettingsStore } from '@/stores';
 import { useContextPercentage } from '@/composables/useContextPercentage';
 import { contextWarningBands } from '@/utils/contextBands';
@@ -34,6 +36,7 @@ const contextTooltip = computed(() => {
 
 defineProps<{
   planContent: string;
+  designLink?: PlanApprovalDesignLink | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -75,7 +78,11 @@ function handleSendFeedback() {
       </span>
     </template>
 
-    <div class="px-4.5 pt-4 pb-5">
+    <div class="flex flex-col gap-4 px-4.5 pt-4 pb-5">
+      <DesignPlanStrip
+        v-if="designLink"
+        :link="designLink"
+      />
       <MarkdownRenderer :content="planContent" />
     </div>
 

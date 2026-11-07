@@ -73,6 +73,8 @@ import { log } from '../../logger';
 import { pruneOrphanCheckpointRepos } from '../../pi-session/checkpoints';
 import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
 import { folderKey } from '../../workspace-folders/folder-key';
+import { designStateDirOf } from '../../design/design-paths';
+import { updateDesignLink } from '../../design/design-state';
 
 H.tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-storage-multi-root-'));
 afterAll(() => fs.rmSync(H.tmpRoot, { recursive: true, force: true }));
@@ -407,6 +409,55 @@ describe('StorageManager: one list load at a time', () => {
       expect(store.getPiSessionMetadataByFile).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // Main re-reads a project's rows only on a change event, and a design chat's row shows the version it finished.
+  it("announces a design chat's newly finished version", async () => {
+    vi.useFakeTimers();
+    try {
+      const design = { designId: 'contacts-1a2b3c4d', parentSessionId: 'a-0' };
+      H.store.set(A.fsPath, [session('a-1', 100, { design })]);
+      const { manager } = harness([A]);
+      await manager.getStoredSessions();
+      await manager.setupSessionWatcher();
+      const changes: unknown[] = [];
+      manager.onDidChangeSessions((change) => changes.push(change));
+      vi.mocked(store.currentCachedRow).mockResolvedValueOnce(session('a-1', 300, { design: { ...design, finishedVersion: 1 } }));
+
+      platform.fileWatchers.watchers[0]!.fireChange(fileOf(A.fsPath, 'a-1'));
+      await vi.runAllTimersAsync();
+
+      // the row's read of its design's link.json is real IO, which no fake timer settles
+      await vi.waitFor(() => expect(changes).toEqual([{ projectKey: A.key }]));
+      expect((await manager.sessionsOf(A.key))[0]?.design).toEqual({ ...design, finishedVersion: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A rewind takeover changes only link.json, so the old chat's row is read again by its panel (onSessionPersisted).
+  it("marks a design chat superseded while its design's link.json names another chat, and announces the change", async () => {
+    const design = { designId: 'contacts-1a2b3c4d', parentSessionId: 'a-0' };
+    const stateDir = designStateDirOf(design.designId);
+    const linkTo = (designSessionId: string, superseded: string[]) =>
+      updateDesignLink(stateDir, () => ({ schemaVersion: 1, designId: design.designId, folder: '/d', title: 'Contacts', parentSessionId: 'a-0', designSessionId, superseded }));
+    try {
+      H.store.set(A.fsPath, [session('a-1', 100, { design }), session('a-2', 200, { design })]);
+      await linkTo('a-1', []);
+      const { manager } = harness([A]);
+      expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.design?.superseded])).toEqual([['a-2', true], ['a-1', undefined]]);
+      const changes: unknown[] = [];
+      manager.onDidChangeSessions((change) => changes.push(change));
+
+      await linkTo('a-2', ['a-1']);
+      await manager.addOrUpdateSession('a-1', A.key);
+      await manager.addOrUpdateSession('a-2', A.key);
+
+      expect(changes).toEqual([{ projectKey: A.key }, { projectKey: A.key }]);
+      expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.design])).toEqual([['a-2', design], ['a-1', { ...design, superseded: true }]]);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
 

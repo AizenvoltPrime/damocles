@@ -3,12 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs script, no types
-import { browserHelperProblems, cliScriptProblems, credentialRelayProblems, devcontainersCliProblems, dynamicLinkage, loadAlignProblems, muslLinkageProblems, selfTestCommand, selfTestPlan, serverVersionProblems } from '../verify-server-package.mjs';
-// @ts-expect-error -- plain .mjs script, no types
-import { packageBuild, serverPackageEntry } from '../build-server.mjs';
-// @ts-expect-error -- plain .mjs script, no types
-import { readTarGz, readZip, tarGz, zip } from '../server-archive.mjs';
+import { browserHelperProblems, cliScriptProblems, credentialRelayProblems, devcontainersCliProblems, distScopeProblems, dynamicLinkage, loadAlignProblems, muslLinkageProblems, selfTestCommand, selfTestPlan, serverVersionProblems } from '../verify-server-package.ts';
+import { packageBuild, serverPackageEntry } from '../build-server.ts';
+import { readTarGz, readZip, tarGz, zip } from '../server-archive.ts';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -17,7 +14,7 @@ afterEach(() => {
 
 describe('selfTestPlan', () => {
   it('self-tests on the target\'s own machine', () => {
-    for (const mode of ['auto', 'require']) expect(selfTestPlan(mode, 'linux-x64', 'linux-x64')).toEqual({ run: true });
+    for (const mode of ['auto', 'require'] as const) expect(selfTestPlan(mode, 'linux-x64', 'linux-x64')).toEqual({ run: true });
   });
 
   it('fails a required self-test on another machine, which auto only notes', () => {
@@ -127,6 +124,18 @@ describe('the Dev Containers CLI in a server package', () => {
     expect(devcontainersCliProblems([cli[0]!, cli[2]!], '0.90.0')).toEqual(['no node_modules/@devcontainers/cli/dist/spec-node/devContainersSpecCLI.js']);
     expect(devcontainersCliProblems(cli, '0.91.0')).toEqual(['@devcontainers/cli is 0.90.0, package-lock.json pins 0.91.0']);
     expect(devcontainersCliProblems(cli.slice(0, 2), '0.90.0')).toEqual(['@devcontainers/cli is missing, package-lock.json pins 0.90.0']);
+  });
+});
+
+describe('the module scope of a server package dist/', () => {
+  const entry = (text: string) => ({ path: 'dist/package.json', data: Buffer.from(text, 'utf8') });
+
+  // the shipped root package.json says "type": "module", which would make Node load every .js bundle as ESM
+  it('needs dist/package.json to declare the bundles CommonJS', () => {
+    expect(distScopeProblems([entry('{"type":"commonjs"}\n')])).toEqual([]);
+    expect(distScopeProblems([])).toEqual(['no dist/package.json']);
+    expect(distScopeProblems([entry('{"type":"module"}')])).toEqual(['dist/package.json declares type module, not commonjs']);
+    expect(distScopeProblems([entry('{}')])).toEqual(['dist/package.json declares type none, not commonjs']);
   });
 });
 

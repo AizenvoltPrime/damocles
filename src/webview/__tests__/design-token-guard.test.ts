@@ -34,3 +34,13 @@ describe('design token guard', () => {
     expect(fs.readFileSync(TOKENS_CSS, 'utf8')).toMatch(/--d-bg: var\(--vscode-editor-background\)/);
   });
 });
+
+// PD-48: every design surface reads --d-design; desktop's palettes reach AA for it in palette-contrast.test.ts.
+describe('design hue', () => {
+  it('maps --d-design from a --vscode-* color and derives --d-on-design and --d-design-text from it', () => {
+    const css = fs.readFileSync(TOKENS_CSS, 'utf8');
+    expect(css).toMatch(/--d-design: var\(--vscode-[a-zA-Z-]+/);
+    expect(css).toMatch(/--d-on-design: color\(from var\(--d-design\) srgb-linear/);
+    expect(css).toContain('--d-design-text: color-mix(in srgb, var(--d-design) 70%, var(--d-text));');
+  });
+});

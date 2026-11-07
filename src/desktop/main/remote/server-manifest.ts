@@ -1,5 +1,5 @@
 // The server packages' manifest, dist/desktop/server-manifest.json beside main.js: inside app.asar in a packaged app, written
-// by scripts/build-server.mjs (the release from all eight packages, a dev build from the local ones).
+// by scripts/build-server.ts (the release from all eight packages, a dev build from the local ones).
 import * as path from 'node:path';
 import { readFile } from '../../../core/resource-fs';
 import { parseServerManifest, SERVER_TARGETS, type ServerManifest } from './server-manifest-format';

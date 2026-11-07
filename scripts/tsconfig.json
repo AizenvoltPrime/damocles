@@ -1,0 +1,37 @@
+// Type-checks the build, release and dev scripts, esbuild.config.ts among them, as Node runs them: Node strips their
+// types and resolves their imports itself, so `nodenext` resolution, explicit `.ts` specifiers, erasable syntax only, and
+// no `baseUrl` or `paths`, which Node does not read. Standalone rather than extending ../tsconfig.json, whose bundler
+// resolution, aliases and emit options all do not apply. The strictness flags below match it, except the syntactic
+// noPropertyAccessFromIndexSignature, off as in tsconfig.tests.json, which also checks these files through the tests.
+// scripts/__tests__ run under Vitest and are checked by tsconfig.tests.json, except the e2e support tests the e2e tsconfigs
+// list; demo-video is its own project.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    // DOM: smoke-desktop/helpers.ts's page.evaluate callbacks run in the page and read window and document.
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noUncheckedSideEffectImports": true,
+
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["**/*.ts", "../esbuild.config.ts"],
+  "exclude": ["__tests__", "demo-video"]
+}

@@ -20,6 +20,10 @@ import { claimStoredSession } from "./session-ownership";
 import { partialStreamKey } from "./partial-stream";
 import { PanelWorktrees, type PanelWorktreeStateEvent, type WorktreeOptIn } from "./panel-worktrees";
 import { sessionLeaseBlocker } from "../pi-session/session-store/session-lease";
+import { resolvePiSessionFile } from "../pi-session/session-store/reading";
+import type { DesignSeed, SessionShown } from "../design/tools/start-design";
+import { designChatName } from "../../shared/types/design";
+import { isFileBelow } from "../paths";
 import { folderContains } from "../worktrees/records";
 import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
 import type { UserContentBlock } from "../../shared/types/content";
@@ -105,6 +109,7 @@ export interface PanelManagerConfig {
     panelId: string,
     folder: FolderTarget,
     forkContext?: ForkContext,
+    design?: DesignSeed,
   ) => Promise<ChatSession>;
   folderRegistry: WorkspaceFolderRegistry;
   /** Re-push what depends on the panel's folder (slash commands, tools, MCP, Compass, @-mention files). */
@@ -142,6 +147,8 @@ interface HostSetUpOptions {
   worktree?: { readonly projectKey: string; readonly worktreeId: string };
   // what the chat's ended core published (a desktop engine restart), in place of the folder's defaults
   permissions?: ChatPermissions;
+  // a new design chat (PD-50): the source's folder and settings, never its permissions
+  design?: DesignSeed;
 }
 
 export class PanelManager {
@@ -254,10 +261,13 @@ export class PanelManager {
   async mentionFile(panelId: string, target: MentionTarget): Promise<boolean> {
     const instance = this.panels.get(panelId);
     if (!instance) throw new Error('The chat is not loaded');
+    // A design chat's preview tab names a file of its own design folder, which lies outside the chat's working folder (PD-9).
+    const designFolder = instance.session.design.role()?.folder;
+    const inDesign = designFolder !== undefined && 'path' in target && isFileBelow(designFolder, target.path);
     return mentionInChat(
       { folders: this.folderRegistry, confinement: this.platform.confinement, notifications: this.platform.notifications, post: (message) => this.postMessage(instance.host, message) },
       target,
-      instance.folder.fsPath,
+      inDesign ? designFolder : instance.folder.fsPath,
     );
   }
 
@@ -449,6 +459,80 @@ export class PanelManager {
     }
   }
 
+  /**
+   * Opens a design chat beside its parent (PD-1, PD-50): the parent's working folder, its chat worktree included, its model
+   * and thinking level, not its permissions. Resolves the new chat's session id once its session started.
+   */
+  async showDesign(args: { readonly sourcePanelId: string; readonly seed: DesignSeed }): Promise<string> {
+    const source = this.panels.get(args.sourcePanelId);
+    if (!source) throw new Error("The main chat is not loaded");
+    const live = source.session.worktree.inLiveWorktree();
+    const host = this.platform.window.createPanel({
+      kind: "chat",
+      // the name its seed gives the session, which a host listing chats shows until the stored chat is listed
+      title: designChatName(args.seed.title),
+      localResourceRoots: this.getLocalResourceRoots(),
+      parent: source.host,
+      ...(source.host.column !== undefined ? { column: source.host.column } : {}),
+    });
+    this.showChatPage(host);
+    host.setIcon(path.join(this.resourceRoot, "resources", "icon.png"));
+    const panelId = await this.trackOpening(this.initializeHost(host, {
+      sourcePanelId: args.sourcePanelId,
+      design: args.seed,
+      ...(live && source.folder.ownerKey !== undefined ? { worktree: { projectKey: source.folder.ownerKey, worktreeId: live.id } } : {}),
+    }));
+    const instance = this.panels.get(panelId);
+    if (!instance) throw new Error("The design chat closed before it started");
+    await instance.session.initializeEarly();
+    const sessionId = instance.session.currentSessionId;
+    if (sessionId === null) throw new Error("The design chat did not start");
+    return sessionId;
+  }
+
+  /** Publishes each design chat's state again, whose header names its main chat by that chat's current stored title. */
+  republishDesignChats(): void {
+    for (const instance of this.panels.values()) if (instance.session.design.isDesignChat()) instance.session.publishDesignState();
+  }
+
+  /**
+   * Shows the chat holding stored session `sessionId`: the panel that holds it, else a new panel resumed onto it, as the session
+   * list would. `elsewhere` when another process holds it, which this one cannot show; `missing` when its file is gone from `cwd`.
+   */
+  async showSession(sessionId: string, cwd: string): Promise<SessionShown> {
+    const holder = [...this.panels.values()].find((instance) => instance.session.holdsSession(sessionId));
+    if (holder) {
+      holder.host.reveal();
+      return "shown";
+    }
+    if (sessionLeaseBlocker(sessionId)?.kind === "other-process") return "elsewhere";
+    if ((await resolvePiSessionFile(cwd, sessionId)) === null) return "missing";
+    await this.openStored(sessionId);
+    return "shown";
+  }
+
+  /** Opens closed stored session `sessionId` in a new panel, through the session list's resume. */
+  async openStored(sessionId: string, folderKey?: string): Promise<string> {
+    const panelId = await this.trackOpening(this.openPanelOn(folderKey));
+    const instance = this.panels.get(panelId);
+    // Posts before the webview's first `ready` are dropped, so the resume waits for it.
+    await instance?.webviewReady;
+    if (!instance || this.panels.get(panelId) !== instance) return panelId;
+    await this.handleWebviewMessage({ type: "resumeSession", sessionId }, panelId);
+    return panelId;
+  }
+
+  private async openPanelOn(folderKey: string | undefined): Promise<string> {
+    const host = await this.platform.window.createPanelInOwnColumn({
+      kind: "chat",
+      title: "Damocles",
+      localResourceRoots: this.getLocalResourceRoots(),
+    });
+    this.showChatPage(host);
+    host.setIcon(path.join(this.resourceRoot, "resources", "icon.png"));
+    return this.initializeHost(host, folderKey !== undefined ? { initialFolderKey: folderKey } : undefined);
+  }
+
   async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
     this.showChatPage(host);
     try {
@@ -577,8 +661,9 @@ export class PanelManager {
 
     const permissionHandler = new PermissionHandler(this.platform, panelId, settingsFolderOf(folder));
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
-    // Before the session is created, which takes its tool set from the mode.
-    const inherited = source?.permissionHandler.getPermissions() ?? options?.permissions;
+    // Before the session is created, which takes its tool set from the mode. A design chat inherits no permissions (PD-50).
+    const inherited = options?.design ? undefined : source?.permissionHandler.getPermissions() ?? options?.permissions;
+    if (options?.design) permissionHandler.setPermissionMode("default");
     if (inherited) {
       permissionHandler.setPermissionMode(inherited.permissionMode);
       permissionHandler.setDangerouslySkipPermissions(inherited.dangerouslySkipPermissions);
@@ -614,7 +699,7 @@ export class PanelManager {
 
     let session: ChatSession;
     try {
-      session = await this.createSessionForPanel(host, permissionHandler, panelId, folder, options?.forkContext);
+      session = await this.createSessionForPanel(host, permissionHandler, panelId, folder, options?.forkContext, options?.design);
     } catch (err) {
       // Nothing registered the panel yet, so its worktree hold and what it set up go here.
       this.worktrees.panelClosed(panelId);
@@ -844,6 +929,9 @@ export class PanelManager {
     // A session that replaced another (a folder switch, a recovery) names the same panel in its lease owner records.
     session.setPanelToken(instance.panelToken);
     this.worktrees.bind(panelId, instance);
+    // A design chat's mode is fixed at default (PD-25).
+    permissionHandler.setModeFixed(() => session.design.role() !== undefined);
+    permissionHandler.setDesignQuestionFolder(() => session.design.role()?.folder);
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
       await this.sendCurrentSettings(host, permissionHandler, instance.folder);
@@ -1404,12 +1492,21 @@ export class PanelManager {
     });
   }
 
-  newSession(): void {
-    for (const [, instance] of this.panels) {
-      instance.session.reset();
+  newSession(): Promise<void> {
+    return this.resetConversations({ type: "sessionCleared" });
+  }
+
+  /** Starts a new conversation in every panel but a design chat's, which keeps its conversation (D70), and posts `cleared` to each panel reset. */
+  async resetConversations(cleared: ExtensionToWebviewMessage): Promise<void> {
+    await Promise.all([...this.panels].map(async ([panelId, instance]) => {
+      const session = instance.session;
+      if (await session.isDesignConversation()) return;
+      // The check awaited a file read: the panel may have closed, replaced its session, or started on a design chat meanwhile.
+      if (this.panels.get(panelId) !== instance || instance.session !== session || session.design.isDesignChat()) return;
+      session.reset();
       this.postMessage(instance.host, { type: "processing", isProcessing: false });
-      this.postMessage(instance.host, { type: "sessionCleared" });
-    }
+      this.postMessage(instance.host, cleared);
+    }));
   }
 
   cancelSession(): void {

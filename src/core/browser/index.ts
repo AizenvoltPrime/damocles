@@ -1448,8 +1448,10 @@ export class BrowserService {
 
     // Last tab gone → end the whole session (unless we are already tearing down).
     if (this.pages.size === 0) {
+      // On openChain, so a launch asked meanwhile waits for this context to close instead of starting Chrome on its profile beside it.
       if (!this.closing) {
-        this.close().catch((err) =>
+        const close = this.openChain.then(() => (this.pages.size === 0 && !this.closing ? this.close() : undefined));
+        this.openChain = close.catch((err) =>
           log(`[Browser] Close after last tab failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       }

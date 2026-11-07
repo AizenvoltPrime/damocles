@@ -202,8 +202,9 @@ describe('buildCustomTools — behavior', () => {
       activatePlanMode: vi.fn(async () => undefined),
     } as unknown as PermissionHandler;
     const { tool } = build(ph);
-    const result = await tool('ExitPlanMode').execute('id', {}, undefined, undefined, { sessionManager: { getBranch: () => [] } } as never);
-    expect(result).toMatchObject({ isError: true, details: { planVersion: 1 } });
+    const result = await tool('ExitPlanMode').execute('id', {}, undefined, undefined, { sessionManager: { getBranch: () => [], getSessionId: () => 'session-1' } } as never);
+    // A chat with no design link records no design version, on a sent-back plan too.
+    expect(result).toMatchObject({ isError: true, details: { planVersion: 1, designVersion: null } });
     expect(JSON.stringify(result.content)).toContain(FEEDBACK_MARKER);
   });
 

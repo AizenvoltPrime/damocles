@@ -262,13 +262,13 @@ export class RepoManager {
   /** Run a git subcommand against this repo with the portable config and pinned environment. */
   private git(
     args: string[],
-    options?: { input?: string; env?: ExecEnv; config?: readonly string[] },
+    options?: { input?: string; env?: ExecEnv; config?: readonly string[]; cwd?: string },
   ): Promise<{ stdout: string; stderr: string }> {
     return exec(
       gitExecutable,
       [...PORTABLE_CONFIG, ...(options?.config ?? []), ...args],
       options?.env ?? this.env,
-      this.workTree,
+      options?.cwd ?? this.workTree,
       undefined,
       options?.input,
       this.holdsLock ? this.trackChild : undefined,
@@ -1071,6 +1071,17 @@ export class RepoManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Writes `commit`'s tree into the empty folder `workTree` through the throwaway index `indexFile`, never the shared
+   * index or this repo's own work tree. The caller holds the lock.
+   */
+  async checkoutTreeLocked(commit: string, workTree: string, indexFile: string): Promise<void> {
+    if (!isHexCommit(commit)) throw new Error(`refusing to check out a non-commit ref: ${commit}`);
+    const env: ExecEnv = { GIT_DIR: this.gitDir, GIT_WORK_TREE: workTree, GIT_INDEX_FILE: indexFile };
+    await this.git(['read-tree', commit], { env, cwd: workTree });
+    await this.git(['checkout-index', '--all'], { env, cwd: workTree });
   }
 
   /** `safeCheckoutLocked` under this repo's lock. */

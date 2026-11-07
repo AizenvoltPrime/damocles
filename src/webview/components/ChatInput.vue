@@ -4,14 +4,16 @@ import { toast } from "vue-sonner";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
-import type { UserContentBlock } from "@shared/types/content";
-import { ArrowUp, AtSign, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, Lock, LockOpen, Mic, Paperclip, Pencil } from "lucide-vue-next";
+import type { UserContentBlock, UserImageOrigin } from "@shared/types/content";
+import type { DesignPreviewImage } from "@shared/types/design";
+import { ArrowUp, AtSign, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, Lock, LockOpen, Mic, Palette, Paperclip, Pencil } from "lucide-vue-next";
 import { FILE_DRAG_MIME, parseFileDragPayload } from "@shared/file-drag";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
 import { useImageAttachments, type ImageAttachment } from "@/composables/useImageAttachments";
 import { useElementAttachments, elementAttachmentBus } from "@/composables/useElementAttachments";
+import { takeCapturedImages } from "@/composables/capturedImageQueue";
 import { useVoiceInput } from "@/composables/useVoiceInput";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { DOCK_PROMPT_SELECTOR } from "@/composables/useDockPrompt";
@@ -20,6 +22,8 @@ import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import type { CpuFallbackReason } from "@/stores/useVoiceJarvisStore";
 import { useStreamingStore } from "@/stores/useStreamingStore";
+import { useDesignStore } from "@/stores/useDesignStore";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { parseSteerCommand, type SteerRequest } from "@/utils/steer-command";
 import { visibleRect } from "@/utils/visible-rect";
 import AtMentionPopup from "./AtMentionPopup.vue";
@@ -38,6 +42,7 @@ const { rt } = useLocalizedText();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 const streamingStore = useStreamingStore();
+const designStore = useDesignStore();
 
 const props = defineProps<{
   isProcessing: boolean;
@@ -94,6 +99,7 @@ const {
   addFromFile: addImageFromFile,
   addFromClipboard: addImageFromClipboard,
   addFromBlock: addImageFromBlock,
+  addCaptured: addCapturedImageAttachment,
   remove: removeImage,
   clear: clearImages,
   toContentBlocks: imagesToContentBlocks,
@@ -339,10 +345,16 @@ function appendPrompt(text: string): void {
   });
 }
 
+function addCapturedImage(image: DesignPreviewImage, origin: UserImageOrigin): void {
+  const result = addCapturedImageAttachment(image, origin);
+  if (result.error) toast.error(result.error);
+  else focus();
+}
+
 // No text and nothing attached: the composer as it mounts, whose height the resume placeholder takes.
 const isEmpty = computed(() => inputText.value === "" && !hasImageAttachments.value && !hasElementAttachments.value);
 
-defineExpose({ focus, setInput, prependInput, submit: handleSend, sendPrompt, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued, appendPrompt, isEmpty });
+defineExpose({ focus, setInput, prependInput, submit: handleSend, sendPrompt, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued, appendPrompt, addCapturedImage, isEmpty });
 
 // One composer per page, so fixed ids tie the textarea to whichever autocomplete list is open.
 const MENTION_LIST_ID = "composer-mentions";
@@ -370,7 +382,12 @@ const modeOrder = computed<PermissionMode[]>(() => ["default", "acceptEdits", "p
 const currentModeConfig = computed(() => modeConfig.value[props.permissionMode]);
 const modeIndex = computed(() => Math.max(0, modeOrder.value.indexOf(props.permissionMode)));
 
+// A design chat's mode is fixed at default (PD-25): its chip names Design and never cycles.
+const designChat = computed(() => designStore.design !== null);
+const designModeHintId = useId();
+
 function cycleMode() {
+  if (designChat.value) return;
   const order = modeOrder.value;
   const currentIndex = order.indexOf(props.permissionMode);
   const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % order.length;
@@ -492,10 +509,11 @@ function removeTerminalAttachment(id: string) {
   postMessage({ type: "removeTerminalAttachment", id });
 }
 
-/** Sends `prompt` on its own; the draft and its attachments stay staged in the box. */
-function sendPrompt(prompt: string) {
-  if (settingsStore.workspaceFolderSwitchPending || props.sendBlocked) return;
+/** Sends `prompt` on its own; the draft and its attachments stay staged in the box. False when the send was blocked. */
+function sendPrompt(prompt: string): boolean {
+  if (settingsStore.workspaceFolderSwitchPending || props.sendBlocked) return false;
   dispatch(prompt);
+  return true;
 }
 
 function handleButtonClick() {
@@ -512,6 +530,8 @@ function handleKeydown(event: KeyboardEvent) {
 
   // Only a bare Shift+Tab cycles the mode; Ctrl/Cmd/Alt+Shift+Tab belong to the host (previous tab or editor).
   if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    // A design chat's mode never cycles, so there Shift+Tab moves focus back.
+    if (designChat.value) return;
     event.preventDefault();
     cycleMode();
     return;
@@ -620,6 +640,7 @@ let unsubBus: (() => void) | null = null;
 onMounted(() => {
   window.addEventListener("keydown", handleGlobalKeydown);
   unsubBus = elementAttachmentBus.on(addElement);
+  for (const { image, origin } of takeCapturedImages()) addCapturedImage(image, origin);
 });
 
 onUnmounted(() => {
@@ -746,7 +767,40 @@ onUnmounted(() => {
 
       <!-- The row wraps, so it never overflows: labels fold through the container breakpoints, then whole controls move down. -->
       <div class="relative flex flex-wrap items-center gap-1 px-2 pb-2 pt-1.5">
+        <!-- The mode control, which a design chat holds at default: disabled, yet focusable so its tooltip shows. -->
+        <Tooltip v-if="designChat">
+          <TooltipTrigger as-child>
+            <button
+              type="button"
+              aria-disabled="true"
+              class="d-tone-design flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-full border border-(--tone)/35 bg-(--tone)/10 py-0 ps-0.75 pe-2.5 text-xs font-medium outline-none focus-visible:ring-1 focus-visible:ring-(--d-design) @max-[28.75rem]:pe-0.75"
+              :aria-describedby="designModeHintId"
+              data-testid="composer-mode"
+              data-mode="design"
+            >
+              <span
+                class="flex size-5 items-center justify-center rounded-full bg-(--tone)/18 text-(--d-design)"
+                aria-hidden="true"
+              >
+                <Palette class="size-3" />
+              </span>
+              <span class="whitespace-nowrap @max-[28.75rem]:sr-only">{{ t("design.mode.label") }}</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent
+            side="top"
+            data-testid="composer-mode-design-tooltip"
+          >
+            {{ t("design.mode.tooltip") }}
+          </TooltipContent>
+        </Tooltip>
+        <span
+          v-if="designChat"
+          :id="designModeHintId"
+          class="sr-only"
+        >{{ t("design.mode.tooltip") }}</span>
         <button
+          v-else
           type="button"
           class="d-press flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-(--d-border2) py-0 ps-0.75 pe-2.5 text-xs font-medium transition-colors duration-200 hover:bg-(--d-hover) @max-[28.75rem]:pe-0.75"
           :class="currentModeConfig.color"

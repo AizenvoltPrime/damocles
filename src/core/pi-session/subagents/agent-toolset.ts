@@ -28,7 +28,7 @@
  *    get none
  *  - disallowed_tools subtracts (mapped) from the resolved set
  *  - the three subagent tools are always removed (no recursion — FR-11)
- *  - GenerateImage is always removed (image generation is main-session only)
+ *  - GenerateImage and the design tools are always removed (both are main-session only)
  *  - the plan-mode tools (EnterPlanMode/ExitPlanMode) are always removed — plan mode is a top-level
  *    panel concern; a subagent must never enter or exit it
  *
@@ -47,6 +47,7 @@ import {
   TOOL_GENERATE_IMAGE,
 } from '../../../shared/tool-names';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
+import { DESIGN_PI_TOOL_NAMES } from '../../design/rule-set';
 import { isNestedMcpName } from '../mcp/naming';
 import type { AgentConfig } from './types';
 
@@ -128,7 +129,7 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
 
   // Image generation is main-session only and no nested build carries its definition. Stripped before
   // `readOnly` is computed, so naming it cannot lift a read-only agent's shell restriction.
-  names = names.filter((n) => n !== TOOL_GENERATE_IMAGE);
+  names = names.filter((n) => n !== TOOL_GENERATE_IMAGE && !DESIGN_PI_TOOL_NAMES.has(n));
 
   // Plan mode is a top-level panel concern owned by the primary session; a subagent must never enter
   // or exit plan mode, so strip these even when the parent inherits them (e.g. while the panel is in

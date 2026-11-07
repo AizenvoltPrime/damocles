@@ -30,6 +30,8 @@ export interface StructuredCompletionRequest {
   systemPrompt: string;
   /** The user-role content driving the completion. */
   userMessage: string;
+  /** Images sent after the text, in order; the caller checks that the model reads images. */
+  userImages?: readonly { data: string; mimeType: string }[];
   /** Name of the single terminating tool the model is asked to call with the structured result. */
   outputToolName: string;
   /** Description shown to the model for the terminating tool. */
@@ -225,7 +227,14 @@ export async function runStructuredCompletion<T>(
   const tool: Tool = { name: req.outputToolName, description: req.outputToolDescription, parameters: req.schema as unknown as TSchema };
   const context: Context = {
     systemPrompt: req.systemPrompt,
-    messages: [{ role: 'user', content: [{ type: 'text', text: buildUserTurn(req.systemPrompt, req.userMessage, req.outputToolName) }], timestamp: Date.now() }],
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: buildUserTurn(req.systemPrompt, req.userMessage, req.outputToolName) },
+        ...(req.userImages ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType })),
+      ],
+      timestamp: Date.now(),
+    }],
     tools: [tool],
   };
   const options: PiCompleteOptions = {

@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
-import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
+import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.ts';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
 import { MATERIAL_ICON_DIR, materialIconNames } from '../../src/desktop/shell/material-icons';
 import { coreQuitLog, logBeforeQuit, mainLog } from './support/app';
@@ -252,7 +252,7 @@ test('the formatter host loads from the build and formats a file with the projec
   seedTrustedProject(home);
   const packageDir = path.join(home.project, 'node_modules', 'prettier');
   fs.mkdirSync(packageDir, { recursive: true });
-  fs.copyFileSync(path.join(__dirname, 'fixtures', 'prettier-stub', 'index.js'), path.join(packageDir, 'index.js'));
+  fs.copyFileSync(path.join(import.meta.dirname, 'fixtures', 'prettier-stub', 'index.js'), path.join(packageDir, 'index.js'));
   fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ name: 'prettier', version: '3.3.3', main: 'index.js' }));
   fs.writeFileSync(path.join(home.project, 'a.ts'), 'const a=1\n');
   const { app } = await launch();

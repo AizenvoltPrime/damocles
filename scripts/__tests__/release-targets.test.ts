@@ -2,20 +2,18 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { parse } from 'yaml';
-// @ts-expect-error -- plain .mjs helper, no types
-import { RELEASE_TARGETS, MIN_VSIX_BYTES, DESKTOP_TARGETS, DESKTOP_ARTIFACT_PATTERN, desktopArtifacts, desktopArtifactProblems } from '../release-targets.mjs';
+import { RELEASE_TARGETS, MIN_VSIX_BYTES, DESKTOP_TARGETS, DESKTOP_ARTIFACT_PATTERN, desktopArtifacts, desktopArtifactProblems, type DesktopTargetSpec, type ReleaseTargetSpec } from '../release-targets.ts';
 
 /**
- * `scripts/release-targets.mjs` and `.github/workflows/release.yml` describe the same release matrix,
+ * `scripts/release-targets.ts` and `.github/workflows/release.yml` describe the same release matrix,
  * and the workflow cannot import the module (Actions resolves `strategy.matrix` before any JS runs).
  * Drift is otherwise silent and only shows up as a released artifact missing its ripgrep binary, or a
  * desktop installer the release never attaches, so this is the seam that reports it.
  */
 
-type Step = { id?: string; name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string>; 'timeout-minutes'?: number };
-type Matrix = { include: Record<string, string | number | boolean>[]; target?: string[]; shard?: number[]; exclude?: { target: string; shard: number }[] };
+type Step = { id?: string; name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number };
+type Matrix = { include: Record<string, string | number | boolean>[]; target?: string[]; shard?: number[]; shards?: number[]; exclude?: { target: string; shard: number }[] };
 type Job = { needs?: string | string[]; if?: string; env?: Record<string, string>; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: Matrix }; 'timeout-minutes'?: number };
-type DesktopSpec = { runner: string; os: string; builder: string; arch: string; channel?: string; appDir: string; executable: string; artifacts: string[] };
 
 const workflowText = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
 const workflow = parse(workflowText) as { jobs: Record<string, Job> };
@@ -26,7 +24,8 @@ const stepJobs: [string, Job][] = Object.entries(workflow.jobs).flatMap(([name, 
   const called = parse(readFileSync(join(__dirname, '..', '..', uses), 'utf8')) as { jobs: Record<string, Job> };
   return Object.entries(called.jobs).map(([inner, calledJob]): [string, Job] => [`${name}/${inner}`, calledJob]);
 });
-const desktopTargets = DESKTOP_TARGETS as Record<string, DesktopSpec>;
+const desktopTargets: Record<string, DesktopTargetSpec> = DESKTOP_TARGETS;
+const releaseTargets: Record<string, ReleaseTargetSpec> = RELEASE_TARGETS;
 
 function include(job: string): Record<string, string | number | boolean>[] {
   const legs = workflow.jobs[job]?.strategy?.matrix.include;
@@ -69,7 +68,7 @@ function globs(lines: string[]): RegExp[] {
   return lines.map((glob) => new RegExp(`^${glob.split('/').pop()!.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`));
 }
 
-describe('release-targets.mjs mirrors the release workflow VSIX matrix', () => {
+describe('release-targets.ts mirrors the release workflow VSIX matrix', () => {
   const legs = include('package');
 
   it('covers exactly the same targets', () => {
@@ -78,7 +77,7 @@ describe('release-targets.mjs mirrors the release workflow VSIX matrix', () => {
 
   it('agrees on every ripgrep package and binary name', () => {
     for (const leg of legs) {
-      const spec = RELEASE_TARGETS[leg.target as string];
+      const spec = releaseTargets[leg.target as string]!;
       expect({ target: leg.target, rgPkg: leg.rgPkg, rgBin: leg.rgBin }).toEqual({ target: leg.target, rgPkg: spec.rgPkg, rgBin: spec.rgBin });
     }
   });
@@ -101,7 +100,7 @@ describe('release-targets.mjs mirrors the release workflow VSIX matrix', () => {
   });
 });
 
-describe('release-targets.mjs mirrors the release workflow desktop matrix', () => {
+describe('release-targets.ts mirrors the release workflow desktop matrix', () => {
   const legs = include('package-desktop');
 
   it('covers exactly the same targets', () => {
@@ -411,7 +410,7 @@ describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => 
     expect(sign).toMatchObject({ type: 'boolean', default: false });
     expect(job.env?.SIGN_WINDOWS).toBe("${{ github.event_name == 'push' || inputs.sign }}");
     const signPathSteps = job.steps.filter((step) =>
-      step.uses?.startsWith('signpath/') || step.with?.name?.startsWith('unsigned-win-') || step.run?.includes('check-authenticode.ps1') || step.run?.includes('signed-windows-feed.mjs --rewrite') || step.id === 'collect-executables');
+      step.uses?.startsWith('signpath/') || step.with?.name?.startsWith('unsigned-win-') || step.run?.includes('check-authenticode.ps1') || step.run?.includes('signed-windows-feed.ts --rewrite') || step.id === 'collect-executables');
     expect(signPathSteps).toHaveLength(8);
     for (const step of signPathSteps) expect({ name: step.name, if: step.if }).toEqual({ name: step.name, if: "env.SIGN_WINDOWS == 'true'" });
   });
@@ -443,7 +442,7 @@ describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => 
 
   it('restores the grammars and wake models before the package check, which compares the apps with them', () => {
     const restore = job.steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'fetched-assets');
-    const check = job.steps.findIndex((step) => step.run?.trim().startsWith('node scripts/verify-desktop-package.mjs'));
+    const check = job.steps.findIndex((step) => step.run?.trim().startsWith('node scripts/verify-desktop-package.ts'));
     expect(restore).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(restore);
   });
@@ -492,7 +491,7 @@ describe('sign-browser-helper signs the Windows server packages\' browser.exe (d
     expect(requests[0]!.with!['signing-policy-slug']).toBe('${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}');
     expect(requests[0]!.with!['github-artifact-id']).toBe('${{ steps.upload-unsigned-browser-helpers.outputs.artifact-id }}');
     expect(requests[0]!.with!.parameters?.trim()).toBe('version: "${{ steps.version.outputs.version }}"');
-    expect(job.steps.find((step) => step.id === 'build-browser-helpers')?.run).toBe('node scripts/browser-helper.mjs --out browser-helpers');
+    expect(job.steps.find((step) => step.id === 'build-browser-helpers')?.run).toBe('node scripts/browser-helper.ts --out browser-helpers');
     expect(job.env).toMatchObject({ SIGNPATH_SIGNING_POLICY_SLUG: workflow.jobs['sign-windows']!.env!.SIGNPATH_SIGNING_POLICY_SLUG, SIGN_WINDOWS: workflow.jobs['sign-windows']!.env!.SIGN_WINDOWS });
   });
 
@@ -515,7 +514,7 @@ describe('sign-browser-helper signs the Windows server packages\' browser.exe (d
     const build = server.steps.find((step) => step.if === '${{ !matrix.alpine }}' && step.run?.includes('build:server'))!;
     expect(build.run).toContain('helper=(--signed-browser-helper "signed-browser-helpers/$BROWSER_HELPER_ARCH/browser.exe")');
     expect(build.run).toMatch(/npm run build:server -- [^\n]*"\$\{helper\[@\]\}"/);
-    expect(build.run).toMatch(/verify-server-package\.mjs [^\n]*"\$\{helper\[@\]\}"/);
+    expect(build.run).toMatch(/verify-server-package\.ts [^\n]*"\$\{helper\[@\]\}"/);
   });
 });
 
@@ -571,7 +570,7 @@ describe('DESKTOP_TARGETS agrees with electron-builder.yml', () => {
 describe('the verify job', () => {
   // A tag can name a commit no pull request checked, so the release checks the wire's snapshot itself.
   it('checks the committed protocol snapshot against the contracts', () => {
-    expect(workflow.jobs.verify!.steps.some((step) => step.run?.trim() === 'node scripts/protocol-compat.mjs --check')).toBe(true);
+    expect(workflow.jobs.verify!.steps.some((step) => step.run?.trim() === 'node scripts/protocol-compat.ts --check')).toBe(true);
   });
 });
 

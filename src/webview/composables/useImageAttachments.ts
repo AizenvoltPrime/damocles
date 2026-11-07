@@ -2,9 +2,11 @@ import { ref, computed } from 'vue';
 import {
   isImageMediaType,
   MAX_IMAGES_PER_MESSAGE,
-  type ImageBlock,
   type ImageMediaType,
+  type UserImageBlock,
+  type UserImageOrigin,
 } from '@shared/types/content';
+import type { DesignPreviewImage } from '@shared/types/design';
 import { i18n } from '@/i18n';
 import { resizeImageForSDK } from '@/utils/imageUtils';
 
@@ -16,6 +18,8 @@ export interface ImageAttachment {
   fileName?: string;
   width: number;
   height: number;
+  /** Where Damocles made the image (PD-40); absent for one the user brought (file, paste, drop). */
+  origin?: UserImageOrigin;
 }
 
 const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -98,11 +102,28 @@ export function useImageAttachments() {
   }
 
   /** Re-attach an image a message already carried, so already resized for the SDK. Skipped past the per-message cap. */
-  async function addFromBlock(block: ImageBlock): Promise<void> {
+  async function addFromBlock(block: UserImageBlock): Promise<void> {
     const dataUrl = `data:${block.source.media_type};base64,${block.source.data}`;
     const { width, height } = await loadDimensions(dataUrl).catch(() => ({ width: 0, height: 0 }));
     if (!canAddMore.value) return;
-    attachments.value.push({ id: generateId(), dataUrl, base64Data: block.source.data, mediaType: block.source.media_type, width, height });
+    attachments.value.push({ id: generateId(), dataUrl, base64Data: block.source.data, mediaType: block.source.media_type, width, height, ...(block.origin && { origin: block.origin }) });
+  }
+
+  /** An image main captured for this composer (the design preview's Screenshot); main bounds its size. */
+  function addCaptured(image: DesignPreviewImage, origin: UserImageOrigin): { success: boolean; error?: string } {
+    if (!canAddMore.value) {
+      return { success: false, error: i18n.global.t('imageAttachment.maxAllowed', { n: MAX_IMAGES_PER_MESSAGE }) };
+    }
+    attachments.value.push({
+      id: generateId(),
+      dataUrl: `data:${image.mimeType};base64,${image.data}`,
+      base64Data: image.data,
+      mediaType: image.mimeType,
+      width: image.width,
+      height: image.height,
+      origin,
+    });
+    return { success: true };
   }
 
   function remove(id: string): void {
@@ -116,7 +137,7 @@ export function useImageAttachments() {
     attachments.value = [];
   }
 
-  function toContentBlocks(): ImageBlock[] {
+  function toContentBlocks(): UserImageBlock[] {
     return attachments.value.map((attachment) => ({
       type: "image" as const,
       source: {
@@ -124,6 +145,7 @@ export function useImageAttachments() {
         media_type: attachment.mediaType,
         data: attachment.base64Data,
       },
+      ...(attachment.origin && { origin: attachment.origin }),
     }));
   }
 
@@ -134,6 +156,7 @@ export function useImageAttachments() {
     addFromFile,
     addFromClipboard,
     addFromBlock,
+    addCaptured,
     remove,
     clear,
     toContentBlocks,

@@ -26,6 +26,15 @@ export function fakeViewsElectron(webPreferences: unknown[] = []): Record<string
     readonly send = vi.fn();
     readonly close = vi.fn();
     readonly setZoomFactor = vi.fn();
+    // a design view's (design-previews.ts): its sheets, isolated world, WebRTC policy, reload and frame capture
+    private cssCount = 0;
+    readonly insertCSS = vi.fn(async () => `css-${++this.cssCount}`);
+    readonly removeInsertedCSS = vi.fn(async () => undefined);
+    readonly executeJavaScriptInIsolatedWorld = vi.fn(async () => undefined);
+    readonly setWebRTCIPHandlingPolicy = vi.fn();
+    readonly reload = vi.fn();
+    // an evicted surface captures as an empty image; mockResolvedValueOnce(EMPTY_CAPTURE) gives one
+    readonly capturePage = vi.fn(async () => ({ isEmpty: () => false, getSize: () => ({ width: 640, height: 400 }), resize: () => { throw new Error('no resize below the cap'); }, toJPEG: () => Buffer.from('jpeg'), toPNG: () => Buffer.from('png') }));
     zoom = 1;
     getZoomFactor(): number {
       return this.zoom;
@@ -71,12 +80,25 @@ export function fakeViewsElectron(webPreferences: unknown[] = []): Record<string
       return this.bounds;
     }
   }
+  // a PNG data URL decodes to an image of the size its test names through mockReturnValueOnce, else 100 × 100
+  const nativeImage = {
+    createFromDataURL: vi.fn((url: string) => ({
+      isEmpty: () => !url.startsWith('data:image/png;base64,'),
+      getSize: () => ({ width: 100, height: 100 }),
+      resize: () => { throw new Error('no resize below the cap'); },
+      toPNG: () => Buffer.from('png'),
+    })),
+  };
   return {
     WebContentsView,
+    nativeImage,
     nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() },
     protocol: {},
   };
 }
+
+/** What capturePage answers for a view whose surface Chromium evicted. */
+export const EMPTY_CAPTURE = { isEmpty: () => true, getSize: () => ({ width: 0, height: 0 }), toJPEG: () => Buffer.alloc(0), toPNG: () => Buffer.alloc(0) };
 
 export type FakeContents = DesktopPanel['webContents'] & {
   ipc: EventEmitter & { handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> };

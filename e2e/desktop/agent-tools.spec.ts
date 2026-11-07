@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { writeAsar } from '../../scripts/asar-archive.ts';
 import { appHolders } from './support/app';
 import { ARCHIVE } from './support/asar';
 import { expect, test } from './support/fixtures';

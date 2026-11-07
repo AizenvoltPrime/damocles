@@ -3,8 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs helper, no types
-import { CHECKOUT_SERVER_BIN, DESKTOP_BUNDLES, SERVER_BUNDLES, writeCheckoutBrowserHelper, writeCheckoutServerBin } from '../../esbuild.config.mjs';
+import { CHECKOUT_SERVER_BIN, DESKTOP_BUNDLES, SERVER_BUNDLES, writeCheckoutBrowserHelper, writeCheckoutServerBin } from '../../esbuild.config.ts';
 import { findBash } from '../../src/core/system-tools';
 import { terminalBinFolder } from '../../src/desktop/daemon/server-package';
 

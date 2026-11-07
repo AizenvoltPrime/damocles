@@ -8,6 +8,7 @@ import type { ChatAttachmentInfo } from '@shared/types/chat-attachment';
 import type { SettingsAccountId, SettingsTarget } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { chatOffline } from '@/composables/useChatHost';
+import { useDesignStore } from '@/stores/useDesignStore';
 
 type RewindSource = 'picker' | 'bubble' | null;
 
@@ -81,9 +82,10 @@ export const useUIStore = defineStore('ui', () => {
   // Text the host appended (composerAppend) before the composer mounted, in order.
   const appendedPrompt = shallowRef<string[] | null>(null);
   // Rule 18: a chat whose worktree was deleted is read-only history, so nothing rewinds or forks it; nor does a remote
-  // chat's transcript shown from its mirror while its host is offline, which no core answers.
+  // chat's transcript shown from its mirror while its host is offline, which no core answers; nor a superseded design chat (PD-36).
   const offlineTranscript = chatOffline() !== undefined;
-  const historyReadOnly = computed(() => offlineTranscript || worktree.value?.phase === 'deleted');
+  const designStore = useDesignStore();
+  const historyReadOnly = computed(() => offlineTranscript || worktree.value?.phase === 'deleted' || designStore.design?.superseded === true);
 
   /** `elapsedMs`: how long core says the turn has run, which a joining or reloaded view gets from the live snapshot. */
   function setProcessing(value: boolean, elapsedMs?: number) {

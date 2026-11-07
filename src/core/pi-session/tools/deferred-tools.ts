@@ -1,4 +1,4 @@
-import { BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { BROWSER_PI_TOOL_NAMES, designBrowserAllows } from './browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
@@ -91,10 +91,13 @@ export function userScopeToolNames(reach: UserScopeReach): ReadonlySet<string> {
   return new Set([...browser, ...relayed]);
 }
 
-/** The loadable snapshot: the deferred tools ToolSearch may list and load, those with an unavailable service left out. */
-export function loadableToolNames(deferred: readonly string[], reach: UserScopeReach): string[] {
+/**
+ * The loadable snapshot: the deferred tools ToolSearch may list and load, those with an unavailable service left out, and in
+ * a design chat or an agent it started (`design`) every browser tool that is not a read (PD-25).
+ */
+export function loadableToolNames(deferred: readonly string[], reach: UserScopeReach, design: boolean): string[] {
   const unavailable = userScopeToolNames(reach);
-  return deferred.filter((name) => !unavailable.has(name));
+  return deferred.filter((name) => !unavailable.has(name) && (!design || designBrowserAllows(name)));
 }
 
 /** `(eligible \ deferred) ∪ (deferred ∩ activated)`, in `eligible` order. */

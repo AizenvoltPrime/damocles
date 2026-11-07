@@ -18,6 +18,8 @@ The Restore Options modal offers three actions:
 - **Roll back files**: restore the workspace; the conversation stays linear.
 - **Fork and roll back files**: both.
 
+A design chat offers its own options instead ([Design mode](design-mode.md#rewind-and-fork)).
+
 The "files affected" list is the **live diff** between the workspace now and the checkpoint, so files you deleted since are flagged for restore; clicking a file opens a side-by-side diff.
 
 A rollback first saves your current files, and the Rewind Browser lists each saved state with **Undo rewind** to put them back. A hard restore recreates deleted files and drops ones created after.

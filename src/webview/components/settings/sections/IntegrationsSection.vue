@@ -23,6 +23,7 @@ const groups: { group: SwitchableToolGroup; id: string; name: string }[] = [
   { group: 'compass', id: 'damocles.compass.enabled', name: 'compass' },
   { group: 'browser', id: 'damocles.browser.enabled', name: 'browser' },
   { group: 'web', id: 'damocles.pi.webSearch.enabled', name: 'webSearch' },
+  { group: 'design', id: 'damocles.design.enabled', name: 'design' },
 ];
 const switches = groups.map((entry) => ({ ...entry, control: useToolGroupSwitch(entry.group) }));
 

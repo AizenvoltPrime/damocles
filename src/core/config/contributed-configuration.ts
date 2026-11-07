@@ -1,4 +1,4 @@
-// scripts/generate-settings-schema.mjs imports this file through Node's type stripping: erasable TypeScript and node: imports only.
+// scripts/generate-settings-schema.ts imports this file through Node's type stripping: erasable TypeScript and node: imports only.
 
 interface PropertySchema {
   readonly default?: unknown;

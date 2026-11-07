@@ -69,10 +69,12 @@ export {
   deleteSessionCheckpointRefs,
   folderIdsInSessionFile,
   copyCheckpointRefs,
+  copyPreRewindRefs,
   markForkCopyPending,
   readSkippedManifest,
   type FolderRepoHandle,
 } from './folder-repo';
+export { materializeCheckpoint } from './materialize';
 export { pruneOrphanCheckpointRepos } from './prune';
 export {
   AutoCheckpointProducer,

@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -36,8 +37,7 @@ const addDistro = (app: ElectronApplication, distro: string): Promise<string> =>
 const quote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`;
 
 // The development Electron, which the layout below names Damocles.exe as an installed app's binary
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const ELECTRON = require('electron') as unknown as string;
+const ELECTRON = createRequire(import.meta.url)('electron') as string;
 
 /**
  * An installed app's layout around this checkout: Electron's files hard-linked beside Damocles.exe, resources/bin/damocles

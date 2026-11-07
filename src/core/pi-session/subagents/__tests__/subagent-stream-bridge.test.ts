@@ -198,7 +198,7 @@ describe('SubagentStreamBridge streaming', () => {
     session.emit({ type: 'tool_execution_end', toolCallId: 'thrown', toolName: 'edit', result: { content: [{ type: 'text', text: 'boom' }], details: {} }, isError: true });
 
     expect(sent.filter((m) => m.type === 'toolFailed' || m.type === 'toolMetadata').map((m) => [m.type, (m as { toolUseId: string }).toolUseId])).toEqual([
-      ['toolFailed', 'kept'], ['toolMetadata', 'kept'], ['toolFailed', 'thrown'],
+      ['toolMetadata', 'kept'], ['toolFailed', 'kept'], ['toolFailed', 'thrown'],
     ]);
     expect(sent.find((m) => m.type === 'toolMetadata')).toEqual({ type: 'toolMetadata', toolUseId: 'kept', metadata: { reason: 'no-match' } });
   });
@@ -214,8 +214,8 @@ describe('SubagentStreamBridge streaming', () => {
     session.emit({ type: 'tool_execution_end', toolCallId: 'killed', toolName: 'bash', result: { content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true } }, isError: true, durationMs: 700 });
 
     expect(sent).toEqual([
-      { type: 'toolCompleted', toolUseId: 'killed', toolName: 'Bash', result: 'Command aborted', parentToolUseId: 'toolu_parent', durationMs: 700 },
       { type: 'toolMetadata', toolUseId: 'killed', metadata: { damoclesCancelled: true } },
+      { type: 'toolCompleted', toolUseId: 'killed', toolName: 'Bash', result: 'Command aborted', parentToolUseId: 'toolu_parent', durationMs: 700 },
     ]);
   });
 
@@ -856,8 +856,8 @@ describe('SubagentStreamBridge.liveSnapshot', () => {
     // ended, and pi has not stored its result yet: the end is sent again
     session.emit({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'a.ts\nb.ts' }], details: {} }, isError: false, durationMs: 12 });
     expect(bridge.liveSnapshot().messages).toEqual([
-      { type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'a.ts\nb.ts', parentToolUseId: 'toolu_parent', durationMs: 12 },
       { type: 'toolMetadata', toolUseId: 't1', metadata: {} },
+      { type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'a.ts\nb.ts', parentToolUseId: 'toolu_parent', durationMs: 12 },
     ]);
     session.emit({ type: 'message_end', message: { role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: 'a.ts\nb.ts' }], details: {}, isError: false } });
     expect(bridge.liveSnapshot()).toMatchObject({ messages: [], liveToolCallIds: new Set() });

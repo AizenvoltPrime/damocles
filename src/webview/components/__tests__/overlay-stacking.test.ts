@@ -969,7 +969,7 @@ describe('a tool result that carries images', () => {
 
   it('renders the thumbnails in the MCP tool overlay too', async () => {
     const overlay = track(mount(McpToolOverlay, {
-      props: { tool: { ...IMAGE_ONLY, name: 'mcp__shots__capture' }, owner: SESSION },
+      props: { tool: { ...IMAGE_ONLY, id: 't-shot-mcp', name: 'mcp__shots__capture' }, owner: SESSION },
       global: { plugins: [i18n], stubs: { MarkdownRenderer: true, CodeBlock: true } },
       attachTo: document.body,
     }));

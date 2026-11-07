@@ -29,7 +29,7 @@ test('the damocles command on this computer opens a project file at its line in 
   const shell = await shellPage(app);
   await expect.poll(async () => (await shellState(app)).projects.map((project) => project.fsPath)).toEqual([home.project]);
   // the command starts this checkout's Electron with the test's own user data, never an installed Damocles
-  expect(path.resolve(cliAppBinary()).startsWith(path.resolve(path.join(__dirname, '..', '..', 'node_modules')))).toBe(true);
+  expect(path.resolve(cliAppBinary()).startsWith(path.resolve(path.join(import.meta.dirname, '..', '..', 'node_modules')))).toBe(true);
 
   const opened = await runLocalCli(home, ['src/app.ts:42'], home.project);
   expect(opened).toEqual({ code: 0, stdout: '', stderr: '' });

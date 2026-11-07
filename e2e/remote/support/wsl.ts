@@ -3,14 +3,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { ElectronApplication } from '@playwright/test';
-import { clampLoadAlign } from '../../../scripts/elf-load-align.mjs';
+import { clampLoadAlign } from '../../../scripts/elf-load-align.ts';
 import { seedStubModel, type HermeticHome } from '../../desktop/support/hermetic';
 import { STUB_MODEL_ID } from '../../desktop/support/openai-stub';
 import { control, expect } from './remote';
 import { runProgram } from './sshd';
 
 // The WSL suite: the app against this computer's WSL distros through wsl.exe (Windows only, never a Docker fixture).
-// scripts/test-remote.mjs reads it from Playwright's listing: a spec carrying it builds the Linux and Alpine packages and starts no container.
+// scripts/test-remote.ts reads it from Playwright's listing: a spec carrying it builds the Linux and Alpine packages and starts no container.
 export const WSL_TAG = '@wsl';
 
 // The distros the suite may use, by role; a name wsl.exe does not list skips that distro's cases with the reason.
@@ -181,7 +181,7 @@ export async function prepareDistroModel(distro: string, home: HermeticHome): Pr
 
 /** Runs the stub on `port` with `node` (the distro's, or a given one) from `dir`, which stop removes. */
 export async function startDistroModelStub(distro: string, port: number, dir: string, replies: readonly unknown[], node = 'node'): Promise<DistroModelStub> {
-  const script = (await inDistro(distro, `wslpath -u ${shQuote(path.join(__dirname, 'wsl-model-stub.cjs'))}`)).trim();
+  const script = (await inDistro(distro, `wslpath -u ${shQuote(path.join(import.meta.dirname, 'wsl-model-stub.cjs'))}`)).trim();
   await inDistro(distro, [
     `mkdir -p ${shQuote(dir)}`,
     `printf '%s' ${shQuote(JSON.stringify(replies))} > ${shQuote(`${dir}/replies.json`)}`,

@@ -515,6 +515,17 @@ describe('session state publisher', () => {
     await session.dispose();
   });
 
+  it('publishes designState at bind and to a reloaded webview, empty for a chat with no design role or link', async () => {
+    const { session, messages } = await startPanel();
+    const designStates = () => messages.filter((m) => m.type === 'designState');
+    await waitFor(() => designStates().length > 0);
+    expect(designStates()).toEqual([{ type: 'designState', design: null, link: null, openInBrowser: true, openPreview: false }]);
+    session.onWebviewReady();
+    await waitFor(() => designStates().length > 1);
+    expect(designStates()).toEqual([{ type: 'designState', design: null, link: null, openInBrowser: true, openPreview: false }, { type: 'designState', design: null, link: null, openInBrowser: true, openPreview: false }]);
+    await session.dispose();
+  });
+
   it('republishes to a reloaded webview, whose fresh store starts at idle', async () => {
     const { session, permissionHandler, messages } = await startPanel();
     const finish = await openTurn(session);
@@ -740,6 +751,45 @@ describe('panel activity, from the same publisher', () => {
     await permissionHandler.dispose();
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(permissionHandler.pendingPrompts()).toEqual([]);
+  });
+
+  it('a design version prompt registers on PermissionState, reaches the activity as kind designVersion, is reposted to a webview that came back, and returns the session to idle once answered', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const answer = permissionHandler.requestDesignVersionDecision({ designId: 'contacts-abcd1234', fromVersion: 1, toVersion: 2, changes: [{ kind: 'screenChanged', screen: 'S1' }] }, new AbortController().signal);
+    const request = messages.find((m) => m.type === 'requestDesignVersionDecision') as Extract<ExtensionToWebviewMessage, { type: 'requestDesignVersionDecision' }>;
+    expect(permissionHandler.pendingPrompts()).toEqual([{ id: request.promptId, kind: 'designVersion', request }]);
+    const posted = messages.length;
+    permissionHandler.repostPendingPrompts();
+    expect(messages.slice(posted)).toEqual([request]);
+    permissionHandler.resolveDesignVersionDecision(request.promptId, 'finishFirst');
+    expect(await answer).toBe('finishFirst');
+    expect(messages).toContainEqual({ type: 'designVersionDecisionClosed', promptId: request.promptId });
+
+    expect(states(messages)).toEqual(['idle', 'requires_action', 'idle']);
+    expect(activity.map((a) => a.pendingKinds)).toEqual([[], ['designVersion'], []]);
+    expect(activity[1]?.pendingPrompts).toEqual([{ id: request.promptId, kind: 'designVersion', owner: { kind: 'main' } }]);
+    await session.dispose();
+  });
+
+  it('a design approval prompt is a pending prompt of kind designApproval (Needs you), reposted to a webview that came back, and idle once answered', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const ask = { designId: 'contacts-abcd1234', summary: 'The list.', previousVersion: null, changes: [], warnings: [], decisions: [], screens: [{ id: 'S1', file: 'screens/S1.html' }], hasParent: true };
+    const answer = permissionHandler.requestDesignApproval(ask, new AbortController().signal);
+    const request = messages.find((m) => m.type === 'requestDesignApproval') as Extract<ExtensionToWebviewMessage, { type: 'requestDesignApproval' }>;
+    expect(permissionHandler.pendingPrompts()).toEqual([{ id: request.promptId, kind: 'designApproval', request }]);
+    const posted = messages.length;
+    permissionHandler.repostPendingPrompts();
+    expect(messages.slice(posted)).toEqual([request]);
+    permissionHandler.resolveDesignApproval(request.promptId, 'approve', undefined);
+    expect(await answer).toEqual({ choice: 'approve' });
+    expect(messages).toContainEqual({ type: 'designApprovalClosed', promptId: request.promptId });
+
+    expect(states(messages)).toEqual(['idle', 'requires_action', 'idle']);
+    expect(activity.map((a) => a.pendingKinds)).toEqual([[], ['designApproval'], []]);
+    expect(activity[1]?.pendingPrompts).toEqual([{ id: request.promptId, kind: 'designApproval', owner: { kind: 'main' }, summary: { message: 'send the design to its main chat' } }]);
+    await session.dispose();
   });
 
   it('reports the first write of the session file, which changes the stored session id and not the state', async () => {
@@ -1031,7 +1081,7 @@ describe('single-writer discipline', () => {
     expect(files.some((f) => f.rel === 'src/core/permission-handler/diff-manager.ts')).toBe(true);
 
     const mutation =
-      /pending(?:Approvals|Questions|Forms|PlanApprovals|SkillApprovals|Elicitations|SignIns|PromptRequests)\s*\.\s*(?:set|delete|clear)\b/;
+      /pending(?:Approvals|Questions|Forms|PlanApprovals|SkillApprovals|Elicitations|SignIns|DesignVersions|PromptRequests)\s*\.\s*(?:set|delete|clear)\b/;
     const offenders = files
       .filter((f) => f.rel !== 'src/core/permission-handler/state.ts' && mutation.test(readFileSync(f.path, 'utf8')))
       .map((f) => f.rel);

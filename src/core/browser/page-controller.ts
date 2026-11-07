@@ -1,7 +1,7 @@
 import type { Page, CDPSession } from 'patchright';
 import type { BoxModel, RemoteObject, NodeDescription, ComputedStyleProperty, MatchedStyles } from './types';
 
-const SDK_SAFE_MAX_DIMENSION = 1950;
+export const SDK_SAFE_MAX_DIMENSION = 1950;
 
 /**
  * The COMPLETE set of CDP methods `PageController` is permitted to send over its leak-free

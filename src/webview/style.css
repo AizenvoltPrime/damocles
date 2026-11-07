@@ -204,6 +204,11 @@
     --tone-on: color(from color-mix(in srgb, rgb(var(--host-rgb)) calc(var(--host-alpha) * 100%), var(--tone-surface, var(--d-panel))) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
     color: var(--d-text);
   }
+  .d-tone-design {
+    --tone: var(--d-design);
+    --tone-on: var(--d-on-design);
+    color: var(--d-design-text);
+  }
   .d-tone-muted {
     --tone: var(--d-muted);
     color: var(--d-muted);
@@ -439,6 +444,54 @@ a:hover {
 .toast-icon-loading {
   background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
   color: var(--muted-foreground);
+}
+
+/* A strip scrolled under VS Code's overlay slider (useOverflowStrip.ts, OverflowSlider.vue): its native scrollbar never takes room. */
+.d-overflow-strip {
+  scrollbar-width: none;
+}
+
+/*
+ * VS Code's scrollbar fade (base/browser/ui/scrollbar/media/scrollbars.css): in over 100 ms, out over 800 ms. The slider takes
+ * scrollbarSlider.background, hoverBackground and activeBackground at VS Code's alphas (40%, 70%, 40%) of --d-muted and --d-text.
+ */
+.d-overflow-scrollbar {
+  opacity: 0;
+  transition: opacity 0.8s linear;
+}
+
+.d-overflow-scrollbar-shown {
+  opacity: 1;
+  transition: opacity 0.1s linear;
+}
+
+.d-overflow-slider {
+  background-color: color-mix(in srgb, var(--d-muted) 40%, transparent);
+}
+
+/* A hidden slider takes no clicks: the content under the strip's bottom edge keeps them. */
+.d-overflow-scrollbar:not(.d-overflow-scrollbar-shown) .d-overflow-slider {
+  pointer-events: none;
+}
+
+.d-overflow-slider:hover {
+  background-color: color-mix(in srgb, var(--d-muted) 70%, transparent);
+}
+
+.d-overflow-slider[data-active] {
+  background-color: color-mix(in srgb, var(--d-text) 40%, transparent);
+}
+
+.d-overflow-fade-start {
+  mask-image: linear-gradient(90deg, transparent, #000 1.5rem);
+}
+
+.d-overflow-fade-end {
+  mask-image: linear-gradient(90deg, #000 calc(100% - 1.5rem), transparent);
+}
+
+.d-overflow-fade-start.d-overflow-fade-end {
+  mask-image: linear-gradient(90deg, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
 }
 
 @media (prefers-reduced-motion: no-preference) {

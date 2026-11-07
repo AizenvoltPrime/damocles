@@ -19,6 +19,7 @@
   --d-warning: var(--vscode-editorWarning-foreground, #ff9800);
   --d-danger: var(--vscode-errorForeground, #f44336);
   --d-info: var(--vscode-editorInfo-foreground, #2196f3);
+  --d-design: var(--vscode-charts-purple, #b180d7);
   --d-code: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background));
   --d-input: var(--vscode-input-background);
   --d-add: var(--vscode-diffEditor-insertedTextBackground, rgba(34, 197, 94, 0.15));
@@ -32,6 +33,7 @@
   --d-on-warning: color(from var(--d-warning) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-success: color(from var(--d-success) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-info: color(from var(--d-info) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+  --d-on-design: color(from var(--d-design) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
 
   --d-accent-soft: color-mix(in srgb, var(--d-accent) 15%, transparent);
   /* Text on a tint of its tone, a hover or a diff row: leaning toward the theme foreground gains contrast in dark, light and high contrast themes alike. */
@@ -40,6 +42,7 @@
   --d-warning-text: color-mix(in srgb, var(--d-warning) 70%, var(--d-text));
   --d-danger-text: color-mix(in srgb, var(--d-danger) 70%, var(--d-text));
   --d-info-text: color-mix(in srgb, var(--d-info) 70%, var(--d-text));
+  --d-design-text: color-mix(in srgb, var(--d-design) 70%, var(--d-text));
   --d-faint-text: color-mix(in srgb, var(--d-faint) 70%, var(--d-text));
   /* A near-black taken from the background, so a light theme gets a softer shadow and scrim than a dark one. */
   --d-shadow: 0 12px 32px color-mix(in srgb, color-mix(in srgb, var(--d-bg) 30%, black) 40%, transparent);

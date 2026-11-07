@@ -26,6 +26,7 @@ Damocles is also a VS Code extension. The extension runs the same agent, chat an
 - **Models**: Anthropic, OpenAI, GitHub Copilot, StepFun, DeepSeek, MiniMax, xAI, Kimi Code and Meta models, picked per panel with per-model reasoning effort. See [Models](docs/models.md).
 - **Agents and teams**: custom agent templates, background subagents, `/steer`, resume after an interruption, and teams of 2-5 specialists. See [Agents and teams](docs/agents.md).
 - **Plan mode**: the agent writes a plan to a per-session file and waits for your approval before it changes anything. See [Plan mode](docs/plan-mode.md).
+- **Design mode**: the agent designs in a linked design chat that writes only its design folder, checks each screen against your components and tokens, and sends you an approved version to plan against. See [Design mode](docs/design-mode.md).
 - **Checkpoints and rewind**: roll back files, fork a conversation into a new panel, or rewind to before a compaction. See [Checkpoints](docs/checkpoints.md).
 - **Compaction and caching**: manual and automatic compaction with per-model budgets, and prompt cache warming. See [Compaction](docs/compaction.md).
 - **Permissions**: per-panel modes, YOLO, and allow, deny and ask rules compatible with Claude Code's settings files. See [Permissions](docs/permissions.md).
@@ -162,6 +163,7 @@ macOS builds are signed ad hoc, and Linux packages are not signed. The procedure
 | [Authentication](docs/authentication.md) | Signing in to each provider, billing and key precedence |
 | [Agents and teams](docs/agents.md) | Subagents, custom agents, steering, resuming and collaborative teams |
 | [Plan mode](docs/plan-mode.md) | Plan files, what runs while planning, approval and binding a plan |
+| [Design mode](docs/design-mode.md) | Design chats, the design folder, checks, versions and approval, the desktop preview, Open in browser and DesignParity |
 | [Checkpoints](docs/checkpoints.md) | File checkpoints, rewind, forking and rewinding to before a compaction |
 | [Compaction](docs/compaction.md) | Manual and automatic compaction, per-model budgets and prompt cache warming |
 | [Permissions](docs/permissions.md) | Permission modes, YOLO and allow, deny and ask rules |

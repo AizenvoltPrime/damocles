@@ -2,7 +2,8 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
-import { Ban, CheckCheck, ChevronRight, ClipboardList, Eye, MessageSquare, Pencil } from 'lucide-vue-next';
+import { DESIGN_VERSION_DETAIL_KEY } from '@shared/types/design';
+import { Ban, CheckCheck, ChevronRight, ClipboardList, Eye, MessageSquare, Palette, Pencil } from 'lucide-vue-next';
 import { useToolCardStatus } from '@/composables/useToolCardStatus';
 import { recordedPlanVersion, usePlanSummary } from '@/composables/usePlanSummary';
 import { usePermissionStore } from '@/stores/usePermissionStore';
@@ -27,6 +28,14 @@ const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
 
 const planSummary = usePlanSummary(() => props.toolCall.id, () => recordedPlanVersion(props.toolCall.metadata));
 const subtitle = computed(() => [t('exitPlanMode.plan'), ...planSummary.value].join(' · '));
+
+// Core stamps the design version on every outcome but counts only an approval of a shown plan, one with a plan version (`approvedDesignVersion`).
+const designVersion = computed(() => {
+  const stamp = props.toolCall.metadata?.[DESIGN_VERSION_DETAIL_KEY];
+  if (recordedPlanVersion(props.toolCall.metadata) === undefined || typeof stamp !== 'object' || stamp === null || !('version' in stamp)) return undefined;
+  const { version } = stamp;
+  return typeof version === 'number' && Number.isInteger(version) && version > 0 ? version : undefined;
+});
 
 const { statusIcon, statusMotion, cardClass } = useToolCardStatus(() => props.toolCall.status);
 
@@ -165,6 +174,16 @@ function handleViewPlan() {
           class="size-3"
           aria-hidden="true"
         />{{ approvalModeLabel }}
+      </span>
+      <span
+        v-if="designVersion !== undefined"
+        class="flex items-center gap-1.5 text-(--d-design-text)"
+        data-testid="plan-card-design-version"
+      >
+        <Palette
+          class="size-3"
+          aria-hidden="true"
+        />{{ t('exitPlanMode.againstDesign', { version: designVersion }) }}
       </span>
       <span class="flex-1" />
       <button

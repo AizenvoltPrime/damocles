@@ -1,4 +1,4 @@
-import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage, ImageBlock } from './content';
+import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage, ImageBlock, ToolResultMetadata, UserImageOrigin } from './content';
 import type { ChatAttachmentInfo } from './chat-attachment';
 import type {
   McpConfigError,
@@ -57,6 +57,8 @@ import type { ToolsSnapshot, ToolGroup } from './tools';
 import type { WorkspaceFolderInfo } from './workspace-folders';
 import type { SettingsAccountId, SettingsSectionId } from '../settings-sections';
 import type { LocalizedText } from '../localized-text';
+import type { DesignApprovalChoice, DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignPreviewImage, DesignReferenceNote, DesignResultDecision, DesignResultView, DesignVersionChoice, PlanApprovalDesignLink } from './design';
+import type { DesignMarkupNote } from '../design-markup';
 
 // A pi provider id as a credential ask or a run's token note names it; main's user relays and the overlay refuse any other form.
 export const PROVIDER_ID_PATTERN: RegExp = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -176,6 +178,20 @@ export type WebviewToExtensionMessage =
   /** A file dropped on the composer with FILE_DRAG_MIME (src/shared/file-drag.ts); core confines it and answers with insertMention. */
   | { type: "mentionDropped"; projectKey: string; relativePath: string }
   | { type: "openFile"; filePath: string; line?: number }
+  /** Reveals the design chat of the panel's own link, reopening it when closed. */
+  | { type: "openDesignChat"; designId: string }
+  /** From a design chat: reveals its parent, reopening it when closed. */
+  | { type: "openParentChat" }
+  /** `file` is relative to the design folder; core confines it to the folder before opening. */
+  | { type: "openDesignFile"; designId: string; file: string }
+  /** Answered by `designFiles`. */
+  | { type: "requestDesignFiles"; designId: string }
+  /** `relPath` is relative to the folder of the panel's own design; core serves it on the host's loopback server and opens it in the browser. */
+  | { type: "openDesignInBrowser"; designId: string; relPath: string }
+  /** `relPath` is relative to the folder of the panel's own design; core opens its preview tab in the design chat (desktop). */
+  | { type: "openDesignPreview"; designId: string; relPath: string }
+  /** Replays PreviewJourney call `toolCallId` of this design chat in its screen's preview tab (desktop); core reads the journey from the branch. */
+  | { type: "replayDesignJourney"; toolCallId: string; reducedMotion: boolean }
   | { type: "openSystemPrompt" }
   | { type: "openMcpToolInfo"; piName: string }
   | { type: "openRewindDiff"; filePath: string; userMessageId: string }
@@ -224,6 +240,10 @@ export type WebviewToExtensionMessage =
   | { type: "setProjectTrusted" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
   | { type: "answerForm"; toolUseId: string; values: FormValues | null }
+  /** The answer to a `requestDesignVersionDecision` (PD-29); one for a prompt no longer open is ignored. */
+  | { type: "resolveDesignVersionDecision"; promptId: string; choice: DesignVersionChoice }
+  /** The answer to a `requestDesignApproval`; `feedback` is required non-blank for `changes`. One for a prompt no longer open is ignored. */
+  | { type: "resolveDesignApproval"; promptId: string; choice: DesignApprovalChoice; feedback?: string }
   | {
       type: "approvePlan";
       toolUseId: string;
@@ -321,6 +341,8 @@ export type WebviewToExtensionMessage =
   | { type: "cancelTeam"; teamId: string }
   | { type: "requestTeamAgentData"; teamId: string; agentId: string }
   | { type: "requestToolResultImages"; requestId: string; toolUseId: string; owner: ToolResultOwner }
+  /** A design-kind option preview's thumbnail (FULL): AskUserQuestion call `toolUseId`, its question and option by index. */
+  | { type: "requestDesignPreviewImage"; requestId: string; toolUseId: string; questionIndex: number; optionIndex: number }
   | { type: "requestCompassReindex" }
   | { type: "compassSearch"; query: string; kind?: CompassNodeKind; limit?: number }
   | { type: "compassRequestGraph"; communityId?: number; maxNodes?: number }
@@ -411,6 +433,8 @@ export interface HostCapabilities {
   bypassPermissions: boolean;
   /** Global-scope memories live on the server the host runs on, not the user's own computer (the VS Code extension running on the workspace side of a Remote-SSH, WSL, Dev Containers or Codespaces window); their labels name the server. Optional on the wire: an older daemon's core omits it. */
   globalMemoryOnServer?: boolean;
+  /** The host has the design preview; selects the FULL design rule set (`designRuleSet`), else REDUCED. Optional on the wire: an older daemon's core omits it. */
+  designPreview?: boolean;
 }
 
 /** Where a worktree-capable chat works (D61). */
@@ -497,6 +521,7 @@ export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   worktrees: false,
   bypassPermissions: true,
   globalMemoryOnServer: false,
+  designPreview: false,
 };
 
 /** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */
@@ -577,7 +602,9 @@ export type ExtensionToWebviewMessage =
   | { type: "assistantRetracted"; messageId: string; parentToolUseId?: string }
   | { type: "done"; data: ResultMessage }
   // `isCommandEcho` marks the echo of a slash command that commits no user entry; it is always injected too.
-  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
+  /** `designMarkup`: the message is a preview's markup (PD-12), its files feedback/<feedbackId>.png and .json of the chat's design. */
+  /** `designReferences`: the message's images core saves as the design's references (PD-40). */
+  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean; designMarkup?: DesignMarkupNote; designReferences?: DesignReferenceNote[] }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   /** `parentToolUseId` names the nested agent the error belongs to: a subagent's `Agent` call id or a team agent's id. */
@@ -653,13 +680,20 @@ export type ExtensionToWebviewMessage =
   | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null; durationMs?: number; imageCount?: number }
   /** Replies to `requestToolResultImages`; `[]` means unavailable, for any reason; read failures are logged. */
   | { type: "toolResultImages"; requestId: string; images: ImageBlock[] }
+  /** Replies to `requestDesignPreviewImage`: the option's screen at the design's primary width, or why there is none. Kept in component state only. */
+  | { type: "designPreviewImage"; requestId: string; image?: DesignPreviewImage; error?: LocalizedText }
+  /** Replies to `replayDesignJourney` once the replay ended, or with why it did not run. */
+  | { type: "designJourneyReplayed"; toolCallId: string; ok: boolean; error?: LocalizedText }
+  /** Desktop main's, never core's: an image for the chat's composer, from the design preview's Screenshot (PD-40). */
+  | { type: "composerAddImage"; image: DesignPreviewImage; origin: UserImageOrigin }
   | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null; durationMs?: number }
   | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null; reason: ToolAbandonReason }
   /** No live shell call matched the cancel, so the optimistic "Stopping..." state has nothing to clear it.
    *  Match on `requestId` when present, else fall back to `toolUseId`. Not an error: the ordinary case is
    *  a click landing after the call finished. */
   | { type: "toolCancelRejected"; toolUseId: string; requestId?: string }
-  | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
+  /** Sent ahead of the call's `toolCompleted` or `toolFailed`, so a card never shows its end status without its details. */
+  | { type: "toolMetadata"; toolUseId: string; metadata: ToolResultMetadata }
   /** A `stopSubagent` that stopped nothing because the agent had already finished, so its "Stopping..." state clears. */
   | { type: "subagentStopRejected"; agentId: string }
   /** A `cancelTeam` that stopped nothing because the team had already finished, so its "Stopping..." state clears. */
@@ -697,7 +731,7 @@ export type ExtensionToWebviewMessage =
   // card's account); correlationId: the transcript's echo of the prompt, which the transcript drops; parts: the queued
   // messages a send of several combined, whose text `content` joins, each for the view that queued it.
   | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: LocalizedText; account?: SettingsAccountId; correlationId?: string; parts?: QueuedPart[] }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; designMarkup?: DesignMarkupNote; designReferences?: DesignReferenceNote[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   /** `authFailure`: the call failed on that account's credential, refused or missing, which the live view showed as its card. */
   | { type: "errorReplay"; content: LocalizedText; authFailure?: AuthFailure }
@@ -780,6 +814,8 @@ export type ExtensionToWebviewMessage =
       planContent: string;
       /** The call's plan version, as its result records it under `PLAN_VERSION_DETAIL_KEY`. */
       planVersion?: number;
+      /** The parent's own design at the version the approval records under `DESIGN_VERSION_DETAIL_KEY`; absent without a link or a delivered version. */
+      designLink?: PlanApprovalDesignLink;
       owner: PromptOwner;
       parentToolUseId?: string | null;
     }
@@ -950,6 +986,43 @@ export type ExtensionToWebviewMessage =
   // A resumed or restored chat has no worktree state to show (an untrusted project, or no repository source control has
   // open); it answers a webview waiting for the place, as worktreeState does.
   | { type: "noWorktreeState" }
+  // One publisher, PiSession.publishDesignState(): `design` only in a design chat, `link` only in a parent with its own link.
+  // `openInBrowser`: the host's rule set opens designs in the browser from a chat's buttons (`openInBrowserFromChat`); a core
+  // that predates it (feature `chat.designOpenInBrowser`) omits it, which hides them. `openPreview`: the host has the preview
+  // tab (the rule set's `preview`); a core that predates it (feature `chat.designOpenPreview`) omits it, which hides Open preview.
+  | { type: "designState"; design: DesignChatStateView | null; link: DesignLinkStateView | null; openInBrowser?: boolean; openPreview?: boolean }
+  // Posted when the `damocles-design-result` entry commits, and by the history replay at its place (`replayed`).
+  | { type: "designResult"; entryId: string; result: DesignResultView; replayed?: true }
+  // Posted when the `damocles-design-brief` entry commits, and by the history replay at its place (`replayed`).
+  | { type: "designBrief"; entryId: string; brief: DesignBriefView; replayed?: true }
+  // Replies to every `requestDesignFiles`, sorted by path; `failed`: the folder could not be listed, or is not this chat's design.
+  | { type: "designFiles"; designId: string; files: DesignFileInfo[]; failed?: true }
+  /**
+   * A prompt of kind `designVersion` (PD-29): design `toVersion` was delivered after the plan was approved against `fromVersion` (0: none).
+   * `changes` are structured, so the view words them; a decision's title and chosen value are the designer's own words.
+   */
+  | { type: "requestDesignVersionDecision"; promptId: string; designId: string; fromVersion: number; toVersion: number; changes: DesignChange[]; owner: PromptOwner }
+  /** The prompt closed: answered from any view, withdrawn by a newer version or an approval, or ended with the panel, a reset or a resume switch. */
+  | { type: "designVersionDecisionClosed"; promptId: string }
+  /**
+   * A prompt of kind `designApproval`: FinishDesign's gate passed and it waits for the user before making a version.
+   * `previousVersion` is what `changes` are measured against (null for a first version); `hasParent` false: no main chat gets it.
+   */
+  | {
+      type: "requestDesignApproval";
+      promptId: string;
+      designId: string;
+      summary: string;
+      previousVersion: number | null;
+      changes: DesignChange[];
+      warnings: DesignCheckIssue[];
+      decisions: DesignResultDecision[];
+      screens: DesignApprovalScreen[];
+      hasParent: boolean;
+      owner: PromptOwner;
+    }
+  /** The approval prompt closed: answered from any view, or ended with the run, the panel, a reset or a resume switch. */
+  | { type: "designApprovalClosed"; promptId: string }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
   | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize' }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }

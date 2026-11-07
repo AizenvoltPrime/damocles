@@ -200,3 +200,59 @@ describe('resolveApproval settles the tool call even when the diff view will not
     await expect(approval).resolves.toMatchObject({ behavior: 'allow' });
   });
 });
+
+describe('PermissionState removals', () => {
+  it('reports a change only when a design version or sign-in prompt it held went', async () => {
+    const { PermissionState } = await import('../state');
+    const state = new PermissionState();
+    const changed = vi.fn();
+    state.onPendingChanged = changed;
+    expect(state.removePendingDesignVersion('none')).toBeUndefined();
+    expect(state.removePendingSignIn('none')).toBeUndefined();
+    expect(changed).not.toHaveBeenCalled();
+    const prompt = { resolve: () => undefined, cleanup: () => undefined, request: { type: 'requestDesignVersionDecision' } } as never;
+    state.addPendingDesignVersion('v1', prompt);
+    expect(state.removePendingDesignVersion('v1')).toBe(prompt);
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a change only when a design approval prompt it held went, and keeps its request for the re-post', async () => {
+    const { PermissionState } = await import('../state');
+    const state = new PermissionState();
+    const changed = vi.fn();
+    state.onPendingChanged = changed;
+    expect(state.removePendingDesignApproval('none')).toBeUndefined();
+    expect(changed).not.toHaveBeenCalled();
+    const request = { type: 'requestDesignApproval', promptId: 'a1' } as never;
+    const prompt = { resolve: () => undefined, cleanup: () => undefined, request };
+    state.addPendingDesignApproval('a1', prompt);
+    expect(state.pendingPrompts()).toEqual([{ id: 'a1', kind: 'designApproval', request }]);
+    expect(state.removePendingDesignApproval('a1')).toBe(prompt);
+    expect(state.pendingPrompts()).toEqual([]);
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a design approval prompt in the settle and re-post paths', () => {
+  const ask = { designId: 'contacts-abcd1234', summary: 's', previousVersion: null, changes: [], warnings: [], decisions: [], screens: [], hasParent: false };
+
+  it('settles on an already-aborted signal and leaves no pending prompt behind', async () => {
+    const { handler, messages } = handlerWith();
+    expect(await handler.requestDesignApproval(ask, abortedCtx('t1').signal)).toBeUndefined();
+    expect(handler.pendingPrompts()).toEqual([]);
+    expect(messages).toEqual([]);
+  });
+
+  it('is re-posted with the other live prompts in the order raised', async () => {
+    const { handler, messages } = handlerWith();
+    void handler.canUseTool('Bash', { command: 'rm -rf /tmp/x' }, liveCtx('t1'));
+    await waitFor(() => messages.length === 1);
+    void handler.requestDesignApproval(ask, liveCtx('a1').signal);
+    await waitFor(() => messages.length === 2);
+    const raised = [...messages];
+    expect(raised.map((m) => m.type)).toEqual(['requestPermission', 'requestDesignApproval']);
+    messages.length = 0;
+    handler.repostPendingPrompts();
+    expect(messages).toEqual(raised);
+  });
+});

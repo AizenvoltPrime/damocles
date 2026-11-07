@@ -32,7 +32,16 @@ import type { ShellCancelStore } from './shell-cancel-registry';
 import type { SessionJob } from '../../process-launcher';
 import { createPowerShellTool } from './powershell-tool';
 import { createPlanModeTools } from './plan-mode-tools';
-import { createAskUserQuestionTool } from './ask-user-question-tool';
+import { createAskUserQuestionTool, type QuestionDecisions } from './ask-user-question-tool';
+import { createDesignChatTools, type DesignChatToolDeps } from '../../design/tools/design-chat-tools';
+import { createFinishDesignTool } from '../../design/tools/finish-design';
+import { createDesignScreenshotTool } from '../../design/tools/design-screenshot';
+import { createPreviewJourneyTool } from '../../design/tools/preview-journey';
+import { createDeclareTweaksTool } from '../../design/tools/declare-tweaks';
+import { createMapReferenceTool } from '../../design/tools/map-reference';
+import { createDesignParityTool, type DesignParityDeps } from '../../design/tools/design-parity';
+import type { DesignRuleSet } from '../../design/rule-set';
+import { createStartDesignTool, type StartDesignDeps } from '../../design/tools/start-design';
 import { buildMemoryPiTools, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { buildCompassPiTools, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
@@ -117,6 +126,20 @@ export interface CustomToolDeps {
     source: () => McpToolSource | null;
     disabledResource: () => (server: string, uri: string) => boolean;
   };
+  /**
+   * The design tools (PD-42), built for the primary session only, while design mode is off too: whether each is active
+   * follows the setting and the chat's role (`fullActiveToolNames`). A nested agent builds none.
+   */
+  design?: {
+    chat: DesignChatToolDeps;
+    start: StartDesignDeps;
+    parity: DesignParityDeps;
+    questionDecisions: QuestionDecisions;
+    /** The design chat's recorded rule set, else the host's; the tool descriptions read it, so it is fixed for the session. */
+    ruleSet: DesignRuleSet;
+    /** A design chat's AskUserQuestion takes design-kind previews (PD-18); fixed for the session like the rule set. */
+    designPreviews: boolean;
+  };
 }
 
 /**
@@ -164,7 +187,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * operations from Damocles' bundle, which treat an `.asar` as a file.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources, design } = deps;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
@@ -183,7 +206,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env),
     enterPlan,
     exitPlan,
-    createAskUserQuestionTool(pi, permissionHandler),
+    createAskUserQuestionTool(pi, permissionHandler, design?.questionDecisions, design?.designPreviews ?? false),
   ].map(cancellable);
 
   // Build module tools whenever their service object is present — NOT gated by `.isEnabled`. Built-but-
@@ -241,6 +264,20 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
       disabledResource: mcpResources.disabledResource,
       ruleFilter: (toolName) => permissionHandler.mcpResourceRuleFilter(toolName),
     }));
+  }
+
+  if (design) {
+    tools.push(
+      createStartDesignTool(pi, design.start),
+      ...createDesignChatTools(pi, design.chat, design.ruleSet),
+      createFinishDesignTool(pi, design.chat),
+      createDeclareTweaksTool(pi, design.chat),
+      createMapReferenceTool(pi, design.chat),
+      // their renders run in the client, so the turn's Stop must not wait on them
+      abortableTool(createDesignScreenshotTool(pi, design.chat)),
+      abortableTool(createPreviewJourneyTool(pi, design.chat)),
+      abortableTool(createDesignParityTool(pi, design.parity)),
+    );
   }
 
   return tools;

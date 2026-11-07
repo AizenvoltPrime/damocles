@@ -8,6 +8,7 @@ import { errorTextOf, l, verbatim } from '../../l10n';
 import type { LocalizedText } from '../../../shared/localized-text';
 import { approxStringLength, perfDebugEnabled, perfSpan } from '../../perf';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
+import { persistedQuestionInput } from '../../../shared/question-preview';
 import { piMessagesToHistoryAgentMessages } from '../subagents/message-mapper';
 import { failedCallError } from '../nested-call-failures';
 import { failureCard } from '../provider-account';
@@ -24,7 +25,7 @@ import {
   type AgentFile,
   type AgentInvocationData,
 } from '../agent-records';
-import { TOOL_AGENT } from '../../../shared/tool-names';
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
 import * as fs from 'fs';
 import * as path from 'path';
 import { piSessionDirOf, resolvePiSessionFile } from './reading';
@@ -35,6 +36,11 @@ import { extractMidStreamEntryIds } from './mid-stream';
 import { stoppedOnBranch } from './turn-stopped';
 import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
+import { designEntryMessage } from '../../design/design-entries';
+import { markupEntriesOnBranch } from '../../design/markup';
+import { referencesOnBranch } from '../../design/references';
+import type { DesignReferenceNote } from '../../../shared/types/design';
+import type { DesignMarkupNote } from '../../../shared/design-markup';
 import { storedTypedText } from './prompt-context';
 import { extractAttachmentImageCounts, extractTerminalAttachmentCounts } from './terminal-attachments';
 import { attachmentInfo, splitTerminalAttachments } from '../../terminal-attachment';
@@ -65,6 +71,8 @@ interface ReplayUser {
   content: string;
   contentBlocks?: ContentBlock[];
   terminalAttachments?: ChatAttachmentInfo[];
+  designMarkup?: DesignMarkupNote;
+  designReferences?: DesignReferenceNote[];
   isMidStream?: boolean;
   /** Present on a prompt only; a user entry delivered mid-run consumes no index. */
   promptIndex?: number;
@@ -99,7 +107,12 @@ interface ReplaySteer {
   images?: ImageBlock[];
   sentAt?: number;
 }
-type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer;
+/** A delivered design result or brief, replayed at its place in the branch. */
+interface ReplayDesign {
+  kind: 'design';
+  message: NonNullable<ReturnType<typeof designEntryMessage>>;
+}
+type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer | ReplayDesign;
 
 /** A failed call's replay: the live card's account and the provider's text, else the live error card's text. */
 function replayedFailure(message: { provider?: unknown; model?: unknown } | undefined, text: string): ReplayError {
@@ -188,6 +201,8 @@ export function reconstructMessages(
   const attachmentCounts = extractTerminalAttachmentCounts(branch);
   const attachmentImageCounts = extractAttachmentImageCounts(branch);
   const midStreamIds = extractMidStreamEntryIds(branch);
+  const markups = markupEntriesOnBranch(branch);
+  const references = referencesOnBranch(branch);
   const stopped = stoppedOnBranch(branch);
   const omitted = omittedEntryIds(branch);
   const isPrompt = promptTest(branch);
@@ -245,6 +260,11 @@ export function reconstructMessages(
         });
       continue;
     }
+    if (entry.type === 'custom_message') {
+      const design = designEntryMessage(entry, true);
+      if (design) messages.push({ kind: 'design', message: design });
+      continue;
+    }
     if (entry.type !== 'message') continue;
     const message = (entry as {
       message?: {
@@ -271,12 +291,16 @@ export function reconstructMessages(
       const blocks = userContentBlocks(message?.content, attachmentCount, attachmentImageCounts.get(entry.id) ?? 0, original);
       const sentAt = sentAtOf(entry);
       const attachments = splitTerminalAttachments(textOf(message?.content), attachmentCount).attachments.map((attachment, index) => attachmentInfo(`${entry.id}:${index}`, attachment));
+      const markup = markups.get(entry.id);
+      const saved = references.get(entry.id);
       messages.push({
         kind: 'user',
         entryId: entry.id,
         content,
         ...(blocks ? { contentBlocks: blocks } : {}),
         ...(attachments.length > 0 ? { terminalAttachments: attachments } : {}),
+        ...(markup !== undefined ? { designMarkup: markup } : {}),
+        ...(saved !== undefined ? { designReferences: saved } : {}),
         ...(midStreamIds.has(entry.id) ? { isMidStream: true } : {}),
         ...(promptIndex !== undefined ? { promptIndex } : {}),
         ...(sentAt !== undefined ? { sentAt } : {}),
@@ -328,7 +352,8 @@ export function reconstructMessages(
         thinking = thinking ? `${thinking}\n\n${b.thinking}` : b.thinking;
       } else if (b.type === 'toolCall' && b.id && b.name) {
         const toolName = mapPiToolName(b.name);
-        const input = normalizeToolInput(b.name, b.arguments ?? {});
+        const normalized = normalizeToolInput(b.name, b.arguments ?? {});
+        const input = toolName === TOOL_ASK_USER_QUESTION ? persistedQuestionInput(normalized) : normalized;
         const recorded = toolResults.get(b.id);
         if (!recorded && liveToolCallIds.has(b.id)) {
           tools.push({ id: b.id, name: toolName, input, live: true });
@@ -647,6 +672,8 @@ async function postReplayMessages(messages: readonly ReplayMessage[], post: (m: 
         content: msg.content,
         ...(msg.contentBlocks ? { contentBlocks: msg.contentBlocks } : {}),
         ...(msg.terminalAttachments ? { terminalAttachments: msg.terminalAttachments } : {}),
+        ...(msg.designMarkup ? { designMarkup: msg.designMarkup } : {}),
+        ...(msg.designReferences ? { designReferences: msg.designReferences } : {}),
         isSynthetic: false,
         sdkMessageId: msg.entryId,
         ...(msg.isMidStream ? { isMidStream: true } : {}),
@@ -667,6 +694,8 @@ async function postReplayMessages(messages: readonly ReplayMessage[], post: (m: 
         },
         ...(msg.sentAt !== undefined ? { timestamp: msg.sentAt } : {}),
       });
+    } else if (msg.kind === 'design') {
+      post(msg.message);
     } else if (msg.kind === 'error') {
       post({ type: 'errorReplay', content: msg.content, ...(msg.authFailure ? { authFailure: msg.authFailure } : {}) });
     } else if (msg.kind === 'compaction') {

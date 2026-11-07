@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
-import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { writeAsar } from '../../scripts/asar-archive.ts';
 import { appHolders } from './support/app';
 import { ARCHIVE } from './support/asar';
 import { filesRow, untilCoreWatchLive, untilWatchLive } from './support/editor';
@@ -12,7 +12,7 @@ import { openProjectChat } from './support/screenshots';
 import { shellPage } from './support/shell';
 import { addProject, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 
-const MCP_SERVER = path.join(__dirname, 'support', 'mcp-stdio-server.cjs');
+const MCP_SERVER = path.join(import.meta.dirname, 'support', 'mcp-stdio-server.cjs');
 
 function requestFor(stub: OpenAIStub, prompt: string): string {
   const request = chatRequests(stub).find((r) => JSON.stringify(r.body).includes(`"text":"${prompt}"`));

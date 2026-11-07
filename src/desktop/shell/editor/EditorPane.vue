@@ -3,6 +3,7 @@ import { computed, inject, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { AtSign, CircleAlert, CloudOff, ExternalLink, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellState } from '../../preload/shell-channels';
 import PaneGrip from '../layout/PaneGrip.vue';
 import { EDITOR_STORE } from './editor-store';
@@ -16,6 +17,7 @@ import DiffEditor from './DiffEditor.vue';
 import MarkdownPreview from './MarkdownPreview.vue';
 import ImagePreview from './ImagePreview.vue';
 import BrowserTab from './BrowserTab.vue';
+import DesignPreviewTab from './DesignPreviewTab.vue';
 import SearchEditorTab from './SearchEditorTab.vue';
 import ScmChangesTab from './ScmChangesTab.vue';
 import PatchChangesTab from './PatchChangesTab.vue';
@@ -73,12 +75,17 @@ const searchEditorTab = computed(() => (tab.value?.searchEditor && tab.value.doc
 const changesTab = computed(() => (tab.value?.changes ? (tab.value as ShellEditorTab & { changes: NonNullable<ShellEditorTab['changes']> }) : undefined));
 const patchTab = computed(() => (tab.value?.patch ? (tab.value as ShellEditorTab & { patch: NonNullable<ShellEditorTab['patch']> }) : undefined));
 const browserTab = computed(() => (tab.value?.browser ? (tab.value as ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> }) : undefined));
+const designPreviewTab = computed(() => (tab.value?.designPreview ? (tab.value as ShellEditorTab & { designPreview: NonNullable<ShellEditorTab['designPreview']> }) : undefined));
 const reviewTab = computed(() => (tab.value?.review ? (tab.value as ShellEditorTab & { review: NonNullable<ShellEditorTab['review']> }) : undefined));
 const timelineTab = computed(() => (tab.value?.timeline && tab.value.kind === 'timeline' ? (tab.value as ShellEditorTab & { timeline: NonNullable<ShellEditorTab['timeline']> }) : undefined));
 const mergeTab = computed(() => (tab.value?.merge ? (tab.value as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> }) : undefined));
 // Tabs that are no file of their own: no mention and no breadcrumbs; each names what it shows in its own header.
 const OWN_HEADER_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['changes', 'review', 'timeline', 'merge']);
-const canMention = computed(() => tab.value !== null && tab.value.kind !== 'untitled' && tab.value.kind !== 'diff' && tab.value.kind !== 'browser' && !OWN_HEADER_KINDS.has(tab.value.kind));
+// A design preview is a file (main mentions its path in the design chat), but it names it in its own toolbar.
+const showsBreadcrumbs = computed(() => tab.value !== null && !OWN_HEADER_KINDS.has(tab.value.kind) && tab.value.kind !== 'designPreview');
+// A design preview knows its file's path only once main read the screen's info.
+const canMention = computed(() => tab.value !== null && tab.value.kind !== 'untitled' && tab.value.kind !== 'diff' && tab.value.kind !== 'browser' && !OWN_HEADER_KINDS.has(tab.value.kind)
+  && (tab.value.designPreview === undefined || tab.value.designPreview.info !== undefined));
 const formatting = computed(() => tab.value?.documentId !== undefined && store.formatting.value.has(tab.value.documentId));
 const conflictBusy = ref(false);
 
@@ -100,13 +107,9 @@ watch(store.focusOverlay, (open) => {
 function onAnimationEnd(event: AnimationEvent): void {
   if (event.target === root.value && focusPhase.value === 'leaving') focusPhase.value = 'off';
 }
-
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && !event.defaultPrevented && store.focusOverlay.value) {
-    event.preventDefault();
-    void store.setFocusOverlay(false);
-  }
-}
+// The focus overlay is a layer of the overlay stack, which gives it Escape and its z-index, so popper content inside it
+// (usePopperZIndex) paints above it.
+const focusLayer = useOverlayEscape(() => void store.setFocusOverlay(false), { active: () => store.focusOverlay.value, root: () => root.value });
 
 // F6 parts: focus anywhere in the pane is the editor part.
 function onFocusIn(): void {
@@ -132,7 +135,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
     :data-focus-overlay="focusPhase !== 'off' ? focusPhase : undefined"
     class="editor-pane flex size-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--d-bg)"
     :class="focusPhase === 'off' ? '' : focusPhase === 'on' ? 'editor-focus' : 'editor-focus editor-focus-leave'"
-    @keydown="onKeydown"
+    :style="focusPhase === 'off' ? undefined : { zIndex: focusLayer.zIndex.value }"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
     @animationend="onAnimationEnd"
@@ -222,7 +225,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
     <template v-else>
       <!-- A changes tab names its group in its own header and is no file, so it has no breadcrumbs. -->
       <Breadcrumbs
-        v-if="!OWN_HEADER_KINDS.has(tab.kind)"
+        v-if="showsBreadcrumbs"
         :tab="tab"
         :project-name="projectName"
         :host-name="outsideHostName"
@@ -369,6 +372,13 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           v-else-if="browserTab"
           :api="api"
           :tab="browserTab"
+        />
+        <DesignPreviewTab
+          v-else-if="designPreviewTab"
+          :key="designPreviewTab.id"
+          :api="api"
+          :tab="designPreviewTab"
+          :platform="state.platform"
         />
         <NotDisplayedNotice
           v-else-if="!openedAnyway"

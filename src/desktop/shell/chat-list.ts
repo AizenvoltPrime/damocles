@@ -3,9 +3,12 @@ import type { ShellChat, ShellChatAction } from '../preload/shell-channels';
 
 export type ChatGroup = 'today' | 'yesterday' | 'earlier';
 
+// A nested row's tree line continues to the next child of the same parent, or ends at this one.
+export type ChatNesting = 'continues' | 'ends';
+
 export type ChatListRow =
   | { readonly kind: 'group'; readonly group: ChatGroup }
-  | { readonly kind: 'chat'; readonly chat: ShellChat };
+  | { readonly kind: 'chat'; readonly chat: ShellChat; readonly nested?: ChatNesting };
 
 const GROUP_ORDER: readonly ChatGroup[] = ['today', 'yesterday', 'earlier'];
 
@@ -17,13 +20,34 @@ export function chatGroupOf(timestamp: number, now: Date): ChatGroup {
   return timestamp >= startOfYesterday ? 'yesterday' : 'earlier';
 }
 
-/** The chats under Today / Yesterday / Earlier headers, each group keeping the given order and empty groups left out. */
+/**
+ * The chats under Today / Yesterday / Earlier headers, each group keeping the given order and empty groups left out. A design
+ * chat follows its parent's row, nested, whatever its own date, the ones a rewind superseded after the others; one whose parent
+ * is not listed, or is itself nested, stays top level.
+ */
 export function chatListRows(chats: readonly ShellChat[], now: Date): ChatListRow[] {
+  const listed = new Set(chats.map((chat) => chat.id));
+  const nestsUnder = (chat: ShellChat): string | undefined => {
+    const parentId = chat.design?.parentId;
+    return parentId !== undefined && parentId !== chat.id && listed.has(parentId) ? parentId : undefined;
+  };
+  const topLevelIds = new Set(chats.filter((chat) => nestsUnder(chat) === undefined).map((chat) => chat.id));
+  const children = new Map<string, ShellChat[]>();
+  const superseded = (chat: ShellChat): number => (chat.design?.superseded === true ? 1 : 0);
+  const childrenOf = (id: string): ShellChat[] => [...(children.get(id) ?? [])].sort((a, b) => superseded(a) - superseded(b));
   const byGroup = new Map<ChatGroup, ShellChat[]>(GROUP_ORDER.map((group) => [group, []]));
-  for (const chat of chats) byGroup.get(chatGroupOf(chat.timestamp, now))?.push(chat);
+  for (const chat of chats) {
+    const parent = nestsUnder(chat);
+    if (parent !== undefined && topLevelIds.has(parent)) children.set(parent, [...(children.get(parent) ?? []), chat]);
+    else byGroup.get(chatGroupOf(chat.timestamp, now))?.push(chat);
+  }
   return GROUP_ORDER.flatMap((group): ChatListRow[] => {
     const members = byGroup.get(group) ?? [];
-    return members.length === 0 ? [] : [{ kind: 'group', group }, ...members.map((chat) => ({ kind: 'chat' as const, chat }))];
+    if (members.length === 0) return [];
+    return [{ kind: 'group', group }, ...members.flatMap((chat): ChatListRow[] => [
+      { kind: 'chat', chat },
+      ...childrenOf(chat.id).map((child, index, siblings): ChatListRow => ({ kind: 'chat', chat: child, nested: index < siblings.length - 1 ? 'continues' : 'ends' })),
+    ])];
   });
 }
 

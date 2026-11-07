@@ -5,6 +5,9 @@ import { createPinia, setActivePinia } from 'pinia';
 import { defineAsyncComponent, defineComponent, h, nextTick, ref } from 'vue';
 import SkillApprovalPrompt from '@/components/SkillApprovalPrompt.vue';
 import FormPrompt from '@/components/FormPrompt.vue';
+import DesignVersionPrompt from '@/components/design/DesignVersionPrompt.vue';
+import DesignApprovalPrompt from '@/components/design/DesignApprovalPrompt.vue';
+import { useDesignStore } from '@/stores/useDesignStore';
 import { createAttentionHandlers } from '../attention-handlers';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { useQuestionStore } from '@/stores/useQuestionStore';
@@ -107,6 +110,40 @@ describe('focusAttention', () => {
     expect(document.activeElement?.tagName).toBe('INPUT');
     expect(card.element.contains(document.activeElement)).toBe(true);
     expect(card.element.classList.contains('d-attention')).toBe(true);
+  });
+
+  it('focuses the design version prompt\'s options for a question, and rings it', async () => {
+    composer();
+    useDesignStore().addVersionPrompt({ promptId: 'dv-1', designId: 'd-1', fromVersion: 1, toVersion: 2, changes: [{ kind: 'screenChanged', screen: 'S1' }] });
+    const card = mount(DesignVersionPrompt, { global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(card);
+    await flushPromises();
+
+    dispatch({ type: 'focusAttention', kind: 'question' });
+    await flushPromises();
+
+    const root = card.get('[data-testid="design-version-card"]').element;
+    expect(document.activeElement?.getAttribute('role')).toBe('option');
+    expect(root.contains(document.activeElement)).toBe(true);
+    expect(root.classList.contains('d-attention')).toBe(true);
+  });
+
+  it('focuses the design approval prompt\'s answers for an approval, and rings it', async () => {
+    composer();
+    useDesignStore().addApprovalPrompt({
+      promptId: 'da-1', designId: 'd-1', summary: 'Contacts', previousVersion: null, changes: [], warnings: [], decisions: [], screens: [], hasParent: true,
+    });
+    const card = mount(DesignApprovalPrompt, { global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(card);
+    await flushPromises();
+
+    dispatch({ type: 'focusAttention', kind: 'approval' });
+    await flushPromises();
+
+    const root = card.get('[data-testid="design-approval-card"]').element;
+    expect(document.activeElement?.getAttribute('role')).toBe('option');
+    expect(root.contains(document.activeElement)).toBe(true);
+    expect(root.classList.contains('d-attention')).toBe(true);
   });
 
   it('reaches a card that was still mounting when the request came, while its prompt is pending', async () => {

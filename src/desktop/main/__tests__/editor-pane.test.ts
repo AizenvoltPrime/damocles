@@ -874,6 +874,8 @@ function pages(ids: string[]): BrowserTabSource & { ids: string[]; closed: strin
     activeChanged: (id: string | null) => {
       source.active.push(id);
     },
+    copyPath: async () => undefined,
+    mention: async () => undefined,
   };
   return source;
 }
@@ -903,6 +905,31 @@ describe('page tabs (D14)', () => {
     expect(states.at(-1)?.activeTabId).toBe('p2');
     expect(persisted).toBeUndefined();
     expect(saved?.active).toBeNull();
+  });
+
+  it('lists a design preview tab with its kind, and routes its Copy path and mention to the preview, never to a file', async () => {
+    const source = pages(['p1']);
+    const copied: string[] = [];
+    const mentioned: string[] = [];
+    const design: ShellEditorTab = { id: 'design-1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: '/d/S1.html', dirty: false, readOnly: true, conflict: false };
+    browser = {
+      ...source,
+      tabs: () => [...source.tabs(), design],
+      copyPath: async (id) => {
+        copied.push(id);
+      },
+      mention: async (id) => {
+        mentioned.push(id);
+      },
+    };
+    pane.activateBrowserTab('design-1');
+    expect(pane.activeKind()).toBe('designPreview');
+    await pane.tabAction('copyPath', 'design-1');
+    await pane.mention('design-1');
+    expect(copied).toEqual(['design-1']);
+    expect(mentioned).toEqual(['design-1']);
+    await pane.tabAction('close', 'design-1');
+    expect(source.closed).toEqual(['design-1']);
   });
 
   it('cycles through file and page tabs, and counts page tabs as tabs', async () => {

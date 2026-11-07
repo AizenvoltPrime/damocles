@@ -1,15 +1,36 @@
-import { Type } from 'typebox';
+import { Type, type Static } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
+import { invalidQuestionInput, questionPreviewRefusal } from '../../permission-handler/managers/question-manager';
 import type { QuestionAnnotations } from '../../../shared/types/permissions';
 import { buildCanUseToolContext, formatDenyReason, formatPolicyBlockReason } from '../permission-gate';
 import { TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
+import { MAX_QUESTION_PREVIEW_CHARS, QUESTION_PREVIEW_FORM } from '../../../shared/question-preview';
+import { DESIGN_DECISIONS_DETAIL_KEY } from '../../../shared/types/design';
+import type { DesignDecisionRecord } from '../../design/design-entries';
+
+const DESIGN_PREVIEW_FORM = '{ "kind": "design", "path": "variants/<option>/<screen>.html" }';
+
+/** In a design chat, the decisions an answered question set makes (PD-6, PD-15); none elsewhere. */
+export type QuestionDecisions = (questions: readonly { question: string; header?: string; multiSelect?: boolean; options: readonly { label: string }[] }[], answers: Readonly<Record<string, string>>) => Promise<DesignDecisionRecord[]>;
+
+// question-manager.ts takes the design kind only in a design chat, so only a design chat's description names it.
+const previewSchema = Type.Union([
+  Type.Object(
+    {
+      kind: Type.Literal('markdown'),
+      content: Type.String({ maxLength: MAX_QUESTION_PREVIEW_CHARS, description: 'Markdown shown beside the options while this option is focused.' }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object({ kind: Type.Literal('design'), path: Type.String({ maxLength: 400 }) }, { additionalProperties: false }),
+]);
 
 const optionSchema = Type.Object({
   label: Type.String({ description: 'The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice.' }),
   description: Type.String({ description: 'Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications.' }),
-  preview: Type.Optional(Type.String({ description: 'Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons that help users compare options. See the tool description for the expected content format.' })),
+  preview: Type.Optional(previewSchema),
 });
 
 const questionSchema = Type.Object({
@@ -42,8 +63,9 @@ interface AskUserQuestionOutput {
  * returns the full SDK `AskUserQuestionOutput` (`{ questions, answers, annotations? }`) as the tool
  * result, so the answered card renders the user's choices and the model receives their notes.
  */
-export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHandler: PermissionHandler): ToolDefinition {
-  return pi.defineTool<typeof askSchema, undefined>({
+/** `designPreviews`: a design chat's tool, whose description names the design kind; fixed for the session (PD-17). */
+export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHandler: PermissionHandler, questionDecisions?: QuestionDecisions, designPreviews = false): ToolDefinition {
+  return pi.defineTool<typeof askSchema, { [DESIGN_DECISIONS_DETAIL_KEY]: DesignDecisionRecord[] } | undefined>({
     name: TOOL_ASK_USER_QUESTION,
     label: 'AskUserQuestion',
     description: [
@@ -59,14 +81,19 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
       'Reserve this for decisions where the user\'s answer changes what you do next — not for choices with a conventional default or facts you can verify in the codebase yourself. In those cases pick the obvious option, mention it in your response, and proceed.',
       '',
       'Preview feature:',
-      'Use the optional `preview` field on options when presenting concrete artifacts that users need to visually compare:',
-      '- HTML mockups of UI layouts or components',
-      '- Formatted code snippets showing different implementations',
-      '- Visual comparisons or diagrams',
+      'Use the optional `preview` field on options when presenting concrete artifacts that users need to compare side by side:',
+      '- Code snippets showing different implementations (fenced code blocks with a language tag)',
+      '- Outlines, file layouts, or short tables contrasting the options',
       '',
-      'Preview content must be a self-contained HTML fragment (no <html>/<body> wrapper, no <script> or <style> tags — use inline style attributes instead). Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).',
+      `A preview is an object: ${QUESTION_PREVIEW_FORM}. The content is Markdown (at most ${MAX_QUESTION_PREVIEW_CHARS} characters), shown beside the options while one is focused; HTML in it is shown as literal text, never rendered. Do not use previews for simple preference questions where labels and descriptions suffice. Previews work on single-select and multiSelect questions.`,
+      ...(designPreviews ? [`In this design chat a preview may also be ${DESIGN_PREVIEW_FORM}: a screen you wrote in this design (an .html file below screens/ or variants/, relative to the design folder), which the user sees as a thumbnail they can open. Write each option's screen first, then ask; use it to compare layouts side by side. One question uses one preview kind: every preview of a question is design, or every one is markdown.`] : []),
     ].join('\n'),
     parameters: askSchema,
+    prepareArguments: (args) => {
+      const refusal = questionPreviewRefusal((args as { questions?: unknown } | null)?.questions, designPreviews);
+      if (refusal) throw new Error(formatPolicyBlockReason(invalidQuestionInput(refusal)));
+      return args as Static<typeof askSchema>;
+    },
     execute: async (toolCallId, params, signal) => {
       const result = await permissionHandler.canUseTool(
         TOOL_ASK_USER_QUESTION,
@@ -88,7 +115,11 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
         answers: updated?.answers ?? {},
         ...(updated?.annotations ? { annotations: updated.annotations } : {}),
       };
-      return { content: [{ type: 'text', text: JSON.stringify(output) }], details: undefined };
+      const decisions = questionDecisions ? await questionDecisions(params.questions, output.answers) : [];
+      return {
+        content: [{ type: 'text', text: JSON.stringify(output) }],
+        details: decisions.length > 0 ? { [DESIGN_DECISIONS_DETAIL_KEY]: decisions } : undefined,
+      };
     },
   });
 }

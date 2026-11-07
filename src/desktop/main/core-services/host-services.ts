@@ -8,8 +8,9 @@ import type { PageSpec } from '../../../shared/panel-html';
 import { LOCAL_CLIENT_ID, type BrokerAnswer, type BrowserToolAnswer } from '../../../shared/remote-user';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
-import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
+import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type Params, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
 import type { LocalizedText } from '../../../shared/localized-text';
+import type { DesignCapture, DesignJourneyRun, DesignProbeResult } from '../../../shared/types/design';
 import type { MessageQuestion } from '../message-dialog';
 
 export interface HostTrust {
@@ -124,7 +125,7 @@ export interface HostServicesDeps {
   readonly terminalToggle: () => { readonly shown: boolean; readonly shortcut: string };
   readonly resolveProxy: (url: string) => Promise<string>;
   // the view for a panel core creates, with the id core issued; a browser page's owner is its chat's view
-  readonly createView: (panelId: string, create: Omit<PanelCreate, 'owner'> & { readonly owner?: RelayView }) => RelayView;
+  readonly createView: (panelId: string, create: Omit<PanelCreate, 'owner' | 'parent'> & { readonly owner?: RelayView; readonly parent?: RelayView }) => RelayView;
   readonly git: CoreInit['git'];
   readonly e2eHooks: boolean;
   readonly paths: CoreInit['paths'];
@@ -147,6 +148,16 @@ export interface HostServicesDeps {
   readonly divert: (view: RelayView, message: unknown) => boolean;
   // the post types this core may not send its views: a remote core's voice view state, which only this computer's core feeds
   readonly refusedPosts: ReadonlySet<string>;
+  // design.openPreview: the preview tab of a design file in design chat corePanelId (PD-33); it never opens a browser
+  readonly openDesignPreview: (corePanelId: string, designId: string, relPath: string) => void;
+  // design.capture, design.probe and design.journey of this core's design, run in main's design runner (PD-41)
+  readonly designRender: {
+    capture(params: Params<CoreRequests, 'design.capture'>, signal: AbortSignal): Promise<DesignCapture>;
+    probe(params: Params<CoreRequests, 'design.probe'>, signal: AbortSignal): Promise<DesignProbeResult>;
+    journey(params: Params<CoreRequests, 'design.journey'>, signal: AbortSignal): Promise<DesignJourneyRun>;
+    // design.replayJourney: the live preview tab of the screen in design chat panelId, this core's own (PD-33)
+    replay(params: Params<CoreRequests, 'design.replayJourney'>, signal: AbortSignal): Promise<void>;
+  };
   readonly log: (line: string) => void;
 }
 
@@ -260,11 +271,14 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
 
   const createView = (panelId: string, create: PanelCreate): RelayView => {
     refuseRelayed(panelId);
-    const { owner, ...options } = create;
-    if (owner === undefined) return deps.createView(panelId, options);
+    const { owner, parent, ...options } = create;
+    // A parent that closed meanwhile leaves the design chat at the top of the list.
+    const parentView = parent !== undefined ? views.get(parent) : undefined;
+    const withParent = parentView ? { ...options, parent: parentView } : options;
+    if (owner === undefined) return deps.createView(panelId, withParent);
     const chat = views.get(owner) ?? deps.foreignOwner?.(owner);
     if (!chat) throw new Error('A browser page opens only in a loaded chat');
-    return deps.createView(panelId, { ...options, owner: chat });
+    return deps.createView(panelId, { ...withParent, owner: chat });
   };
 
   const refused = (type: unknown): boolean => {
@@ -344,6 +358,11 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
     // main posts to a page in this process, which queues nothing toward it
     endpoint.serve('views.drained', () => undefined);
+    endpoint.serve('design.openPreview', ({ panelId, designId, relPath }) => deps.openDesignPreview(panelId, designId, relPath));
+    endpoint.serve('design.capture', (params, signal) => deps.designRender.capture(params, signal));
+    endpoint.serve('design.probe', (params, signal) => deps.designRender.probe(params, signal));
+    endpoint.serve('design.journey', (params, signal) => deps.designRender.journey(params, signal));
+    endpoint.serve('design.replayJourney', (params, signal) => deps.designRender.replay(params, signal));
   };
 
   serve();

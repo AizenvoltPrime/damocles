@@ -23,6 +23,7 @@ vi.mock("../../../settings-manager/utils", async (importOriginal) => ({
 import { createPermissionHandlers } from "../permission-handlers";
 import { ApprovalManager } from "../../../../permission-handler/managers/approval-manager";
 import { PermissionState } from "../../../../permission-handler/state";
+import { PermissionHandler } from "../../../../permission-handler";
 import type { DiffManager } from "../../../../permission-handler/diff-manager";
 import type { PermissionUpdate } from "../../../../../shared/types/permissions";
 import type { LocalizedText } from "../../../../../shared/localized-text";
@@ -304,5 +305,47 @@ describe("approveEdit — saving an always-allow rule", () => {
     await answer("gone");
 
     expect(syncRules).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveDesignApproval", () => {
+  const ask = { designId: "contacts-abcd1234", summary: "s", previousVersion: null, changes: [], warnings: [], decisions: [], screens: [], hasParent: true };
+
+  function approvalPrompt() {
+    const { deps, ctx } = setup();
+    const permissionHandler = new PermissionHandler(createFakePlatform());
+    const posted: ExtensionToWebviewMessage[] = [];
+    permissionHandler.setPostMessage((m) => posted.push(m));
+    const answer = permissionHandler.requestDesignApproval(ask, new AbortController().signal);
+    const request = posted.find((m): m is Extract<ExtensionToWebviewMessage, { type: "requestDesignApproval" }> => m.type === "requestDesignApproval")!;
+    const send = (message: Record<string, unknown>) =>
+      createPermissionHandlers(deps).resolveDesignApproval!({ type: "resolveDesignApproval", promptId: request.promptId, ...message } as never, { ...ctx, permissionHandler } as HandlerContext);
+    return { permissionHandler, posted, answer, request, send };
+  }
+
+  it("ignores a request for changes with no note and an unknown choice, and keeps the prompt open", async () => {
+    const { permissionHandler, posted, send } = approvalPrompt();
+    await send({ choice: "changes" });
+    await send({ choice: "changes", feedback: "   " });
+    await send({ choice: "maybe" });
+    await send({ choice: "changes", feedback: 42 });
+    expect(permissionHandler.pendingPrompts().map((p) => p.kind)).toEqual(["designApproval"]);
+    expect(posted.some((m) => m.type === "designApprovalClosed")).toBe(false);
+  });
+
+  it("passes the note of a request for changes on, and closes the prompt on every view", async () => {
+    const { posted, answer, request, send } = approvalPrompt();
+    await send({ choice: "changes", feedback: "Bigger buttons." });
+    expect(await answer).toEqual({ choice: "changes", feedback: "Bigger buttons." });
+    expect(posted.at(-1)).toEqual({ type: "designApprovalClosed", promptId: request.promptId });
+  });
+
+  it("passes approve and stop on", async () => {
+    const approved = approvalPrompt();
+    await approved.send({ choice: "approve" });
+    expect(await approved.answer).toEqual({ choice: "approve" });
+    const stopped = approvalPrompt();
+    await stopped.send({ choice: "stop" });
+    expect(await stopped.answer).toEqual({ choice: "stop" });
   });
 });

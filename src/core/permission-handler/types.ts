@@ -3,6 +3,7 @@ import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, QuestionAnnotations } from '../../shared/types/permissions';
 import type { FormValues } from '../../shared/types/forms';
 import type { ElicitationResult } from '../../shared/types/elicitation';
+import type { DesignVersionChoice, PlanApprovalDesignLink } from '../../shared/types/design';
 
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
@@ -24,7 +25,26 @@ export interface McpToolIdentity {
   tool: string;
 }
 
-export interface CanUseToolContext {
+export interface MatchRuleOptions {
+  /** Match under YOLO too, for a call only the user approves (`CanUseToolContext.requiresUser`). */
+  ignoreBypass?: true;
+}
+
+/** `rule` is required whenever `requiresUser` is set, since only that rule tells a deny from an ask. */
+export type CanUseToolContext = CanUseToolContextBase & (
+  | {
+    /** The settings rule the gate matched for this call; the decision and any re-check of its open prompt read only this. */
+    rule?: 'allow' | 'deny' | 'ask' | null;
+    requiresUser?: never;
+  }
+  | {
+    rule: 'allow' | 'deny' | 'ask' | null;
+    /** Only the user's answer approves the call: YOLO and allow rules do not (a design chat's MCP call that is not read-only). */
+    requiresUser: true;
+  }
+);
+
+interface CanUseToolContextBase {
   signal: AbortSignal;
   toolUseID: string | null;
   agentID?: string;
@@ -36,8 +56,8 @@ export interface CanUseToolContext {
   mcpTool?: McpToolIdentity;
   /** The version core stamped on an `ExitPlanMode` call (`plan-version.ts`), shown on its approval prompt. */
   planVersion?: number;
-  /** The settings rule the gate matched for this call; the decision and any re-check of its open prompt read only this. */
-  rule?: 'allow' | 'deny' | 'ask' | null;
+  /** The parent's own design at the version an `ExitPlanMode` call records, shown on its approval prompt. */
+  designLink?: PlanApprovalDesignLink;
   /**
    * Whether the gate, deciding this call under the current permission state, would run it unasked
    * (`runsUnasked` in `permission-gate.ts`). Its open prompt is settled as approved when this turns true;
@@ -154,6 +174,23 @@ export interface PendingElicitation {
   resolve: (result: ElicitationResult) => void;
   cleanup: () => void;
   request: ExtensionToWebviewMessage;
+}
+
+/** An open version pause prompt (PD-29); it resolves with the user's choice, or undefined when it closed unanswered. */
+export interface PendingDesignVersion {
+  resolve: (choice: DesignVersionChoice | undefined) => void;
+  cleanup: () => void;
+  request: Extract<ExtensionToWebviewMessage, { type: 'requestDesignVersionDecision' }>;
+}
+
+/** The answer to FinishDesign's approval prompt; `changes` always carries a non-blank note. */
+export type DesignApprovalAnswer = { choice: 'approve' } | { choice: 'changes'; feedback: string } | { choice: 'stop' };
+
+/** An open FinishDesign approval prompt; it resolves with the user's answer, or undefined when it closed unanswered. */
+export interface PendingDesignApproval {
+  resolve: (answer: DesignApprovalAnswer | undefined) => void;
+  cleanup: () => void;
+  request: Extract<ExtensionToWebviewMessage, { type: 'requestDesignApproval' }>;
 }
 
 export type PostMessageFn = (msg: ExtensionToWebviewMessage) => void;

@@ -31,4 +31,12 @@ describe('malformedWebviewText', () => {
     expect(malformedWebviewText({ type: 'partial', data: { message: 'not core text' } })).toBeUndefined();
     expect(malformedWebviewText('nonsense')).toBeUndefined();
   });
+
+  it('parses the LocalizedText a design tool puts in its details, live and replayed, so no card parses it itself', () => {
+    expect(malformedWebviewText({ type: 'toolMetadata', toolUseId: 't', metadata: { refusal: TEXT } })).toBeUndefined();
+    expect(malformedWebviewText({ type: 'toolMetadata', toolUseId: 't', metadata: { refusal: 'not localized text' } })).toBe('.metadata.refusal');
+    expect(malformedWebviewText({ type: 'toolMetadata', toolUseId: 't', metadata: { errors: [], widthChecks: { skipped: 7 } } })).toBe('.metadata.widthChecks.skipped');
+    expect(malformedWebviewText({ type: 'assistantReplay', content: '', tools: [{ id: 't', name: 'DesignCheck', input: {}, metadata: { widthChecks: { skipped: TEXT } } }] })).toBeUndefined();
+    expect(malformedWebviewText({ type: 'assistantReplay', content: '', tools: [{ id: 't', name: 'DesignParity', input: {}, metadata: { refusal: 'x' } }] })).toBe('.tools[].metadata.refusal');
+  });
 });

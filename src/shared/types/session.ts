@@ -4,6 +4,8 @@ import type { EffortBadgeLevel } from '../effort-badge';
 import type { ChatAttachmentInfo } from './chat-attachment';
 import type { AuthFailure, ChatPlace } from './messages';
 import type { LocalizedText } from '../localized-text';
+import type { DesignDecisionView, DesignReferenceNote } from './design';
+import type { DesignMarkupNote } from '../design-markup';
 
 export interface SystemInitData {
   model: string;
@@ -111,6 +113,8 @@ export interface RewindHistoryItem {
   notRewindable?: { reason: NotRewindableReason | "no-project"; params: NotRewindableParams };
   /** A hand-off (D61) came after this turn: its files are in the other folder, so a rewind restores the conversation only. */
   crossesHandOff?: boolean;
+  /** Design chat only: the decisions on the branch recorded at or after this turn's user entry, which a conversation rewind removes. */
+  designDecisionsAfter?: DesignDecisionView[];
 }
 
 export type SkipReason = "size" | "category" | "lfs";
@@ -259,6 +263,10 @@ export interface ChatMessage {
   contentBlocks?: ContentBlock[];
   /** A user message's attachments (terminal output, commits, MCP resources), shown as chips. */
   terminalAttachments?: ChatAttachmentInfo[];
+  /** A user message that is a preview's markup (PD-12), shown as its card; its files are feedback/<feedbackId>.png and .json. */
+  designMarkup?: DesignMarkupNote;
+  /** A user message's images core saved as the design's references (PD-40). */
+  designReferences?: DesignReferenceNote[];
   toolCalls?: ToolCall[];
   timestamp: number;
   isPartial?: boolean;
@@ -378,4 +386,10 @@ export interface StoredSession {
   worktree?: { worktreeId: string; place: ChatPlace };
   /** The registry folder whose session dir it was listed from, when that is not the project's own (AD12 Listing). */
   listedFrom?: string;
+  /**
+   * A design chat's design and parent (PD-23), from its role entry, and the highest version its branch finished; a forked design
+   * chat has no parent. `superseded` (D70) comes from the design's `link.json` as the list read it, never from the session file,
+   * so the session metadata index never holds it.
+   */
+  design?: { designId: string; parentSessionId?: string; finishedVersion?: number; superseded?: boolean };
 }

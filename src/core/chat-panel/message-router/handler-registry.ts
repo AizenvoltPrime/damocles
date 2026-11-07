@@ -21,6 +21,7 @@ import { createUsageStatsHandlers } from "./handlers/usage-stats-handlers";
 import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handlers";
 import { createSettingsFileHandlers } from "./handlers/settings-file-handlers";
 import { createRemoteChatSettingHandlers } from "./handlers/remote-chat-setting-handlers";
+import { createDesignHandlers } from "./handlers/design-handlers";
 import { log } from "../../logger";
 
 /**
@@ -68,6 +69,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
     ...createUsageStatsHandlers(deps),
     ...createWorkspaceFolderHandlers(deps),
     ...settingsFiles.handlers,
+    ...createDesignHandlers(deps),
   };
   return { handlers, foreignHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers, ...createRemoteChatSettingHandlers(deps) } };
 }

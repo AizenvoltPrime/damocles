@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, SIDEBAR_SECTIONS, type ContentBounds, type DamoclesShellApi, type ShellChat, type ShellEditorTab, type ShellHost, type ShellState } from '../../preload/shell-channels';
+import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, SIDEBAR_SECTIONS, type ContentBounds, type DamoclesShellApi, type DesignFreeze, type ShellChat, type ShellEditorTab, type ShellHost, type ShellState } from '../../preload/shell-channels';
 import type { OverlayRequest } from '../../preload/overlay-channels';
 import App from '../App.vue';
 import ChatsSection from '../components/ChatsSection.vue';
@@ -15,8 +15,11 @@ import { LAYOUT_SETTLED_EVENT, watchContentBounds } from '../content-bounds';
 import { chatGroupOf, chatListRows, modelLabel, tagCounts } from '../chat-list';
 import { avatarHue, avatarInitial } from '../project-avatar';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
+import { DESIGN_STRIP } from '@/components/design/design-strip';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
+import { markupSession, startMarkupSession } from '../editor/markup-session';
+import { ensureTweaksSession, tweaksSession } from '../editor/tweaks-session';
 import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakePortsApi, fakeShellApi } from './fakes';
 
 // The sidebar's Files and Search sections read the editor store App provides.
@@ -58,6 +61,39 @@ describe('chat list helpers', () => {
       chat({ id: 'b', timestamp: new Date(2026, 4, 12, 8).getTime() }),
     ], now);
     expect(rows.map((row) => (row.kind === 'group' ? `#${row.group}` : row.chat.id))).toEqual(['#today', 'a', 'b', '#earlier', 'old']);
+  });
+
+  it('nests a design chat under its parent row whatever its date, and keeps one with no listed parent at top level', () => {
+    const rows = chatListRows([
+      chat({ id: 'design', design: { parentId: 'parent' }, timestamp: new Date(2026, 4, 12, 9).getTime() }),
+      chat({ id: 'other', timestamp: new Date(2026, 4, 12, 8).getTime() }),
+      chat({ id: 'orphan', design: { parentId: 'deleted' }, timestamp: new Date(2026, 4, 12, 7).getTime() }),
+      chat({ id: 'parent', timestamp: new Date(2026, 3, 1).getTime() }),
+    ], now);
+    expect(rows.map((row) => (row.kind === 'group' ? `#${row.group}` : `${row.nested ? '  ' : ''}${row.chat.id}`))).toEqual(['#today', 'other', 'orphan', '#earlier', 'parent', '  design']);
+  });
+
+  it("runs a parent's tree line on past every design chat but its last, where it ends", () => {
+    const rows = chatListRows([
+      chat({ id: 'first', design: { parentId: 'parent' }, timestamp: new Date(2026, 4, 12, 9).getTime() }),
+      chat({ id: 'parent', timestamp: new Date(2026, 4, 12, 8).getTime() }),
+      chat({ id: 'second', design: { parentId: 'parent' }, timestamp: new Date(2026, 4, 12, 7).getTime() }),
+      chat({ id: 'third', design: { parentId: 'parent' }, timestamp: new Date(2026, 3, 1).getTime() }),
+      chat({ id: 'other', timestamp: new Date(2026, 4, 12, 6).getTime() }),
+      chat({ id: 'only', design: { parentId: 'other' }, timestamp: new Date(2026, 4, 12, 5).getTime() }),
+      chat({ id: 'forked', design: {}, timestamp: new Date(2026, 4, 12, 4).getTime() }),
+    ], now);
+    expect(rows.flatMap((row) => (row.kind === 'chat' ? [`${row.chat.id}:${row.nested ?? 'top'}`] : []))).toEqual([
+      'parent:top', 'first:continues', 'second:continues', 'third:ends', 'other:top', 'only:ends', 'forked:top',
+    ]);
+  });
+
+  it('drops a date group whose only rows moved under a parent elsewhere', () => {
+    const rows = chatListRows([
+      chat({ id: 'design', design: { parentId: 'parent' }, timestamp: new Date(2026, 4, 11, 9).getTime() }),
+      chat({ id: 'parent', timestamp: new Date(2026, 4, 12, 9).getTime() }),
+    ], now);
+    expect(rows.map((row) => (row.kind === 'group' ? `#${row.group}` : row.chat.id))).toEqual(['#today', 'parent', 'design']);
   });
 
   it('counts tags, most used first then alphabetical', () => {
@@ -257,6 +293,19 @@ describe('a remote host that is not connected', () => {
     expect(wrapper.get('[data-testid="connection-banner-edge"]').attributes('data-state')).toBe('reconnected');
   });
 
+  it("stacks a design chat's header edge between the header's cell and the banner's strip, as the page stacks them", async () => {
+    const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...REMOTE, selectedChat: { id: 'c1', status: 'idle' as const, design: { parentId: 'c0' } } })) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const pane = wrapper.get('[data-testid="grid-pane-chat"]');
+    const [grip, design, banner] = ['pane-grip-chat', 'design-header-edge', 'connection-banner-edge'].map((id) => pane.get(`[data-testid="${id}"]`).element);
+    expect(grip!.compareDocumentPosition(design!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(design!.compareDocumentPosition(banner!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // all three in the gutter's column, beside the chat slot
+    const gutter = grip!.parentElement!.parentElement!;
+    expect([gutter.contains(design!), gutter.contains(banner!), gutter.contains(pane.get('[data-testid="chat-slot"]').element)]).toEqual([true, true, false]);
+  });
+
   it("shows neither banner nor strip over another project's chat kept on screen", async () => {
     const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...REMOTE, selected: { projectKey: 'ssh:h1|/srv/app' }, chatViewShown: true })) });
     const wrapper = mountApp(api);
@@ -281,7 +330,62 @@ describe('a remote host that is not connected', () => {
   });
 });
 
+describe("a design chat's header edge", () => {
+  const DESIGN_CHAT: ShellState = { ...STATE, selectedChat: { id: 'c1', title: 'Design · Fix login', status: 'running', design: {} } };
+  const TAB: ShellEditorTab = { id: 't1', kind: 'code', documentId: 'd1', title: 'a.ts', projectKey: 'p1', relativePath: 'a.ts', displayPath: '/w/alpha/a.ts', dirty: false, readOnly: false, conflict: false };
+  const edge = (wrapper: VueWrapper) => wrapper.find('[data-testid="grid-pane-chat"] [data-testid="design-header-edge"]');
+
+  function mountWith(state: ShellState) {
+    const api = fakeShellApi([], { getState: vi.fn(async () => state), getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })) });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    return { api, wrapper };
+  }
+
+  it("continues the page's design header across the gutter in the header's own box, hidden from AT", async () => {
+    const { wrapper } = mountWith(DESIGN_CHAT);
+    await flushPromises();
+    expect(edge(wrapper).attributes('aria-hidden')).toBe('true');
+    expect(edge(wrapper).classes()).toEqual(DESIGN_STRIP.split(' '));
+  });
+
+  it('follows the selection: none for a chat that is not a design chat, nor while the placeholder fills the slot', async () => {
+    const { api, wrapper } = mountWith(STATE);
+    await flushPromises();
+    expect(edge(wrapper).exists()).toBe(false);
+    api.push(DESIGN_CHAT);
+    await flushPromises();
+    expect(edge(wrapper).exists()).toBe(true);
+    api.push({ ...DESIGN_CHAT, chatViewShown: false });
+    await flushPromises();
+    expect(edge(wrapper).exists()).toBe(false);
+  });
+
+  it('leaves the gutter while the focus overlay covers the chat view', async () => {
+    const { wrapper } = mountWith(DESIGN_CHAT);
+    await flushPromises();
+    await wrapper.get('[data-testid="editor-focus-toggle"]').trigger('click');
+    expect(edge(wrapper).exists()).toBe(false);
+  });
+});
+
 describe('App and title bar', () => {
+  it("lets go of a design tab's markup and tweaks once main closes the tab for good, and of no other tab's", async () => {
+    const api = fakeShellApi();
+    mountApp(api);
+    await flushPromises();
+    const freeze = { png: 'data:image/png;base64,', imageWidth: 1, imageHeight: 1, width: 1, height: 1, elements: [] } as unknown as DesignFreeze;
+    for (const tabId of ['design-1', 'design-2']) {
+      startMarkupSession(tabId, freeze);
+      ensureTweaksSession(tabId).open = true;
+    }
+    api.designClosed('design-1');
+    expect(markupSession('design-1')).toBeUndefined();
+    expect(tweaksSession('design-1')).toBeUndefined();
+    expect(markupSession('design-2')).toBeDefined();
+    expect(tweaksSession('design-2')?.open).toBe(true);
+    api.designClosed('design-2');
+  });
+
   it('shows the project › chat breadcrumb and reports the chat slot rectangle', async () => {
     const api = fakeShellApi();
     const wrapper = mountApp(api);

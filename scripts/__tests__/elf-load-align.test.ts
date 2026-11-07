@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs helper, no types
-import { clampLoadAlign } from '../elf-load-align.mjs';
+import { clampLoadAlign } from '../elf-load-align.ts';
 import { aligns, elf, NODE_LINUX_X64, PT_LOAD, type Segment } from './elf-fixture';
 
-const clamp = (data: Buffer): Buffer => clampLoadAlign(data, 'node') as Buffer;
+const clamp = (data: Buffer): Buffer => clampLoadAlign(data, 'node');
 const load = (offset: number, vaddr: number, align: number): Segment => ({ type: PT_LOAD, offset, vaddr, filesz: 0x1000, align });
 
 describe('clampLoadAlign', () => {

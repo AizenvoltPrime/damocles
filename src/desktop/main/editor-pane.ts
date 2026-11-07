@@ -91,7 +91,7 @@ export const FLUSH_TIMEOUT_MS = 2000;
 // (formatter-hosts.ts) plus the round trips.
 export const FORMAT_FLUSH_MS_PER_DOCUMENT: number = 2 * EDITOR_FORMAT_TIMEOUT_MS + 1000;
 
-type FileTabKind = Exclude<EditorTabKind, 'browser'>;
+type FileTabKind = Exclude<EditorTabKind, 'browser' | 'designPreview'>;
 
 // Tabs that are no file, whatever document they hold.
 const NO_PATH_TAB_KINDS: ReadonlySet<EditorTabKind> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
@@ -203,12 +203,15 @@ export interface PersistedEditor {
   readonly recent: readonly FileRef[];
 }
 
-// The selected chat's browser pages, which the pane shows as tabs after its file tabs (D14).
+// The selected chat's browser pages and design previews, which the pane shows as tabs after its file tabs (D14, PD-33).
 export interface BrowserTabSource {
   tabs(): readonly ShellEditorTab[];
   close(tabId: string): void;
   // the active tab changed; a page tab's page becomes the only page view shown
   activeChanged(tabId: string | null): void;
+  // a design preview's file: its absolute path copied, or mentioned in its design chat; nothing for a browser page
+  copyPath(tabId: string): Promise<void>;
+  mention(tabId: string): Promise<void>;
 }
 
 export interface EditorPaneDeps {
@@ -730,7 +733,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (this.activeId === null) return undefined;
     const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
     if (tab) return tab.kind;
-    return this.browserTabs().some((candidate) => candidate.id === this.activeId) ? 'browser' : undefined;
+    return this.browserTabs().find((candidate) => candidate.id === this.activeId)?.kind;
   }
 
   /** The active tab to source control: a code tab of a file in an open repository, or a diff of a working tree or index change. */
@@ -1176,6 +1179,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   async mention(tabId: string): Promise<void> {
+    if (this.browserTabs().some((candidate) => candidate.id === tabId)) {
+      await this.deps.browser()?.mention(tabId);
+      return;
+    }
     const tab = this.tab(tabId);
     const documentId = tab.documentId ?? tab.diff?.modifiedId;
     const document = documentId === undefined ? undefined : this.deps.documents.get(documentId);
@@ -1631,10 +1638,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     await this.closeTabs(targets, { ask: true });
   }
 
-  // A page tab has no file: Copy path, Reveal and the markdown views do nothing there.
+  // A browser page has no file and a design preview's is on its chat's machine: Reveal and the markdown views do nothing there.
   private async browserTabAction(action: EditorTabAction, tabId: string): Promise<void> {
     if (action === 'activate') this.activate(tabId);
     else if (action === 'close') this.deps.browser()?.close(tabId);
+    else if (action === 'copyPath') await this.deps.browser()?.copyPath(tabId);
     else if (action === 'closeOthers' || action === 'closeRight' || action === 'closeAll') await this.closeAround(action, tabId);
   }
 

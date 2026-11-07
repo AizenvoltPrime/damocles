@@ -65,7 +65,7 @@ Most `damocles.*` settings apply to the whole window; the ones a chat reads for 
 | `damocles.memory.dedup.threshold` | Similarity above which a new memory is merged as a near-duplicate at consolidation | `0.8` |
 | `damocles.pinnedHeaderHidden` | Hide the pinned user-message sticky header; a floating chip restores it (global scope, persists across workspaces) | `false` |
 
-Settings mentioned elsewhere in these docs that this table does not list include `damocles.compass.enabled`, `damocles.browser.enabled`, `damocles.browser.devToolsPort`, `damocles.showCacheMissNotices`, `damocles.tools.disabled`, `damocles.mcp.disabledServers`, `damocles.mcp.disabledProjectServers`, `damocles.openai.preferApiKey`, `damocles.<provider>.preferApiKey`, `damocles.maxBudgetUsd` and the desktop app's `damocles.desktop.*` settings; each is described on the page that mentions it.
+Settings mentioned elsewhere in these docs that this table does not list include `damocles.compass.enabled`, `damocles.browser.enabled`, `damocles.browser.devToolsPort`, `damocles.design.enabled`, `damocles.showCacheMissNotices`, `damocles.tools.disabled`, `damocles.mcp.disabledServers`, `damocles.mcp.disabledProjectServers`, `damocles.openai.preferApiKey`, `damocles.<provider>.preferApiKey`, `damocles.maxBudgetUsd` and the desktop app's `damocles.desktop.*` settings; each is described on the page that mentions it.
 
 ## Localization
 

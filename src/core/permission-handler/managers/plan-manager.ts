@@ -116,6 +116,7 @@ export class PlanManager {
         toolUseId,
         planContent,
         ...(context.planVersion !== undefined ? { planVersion: context.planVersion } : {}),
+        ...(context.designLink !== undefined ? { designLink: context.designLink } : {}),
         owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       };

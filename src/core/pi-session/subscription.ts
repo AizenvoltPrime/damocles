@@ -3,14 +3,14 @@ import * as path from 'path';
 import { stripBom } from '../config/bom';
 import { PI_AGENT_DIR } from './agent-dir';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
-import { SUBSCRIPTION_COMMIT, SUBSCRIPTION_REPO } from './subscription-pin';
+import subscriptionPin from './subscription-pin.json' with { type: 'json' };
 
 // The plugin wraps pi-ai's Anthropic transport and adds Claude Code's billing block, which bills the
 // subscription's included allowance; the same OAuth token without it meters as extra usage.
 
 // `@<sha>`, not `#<sha>`: pi's parseGitUrl keeps a `#` fragment on the clone URL, which breaks `git clone`.
 // Before bumping, run the plugin's tests with its @earendil-works/pi-* devDependencies set to Damocles' versions; nothing in this repo's CI clones it.
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@${SUBSCRIPTION_COMMIT}`;
+export const SUBSCRIPTION_SOURCE: string = `${subscriptionPin.repo}@${subscriptionPin.commit}`;
 
 // pi keys git packages by repo identity, so a replaced plugin's entry is invisible to checks on the current repo.
 export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = [
@@ -29,7 +29,7 @@ function namesRepo(source: string, repo: string): boolean {
 
 export function classifySubscriptionSource(source: string): SubscriptionSourceKind {
   if (source === SUBSCRIPTION_SOURCE) return 'current';
-  if (namesRepo(source, SUBSCRIPTION_REPO)) return 'stale';
+  if (namesRepo(source, subscriptionPin.repo)) return 'stale';
   if (LEGACY_SUBSCRIPTION_REPOS.some((repo) => namesRepo(source, repo))) return 'legacy';
   return 'unrelated';
 }

@@ -134,7 +134,37 @@
   "files.outside",
   "files.listOutside",
   "sessionFiles",
-  "files.readOutsideLimit"
+  "files.readOutsideLimit",
+  "question.typedPreview",
+  "panels.parent",
+  "chat.design",
+  "chat.designFilesFailed",
+  "chat.designRewind",
+  "designVersionPrompt",
+  "chat.designOpenInBrowser",
+  "design.read",
+  "design.info",
+  "design.openPreview",
+  "design.changed",
+  "chat.designOpenPreview",
+  "design.capture",
+  "design.probe",
+  "design.journey",
+  "design.replayJourney",
+  "design.markup",
+  "design.tweak",
+  "design.tweaks",
+  "chat.designReferences",
+  "user.browser.parityCapture",
+  "chats.designFinishedVersion",
+  "core.attachFeatures",
+  "chat.designAwaitingContinue",
+  "chat.designMarkupMarks",
+  "chat.designStructuredChanges",
+  "chat.toolMetadataText",
+  "question.multiSelectPreviews",
+  "chats.designSuperseded",
+  "chat.designApproval"
  ],
  "contracts": {
   "CoreRequests": {
@@ -285,6 +315,697 @@
           "text": {
            "optional": false,
            "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "design.capture": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "scale": {
+           "optional": false,
+           "type": "number"
+          },
+          "state": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "width": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "contentHeight": {
+           "optional": false,
+           "type": "number"
+          },
+          "cssHeight": {
+           "optional": false,
+           "type": "number"
+          },
+          "cssWidth": {
+           "optional": false,
+           "type": "number"
+          },
+          "png": {
+           "optional": false,
+           "type": {
+            "named": "Uint8Array<ArrayBufferLike>"
+           }
+          },
+          "scale": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "design.journey": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "outline": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "state": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "steps": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "action": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"assert\"",
+                 "\"click\"",
+                 "\"fill\"",
+                 "\"press\"",
+                 "\"select\""
+                ]
+               }
+              },
+              "expect": {
+               "optional": true,
+               "type": {
+                "union": [
+                 {
+                  "object": {
+                   "textContains": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "valueEquals": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "visible": {
+                    "optional": false,
+                    "type": "boolean"
+                   }
+                  }
+                 }
+                ]
+               }
+              },
+              "key": {
+               "optional": true,
+               "type": {
+                "union": [
+                 "\"ArrowDown\"",
+                 "\"ArrowLeft\"",
+                 "\"ArrowRight\"",
+                 "\"ArrowUp\"",
+                 "\"Enter\"",
+                 "\"Escape\"",
+                 "\"Space\"",
+                 "\"Tab\""
+                ]
+               }
+              },
+              "target": {
+               "optional": false,
+               "type": {
+                "union": [
+                 {
+                  "object": {
+                   "label": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "name": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "role": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "placeholder": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "text": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                ]
+               }
+              },
+              "value": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
+          },
+          "widths": {
+           "optional": false,
+           "type": {
+            "array": "number"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "consoleErrors": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "widths": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "outline": {
+               "optional": true,
+               "type": "string"
+              },
+              "passed": {
+               "optional": false,
+               "type": "boolean"
+              },
+              "steps": {
+               "optional": false,
+               "type": {
+                "array": {
+                 "object": {
+                  "failure": {
+                   "optional": true,
+                   "type": {
+                    "union": [
+                     "\"ambiguous\"",
+                     "\"covered\"",
+                     "\"error\"",
+                     "\"expectation\"",
+                     "\"hidden\"",
+                     "\"noOption\"",
+                     "\"notEditable\""
+                    ]
+                   }
+                  },
+                  "hiddenAt": {
+                   "optional": true,
+                   "type": "number"
+                  },
+                  "message": {
+                   "optional": true,
+                   "type": "string"
+                  },
+                  "ok": {
+                   "optional": false,
+                   "type": "boolean"
+                  }
+                 }
+                }
+               }
+              },
+              "width": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "design.openPreview": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "panelId": {
+           "optional": false,
+           "type": "string"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "design.probe": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "state": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "sweepTo": {
+           "optional": true,
+           "type": "number"
+          },
+          "widths": {
+           "optional": false,
+           "type": {
+            "array": "number"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "consoleErrors": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "sweep": {
+           "optional": true,
+           "type": {
+            "object": {
+             "from": {
+              "optional": false,
+              "type": "number"
+             },
+             "overflowAt": {
+              "optional": false,
+              "type": {
+               "array": {
+                "object": {
+                 "scrollWidth": {
+                  "optional": false,
+                  "type": "number"
+                 },
+                 "width": {
+                  "optional": false,
+                  "type": "number"
+                 }
+                }
+               }
+              }
+             },
+             "step": {
+              "optional": false,
+              "type": "number"
+             },
+             "to": {
+              "optional": false,
+              "type": "number"
+             }
+            }
+           }
+          },
+          "widths": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "clientWidth": {
+               "optional": false,
+               "type": "number"
+              },
+              "contentHeight": {
+               "optional": false,
+               "type": "number"
+              },
+              "elements": {
+               "optional": false,
+               "type": {
+                "array": {
+                 "object": {
+                  "bind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "component": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "id": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "rect": {
+                   "optional": false,
+                   "type": {
+                    "object": {
+                     "h": {
+                      "optional": false,
+                      "type": "number"
+                     },
+                     "w": {
+                      "optional": false,
+                      "type": "number"
+                     },
+                     "x": {
+                      "optional": false,
+                      "type": "number"
+                     },
+                     "y": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   }
+                  },
+                  "tag": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "variant": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "visible": {
+                   "optional": false,
+                   "type": "boolean"
+                  }
+                 }
+                }
+               }
+              },
+              "overflow": {
+               "optional": false,
+               "type": "boolean"
+              },
+              "overflowing": {
+               "optional": false,
+               "type": {
+                "array": {
+                 "object": {
+                  "element": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "width": {
+                   "optional": false,
+                   "type": "number"
+                  }
+                 }
+                }
+               }
+              },
+              "scrollWidth": {
+               "optional": false,
+               "type": "number"
+              },
+              "width": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "design.replayJourney": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "panelId": {
+           "optional": false,
+           "type": "string"
+          },
+          "reducedMotion": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "state": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "steps": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "action": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"assert\"",
+                 "\"click\"",
+                 "\"fill\"",
+                 "\"press\"",
+                 "\"select\""
+                ]
+               }
+              },
+              "expect": {
+               "optional": true,
+               "type": {
+                "union": [
+                 {
+                  "object": {
+                   "textContains": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "valueEquals": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "visible": {
+                    "optional": false,
+                    "type": "boolean"
+                   }
+                  }
+                 }
+                ]
+               }
+              },
+              "key": {
+               "optional": true,
+               "type": {
+                "union": [
+                 "\"ArrowDown\"",
+                 "\"ArrowLeft\"",
+                 "\"ArrowRight\"",
+                 "\"ArrowUp\"",
+                 "\"Enter\"",
+                 "\"Escape\"",
+                 "\"Space\"",
+                 "\"Tab\""
+                ]
+               }
+              },
+              "target": {
+               "optional": false,
+               "type": {
+                "union": [
+                 {
+                  "object": {
+                   "label": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "name": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "role": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "placeholder": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "text": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                ]
+               }
+              },
+              "value": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
           }
          }
         }
@@ -3667,6 +4388,391 @@
       }
      }
     },
+    "design.info": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          "undefined",
+          {
+           "object": {
+            "breakpoints": {
+             "optional": false,
+             "type": {
+              "array": {
+               "object": {
+                "name": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "width": {
+                 "optional": false,
+                 "type": "number"
+                }
+               }
+              }
+             }
+            },
+            "checked": {
+             "optional": false,
+             "type": {
+              "array": "number"
+             }
+            },
+            "journey": {
+             "optional": false,
+             "type": {
+              "array": "number"
+             }
+            },
+            "path": {
+             "optional": false,
+             "type": "string"
+            },
+            "primary": {
+             "optional": false,
+             "type": "number"
+            },
+            "screenId": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "string"
+              ]
+             }
+            },
+            "states": {
+             "optional": false,
+             "type": {
+              "array": "string"
+             }
+            },
+            "title": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "string"
+              ]
+             }
+            },
+            "tweaks": {
+             "optional": true,
+             "type": {
+              "union": [
+               "null",
+               {
+                "object": {
+                 "controls": {
+                  "optional": false,
+                  "type": {
+                   "array": {
+                    "object": {
+                     "id": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "kind": {
+                      "optional": false,
+                      "type": {
+                       "union": [
+                        "\"segment\"",
+                        "\"swatch\""
+                       ]
+                      }
+                     },
+                     "label": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "locked": {
+                      "optional": false,
+                      "type": {
+                       "union": [
+                        "null",
+                        {
+                         "object": {
+                          "decisionId": {
+                           "optional": false,
+                           "type": "string"
+                          },
+                          "value": {
+                           "optional": false,
+                           "type": "string"
+                          }
+                         }
+                        }
+                       ]
+                      }
+                     },
+                     "property": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "stops": {
+                      "optional": false,
+                      "type": {
+                       "array": {
+                        "object": {
+                         "token": {
+                          "optional": false,
+                          "type": "string"
+                         },
+                         "value": {
+                          "optional": false,
+                          "type": "string"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 },
+                 "toolCallId": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              ]
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "design.markup": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "json": {
+           "optional": false,
+           "type": "unknown"
+          },
+          "panelId": {
+           "optional": false,
+           "type": "string"
+          },
+          "png": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "feedbackId": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "refused": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "design.read": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          "\"tooLarge\"",
+          "undefined",
+          {
+           "object": {
+            "bytes": {
+             "optional": false,
+             "type": {
+              "named": "Uint8Array<ArrayBufferLike>"
+             }
+            },
+            "fidelity": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"interactive\"",
+               "\"static\"",
+               "null"
+              ]
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "design.tweak": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "panelId": {
+           "optional": false,
+           "type": "string"
+          },
+          "tweakId": {
+           "optional": false,
+           "type": "string"
+          },
+          "value": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "kept": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          },
+          {
+           "object": {
+            "refused": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
     "e2e.clientNetworkAnswers": {
      "optional": false,
      "type": {
@@ -6062,6 +7168,8 @@
             "array": {
              "union": [
               "\"approval\"",
+              "\"designApproval\"",
+              "\"designVersion\"",
               "\"input\"",
               "\"plan\"",
               "\"question\"",
@@ -6084,6 +7192,8 @@
                "type": {
                 "union": [
                  "\"approval\"",
+                 "\"designApproval\"",
+                 "\"designVersion\"",
                  "\"input\"",
                  "\"plan\"",
                  "\"question\"",
@@ -6653,6 +7763,23 @@
            "type": "string"
           }
          }
+        }
+       }
+      }
+     }
+    },
+    "design.changed": {
+     "optional": false,
+     "type": {
+      "object": {
+       "designId": {
+        "optional": false,
+        "type": "string"
+       },
+       "paths": {
+        "optional": false,
+        "type": {
+         "array": "string"
         }
        }
       }
@@ -7918,6 +9045,10 @@
         }
        },
        "owner": {
+        "optional": true,
+        "type": "string"
+       },
+       "parent": {
         "optional": true,
         "type": "string"
        },
@@ -13415,6 +14546,12 @@
            "optional": false,
            "type": "boolean"
           },
+          "features": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
           "hostId": {
            "optional": false,
            "type": "string"
@@ -16446,7 +17583,81 @@
           "metadata": {
            "optional": true,
            "type": {
-            "object": {},
+            "object": {
+             "refusal": {
+              "optional": true,
+              "type": {
+               "object": {
+                "args": {
+                 "optional": true,
+                 "type": {
+                  "array": {
+                   "union": [
+                    "number",
+                    "string",
+                    {
+                     "object": {
+                      "number": {
+                       "optional": false,
+                       "type": "number"
+                      }
+                     }
+                    },
+                    {
+                     "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                    }
+                   ]
+                  }
+                 }
+                },
+                "message": {
+                 "optional": false,
+                 "type": "string"
+                }
+               }
+              }
+             },
+             "widthChecks": {
+              "optional": true,
+              "type": {
+               "object": {
+                "skipped": {
+                 "optional": false,
+                 "type": {
+                  "object": {
+                   "args": {
+                    "optional": true,
+                    "type": {
+                     "array": {
+                      "union": [
+                       "number",
+                       "string",
+                       {
+                        "object": {
+                         "number": {
+                          "optional": false,
+                          "type": "number"
+                         }
+                        }
+                       },
+                       {
+                        "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                       }
+                      ]
+                     }
+                    }
+                   },
+                   "message": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            },
             "index": [
              {
               "key": "string",
@@ -18194,6 +19405,41 @@
       }
      }
     },
+    "\"composerAddImage\"": {
+     "object": {
+      "image": {
+       "optional": false,
+       "type": {
+        "object": {
+         "data": {
+          "optional": false,
+          "type": "string"
+         },
+         "height": {
+          "optional": false,
+          "type": "number"
+         },
+         "mimeType": {
+          "optional": false,
+          "type": "\"image/png\""
+         },
+         "width": {
+          "optional": false,
+          "type": "number"
+         }
+        }
+       }
+      },
+      "origin": {
+       "optional": false,
+       "type": "\"designPreview\""
+      },
+      "type": {
+       "optional": false,
+       "type": "\"composerAddImage\""
+      }
+     }
+    },
     "\"composerAppend\"": {
      "object": {
       "text": {
@@ -19866,6 +21112,693 @@
       }
      }
     },
+    "\"designApprovalClosed\"": {
+     "object": {
+      "promptId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designApprovalClosed\""
+      }
+     }
+    },
+    "\"designBrief\"": {
+     "object": {
+      "brief": {
+       "optional": false,
+       "type": {
+        "object": {
+         "briefId": {
+          "optional": false,
+          "type": "string"
+         },
+         "reopened": {
+          "optional": false,
+          "type": "boolean"
+         },
+         "text": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
+      },
+      "entryId": {
+       "optional": false,
+       "type": "string"
+      },
+      "replayed": {
+       "optional": true,
+       "type": "true"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designBrief\""
+      }
+     }
+    },
+    "\"designFiles\"": {
+     "object": {
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "failed": {
+       "optional": true,
+       "type": "true"
+      },
+      "files": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "bytes": {
+           "optional": false,
+           "type": "number"
+          },
+          "path": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designFiles\""
+      }
+     }
+    },
+    "\"designJourneyReplayed\"": {
+     "object": {
+      "error": {
+       "optional": true,
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
+      },
+      "ok": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "toolCallId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designJourneyReplayed\""
+      }
+     }
+    },
+    "\"designPreviewImage\"": {
+     "object": {
+      "error": {
+       "optional": true,
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
+      },
+      "image": {
+       "optional": true,
+       "type": {
+        "object": {
+         "data": {
+          "optional": false,
+          "type": "string"
+         },
+         "height": {
+          "optional": false,
+          "type": "number"
+         },
+         "mimeType": {
+          "optional": false,
+          "type": "\"image/png\""
+         },
+         "width": {
+          "optional": false,
+          "type": "number"
+         }
+        }
+       }
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designPreviewImage\""
+      }
+     }
+    },
+    "\"designResult\"": {
+     "object": {
+      "entryId": {
+       "optional": false,
+       "type": "string"
+      },
+      "replayed": {
+       "optional": true,
+       "type": "true"
+      },
+      "result": {
+       "optional": false,
+       "type": {
+        "object": {
+         "changes": {
+          "optional": false,
+          "type": {
+           "array": {
+            "union": [
+             {
+              "object": {
+               "chosen": {
+                "optional": false,
+                "type": "string"
+               },
+               "id": {
+                "optional": false,
+                "type": "string"
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"decisionAdded\""
+               },
+               "title": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             },
+             {
+              "object": {
+               "kind": {
+                "optional": false,
+                "type": {
+                 "union": [
+                  "\"screenAdded\"",
+                  "\"screenChanged\"",
+                  "\"screenRemoved\""
+                 ]
+                }
+               },
+               "screen": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            ]
+           }
+          }
+         },
+         "check": {
+          "optional": false,
+          "type": {
+           "object": {
+            "errors": {
+             "optional": false,
+             "type": "0"
+            },
+            "warnings": {
+             "optional": false,
+             "type": {
+              "array": {
+               "object": {
+                "breakpoint": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "element": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "hint": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "message": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "more": {
+                 "optional": true,
+                 "type": "number"
+                },
+                "rule": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "screen": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "severity": {
+                 "optional": false,
+                 "type": {
+                  "union": [
+                   "\"error\"",
+                   "\"warning\""
+                  ]
+                 }
+                },
+                "skill": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "width": {
+                 "optional": true,
+                 "type": "number"
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "decisions": {
+          "optional": false,
+          "type": {
+           "array": {
+            "object": {
+             "chosen": {
+              "optional": false,
+              "type": "string"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             },
+             "title": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          }
+         },
+         "designId": {
+          "optional": false,
+          "type": "string"
+         },
+         "folder": {
+          "optional": false,
+          "type": "string"
+         },
+         "journeys": {
+          "optional": false,
+          "type": {
+           "array": {
+            "union": [
+             {
+              "object": {
+               "file": {
+                "optional": false,
+                "type": "string"
+               },
+               "passed": {
+                "optional": false,
+                "type": "boolean"
+               },
+               "screen": {
+                "optional": false,
+                "type": "string"
+               },
+               "spec": {
+                "optional": false,
+                "type": "string"
+               },
+               "untested": {
+                "optional": false,
+                "type": {
+                 "array": "string"
+                }
+               },
+               "widths": {
+                "optional": false,
+                "type": {
+                 "array": "number"
+                }
+               }
+              }
+             },
+             {
+              "object": {
+               "screen": {
+                "optional": false,
+                "type": "string"
+               },
+               "waiver": {
+                "optional": false,
+                "type": "true"
+               }
+              }
+             }
+            ]
+           }
+          }
+         },
+         "previousVersion": {
+          "optional": false,
+          "type": {
+           "union": [
+            "null",
+            "number"
+           ]
+          }
+         },
+         "screens": {
+          "optional": false,
+          "type": {
+           "array": "string"
+          }
+         },
+         "title": {
+          "optional": false,
+          "type": "string"
+         },
+         "version": {
+          "optional": false,
+          "type": "number"
+         },
+         "versionPause": {
+          "optional": true,
+          "type": {
+           "object": {
+            "fromVersion": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designResult\""
+      }
+     }
+    },
+    "\"designState\"": {
+     "object": {
+      "design": {
+       "optional": false,
+       "type": {
+        "union": [
+         "null",
+         {
+          "object": {
+           "decisions": {
+            "optional": false,
+            "type": {
+             "array": {
+              "object": {
+               "chosen": {
+                "optional": false,
+                "type": "string"
+               },
+               "id": {
+                "optional": false,
+                "type": "string"
+               },
+               "rejected": {
+                "optional": false,
+                "type": {
+                 "array": "string"
+                }
+               },
+               "source": {
+                "optional": false,
+                "type": {
+                 "object": {
+                  "kind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"brief\"",
+                     "\"chat\"",
+                     "\"markup\"",
+                     "\"question\"",
+                     "\"reference\"",
+                     "\"tweak\""
+                    ]
+                   }
+                  },
+                  "ref": {
+                   "optional": false,
+                   "type": "string"
+                  }
+                 }
+                }
+               },
+               "supersedes": {
+                "optional": true,
+                "type": "string"
+               },
+               "title": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           },
+           "designId": {
+            "optional": false,
+            "type": "string"
+           },
+           "enabled": {
+            "optional": false,
+            "type": "boolean"
+           },
+           "fidelity": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"interactive\"",
+              "\"static\"",
+              "null"
+             ]
+            }
+           },
+           "folder": {
+            "optional": false,
+            "type": "string"
+           },
+           "parentSessionId": {
+            "optional": false,
+            "type": {
+             "union": [
+              "null",
+              "string"
+             ]
+            }
+           },
+           "parentTitle": {
+            "optional": false,
+            "type": {
+             "union": [
+              "null",
+              "string"
+             ]
+            }
+           },
+           "ruleSet": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"full\"",
+              "\"reduced\""
+             ]
+            }
+           },
+           "status": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"draft\"",
+              "\"finished\""
+             ]
+            }
+           },
+           "superseded": {
+            "optional": false,
+            "type": "boolean"
+           },
+           "supersededBy": {
+            "optional": false,
+            "type": {
+             "union": [
+              "null",
+              "string"
+             ]
+            }
+           },
+           "title": {
+            "optional": false,
+            "type": "string"
+           },
+           "version": {
+            "optional": false,
+            "type": {
+             "union": [
+              "null",
+              "number"
+             ]
+            }
+           }
+          }
+         }
+        ]
+       }
+      },
+      "link": {
+       "optional": false,
+       "type": {
+        "union": [
+         "null",
+         {
+          "object": {
+           "awaitingContinue": {
+            "optional": true,
+            "type": {
+             "union": [
+              "null",
+              "string"
+             ]
+            }
+           },
+           "designId": {
+            "optional": false,
+            "type": "string"
+           },
+           "designSessionId": {
+            "optional": false,
+            "type": {
+             "union": [
+              "null",
+              "string"
+             ]
+            }
+           },
+           "folder": {
+            "optional": false,
+            "type": "string"
+           },
+           "status": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"draft\"",
+              "\"finished\""
+             ]
+            }
+           },
+           "title": {
+            "optional": false,
+            "type": "string"
+           },
+           "version": {
+            "optional": false,
+            "type": {
+             "union": [
+              "null",
+              "number"
+             ]
+            }
+           }
+          }
+         }
+        ]
+       }
+      },
+      "openInBrowser": {
+       "optional": true,
+       "type": "boolean"
+      },
+      "openPreview": {
+       "optional": true,
+       "type": "boolean"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designState\""
+      }
+     }
+    },
+    "\"designVersionDecisionClosed\"": {
+     "object": {
+      "promptId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"designVersionDecisionClosed\""
+      }
+     }
+    },
     "\"done\"": {
      "object": {
       "data": {
@@ -20489,6 +22422,10 @@
           "optional": false,
           "type": "boolean"
          },
+         "designPreview": {
+          "optional": true,
+          "type": "boolean"
+         },
          "diffReview": {
           "optional": false,
           "type": "boolean"
@@ -20665,6 +22602,10 @@
          "of": {
           "\"image\"": {
            "object": {
+            "origin": {
+             "optional": true,
+             "type": "\"designPreview\""
+            },
             "source": {
              "optional": false,
              "type": {
@@ -20730,6 +22671,10 @@
              "of": {
               "\"image\"": {
                "object": {
+                "origin": {
+                 "optional": true,
+                 "type": "\"designPreview\""
+                },
                 "source": {
                  "optional": false,
                  "type": {
@@ -25000,6 +26945,10 @@
               "of": {
                "\"image\"": {
                 "object": {
+                 "origin": {
+                  "optional": true,
+                  "type": "\"designPreview\""
+                 },
                  "source": {
                   "optional": false,
                   "type": {
@@ -26185,6 +28134,10 @@
          "of": {
           "\"image\"": {
            "object": {
+            "origin": {
+             "optional": true,
+             "type": "\"designPreview\""
+            },
             "source": {
              "optional": false,
              "type": {
@@ -26283,6 +28236,10 @@
              "of": {
               "\"image\"": {
                "object": {
+                "origin": {
+                 "optional": true,
+                 "type": "\"designPreview\""
+                },
                 "source": {
                  "optional": false,
                  "type": {
@@ -26625,6 +28582,10 @@
          "of": {
           "\"image\"": {
            "object": {
+            "origin": {
+             "optional": true,
+             "type": "\"designPreview\""
+            },
             "source": {
              "optional": false,
              "type": {
@@ -26942,6 +28903,353 @@
       "type": {
        "optional": false,
        "type": "\"relatedMemories\""
+      }
+     }
+    },
+    "\"requestDesignApproval\"": {
+     "object": {
+      "changes": {
+       "optional": false,
+       "type": {
+        "array": {
+         "union": [
+          {
+           "object": {
+            "chosen": {
+             "optional": false,
+             "type": "string"
+            },
+            "id": {
+             "optional": false,
+             "type": "string"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"decisionAdded\""
+            },
+            "title": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"screenAdded\"",
+               "\"screenChanged\"",
+               "\"screenRemoved\""
+              ]
+             }
+            },
+            "screen": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         ]
+        }
+       }
+      },
+      "decisions": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "chosen": {
+           "optional": false,
+           "type": "string"
+          },
+          "id": {
+           "optional": false,
+           "type": "string"
+          },
+          "title": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "hasParent": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "owner": {
+       "optional": false,
+       "type": {
+        "variants": "kind",
+        "of": {
+         "\"main\"": {
+          "object": {
+           "kind": {
+            "optional": false,
+            "type": "\"main\""
+           }
+          }
+         },
+         "\"subagent\"": {
+          "object": {
+           "agentId": {
+            "optional": false,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": "\"subagent\""
+           }
+          }
+         },
+         "\"team\"": {
+          "object": {
+           "agentId": {
+            "optional": false,
+            "type": "string"
+           },
+           "agentName": {
+            "optional": true,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": "\"team\""
+           },
+           "teamId": {
+            "optional": false,
+            "type": "string"
+           },
+           "teamTitle": {
+            "optional": true,
+            "type": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "previousVersion": {
+       "optional": false,
+       "type": {
+        "union": [
+         "null",
+         "number"
+        ]
+       }
+      },
+      "promptId": {
+       "optional": false,
+       "type": "string"
+      },
+      "screens": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "file": {
+           "optional": false,
+           "type": "string"
+          },
+          "id": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
+      "summary": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"requestDesignApproval\""
+      },
+      "warnings": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "breakpoint": {
+           "optional": true,
+           "type": "string"
+          },
+          "element": {
+           "optional": false,
+           "type": "string"
+          },
+          "hint": {
+           "optional": true,
+           "type": "string"
+          },
+          "message": {
+           "optional": false,
+           "type": "string"
+          },
+          "more": {
+           "optional": true,
+           "type": "number"
+          },
+          "rule": {
+           "optional": false,
+           "type": "string"
+          },
+          "screen": {
+           "optional": false,
+           "type": "string"
+          },
+          "severity": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"error\"",
+             "\"warning\""
+            ]
+           }
+          },
+          "skill": {
+           "optional": true,
+           "type": "string"
+          },
+          "width": {
+           "optional": true,
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "\"requestDesignVersionDecision\"": {
+     "object": {
+      "changes": {
+       "optional": false,
+       "type": {
+        "array": {
+         "union": [
+          {
+           "object": {
+            "chosen": {
+             "optional": false,
+             "type": "string"
+            },
+            "id": {
+             "optional": false,
+             "type": "string"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"decisionAdded\""
+            },
+            "title": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"screenAdded\"",
+               "\"screenChanged\"",
+               "\"screenRemoved\""
+              ]
+             }
+            },
+            "screen": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         ]
+        }
+       }
+      },
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "fromVersion": {
+       "optional": false,
+       "type": "number"
+      },
+      "owner": {
+       "optional": false,
+       "type": {
+        "variants": "kind",
+        "of": {
+         "\"main\"": {
+          "object": {
+           "kind": {
+            "optional": false,
+            "type": "\"main\""
+           }
+          }
+         },
+         "\"subagent\"": {
+          "object": {
+           "agentId": {
+            "optional": false,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": "\"subagent\""
+           }
+          }
+         },
+         "\"team\"": {
+          "object": {
+           "agentId": {
+            "optional": false,
+            "type": "string"
+           },
+           "agentName": {
+            "optional": true,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": "\"team\""
+           },
+           "teamId": {
+            "optional": false,
+            "type": "string"
+           },
+           "teamTitle": {
+            "optional": true,
+            "type": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "promptId": {
+       "optional": false,
+       "type": "string"
+      },
+      "toVersion": {
+       "optional": false,
+       "type": "number"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"requestDesignVersionDecision\""
       }
      }
     },
@@ -27371,6 +29679,100 @@
     },
     "\"requestPlanApproval\"": {
      "object": {
+      "designLink": {
+       "optional": true,
+       "type": {
+        "object": {
+         "decisions": {
+          "optional": false,
+          "type": "number"
+         },
+         "designId": {
+          "optional": false,
+          "type": "string"
+         },
+         "folder": {
+          "optional": false,
+          "type": "string"
+         },
+         "journeysPassed": {
+          "optional": false,
+          "type": {
+           "union": [
+            "boolean",
+            "null"
+           ]
+          }
+         },
+         "screens": {
+          "optional": false,
+          "type": "number"
+         },
+         "title": {
+          "optional": false,
+          "type": "string"
+         },
+         "version": {
+          "optional": false,
+          "type": "number"
+         },
+         "warnings": {
+          "optional": false,
+          "type": {
+           "array": {
+            "object": {
+             "breakpoint": {
+              "optional": true,
+              "type": "string"
+             },
+             "element": {
+              "optional": false,
+              "type": "string"
+             },
+             "hint": {
+              "optional": true,
+              "type": "string"
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             },
+             "more": {
+              "optional": true,
+              "type": "number"
+             },
+             "rule": {
+              "optional": false,
+              "type": "string"
+             },
+             "screen": {
+              "optional": false,
+              "type": "string"
+             },
+             "severity": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"error\"",
+                "\"warning\""
+               ]
+              }
+             },
+             "skill": {
+              "optional": true,
+              "type": "string"
+             },
+             "width": {
+              "optional": true,
+              "type": "number"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      },
       "owner": {
        "optional": false,
        "type": {
@@ -27541,7 +29943,35 @@
               },
               "preview": {
                "optional": true,
-               "type": "string"
+               "type": {
+                "variants": "kind",
+                "of": {
+                 "\"design\"": {
+                  "object": {
+                   "kind": {
+                    "optional": false,
+                    "type": "\"design\""
+                   },
+                   "path": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 "\"markdown\"": {
+                  "object": {
+                   "content": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "kind": {
+                    "optional": false,
+                    "type": "\"markdown\""
+                   }
+                  }
+                 }
+                }
+               }
               }
              }
             }
@@ -27752,6 +30182,61 @@
           "crossesHandOff": {
            "optional": true,
            "type": "boolean"
+          },
+          "designDecisionsAfter": {
+           "optional": true,
+           "type": {
+            "array": {
+             "object": {
+              "chosen": {
+               "optional": false,
+               "type": "string"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "rejected": {
+               "optional": false,
+               "type": {
+                "array": "string"
+               }
+              },
+              "source": {
+               "optional": false,
+               "type": {
+                "object": {
+                 "kind": {
+                  "optional": false,
+                  "type": {
+                   "union": [
+                    "\"brief\"",
+                    "\"chat\"",
+                    "\"markup\"",
+                    "\"question\"",
+                    "\"reference\"",
+                    "\"tweak\""
+                   ]
+                  }
+                 },
+                 "ref": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              },
+              "supersedes": {
+               "optional": true,
+               "type": "string"
+              },
+              "title": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
+           }
           },
           "files": {
            "optional": true,
@@ -29761,6 +32246,29 @@
           "customTitle": {
            "optional": true,
            "type": "string"
+          },
+          "design": {
+           "optional": true,
+           "type": {
+            "object": {
+             "designId": {
+              "optional": false,
+              "type": "string"
+             },
+             "finishedVersion": {
+              "optional": true,
+              "type": "number"
+             },
+             "parentSessionId": {
+              "optional": true,
+              "type": "string"
+             },
+             "superseded": {
+              "optional": true,
+              "type": "boolean"
+             }
+            }
+           }
           },
           "id": {
            "optional": false,
@@ -32781,7 +35289,81 @@
       "metadata": {
        "optional": false,
        "type": {
-        "object": {},
+        "object": {
+         "refusal": {
+          "optional": true,
+          "type": {
+           "object": {
+            "args": {
+             "optional": true,
+             "type": {
+              "array": {
+               "union": [
+                "number",
+                "string",
+                {
+                 "object": {
+                  "number": {
+                   "optional": false,
+                   "type": "number"
+                  }
+                 }
+                },
+                {
+                 "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                }
+               ]
+              }
+             }
+            },
+            "message": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         },
+         "widthChecks": {
+          "optional": true,
+          "type": {
+           "object": {
+            "skipped": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
         "index": [
          {
           "key": "string",
@@ -32947,6 +35529,7 @@
                 "\"browser\"",
                 "\"compass\"",
                 "\"core\"",
+                "\"design\"",
                 "\"image\"",
                 "\"memory\"",
                 "\"subagents\"",
@@ -32993,6 +35576,7 @@
                 "\"browser\"",
                 "\"compass\"",
                 "\"core\"",
+                "\"design\"",
                 "\"image\"",
                 "\"memory\"",
                 "\"subagents\"",
@@ -33938,6 +36522,10 @@
          "of": {
           "\"image\"": {
            "object": {
+            "origin": {
+             "optional": true,
+             "type": "\"designPreview\""
+            },
             "source": {
              "optional": false,
              "type": {
@@ -33989,6 +36577,124 @@
       "correlationId": {
        "optional": false,
        "type": "string"
+      },
+      "designMarkup": {
+       "optional": true,
+       "type": {
+        "object": {
+         "feedbackId": {
+          "optional": false,
+          "type": "string"
+         },
+         "markup": {
+          "optional": true,
+          "type": {
+           "object": {
+            "breakpoint": {
+             "optional": false,
+             "type": "string"
+            },
+            "file": {
+             "optional": false,
+             "type": "string"
+            },
+            "marks": {
+             "optional": false,
+             "type": {
+              "array": {
+               "union": [
+                {
+                 "object": {
+                  "element": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "kind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"change\"",
+                     "\"note\""
+                    ]
+                   }
+                  },
+                  "n": {
+                   "optional": false,
+                   "type": "number"
+                  },
+                  "text": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "type": {
+                   "optional": false,
+                   "type": "\"pin\""
+                  }
+                 }
+                },
+                {
+                 "object": {
+                  "elements": {
+                   "optional": false,
+                   "type": {
+                    "array": "string"
+                   }
+                  },
+                  "type": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"arrow\"",
+                     "\"box\"",
+                     "\"pen\""
+                    ]
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "state": {
+             "optional": false,
+             "type": "string"
+            },
+            "width": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "designReferences": {
+       "optional": true,
+       "type": {
+        "array": {
+         "object": {
+          "id": {
+           "optional": false,
+           "type": "string"
+          },
+          "image": {
+           "optional": false,
+           "type": "string"
+          },
+          "imageIndex": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       }
       },
       "isCommandEcho": {
        "optional": true,
@@ -34282,6 +36988,124 @@
              "type": "\"tool_use\""
             }
            }
+          }
+         }
+        }
+       }
+      },
+      "designMarkup": {
+       "optional": true,
+       "type": {
+        "object": {
+         "feedbackId": {
+          "optional": false,
+          "type": "string"
+         },
+         "markup": {
+          "optional": true,
+          "type": {
+           "object": {
+            "breakpoint": {
+             "optional": false,
+             "type": "string"
+            },
+            "file": {
+             "optional": false,
+             "type": "string"
+            },
+            "marks": {
+             "optional": false,
+             "type": {
+              "array": {
+               "union": [
+                {
+                 "object": {
+                  "element": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "kind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"change\"",
+                     "\"note\""
+                    ]
+                   }
+                  },
+                  "n": {
+                   "optional": false,
+                   "type": "number"
+                  },
+                  "text": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "type": {
+                   "optional": false,
+                   "type": "\"pin\""
+                  }
+                 }
+                },
+                {
+                 "object": {
+                  "elements": {
+                   "optional": false,
+                   "type": {
+                    "array": "string"
+                   }
+                  },
+                  "type": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"arrow\"",
+                     "\"box\"",
+                     "\"pen\""
+                    ]
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "state": {
+             "optional": false,
+             "type": "string"
+            },
+            "width": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "designReferences": {
+       "optional": true,
+       "type": {
+        "array": {
+         "object": {
+          "id": {
+           "optional": false,
+           "type": "string"
+          },
+          "image": {
+           "optional": false,
+           "type": "string"
+          },
+          "imageIndex": {
+           "optional": false,
+           "type": "number"
           }
          }
         }
@@ -35470,7 +38294,75 @@
             },
             "preview": {
              "optional": true,
-             "type": "string"
+             "type": {
+              "variants": "kind",
+              "of": {
+               "\"design\"": {
+                "object": {
+                 "kind": {
+                  "optional": false,
+                  "type": "\"design\""
+                 },
+                 "path": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               },
+               "\"markdown\"": {
+                "object": {
+                 "content": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "kind": {
+                  "optional": false,
+                  "type": "\"markdown\""
+                 }
+                }
+               }
+              }
+             }
+            },
+            "previews": {
+             "optional": true,
+             "type": {
+              "object": {},
+              "index": [
+               {
+                "key": "string",
+                "value": {
+                 "variants": "kind",
+                 "of": {
+                  "\"design\"": {
+                   "object": {
+                    "kind": {
+                     "optional": false,
+                     "type": "\"design\""
+                    },
+                    "path": {
+                     "optional": false,
+                     "type": "string"
+                    }
+                   }
+                  },
+                  "\"markdown\"": {
+                   "object": {
+                    "content": {
+                     "optional": false,
+                     "type": "string"
+                    },
+                    "kind": {
+                     "optional": false,
+                     "type": "\"markdown\""
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              ]
+             }
             }
            }
           }
@@ -37061,6 +39953,66 @@
       }
      }
     },
+    "\"openDesignChat\"": {
+     "object": {
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"openDesignChat\""
+      }
+     }
+    },
+    "\"openDesignFile\"": {
+     "object": {
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "file": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"openDesignFile\""
+      }
+     }
+    },
+    "\"openDesignInBrowser\"": {
+     "object": {
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "relPath": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"openDesignInBrowser\""
+      }
+     }
+    },
+    "\"openDesignPreview\"": {
+     "object": {
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "relPath": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"openDesignPreview\""
+      }
+     }
+    },
     "\"openElementContext\"": {
      "object": {
       "content": {
@@ -37110,6 +40062,14 @@
       "type": {
        "optional": false,
        "type": "\"openMcpToolInfo\""
+      }
+     }
+    },
+    "\"openParentChat\"": {
+     "object": {
+      "type": {
+       "optional": false,
+       "type": "\"openParentChat\""
       }
      }
     },
@@ -37344,6 +40304,10 @@
            "of": {
             "\"image\"": {
              "object": {
+              "origin": {
+               "optional": true,
+               "type": "\"designPreview\""
+              },
               "source": {
                "optional": false,
                "type": {
@@ -37481,6 +40445,22 @@
       }
      }
     },
+    "\"replayDesignJourney\"": {
+     "object": {
+      "reducedMotion": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "toolCallId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"replayDesignJourney\""
+      }
+     }
+    },
     "\"requestCompassReindex\"": {
      "object": {
       "type": {
@@ -37530,6 +40510,42 @@
       "type": {
        "optional": false,
        "type": "\"requestCustomSlashCommands\""
+      }
+     }
+    },
+    "\"requestDesignFiles\"": {
+     "object": {
+      "designId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"requestDesignFiles\""
+      }
+     }
+    },
+    "\"requestDesignPreviewImage\"": {
+     "object": {
+      "optionIndex": {
+       "optional": false,
+       "type": "number"
+      },
+      "questionIndex": {
+       "optional": false,
+       "type": "number"
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "toolUseId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"requestDesignPreviewImage\""
       }
      }
     },
@@ -38017,6 +41033,53 @@
       }
      }
     },
+    "\"resolveDesignApproval\"": {
+     "object": {
+      "choice": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"approve\"",
+         "\"changes\"",
+         "\"stop\""
+        ]
+       }
+      },
+      "feedback": {
+       "optional": true,
+       "type": "string"
+      },
+      "promptId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"resolveDesignApproval\""
+      }
+     }
+    },
+    "\"resolveDesignVersionDecision\"": {
+     "object": {
+      "choice": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"finishFirst\"",
+         "\"replan\""
+        ]
+       }
+      },
+      "promptId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"resolveDesignVersionDecision\""
+      }
+     }
+    },
     "\"resumeSession\"": {
      "object": {
       "sessionId": {
@@ -38216,6 +41279,10 @@
            "of": {
             "\"image\"": {
              "object": {
+              "origin": {
+               "optional": true,
+               "type": "\"designPreview\""
+              },
               "source": {
                "optional": false,
                "type": {
@@ -39470,6 +42537,7 @@
          "\"browser\"",
          "\"compass\"",
          "\"core\"",
+         "\"design\"",
          "\"image\"",
          "\"memory\"",
          "\"subagents\"",

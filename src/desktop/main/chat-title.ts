@@ -1,4 +1,5 @@
 import type { StoredSession } from '../../shared/types/session';
+import { visibleText } from '../../shared/visible-text';
 
 // A chat title, not the conversation: long previews are cut so ShellState and the chat list stay small.
 export const MAX_CHAT_TITLE_CHARS = 120;
@@ -12,6 +13,11 @@ export function storedTitle(session: Pick<StoredSession, 'customTitle' | 'aiTitl
     }
   }
   return '';
+}
+
+/** A panel title a core sent, a remote one included, as `storedTitle` shows a row's: its hidden characters escaped, on one line and clipped. */
+export function panelTitle(title: string): string {
+  return storedTitle({ preview: visibleText(title.replace(/\s+/g, ' ')) });
 }
 
 /**

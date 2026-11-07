@@ -7,6 +7,7 @@ import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-p
 import { WorkspaceFolderRegistry } from '../../workspace-folders/folder-registry';
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
 import type { ChatSession } from '../../chat-session';
+import type { DesignSeed } from '../../design/tools/start-design';
 import type { ChatActivity, TurnOutcome } from '../../pi-session/session-state';
 import type { AttachedView, HostInstance, ViewJoinGate } from '../types';
 import type { PanelHost } from '../../../platform/window-service';
@@ -31,8 +32,17 @@ export function inertSessionWorktree(): ChatSession['worktree'] {
   } as unknown as ChatSession['worktree'];
 }
 
+/** The design facts of a chat with no design role and no link. */
+export function inertSessionDesign(): ChatSession['design'] {
+  return { role: () => undefined, ownLink: () => undefined, isDesignChat: () => false } as unknown as ChatSession['design'];
+}
+
 export interface FakeSession {
   cwd: string;
+  /** The design seed the panel manager created this session with, when it is a new design chat. */
+  designSeed: DesignSeed | undefined;
+  /** The session id `currentSessionId` reports once `initializeEarly` started it. */
+  currentSessionId: string | null;
   conversation: boolean;
   /** The stored session this session is on or will open, as `persistenceSessionId` reports it. */
   storedId: string | null;
@@ -51,12 +61,17 @@ export interface FakeSession {
   initializeEarly: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
   hasConversation: () => boolean;
+  reset: ReturnType<typeof vi.fn>;
+  /** True for a panel created with a design seed until a test sets it otherwise. */
+  isDesignConversation: ReturnType<typeof vi.fn>;
   getToolStatus: () => object;
   setMcpStatusListener: () => void;
   /** The panel token the manager last handed this session, as PiSession records it for its lease owner records. */
   panelToken: string | null;
   setPanelToken: (token: string | null) => void;
   worktree: ChatSession['worktree'];
+  design: ChatSession['design'];
+  publishDesignState: ReturnType<typeof vi.fn>;
 }
 
 export interface FakeHost extends PanelHost {
@@ -215,13 +230,15 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
     platform,
     languagePreference: options.languagePreference ?? (() => 'en'),
     folderRegistry: registry,
-    createSessionForPanel: async (_host, _ph, _panelId, folder) => {
+    createSessionForPanel: async (_host, _ph, _panelId, folder, _forkContext, designSeed) => {
       if (holdCreation.gate) await holdCreation.gate;
       const error = failCreation.errors.shift();
       if (error) throw error;
       if (options.createSession) return options.createSession(folder);
       const session: FakeSession = {
         cwd: folder.fsPath,
+        designSeed,
+        currentSessionId: null,
         conversation: false,
         storedId: null,
         get persistenceSessionId() { return session.storedId; },
@@ -239,14 +256,18 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
         openResumeTarget: vi.fn(async (id: string) => (session.storedId === id ? { kind: 'switched' as const } : { kind: 'cancelled' as const })),
         seedCheckpoints: vi.fn(),
         dispose: vi.fn(async () => undefined),
-        initializeEarly: vi.fn(async () => undefined),
+        initializeEarly: vi.fn(async () => { session.currentSessionId ??= `started-${sessions.indexOf(session)}`; }),
         setPermissionMode: vi.fn(async () => undefined),
         hasConversation: () => session.conversation,
+        reset: vi.fn(),
+        isDesignConversation: vi.fn(async () => session.designSeed !== undefined),
         getToolStatus: () => ({}),
         setMcpStatusListener: () => undefined,
         panelToken: null,
         setPanelToken: (token) => { session.panelToken = token; },
         worktree: inertSessionWorktree(),
+        design: inertSessionDesign(),
+        publishDesignState: vi.fn(),
       };
       sessions.push(session);
       return session as unknown as ChatSession;

@@ -32,9 +32,9 @@ function tools(handler: PermissionHandler): Record<'ask' | 'form' | 'exitPlan', 
   };
 }
 
-/** The tool context pi passes, with an empty branch for the plan version. */
+/** The tool context pi passes, with an empty branch for the plan and design versions. */
 function withBranch(tool: Executable): Executable {
-  return { execute: (id, params, signal) => tool.execute(id, params, signal, undefined, { sessionManager: { getBranch: () => [] } }) };
+  return { execute: (id, params, signal) => tool.execute(id, params, signal, undefined, { sessionManager: { getBranch: () => [], getSessionId: () => 'session-1' } }) };
 }
 
 const params = { ask: question, form, exitPlan: {} } as const;

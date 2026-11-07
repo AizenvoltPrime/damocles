@@ -47,15 +47,18 @@ export interface FolderRepoHandle {
   readonly repo: RepoManager;
 }
 
-/** The folder repo for `cwd`, as a handle; nothing is created until a snapshot runs. */
-export function folderRepoFor(cwd: string): FolderRepoHandle {
-  return folderRepoById(folderIdFor(cwd), cwd);
+/**
+ * The folder repo for `cwd`, as a handle; nothing is created until a snapshot runs. `capturesTracked` false for a folder
+ * that is no git project (a design folder), whose enclosing repository's tracked files are not its own.
+ */
+export function folderRepoFor(cwd: string, capturesTracked = true): FolderRepoHandle {
+  return folderRepoById(folderIdFor(cwd), cwd, capturesTracked);
 }
 
-export function folderRepoById(folderId: string, cwd: string): FolderRepoHandle {
+export function folderRepoById(folderId: string, cwd: string, capturesTracked = true): FolderRepoHandle {
   if (!isFolderId(folderId)) throw new Error(`not a folder repo id: ${JSON.stringify(folderId)}`);
   const repoDir = getFolderRepoDir(folderId);
-  return { folderId, repoDir, repo: new RepoManager(getGitDir(repoDir), getIndexPath(repoDir), cwd, { capturesTracked: true }) };
+  return { folderId, repoDir, repo: new RepoManager(getGitDir(repoDir), getIndexPath(repoDir), cwd, { capturesTracked }) };
 }
 
 function registrationPath(repoDir: string, sessionId: string): string {
@@ -318,6 +321,31 @@ export async function copyCheckpointRefs(
     });
   }
   return copied;
+}
+
+/**
+ * Give a design chat's rewind takeover (PD-36) its own refs to the pre-rewind snapshot `record` its restore kept, so the new
+ * chat's Undo rewind outlives the superseded chat's refs. False, logged, when an object is gone. Takes the folder lock.
+ */
+export async function copyPreRewindRefs(cwd: string, childSessionId: string, childSessionFile: string, record: PreRewindRecord): Promise<boolean> {
+  const handle = folderRepoById(record.folderId, cwd);
+  return handle.repo.withLock(async () => {
+    const manifest = record.skipped.manifest;
+    const present = await Promise.all([
+      handle.repo.objectExists(record.commit, 'commit'),
+      ...(manifest === null ? [] : [handle.repo.objectExists(manifest, 'blob')]),
+    ]);
+    if (!present.every(Boolean)) {
+      log('[Checkpoints] takeover: objects of pre-rewind snapshot %s are gone from folder repo %s; not copied', record.id, handle.folderId);
+      return false;
+    }
+    await registerSession(handle.repoDir, childSessionId, childSessionFile);
+    await handle.repo.updateRefs([
+      { ref: preRewindRefName(childSessionId, record.id, 'snapshot'), commit: record.commit },
+      ...(manifest === null ? [] : [{ ref: preRewindRefName(childSessionId, record.id, 'skipped'), commit: manifest }]),
+    ]);
+    return true;
+  });
 }
 
 /**

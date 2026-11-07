@@ -1,6 +1,7 @@
 import type { HandlerRegistry } from "../types";
 import { requestAttention } from "@/composables/useAttention";
 import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
+import { useDesignStore } from "@/stores/useDesignStore";
 
 /** A desktop notification's action and the command registry reach a chat's UI here (AD10, AD11). */
 export function createAttentionHandlers(): Partial<HandlerRegistry> {
@@ -13,8 +14,9 @@ export function createAttentionHandlers(): Partial<HandlerRegistry> {
         return;
       }
       const pending = msg.kind === "approval"
-        ? permissionStore.currentPermission !== null || permissionStore.pendingSkillApproval !== null
-        : questionStore.pendingQuestion !== null || formStore.pendingForm !== null || elicitationStore.pendingElicitations.length > 0 || permissionStore.pendingSignIns.length > 0;
+        ? permissionStore.currentPermission !== null || permissionStore.pendingSkillApproval !== null || useDesignStore().approvalPrompts.length > 0
+        : questionStore.pendingQuestion !== null || formStore.pendingForm !== null || elicitationStore.pendingElicitations.length > 0 || permissionStore.pendingSignIns.length > 0
+          || useDesignStore().versionPrompts.length > 0;
       requestAttention(msg.kind, pending);
     },
 

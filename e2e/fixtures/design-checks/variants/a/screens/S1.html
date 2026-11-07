@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en" data-ds-screen="S1" data-ds-states="default">
+<head><meta charset="utf-8"><title>Contacts · Table</title><link rel="stylesheet" href="../../../tokens.css"></head>
+<body style="margin: 0; background: var(--color-muted)">
+<main style="padding: 24px">
+  <h1 style="color: var(--color-primary)">Contacts · Table</h1>
+  <button data-ds-component="Button">Add contact</button>
+  <table data-ds-component="Table" style="width: 100%; background: var(--color-surface)">
+    <tr><th>Name</th><th>Email</th></tr>
+    <tr><td data-ds-bind="Contact.name">Ada Lovelace</td><td data-ds-bind="Contact.email">ada@example.com</td></tr>
+    <tr><td>Grace Hopper</td><td>grace@example.com</td></tr>
+  </table>
+</main>
+</body>
+</html>

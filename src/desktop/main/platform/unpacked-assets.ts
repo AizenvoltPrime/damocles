@@ -3,6 +3,8 @@ export const WATCHER_UNPACK = 'node_modules/@parcel/watcher-*/**';
 
 // electron-builder.yml `asarUnpack` must equal this list; __tests__/app-paths.test.ts fails when they drift.
 export const ASAR_UNPACK: readonly string[] = [
+  // The unpacked bundles' module scope: without it Node takes the type of any package.json above the install folder.
+  'dist/package.json',
   'dist/compass-worker.js',
   'dist/usage-stats-worker.js',
   'dist/sentinel.js',

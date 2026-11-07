@@ -153,6 +153,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
       id: connection.id,
       clientId: connection.clientId,
       hostId: payload.hostId,
+      features: new Set(payload.features ?? []),
       transport: generation(connection),
       mirrors: payload.mirrors,
       close: connection.close,

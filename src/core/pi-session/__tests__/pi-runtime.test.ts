@@ -139,6 +139,26 @@ describe('PiRuntime.runStructuredCompletion usage ledger', () => {
     expect(ledger()).toEqual([expect.objectContaining({ v: 1, type: 'subcall', purpose: 'memory-extract', provider: 'anthropic', model: 'claude-haiku-5-5', stopReason: 'toolUse', cwd: '/ws', sessionId: 's1', usage: USAGE })]);
   });
 
+  it('records a design-parity sub-call with its images under its own purpose', async () => {
+    const runtime = runtimeReturning(async () => message('toolUse'));
+    (runtime as unknown as { subCallModelFor: () => unknown }).subCallModelFor = () => ({ model: { ...MODEL, input: ['text', 'image'] } });
+    const images = [{ data: 'ZGVzaWdu', mimeType: 'image/png' }, { data: 'YXBw', mimeType: 'image/png' }];
+    expect(runtime.subCallReadsImages('design-parity')).toBe(true);
+    expect(await runtime.runStructuredCompletion({ ...REQ, purpose: 'design-parity', userImages: images, attribution: { cwd: '/ws', sessionId: 's1' } })).toEqual({ kind: 'answered', value: { ok: true } });
+    const sent = (runtime as unknown as { _modelRuntime: { completeSimple: ReturnType<typeof vi.fn> } })._modelRuntime.completeSimple.mock.calls[0]![1] as { messages: Array<{ content: Array<{ type: string }> }> };
+    expect(sent.messages[0]!.content.map((block) => block.type)).toEqual(['text', 'image', 'image']);
+    expect(ledger()).toEqual([expect.objectContaining({ purpose: 'design-parity', cwd: '/ws', sessionId: 's1', usage: USAGE })]);
+  });
+
+  it('sends no images to a model that reads none', async () => {
+    const runtime = runtimeReturning(async () => message('toolUse'));
+    (runtime as unknown as { subCallModelFor: () => unknown }).subCallModelFor = () => ({ model: { ...MODEL, input: ['text'] } });
+    expect(runtime.subCallReadsImages('design-parity')).toBe(false);
+    expect(await runtime.runStructuredCompletion({ ...REQ, purpose: 'design-parity', userImages: [{ data: 'YXBw', mimeType: 'image/png' }] })).toEqual({ kind: 'unreachable' });
+    expect((runtime as unknown as { _modelRuntime: { completeSimple: ReturnType<typeof vi.fn> } })._modelRuntime.completeSimple).not.toHaveBeenCalled();
+    expect(ledger()).toEqual([]);
+  });
+
   it('records an errored sub-call, which was still billed', async () => {
     const runtime = runtimeReturning(async () => message('error'));
     expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unanswered' });

@@ -6,14 +6,25 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"],
     "rootDir": "../..",
-    // global-setup imports the externals list from scripts/*.mjs, the bundles' single source.
-    "allowJs": true,
     "paths": {
       "@shared/*": ["./src/shared/*"],
       "@/*": ["./src/webview/*"]
     }
   },
-  "include": ["./**/*.ts", "../../playwright.desktop.config.ts", "../../src/**/*.d.ts"],
+  "include": [
+    "./**/*.ts",
+    "../../playwright.desktop.config.ts",
+    "../../playwright.journey.config.ts",
+    // PreviewJourney's committed output, which playwright.journey.config.ts runs.
+    "../fixtures/design-app/static/contacts.journey.spec.ts",
+    "../../src/**/*.d.ts",
+    // Vitest tests of this suite's support code.
+    "../../scripts/__tests__/e2e-async-children.test.ts",
+    "../../scripts/__tests__/e2e-file-holders.test.ts",
+    "../../scripts/__tests__/e2e-foreground-bound.test.ts",
+    "../../scripts/__tests__/e2e-foreground-queue.test.ts",
+    "../../scripts/__tests__/e2e-pointer.test.ts"
+  ],
   "files": ["../../src/webview/env.d.ts"],
   "exclude": []
 }

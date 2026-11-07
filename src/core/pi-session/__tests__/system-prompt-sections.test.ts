@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assembleDamoclesSystemPrompt, type DamoclesSystemPromptInputs } from '../agent-start';
+import { designRuleSet } from '../../design/rule-set';
 import type { SystemPromptEnv } from '../permission-gate';
 
 /**
@@ -236,5 +237,37 @@ describe('system prompt sections — map shape', () => {
       'damocles_model',
       'damocles_tone',
     ]);
+  });
+});
+
+describe('the design sections (PD-14, PD-17)', () => {
+  const folder = '/home/u/.damocles/designs/contacts-abcd1234';
+  const full = designRuleSet({ designPreview: true });
+
+  it('gives a design chat its damocles_design section in place of the plan sections', () => {
+    const design = assembleDamoclesSystemPrompt(inputs({ planMode: true, existingPlanFile: '/p.md', design: { folder, ruleSet: full } }));
+    expect(Object.keys(design.sections)).toContain('damocles_design');
+    expect(Object.keys(design.sections).filter((k) => k.startsWith('damocles_plan'))).toEqual([]);
+    expect(design.sections['damocles_design']).toContain(folder);
+    expect(design.sections['damocles_design']).toContain('outrank');
+  });
+
+  it('keeps every section constant across turns, so the prompt cache holds', () => {
+    const first = assembleDamoclesSystemPrompt(inputs({ design: { folder, ruleSet: full } }));
+    const later = assembleDamoclesSystemPrompt(inputs({ design: { folder, ruleSet: full } }));
+    expect(diffSections(first.sections, later.sections)).toEqual({ added: [], removed: [], changed: [] });
+  });
+
+  it('adds damocles_design_link once a parent has its own link, and changes nothing else', () => {
+    const before = assembleDamoclesSystemPrompt(inputs());
+    const after = assembleDamoclesSystemPrompt(inputs({ designLink: { folder } }));
+    expect(diffSections(before.sections, after.sections)).toEqual({ added: ['damocles_design_link'], removed: [], changed: [] });
+    expect(after.sections['damocles_design_link']).toMatch(/For a small change, implement it directly/);
+  });
+
+  it('words the FinishDesign gate from the rule set', () => {
+    const reduced = assembleDamoclesSystemPrompt(inputs({ design: { folder, ruleSet: designRuleSet({ designPreview: false }) } }));
+    expect(reduced.sections['damocles_design']).toContain('FinishDesign refuses while DesignCheck reports any error.');
+    expect(assembleDamoclesSystemPrompt(inputs({ design: { folder, ruleSet: full } })).sections['damocles_design']).toContain('journey');
   });
 });

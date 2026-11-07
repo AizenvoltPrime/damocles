@@ -19,7 +19,7 @@ import { TARGET_HOME, TARGET_USER } from './support/sshd';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 
 const APP = '/srv/app';
-const SERVER_SOURCE = fs.readFileSync(path.join(__dirname, 'support', 'mcp-notes-server.cjs'), 'utf8');
+const SERVER_SOURCE = fs.readFileSync(path.join(import.meta.dirname, 'support', 'mcp-notes-server.cjs'), 'utf8');
 // the personal server's secret, which must never reach the target
 const CLIENT_SECRET = 'client-secret-7c1f2e';
 const REMOTE_AVAILABLE = 'damocles.desktop.mcp.remoteAvailable';

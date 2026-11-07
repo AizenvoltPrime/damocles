@@ -8,7 +8,11 @@ import { CUSTOM_TOOL_NAMES, moduleToolNames } from './tools';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { FULL_TOOL_CATALOG } from './tools/tool-catalog';
 import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
-import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { MCP_RESOURCE_TOOL_NAMES, TOOL_DESIGN_PARITY, TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_START_DESIGN, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { designBrowserAllows } from './tools/browser-tools';
+import { MEMORY_WRITE_PI_TOOL_NAMES } from './tools/memory-tools';
+import { BUILT_DESIGN_TOOL_NAMES } from '../design/tools/design-tool-specs';
+import type { DesignRuleSet } from '../design/rule-set';
 
 /**
  * The Tools-panel snapshot + full-active-set name assembly (US-017/Tools panel). Both are near-pure:
@@ -52,6 +56,21 @@ export interface ToolStatusDeps {
   disabled: Set<string>;
   /** A daemon's core only: its settings, whose machineValue marks a switch the host's own file holds (setOnHost). */
   hostSettings?: Pick<SettingsStore, 'inspect'>;
+  /** `damocles.design.enabled`, a user-scope setting. */
+  designEnabled: boolean;
+  /** The session is a design chat (its branch's role entry), which keeps its role while the setting is off. */
+  designRole: boolean;
+  /** The host's rule set (`designRuleSet`), a design chat's recorded one. */
+  ruleSet: DesignRuleSet;
+}
+
+/** What a design chat never has: plan mode, parent design tools, teams, and memory writes, which reach outside its folder (PD-4, PD-25). */
+const DESIGN_CHAT_EXCLUDED: ReadonlySet<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_START_DESIGN, TOOL_DESIGN_PARITY, ...TEAM_MAIN_PI_TOOL_NAMES, ...MEMORY_WRITE_PI_TOOL_NAMES]);
+
+/** The design tools a chat gets: its rule set's design chat tools in a design chat, its parent tools elsewhere; only those built. */
+function designToolNames(deps: Pick<ToolStatusDeps, 'designEnabled' | 'designRole' | 'ruleSet'>): string[] {
+  if (!deps.designEnabled) return [];
+  return (deps.designRole ? deps.ruleSet.designTools : deps.ruleSet.parentTools).filter((name) => BUILT_DESIGN_TOOL_NAMES.has(name));
 }
 
 /**
@@ -80,11 +99,15 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
     }),
     ...(deps.mcpEnabled ? deps.mcpToolNames : []),
     ...(deps.mcpEnabled && deps.mcpResourceExposure !== null ? MCP_RESOURCE_TOOL_NAMES : []),
+    ...designToolNames(deps),
   ];
+  // A design chat's least privilege (PD-25); `loadableToolNames` and the gate's `designWriteBlock` narrow it too, and each must hold on its own.
+  const allowed = (name: string): boolean =>
+    !deps.disabled.has(name) && (!deps.designRole || (!DESIGN_CHAT_EXCLUDED.has(name) && designBrowserAllows(name)));
   // pi's setActiveToolsByName pushes one definition per name occurrence (no internal de-dup), so a
   // duplicate name would make the provider reject the request ("Tool names must be unique"). De-dup
   // defensively, mirroring pi's own `[...new Set(...)]` active-set contract.
-  return [...new Set(names.filter((name) => !deps.disabled.has(name)))];
+  return [...new Set(names.filter(allowed))];
 }
 
 /**
@@ -126,6 +149,7 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     image: deps.imageEnabled,
     subagents: true,
     team: deps.teamEnabled,
+    design: deps.designEnabled,
   };
   const heldOnHost = (key: string): boolean => deps.hostSettings?.inspect(key).machineValue !== undefined;
   const hostHeld = (group: SwitchableToolGroup): { setOnHost?: true } => (heldOnHost(TOOL_GROUP_SETTINGS[group]) ? { setOnHost: true } : {});
@@ -143,9 +167,11 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     },
     { group: 'subagents', enabled: groupEnabled.subagents, available: true },
     { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable, ...hostHeld('team') },
+    // Settings' design switch renders from this entry, so it is sent while off too; the Tools panel hides a group with no tools (PD-22).
+    { group: 'design', enabled: groupEnabled.design, available: true, ...hostHeld('design') },
     { group: 'core', enabled: true, available: true },
   ];
-  const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
+  const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.filter((entry) => entry.group !== 'design' || deps.designEnabled).map((entry) => ({
     ...entry,
     enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,
   }));

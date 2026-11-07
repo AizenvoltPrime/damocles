@@ -13,15 +13,13 @@ import { MAX_ITEMS } from '../core-protocol/messages';
 import { confineExisting, projectOfPath } from '../local-services/confine';
 import { readFileBytes } from '../local-services/file-bytes';
 import { CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
+import { DESIGN_RENDER_CLIENT_ABSENT } from '../../shared/design-render';
 import { CodecError } from '../../remote/codec';
-import type { Call, ChatEntry, ClientAuth, ClientPolicy, ClientUser, CoreEvents, CoreMirrorTopics, CorePanelOps, CoreRequests, EditorMirror, MainEvents, MainPanelOps, MainRequests, MirrorTopics } from '../core-protocol/messages';
+import type { ChatEntry, ClientAuth, ClientPolicy, ClientUser, CoreEvents, CoreMirrorTopics, CorePanelOps, CoreRequests, EditorMirror, MainEvents, MainPanelOps, MainRequests, MirrorTopics, Params, Result } from '../core-protocol/messages';
 import type { DaemonState } from './daemon-state';
 import { createPanelRetention, type PanelRetention } from './panel-retention';
 import type { RunRegistry } from './run-registry';
 import { createViewKeys, joinView } from './views-join';
-
-type Params<T, M extends keyof T> = T[M] extends Call<infer P, unknown> ? P : never;
-type Result<T, M extends keyof T> = T[M] extends Call<unknown, infer R> ? R : never;
 
 /** What a route answers from when no client is attached: the folders core works in. */
 export interface NoClientContext {
@@ -31,11 +29,14 @@ export interface NoClientContext {
 /**
  * client: the client the request's actor names, else the acting client, else another attached one, else noClient (a client
  * inside its reconnection grace is skipped); issuingClient: the client that sent the scm.commit the token names; viewClient:
- * a client showing params.viewId, the actor's first; pinnedClient: exactly the client params.clientId names, refused with
- * CREDENTIAL_CLIENT_ABSENT while it is gone or inside its grace, never another.
+ * a client showing params.viewId, the actor's first; chatClient: a client showing the chat params.panelId names, the actor's
+ * first; pinnedClient: exactly the client params.clientId names, refused with CREDENTIAL_CLIENT_ABSENT while it is gone or
+ * inside its grace, never another. needs: a name of FEATURES; on every route kind that has it, only a client whose attach
+ * listed it is asked (one that predates the request would close its connection on the name), and for client the actor
+ * first, else another attached client that lists it.
  */
 export type CoreRequestRoute<M extends keyof CoreRequests> =
-  | { readonly to: 'client' | 'issuingClient' | 'viewClient'; readonly noClient: (params: Params<CoreRequests, M>, context: NoClientContext) => Result<CoreRequests, M> | Promise<Result<CoreRequests, M>> }
+  | { readonly to: 'client' | 'issuingClient' | 'viewClient' | 'chatClient'; readonly noClient: (params: Params<CoreRequests, M>, context: NoClientContext) => Result<CoreRequests, M> | Promise<Result<CoreRequests, M>>; readonly needs?: string }
   | { readonly to: 'daemon' }
   | { readonly to: 'pinnedClient' }
   | { readonly to: 'refused' };
@@ -65,6 +66,9 @@ async function readConfinedText(target: string, folders: readonly OpenFolder[]):
 const answer = <R>(value: R) => (): R => value;
 const noClientFor = (what: string) => (): never => {
   throw new Error(`No client is attached to ${what}`);
+};
+const noRenderingClient = (): never => {
+  throw new Error(DESIGN_RENDER_CLIENT_ABSENT);
 };
 
 export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequestRoute<M> } = {
@@ -124,10 +128,19 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'user.mcp.resources': { to: 'pinnedClient' },
   'user.mcp.readResource': { to: 'pinnedClient' },
   'views.drained': { to: 'daemon' },
+  // a client opens the tab in its own window, of a chat it shows; with none there is no window to open it in
+  'design.openPreview': { to: 'chatClient', noClient: nothing, needs: 'design.openPreview' },
+  // core matches the refusal's text (DESIGN_RENDER_CLIENT_ABSENT)
+  'design.capture': { to: 'client', noClient: noRenderingClient, needs: 'design.capture' },
+  'design.probe': { to: 'client', noClient: noRenderingClient, needs: 'design.probe' },
+  'design.journey': { to: 'client', noClient: noRenderingClient, needs: 'design.journey' },
+  // a replay drives the chat's own preview tab, so only a client showing the chat runs it
+  'design.replayJourney': { to: 'chatClient', noClient: noRenderingClient, needs: 'design.replayJourney' },
 };
 
-// registry: the daemon's own (the run registry, the port detector)
-export type CoreEventRoute = 'allClients' | 'actingClient' | 'attachmentClient' | 'registry' | 'dropped';
+// registry: the daemon's own (the run registry, the port detector); needs: every attached client whose attach listed that
+// name of FEATURES, as a request route's needs
+export type CoreEventRoute = 'allClients' | 'actingClient' | 'attachmentClient' | 'registry' | 'dropped' | { readonly to: 'allClients'; readonly needs: string };
 
 export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute>> = {
   'window.openAppSettings': 'actingClient',
@@ -153,6 +166,7 @@ export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute
   'user.clientAuthChanged': 'dropped',
   'user.mcpChanged': 'dropped',
   'ports.urlSeen': 'registry',
+  'design.changed': { to: 'allClients', needs: 'design.changed' },
 };
 
 // each attach gets a snapshot as deltas from version 1, then live deltas; chats only of the panels that client views
@@ -237,6 +251,12 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'scm.commit': 'commit',
   'scm.ignoredIn': 'core',
   'scm.commitBlob': 'core',
+  // core reads only a design a chat of its own holds, and only below that design's folder
+  'design.read': 'core',
+  'design.info': 'core',
+  // the remote core writes the markup into its own design folder, on its own machine
+  'design.markup': 'core',
+  'design.tweak': 'core',
   'scm.generateMessage': 'core',
   'scm.repo': 'core',
   'worktrees.call': 'core',
@@ -374,6 +394,8 @@ export interface RouterClient extends ClientLink {
   readonly clientId: string;
   // the client's own id for this host: its secrets namespace is remote/<hostId>/
   readonly hostId: string;
+  // the names of FEATURES its attach listed (CoreAttach.features), which a route's needs reads; absent, none
+  readonly features?: ReadonlySet<string>;
   // the attach generation's transport (attached-transport framing already removed)
   readonly transport: CoreTransport;
   readonly mirrors: Pick<MirrorTopics, 'editor' | 'terminal' | 'language'> & {
@@ -494,6 +516,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   };
   const liveViewers = (viewId: string): Viewer[] => [...(viewers.get(viewId)?.values() ?? [])].filter((viewer) => live(viewer.session));
   const viewerOf = (session: Session, viewId: string): Viewer | undefined => liveViewers(viewId).find((viewer) => viewer.session === session);
+  const capable = (session: Session, needs: string | undefined): boolean => needs === undefined || session.client.features?.has(needs) === true;
   // core reads the acting client from this mirror, so it is published before the message that made the client act
   const publishActing = (): void => {
     const clientId = actingPresent()?.client.clientId;
@@ -687,24 +710,33 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           lostWhileAsking.dispose();
         }
       }) as never);
-    } else if (route.to === 'viewClient') {
+    } else if (route.to === 'viewClient' || route.to === 'chatClient') {
       const noClient = route.noClient as (params: unknown, context: NoClientContext) => unknown;
-      serveCore(method, ((params: { viewId: string }, signal: AbortSignal) => {
-        const shown = liveViewers(params.viewId).filter((viewer) => present(viewer.session));
+      serveCore(method, ((params: { viewId?: string; panelId?: string }, signal: AbortSignal) => {
+        const viewId = route.to === 'viewClient' ? params.viewId : chats.get(params.panelId ?? '')?.viewId;
+        const shown = viewId === undefined ? [] : liveViewers(viewId).filter((viewer) => present(viewer.session) && capable(viewer.session, route.needs));
         const actor = actorSession();
         const viewer = shown.find((candidate) => candidate.session === actor) ?? shown[0];
         if (!viewer) {
-          log(`[core-host] ${method} for view ${params.viewId}, which no client shows`);
+          log(`[core-host] ${method} for ${route.to === 'viewClient' ? `view ${params.viewId}` : `chat ${params.panelId}`}, which no client${route.needs === undefined ? '' : ` listing ${route.needs}`} shows`);
           return noClient(params, { folders: deps.mirrors.folders });
         }
-        return (viewer.session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, { ...params, viewId: viewer.viewId }, signal);
+        const sent = route.to === 'viewClient' ? { ...params, viewId: viewer.viewId } : params;
+        return (viewer.session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, sent, signal);
       }) as never);
     } else {
       const noClient = route.noClient as (params: unknown, context: NoClientContext) => unknown;
       serveCore(method, ((params: unknown, signal: AbortSignal) => {
-        const session = route.to === 'issuingClient' ? commitTokens.get((params as { token: string }).token) : actorSession();
+        const actor = actorSession();
+        const session = route.to === 'issuingClient'
+          ? commitTokens.get((params as { token: string }).token)
+          : present(actor) && capable(actor, route.needs) ? actor : [...sessions.values()].reverse().find((candidate) => present(candidate) && capable(candidate, route.needs));
         if (!present(session)) {
-          log(`[core-host] ${method} with no client attached`);
+          log(`[core-host] ${method} with no client${route.needs === undefined ? '' : ` listing ${route.needs}`} attached`);
+          return noClient(params, { folders: deps.mirrors.folders });
+        }
+        if (!capable(session, route.needs)) {
+          log(`[core-host] ${method}: client ${session.client.id} attached without ${route.needs}`);
           return noClient(params, { folders: deps.mirrors.folders });
         }
         return (session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, params, signal);
@@ -719,6 +751,10 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   for (const name of Object.keys(CORE_EVENT_ROUTES) as Array<keyof CoreEvents>) {
     const route = CORE_EVENT_ROUTES[name];
     disposables.push(core.onEvent(name, (payload: unknown) => {
+      if (typeof route === 'object') {
+        for (const session of sessions.values()) if (capable(session, route.needs)) emitTo(session, name, payload);
+        return;
+      }
       if (route === 'registry') return;
       if (route === 'dropped') log(`[core-host] dropped core's ${name}, which a daemon's core never sends`);
       else if (route === 'allClients') for (const session of sessions.values()) emitTo(session, name, payload);
@@ -817,9 +853,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         core.postPanel(viewId, 'disposed', { error: 'a host opens no browser page', reason: 'user' });
         return;
       }
-      titles.set(viewId, (envelope.payload as CorePanelOps['create']).title);
+      const { parent, ...create } = envelope.payload as CorePanelOps['create'];
+      titles.set(viewId, create.title);
       bindView(session, viewId, viewId);
-      deliver(session, (endpoint) => endpoint.postPanel(viewId, envelope.op, envelope.payload as never));
+      // core names the parent by its own view id, which this client may show under another (a chat it rejoined)
+      const parentView = parent === undefined ? undefined : viewerOf(session, parent)?.viewId;
+      deliver(session, (endpoint) => endpoint.postPanel(viewId, 'create', parentView === undefined ? create : { ...create, parent: parentView }));
       return;
     }
     if (envelope.op === 'setTitle') titles.set(viewId, (envelope.payload as CorePanelOps['setTitle']).title);

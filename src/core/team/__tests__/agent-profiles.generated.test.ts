@@ -6,9 +6,9 @@ import { AGENT_PROFILES, AGENT_PROFILE_MAP } from '../agent-profiles.generated';
 // Claude Code subagent set (~/.claude/agents): 91 profiles across 8 divisions, governed by
 // ~/.claude/scripts/sync-claude-agents.mjs (DEFAULT_DIVISIONS minus the EXCLUDE denylist, further
 // narrowed per division by DIVISION_ALLOWLIST), which is itself mirrored by
-// scripts/sync-agent-profiles.mjs.
+// scripts/sync-agent-profiles.ts.
 //
-// To change the catalog DELIBERATELY: edit the policy in scripts/sync-agent-profiles.mjs (and the
+// To change the catalog DELIBERATELY: edit the policy in scripts/sync-agent-profiles.ts (and the
 // matching ~/.claude/scripts/sync-claude-agents.mjs), run `npm run sync:profiles -- --apply --prune`
 // then `npm run generate:profiles`, and update the pinned allowlist + counts below in the SAME
 // commit. If this test fails unexpectedly, the catalog drifted from the intended 91-set.

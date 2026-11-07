@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import type { ChatMessage, CompactMarker, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice } from '@shared/types/session';
 import { useVirtualizedMessages } from '../useVirtualizedMessages';
 import { at } from '@/__tests__/helpers';
+import type { DesignTranscriptCard } from '@/stores/useDesignStore';
 
 interface BuildExtras {
   compactMarkers?: CompactMarker[];
@@ -359,5 +360,47 @@ describe('useVirtualizedMessages streaming text identity', () => {
 
     expect(rowOf(streaming, true)).toEqual(['text-block:text-a1-0', 'streaming-text:text-a1-2']);
     expect(rowOf(committed, false)).toEqual(['text-block:text-a1-0', 'text-block:text-a1-2']);
+  });
+});
+
+describe('useVirtualizedMessages design cards', () => {
+  const result = { designId: 'd', version: 1, folder: 'f', title: 'Contacts', screens: [], decisions: [], check: { errors: 0 as const, warnings: [] }, journeys: [], previousVersion: null, changes: [] };
+  const user: ChatMessage = { id: 'u1', role: 'user', content: 'design it', timestamp: 1 };
+  const reply: ChatMessage = { id: 'a1', role: 'assistant', content: 'Opening the design chat.', timestamp: 2 };
+  const next: ChatMessage = { id: 'u2', role: 'user', content: 'thanks', timestamp: 3 };
+
+  function rows(messages: ChatMessage[], cards: DesignTranscriptCard[]): string[] {
+    const { items } = useVirtualizedMessages({
+      messages: ref(messages),
+      compactMarkers: ref<CompactMarker[]>([]),
+      cacheMissNotices: ref<CacheMissNotice[]>([]),
+      compactionAbortedNotices: ref<CompactionAbortedNotice[]>([]),
+      thinkingDroppedNotices: ref<ThinkingDroppedNotice[]>([]),
+      designCards: ref(cards),
+      streamingMessageId: ref<string | null>(null),
+    });
+    return items.value.map((item) => item.id);
+  }
+
+  it('puts each card right after the message it followed, and one that came first before every message', () => {
+    const cards: DesignTranscriptCard[] = [
+      { kind: 'brief', entryId: 'b', afterMessageId: null, afterTimestamp: 0, live: false, brief: { briefId: 'b1', text: 'x', reopened: false } },
+      { kind: 'result', entryId: 'r', afterMessageId: 'a1', afterTimestamp: 2, live: true, result },
+    ];
+    expect(rows([user, reply, next], cards)).toEqual(['design-b', 'user-u1', 'text-a1-0', 'design-r', 'user-u2']);
+    expect(rows([], cards)).toEqual(['design-b', 'design-r']);
+  });
+
+  it('shows a card at the end when the message it followed is the last one', () => {
+    const cards: DesignTranscriptCard[] = [{ kind: 'result', entryId: 'r', afterMessageId: 'a1', afterTimestamp: 2, live: true, result }];
+    expect(rows([user, reply], cards)).toEqual(['user-u1', 'text-a1-0', 'design-r']);
+  });
+
+  it('keeps a card whose message left the transcript after the nearest earlier message, never dropping it', () => {
+    // The reply it followed was retracted (or a rewind, compaction, returned prompt or merged queue took it).
+    const cards: DesignTranscriptCard[] = [{ kind: 'result', entryId: 'r', afterMessageId: 'gone', afterTimestamp: 2, live: true, result }];
+    expect(rows([user, next], cards)).toEqual(['user-u1', 'design-r', 'user-u2']);
+    expect(rows([next], cards)).toEqual(['design-r', 'user-u2']);
+    expect(rows([user], cards)).toEqual(['user-u1', 'design-r']);
   });
 });

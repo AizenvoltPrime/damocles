@@ -24,7 +24,7 @@ export const useQuestionStore = defineStore('question', () => {
   const currentSelections = computed(() => {
     const q = currentQuestion.value;
     if (!q) return new Set<string>();
-    return selectedOptions.value.get(q.question) ?? new Set();
+    return selectedOptions.value.get(q.question) ?? new Set<string>();
   });
 
   const currentCustomInput = computed(() => {
@@ -66,12 +66,14 @@ export const useQuestionStore = defineStore('question', () => {
     for (const q of questions.value) {
       const selections = selectedOptions.value.get(q.question) ?? new Set();
       const notes = annotationNotes.value.get(q.question);
-      const selectedPreview = !q.multiSelect
-        ? q.options.find(o => selections.has(o.label) && o.preview)?.preview
-        : undefined;
-      if (selectedPreview || notes?.trim()) {
+      // Copies: the desktop bridge structured-clones messages, which refuses the store's reactive proxy.
+      const selectedPreviews = q.options.flatMap(o => (selections.has(o.label) && o.preview ? [[o.label, { ...o.preview }] as const] : []));
+      const preview = q.multiSelect ? undefined : selectedPreviews[0]?.[1];
+      const previews = q.multiSelect && selectedPreviews.length > 0 ? Object.fromEntries(selectedPreviews) : undefined;
+      if (preview || previews || notes?.trim()) {
         result[q.question] = {
-          ...(selectedPreview && { preview: selectedPreview }),
+          ...(preview && { preview }),
+          ...(previews && { previews }),
           ...(notes?.trim() && { notes: notes.trim() }),
         };
         hasEntries = true;
@@ -153,6 +155,12 @@ export const useQuestionStore = defineStore('question', () => {
     }
   }
 
+  /** A single-select choice that stays on its tab: a design grid's radios check as the arrow keys move. */
+  function chooseOption(questionText: string, optionLabel: string) {
+    selectedOptions.value = new Map(selectedOptions.value).set(questionText, new Set([optionLabel]));
+    customInputs.value = new Map(customInputs.value).set(questionText, '');
+  }
+
   function setCustomInput(questionText: string, value: string, isMultiSelect: boolean) {
     customInputs.value = new Map(customInputs.value).set(questionText, value);
     if (!isMultiSelect && value.trim()) {
@@ -195,6 +203,7 @@ export const useQuestionStore = defineStore('question', () => {
     nextTab,
     prevTab,
     toggleOption,
+    chooseOption,
     setCustomInput,
     enterCustomInputMode,
     exitCustomInputMode,

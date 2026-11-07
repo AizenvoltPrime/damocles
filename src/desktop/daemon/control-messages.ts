@@ -4,6 +4,7 @@
 import type { Call, ClientAuth, ClientPolicy, ClientUser, Contract, MirrorTopics, Tables } from '../core-protocol/messages';
 import { MAIN_TO_CORE, parseClientValues, MAX_ITEMS, MAX_LABEL_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
 import { arr, bool, bytes, either, int, INVALID, nonEmpty, none, num, obj, oneOf, opt, str, streamId, type Parser } from '../core-protocol/schema';
+import { isFeatureName, MAX_FEATURES } from '../../remote/handshake';
 import { isCliPath, PACKAGE_FILE } from './container-commands';
 import { CONTAINER_ENGINES, isContainerId, isContainerPath, isContainerUser, type ContainerEngine } from './container-values';
 
@@ -101,6 +102,9 @@ export interface CoreAttach {
   readonly appInfo: { readonly version: string; readonly host: 'desktop' };
   readonly secretsPersistent: boolean;
   readonly chatBrowserPane: boolean;
+  // the app's own FEATURES (feature core.attachFeatures): the daemon sends this client only the requests and events whose
+  // feature it lists (core-routes.ts `needs`); absent, it lists none
+  readonly features?: readonly string[];
   // version-0 values of the mirrors the daemon takes from clients
   readonly mirrors: {
     readonly trust: { readonly keys: readonly string[] };
@@ -296,12 +300,14 @@ export const parseCoreState: Parser<CoreState> = obj({
   pid,
   ppid: pid,
 });
+const featureName: Parser<string> = (raw) => (isFeatureName(raw) ? raw : INVALID);
 const coreAttach: Parser<CoreAttach> = obj({
   attach: int(1, Number.MAX_SAFE_INTEGER),
   hostId,
   appInfo: obj({ version: str(MAX_LABEL_CHARS), host: oneOf(['desktop'] as const) }),
   secretsPersistent: bool,
   chatBrowserPane: bool,
+  features: opt(arr(featureName, MAX_FEATURES)),
   mirrors: obj({
     trust: obj({ keys: arr(nonEmpty(MAX_PATH_CHARS), MAX_ITEMS) }),
     folders: MAIN_TO_CORE.mirrors.folders,

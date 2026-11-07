@@ -36,4 +36,4 @@ What this saves depends on your provider: a tool never loaded always costs nothi
 
 ## Tools panel
 
-A status panel lists every agent tool grouped by subsystem (core, memory, compass, browser, web), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; memory, compass, browser and web tools toggle. It opens from the Tools button in the chat header (in its More menu when the panel is narrow).
+A status panel lists every agent tool grouped by subsystem (core, memory, compass, browser, web, design), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; memory, compass, browser, web and design tools toggle. It opens from the Tools button in the chat header (in its More menu when the panel is narrow).

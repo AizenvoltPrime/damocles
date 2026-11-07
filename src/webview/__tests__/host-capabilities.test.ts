@@ -32,6 +32,7 @@ const DESKTOP_MAC: HostCapabilities = {
   worktrees: true,
   bypassPermissions: true,
   globalMemoryOnServer: false,
+  designPreview: true,
 };
 
 function buildRegistry(): HandlerRegistry {
@@ -83,6 +84,7 @@ describe('host capabilities', () => {
       worktrees: false,
       bypassPermissions: true,
       globalMemoryOnServer: false,
+      designPreview: false,
     });
   });
 

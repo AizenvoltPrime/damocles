@@ -3,27 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
-// @ts-expect-error -- a plain .mjs script without declarations
-import { checkSnapshots, run, snapshot } from '../protocol-compat.mjs';
-
-interface Snapshot {
-  readonly protocolVersion: number;
-  readonly preRelease: boolean;
-  readonly features: readonly string[];
-  readonly contracts: Record<string, unknown>;
-}
-
-interface Checked {
-  readonly ok: boolean;
-  readonly errors: readonly string[];
-}
-
-interface Contract {
-  readonly file: string;
-  readonly type: string;
-  readonly table?: true;
-  readonly frozen?: true;
-}
+import { type CheckResult, type Contract, type Snapshot, checkSnapshots, run, snapshot } from '../protocol-compat.ts';
 
 interface Version {
   readonly version?: number;
@@ -38,9 +18,7 @@ const CONTRACTS: readonly Contract[] = [
   { file: 'contract.ts', type: 'Hello', frozen: true },
 ];
 
-const check = (previous: Snapshot, next: Snapshot): Checked => (checkSnapshots as (previous: Snapshot, next: Snapshot, contracts: readonly Contract[]) => Checked)(previous, next, CONTRACTS);
-const take = snapshot as (root: string, contracts: readonly Contract[], versionFile: string) => Snapshot;
-const runIn = run as (argv: readonly string[], options: { root: string; contracts: readonly Contract[]; versionFile: string; snapshotPath: string }) => number;
+const check = (previous: Snapshot, next: Snapshot): CheckResult => checkSnapshots(previous, next, CONTRACTS);
 
 const BASE = `
 import type { Entry, Tree } from './other';
@@ -94,7 +72,7 @@ function project(source: string, version: Version = {}, other = OTHER): { root: 
 
 function fixture(source: string, version = 1, features: readonly string[] = [], other = OTHER): Snapshot {
   const { root, versionFile } = project(source, { version, features }, other);
-  return take(root, CONTRACTS, versionFile);
+  return snapshot(root, CONTRACTS, versionFile);
 }
 
 // an import("...") naming a module by an absolute POSIX or drive path
@@ -152,6 +130,13 @@ describe('protocol-compat', () => {
     ]);
   });
 
+  it('compares the members of a plain union in order, so an optional field added inside one is additive and a changed member breaks', () => {
+    const united = BASE.replace("  'files.stat':", "  'files.send': { readonly params: { readonly content: string | readonly { readonly data: string }[] }; readonly result: boolean };\n  'files.stat':");
+    const before = fixture(united);
+    expect(check(before, fixture(united.replace('readonly { readonly data: string }[]', 'readonly { readonly data: string; readonly origin?: \'preview\' }[]'), 1, ['files.send.origin']))).toMatchObject({ ok: true, errors: [] });
+    expect(check(before, fixture(united.replace('content: string |', 'content: number |'))).ok).toBe(false);
+  });
+
   it('fails a removed command or event variant without a bump', () => {
     expect(check(base, fixture(BASE.replace(/ {2}'files\.stat'.*\n/, ''))).errors).toEqual(['breaking without a protocolVersion bump: Requests.files.stat was removed']);
     expect(check(base, fixture(BASE.replace("\n  | { readonly type: 'deleted'; readonly path: string }", ''))).ok).toBe(false);
@@ -191,10 +176,30 @@ describe('protocol-compat', () => {
     const raw = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8');
     expect(raw).not.toMatch(ABSOLUTE_IMPORT);
     const committed = JSON.parse(raw) as Snapshot;
-    const current = (snapshot as () => Snapshot)();
-    expect((checkSnapshots as (previous: Snapshot, next: Snapshot) => Checked)(committed, current)).toMatchObject({ ok: true, errors: [] });
+    const current = snapshot();
+    expect(checkSnapshots(committed, current)).toMatchObject({ ok: true, errors: [] });
     expect(JSON.stringify(current)).toBe(JSON.stringify(committed));
   }, 60_000);
+
+  it('names the design preview\'s requests and event in the features and the committed contracts', () => {
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as { features: string[]; contracts: Record<string, Record<string, unknown>> };
+    expect(committed.features).toEqual(expect.arrayContaining(['design.read', 'design.info', 'design.openPreview', 'design.changed', 'chat.designOpenPreview']));
+    expect(Object.keys(committed.contracts['MainRequests']!['object'] as object)).toEqual(expect.arrayContaining(['design.read', 'design.info']));
+    expect(Object.keys(committed.contracts['CoreRequests']!['object'] as object)).toContain('design.openPreview');
+    expect(Object.keys(committed.contracts['CoreEvents']!['object'] as object)).toContain('design.changed');
+  });
+
+  it('names the markup request in the features and the committed contracts', () => {
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as { features: string[]; contracts: Record<string, Record<string, unknown>> };
+    expect(committed.features).toContain('design.markup');
+    expect(Object.keys(committed.contracts['MainRequests']!['object'] as object)).toContain('design.markup');
+  });
+
+  it('names the design renders in the features and the committed contracts', () => {
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as { features: string[]; contracts: Record<string, Record<string, unknown>> };
+    expect(committed.features).toEqual(expect.arrayContaining(['design.capture', 'design.probe']));
+    expect(Object.keys(committed.contracts['CoreRequests']!['object'] as object)).toEqual(expect.arrayContaining(['design.capture', 'design.probe']));
+  });
 });
 
 describe('the pull request workflow', () => {
@@ -202,13 +207,13 @@ describe('the pull request workflow', () => {
   const steps = workflow.jobs['checks']!.steps;
 
   it('checks the contracts against the base branch\'s committed snapshot, the base ref passed through the environment', () => {
-    const against = steps.find((step) => step.run?.includes('protocol-compat.mjs --against'));
+    const against = steps.find((step) => step.run?.includes('protocol-compat.ts --against'));
     expect(against?.env?.['BASE_REF']).toBe('${{ github.base_ref || github.event.repository.default_branch }}');
     expect(against?.run).not.toContain('${{');
     expect(against?.run).toContain('snapshot="origin/$BASE_REF:src/remote/protocol-snapshot.json"');
     expect(against?.run).toContain('git show "$snapshot"');
     expect(steps.find((step) => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
-    expect(steps.some((step) => step.run === 'node scripts/protocol-compat.mjs --check')).toBe(true);
+    expect(steps.some((step) => step.run === 'node scripts/protocol-compat.ts --check')).toBe(true);
   });
 });
 
@@ -225,8 +230,8 @@ describe('the command line', () => {
     const { root, versionFile } = project(source, now);
     const old = project(BASE, committed);
     const snapshotPath = path.join(root, 'protocol-snapshot.json');
-    fs.writeFileSync(snapshotPath, JSON.stringify(take(old.root, CONTRACTS, old.versionFile)));
-    return { argv: (...args) => runIn(args, { root, contracts: CONTRACTS, versionFile, snapshotPath }), snapshotPath, written: () => fs.readFileSync(snapshotPath, 'utf8') };
+    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot(old.root, CONTRACTS, old.versionFile)));
+    return { argv: (...args) => run(args, { root, contracts: CONTRACTS, versionFile, snapshotPath }), snapshotPath, written: () => fs.readFileSync(snapshotPath, 'utf8') };
   }
 
   it('writes a compatible change', () => {

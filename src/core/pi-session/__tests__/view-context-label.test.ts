@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import en from '../../../webview/i18n/locales/en.json';
-import el from '../../../webview/i18n/locales/el.json';
+import en from '../../../webview/i18n/locales/en.json' with { type: 'json' };
+import el from '../../../webview/i18n/locales/el.json' with { type: 'json' };
 import { VIEW_CONTEXT_BUTTON } from '../pi-session';
 
 const ROOT = path.join(__dirname, '..', '..', '..', '..');

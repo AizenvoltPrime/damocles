@@ -2,7 +2,9 @@ import * as path from 'path';
 import { describe, it, expect } from 'vitest';
 import type { RewindHistoryItem } from '@shared/types/session';
 import type { FileChange } from '../../checkpoints';
-import { getCompactionRewindItems, mergeRewindAnchorsNewestFirst, partitionCheckpointRows, type CheckpointRow } from '../rewind';
+import { getCompactionRewindItems, mergeRewindAnchorsNewestFirst, partitionCheckpointRows, rewindableUserIdsOnBranch, withDesignDecisionsAfter, type CheckpointRow } from '../rewind';
+import { folderIdFor } from '../../checkpoints';
+import { designFolderOf } from '../../../design/design-paths';
 
 function userMsg(id: string): unknown {
   return { id, type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } };
@@ -196,5 +198,51 @@ describe('partitionCheckpointRows', () => {
     expect(promptItemsOldestFirst[0]).toMatchObject({ messageId: 'u1', filesAffected: 0 });
     expect(promptItemsOldestFirst[0]!.files).toBeUndefined();
     expect(promptItemsOldestFirst[0]!.linesChanged).toBeUndefined();
+  });
+});
+
+describe('withDesignDecisionsAfter (PD-15)', () => {
+  const role = { id: 'role', type: 'custom', customType: 'damocles.design', data: { v: 1, designId: 'contacts-abcd1234', parentSessionId: null, ruleSet: 'full' } };
+  const decided = (id: string, decisionId: string) => ({
+    id,
+    type: 'message',
+    message: { role: 'toolResult', toolName: 'AskUserQuestion', content: [], details: { designDecisions: [{ v: 1, id: decisionId, title: decisionId, chosen: 'x', rejected: [], source: { kind: 'question', ref: 'q' }, files: [] }] } },
+  });
+  const item = (messageId: string, kind: 'prompt' | 'compaction' = 'prompt'): RewindHistoryItem => ({ kind, messageId, content: '', timestamp: 0, filesAffected: 0 });
+
+  it('names the decisions at or after each anchor, a compaction anchor included, and none for an anchor off the branch', () => {
+    const branch = [role, userMsg('u1'), decided('r1', 'D1'), compaction('c1', 's', '2026-06-20T20:00:00.000Z'), userMsg('u2'), decided('r2', 'D2')];
+    const out = withDesignDecisionsAfter([item('u2'), item('c1', 'compaction'), item('u1'), item('gone')], branch);
+    expect(out.map((i) => i.designDecisionsAfter?.map((d) => d.id))).toEqual([['D2'], ['D2'], ['D1', 'D2'], []]);
+  });
+
+  it('leaves a chat that is no design chat as it is', () => {
+    const items = [item('u1')];
+    expect(withDesignDecisionsAfter(items, [userMsg('u1'), decided('r1', 'D1')])).toBe(items);
+  });
+});
+
+describe('rewindableUserIdsOnBranch in a design fork (D71)', () => {
+  const role = (designId: string) => ({ id: `role-${designId}`, type: 'custom', customType: 'damocles.design', data: { v: 1, designId, parentSessionId: null, ruleSet: 'full' } });
+  const record = (userEntryId: string, folderId: string) => ({
+    id: `cp-${userEntryId}`,
+    type: 'custom',
+    customType: 'damocles-checkpoint',
+    data: {
+      v: 3, kind: 'checkpoint', turnId: 't', userEntryId, beforeCommit: 'a'.repeat(40), afterCommit: 'b'.repeat(40), prompt: 'p', fileCount: 0, fileChanges: [],
+      createdAt: '2026-01-01T00:00:00.000Z', repo: 'folder', folderId, skipped: { totalCount: 0, totalBytes: 0, byReason: {}, patterns: [], manifest: null },
+    },
+  });
+
+  it('lists only the turns checkpointed in the fork\'s own design folder, never the records it inherited from the original', () => {
+    const original = folderIdFor(designFolderOf('contacts-abcd1234'));
+    const fork = folderIdFor(designFolderOf('contacts-abcd1234-f0badf00'));
+    const branch = [role('contacts-abcd1234'), userMsg('u1'), record('u1', original), role('contacts-abcd1234-f0badf00'), userMsg('u2'), record('u2', fork)];
+    expect(rewindableUserIdsOnBranch(branch)).toEqual(['u2']);
+  });
+
+  it('keeps every record outside a design chat, a hand-off\'s other folder included', () => {
+    const branch = [userMsg('u1'), record('u1', 'a'.repeat(16)), userMsg('u2'), record('u2', 'b'.repeat(16))];
+    expect(rewindableUserIdsOnBranch(branch)).toEqual(['u1', 'u2']);
   });
 });

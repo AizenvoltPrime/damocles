@@ -95,7 +95,7 @@ test('text typed while Ctrl+S is being written keeps the tab dirty, and the next
   const shell = await shellPage(app);
   // Main's in-place write of held.ts waits at its open until the test releases it, and reports when its handle closed.
   await app.evaluate((_electron, target) => {
-    // Main's bundled code reads through original-fs (scripts/esbuild-original-fs.mjs).
+    // Main's bundled code reads through original-fs (scripts/esbuild-original-fs.ts).
     const fs = (process.getBuiltinModule('original-fs') as typeof import('node:fs')).promises;
     const path = process.getBuiltinModule('node:path');
     const open = fs.open.bind(fs);
@@ -618,9 +618,9 @@ test("an overflowing tab strip scrolls under VS Code's overlay slider, and the a
   expect(await strip.evaluate((element) => (element as HTMLElement).offsetHeight - element.clientHeight)).toBe(0);
   const scrollbar = shell.getByTestId('editor-tab-scrollbar');
   await shell.mouse.move(5, 5);
-  await expect(scrollbar).not.toHaveClass(/editor-tab-scrollbar-shown/);
+  await expect(scrollbar).not.toHaveClass(/d-overflow-scrollbar-shown/);
   await strip.hover();
-  await expect(scrollbar).toHaveClass(/editor-tab-scrollbar-shown/);
+  await expect(scrollbar).toHaveClass(/d-overflow-scrollbar-shown/);
   expect(await scrollbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(3);
 
   // A vertical wheel scrolls the strip sideways, and dragging the slider scrolls it too.
@@ -628,7 +628,7 @@ test("an overflowing tab strip scrolls under VS Code's overlay slider, and the a
   await shell.mouse.wheel(0, 120);
   await expect.poll(() => strip.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
   await strip.evaluate((element) => { element.scrollLeft = 0; });
-  const slider = (await scrollbar.locator('.editor-tab-slider').boundingBox())!;
+  const slider = (await scrollbar.locator('.d-overflow-slider').boundingBox())!;
   await shell.mouse.move(slider.x + slider.width / 2, slider.y + 1);
   await shell.mouse.down();
   await shell.mouse.move(slider.x + slider.width / 2 + 80, slider.y + 1, { steps: 4 });

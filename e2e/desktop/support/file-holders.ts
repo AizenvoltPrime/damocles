@@ -30,7 +30,7 @@ let restartManager: RestartManager | undefined;
 
 function bindRestartManager(): RestartManager {
   if (restartManager) return restartManager;
-  const koffi = createRequire(__filename)('koffi') as typeof Koffi;
+  const koffi = createRequire(import.meta.url)('koffi') as typeof Koffi;
   const lib = koffi.load('rstrtmgr.dll');
   const uniqueProcess = koffi.struct('RM_UNIQUE_PROCESS', { dwProcessId: 'uint32_t', dwLowDateTime: 'uint32_t', dwHighDateTime: 'uint32_t' });
   const processInfo = koffi.struct('RM_PROCESS_INFO', {

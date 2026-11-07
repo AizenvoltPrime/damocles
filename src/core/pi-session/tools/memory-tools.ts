@@ -44,6 +44,9 @@ const n = (key: string): string => NAME_BY_KEY[key]!;
 
 export const MEMORY_PI_TOOL_NAMES: readonly string[] = MEMORY_SPECS.map((s) => s.name);
 
+/** The memory tools that change stored memories or notes; a design chat, which writes only its folder, gets none (PD-4). */
+export const MEMORY_WRITE_PI_TOOL_NAMES: readonly string[] = ['SaveObservation', 'SaveMemory', 'SaveNote', 'ResetObservationStaleness', 'ForgetMemory', 'UnforgetMemory', 'UpdateMemory'];
+
 export const MEMORY_TOOL_CATALOG: readonly ToolCatalogEntry[] = MEMORY_SPECS.map((s) => ({
   name: s.name,
   label: s.label,

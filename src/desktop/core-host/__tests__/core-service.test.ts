@@ -57,7 +57,11 @@ vi.mock('../browser-relay', () => ({
 }));
 
 vi.mock('../../../core/logger', () => ({ log: (line: string) => H.order.push(`log: ${line}`) }));
-vi.mock('../../../core/chat-panel/session-ownership', () => ({ announceLeaseRefusal: vi.fn(), leaseRefusalFor: vi.fn() }));
+vi.mock('../../../core/chat-panel/session-ownership', async (importOriginal) => ({
+  findStoredSessionHolder: (await importOriginal<typeof import('../../../core/chat-panel/session-ownership')>()).findStoredSessionHolder,
+  announceLeaseRefusal: vi.fn(),
+  leaseRefusalFor: vi.fn(),
+}));
 vi.mock('../../../core/pi-session/checkpoints', () => ({ runCheckpointMaintenance: async () => undefined, setCheckpointGitAvailability: () => undefined }));
 vi.mock('../../../core/pi-session/mcp/mcp-auth', () => ({ setMcpSecretStorage: () => undefined }));
 vi.mock('../../../core/voice/auto-disable', () => ({ setupAutoDisable: () => undefined }));
@@ -173,8 +177,8 @@ afterEach(() => {
 });
 
 // actors: the forwarding side's actor context, as a daemon stamps a client's requests; core then serves them as that client
-// clientNetwork: the init's mirror of each remote authority's network policy
-function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object, actors?: ActorContext, clientNetwork?: CoreInit['mirrors']['clientNetwork']): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost>; authorities: Map<string, string> } {
+// clientNetwork: the init's mirror of each remote authority's network policy; initRemote: a daemon's core's CoreInit.remote
+function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object, actors?: ActorContext, clientNetwork?: CoreInit['mirrors']['clientNetwork'], initRemote?: CoreInit['remote']): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost>; authorities: Map<string, string> } {
   const loopback = createLoopback();
   const core = createCoreEndpoint(loopback.core, () => undefined, undefined, actors ? processActor : undefined);
   const main = createMainEndpoint(loopback.main, () => undefined, undefined, actors);
@@ -184,7 +188,7 @@ function start(teardown: () => Promise<void> = async () => void H.order.push('te
   const platform = {
     endpoint: core,
     panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0], foreign: (viewId: string) => foreign.get(viewId), foreignAuthority: (viewId: string) => authorities.get(viewId) },
-    init: { git: { available: true }, e2eHooks: false, mirrors: clientNetwork ? { clientNetwork } : {} },
+    init: { git: { available: true }, e2eHooks: false, mirrors: clientNetwork ? { clientNetwork } : {}, ...(initRemote ? { remote: initRemote } : {}) },
     secrets: {},
     settings: { get: <T>(_key: string, fallback: T) => fallback, onDidChange: () => ({ dispose: () => void H.order.push('subscription disposed') }) },
     setChatPrompts: () => undefined,
@@ -357,6 +361,34 @@ describe('chats.unload', () => {
     expect(await main.request('chats.unload', { viewId: 'view-1', empty: true })).toBe(false);
     chat.instance.session = { storedSessionId: null, hasConversation: () => false, processing: false };
     expect(await main.request('chats.unload', { viewId: 'view-1', empty: true })).toBe(true);
+  });
+});
+
+describe('chats.leaseRefusal', () => {
+  // A chat whose resume switch is still in flight holds the target before main's mirror names it, and a second panel's
+  // claim would be refused, leaving that panel empty.
+  it('shows an open the chat that holds the conversation, and leaves any other ask to the lease', async () => {
+    const { main, addChat } = start();
+    const chat = addChat('panel-1', 'view-1');
+    const reveal = vi.fn();
+    Object.assign(chat.host, { reveal });
+    Object.assign(chat.instance.session, { holdsSession: (sessionId: string) => sessionId === 's-1' || sessionId === 's-2' });
+
+    expect(await main.request('chats.leaseRefusal', { sessionId: 's-2', announce: true })).toBe(true);
+    expect(reveal).toHaveBeenCalledOnce();
+    expect(await main.request('chats.leaseRefusal', { sessionId: 's-2', announce: false })).toBe(false);
+    expect(await main.request('chats.leaseRefusal', { sessionId: 's-3', announce: true })).toBe(false);
+    expect(reveal).toHaveBeenCalledOnce();
+  });
+
+  it('never reveals the holder on a remote core, whose other device joins the conversation instead (views.join)', async () => {
+    const { main, addChat } = start(undefined, undefined, undefined, undefined, { hostId: 'h' });
+    const chat = addChat('panel-1', 'view-1');
+    const reveal = vi.fn();
+    Object.assign(chat.host, { reveal });
+    Object.assign(chat.instance.session, { holdsSession: () => true });
+    expect(await main.request('chats.leaseRefusal', { sessionId: 's-1', announce: true })).toBe(false);
+    expect(reveal).not.toHaveBeenCalled();
   });
 });
 

@@ -4,8 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-// @ts-expect-error -- plain .mjs helper, no types
-import { downloadWithRetry, DOWNLOAD_ATTEMPTS, fetchWakeModel, readWakeModel, systemTarPath } from '../fetch-wake-models.mjs';
+import { downloadWithRetry, DOWNLOAD_ATTEMPTS, fetchWakeModel, readWakeModel, systemTarPath } from '../fetch-wake-models.ts';
 
 type Reply = Response | Error;
 
@@ -31,13 +30,13 @@ function run(replies: Reply[]) {
     random: () => 0,
     now: () => Date.parse('2026-10-01T00:00:00Z'),
     log: () => undefined,
-  }) as Promise<Buffer>;
+  });
   return { result, calls, sleep };
 }
 
 const ok = (): Response => new Response('onnx-bytes');
 const STATUS_TEXT: Record<number, string> = { 404: 'Not Found', 500: 'Internal Server Error' };
-const status = (code: number, headers?: Record<string, string>): Response =>
+const status = (code: number, headers: Record<string, string> = {}): Response =>
   new Response('error page', { status: code, statusText: STATUS_TEXT[code] ?? '', headers });
 
 describe('downloadWithRetry', () => {
@@ -128,7 +127,7 @@ describe('fetchWakeModel', () => {
   }
 
   function fetchWith(download = vi.fn(async (_url: string) => archive)) {
-    return { download, result: fetchWakeModel({ manifestPath, wakeDir, download, log: () => undefined }) as Promise<{ fetched: number; present: number; removed: string[] }> };
+    return { download, result: fetchWakeModel({ manifestPath, wakeDir, download, log: () => undefined }) };
   }
 
   beforeEach(() => {

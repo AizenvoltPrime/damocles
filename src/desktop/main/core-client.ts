@@ -12,6 +12,9 @@ import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToEx
 import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, GlobalMemorySearchFilters, HeldAuth, HeldMemoryQueue } from '../../shared/remote-user';
 import type { PushedCredential } from '../core-protocol/messages';
+import type { DesignPreviewFile, DesignPreviewInfo } from '../../shared/types/design';
+import type { MarkupJsonInput } from '../../shared/design-markup';
+import type { LocalizedText } from '../../shared/localized-text';
 import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
 import { parsedCallText, SCM_CALL_LOCALIZED_TEXT, WORKTREE_CALL_LOCALIZED_TEXT, type MainEndpoint, type ScmCommitOutcome } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
@@ -148,6 +151,10 @@ export class CoreClient implements Disposable {
     return this.endpoint.onEvent('chat.takeover', ({ sessionId }) => listener(sessionId));
   }
 
+  onDesignChanged(listener: (designId: string, paths: readonly string[]) => void): Disposable {
+    return this.endpoint.onEvent('design.changed', ({ designId, paths }) => listener(designId, paths));
+  }
+
   onCatalogChanged(listener: (projectKey: string | undefined) => void): Disposable {
     return this.endpoint.onEvent('catalog.changed', ({ projectKey }) => listener(projectKey === undefined ? undefined : this.keys.toShell(projectKey)));
   }
@@ -266,7 +273,7 @@ export class CoreClient implements Disposable {
     return this.request('chats.projectBusy', { projectKey: this.keys.toCore(projectKey) });
   }
 
-  /** Whether another holder keeps the session from opening here; announce tells the user, with a takeover (onTakeover). */
+  /** Whether another holder keeps the session from opening here; announce tells the user, with a takeover (onTakeover), and on a local core shows a chat holding it. */
   leaseRefused(sessionId: string, announce: boolean): Promise<boolean> {
     return this.request('chats.leaseRefusal', { sessionId, announce });
   }
@@ -428,6 +435,23 @@ export class CoreClient implements Disposable {
 
   scmCommitBlob(repoId: string, commit: string, path: string): Promise<Uint8Array | 'tooLarge' | undefined> {
     return this.request('scm.commitBlob', { repoId, commit, path });
+  }
+
+  designRead(designId: string, relPath: string): Promise<DesignPreviewFile | 'tooLarge' | undefined> {
+    return this.request('design.read', { designId, relPath });
+  }
+
+  designInfo(designId: string, relPath: string): Promise<DesignPreviewInfo | undefined> {
+    return this.request('design.info', { designId, relPath });
+  }
+
+  // png: base64 with no data: prefix, at most 1950 px a side
+  designMarkup(panelId: string, png: string, json: MarkupJsonInput): Promise<{ readonly feedbackId: string } | { readonly refused: LocalizedText }> {
+    return this.request('design.markup', { panelId, png, json });
+  }
+
+  designTweak(panelId: string, tweakId: string, value: string): Promise<{ readonly kept: true } | { readonly refused: LocalizedText }> {
+    return this.request('design.tweak', { panelId, tweakId, value });
   }
 
   scmGenerateMessage(repoId: string): Promise<unknown> {

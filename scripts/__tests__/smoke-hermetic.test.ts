@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSmokeHome, OWNER_MARKER, PI_REFRESH_WINDOW_MS, removeTree, RUN_MARGIN_MS, seedAuth, smokeEnv } from '../smoke-desktop/hermetic.mjs';
-import { createSmokeSession } from '../smoke-desktop/session.mjs';
+import { createSmokeHome, OWNER_MARKER, PI_REFRESH_WINDOW_MS, removeTree, RUN_MARGIN_MS, seedAuth, smokeEnv } from '../smoke-desktop/hermetic.ts';
+import { createSmokeSession } from '../smoke-desktop/session.ts';
 
 const NOW = Date.UTC(2026, 9, 29, 12, 0);
 const HOUR = 60 * 60 * 1000;
@@ -235,6 +235,7 @@ describe('a smoke session', () => {
     const fake = fakeApps();
     const s = session(tempDir(), fake.launchApp);
     const first = await s.launch();
+    if (!('notices' in first)) throw new Error('the first launch found an app already running');
     write(join(first.home, '.damocles', 'pi', 'agent', 'sessions', 'C--work', 'a.jsonl'), '{}');
     write(join(s.home()!.userData, 'panels.json'), '{"version":2}');
     const again = await s.relaunch();

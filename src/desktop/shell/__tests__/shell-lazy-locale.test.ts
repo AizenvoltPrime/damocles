@@ -4,7 +4,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia } from 'pinia';
 import type { App } from 'vue';
 import type { OverlayRequest, OverlayToast } from '../../preload/overlay-channels';
-import en from '../locales/en.json';
+import en from '../locales/en.json' with { type: 'json' };
 import { LOCALE_HOLD_BOUND_MS } from '../../../shared/locale-hold';
 import { FakeResizeObserver, STATE, fakeOverlayApi, fakeShellApi } from './fakes';
 

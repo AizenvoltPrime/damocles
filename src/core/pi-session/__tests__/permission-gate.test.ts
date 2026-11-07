@@ -8,9 +8,10 @@ import { buildNestedMcpToolset } from '../tools/mcp-tools';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { McpClientManager } from '../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../pi-loader';
-import { DAMOCLES_PLANS_DIR, isPlanFilePath } from '../../paths';
+import { DAMOCLES_DESIGNS_DIR, DAMOCLES_PLANS_DIR, isPlanFilePath } from '../../paths';
+import { designFolderOf } from '../../design/design-paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
-import { PermissionHandler, type PermissionResult } from '../../permission-handler';
+import { PermissionHandler, type CanUseToolContext, type PermissionResult } from '../../permission-handler';
 import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -32,7 +33,7 @@ function makePanel(opts: {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
   const decide = vi.fn<PermissionHandler['decide']>(opts.decide ?? (() => 'allow' as const));
   const matchRule = vi.fn<PermissionHandler['matchRule']>(opts.rule ?? (async () => null));
-  const permissionHandler = { canUseTool, decide, matchRule, isPlanFile: isPlanFilePath } as unknown as PanelGateContext['permissionHandler'];
+  const permissionHandler = { canUseTool, decide, matchRule, isPlanFile: isPlanFilePath, sessionCwd: () => path.resolve('/repo') } as unknown as PanelGateContext['permissionHandler'];
   const panel: PanelGateContext = {
     permissionHandler,
     isPlanMode: () => Boolean(opts.plan),
@@ -857,7 +858,7 @@ function nestedGate(opts: {
     resourceRuleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }),
   });
   const ctx: GatePermissionContext = {
-    permissionHandler: { canUseTool, decide, matchRule: async () => null, isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
+    permissionHandler: { canUseTool, decide, matchRule: async () => null, isPlanFile: isPlanFilePath, sessionCwd: () => path.resolve('/repo') } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => Boolean(opts.plan),
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     isMcpReadOnly: mcp.isReadOnly,
@@ -1586,4 +1587,283 @@ describe('MCP resource calls through the real PermissionHandler, in every mode a
       expect(prompts).toEqual([]);
     });
   }
+});
+
+describe('a design chat\'s posture (PD-4, PD-25)', () => {
+  const DESIGN_FOLDER = designFolderOf('gate-design-abcd1234');
+  const PROJECT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'design-gate-project-')));
+  afterAll(() => {
+    fs.rmSync(PROJECT, { recursive: true, force: true });
+    fs.rmSync(DESIGN_FOLDER, { recursive: true, force: true });
+  });
+
+  function designChat(opts: { yolo?: boolean; mcpReadOnly?: (name: string) => boolean } = {}) {
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setCwd(PROJECT);
+    handler.setWorkspacePath(PROJECT);
+    if (opts.yolo) handler.setDangerouslySkipPermissions(true);
+    const canUseTool = vi.spyOn(handler, 'canUseTool').mockImplementation(async () => ({ behavior: 'deny', message: 'asked', userAnswered: true } as unknown as PermissionResult));
+    const gate: GatePermissionContext = {
+      permissionHandler: handler,
+      isPlanMode: () => false,
+      shellCancel: new ShellCancelStore().forContext(() => undefined),
+      designScope: () => ({ folder: DESIGN_FOLDER, cwd: PROJECT }),
+      ...(opts.mcpReadOnly ? { isMcpReadOnly: opts.mcpReadOnly } : {}),
+    };
+    return { gate, canUseTool, handler };
+  }
+
+  it('writes a screen in its folder with no prompt in default mode', async () => {
+    const { gate, canUseTool } = designChat();
+    expect(await runPermissionGate(ev('write', 'd1', { path: path.join(DESIGN_FOLDER, 'screens', 'S1-contacts.html'), content: '<html></html>' }), gate, undefined)).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a project file in default mode and under YOLO, with a policy reason', async () => {
+    for (const yolo of [false, true]) {
+      const { gate, canUseTool } = designChat({ yolo });
+      const result = await runPermissionGate(ev('write', 'd2', { path: path.join(PROJECT, 'src', 'app.ts'), content: 'x' }), gate, undefined);
+      expect(result?.block).toBe(true);
+      expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+      expect(result?.reason).toContain('only files in its design folder');
+      expect(canUseTool).not.toHaveBeenCalled();
+    }
+  });
+
+  it('blocks before a PreToolUse hook\'s force-allow', async () => {
+    const { gate } = designChat({ yolo: true });
+    const onDecision = decisionSpy();
+    const result = await runPermissionGate(ev('edit', 'd3', { file_path: path.join(PROJECT, 'a.ts'), old_string: 'a', new_string: 'b' }), gate, undefined, null, preToolUseGate(hookResult({ decision: 'allow' }), onDecision));
+    expect(result?.block).toBe(true);
+    expect(onDecision).not.toHaveBeenCalled();
+  });
+
+  it('blocks writing decisions.md or manifest.json', async () => {
+    const { gate } = designChat({ yolo: true });
+    for (const file of ['decisions.md', 'manifest.json']) {
+      expect((await runPermissionGate(ev('write', 'd4', { path: path.join(DESIGN_FOLDER, file), content: 'x' }), gate, undefined))?.reason).toMatch(/writes only design\.md/);
+    }
+  });
+
+  it('runs a proven read-only command unasked and blocks echo x > a.txt under YOLO too', async () => {
+    const { gate, canUseTool } = designChat({ yolo: true });
+    expect(await runPermissionGate(ev('bash', 'd5', { command: 'ls -la' }), gate, undefined)).toBeUndefined();
+    const blocked = await runPermissionGate(ev('bash', 'd6', { command: 'echo x > a.txt' }), gate, undefined);
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toMatch(/proven read-only/);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('asks for an MCP tool with no read-only annotation under YOLO, and runs an annotated one', async () => {
+    const { gate, canUseTool } = designChat({ yolo: true, mcpReadOnly: (name) => name === 'mcp__figma__get_file' });
+    expect(await runPermissionGate(ev('mcp__figma__get_file', 'd7', {}), gate, undefined)).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+    await runPermissionGate(ev('mcp__figma__post_comment', 'd8', {}), gate, undefined);
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0]![2]).toMatchObject({ requiresUser: true });
+  });
+
+  it('leaves the read-only-agent MCP posture of a chat with no design scope unchanged', async () => {
+    const { gate, canUseTool } = designChat({ yolo: true });
+    const plain: GatePermissionContext = { ...gate, readOnlyShell: true };
+    delete (plain as { designScope?: unknown }).designScope;
+    canUseTool.mockImplementation(async () => ({ behavior: 'allow', updatedInput: {} }));
+    expect(await runPermissionGate(ev('mcp__figma__post_comment', 'd9', {}), plain, undefined)).toBeUndefined();
+    expect(canUseTool.mock.calls[0]![2]).not.toHaveProperty('requiresUser');
+  });
+
+  it('still asks for a non-read-only MCP call after a PreToolUse hook allowed it, and a hook deny still denies', async () => {
+    const { gate, canUseTool } = designChat({ yolo: true, mcpReadOnly: (name) => name === 'mcp__figma__get_file' });
+    await runPermissionGate(ev('mcp__figma__post_comment', 'h1', {}), gate, undefined, null, preToolUseGate(hookResult({ decision: 'allow' })));
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0]![2]).toMatchObject({ requiresUser: true });
+    expect(await runPermissionGate(ev('mcp__figma__get_file', 'h2', {}), gate, undefined, null, preToolUseGate(hookResult({ decision: 'allow' })))).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect((await runPermissionGate(ev('mcp__figma__post_comment', 'h3', {}), gate, undefined, null, preToolUseGate(hookResult({ decision: 'deny' }))))?.block).toBe(true);
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('cannot load or run a browser tool that acts on the page', async () => {
+    const { gate } = designChat({ yolo: true });
+    expect((await runPermissionGate(ev('BrowserClick', 'd10', { ref: 'e1' }), gate, undefined))?.reason).toMatch(/only look at pages/);
+  });
+
+  it('runs the design tools by settings rule, and only the ones that write no design file skip the checkpoint baseline (PD-42)', async () => {
+    const { gate } = designChat();
+    const waited: string[] = [];
+    gate.checkpointBaseline = { folder: DESIGN_FOLDER, wait: async (_signal, toolName) => { waited.push(toolName); } };
+    for (const name of ['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'MapReference', 'StartDesign', 'LoadDesignSkill', 'DeclareTweaks']) {
+      expect(await runPermissionGate(ev(name, `t-${name}`, {}), gate, undefined)).toBeUndefined();
+    }
+    expect(waited).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'MapReference']);
+  });
+
+  it('raises no force-allow notice for a hook allow that the user still has to approve, and raises it where the hook\'s allow runs the call', async () => {
+    const { gate, canUseTool } = designChat({ yolo: true, mcpReadOnly: (name) => name === 'mcp__figma__get_file' });
+    const onDecision = decisionSpy();
+    await runPermissionGate(ev('mcp__figma__post_comment', 'n1', {}), gate, undefined, null, preToolUseGate(hookResult({ decision: 'allow' }), onDecision));
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(await runPermissionGate(ev('mcp__figma__get_file', 'n2', {}), gate, undefined, null, preToolUseGate(hookResult({ decision: 'allow' }), onDecision))).toBeUndefined();
+    expect(onDecision).toHaveBeenCalledWith('mcp__figma__get_file', 'allow', undefined, false);
+  });
+});
+
+describe('one writer per design file, for every chat (D65)', () => {
+  const DESIGN_FOLDER = designFolderOf('gate-writer-abcd1234');
+  const STATE_LINK = path.join(DAMOCLES_DESIGNS_DIR, '.state', 'gate-writer-abcd1234', 'link.json');
+  const PROJECT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'design-writer-project-')));
+  afterAll(() => {
+    fs.rmSync(PROJECT, { recursive: true, force: true });
+    fs.rmSync(DESIGN_FOLDER, { recursive: true, force: true });
+  });
+
+  function plainChat(mode: 'default' | 'acceptEdits', yolo: boolean) {
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setCwd(PROJECT);
+    handler.setWorkspacePath(PROJECT);
+    handler.setPermissionMode(mode);
+    handler.setDangerouslySkipPermissions(yolo);
+    const canUseTool = vi.spyOn(handler, 'canUseTool');
+    const gate: GatePermissionContext = { permissionHandler: handler, isPlanMode: () => false, shellCancel: new ShellCancelStore().forContext(() => undefined) };
+    return { gate, canUseTool };
+  }
+
+  for (const [mode, yolo] of [['default', false], ['acceptEdits', false], ['default', true]] as const) {
+    it(`blocks a parent's write of .state and of a core-owned design file in ${mode} mode${yolo ? ' under YOLO' : ''}, with a policy reason`, async () => {
+      const { gate, canUseTool } = plainChat(mode, yolo);
+      for (const target of [STATE_LINK, path.join(DESIGN_FOLDER, 'decisions.md')]) {
+        const result = await runPermissionGate(ev('write', 'w1', { path: target, content: 'x' }), gate, undefined);
+        expect(result?.block).toBe(true);
+        expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+        expect(result?.reason).toContain('is in the designs folder');
+      }
+      expect((await runPermissionGate(ev('Edit', 'e1', { file_path: path.join(DESIGN_FOLDER, 'manifest.json'), old_string: 'a', new_string: 'b' }), gate, undefined))?.block).toBe(true);
+      expect((await runPermissionGate(ev('GenerateImage', 'g1', { file_path: path.join(DESIGN_FOLDER, 'assets', 'x.png'), prompt: 'x' }), gate, undefined))?.block).toBe(true);
+      expect(canUseTool).not.toHaveBeenCalled();
+    });
+  }
+
+  it('blocks before a PreToolUse hook\'s force-allow, and raises no notice', async () => {
+    const { gate, canUseTool } = plainChat('default', true);
+    const onDecision = decisionSpy();
+    for (const target of [STATE_LINK, path.join(DESIGN_FOLDER, 'decisions.md')]) {
+      const result = await runPermissionGate(ev('write', 'h1', { path: target, content: 'x' }), gate, undefined, null, preToolUseGate(hookResult({ decision: 'allow' }), onDecision));
+      expect(result?.block).toBe(true);
+      expect(result?.reason).toContain('is in the designs folder');
+    }
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('lets a parent write a designer file of a design folder, through the normal approval flow', async () => {
+    const { gate } = plainChat('default', true);
+    expect(await runPermissionGate(ev('write', 'p1', { path: path.join(DESIGN_FOLDER, 'design.md'), content: 'x' }), gate, undefined)).toBeUndefined();
+    expect(await runPermissionGate(ev('write', 'p2', { path: path.join(PROJECT, 'a.ts'), content: 'x' }), gate, undefined)).toBeUndefined();
+  });
+
+  it('blocks a nested agent\'s write of a core-owned design file too', async () => {
+    const { gate } = plainChat('default', true);
+    const result = await runPermissionGate(ev('write', 'a1', { path: path.join(DESIGN_FOLDER, 'tokens.css'), content: 'x' }), gate, undefined, 'agent-1');
+    expect(result?.reason).toContain('is in the designs folder');
+  });
+});
+
+describe('a chat whose design role cannot be read fails closed', () => {
+  const PROJECT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'design-unreadable-project-')));
+  afterAll(() => fs.rmSync(PROJECT, { recursive: true, force: true }));
+
+  function unreadableChat() {
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setCwd(PROJECT);
+    handler.setWorkspacePath(PROJECT);
+    handler.setDangerouslySkipPermissions(true);
+    const canUseTool = vi.spyOn(handler, 'canUseTool');
+    const gate: GatePermissionContext = {
+      permissionHandler: handler,
+      isPlanMode: () => false,
+      shellCancel: new ShellCancelStore().forContext(() => undefined),
+      designScope: () => ({ unreadable: true }),
+      isMcpReadOnly: (name) => name === 'mcp__figma__get_file',
+    };
+    return { gate, canUseTool };
+  }
+
+  it('blocks writes, every shell command, design tools, page-acting browser tools and MCP calls that are not read-only, under YOLO and a hook allow', async () => {
+    const { gate, canUseTool } = unreadableChat();
+    const onDecision = decisionSpy();
+    for (const [name, input] of [
+      ['write', { path: path.join(PROJECT, 'a.ts'), content: 'x' }],
+      ['bash', { command: 'ls -la' }],
+      ['FinishDesign', {}],
+      ['BrowserClick', { ref: 'e1' }],
+      ['mcp__figma__post_comment', {}],
+    ] as const) {
+      for (const hook of [undefined, preToolUseGate(hookResult({ decision: 'allow' }), onDecision)]) {
+        const result = await runPermissionGate(ev(name, `u-${name}`, input), gate, undefined, null, hook);
+        expect(result?.block).toBe(true);
+        expect(result?.reason).toContain('design role cannot be read');
+      }
+    }
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('still reads', async () => {
+    const { gate } = unreadableChat();
+    expect(await runPermissionGate(ev('read', 'r1', { path: path.join(PROJECT, 'a.ts') }), gate, undefined)).toBeUndefined();
+    expect(await runPermissionGate(ev('mcp__figma__get_file', 'r2', {}), gate, undefined)).toBeUndefined();
+  });
+});
+
+describe('a design chat\'s MCP call that is not read-only, under YOLO, through the real PermissionHandler', () => {
+  const DESIGN_FOLDER = designFolderOf('gate-yolo-abcd1234');
+  const PROJECT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'design-yolo-project-')));
+  afterAll(() => fs.rmSync(PROJECT, { recursive: true, force: true }));
+
+  function yoloDesignChat(rules: Record<string, string[]>) {
+    const workspace = fs.mkdtempSync(path.join(PROJECT, 'ws-'));
+    fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: rules }));
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setCwd(workspace);
+    handler.setWorkspacePath(workspace);
+    handler.setDangerouslySkipPermissions(true);
+    const prompts: Array<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>> = [];
+    handler.setPostMessage((msg) => { if (msg.type === 'requestPermission') prompts.push(msg); });
+    const gate: GatePermissionContext = {
+      permissionHandler: handler,
+      isPlanMode: () => false,
+      shellCancel: new ShellCancelStore().forContext(() => undefined),
+      designScope: () => ({ folder: DESIGN_FOLDER, cwd: workspace }),
+      isMcpReadOnly: () => false,
+    };
+    return { gate, handler, prompts };
+  }
+
+  it('denies it on a deny rule, as the rule says', async () => {
+    const { gate, prompts } = yoloDesignChat({ deny: ['mcp__figma__post_comment'] });
+    const result = await runPermissionGate(ev('mcp__figma__post_comment', 'm1', {}), gate, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(result?.reason).toContain('Permission denied by a rule in your Damocles settings');
+    expect(prompts).toEqual([]);
+  });
+
+  it('cannot hand canUseTool requiresUser without the rule, at compile time', () => {
+    // @ts-expect-error: a call only the user approves must carry its settings rule
+    const missing: CanUseToolContext = { signal: new AbortController().signal, toolUseID: null, requiresUser: true };
+    expect(missing.requiresUser).toBe(true);
+  });
+
+  it('still asks on an allow rule, and turning YOLO on again settles nothing', async () => {
+    const { gate, handler, prompts } = yoloDesignChat({ allow: ['mcp__figma__post_comment'] });
+    const pending = runPermissionGate(ev('mcp__figma__post_comment', 'm2', {}), gate, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    handler.setDangerouslySkipPermissions(false);
+    handler.setDangerouslySkipPermissions(true);
+    expect(handler.pendingPrompts().length > 0).toBe(true);
+    await handler.resolveApproval('m2', false, { customMessage: 'not now' });
+    expect((await pending)?.reason).toContain(FEEDBACK_MARKER);
+  });
 });

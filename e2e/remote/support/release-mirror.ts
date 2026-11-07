@@ -11,9 +11,9 @@ const CPU = process.arch === 'arm64' ? 'arm64' : 'x64';
 // The fixtures' targets, on this computer's CPU architecture.
 export const LINUX_TARGET = `linux-${CPU}`;
 export const ALPINE_TARGET = `alpine-${CPU}`;
-/** scripts/server-targets.mjs serverArtifact for a POSIX target. */
+/** scripts/server-targets.ts serverArtifact for a POSIX target. */
 export const serverPackage = (target: string): string => `damocles-server-${APP_VERSION}-${target}.tar.gz`;
-/** The server version this build installs on `target`, from the dev manifest build-server.mjs wrote with its package. */
+/** The server version this build installs on `target`, from the dev manifest build-server.ts wrote with its package. */
 export function serverVersionOf(target: string): string {
   const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'dist', 'desktop', 'server-manifest.json'), 'utf8')) as { packages: Record<string, { serverVersion?: string } | undefined> };
   const serverVersion = manifest.packages[target]?.serverVersion;

@@ -6,7 +6,7 @@ $ARGUMENTS
 
 ## What this is and is not
 
-- It is hands-on use of the app through `scripts/smoke-desktop/` (read its `README.md` and `helpers.mjs` first). Every check ends with you looking at the app's own output: a screenshot you read, the chat text, the session file, the hook log or the main log.
+- It is hands-on use of the app through `scripts/smoke-desktop/` (read its `README.md` and `helpers.ts` first). Every check ends with you looking at the app's own output: a screenshot you read, the chat text, the session file, the hook log or the main log.
 - It is not running Vitest, the e2e suite, typecheck or lint. Those are automated checks the user runs separately; do not start a full `npm test` or a full e2e run unless the user asks. Only the static staged-diff checks below and the two builds are part of this command.
 - Scope is only what is staged. The changed set is `git diff --cached`, not the whole `## [Unreleased]` section of `CHANGELOG.md`, which also holds already-committed work. If nothing is staged, or there are unstaged edits, say so first and ask whether to include them.
 
@@ -36,7 +36,7 @@ Run in parallel, from Git Bash:
   - `.damocles/hooks.json` with a node hook script that sleeps on demand. A slow `agent_end` hook (Damocles runs it in pi's `agent_settled`) opens the end-of-turn window. Gate it on a flag file you can create and delete from a step. Also add a slow `input` (UserPromptSubmit) hook gated on a marker word, a slow `tool_call` (PreToolUse) hook gated on a marker word, and an `input` hook that returns `{"decision":"block"}` for another marker word. Have the script append start and end lines to a log file, so you can tell a killed hook from a finished one.
   - `.mcp.json` pointing at a small stdio MCP server script that offers tools, resources and a resource template.
   - `.damocles/commands/<name>.md` for prompt-template checks.
-- Start the controller hidden with its output redirected to `%TEMP%`, then `node scripts/smoke-desktop/post.mjs --launch`. Step files go in `%TEMP%\smoke-steps\`, never the repo.
+- Start the controller hidden with its output redirected to `%TEMP%`, then `node scripts/smoke-desktop/post.ts --launch`. Step files go in `%TEMP%\smoke-steps\`, never the repo.
 - The app runs on a hermetic home under `<SMOKE_DIR>/run/` (README "Hermetic home"): a copy of the user's settings, models, subscription plugin and sign-in (OAuth without its refresh token), and none of their sessions, worktrees, memory, global hooks or MCP servers. Toggling settings is safe, since every `--launch` starts again from the user's own (a `--relaunch` keeps the run's copy). If `--launch` returns a notice that a sign-in expires soon and the checks need that provider, tell the user what it says and stop: refreshing it takes a message in their own app.
 
 ## 4. Test
@@ -44,7 +44,7 @@ Run in parallel, from Git Bash:
 - Pick a cheap model for ordinary turns (Haiku 5.5, Low, the `prepare` default), and Ask before edits with YOLO off. Turn YOLO on only where a permission prompt would block the check, such as subagents and teams. Keep team briefs tiny; team roles use the user's configured models.
 - Keep each step under 55 seconds. Start long work in one step and poll it from short later steps. Read the result of each step before writing the next, and adjust the prompt rather than the assertion when the model acts differently.
 - Collect evidence every time: `h.shot` then read the PNG (if the long path fails, read it through the short `C:\Users\ASTEFA~1\...` form), `h.tail`, the hook log, the session `.jsonl` under `h.home()`'s `.damocles/pi/agent/sessions/`, and `<SMOKE_DIR>/run/ud/logs/Damocles.log` (after `--quit` or the next `--launch`, `<SMOKE_DIR>/logs/`, which also keeps a crashed run's logs). The hermetic home and its sessions are gone after `--quit` and replaced by each `--launch`, so read them before.
-- Exercise the edges as well as the golden path: Stop at each stage (while a hook runs, while pi settles, while a tool runs, on a subagent, on a team), a message sent or queued during each window, and a quit plus relaunch of the app with `post.mjs --relaunch`, which quits the app and starts it again on the same home (chats, model, context meter and loaded tools must come back). Its answer must say `"closed": "quit"`; `"killed"` means a quit dialog held the app past 20 seconds and it was killed, so the check did not test a clean quit: close the dialog's cause and repeat it. Never use `--launch` for this check, since it starts from a new home.
+- Exercise the edges as well as the golden path: Stop at each stage (while a hook runs, while pi settles, while a tool runs, on a subagent, on a team), a message sent or queued during each window, and a quit plus relaunch of the app with `post.ts --relaunch`, which quits the app and starts it again on the same home (chats, model, context meter and loaded tools must come back). Its answer must say `"closed": "quit"`; `"killed"` means a quit dialog held the app past 20 seconds and it was killed, so the check did not test a clean quit: close the dialog's cause and repeat it. Never use `--launch` for this check, since it starts from a new home.
 - When something looks wrong, find the cause before reporting it. Read the session file and code, and check whether released `v3.7.0` (`git show v3.7.0:<file>`, and the pi version it pinned) already behaved that way. Report a defect as caused by the staged changes only with that evidence.
 
 Known runner quirks:
@@ -57,7 +57,7 @@ Known runner quirks:
 
 ## 5. Clean up and report
 
-- `post.mjs --quit`, which deletes the hermetic home with its copied sign-in (killing the app if it does not quit) and keeps `shots/` and `logs/`. Delete the scratch project and step files after checking them for links (`find -type l`). Keep `%TEMP%\damocles-smoke\shots` and tell the user where it is.
+- `post.ts --quit`, which deletes the hermetic home with its copied sign-in (killing the app if it does not quit) and keeps `shots/` and `logs/`. Delete the scratch project and step files after checking them for links (`find -type l`). Keep `%TEMP%\damocles-smoke\shots` and tell the user where it is.
 - Never stage, unstage or commit. If you edit a tracked file (for example to fix a nit the staged-diff check found), name it and tell the user to re-stage it.
 - Report:
   - the staged-diff check results;

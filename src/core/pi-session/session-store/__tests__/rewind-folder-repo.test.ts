@@ -20,6 +20,7 @@ import {
   type CheckpointRecord,
 } from '../../checkpoints';
 import { GIT_DIR_MAX_LENGTH } from '../../checkpoints/resolver';
+import { designFolderOf } from '../../../design/design-paths';
 
 const MB = 1024 * 1024;
 const CAP = 25 * MB;
@@ -240,5 +241,63 @@ describe('rewind history, file content and delete across legacy and folder check
     await holding;
     await refsDeleted;
     expect(folderRefs(prefix)).toEqual([]);
+  });
+});
+
+// PD-39, PD-36: a design chat's checkpoints capture its design folder, which is not the folder its session file is found from.
+describe('rewind history of a design chat', { timeout: 120_000 }, () => {
+  it('diffs against the design folder, and names the decisions each rewind removes', async () => {
+    // The role's design folder, since a design chat rewinds only to checkpoints of its own folder (D71).
+    const designFolder = designFolderOf('rewind-history-abcd1234');
+    fs.mkdirSync(designFolder, { recursive: true });
+    const sm = await newSession();
+    sm.appendCustomEntry('damocles.design', { v: 1, designId: 'rewind-history-abcd1234', folder: designFolder, parentSessionId: 'parent-1', ruleSet: 'full', title: 'Contacts' });
+    const decision = (id: string, title: string) => ({ v: 1, id, title, chosen: `${title} chosen`, rejected: [], source: { kind: 'question', ref: 'Which?' }, files: [] });
+    const decide = (records: unknown[]) => sm.appendMessage({ role: 'toolResult', toolCallId: `c-${records.length}-${Date.now()}`, toolName: 'RecordDecision', content: [], details: { designDecisions: records }, isError: false, timestamp: Date.now() } as unknown as Message);
+    const producer = new AutoCheckpointProducer({
+      sessionId: sm.getSessionId(),
+      sessionFile: sm.getSessionFile() ?? path.join(root, 'design.jsonl'),
+      cwd: designFolder,
+      capturesTracked: false,
+      maxFileSizeBytes: () => CAP,
+      createTurnId: () => 'turn',
+      now: () => new Date(),
+    });
+    try {
+      const d1 = sm.appendMessage(user('first screen'));
+      sm.appendMessage(assistant('ok'));
+      decide([decision('D1', 'Fidelity')]);
+      sm.appendCustomEntry('damocles-checkpoint', await finalized(producer, d1, () => fs.writeFileSync(path.join(designFolder, 'design.md'), '# v1\n')));
+      const d2 = sm.appendMessage(user('second screen'));
+      sm.appendMessage(assistant('ok'));
+      decide([decision('D2', 'Density'), decision('D3', 'Layout')]);
+      sm.appendCustomEntry('damocles-checkpoint', await finalized(producer, d2, () => fs.writeFileSync(path.join(designFolder, 'S1.html'), '<html></html>\n')));
+
+      const { items } = await getPiRewindHistory(cwd, sm.getSessionId(), CAP, true, designFolder);
+      const byId = new Map(items.map((i) => [i.messageId, i]));
+      expect(byId.get(d1)?.files).toEqual([
+        { path: path.join(designFolder, 'S1.html'), displayName: 'S1.html' },
+        { path: path.join(designFolder, 'design.md'), displayName: 'design.md' },
+      ]);
+      expect(byId.get(d1)?.designDecisionsAfter?.map((d) => d.id)).toEqual(['D1', 'D2', 'D3']);
+      expect(byId.get(d2)?.designDecisionsAfter).toEqual([
+        { id: 'D2', title: 'Density', chosen: 'Density chosen', rejected: [], source: { kind: 'question', ref: 'Which?' } },
+        { id: 'D3', title: 'Layout', chosen: 'Layout chosen', rejected: [], source: { kind: 'question', ref: 'Which?' } },
+      ]);
+      expect(await getPiFileCheckpointContent(cwd, sm.getSessionId(), d2, path.join(designFolder, 'design.md'), designFolder)).toBe('# v1\n');
+      expect(await getPiFileCheckpointContent(cwd, sm.getSessionId(), d2, path.join(designFolder, 'S1.html'), designFolder)).toBe('');
+    } finally {
+      producer.dispose();
+      await fs.promises.rm(getFolderRepoDir(folderIdFor(designFolder)), { recursive: true, force: true });
+      await fs.promises.rm(designFolder, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves designDecisionsAfter unset outside a design chat', async () => {
+    const plain = await newSession();
+    const u = plain.appendMessage(user('plain'));
+    plain.appendMessage(assistant('ok'));
+    const { items } = await getPiRewindHistory(cwd, plain.getSessionId(), CAP, false);
+    expect(items.find((i) => i.messageId === u)?.designDecisionsAfter).toBeUndefined();
   });
 });

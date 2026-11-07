@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { MAX_BROWSER_URL_LENGTH } from '../../shared/typed-address';
-import { MAX_ID_LENGTH } from '../preload/shell-channels';
+import { MAX_DESIGN_TABS, MAX_DESIGN_WIDTH, MAX_ID_LENGTH, MIN_DESIGN_WIDTH } from '../preload/shell-channels';
+import { DESIGN_NAME, isDesignId } from '../../shared/design-paths';
+import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 import { isImageBlock, type UserContentBlock } from '../../shared/types/content';
 
 const SCHEMA_VERSION = 2;
@@ -18,11 +20,22 @@ export interface PersistedPages {
 
 export const NO_PAGES: PersistedPages = { pages: [] };
 
+// A design chat's preview tab (PD-33): a screen of its design, with the width, state and provenance the user chose.
+export interface PersistedDesignTab {
+  readonly designId: string;
+  readonly relPath: string;
+  readonly width?: number;
+  readonly state?: string;
+  readonly provenance?: boolean;
+}
+
 // A loaded chat and its browser pages.
 export interface PersistedChat {
   readonly panelId: string;
   readonly state: unknown;
   readonly browser: PersistedPages;
+  // an optional version 2 field, as lastChats is: an older build ignores it and drops it at its next write
+  readonly designTabs?: readonly PersistedDesignTab[];
   // the first prompt the chat held for its worktree when the window closed (rule 6), which the next start puts in its composer
   readonly heldPrompt?: readonly UserContentBlock[];
 }
@@ -80,8 +93,38 @@ function parsePages(rawPages: unknown, rawActive: unknown, panelId: string, log:
   return { pages, ...(activePage !== undefined ? { activePage } : {}) };
 }
 
-function chatEntry(panelId: string, state: unknown, browser: PersistedPages, heldPrompt?: readonly UserContentBlock[]): PersistedChat {
-  return { panelId, state: state ?? null, browser, ...(heldPrompt ? { heldPrompt } : {}) };
+function chatEntry(panelId: string, state: unknown, browser: PersistedPages, heldPrompt?: readonly UserContentBlock[], designTabs?: readonly PersistedDesignTab[]): PersistedChat {
+  return { panelId, state: state ?? null, browser, ...(heldPrompt ? { heldPrompt } : {}), ...(designTabs && designTabs.length > 0 ? { designTabs } : {}) };
+}
+
+// relPath's length bound is isRelativeFilePath's; a malformed width, state or provenance drops only that field
+function parseDesignTab(raw: unknown): PersistedDesignTab | undefined {
+  if (!isRecord(raw)) return undefined;
+  const designId = field(raw, 'designId');
+  const relPath = field(raw, 'relPath');
+  if (typeof designId !== 'string' || !isDesignId(designId)) return undefined;
+  if (!isRelativeFilePath(relPath) || hasUnsafeWindowsSegment(relPath)) return undefined;
+  const rawWidth = field(raw, 'width');
+  const rawState = field(raw, 'state');
+  const width = typeof rawWidth === 'number' && Number.isInteger(rawWidth) && rawWidth >= MIN_DESIGN_WIDTH && rawWidth <= MAX_DESIGN_WIDTH ? rawWidth : undefined;
+  const state = typeof rawState === 'string' && DESIGN_NAME.test(rawState) ? rawState : undefined;
+  const provenance = field(raw, 'provenance') === true;
+  return { designId, relPath, ...(width !== undefined ? { width } : {}), ...(state !== undefined ? { state } : {}), ...(provenance ? { provenance } : {}) };
+}
+
+function parseDesignTabs(raw: unknown, panelId: string, log: Log): PersistedDesignTab[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    log(`[panels] chat ${panelId}: dropping malformed design tabs`);
+    return [];
+  }
+  const tabs: PersistedDesignTab[] = [];
+  for (const entry of (raw as unknown[]).slice(0, MAX_DESIGN_TABS)) {
+    const tab = parseDesignTab(entry);
+    if (tab) tabs.push(tab);
+    else log(`[panels] chat ${panelId}: dropping a malformed design tab`);
+  }
+  return tabs;
 }
 
 // A block rebuilt from its own fields only; undefined for anything but a text or base64 image block.
@@ -175,7 +218,7 @@ function parseV2(file: Record<string, unknown>, log: Log): ParsedPanels {
     const rawHeld = field(entry, 'heldPrompt');
     const heldPrompt = parseHeldPrompt(rawHeld);
     if (rawHeld !== undefined && !heldPrompt) log(`[panels] chat ${panelId}: dropping a malformed held prompt`);
-    chats.push(chatEntry(panelId, parseState(field(entry, 'state'), panelId, log), pages, heldPrompt));
+    chats.push(chatEntry(panelId, parseState(field(entry, 'state'), panelId, log), pages, heldPrompt, parseDesignTabs(field(entry, 'designTabs'), panelId, log)));
   }
   return { chats, selected: parseSelection(field(file, 'selected'), chats, log), lastChats: parseLastChats(field(file, 'lastChats'), chats, log) };
 }
@@ -297,11 +340,21 @@ export class PanelStateStore {
     this.sealed = false;
   }
 
-  // A new chat starts with no pages; an existing one keeps its pages.
+  // A new chat starts with no pages; an existing one keeps its pages and design tabs.
   set(chat: { readonly panelId: string; readonly state: unknown }): void {
     if (this.sealed) return;
-    const held = this.chats.get(chat.panelId)?.heldPrompt;
-    this.chats.set(chat.panelId, { panelId: chat.panelId, state: chat.state, browser: this.chats.get(chat.panelId)?.browser ?? NO_PAGES, ...(held ? { heldPrompt: held } : {}) });
+    const existing = this.chats.get(chat.panelId);
+    this.chats.set(chat.panelId, { ...existing, panelId: chat.panelId, state: chat.state, browser: existing?.browser ?? NO_PAGES });
+    this.persist();
+  }
+
+  // Ignored for a chat the store does not hold.
+  setDesignTabs(panelId: string, designTabs: readonly PersistedDesignTab[]): void {
+    if (this.sealed) return;
+    const chat = this.chats.get(panelId);
+    if (!chat) return;
+    const { designTabs: _replaced, ...rest } = chat;
+    this.chats.set(panelId, { ...rest, ...(designTabs.length > 0 ? { designTabs: designTabs.slice(0, MAX_DESIGN_TABS) } : {}) });
     this.persist();
   }
 
@@ -384,6 +437,7 @@ export class PanelStateStore {
         pages: chat.browser.pages,
         ...(chat.browser.activePage !== undefined ? { activePage: chat.browser.activePage } : {}),
         ...(chat.heldPrompt ? { heldPrompt: chat.heldPrompt } : {}),
+        ...(chat.designTabs ? { designTabs: chat.designTabs } : {}),
       })),
     };
     void writeJsonConfig(this.filePath, () => `${JSON.stringify(snapshot, null, 2)}\n`).catch((err: unknown) => {

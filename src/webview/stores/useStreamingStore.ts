@@ -36,6 +36,12 @@ function contentBlocksFromUserContent(content: string | UserContentBlock[]): Con
   return content;
 }
 
+// A design chat message's own parts: a preview markup, or the images core saved as references.
+export interface DesignUserMessage {
+  designMarkup?: ChatMessage['designMarkup'] | undefined;
+  designReferences?: ChatMessage['designReferences'] | undefined;
+}
+
 export function buildUserMessage(
   content: string | UserContentBlock[],
   isReplay = false,
@@ -47,6 +53,7 @@ export function buildUserMessage(
   isCommandEcho?: boolean,
   terminalAttachments?: readonly ChatAttachmentInfo[],
   timestamp: number = Date.now(),
+  design?: DesignUserMessage,
 ): ChatMessage {
   const blocks = contentBlocksFromUserContent(content);
   return {
@@ -63,6 +70,10 @@ export function buildUserMessage(
     ...(isCommandEcho === true && { isCommandEcho }),
     ...(isMidStream === true && { isCombinedQueue: true }),
     ...(promptIndex !== undefined && { promptIndex }),
+    ...(design?.designMarkup !== undefined && {
+      designMarkup: { feedbackId: design.designMarkup.feedbackId, ...(design.designMarkup.markup ? { markup: design.designMarkup.markup } : {}) },
+    }),
+    ...(design?.designReferences?.length ? { designReferences: design.designReferences.map(({ id, image, imageIndex }) => ({ id, image, imageIndex })) } : {}),
   };
 }
 
@@ -435,9 +446,10 @@ export const useStreamingStore = defineStore("streaming", () => {
     isMidStream?: boolean,
     isCommandEcho?: boolean,
     terminalAttachments?: readonly ChatAttachmentInfo[],
+    design?: DesignUserMessage,
   ): ChatMessage {
     flushReplayQueue();
-    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream, isCommandEcho, terminalAttachments);
+    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream, isCommandEcho, terminalAttachments, Date.now(), design);
     messages.value = [...messages.value, msg];
     return msg;
   }

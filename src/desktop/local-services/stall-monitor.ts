@@ -114,7 +114,7 @@ export function summarizeStall(profile: CpuProfile, fromMs: number, toMs: number
   return { sampledMs, idleMs, stacks };
 }
 
-// The process a monitor watches, as its log lines name it; scripts/perf/stall-report.mjs reads the word.
+// The process a monitor watches, as its log lines name it; scripts/perf/stall-report.ts reads the word.
 export type StallProcess = 'main' | 'core';
 
 export function formatStall(proc: StallProcess, blockedMs: number, cpuMs: number, summary: StallSummary, profileFile: string | undefined): string {

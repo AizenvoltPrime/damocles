@@ -209,6 +209,41 @@ describe('CheckpointService off the stream path', () => {
   });
 });
 
+describe('CheckpointService.awaitBaselineOf', () => {
+  it('waits for the turn a queued prompt opens at its first assistant message, then for that turn\'s baseline', async () => {
+    const { service, fake } = makeService({ baselineWaitMs: () => 60_000 });
+    const sm = treeReader([userEntry('u1'), userEntry('u2')]);
+    service.startTurn(sm, 'u1', 'p');
+    let done: boolean | undefined;
+    const wait = service.awaitBaselineOf('u2', never, 'design.markup').then((written) => { done = written; });
+    // the running turn's baseline is not u2's
+    await vi.waitFor(() => expect(fake.calls).toEqual(['turnStart:u1']));
+    fake.release('u1');
+    await new Promise((r) => setTimeout(r, 5));
+    expect(done).toBeUndefined();
+    service.onSettled();
+    service.onMessageStart({ role: 'assistant' }, sm);
+    await vi.waitFor(() => expect(fake.calls).toContain('turnStart:u2'));
+    expect(done).toBeUndefined();
+    fake.release('u2');
+    await wait;
+    expect(done).toBe(true);
+  });
+
+  it('returns true at once for a turn already past, and false when the service ends before the turn starts', async () => {
+    const { service, fake } = makeService({ baselineWaitMs: () => 60_000 });
+    const sm = treeReader([userEntry('u1')]);
+    service.startTurn(sm, 'u1', 'p');
+    service.onSettled();
+    await vi.waitFor(() => expect(fake.released('u1')).toBe(true));
+    fake.release('u1');
+    expect(await service.awaitBaselineOf('u1', never, 'design.markup')).toBe(true);
+    const waiting = service.awaitBaselineOf('u9', never, 'design.markup');
+    service.dispose();
+    expect(await waiting).toBe(false);
+  });
+});
+
 describe('CheckpointService.awaitBaseline', () => {
   it('resolves at once with no turn in progress', async () => {
     const { service } = makeService();

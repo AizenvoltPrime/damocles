@@ -1,6 +1,6 @@
 import { computed, toValue, type Component, type ComputedRef, type MaybeRefOrGetter } from "vue";
 import { useI18n } from "vue-i18n";
-import type { ToolCall } from "@shared/types/session";
+import type { ToolAbandonReason, ToolCall } from "@shared/types/session";
 import { Ban, CircleCheck, CircleQuestionMark, CircleX, Hourglass, LoaderCircle, ShieldBan } from "lucide-vue-next";
 
 type ToolStatus = ToolCall["status"];
@@ -136,6 +136,45 @@ export interface ToolCardStatus {
   /** The motion.css class alone, for an icon that takes its colour from a chip. */
   statusMotion: ComputedRef<string>;
   cardClass: ComputedRef<string>;
+}
+
+/** A call's measured `execute()` time as its card's meta chip shows it. */
+export function formatToolDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.floor((ms % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+export interface ToolStatusNote {
+  icon: Component;
+  title: string;
+  description: string | undefined;
+}
+
+const ABANDONED_DESCRIPTION_KEYS: Record<ToolAbandonReason, string> = {
+  stopped: "toolCall.abandonedStopped",
+  failed: "toolCall.abandonedFailed",
+};
+
+/** The note a card shows under a call that never ran, was cancelled, or whose outcome was not recorded; null otherwise. */
+export function useToolStatusNote(status: MaybeRefOrGetter<ToolStatus>, abandonReason: MaybeRefOrGetter<ToolAbandonReason | undefined>): ComputedRef<ToolStatusNote | null> {
+  const { t } = useI18n();
+  return computed(() => {
+    switch (toValue(status)) {
+      case "abandoned": {
+        const reason = toValue(abandonReason);
+        return { icon: Ban, title: t("toolCall.notExecuted"), description: reason ? t(ABANDONED_DESCRIPTION_KEYS[reason]) : undefined };
+      }
+      case "cancelled":
+        return { icon: Ban, title: t("toolCall.cancelled"), description: t("toolCall.cancelledDescription") };
+      case "unrecorded":
+        return { icon: CircleQuestionMark, title: t("toolCall.outcomeUnrecorded"), description: t("toolCall.outcomeUnrecordedDescription") };
+      default:
+        return null;
+    }
+  });
 }
 
 /** The one status vocabulary of every tool card (the reference's tool row, Chat Panel.dc.html m.isTool). */

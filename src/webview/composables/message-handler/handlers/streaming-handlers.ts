@@ -18,6 +18,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         undefined,
         msg.isCommandEcho,
         msg.terminalAttachments,
+        { designMarkup: msg.designMarkup, designReferences: msg.designReferences },
       );
     },
 

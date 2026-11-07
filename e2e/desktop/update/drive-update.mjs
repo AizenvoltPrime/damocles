@@ -6,9 +6,9 @@ import process from 'node:process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { startFeedServer } from '../../../scripts/desktop-update-feed.mjs';
-import { writeOverride } from '../../../scripts/desktop-update-override.mjs';
-import { isEntryPoint } from '../../../scripts/entry-point.mjs';
+import { startFeedServer } from '../../../scripts/desktop-update-feed.ts';
+import { writeOverride } from '../../../scripts/desktop-update-override.ts';
+import { isEntryPoint } from '../../../scripts/entry-point.ts';
 import {
   aboutRestart,
   aboutUpdateStatus,
@@ -183,7 +183,7 @@ const linux = {
   relaunched: ({ logFile, version }) => readLog(logFile).includes(`Damocles desktop starting (version ${version},`),
   // The installed tree is root-owned, so the writer runs under sudo with the same Node.
   writeOverride(installDir, url) {
-    const script = fileURLToPath(new URL('../../../scripts/desktop-update-override.mjs', import.meta.url));
+    const script = fileURLToPath(new URL('../../../scripts/desktop-update-override.ts', import.meta.url));
     run('sudo', [process.execPath, script, '--install-dir', installDir, '--url', url]);
   },
   stop(installDir) {

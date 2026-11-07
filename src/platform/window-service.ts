@@ -58,6 +58,8 @@ export interface PanelOptions {
   readonly column?: number;
   // The chat panel a browser page belongs to; a host with chatBrowserPane shows the page only among that chat's pages.
   readonly owner?: PanelHost;
+  // A design chat's parent chat, which a host listing chats nests it under; a host without a chat list ignores it.
+  readonly parent?: PanelHost;
 }
 
 export interface WindowService {

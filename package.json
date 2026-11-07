@@ -6,6 +6,7 @@
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "https://github.com/AizenvoltPrime/damocles.git"
@@ -41,7 +42,7 @@
     "onStartupFinished",
     "onWebviewPanel:damocles.chat"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "l10n": "./l10n",
   "capabilities": {
     "untrustedWorkspaces": {
@@ -52,7 +53,8 @@
         "damocles.permissionMode",
         "damocles.compass.enabled",
         "damocles.imageGeneration.enabled",
-        "damocles.imageGeneration.model"
+        "damocles.imageGeneration.model",
+        "damocles.design.enabled"
       ]
     }
   },
@@ -464,6 +466,12 @@
             ]
           },
           "description": "%configuration.mcp.resourceExposure.description%"
+        },
+        "damocles.design.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "%configuration.design.enabled.description%"
         },
         "damocles.team.enabled": {
           "type": "boolean",
@@ -1334,48 +1342,51 @@
     }
   },
   "scripts": {
-    "fetch:grammars": "node scripts/fetch-grammars.mjs",
-    "fetch:wake-models": "node scripts/fetch-wake-models.mjs",
+    "fetch:grammars": "node scripts/fetch-grammars.ts",
+    "fetch:wake-models": "node scripts/fetch-wake-models.ts",
     "fetch:assets": "npm run fetch:grammars && npm run fetch:wake-models",
     "build": "npm run fetch:assets && npm run build:extension && npm run build:webview",
-    "build:extension": "node esbuild.config.mjs",
+    "build:extension": "node esbuild.config.ts",
     "build:webview": "npm run generate:settings-schema && vite build",
-    "build:desktop": "node esbuild.config.mjs --desktop && npm run build:shell",
+    "build:desktop": "node esbuild.config.ts --desktop && npm run build:shell",
     "build:shell": "vite build --config vite.shell.config.ts",
-    "build:server": "node scripts/build-server.mjs",
-    "dev:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.mjs && npm run build:webview && npm run build:desktop && node scripts/launch-desktop.mjs",
-    "test:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.mjs && npm run build:webview && npm run build:desktop && playwright test --config playwright.desktop.config.ts --project=dev",
+    "build:server": "node scripts/build-server.ts",
+    "dev:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.ts && npm run build:webview && npm run build:desktop && node scripts/launch-desktop.ts",
+    "test:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.ts && npm run build:webview && npm run build:desktop && playwright test --config playwright.desktop.config.ts --project=dev",
     "test:desktop:packaged": "playwright test --config playwright.desktop.config.ts --project=packaged",
-    "test:remote": "node scripts/test-remote.mjs",
-    "dist": "npm run build && npm run build:desktop && node scripts/dist-desktop.mjs",
-    "dist:linux-wsl": "node scripts/dist-linux-wsl.mjs",
-    "dist:local": "node scripts/dist-local.mjs",
+    "test:remote": "node scripts/test-remote.ts",
+    "test:journey": "playwright test --config playwright.journey.config.ts",
+    "dist": "npm run build && npm run build:desktop && node scripts/dist-desktop.ts",
+    "dist:linux-wsl": "node scripts/dist-linux-wsl.ts",
+    "dist:local": "node scripts/dist-local.ts",
     "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
-    "watch:extension": "node esbuild.config.mjs --watch",
+    "watch:extension": "node esbuild.config.ts --watch",
     "watch:webview": "vite build --watch",
     "dev": "npm run watch",
-    "typecheck": "tsc --noEmit && npm run typecheck:core && npm run typecheck:desktop && npm run typecheck:e2e && npm run typecheck:tests && npm run typecheck:webview",
+    "typecheck": "tsc --noEmit && npm run typecheck:core && npm run typecheck:desktop && npm run typecheck:e2e && npm run typecheck:scripts && npm run typecheck:tests && npm run typecheck:webview",
     "typecheck:core": "tsc -p tsconfig.core.json",
     "typecheck:desktop": "tsc -p tsconfig.desktop.json && tsc -p tsconfig.desktop-preload.json",
     "typecheck:e2e": "tsc -p e2e/desktop/tsconfig.json && tsc -p e2e/remote/tsconfig.json",
+    "typecheck:scripts": "tsc -p scripts/tsconfig.json",
     "typecheck:tests": "tsc -p tsconfig.tests.json && tsc -p tsconfig.tests.dom.json",
     "typecheck:webview": "vue-tsc -p tsconfig.webview.json --noEmit",
-    "sync:vscodeignore": "node scripts/sync-vscodeignore.mjs",
-    "vscode:prepublish": "node scripts/sync-vscodeignore.mjs && npm run build",
+    "sync:vscodeignore": "node scripts/sync-vscodeignore.ts",
+    "vscode:prepublish": "node scripts/sync-vscodeignore.ts && npm run build",
     "package": "vsce package",
-    "package:linux-wsl": "node scripts/package-wsl.mjs",
+    "package:linux-wsl": "node scripts/package-wsl.ts",
     "publish": "vsce publish",
     "pretest": "npm run fetch:assets",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint --max-warnings 0 \"src/**/*.{ts,vue}\" && stylelint --max-warnings 0 \"src/webview/**/*.{css,vue}\" \"src/desktop/shell/**/*.{css,vue}\"",
-    "smoke:pi": "node scripts/pi-smoke.mjs",
-    "generate:file-icons": "node scripts/generate-file-icons.mjs",
-    "generate:icons": "node scripts/generate-icons.mjs",
-    "generate:profiles": "node scripts/generate-agent-profiles.mjs",
-    "generate:reference-words": "node scripts/generate-reference-words.mjs",
-    "generate:settings-schema": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/generate-settings-schema.mjs",
-    "sync:profiles": "node scripts/sync-agent-profiles.mjs"
+    "lint": "eslint --max-warnings 0 \"src/**/*.{ts,vue}\" \"scripts/**/*.ts\" esbuild.config.ts && stylelint --max-warnings 0 \"src/webview/**/*.{css,vue}\" \"src/desktop/shell/**/*.{css,vue}\"",
+    "smoke:pi": "node scripts/pi-smoke.ts",
+    "generate:file-icons": "node scripts/generate-file-icons.ts",
+    "generate:icons": "node scripts/generate-icons.ts",
+    "generate:profiles": "node scripts/generate-agent-profiles.ts",
+    "generate:design-skills": "node scripts/generate-design-skills.ts",
+    "generate:reference-words": "node scripts/generate-reference-words.ts",
+    "generate:settings-schema": "node scripts/generate-settings-schema.ts",
+    "sync:profiles": "node scripts/sync-agent-profiles.ts"
   },
   "dependencies": {
     "@devcontainers/cli": "0.90.0",

@@ -4,6 +4,7 @@ import { VSCODE_HOST_CAPABILITIES } from '../../shared/types/messages';
 import { createVsCodeAppInfo } from './app-info';
 import { createVsCodeAppPaths } from './app-paths';
 import { createVsCodeClipboardService } from './clipboard-service';
+import { createVsCodeDesignHost } from './design-host';
 import { createVsCodeDialogService } from './dialog-service';
 import { createVsCodeEditorService } from './editor-service';
 import { createVsCodeFileConfinement } from './file-confinement';
@@ -20,8 +21,11 @@ import { createVsCodeTrustService } from './trust-service';
 import { createVsCodeWindowService } from './window-service';
 import { createVsCodeWorkspaceFolders } from './workspace-folders';
 
-// Every service subscribes per caller and returns that Disposable; only the editor's window-wide diff providers go to context.subscriptions.
+// Every service subscribes per caller and returns that Disposable; only the editor's window-wide diff providers and the design server go to context.subscriptions.
 export function createVsCodePlatform(context: vscode.ExtensionContext): Platform {
+  const shell = createVsCodeShellService();
+  const design = createVsCodeDesignHost(shell);
+  context.subscriptions.push(design);
   return {
     // env.remoteName is set in the local extension host too whenever a remote one exists; only the extension's kind says where it runs.
     capabilities: { ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: context.extension.extensionKind === vscode.ExtensionKind.Workspace },
@@ -37,11 +41,12 @@ export function createVsCodePlatform(context: vscode.ExtensionContext): Platform
     appInfo: createVsCodeAppInfo(context),
     localization: createVsCodeLocalizationService(),
     clipboard: createVsCodeClipboardService(),
-    shell: createVsCodeShellService(),
+    shell,
     dialogs: createVsCodeDialogService(),
     editor: createVsCodeEditorService(context.subscriptions),
     window: createVsCodeWindowService(),
     lifecycle: createVsCodeHostLifecycle(),
     logSinks: createVsCodeLogSinkFactory(),
+    design,
   };
 }

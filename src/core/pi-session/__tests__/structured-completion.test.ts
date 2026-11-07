@@ -45,6 +45,21 @@ describe('runStructuredCompletion', () => {
     expect(out).toEqual({ kind: 'answered', value: { terms: ['a', 'b'] } });
   });
 
+  it('sends the request images as image blocks after the text, in order', async () => {
+    const complete = vi.fn<PiCompleteFn>(async () => assistant([{ type: 'toolCall', id: '1', name: 'submit_terms', arguments: { terms: [] } }]));
+    const userImages = [{ data: 'ZGVzaWdu', mimeType: 'image/png' }, { data: 'YXBw', mimeType: 'image/jpeg' }];
+    await runStructuredCompletion(complete, MODEL, { ...REQ, userImages });
+    const content = complete.mock.calls[0]![1].messages[0]!.content as Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    expect(content.map((block) => block.type)).toEqual(['text', 'image', 'image']);
+    expect(content.slice(1)).toEqual([{ type: 'image', data: 'ZGVzaWdu', mimeType: 'image/png' }, { type: 'image', data: 'YXBw', mimeType: 'image/jpeg' }]);
+  });
+
+  it('sends one text block when the request has no images', async () => {
+    const complete = vi.fn<PiCompleteFn>(async () => assistant([{ type: 'toolCall', id: '1', name: 'submit_terms', arguments: { terms: [] } }]));
+    await runStructuredCompletion(complete, MODEL, REQ);
+    expect((complete.mock.calls[0]![1].messages[0]!.content as { type: string }[]).map((block) => block.type)).toEqual(['text']);
+  });
+
   it('passes the schema-as-parameters and the system prompt through to complete()', async () => {
     const complete = vi.fn<PiCompleteFn>(async () => assistant([{ type: 'toolCall', id: '1', name: 'submit_terms', arguments: { terms: [] } }]));
     await runStructuredCompletion(complete, MODEL, REQ);

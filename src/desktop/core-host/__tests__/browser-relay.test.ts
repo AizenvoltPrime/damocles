@@ -4,6 +4,7 @@ import { BrowserAgentScope, remoteProfileDir, type BrowserService, type BrowserS
 import type { PiCodingAgentModule } from '../../../core/pi-session/pi-loader';
 import type { PanelHost } from '../../../platform/window-service';
 import { createRemoteBrowsers } from '../browser-relay';
+import { PARITY_CAPTURE_TOOL } from '../../../core/design/parity-capture';
 import { LocalizedError } from '../../../shared/localized-text';
 
 const pi = { defineTool: (definition: unknown) => definition } as unknown as PiCodingAgentModule;
@@ -115,5 +116,14 @@ describe('a remote chat\'s browser tool on this computer\'s core', () => {
     await expect(relay.tool({ authority: 'ssh+host-2', viewId: 'view-1', scope: 'chat', tool: 'BrowserDownloads', input: {} }, signal)).rejects.toThrow('not attached');
     await expect(relay.tool({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'chat', tool: 'Bash', input: {} }, signal)).rejects.toThrow('not a browser tool');
     await expect(relay.tool({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'chat', tool: 'BrowserNavigate', input: { url: 42 } }, signal)).rejects.toThrow('does not match its schema');
+  });
+
+  it("runs DesignParity's capture only in a scope of its own, with its schema checked", async () => {
+    const { relay, scopes } = setup();
+    await expect(relay.tool({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'chat', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5174/', width: 768 } }, signal)).rejects.toThrow('scope of its own');
+    expect(scopes).toEqual([]);
+    await expect(relay.tool({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5174/', width: 100 } }, signal)).rejects.toThrow('does not match its schema');
+    const answer = await relay.tool({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'file:///etc/passwd', width: 768 } }, signal);
+    expect(answer).toEqual({ content: [{ type: 'text', text: '{"failure":"scheme"}' }], isError: true });
   });
 });

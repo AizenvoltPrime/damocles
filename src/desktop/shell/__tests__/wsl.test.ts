@@ -19,8 +19,8 @@ import { failureText } from '../overlay/connect-text';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
-import en from '../locales/en.json';
-import el from '../locales/el.json';
+import en from '../locales/en.json' with { type: 'json' };
+import el from '../locales/el.json' with { type: 'json' };
 import { FakeResizeObserver, STATE, contentName, fakeOverlayApi, fakePortsApi, fakeShellApi, opened, type FakeOverlayApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];

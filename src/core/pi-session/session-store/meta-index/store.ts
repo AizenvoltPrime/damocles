@@ -8,7 +8,7 @@ import { isCorruption } from '../../../usage-stats/database';
 import type { SessionMetaEntry } from './protocol';
 
 /** Bump on any change to what `sessionFileMeta` returns (`__tests__/schema.test.ts` pins it) or to the table below: a new value names a new file. */
-export const SESSION_META_SCHEMA = 5;
+export const SESSION_META_SCHEMA = 8;
 const BUSY_TIMEOUT_MS = 5000;
 
 const SCHEMA_SQL = `

@@ -123,6 +123,14 @@ describe('ToolsStatusPanel', () => {
     expect(wrapper.find('[data-testid="tools-loading"]').exists()).toBe(false);
   });
 
+  it('lists no group core sends without tools, as design mode while off', async () => {
+    const wrapper = mountPanel({ ...SNAPSHOT, groups: [...SNAPSHOT.groups, { group: 'design', enabled: false, available: true }] });
+    await nextTick();
+
+    expect(wrapper.findAll('[data-testid="tools-group"]')).toHaveLength(3);
+    expect(wrapper.text()).not.toContain(i18n.global.t('tools.group.design'));
+  });
+
   it('filters tools by name, label or description, opening each matching group', async () => {
     const wrapper = mountPanel(SNAPSHOT);
     await wrapper.get('[data-testid="tools-filter"]').setValue('rec');

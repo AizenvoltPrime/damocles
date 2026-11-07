@@ -21,6 +21,7 @@ export function desktopHostCapabilities(platform: NodeJS.Platform): HostCapabili
     worktrees: true,
     bypassPermissions: true,
     globalMemoryOnServer: false,
+    designPreview: true,
   };
 }
 

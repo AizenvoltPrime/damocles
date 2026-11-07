@@ -5,7 +5,7 @@ import ignore from 'ignore';
 import type { FileWatcher } from '../../../platform/file-watcher';
 import type { Platform } from '../../../platform/platform';
 import type { PermissionState } from '../state';
-import type { McpToolIdentity } from '../types';
+import type { MatchRuleOptions, McpToolIdentity } from '../types';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions } from '../permission-settings';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, SHELL_TOOLS } from '../../../shared/tool-names';
@@ -164,8 +164,13 @@ export class EvaluatorManager {
   /**
    * The verdict on a call under the current mode and YOLO, given `rule`, the settings rule it matches
    * (`matchRule`). Synchronous, so an open prompt can be decided again the moment the mode changes.
+   * `requiresUser`: only a deny rule or the user decides, so YOLO and an allow rule ask (PD-25).
    */
-  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null): PermissionBehavior {
+  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null, requiresUser = false): PermissionBehavior {
+    if (requiresUser) {
+      return rule === 'deny' ? 'deny' : 'ask';
+    }
+
     if (this.bypassing()) {
       return 'allow';
     }
@@ -204,10 +209,11 @@ export class EvaluatorManager {
   /**
    * The behavior of the settings rule the call matches, or null when none does or YOLO is on. A deny in
    * any settings file wins, then an ask in any file, then an allow, so a repository's allow never
-   * overrides the user's own deny or ask.
+   * overrides the user's own deny or ask. `ignoreBypass` matches under YOLO too, for a call `decide`
+   * gets with `requiresUser`, which YOLO does not approve and a deny rule denies.
    */
-  async matchRule(toolName: string, input: Record<string, unknown>, workspacePath: string | null, mcpTool?: McpToolIdentity): Promise<PermissionBehavior | null> {
-    if (this.bypassing()) {
+  async matchRule(toolName: string, input: Record<string, unknown>, workspacePath: string | null, mcpTool?: McpToolIdentity, options: MatchRuleOptions = {}): Promise<PermissionBehavior | null> {
+    if (this.bypassing() && options.ignoreBypass !== true) {
       return null;
     }
     const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
@@ -297,7 +303,7 @@ export class EvaluatorManager {
     return inside(spelledPath(cwd), spelledPath(requested)) && !inside(canonicalPath(path.resolve(cwd)), canonicalPath(requested));
   }
 
-  private sessionCwd(): string {
+  sessionCwd(): string {
     const cwd = this.state.cwd;
     if (cwd === null) throw new Error('File permission rules need the session cwd, and none is set');
     return cwd;

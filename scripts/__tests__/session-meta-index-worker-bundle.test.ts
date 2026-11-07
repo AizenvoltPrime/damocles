@@ -3,7 +3,7 @@ import * as esbuild from 'esbuild';
 import { expect, it } from 'vitest';
 
 const ROOT = join(__dirname, '..', '..');
-// Must equal sessionMetaIndexWorkerOptions.entryPoints in esbuild.config.mjs.
+// Must equal sessionMetaIndexWorkerOptions.entryPoints in esbuild.config.ts.
 const ENTRY = 'src/core/pi-session/session-store/meta-index/worker.ts';
 
 // A worker thread never has the host's platform installed, so platform() throws there (src/core/platform-host.ts).

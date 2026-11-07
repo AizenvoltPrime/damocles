@@ -5,6 +5,7 @@ import { extractOriginalInputs } from './original-input';
 import { storedTypedText } from './prompt-context';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
 import { latestWorktreeEntry } from '../../worktrees/worktree-entry';
+import { designRoleOf, finishedDesignVersion } from '../../design/design-entries';
 
 /** Fields computed from a single opened pi session, including the in-tree rename marker and tag. */
 export interface PiSessionFields {
@@ -196,6 +197,15 @@ export function sessionFileMeta(sm: SessionManagerView, mtimeMs: number): Sessio
   const fields = computePiSessionFields(header, branch, sm.getSessionName(), mtimeMs);
   // The latest in file order, off the branch too: the entry that decides where the chat works (AD12).
   const worktree = latestWorktreeEntry(entries);
+  const role = designRoleOf(branch);
+  const finished = role ? finishedDesignVersion(branch, role.designId) : undefined;
   const stored = mapPiFieldsToStored(fields);
-  return { stored: worktree ? { ...stored, worktree: { worktreeId: worktree.worktreeId, place: worktree.place } } : stored, prompts: newestUniquePrompts(branch) };
+  return {
+    stored: {
+      ...stored,
+      ...(worktree ? { worktree: { worktreeId: worktree.worktreeId, place: worktree.place } } : {}),
+      ...(role ? { design: { designId: role.designId, ...(role.parentSessionId !== null ? { parentSessionId: role.parentSessionId } : {}), ...(finished !== undefined ? { finishedVersion: finished } : {}) } } : {}),
+    },
+    prompts: newestUniquePrompts(branch),
+  };
 }

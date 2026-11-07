@@ -38,6 +38,25 @@ import { PLAN_MODE_TOOLS, WRITE_TOOLS } from "../../shared/tool-names";
 import { modelLabel } from "../../shared/model-vendor";
 import { ChatReview, type ChatChangeTotals, type ChatReviewSnapshot, type CommentPlace, type DraftComment, type ReviewSubmitOutcome } from "./chat-review";
 import { SessionWorktree } from "./session-worktree";
+import { SessionDesign, DESIGN_ENABLED_SETTING, type ReconcileTrigger } from "../design/session-design";
+import { DESIGN_PI_TOOL_NAMES, type DesignRuleSet } from "../design/rule-set";
+import { questionDecisions } from "../design/decisions";
+import type { DesignCustomMessage } from "../design/delivery";
+import type { DesignChatToolDeps } from "../design/tools/design-chat-tools";
+import type { StartDesignDeps } from "../design/tools/start-design";
+import type { DesignParityDeps, ParityAppCapture } from "../design/tools/design-parity";
+import { captureAppFrame, PARITY_CAPTURE_TOOL } from "../design/parity-capture";
+import { deliveredBriefs, designLinkedOn, designLinkEntryData, designRoleEntryData, hasDesignRoleEntry, ownDesignLink, type DesignLink, type DesignRole } from "../design/design-entries";
+import { forkDesign, forkDesignRole, type DesignForkSource } from "../design/design-fork";
+import { rewindableCheckpoints } from "../design/design-checkpoints";
+import { designStateDirOf } from "../design/design-paths";
+import { readDesignLink, takeOverDesignLink, takeOverDesignParent } from "../design/design-state";
+import type { QuestionDecisions } from "./tools/ask-user-question-tool";
+import { DAMOCLES_DESIGN_ENTRY, DAMOCLES_DESIGN_LINK_ENTRY, DAMOCLES_DESIGN_MARKUP_ENTRY, DAMOCLES_DESIGN_REFERENCES_ENTRY, DAMOCLES_DESIGN_TWEAK_KEPT } from "./session-store/constants";
+import { markupEntryData, MarkupInvalidError, markupPromptText, nextFeedbackId, parseMarkupJson, parseMarkupPng, writeMarkupFiles } from "../design/markup";
+import { MAX_REFERENCES, MAX_REFERENCES_PER_MESSAGE, nextReferenceNumber, planReferences, referencesEntryData, referencesPromptNote, writeReference, type PlannedReference } from "../design/references";
+import { keepPromptText, keepTweak, tweakKeptEntryData, type TweakKept } from "../design/tweaks";
+import { designMarkupView, type MarkupJsonInput } from "../../shared/design-markup";
 import { WORKTREE_ENTRY, worktreeGitOf } from "../worktrees/hand-off";
 import { identityFolder, worktreeProjectOf } from "../worktrees/personal-config";
 import { folderKey } from "../workspace-folders/folder-key";
@@ -54,7 +73,7 @@ import type { FolderRuntime } from "./folder-runtime";
 import { getPiCodingAgent, loadedPiAi, type PiCodingAgentModule } from "./pi-loader";
 import { inheritedParentPrompt } from "./subagents/prompts";
 import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
-import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
+import { installTurnDecider, designTurnEnds, BUDGET_STOP_HOOK, DESIGN_TERMINAL_HOOK, DESIGN_VERSION_PAUSE_HOOK } from "./finish-turn";
 import { installPlanModeChangeNotice, mainPlanModeStatement, planModeChangeNotice, planModeNoticeAtPromptStart, type PlanModeStatement } from "./plan-mode-change";
 import { buildPlanModeGuidance } from "./plan-mode-guidance";
 import { dispatchInput, dispatchObserveOnly, type DispatchDeps, type InputHookResult } from "./hooks/dispatch";
@@ -163,14 +182,17 @@ import {
   type LiveTitleOutcome,
 } from "./session-store";
 import { recordedSelection } from "./session-store/recorded-selection";
+import { sessionFileEntries } from "./session-store/history-loader";
 import { earlierModelRuns } from "./session-store/model-runs";
 import type { TerminalAttachmentsData } from "./session-store/terminal-attachments";
 import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService, RESTORE_WAIT_MS, checkpointBaselineWaitMs, checkpointMaxFileSizeBytes, type ServiceRestoreResult } from "./checkpoint-service";
-import type { CheckpointRecord, NotRewindableRecord, StoredCheckpointRecord } from "./checkpoints";
+import type { CheckpointEntry, CheckpointRecord, NotRewindableRecord, PreRewindRecord, StoredCheckpointRecord } from "./checkpoints";
 import {
-  getCheckpointEntries,
+  folderIdFor,
+  folderRepoById,
+  copyPreRewindRefs,
   getCheckpointRecords,
   getNotRewindableEntries,
   getPreRewindEntries,
@@ -212,7 +234,7 @@ import {
   turnHasNonErrorExitPlanModeResult,
 } from "./plan-mode-hold";
 import { BTW_SYSTEM_PROMPT, buildBtwContextBlock } from "./btw-context";
-import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from "./context-image-pruning";
+import { registerTurnEndImagePruning, registerAgentStartImageReconcile, resolveImageBudget } from "./context-image-pruning";
 import { buildContextUsage } from "./context-usage";
 import { resolveCompactionBudget } from "./compaction-budget";
 import { generateSessionTitle } from "./session-title";
@@ -335,6 +357,33 @@ function queuedPart(input: QueuedInput): QueuedPart {
   return { messageId: input.id, content: typeof input.content === "string" ? [{ type: "text", text: input.typed ?? input.text }] : input.content };
 }
 
+/** A preview's markup core accepted, from its F<n> until its files are written or it is dropped unsent. */
+interface PendingMarkup {
+  readonly kind: "markup";
+  readonly feedbackId: string;
+  readonly folder: string;
+  readonly png: Buffer;
+  readonly markup: MarkupJsonInput;
+  readonly content: UserContentBlock[];
+  readonly text: string;
+  // the conversation it was sent to; only that one takes it
+  readonly target: string;
+  // its queued chip, while a busy chat holds it
+  queuedId?: string;
+}
+
+/** A tweak the user kept, from its acceptance until its prompt commits or it is dropped unsent. */
+interface PendingTweakKeep {
+  readonly kind: "tweak";
+  readonly kept: TweakKept;
+  readonly text: string;
+  readonly target: string;
+  queuedId?: string;
+}
+
+/** A prompt core composed for a design chat, sent as its own prompt and never steered or merged (PD-12, PD-13). */
+type HeldDesignPrompt = PendingMarkup | PendingTweakKeep;
+
 /** A `sendMessage` prompt, from the start of its send until it settles (docs/invariants.md, "A send holds the session"). */
 interface OutgoingPrompt extends SendTicket {
   /** Aborts `signal`: the send stops before `prompt()`, and a run pi opens with it afterwards is aborted at its start. */
@@ -444,6 +493,14 @@ interface ModelRefusal {
   readonly account?: SettingsAccountId;
 }
 
+/** Why no run may start now, from `runStartRefusal`, which every path that starts a run asks: a send, a design delivery. */
+type RunStartRefusal =
+  | { readonly kind: "worktreeFinishing" }
+  | { readonly kind: "moving" }
+  | { readonly kind: "readOnly"; readonly text: LocalizedText }
+  | { readonly kind: "model"; readonly refusal: ModelRefusal }
+  | { readonly kind: "budget"; readonly limit: number };
+
 /** Why a model value cannot run, and the Accounts row whose sign-in would let it, when a sign-in would. */
 interface UnavailableModel {
   readonly text: LocalizedText;
@@ -469,6 +526,30 @@ interface SubscriptionUsage {
 }
 
 /**
+ * What a fork does with the chat's design (PD-36, D70): a design chat's fork makes a new design of its own and its rewind takes
+ * the design over; a main chat's rewind carries its own design to the new chat (`parent`).
+ */
+type DesignForkPlan =
+  | { readonly kind: "fork"; readonly role: DesignRole; readonly source: DesignForkSource }
+  | { readonly kind: "takeover"; readonly role: DesignRole; readonly preRewind: PreRewindRecord | null }
+  | { readonly kind: "parent"; readonly link: DesignLink };
+
+/** Whether pi writes a branched file for a fork at `parentId`: only for a path holding a user or assistant message (`SessionManager._hasConversation`). */
+function forkWritesFile(sm: AgentSession["sessionManager"], parentId: string | null): boolean {
+  return parentId !== null && sm.getBranch(parentId).some((e) => {
+    const role = e.type === "message" ? (e as { message?: { role?: string } }).message?.role : undefined;
+    return role === "user" || role === "assistant";
+  });
+}
+
+/** A design fork's files: the fork point's before-commit in the design folder's repo, else a copy of the folder as it is now. */
+function designForkSource(role: DesignRole, entry: CheckpointEntry | null): DesignForkSource {
+  return entry?.v === 3 && entry.folderId === folderIdFor(role.folder)
+    ? { kind: "checkpoint", handle: folderRepoById(entry.folderId, role.folder, false), commit: entry.beforeCommit }
+    : { kind: "copy" };
+}
+
+/**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses its folder's `FolderRuntime.services` and a `PiStreamAdapter` that
  * reproduces the existing webview message contract. Deferred subsystems degrade gracefully — no
@@ -488,7 +569,7 @@ export class PiSession implements ChatSession {
   private folder: FolderRuntime | null = null;
   private unsubscribe: (() => void) | null = null;
   private startPromise: Promise<void> | null = null;
-  /** In-flight session replacement (reset/clear → newSession); a following sendMessage awaits it. */
+  /** The session replacement in flight (a reset's newSession, a resume switch), set only through `trackReplacement`; a following sendMessage awaits it. */
   private resetPromise: Promise<void> | null = null;
   /** The tail of the queued model switches (never rejects); a prompt and a session replacement wait for it. */
   private modelSwitch: Promise<void> | null = null;
@@ -525,6 +606,9 @@ export class PiSession implements ChatSession {
   private readonly chatReview: ChatReview;
   /** Where the chat works and what follows from it (AD12); the one source of `worktreeState`. */
   readonly worktree: SessionWorktree;
+  /** The chat's design role or its own design link (PD-23); the one source of `designState`. */
+  readonly design: SessionDesign;
+  private readonly designSettingSubscription: { dispose(): void };
   // D61's note not yet in the conversation (rule 11): delivered once the session runs, never by starting a turn.
   private pendingWorkingFolderNote: string | null = null;
   // The stored file a running switchSession opens, when it lies outside this folder's session directory.
@@ -640,6 +724,16 @@ export class PiSession implements ChatSession {
   private afterSettleTarget: string | undefined;
   /** The send `sendAfterSettle` made while it runs: what each of its messages puts back, should it go back. */
   private afterSettleSend: { readonly correlationId: string; readonly parts: QueuedPart[] } | undefined;
+  /** Markups and kept tweaks sent while the chat was busy, oldest first; each goes out as its own prompt once the chat settles, never steered or merged. */
+  private heldDesignPrompts: HeldDesignPrompt[] = [];
+  /** The images each prompt in flight will save as design references, by correlation id, until it commits or is not sent (PD-40). */
+  private readonly plannedReferences = new Map<string, PlannedReference[]>();
+  /** The reference writes still waiting for their turn's baseline or under way, by R<n>; MapReference waits for its reference's. */
+  private readonly referenceWrites = new Map<string, Promise<void>>();
+  /** Every markup accepted and not yet committed, by F<n>, so two of them never take one number. */
+  private readonly pendingMarkups = new Map<string, PendingMarkup>();
+  /** The tail of the markups being numbered, one at a time, so two arriving together never compute one F<n>. */
+  private markupNumbering: Promise<void> = Promise.resolve();
   /** The batch whose re-steer `prompt()` holds; a Stop leaves it to pi's verdict instead of returning its chips. */
   private batchInPi: readonly QueuedInput[] | null = null;
   /** The batch a Stop left to pi's verdict: sent and stopped if pi opens a run with it, returned if pi queues or rejects it. */
@@ -722,8 +816,29 @@ export class PiSession implements ChatSession {
       busy: () => deriveSessionState(this.turnState, this.raisedPrompts().length > 0) !== "idle" || this.backgroundRunning(),
       hasConversation: () => this.hasConversation(),
     });
+    this.design = new SessionDesign({
+      cwd: options.cwd,
+      platform: options.platform,
+      seed: options.design,
+      session: () => this.runtime?.session,
+      emit: (message) => this.emit(message),
+      deliveryState: (session, trigger) => this.designDeliveryState(session, trigger),
+      deliver: (session, messages, run) => this.deliverDesignMessages(session, messages, run),
+      sessionExists: async (sessionId) => (await resolvePiSessionFile(this.cwd, sessionId)) !== null,
+      shellPath: () => this.shellOptions().shellPath,
+      panels: () => options.designPanels,
+      askVersion: (ask, signal) => options.permissionHandler.requestDesignVersionDecision(ask, signal),
+      activatePlanMode: () => options.permissionHandler.activatePlanMode(),
+      panelId: () => options.panelId,
+    });
+    // ChatPanelProvider's tool-settings listener refreshes the tools; turning design mode on delivers what is still owed.
+    this.designSettingSubscription = options.platform.settings.onDidChange(DESIGN_ENABLED_SETTING, () => {
+      this.publishDesignState();
+      if (this.design.enabled()) this.design.idle();
+    });
     this.chatReview = new ChatReview({
-      enabled: () => options.platform.capabilities.chatReview,
+      // A design chat's changes are design files, which the project's review never shows.
+      enabled: () => options.platform.capabilities.chatReview && !this.design.role(),
       session: () => {
         const session = this.runtime?.session;
         const sessionFile = session?.sessionManager.getSessionFile();
@@ -803,6 +918,20 @@ export class PiSession implements ChatSession {
         throw err;
       });
     return this.startPromise;
+  }
+
+  /**
+   * `replacement` is the session replacement in flight until it settles with no later one queued behind it; the chat is then
+   * idle again, and the design deliveries a busy chat deferred land (D67).
+   */
+  private trackReplacement(replacement: Promise<void>): void {
+    this.resetPromise = replacement;
+    const settled = (): void => {
+      if (this.resetPromise !== replacement) return;
+      this.resetPromise = null;
+      if (!this._disposed) this.design.idle();
+    };
+    replacement.then(settled, settled);
   }
 
   /** Wait out the replacements queued on the started session; one that released the runtime is followed by the start that builds the next. */
@@ -905,6 +1034,7 @@ export class PiSession implements ChatSession {
           source: () => this.mcpClientManager(),
           disabledResource: () => disabledResourceMatcher(this.disabledToolEntries()),
         },
+        design: this.designToolDeps(() => bound.session, sessionManager.getBranch()),
       });
       // No `tools:` on purpose. pi turns `options.tools` into an allowlist filter; since the
       // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
@@ -1029,12 +1159,22 @@ export class PiSession implements ChatSession {
 
   private subscribeEvents(session: AgentSession): void {
     const adapterUnsubscribe = this.adapter.subscribe(session);
+    const designUnsubscribe = this.design.track(session);
+    // pi appends a message right after its message_end reaches listeners, so a microtask later its first user or assistant message wrote the file.
+    const storedUnsubscribe = session.subscribe((event) => {
+      if (event.type !== "message_end" || (event.message.role !== "user" && event.message.role !== "assistant")) return;
+      queueMicrotask(() => {
+        if (this.runtime?.session === session) this.announceIfNewlyStored();
+      });
+    });
     this.unpersistedImages.track(session);
     const run = trackRunLifecycle(session);
     this.runLifecycle = run;
     this.watchWindDown(run);
     this.unsubscribe = () => {
       adapterUnsubscribe();
+      designUnsubscribe();
+      storedUnsubscribe();
       this.unpersistedImages.untrack(session);
       this.endWindDownWatch();
       if (this.runLifecycle === run) this.runLifecycle = null;
@@ -1102,6 +1242,14 @@ export class PiSession implements ChatSession {
     installTurnDecider(session.agent, BUDGET_STOP_HOOK, () =>
       this._budgetStopRequested ? { action: 'end' } : undefined,
     );
+    // PD-28: StartDesign hands the work to the design chat and FinishDesign hands it back, so each ends its turn.
+    installTurnDecider(session.agent, DESIGN_TERMINAL_HOOK, (turn) =>
+      session.agent.peekQueuedMessages().length === 0 && designTurnEnds(turn) ? { action: "end" } : undefined,
+    );
+    // PD-29: a design version newer than the plan approval stops the parent after its tool batch, never mid-tool; what the user queued goes first.
+    installTurnDecider(session.agent, DESIGN_VERSION_PAUSE_HOOK, () =>
+      this.design.pauseOwed(session) && session.agent.peekQueuedMessages().length === 0 ? { action: "end" } : undefined,
+    );
     // A user's mode change while the run streams reaches the model at its next step; see plan-mode-change.ts.
     installPlanModeChangeNotice(session.agent, () => this.isPlanMode(), this.planModeStatement);
     // The main panel session honors `damocles.autoCompact` (US-030); pi's compaction flag lives on the
@@ -1109,6 +1257,8 @@ export class PiSession implements ChatSession {
     // (see FolderRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
     this.applyCompactionConfig();
     this.applyCacheWarmingConfig();
+    // Before the gate and the checkpoint service below, which read the design role for their folder.
+    this.design.recordSeededRole(session);
 
     const folder = this.requireFolder();
     const sessionId = session.sessionId;
@@ -1117,6 +1267,8 @@ export class PiSession implements ChatSession {
     if (newConversation) {
       this.toolSearchActivated.clear();
       this.pendingRestoredTools.clear();
+      // A prompt planned on the conversation left behind commits nothing here (`recordPromptSidecars`).
+      this.plannedReferences.clear();
     }
     if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
       this.unregisterFromRuntime(folder, this.registeredSessionId);
@@ -1152,6 +1304,8 @@ export class PiSession implements ChatSession {
       ...this.checkpointBaselineField(),
       shellCancel: this.shellCancel.forContext(this.noteDeliveryForMain(() => session)),
       worktreeIsolation: () => this.worktreeIsolation(),
+      designScope: () => this.design.scope(),
+      designPrompt: () => this.design.promptInputs(),
     };
     folder.registerPanel(sessionId, gate);
     this.registeredGate = gate;
@@ -1444,10 +1598,14 @@ export class PiSession implements ChatSession {
     const outgoing = ticket ? [...this.outgoingSends].find((candidate) => candidate === ticket) : this.claimSend(correlationId, userBroadcast, onWithdrawn, prompt);
     // A ticket the session no longer lists ended, or went back to the composer, before this call.
     if (!outgoing) return !ticket ? "busy" : ticket.signal.aborted ? "withdrawn" : "unsent";
+    let outcome: SendOutcome = "unsent";
     try {
-      const outcome = await this.promptPi(prompt, target, correlationId, userBroadcast, outgoing);
-      return outgoing.withdrawn ? "withdrawn" : outcome;
+      outcome = await this.promptPi(prompt, target, correlationId, userBroadcast, outgoing);
+      if (outgoing.withdrawn) outcome = "withdrawn";
+      return outcome;
     } finally {
+      // a prompt that never committed saves no reference; its numbers stay unused
+      if (outcome !== "sent" && correlationId !== undefined) this.plannedReferences.delete(correlationId);
       this.endSend(outgoing);
     }
   }
@@ -1589,6 +1747,52 @@ export class PiSession implements ChatSession {
     return { reason: "modelUnavailable", detail: unavailable.text, ...account };
   }
 
+  /**
+   * Why no run may start on the chat now, asked by every path that starts one: a send (`promptPi`, with `purpose` `send`) and
+   * a design delivery (`delivery`). A finish action holding the worktree (D33), a hand-off in flight (D61), a read-only or
+   * superseded chat, design mode off for a design chat or a design's result run (PD-25), and the budget refuse; the model too
+   * when `model`, which a caller judges after `clientSnapshotSettling`.
+   */
+  private runStartRefusal(model: boolean, purpose: "send" | "delivery"): RunStartRefusal | undefined {
+    if (this.worktree.finishing() !== undefined) return { kind: "worktreeFinishing" };
+    if (this.worktree.moving()) return { kind: "moving" };
+    const readOnly = this.readOnlyRefusal() ?? this.design.sendRefusal(purpose);
+    if (readOnly) return { kind: "readOnly", text: readOnly };
+    const refusal = model ? this.modelRefusal() : null;
+    if (refusal) return { kind: "model", refusal };
+    // US-008: a session past the hard limit starts no run, which would stop at once.
+    const budgetLimit = this.budgetLimitForEnforcement();
+    if (budgetLimit !== null && this.cumulativeCostUsd() >= budgetLimit) return { kind: "budget", limit: budgetLimit };
+    return undefined;
+  }
+
+  /** Tells the sending view why `runStartRefusal` refused its send, and gives the message back where it is the user's to fix. */
+  private refuseSend(refusal: RunStartRefusal, prompt: ContentInput, userBroadcast: UserBroadcast | undefined, correlationId: string | undefined): SendOutcome {
+    switch (refusal.kind) {
+      case "worktreeFinishing":
+        this.emit({ type: "processing", isProcessing: false });
+        this.returnPrompt(prompt, userBroadcast, "worktreeFinishing", undefined, correlationId);
+        break;
+      case "moving":
+        this.emit({ type: "error", message: l("This chat is moving to another folder. Send again when the move ends.") });
+        this.returnUnsentMessage(correlationId, userBroadcast, prompt);
+        break;
+      case "readOnly":
+        this.emit({ type: "error", message: refusal.text });
+        this.returnUnsentMessage(correlationId, userBroadcast, prompt);
+        break;
+      case "model":
+        this.emit({ type: "processing", isProcessing: false });
+        this.refuseForModel(prompt, userBroadcast, refusal.refusal, correlationId);
+        break;
+      case "budget":
+        this.emit({ type: "budgetExceeded", finalSpend: this.cumulativeCostUsd(), limit: refusal.limit });
+        this.emit({ type: "processing", isProcessing: false });
+        break;
+    }
+    return "unsent";
+  }
+
   /** A refused model call goes back to the composer and opens where the user fixes it: a provider's sign-in, Models & accounts, or the chat's model. */
   private refuseForModel(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, refusal: ModelRefusal, correlationId?: string): void {
     this.returnPrompt(prompt, userBroadcast, refusal.reason, refusal, correlationId);
@@ -1639,6 +1843,8 @@ export class PiSession implements ChatSession {
     if (this.mcpReloadPendingAfterTurn) {
       await this.runMcpReload();
     }
+    // `runStartRefusal` below reads the link this finds (PD-36).
+    if (this.design.role()) await this.design.readLink();
     const session = this.runtime?.session;
     if (!session) {
       this.emit({ type: "error", message: l("Failed to initialize pi session") });
@@ -1651,16 +1857,13 @@ export class PiSession implements ChatSession {
       this.returnPrompt(prompt, userBroadcast, "conversationChanged", undefined, correlationId);
       return "unsent";
     }
-    const readOnly = this.readOnlyRefusal();
-    if (readOnly) {
-      this.emit({ type: "error", message: readOnly });
-      this.returnUnsentMessage(correlationId, userBroadcast, prompt);
-      return "unsent";
-    }
-    const text = extractText(prompt);
+    let text = extractText(prompt);
     // An extension command commits no user entry, so its echo is injected like every other row that
     // names no prompt, and the next real prompt keeps the index it would have had.
     const isPrompt = !isExtensionCommand(session, text);
+    // Before any wait or write below; the model is judged once its own waits ran, and the rest again after the last wait.
+    const refused = this.runStartRefusal(false, "send");
+    if (refused) return this.refuseSend(refused, prompt, userBroadcast, correlationId);
     if (isPrompt) {
       const refreshing = this.clientSnapshotSettling();
       if (refreshing) {
@@ -1672,12 +1875,8 @@ export class PiSession implements ChatSession {
         await adopting;
         if (this.sendOvertaken(outgoing, session)) return "withdrawn";
       }
-      const refusal = this.modelRefusal();
-      if (refusal) {
-        this.emit({ type: "processing", isProcessing: false });
-        this.refuseForModel(prompt, userBroadcast, refusal, correlationId);
-        return "unsent";
-      }
+      const refusal = this.runStartRefusal(true, "send");
+      if (refusal) return this.refuseSend(refusal, prompt, userBroadcast, correlationId);
     }
     // An extension command opens no run, and a prompt pi queues joins one already declared.
     if (isPrompt && !this.runOf(session)?.streaming) {
@@ -1698,14 +1897,6 @@ export class PiSession implements ChatSession {
       this.returnUnsentMessage(correlationId, userBroadcast, prompt);
       return "unsent";
     }
-    // Pre-prompt budget block (US-008): if the session already crossed the hard limit, refuse the next
-    // turn rather than starting one that would immediately abort.
-    const budgetLimit = this.budgetLimitForEnforcement();
-    if (budgetLimit !== null && this.cumulativeCostUsd() >= budgetLimit) {
-      this.emit({ type: "budgetExceeded", finalSpend: this.cumulativeCostUsd(), limit: budgetLimit });
-      this.emit({ type: "processing", isProcessing: false });
-      return "unsent";
-    }
 
     // Before `beginTurn`: neither message's message_start may be read as this turn's user entry. Results
     // go first, so the notice skips every agent they delivered. Both introduce a user message, which a
@@ -1713,14 +1904,21 @@ export class PiSession implements ChatSession {
     if (isPrompt && (await this.deliverUndeliveredResults(session))) {
       await this.reconcileInterruptionsIfPending(session);
     }
+    // PD-27: a design result or brief the branch lacks lands ahead of the prompt, which starts the run.
+    if (isPrompt) await this.design.reconcile("prompt");
+    // PD-40: the design chat's outside images are numbered before the echo, which names them, and saved once the prompt commits.
+    if (isPrompt && correlationId && userBroadcast?.contentBlocks) {
+      const references = await this.planDesignReferences(session, correlationId, userBroadcast);
+      userBroadcast = references.broadcast;
+      // the model reads which reference each image is; the transcript shows the typed text (the original-input sidecar)
+      if (references.note) text = `${text}\n\n${references.note}`;
+    }
     // Only the UserPromptSubmit hook and a settle wait await between this check and `prompt()`, and each checks again after it: past `prompt()` a Stop stops the run pi opens instead of returning the message.
     if (this.sendOvertaken(outgoing, session)) return "withdrawn";
-    // D33: a finish action holds the chat's worktree only while the chat is idle, so the check sits with the one above.
-    if (this.worktree.finishing() !== undefined) {
-      this.emit({ type: "processing", isProcessing: false });
-      this.returnPrompt(prompt, userBroadcast, "worktreeFinishing", undefined, correlationId);
-      return "unsent";
-    }
+    // After the last wait: a finish action (D33) holds the chat's worktree only while the chat is idle, which `beginTurn` ends.
+    // The model was judged after `clientSnapshotSettling`, which a check here would not wait for.
+    const late = this.runStartRefusal(false, "send");
+    if (late) return this.refuseSend(late, prompt, userBroadcast, correlationId);
     // A turn run on the committed model means the user went on without the model that asked for sign-in.
     this.dropPendingOpenAIPick();
     // Capture the session's first real user message for the deterministic plan path. The
@@ -1753,6 +1951,8 @@ export class PiSession implements ChatSession {
             content: userBroadcast.content,
             ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
             ...(userBroadcast.terminalAttachments ? { terminalAttachments: userBroadcast.terminalAttachments } : {}),
+            ...(userBroadcast.designMarkup ? { designMarkup: userBroadcast.designMarkup } : {}),
+            ...(userBroadcast.designReferences ? { designReferences: userBroadcast.designReferences } : {}),
             correlationId,
             promptIndex: this.currentPromptIndex,
             ...(isPrompt ? {} : { isInjected: true, isCommandEcho: true }),
@@ -1806,12 +2006,11 @@ export class PiSession implements ChatSession {
     let accepted: PromptDisposition | null = null;
     // The prompt's own entry is the earliest point its turn's checkpoint baseline can start.
     const committed = watchPromptEntry(session, (entry) => {
-      if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length);
+      if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length, correlationId);
       const service = this.checkpointService;
       if (service?.sessionId === session.sessionId) service.startTurn(session.sessionManager, entry.id, entry.text);
       // With no file checkpoints the conversation can still be forked from any prompt.
       if (!this.fileCheckpoints && this.runtime?.session === session) this.addCheckpoint(entry.id);
-      if (this.runtime?.session === session) this.announceIfNewlyStored();
     });
     this.promptEntry = committed;
     let settle!: () => void;
@@ -1842,12 +2041,19 @@ export class PiSession implements ChatSession {
           if (disposition === "queued") {
             const queued = this.queuedPrompts.add(session, images, hookContext, {
               onCommitted: (entry) => {
-                if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length);
+                if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length, correlationId);
               },
-              onWithdrawn: () => outgoing.withdraw(() => {
-                if (correlationId && userBroadcast) this.emit({ type: "queueCancelled", messageId: correlationId, returnToInput: true });
-              }),
-              onRefused: (returnRefused) => outgoing.withdraw(() => returnRefused(prompt, userBroadcast, correlationId)),
+              onWithdrawn: () => {
+                // a prompt that never commits saves no reference, and its numbers stay unused
+                if (correlationId !== undefined) this.plannedReferences.delete(correlationId);
+                outgoing.withdraw(() => {
+                  if (correlationId && userBroadcast) this.emit({ type: "queueCancelled", messageId: correlationId, returnToInput: true });
+                });
+              },
+              onRefused: (returnRefused) => {
+                if (correlationId !== undefined) this.plannedReferences.delete(correlationId);
+                outgoing.withdraw(() => returnRefused(prompt, userBroadcast, correlationId));
+              },
             });
             // A stop or a replacement can land while pi runs the input handlers, and that run delivers nothing more.
             if (this.runStopped() || this.runtime?.session !== session) {
@@ -2185,7 +2391,11 @@ export class PiSession implements ChatSession {
    */
   private sendAfterSettle(): void {
     const session = this.runtime?.session;
-    if (this.afterSettleInputs.length === 0 || !session || this.processingFlag || this.compacting || this.runOf(session)?.settling) return;
+    if (!session || this.processingFlag || this.compacting || this.runOf(session)?.settling) return;
+    if (this.afterSettleInputs.length === 0) {
+      this.sendHeldDesignPrompt(session);
+      return;
+    }
     const inputs = this.afterSettleInputs.splice(0);
     const target = this.afterSettleTarget;
     const { prompt, broadcast } = batchSend(inputs);
@@ -2617,6 +2827,7 @@ export class PiSession implements ChatSession {
     this.screeningInputs = [];
     this.heldInputs = [];
     this.afterSettleInputs = [];
+    this.dropHeldDesignPrompts();
     // Kills every hook still screening a message just taken back; a message queued from here on is screened under the new signal.
     this.screening.abort();
     this.screening = new AbortController();
@@ -2910,6 +3121,7 @@ export class PiSession implements ChatSession {
         this.emit({ type: "notification", message: l("Finish or stop the current turn before compacting."), notificationType: "warning" });
         return;
       }
+      if (this.design.role()) await this.design.readLink();
       const session = this.runtime?.session;
       if (!session) {
         this.emit({ type: "error", message: l("Failed to initialize pi session") });
@@ -2966,7 +3178,9 @@ export class PiSession implements ChatSession {
     } finally {
       if (this.compactionBeforePi === beforePi) this.compactionBeforePi = null;
       this.compacting = false;
+      // What the user queued goes first; a delivery the compaction deferred lands after it, or now.
       this.sendAfterSettle();
+      this.design.idle();
     }
   }
 
@@ -3167,11 +3381,18 @@ export class PiSession implements ChatSession {
       // A replacement that failed before pi's teardown leaves the old session installed and writable, so it reports to the webview again unless a later reset or a rebind took over.
       if (this.resetPromise === replacement && this.unsubscribe === null && !this._disposed && this.runtime === runtime) this.subscribeEvents(runtime.session);
     });
-    this.resetPromise = replacement;
+    // After the logging handle, which reads `resetPromise` before the replacement stops being the one in flight.
+    this.trackReplacement(replacement);
   }
 
-  clear(): void {
+  clear(): boolean {
+    // A design chat keeps its conversation, which holds its design's decisions and briefs (D70).
+    if (this.design.isDesignChat()) {
+      this.emit({ type: "notification", message: l("A design chat keeps its conversation. Use Rewind in this chat to go back, or StartDesign in the main chat for a fresh design."), notificationType: "info" });
+      return false;
+    }
     this.reset();
+    return true;
   }
 
   /** Resolve once any in-flight session replacement (reset/clear → newSession) has finished, so the
@@ -3189,6 +3410,8 @@ export class PiSession implements ChatSession {
   private async runDispose(): Promise<void> {
     const reviewSettled = this.chatReview.dispose();
     this.worktree.dispose();
+    this.design.dispose();
+    this.designSettingSubscription.dispose();
     // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
     this.returnQueue(this.runtime?.session, true);
     this.stopSends(true);
@@ -3705,6 +3928,21 @@ export class PiSession implements ChatSession {
     return this.currentSessionId === sessionId || this.resumeSessionId === sessionId;
   }
 
+  async isDesignConversation(): Promise<boolean> {
+    if (this.design.isDesignChat() || this.design.seedPending()) return true;
+    const target = this.pendingSessionId;
+    if (target === null) return false;
+    const file = await resolvePiSessionFile(this.cwd, target);
+    if (file === null) return false;
+    try {
+      // Read as text: pi's open can rewrite a file, and another process may hold this one's lease.
+      return hasDesignRoleEntry(sessionFileEntries(await fs.promises.readFile(file, "utf8")));
+    } catch (err) {
+      log("[PiSession] reading %s for its design role failed, so it counts as a design chat: %O", file, err);
+      return true;
+    }
+  }
+
   /** The adapter's event count, which a joining view's snapshot is taken at (views.join). */
   get eventSeq(): number {
     return this.adapter.eventSeq;
@@ -3752,12 +3990,20 @@ export class PiSession implements ChatSession {
     this.worktree.ensureEntry();
     this.worktree.refreshGit();
     this.worktree.publish();
+    this.design.onBound();
+    // A design chat runs in default mode whatever the defaults or a restored panel say (PD-25), and its views show that mode.
+    if (this.design.role() && this.options.permissionHandler.getPermissionMode() !== "default") {
+      this.options.permissionHandler.setPermissionMode("default");
+      this.options.republishSettings?.();
+    }
+    // The role entry a new design chat just recorded changes its tool set, which the bind applied before it existed.
+    if (this.design.role()) void this.setPermissionMode(this.options.permissionHandler.getPermissionMode());
     const stored = this.hasSessionFile();
     this.announcedStoredId = stored ? sessionId : null;
     this.options.onSessionIdChange?.(sessionId, stored, resumed);
   }
 
-  /** pi writes a new conversation's file when it commits the first prompt, which a turn ending always follows. */
+  /** pi writes a new conversation's file at its first user or assistant message, a run no prompt opened (a design brief's) included. */
   private announceIfNewlyStored(): void {
     const sessionId = this.runtime?.session.sessionId;
     if (!sessionId || this.announcedStoredId === sessionId || !this.hasSessionFile()) return;
@@ -3823,6 +4069,9 @@ export class PiSession implements ChatSession {
     this.chatReview.schedule();
     // a fresh webview has no worktree state, an empty chat's included, until it hears it again
     this.worktree.republish();
+    // a fresh webview has no design state until it hears it again
+    this.design.forgetPublished();
+    this.publishDesignState();
     this.options.permissionHandler.repostPendingPrompts();
     this.uiContext.repostPending();
     // The reloaded store starts at `idle`, so the cached key describes a webview that no longer exists
@@ -3893,9 +4142,9 @@ export class PiSession implements ChatSession {
     // The lease sync already ran, so a lease refused there marks the switch here.
     const target: QueuedSwitch = { sessionId: request.sessionId, request, cancelled: this.lostLeases.has(request.sessionId) };
     this.queuedSwitches.add(target);
-    this.resetPromise = (this.resetPromise ?? Promise.resolve())
+    this.trackReplacement((this.resetPromise ?? Promise.resolve())
       .then(() => this.switchToResumeTarget(target, stopped))
-      .then((outcome) => this.settleResume(request, outcome), (err: unknown) => this.settleResume(request, resumeFailure(err)));
+      .then((outcome) => this.settleResume(request, outcome), (err: unknown) => this.settleResume(request, resumeFailure(err))));
   }
 
   /**
@@ -4034,7 +4283,8 @@ export class PiSession implements ChatSession {
     // rejection or affect the turn.
     try {
       const session = this.runtime?.session;
-      if (!session || session.sessionManager.getSessionName()) return;
+      // A design chat's title is fixed (PD-50).
+      if (!session || session.sessionManager.getSessionName() || this.design.role()) return;
 
       const exchange = firstExchangeForTitle(session);
       // A prompt that committed nothing (an extension command, a hook block) leaves the attempt to the first exchange.
@@ -4179,28 +4429,43 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Both sidecars of the entry a prompt committed, written at its commit whether it opened a run or joined one: the
-   * count of attachment blocks leading it, and the typed text when the stored text differs. Blocks stay in that
-   * comparison, so a prompt sent with them records its typed text for the rewind list. The attachments' images are
-   * recorded only when pi stored every one of the `sentImages` the prompt was given, since an image pi dropped
-   * would make the last ones stored include a typed image.
+   * The sidecars of the entry a prompt committed, written at its commit whether it opened a run or joined one: the count of
+   * attachment blocks leading it, the typed text when the stored text differs, and in a design chat the markup, kept tweak and
+   * references the prompt carries (PD-12, PD-13, PD-40). Blocks stay in the typed-text comparison, so a prompt sent with them
+   * records its typed text for the rewind list. The attachments' images are recorded only when pi stored every one of the
+   * `sentImages` the prompt was given, since an image pi dropped would make the last ones stored include a typed image. Each
+   * sidecar's failure is its own, so the others and the turn's checkpoint baseline, which the caller starts next, still land.
    */
-  private recordPromptSidecars(session: AgentSession, entry: PromptEntry, broadcast: UserBroadcast, sentImages: number): void {
+  private recordPromptSidecars(session: AgentSession, entry: PromptEntry, broadcast: UserBroadcast, sentImages: number, correlationId: string | undefined): void {
     // A queued prompt commits long after `sendMessage` returned, and a delete or replacement may have come first.
     if (this._disposed || this.runtime?.session !== session) return;
+    const record = (what: string, write: () => void, notice?: (err: unknown) => LocalizedText): void => {
+      try {
+        write();
+      } catch (err) {
+        log("[PiSession] recording the prompt's %s failed: %O", what, err);
+        if (notice) this.emit({ type: "notification", message: notice(err), notificationType: "error" });
+      }
+    };
     const count = broadcast.terminalAttachments?.length ?? 0;
     const images = entry.images === sentImages ? broadcast.attachmentImageCount ?? 0 : 0;
     const typed = broadcast.content.trim();
-    try {
-      if (count > 0) {
-        const data: TerminalAttachmentsData = { userEntryId: entry.id, count, ...(images > 0 ? { images } : {}) };
-        session.sessionManager.appendCustomEntry(DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, data);
-      }
-      if (typed && storedTypedText(entry.text, 0).trim() !== typed) {
-        session.sessionManager.appendCustomEntry(DAMOCLES_ORIGINAL_INPUT_ENTRY, { userEntryId: entry.id, original: typed });
-      }
-    } catch (err) {
-      log("[PiSession] recording the prompt's sidecars failed: %O", err);
+    const markup = broadcast.designMarkup;
+    if (markup) record("markup", () => this.markupCommitted(session, entry.id, markup.feedbackId), (err) => l("Damocles could not save the markup files of {0}: {1}", markup.feedbackId, errorTextOf(err)));
+    const kept = broadcast.designTweakKept;
+    if (kept) record("kept tweak", () => session.sessionManager.appendCustomEntry(DAMOCLES_DESIGN_TWEAK_KEPT, tweakKeptEntryData(entry.id, kept)), (err) => l("Damocles could not record the kept tweak \"{0}\": {1}", kept.label, errorTextOf(err)));
+    const planned = correlationId === undefined ? undefined : this.plannedReferences.get(correlationId);
+    const folder = this.design.role()?.folder;
+    if (correlationId !== undefined) this.plannedReferences.delete(correlationId);
+    if (planned && folder) {
+      record("references", () => this.referencesCommitted(session, entry.id, folder, planned), (err) => l("Damocles could not save the design references {0}: {1}", planned.map((reference) => reference.id).join(", "), errorTextOf(err)));
+    }
+    if (count > 0) {
+      const data: TerminalAttachmentsData = { userEntryId: entry.id, count, ...(images > 0 ? { images } : {}) };
+      record("terminal attachments", () => session.sessionManager.appendCustomEntry(DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, data));
+    }
+    if (typed && storedTypedText(entry.text, 0).trim() !== typed) {
+      record("original input", () => session.sessionManager.appendCustomEntry(DAMOCLES_ORIGINAL_INPUT_ENTRY, { userEntryId: entry.id, original: typed }));
     }
   }
 
@@ -4311,7 +4576,7 @@ export class PiSession implements ChatSession {
   /** The eligible tools ToolSearch may load right now. */
   private deferrableNow(): Set<string> {
     const deps = this.toolStatusDeps();
-    return new Set(loadableToolNames(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)), userScopeReach()));
+    return new Set(loadableToolNames(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)), userScopeReach(), deps.designRole));
   }
 
   /** A newly bound conversation starts from the loadout its transcript recorded, the record pi restores a resumed session from. */
@@ -4339,6 +4604,9 @@ export class PiSession implements ChatSession {
       mcpResourceExposure: resourceToolsExposure(this.mcpClientManager()?.resourceServers() ?? []),
       disabled: this.disabledToolSet(),
       ...(this.options.platform.remote ? { hostSettings: this.options.platform.settings } : {}),
+      designEnabled: this.design.enabled(),
+      designRole: this.design.role() !== undefined,
+      ruleSet: this.design.ruleSet(),
     };
   }
 
@@ -4384,7 +4652,7 @@ export class PiSession implements ChatSession {
     const deps = this.toolStatusDeps();
     const eligible = fullActiveToolNamesFrom(deps);
     // a tool whose user-scope service this core cannot reach stays eligible and deferred, but off the menu
-    const names = loadableToolNames(deferredToolNames(eligible, mcpDeferrableNames(deps)), userScopeReach());
+    const names = loadableToolNames(deferredToolNames(eligible, mcpDeferrableNames(deps)), userScopeReach(), deps.designRole);
     const pendingMcpServers = (this.mcpClientManager()?.getServerStatuses() ?? [])
       .filter((status) => status.enabled && status.status !== 'connected')
       .map((status) => status.name);
@@ -4674,6 +4942,7 @@ export class PiSession implements ChatSession {
       isPlanMode: () => this.options.permissionHandler.turnPermissionMode() === "plan",
       ...this.checkpointBaselineField(),
       worktreeIsolation: () => this.worktreeIsolation(),
+      designScope: () => this.design.scope(),
       shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
       postMessage: (m) => this.emit(m),
       getParentSystemPrompt: () => this.parentPromptForAgents(),
@@ -4755,15 +5024,18 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Pre-settlement coordinator: two independent "keep the run going" mechanisms compose here. The
-   * background keep-alive runs first; if it produces a draft the plan-mode hold is skipped, and pi
-   * re-enters this boundary after the continuation round, where the background results are already
-   * drained and the plan-mode hold gets its chance. Returns the entry to append, or undefined to let
-   * the run settle.
+   * Pre-settlement coordinator: the "keep the run going" mechanisms compose here, at most one draft per boundary. The
+   * background keep-alive runs first, then the design draft (an owed result or brief, PD-27), then the plan-mode hold; pi
+   * re-enters this boundary after each continuation round, where the earlier ones have nothing left and the next gets its
+   * chance. A version pause owed (PD-29) adds no plan-mode hold, so the run settles and its card and prompt land after.
+   * Returns the entry to append, or undefined to let the run settle.
    */
   private async onBeforeSettle(event: AgentBeforeSettleEvent): Promise<CustomMessageEntryDraft | undefined> {
     if (!this.runtime?.session || this.stopRequested()) return undefined;
-    return (await this.tryBackgroundKeepAlive()) ?? this.tryPlanModeHold(event);
+    const draft = (await this.tryBackgroundKeepAlive()) ?? (await this.designSettleDraft());
+    // A version pause lets the run settle: its prompt decides how the next run starts (PD-29).
+    const session = this.runtime?.session;
+    return draft ?? (session && this.design.pauseOwed(session) ? undefined : this.tryPlanModeHold(event));
   }
 
   /**
@@ -5081,7 +5353,9 @@ export class PiSession implements ChatSession {
   private createCheckpointService(sessionId: string): CheckpointService {
     const settings = this.options.platform.settings;
     return new CheckpointService({
-      cwd: this.cwd,
+      cwd: this.checkpointFolder(),
+      // A design folder is no git project, whatever repository holds the home folder (PD-39).
+      ...(this.design.role() ? { capturesTracked: false } : {}),
       sessionId,
       onCheckpointReady: (id) => this.addCheckpoint(id),
       persist: (record) => this.persistCheckpointRecord(sessionId, record),
@@ -5131,14 +5405,20 @@ export class PiSession implements ChatSession {
     if (!this.fileCheckpoints) return {};
     return {
       checkpointBaseline: {
-        folder: this.cwd,
+        folder: this.checkpointFolder(),
         wait: (signal, toolName) => this.checkpointService?.awaitBaseline(signal, toolName) ?? Promise.resolve(),
       },
     };
   }
 
+  /** A design chat checkpoints its design folder only, never the project, under a home-target parent too (PD-39). */
   get fileCheckpoints(): boolean {
-    return this.options.projectScope;
+    return this.options.projectScope || this.design.role() !== undefined;
+  }
+
+  /** The folder this chat's checkpoints capture: its design folder in a design chat, else its working folder. */
+  checkpointFolder(): string {
+    return this.design.role()?.folder ?? this.cwd;
   }
 
   seedCheckpoints(userMessageIds: Iterable<string>): void {
@@ -5173,23 +5453,36 @@ export class PiSession implements ChatSession {
    *    that owns refs to (or a clone of) the checkpoints it inherits, opened in a new panel with the
    *    prompt prefilled. No file restore.
    *  - `fork-and-rewind-code`: both — restore the files AND spawn the forked panel.
+   * In a design chat (PD-36) `fork-conversation` makes a new design for the fork, and `fork-and-rewind-code` is a takeover:
+   * the files go back in place and the new chat takes the design's link, leaving this one superseded. In a main chat
+   * `fork-and-rewind-code` carries its own design to the new chat, whose link becomes the live one (D70).
    * All failures fail soft to `rewindError` (FR-6).
    */
   async rewindFiles(userMessageId: string, option: RewindOption = "code-only", promptContent?: string): Promise<void> {
     const session = await this.sessionForRewind();
     if (!session) return;
+    let endTakeover: (() => void) | undefined;
     try {
       const sm = session.sessionManager;
-      const checkpoints = getCheckpointEntries(sm.getBranch(sm.getLeafId() ?? undefined));
+      const checkpoints = rewindableCheckpoints(sm.getBranch(sm.getLeafId() ?? undefined));
       const entry = [...checkpoints].reverse().find((c) => c.userEntryId === userMessageId) ?? null;
       const needsFileRewind = option === "code-only" || option === "fork-and-rewind-code";
       const needsFork = option === "fork-conversation" || option === "fork-and-rewind-code";
+      const role = this.design.role();
+      // A design fork carries its role entry in its branched file, which pi writes only for a branch holding a conversation.
+      if (role && needsFork && !forkWritesFile(sm, sm.getEntry(userMessageId)?.parentId ?? null)) {
+        this.emit({ type: "rewindError", message: l("A design chat cannot go back to before its first reply. Choose Files only.") });
+        return;
+      }
       // D61: a turn before the latest hand-off made its files in the other folder; only its conversation comes back.
       if (needsFileRewind && precedesHandOff(sm.getEntries(), userMessageId)) {
         this.emit({ type: "rewindError", message: l("Files from before the hand-off are in the other folder. Rewind restores the conversation only.") });
         return;
       }
+      // Read before the files go back, so a link.json that does not parse fails the rewind before it changes anything.
+      const carried = !role && option === "fork-and-rewind-code" ? await this.rewindCarriedLink(session, sm.getEntry(userMessageId)?.parentId ?? null) : undefined;
 
+      let preRewind: PreRewindRecord | null = null;
       if (needsFileRewind) {
         if (!this.fileCheckpoints) {
           this.emit({ type: "rewindError", message: noProjectRewindMessage() });
@@ -5203,6 +5496,12 @@ export class PiSession implements ChatSession {
           });
           return;
         }
+        if (role && option === "fork-and-rewind-code") {
+          endTakeover = this.design.beginTakeover();
+          // The turn stops before the files go back, so none of its tools writes the folder the new chat takes over.
+          if (this.processingFlag || this.runOf(session)?.streaming) await this.interrupt();
+        }
+        if (role) await this.design.settledWrites();
         // Restore the workspace to the turn's pre-message state from the repo the entry names: recreate
         // files deleted since and drop files created after, unconditionally, while files over the size
         // cap, ignored, or skipped by that checkpoint are left exactly as they are.
@@ -5214,6 +5513,9 @@ export class PiSession implements ChatSession {
           this.emit({ type: "rewindError", message: restoreErrorMessage(result) });
           return;
         }
+        preRewind = result.preRewind;
+        // decisions.md is core's, from the branch, which a files-only rewind keeps.
+        if (role && option === "code-only") this.design.refresh({ filesRestored: true });
       }
 
       if (needsFork) {
@@ -5227,7 +5529,13 @@ export class PiSession implements ChatSession {
           this.emit({ type: "rewindError", message: l("This rewind point can't be resolved. The session may have changed.") });
           return;
         }
-        await this.spawnPiFork(session, userMessageId, promptContent);
+        // A main chat's rewind carries its design to the new chat (D70); its plain fork makes its own (PD-37).
+        const design: DesignForkPlan | undefined = !role
+          ? carried ? { kind: "parent", link: carried } : undefined
+          : option === "fork-and-rewind-code"
+            ? { kind: "takeover", role, preRewind }
+            : { kind: "fork", role, source: designForkSource(role, entry) };
+        await this.spawnPiFork(session, userMessageId, promptContent, design);
         return;
       }
 
@@ -5239,6 +5547,8 @@ export class PiSession implements ChatSession {
       });
     } catch (err) {
       this.emit({ type: "rewindError", message: errorTextOf(err) });
+    } finally {
+      endTakeover?.();
     }
   }
 
@@ -5262,10 +5572,13 @@ export class PiSession implements ChatSession {
         return;
       }
       const service = this.checkpointService;
+      if (this.design.role()) await this.design.settledWrites();
       const result: ServiceRestoreResult = service
         ? await service.restorePreRewind(record, sm, AbortSignal.timeout(RESTORE_WAIT_MS))
         : { ok: false, reason: "service-unavailable", preRewind: null };
       this.emit(result.ok ? { type: "rewindUndone" } : { type: "rewindError", message: restoreErrorMessage(result) });
+      // decisions.md is core's, from the branch, which an undo keeps.
+      if (result.ok && this.design.role()) this.design.refresh({ filesRestored: true });
     } catch (err) {
       this.emit({ type: "rewindError", message: errorTextOf(err) });
     }
@@ -5284,6 +5597,7 @@ export class PiSession implements ChatSession {
       this.emit({ type: "rewindError", message: l("Failed to start the session: {0}", errorTextOf(err)) });
       return null;
     }
+    if (this.design.role()) await this.design.readLink();
     const session = this.runtime?.session ?? null;
     if (!session) {
       this.emit({ type: "rewindError", message: l("No active session to rewind.") });
@@ -5308,6 +5622,16 @@ export class PiSession implements ChatSession {
       case "hostWithoutWorktrees":
         return l("This chat works in a worktree, which only the Damocles app can open.");
       case undefined:
+        break;
+    }
+    // PD-36: link.json, which each caller reads first, names the one design chat that may still change the design.
+    switch (this.design.standing().kind) {
+      case "superseded":
+      case "handing-over":
+        return l("This design continues in another chat.");
+      case "unreadable":
+        return l("This design chat's record cannot be read, so it takes no messages.");
+      case "current":
         return undefined;
     }
   }
@@ -5374,7 +5698,7 @@ export class PiSession implements ChatSession {
   }
 
   /** Branch the pi conversation at the user message's parent and open it in a new forked panel. */
-  private async spawnPiFork(session: AgentSession, userEntryId: string, promptContent?: string): Promise<void> {
+  private async spawnPiFork(session: AgentSession, userEntryId: string, promptContent?: string, design?: DesignForkPlan): Promise<void> {
     const onSpawnFork = this.options.onSpawnFork;
     if (!onSpawnFork) {
       this.emit({ type: "rewindError", message: l("Fork is unavailable") });
@@ -5398,13 +5722,7 @@ export class PiSession implements ChatSession {
       // fresh-panel fork: leave `piBranchedSessionId` unset so `start()` creates a fresh session and
       // `showForked` skips history replay (the rewound prompt, if any, still prefills).
       // `getBranch(parentId)` returns the exact root→parent path pi would branch on.
-      const branchHasConversation = pi
-        ? liveSm.getBranch(parentId).some((e) => {
-            const role = e.type === "message" ? (e as { message?: { role?: string } }).message?.role : undefined;
-            return role === "user" || role === "assistant";
-          })
-        : false;
-      if (pi && branchHasConversation) {
+      if (pi && forkWritesFile(liveSm, parentId)) {
         // Branch on a fresh manager reading the source file so the live session is left intact (mirrors
         // pi's own AgentSessionRuntime.fork). Truncate at the parent so the prefilled prompt re-sends
         // the rewound message.
@@ -5413,7 +5731,9 @@ export class PiSession implements ChatSession {
         const branchedPath = branchSm.createBranchedSession(parentId);
         if (branchedPath) {
           piBranchedSessionId = piSessionIdFromFile(branchedPath);
-          if (this.fileCheckpoints) {
+          if (design && !(await this.prepareDesignFork(pi, design, liveSm, branchedPath, piBranchedSessionId))) return;
+          // A design fork's checkpoints are of its own new folder; the original design's records would name the original's repo.
+          if (this.fileCheckpoints && design?.kind !== "fork") {
             try {
               const srcGit = getGitDir(getRepoDir(sourceFile));
               if (existsSync(srcGit)) await RepoManager.cloneFrom(srcGit, getGitDir(getRepoDir(branchedPath)));
@@ -5444,7 +5764,12 @@ export class PiSession implements ChatSession {
         }
       }
     }
+    if (design && design.kind !== "parent" && !piBranchedSessionId) {
+      this.emit({ type: "rewindError", message: l("A design chat cannot go back to before its first reply. Choose Files only.") });
+      return;
+    }
     this.emitForkHook(parentId, sourceSessionId, sourceFile, piBranchedSessionId);
+    if (design?.kind === "takeover" || design?.kind === "parent") this.design.publish();
     await onSpawnFork({
       sourceSdkSessionId: sourceSessionId,
       forkAtUuid: parentId,
@@ -5453,6 +5778,98 @@ export class PiSession implements ChatSession {
       sourcePanelId: this.options.panelId ?? "",
       ...(piBranchedSessionId ? { piBranchedSessionId } : {}),
     });
+  }
+
+  /**
+   * The design a main chat's conversation rewind to after `forkPoint` carries to the new chat (D70): the chat's own link, only
+   * while `link.json` names this chat as the design's main chat and the branch up to `forkPoint` already links that design
+   * (a chat the design was carried to links it first through the chat it came from). Undefined for a plain rewind.
+   */
+  private async rewindCarriedLink(session: AgentSession, forkPoint: string | null): Promise<DesignLink | undefined> {
+    if (forkPoint === null) return undefined;
+    const sm = session.sessionManager;
+    const own = ownDesignLink(sm.getBranch(sm.getLeafId() ?? undefined), session.sessionId);
+    if (!own || !designLinkedOn(sm.getBranch(forkPoint), own.designId)) return undefined;
+    return (await readDesignLink(designStateDirOf(own.designId)))?.parentSessionId === session.sessionId ? own : undefined;
+  }
+
+  /**
+   * Gives a fork its design (PD-36, D70) before its panel opens; false, after telling the user and removing the branched file
+   * nobody opened yet, when that fails. A design chat's fork gets a new design from the fork point's files. A design chat's
+   * takeover keeps the design, carries the pre-rewind record of the restore it follows, so Undo rewind works there, and takes the
+   * link last: from then on this chat is superseded, and a takeover that fails before it leaves this chat current with its Undo
+   * rewind. A main chat's rewind gives the new chat its own link entry and makes it the design's main chat last, in the same order.
+   */
+  private async prepareDesignFork(pi: PiCodingAgentModule, design: DesignForkPlan, sourceSm: AgentSession["sessionManager"], branchedPath: string, forkSessionId: string): Promise<boolean> {
+    const childSm = pi.SessionManager.open(branchedPath, path.dirname(branchedPath), this.cwd);
+    try {
+      if (design.kind === "fork") {
+        // The role entry goes first: a failure after it is the removed branched file's, and forkDesign cleans up its own.
+        childSm.appendCustomEntry(DAMOCLES_DESIGN_ENTRY, designRoleEntryData(forkDesignRole(design.role, forkSessionId)));
+        await forkDesign(design.role, forkSessionId, design.source);
+        if (design.source.kind === "copy") {
+          this.emit({ type: "notification", notificationType: "warning", message: l("This point has no checkpoint of the design files, so the fork starts from a copy of the files as they are now.") });
+        }
+        return true;
+      }
+      if (design.kind === "parent") {
+        // The new chat's own link first; link.json names it the design's main chat last, which leaves this chat's link inert.
+        childSm.appendCustomEntry(DAMOCLES_DESIGN_LINK_ENTRY, designLinkEntryData({ ...design.link, parentSessionId: forkSessionId }));
+        const stateDir = designStateDirOf(design.link.designId);
+        try {
+          await takeOverDesignParent(stateDir, sourceSm.getSessionId(), forkSessionId);
+        } catch (err) {
+          // A lock lost after the write: once link.json names the new chat, that chat's file must stay, or no chat gets the design.
+          let parent: string | null | undefined;
+          try {
+            parent = (await readDesignLink(stateDir))?.parentSessionId;
+          } catch (readErr) {
+            log("[PiSession] cannot tell which chat is the main chat of design %s after a failed takeover, so the new chat is kept: %O", design.link.designId, readErr);
+            parent = forkSessionId;
+          }
+          if (parent !== forkSessionId) throw err;
+          log("[PiSession] design %s moved to the new main chat, then its takeover failed: %O", design.link.designId, err);
+        }
+        return true;
+      }
+      // The branch may predate the role entry this chat continues as, so the takeover names it again.
+      childSm.appendCustomEntry(DAMOCLES_DESIGN_ENTRY, designRoleEntryData(design.role));
+      if (design.preRewind) {
+        childSm.appendCustomEntry(DAMOCLES_CHECKPOINT_ENTRY, design.preRewind);
+        await copyPreRewindRefs(design.role.folder, forkSessionId, branchedPath, design.preRewind);
+      }
+      const stateDir = designStateDirOf(design.role.designId);
+      try {
+        await takeOverDesignLink(stateDir, sourceSm.getSessionId(), forkSessionId, deliveredBriefs(sourceSm.getBranch()));
+        this.design.noteLinkHolder(design.role.designId, forkSessionId);
+      } catch (err) {
+        // link.json is written before the briefs move: once it names the new chat, that chat's file must stay, or no chat can undo.
+        let holder: string | null | undefined;
+        try {
+          holder = (await readDesignLink(stateDir))?.designSessionId;
+        } catch (readErr) {
+          log("[PiSession] cannot tell which chat holds design %s after a failed takeover, so the new chat is kept: %O", design.role.designId, readErr);
+          holder = forkSessionId;
+        }
+        if (holder !== forkSessionId) throw err;
+        log("[PiSession] the takeover of design %s named the new chat, then failed: %O", design.role.designId, err);
+        this.design.noteLinkHolder(design.role.designId, forkSessionId);
+        this.emit({ type: "notification", notificationType: "warning", message: l("The design moved to the new chat, but requests from the main chat it had not received yet may not have moved with it: {0}", errorTextOf(err)) });
+      }
+      // This chat's list row reads superseded from link.json, which no write of its own session file announces.
+      this.options.onSessionPersisted?.(sourceSm.getSessionId());
+      return true;
+    } catch (err) {
+      log("[PiSession] preparing the design fork failed: %O", err);
+      await fs.promises.rm(branchedPath, { force: true }).catch((rmErr: unknown) => log("[PiSession] removing the unopened fork %s failed: %O", branchedPath, rmErr));
+      this.emit({
+        type: "rewindError",
+        message: design.kind === "fork"
+          ? l("The design could not be copied for the fork: {0}", errorTextOf(err))
+          : l("The files were restored, but the design could not move to a new chat: {0}. Undo the rewind to put the files back.", errorTextOf(err)),
+      });
+      return false;
+    }
   }
 
   /**
@@ -5582,6 +5999,7 @@ export class PiSession implements ChatSession {
         skills,
         skillFileReadTool,
         earlierModels: earlierModelRuns(session.sessionManager.getBranch(), env.model),
+        ...this.design.promptInputs(),
       });
     } catch (err) {
       log("[PiSession] buildEffectiveSystemPrompt failed: %O", err);
@@ -5833,6 +6251,7 @@ export class PiSession implements ChatSession {
         ...this.checkpointBaselineField(),
         shellCancel: this.shellCancel.forContext(this.noteDeliveryForTeamAgent(agent)),
         worktreeIsolation: () => this.worktreeIsolation(),
+        designScope: () => this.design.scope(),
         readOnlyShell: readOnly,
         parentToolUseId: agent.agentId,
         stopSignal: agent.stopSignal,
@@ -5859,7 +6278,7 @@ export class PiSession implements ChatSession {
         // (`resolveToolSearchEntries` → "Unknown entries"). This mirrors the
         // `tools: [...toolNames, ...mcp.names]` the caller builds from the same snapshot. Always-loaded
         // tools are in `mcp.names` but not `mcp.deferrable`, so they are active and never on the menu.
-        deferrableToolNames: loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach()),
+        deferrableToolNames: loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach(), this.design.role() !== undefined),
         mcpDescriptions: mcp.descriptions,
         directMcpGroups: mcp.directGroups,
         isMcpReadOnly: mcp.isReadOnly,
@@ -5889,6 +6308,7 @@ export class PiSession implements ChatSession {
       ...TEAM_MAIN_PI_TOOL_NAMES,
       ...PLAN_MODE_TOOLS,
       ...IMAGE_PI_TOOL_NAMES,
+      ...DESIGN_PI_TOOL_NAMES,
     ]);
     return this.fullActiveToolNames().filter((name) => !exclude.has(name) && !isNestedMcpName(name));
   }
@@ -5924,6 +6344,11 @@ export class PiSession implements ChatSession {
    */
   getPlanFilePath(): string {
     const sessionId = this.currentSessionId ?? this.options.panelId ?? "";
+    return computePlanFilePath(sessionId, this.firstMessageForPlan());
+  }
+
+  /** The first message the plan file's slug and a new design's id come from. */
+  private firstMessageForPlan(): string {
     const session = this.runtime?.session;
     let firstMessage = "";
     if (session) {
@@ -5932,8 +6357,7 @@ export class PiSession implements ChatSession {
     }
     // Before the first user message is committed to the branch (first-turn before_agent_start), fall
     // back to the message captured in sendMessage so the path matches the resolver's preview-based one.
-    if (!firstMessage) firstMessage = this._firstUserMessage ?? "";
-    return computePlanFilePath(sessionId, firstMessage);
+    return firstMessage || (this._firstUserMessage ?? "");
   }
 
   /**
@@ -6165,6 +6589,8 @@ export class PiSession implements ChatSession {
     if (turn !== "idle") return;
     this.announceIfNewlyStored();
     if (!settled) return;
+    this.design.refresh();
+    this.design.idle();
     const subscription = this.subscriptionUsage();
     if (outcome.kind === "rateLimit") {
       void this.settleOnRateLimit(outcome, subscription);
@@ -6190,6 +6616,197 @@ export class PiSession implements ChatSession {
   /** A subagent or team run that has not settled; their owners call the publisher as one starts or settles. */
   private backgroundRunning(): boolean {
     return (this.subagentManager?.hasUnsettledRuns() ?? false) || (this.options.teamService?.running ?? false);
+  }
+
+  /** `designState`'s one publisher: the design chat's state, the parent's link chip, or neither (PD-23). */
+  publishDesignState(): void {
+    this.design.publish();
+  }
+
+  /** The live mutator's: a version of this parent's design was finished in this process. */
+  offerDesignResult(designId: string): void {
+    this.design.offerDesignResult(designId);
+  }
+
+  /** The live mutator's: a brief was written for this design chat. */
+  offerDesignBrief(_briefId: string): void {
+    this.design.offerDesignBrief();
+  }
+
+  /** The live mutator's: a parent asked this design chat to open a preview tab of its design. */
+  openDesignPreview(designId: string, relPath: string): Promise<boolean> {
+    return this.design.role()?.designId === designId ? this.design.openPreview(designId, relPath) : Promise.resolve(false);
+  }
+
+  /**
+   * Whether `session` can take a design delivery now (PD-27): idle, or streaming, which the settle boundary covers; a chat
+   * busy otherwise reconciles again once it is idle (`SessionDesign.idle`). A prompt start delivers ahead of its own run, and a
+   * bind inside the replacement that bound the session; any other trigger waits while a send, a compaction or a replacement
+   * is under way.
+   */
+  private designDeliveryState(session: AgentSession, trigger: ReconcileTrigger): "idle" | "streaming" | "gone" {
+    if (this.runtime?.session !== session || this.lostLeases.has(session.sessionId) || this._disposed) return "gone";
+    if (this.runOf(session)?.streaming) return "streaming";
+    if (trigger === "prompt") return "idle";
+    if (this.turnState !== "idle" || this.outgoingSends.size > 0 || this.compacting || (this.resetPromise && trigger !== "bind")) return "streaming";
+    return "idle";
+  }
+
+  /**
+   * Appends `messages` to idle `session` with nothing awaited, and with `run` starts one run on the last, in the chat's
+   * current mode, as a send does, unless `runStartRefusal` refuses it or the user's queued input is waiting to go first: then
+   * every message is appended with no run, and the user continues.
+   */
+  private deliverDesignMessages(session: AgentSession, messages: readonly DesignCustomMessage<unknown>[], run: boolean): boolean {
+    if (this.designDeliveryState(session, "live") === "gone") return false;
+    const userFirst = this.afterSettleInputs.length > 0 || this.heldDesignPrompts.length > 0;
+    const runs = run && !userFirst && this.runStartRefusal(true, "delivery") === undefined;
+    messages.forEach((message, index) => {
+      if (!runs || index < messages.length - 1) {
+        void session.sendCustomMessage(message, { triggerTurn: false }).catch((err: unknown) => log("[PiSession] appending a design message failed: %O", err));
+        return;
+      }
+      this.startDeliveryRun(session, message);
+    });
+    return true;
+  }
+
+  /**
+   * Starts the delivery run of `message` on idle `session`. Its turn opens before pi starts the run, so nothing takes the chat
+   * for idle meanwhile; a run pi never started (its preparation threw, with no `agent_settled`) ends that turn, and the message,
+   * which pi did not append, is delivered again with no run.
+   */
+  private startDeliveryRun(session: AgentSession, message: DesignCustomMessage<unknown>): void {
+    let started = false;
+    // pi drops the restored tools and runs the shown model only once it opened the run (agent-session.js:1447).
+    const stopWatching = this.runOf(session)?.onChange((event) => {
+      if (event.type !== "agent_start") return;
+      started = true;
+      stopWatching?.();
+      this.runStarted(session);
+    });
+    this._aborting = false;
+    this._budgetStopRequested = false;
+    this.adapter.beginTurn();
+    // Watched past the call's return: pi defers a run asked for while it runs `agent_settled` handlers and returns at once (agent-session.js:1866-1868).
+    void session.sendCustomMessage(message, { triggerTurn: true }).catch((err: unknown) => {
+      stopWatching?.();
+      log("[PiSession] a design delivery's run failed: %O", err);
+      this.emit({ type: "error", message: l("The design message arrived, but the agent could not start: {0}", errorTextOf(err)) });
+      if (started || this.runtime?.session !== session) return;
+      // Queued ahead of the reconcile the turn's end runs, so the message lands with no run instead of failing again.
+      void this.design.reconcile("prompt");
+      // As promptPi ends a turn pi refused: no pi event will.
+      this.emit({ type: "processing", isProcessing: false });
+      this.setTurnState("idle", turnOutcomeOfError(failureText(session.model?.provider, session.model?.id, err instanceof Error ? err.message : String(err))));
+      this._aborting = false;
+      this._budgetStopRequested = false;
+    });
+  }
+
+  /** The settle-boundary draft that carries an owed design result or brief into one more request (PD-27). */
+  private async designSettleDraft(): Promise<CustomMessageEntryDraft | undefined> {
+    const message = await this.design.settleDraft();
+    if (!message || this.stopRequested()) return undefined;
+    return { type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details };
+  }
+
+  /**
+   * The design tools' reads of this session (PD-42), built once per pi session in the factory. `branchAtBuild`, the session's
+   * branch at the factory, fixes the rule set the tool descriptions read for the session (PD-17).
+   */
+  private designToolDeps(session: () => AgentSession | undefined, branchAtBuild: readonly unknown[]): { chat: DesignChatToolDeps; start: StartDesignDeps; parity: DesignParityDeps; questionDecisions: QuestionDecisions; ruleSet: DesignRuleSet; designPreviews: boolean } {
+    const branch = (): readonly unknown[] => session()?.sessionManager.getBranch() ?? [];
+    const imageBudget = (): number => {
+      const model = session()?.model;
+      return model?.input.includes("image") ? resolveImageBudget(model).keep : 0;
+    };
+    const chat: DesignChatToolDeps = {
+      role: () => this.design.role(),
+      enabled: () => this.design.enabled(),
+      cwd: this.cwd,
+      confinement: this.options.platform.confinement,
+      branch,
+      pendingDecisions: () => this.design.pendingDecisions(),
+      sessionId: () => session()?.sessionId ?? "",
+      readStanding: () => this.design.readLink(),
+      standing: () => this.design.standing(),
+      decisionsChanged: (added) => this.design.decisionsChanged(added),
+      publish: () => this.publishDesignState(),
+      offerResult: (record, role, notify) => this.design.offerResult(record, role, notify),
+      hasParent: (role) => this.design.hasParent(role),
+      requestApproval: (ask, signal) => this.options.permissionHandler.requestDesignApproval(ask, signal),
+      render: () => this.options.platform.designPreview,
+      imageBudget,
+      referenceWritten: (id) => this.referenceWrites.get(id) ?? Promise.resolve(),
+    };
+    const start: StartDesignDeps = {
+      enabled: () => this.design.enabled(),
+      designChat: () => this.design.role() !== undefined,
+      sessionId: () => session()?.sessionId ?? "",
+      firstMessage: () => this.firstMessageForPlan(),
+      branch,
+      ruleSet: () => this.design.hostRuleSet().id,
+      appendLink: (link) => {
+        session()?.sessionManager.appendCustomEntry(DAMOCLES_DESIGN_LINK_ENTRY, designLinkEntryData(link));
+      },
+      offerBrief: (designSessionId, briefId) => PiRuntime.liveSessionMutator(designSessionId)?.offerDesignBrief(briefId),
+      panels: () => this.options.designPanels,
+      publish: () => this.publishDesignState(),
+    };
+    const parity: DesignParityDeps = {
+      enabled: () => this.design.enabled(),
+      designChat: () => this.design.role() !== undefined,
+      sessionId: () => session()?.sessionId ?? "",
+      branch,
+      cwd: worktreeProjectOf(this.cwd) ?? this.cwd,
+      render: () => this.options.platform.designPreview,
+      imageBudget,
+      browserEnabled: () => this.isBrowserEnabled(),
+      appCapture: () => this.parityAppCapture(),
+      judgeReadsImages: () => PiRuntime.get().subCallReadsImages("design-parity"),
+      judge: (req) => PiRuntime.get().runStructuredCompletion(req),
+    };
+    const decisions: QuestionDecisions = async (questions, answers) => {
+      if (!this.design.role()) return [];
+      const records = questionDecisions(branch(), questions, answers, this.design.pendingDecisions());
+      if (records.length === 0) return records;
+      try {
+        await this.design.decisionsChanged(records);
+      } catch (err) {
+        // The user's answers stay: the result carries them and the records to the branch, which the next rebuild of decisions.md reads.
+        log("[PiSession] writing decisions.md for the answered question failed: %O", err);
+        this.emit({ type: "notification", message: l("Damocles could not update decisions.md: {0}. Your answers were kept, and the file is rebuilt when the turn ends.", errorTextOf(err)), notificationType: "warning" });
+      }
+      return records;
+    };
+    const chatRuleSet = this.design.chatRuleSetOf(branchAtBuild);
+    return { chat, start, parity, questionDecisions: decisions, ruleSet: chatRuleSet ?? this.design.hostRuleSet(), designPreviews: chatRuleSet !== undefined };
+  }
+
+  /** DesignParity's app capture in a scope made for one call: this computer's browser, or on a daemon's core the browser of the client showing the chat. */
+  private parityAppCapture(): ParityAppCapture | undefined {
+    const browser = this.options.browserService;
+    if (!browser) return undefined;
+    const chat = this.options.browserChat;
+    const remote = this.options.platform.remote;
+    if (!remote) {
+      return {
+        remote: false,
+        capture: (scope, url, width, signal) => captureAppFrame(browser.createAgentScope(scope, chat), url, width, signal),
+        // the tabs' close lands before the call ends, so a last-tab teardown is queued ahead of the next call's launch
+        release: async (scope) => {
+          await browser.closeScopeTabs(scope);
+          browser.disposeScope(scope, false);
+        },
+      };
+    }
+    if (!chat) return undefined;
+    return {
+      remote: true,
+      capture: (scope, url, width, signal) => remote.browserTool(chat, scope, PARITY_CAPTURE_TOOL, { url, width }, signal),
+      release: (scope) => remote.browserRelease(chat, scope, true),
+    };
   }
 
   /**
@@ -6317,6 +6934,248 @@ export class PiSession implements ChatSession {
     }
     const outcome = await this.sendMessage(text, target, `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`, { content: text });
     return outcome === "sent" ? "sent" : "unsent";
+  }
+
+  /**
+   * A preview's markup from the design chat's preview tab (PD-12, PD-40): checked as hostile, numbered F<n>, and sent as its own
+   * user prompt, its image marked as the preview's, so it is never saved as a reference. A busy chat holds it until the chat
+   * settles, behind messages already queued for that moment, and never steers or merges it. Its files are written once the
+   * turn of the prompt that carries it has its checkpoint baseline. Resolves with F<n> once accepted, or the reason it was refused.
+   */
+  async sendDesignMarkup(png: unknown, json: unknown): Promise<{ readonly feedbackId: string } | { readonly refused: LocalizedText }> {
+    const role = this.design.role();
+    if (!role || !this.design.ruleSet().preview) return { refused: l("Markup goes only to a design chat in the Damocles app.") };
+    if ((await this.design.readLink()).kind !== "current") return { refused: l("This design continues in another chat.") };
+    const refusal = this.design.sendRefusal("send");
+    if (refusal) return { refused: refusal };
+    let markup: MarkupJsonInput;
+    let image: Buffer;
+    try {
+      markup = parseMarkupJson(json);
+      image = parseMarkupPng(png);
+    } catch (err) {
+      if (!(err instanceof MarkupInvalidError)) throw err;
+      log("[PiSession] refused a markup: %s", err.message);
+      return { refused: l("The markup could not be read, so it was not sent.") };
+    }
+    const session = this.runtime?.session;
+    if (!session || this.design.role()?.folder !== role.folder) return { refused: l("This design chat is not running.") };
+    // One numbering at a time: each takes its F<n> into `pendingMarkups` before the next reads the folder.
+    const numbered = this.markupNumbering.then(async () => {
+      const feedbackId = await nextFeedbackId(role.folder, session.sessionManager.getBranch(), this.pendingMarkups.keys());
+      if (this.runtime?.session !== session) return undefined;
+      const pending = this.pendingMarkup(feedbackId, role.folder, image, markup, session);
+      this.pendingMarkups.set(feedbackId, pending);
+      this.sendOrHoldDesignPrompt(session, pending);
+      return feedbackId;
+    });
+    this.markupNumbering = numbered.then(() => undefined, () => undefined);
+    const feedbackId = await numbered;
+    return feedbackId === undefined ? { refused: l("This design chat moved on before the markup arrived, so it was not sent.") } : { feedbackId };
+  }
+
+  /** Markup F<n> as the prompt core composes for it, sent on `session`. */
+  private pendingMarkup(feedbackId: string, folder: string, image: Buffer, markup: MarkupJsonInput, session: AgentSession): PendingMarkup {
+    const text = markupPromptText(feedbackId, markup);
+    return {
+      kind: "markup",
+      feedbackId,
+      folder,
+      png: image,
+      markup,
+      text,
+      content: [{ type: "text", text }, { type: "image", source: { type: "base64", media_type: "image/png", data: image.toString("base64") }, origin: "designPreview" }],
+      target: session.sessionId,
+    };
+  }
+
+  /**
+   * A tweak the user kept in the preview (PD-13): checked against the chat's latest DeclareTweaks and sent as its own user prompt,
+   * "Keep: <label> → <token>", held like a markup while the chat is busy. Its `damocles-design-tweak-kept` entry is appended when
+   * the prompt commits; only the designer's RecordDecision makes it a decision.
+   */
+  async keepDesignTweak(tweakId: string, value: string): Promise<{ readonly kept: true } | { readonly refused: LocalizedText }> {
+    const role = this.design.role();
+    if (!role || !this.design.ruleSet().preview) return { refused: l("Tweaks go only to a design chat in the Damocles app.") };
+    if ((await this.design.readLink()).kind !== "current") return { refused: l("This design continues in another chat.") };
+    const refusal = this.design.sendRefusal("send");
+    if (refusal) return { refused: refusal };
+    const session = this.runtime?.session;
+    if (!session) return { refused: l("This design chat is not running.") };
+    const outcome = keepTweak(session.sessionManager.getBranch(), tweakId, value);
+    if ("refused" in outcome) {
+      return {
+        refused: outcome.refused === "locked"
+          ? l("A decision already settled this tweak, so it was not kept.")
+          : l("The designer no longer offers this tweak, so it was not kept."),
+      };
+    }
+    this.sendOrHoldDesignPrompt(session, { kind: "tweak", kept: outcome.kept, text: keepPromptText(outcome.kept), target: session.sessionId });
+    return { kept: true };
+  }
+
+  /**
+   * The design chat's images in `broadcast` without the preview's origin marker, numbered R<n> and held for their commit
+   * (PD-40); the broadcast then names them for the echo. Outside a design chat, or with none, `broadcast` as it was.
+   */
+  private async planDesignReferences(session: AgentSession, correlationId: string, broadcast: UserBroadcast): Promise<{ readonly broadcast: UserBroadcast; readonly note?: string }> {
+    const folder = this.design.role()?.folder;
+    if (!folder || !broadcast.contentBlocks?.some((block) => block.type === "image" && block.origin === undefined)) return { broadcast };
+    const reserved = [...this.plannedReferences.values()].flat().map((reference) => reference.id);
+    const first = await nextReferenceNumber(folder, session.sessionManager.getBranch(), reserved);
+    const { planned, skipped } = planReferences(broadcast.contentBlocks, first);
+    if (skipped > 0) {
+      this.emit({
+        type: "notification",
+        message: l("{0} of the images were not saved as design references: a message saves at most {1}, a design at most {2}, each a PNG, JPEG, GIF or WebP of at most 4 MiB.", skipped, MAX_REFERENCES_PER_MESSAGE, MAX_REFERENCES),
+        notificationType: "warning",
+      });
+    }
+    if (planned.length === 0) return { broadcast };
+    this.plannedReferences.set(correlationId, planned);
+    return { broadcast: { ...broadcast, designReferences: planned.map(({ id, image, imageIndex }) => ({ id, image, imageIndex })) }, note: referencesPromptNote(planned) };
+  }
+
+  /** Sends `pending` now when the chat is idle and nothing is held before it, else holds it until the chat settles. */
+  private sendOrHoldDesignPrompt(session: AgentSession, pending: HeldDesignPrompt): void {
+    if (this.heldDesignPrompts.length > 0 || this.afterSettleInputs.length > 0 || !this.sendDesignPromptNow(session, pending)) this.holdDesignPrompt(session, pending);
+  }
+
+  /** Sends `pending` as its own prompt when the chat is idle; false, sending nothing, when a send, run or compaction holds it. */
+  private sendDesignPromptNow(session: AgentSession, pending: HeldDesignPrompt): boolean {
+    if (this.runOf(session)?.busy) return false;
+    const correlationId = `corr-${randomUUID()}`;
+    const broadcast: UserBroadcast = pending.kind === "markup"
+      ? { content: pending.text, contentBlocks: pending.content, designMarkup: { feedbackId: pending.feedbackId, markup: designMarkupView(pending.markup) } }
+      : { content: pending.text, designTweakKept: pending.kept };
+    const ticket = this.beginSend(correlationId, broadcast, () => undefined);
+    if (!ticket) return false;
+    if (pending.queuedId !== undefined) this.emit({ type: "queueCancelled", messageId: pending.queuedId, sentAs: correlationId });
+    void this.sendMessage(pending.kind === "markup" ? pending.content : pending.text, pending.target, correlationId, broadcast, undefined, ticket)
+      .then((outcome) => {
+        if (outcome === "sent") return;
+        // A refused or stopped prompt may go back to the composer, where it sends as a plain message with no files or entry.
+        if (pending.kind === "markup") {
+          this.pendingMarkups.delete(pending.feedbackId);
+          this.emit({ type: "notification", message: l("The markup {0} was not sent, and its files were not saved.", pending.feedbackId), notificationType: "warning" });
+        } else {
+          this.emit({ type: "notification", message: l("\"{0}\" was not sent, so the tweak was not kept.", pending.text), notificationType: "warning" });
+        }
+      })
+      .catch((err) => {
+        if (pending.kind === "markup") this.pendingMarkups.delete(pending.feedbackId);
+        log("[PiSession] sending a design prompt (%s) failed: %O", pending.kind, err);
+      })
+      .finally(() => ticket.end());
+    return true;
+  }
+
+  /** A busy chat holds `pending` with a queued chip, until `sendAfterSettle` finds the chat idle. */
+  private holdDesignPrompt(session: AgentSession, pending: HeldDesignPrompt): void {
+    const queued = createQueuedMessage(pending.kind === "markup" ? pending.content : pending.text);
+    pending.queuedId = queued.id;
+    this.heldDesignPrompts.push(pending);
+    this.emit({ type: "messageQueued", message: queued });
+    this.whenIdleSendHeld(session);
+  }
+
+  // A run no send opened (a brief's) ends with no `endSend`, so the held prompts wait for pi's idle too.
+  private whenIdleSendHeld(session: AgentSession): void {
+    void this.runOf(session)?.untilIdle(this.screening.signal)?.then(() => this.sendAfterSettle());
+  }
+
+  /** The oldest held design prompt, once nothing holds the chat; the next one goes when its send ends (`endSend`). */
+  private sendHeldDesignPrompt(session: AgentSession): void {
+    const next = this.heldDesignPrompts[0];
+    if (!next) return;
+    if (!this.sendsTo(session, next.target)) {
+      this.dropHeldDesignPrompts();
+      return;
+    }
+    if (!this.sendDesignPromptNow(session, next)) {
+      this.whenIdleSendHeld(session);
+      return;
+    }
+    this.heldDesignPrompts.shift();
+  }
+
+  /** Stop, a new chat or a switch: the held prompts were never sent, so their chips go, no file or entry is written, and the user is told. */
+  private dropHeldDesignPrompts(): void {
+    const dropped = this.heldDesignPrompts.splice(0);
+    for (const pending of dropped) {
+      if (pending.kind === "markup") this.pendingMarkups.delete(pending.feedbackId);
+      if (pending.queuedId !== undefined) this.emit({ type: "queueCancelled", messageId: pending.queuedId });
+    }
+    for (const pending of dropped) {
+      this.emit({
+        type: "notification",
+        message: pending.kind === "markup"
+          ? l("The markup {0} was not sent: the chat stopped before it could run.", pending.feedbackId)
+          : l("\"{0}\" was not sent: the chat stopped before it could run.", pending.text),
+        notificationType: "warning",
+      });
+    }
+  }
+
+  /**
+   * The prompt carrying markup `feedbackId` committed as `userEntryId`: its entry lets the transcript show the card, and its
+   * files are written once that turn has its checkpoint baseline, through the wait the write tools use, so a rewind to before
+   * the prompt removes them (PD-40).
+   */
+  private markupCommitted(session: AgentSession, userEntryId: string, feedbackId: string): void {
+    const pending = this.pendingMarkups.get(feedbackId);
+    this.pendingMarkups.delete(feedbackId);
+    if (!pending) {
+      log("[PiSession] markup %s committed with nothing to write", feedbackId);
+      return;
+    }
+    session.sessionManager.appendCustomEntry(DAMOCLES_DESIGN_MARKUP_ENTRY, markupEntryData(userEntryId, feedbackId, pending.markup));
+    void this.afterTurnBaseline(session, userEntryId, "design.markup", `markup ${feedbackId}`, () => writeMarkupFiles(pending.folder, feedbackId, pending.png, pending.markup), {
+      failed: (err) => l("Damocles could not save the markup files of {0}: {1}", feedbackId, errorTextOf(err)),
+      noBaseline: l("The markup files of {0} were not saved: the chat's checkpoints ended before its turn began.", feedbackId),
+    });
+  }
+
+  /**
+   * The prompt carrying `planned` committed as `userEntryId` in design folder `folder`: its entry lets the transcript show the
+   * note, and the references are written once that turn has its checkpoint baseline, so a rewind to before the prompt removes them (PD-40).
+   */
+  private referencesCommitted(session: AgentSession, userEntryId: string, folder: string, planned: readonly PlannedReference[]): void {
+    const ids = planned.map((reference) => reference.id).join(", ");
+    session.sessionManager.appendCustomEntry(DAMOCLES_DESIGN_REFERENCES_ENTRY, referencesEntryData(userEntryId, planned));
+    const written = this.afterTurnBaseline(session, userEntryId, "design.references", `references ${ids}`, async () => {
+      for (const reference of planned) await writeReference(folder, reference, userEntryId);
+    }, {
+      failed: (err) => l("Damocles could not save the design references {0}: {1}", ids, errorTextOf(err)),
+      noBaseline: l("The design references {0} were not saved: the chat's checkpoints ended before its turn began.", ids),
+    });
+    for (const { id } of planned) this.referenceWrites.set(id, written);
+    void written.then(() => {
+      for (const { id } of planned) if (this.referenceWrites.get(id) === written) this.referenceWrites.delete(id);
+    });
+  }
+
+  /** Runs `write` once user entry `userEntryId`'s turn has its checkpoint baseline, through the wait the write tools use (PD-40). */
+  private afterTurnBaseline(
+    session: AgentSession,
+    userEntryId: string,
+    waiter: string,
+    what: string,
+    write: () => Promise<unknown>,
+    notices: { readonly failed: (err: unknown) => LocalizedText; readonly noBaseline: LocalizedText },
+  ): Promise<void> {
+    const service = this.checkpointService?.sessionId === session.sessionId ? this.checkpointService : null;
+    return (async () => {
+      if (service && !(await service.awaitBaselineOf(userEntryId, new AbortController().signal, waiter))) {
+        log("[PiSession] %s: the chat's checkpoints ended before its turn's baseline, so nothing is written", what);
+        this.emit({ type: "notification", message: notices.noBaseline, notificationType: "warning" });
+        return;
+      }
+      await write();
+    })().catch((err: unknown) => {
+      log("[PiSession] writing %s failed: %O", what, err);
+      this.emit({ type: "notification", message: notices.failed(err), notificationType: "error" });
+    });
   }
 
   /** Reports the current activity at once, then every change; null stops the reports. */

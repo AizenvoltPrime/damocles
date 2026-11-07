@@ -384,6 +384,43 @@
         "baselineTimeout": "{tool} waited {n} s for this turn's checkpoint and ran without it.",
         "baselineFailed": "Git reported: {error}"
       }
+    },
+    "design": {
+      "title": "Rewind the design chat",
+      "description": "Everything after this message can go back. Choose what goes back.",
+      "rows": {
+        "conversation": "Conversation",
+        "decisions": "Decisions",
+        "files": "Design files",
+        "mainChat": "Main chat"
+      },
+      "decisionsLeaving": "{n} decision goes away with Rewind or Fork from here | {n} decisions go away with Rewind or Fork from here",
+      "decisionsFilesOnly": "Files only keeps them.",
+      "decisionsNone": "None go away",
+      "filesNone": "No file changes after this point",
+      "mainChatKeeps": "Keeps the last finished version",
+      "mainChatNoVersion": "Has no finished version yet",
+      "hint": "Design chat checkpoints capture its design folder, not your project.",
+      "options": {
+        "cancel": "Close this and change nothing.",
+        "fork": {
+          "label": "Fork from here",
+          "description": "A separate design in a new chat, with the files from this point. It is not linked to the main chat."
+        },
+        "rewind": {
+          "label": "Rewind",
+          "description": "Continue this design from here in a new chat. Later decisions and file changes go away, and this chat becomes read-only."
+        },
+        "filesOnly": {
+          "label": "Files only",
+          "description": "Put the design files back to this point. The conversation and decisions stay."
+        }
+      },
+      "confirmFiles": {
+        "title": "Restore the design files?",
+        "description": "The design folder's files go back to this point. Your project files are not touched, and Undo rewind brings these back.",
+        "confirm": "Restore files"
+      }
     }
   },
   "permission": {
@@ -448,8 +485,16 @@
     "customTextareaPlaceholder": "Enter your custom response...",
     "noAnswer": "(no answer)",
     "notesPlaceholder": "Add notes (optional)...",
-    "showPreview": "Show preview",
-    "hidePreview": "Hide preview",
+    "previewTitle": "Preview",
+    "previewHint": "Preview available, Tab to read",
+    "design": {
+      "thumbnailAlt": "{label} at the primary width",
+      "thumbnailLoading": "Rendering {label}",
+      "thumbnailFailed": "The preview could not be rendered.",
+      "openLive": "Open live",
+      "openLiveAria": "Open live: {label}",
+      "openInBrowserAria": "Open in browser: {label}"
+    },
     "ariaLabel": "Question prompt"
   },
   "form": {
@@ -759,6 +804,7 @@
       "image": "Image",
       "subagents": "Subagents",
       "team": "Team",
+      "design": "Design",
       "core": "Core"
     },
     "unavailable": {
@@ -974,7 +1020,8 @@
       "memory-query-expansion": "Memory query expansion",
       "btw": "/btw side questions",
       "memory-audit": "Memory quality audit",
-      "commit-message": "Commit messages"
+      "commit-message": "Commit messages",
+      "design-parity": "Design parity checks"
     },
     "heatmap": {
       "title": "Activity by weekday and hour (local time)",
@@ -1370,7 +1417,8 @@
     "chipApproved": "Approved",
     "chipRevising": "Revising",
     "chipExited": "Exited",
-    "viewPlan": "View plan"
+    "viewPlan": "View plan",
+    "againstDesign": "approved · against design v{version}"
   },
   "welcome": {
     "sentMidStream": "↳ sent mid-stream",
@@ -1479,7 +1527,12 @@
       "title": "Rewind to before compaction?",
       "description": "A new panel opens with your full pre-compaction conversation. This session stays unchanged, and no files are touched. Any turns you took after this compaction are not carried over. The restored conversation may be near the context limit, so auto-compaction (if enabled) could re-trigger on your next message.",
       "confirm": "Open restored panel",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "design": {
+        "title": "Fork the design from before compaction?",
+        "description": "A new chat opens with your full pre-compaction conversation as a separate design, not linked to the main chat. No checkpoint was kept here, so it starts from a copy of the design's current files. This chat stays unchanged. The restored conversation may be near the context limit, so auto-compaction (if enabled) could re-trigger on your next message.",
+        "confirm": "Fork from here"
+      }
     }
   },
   "cacheMiss": {
@@ -1536,6 +1589,7 @@
     "input": "Input",
     "response": "Response",
     "openResultImage": "Open image {index} of {count}",
+    "openResultImageCaption": "Open image: {caption}",
     "loadingResultImages": "Loading images",
     "resultImagesUnavailable": "Image unavailable",
     "noInput": "No input provided",
@@ -1667,7 +1721,9 @@
     "tooLarge": "Image too large (max {n}MB)",
     "unsupportedType": "Unsupported image type. Use PNG, JPEG, GIF, or WebP",
     "resizeFailed": "Failed to process image for upload",
-    "noImagesInClipboard": "No images found in clipboard"
+    "noImagesInClipboard": "No images found in clipboard",
+    "previewScreenshot": "Preview screenshot",
+    "noComposer": "This chat takes no messages, so the screenshot was not attached"
   },
   "team": {
     "agentCount": "{n} agents",
@@ -2860,6 +2916,10 @@
         "label": "Web search",
         "description": "Let the agent search the web and read pages."
       },
+      "design": {
+        "label": "Design mode",
+        "description": "Let the agent open a linked design chat that drafts screens in ~/.damocles/designs before you plan. The design chat writes only its design folder."
+      },
       "imageGeneration": {
         "label": "Image generation",
         "description": "Let the agent create images with an OpenRouter model, billed to your OpenRouter key."
@@ -3315,5 +3375,394 @@
     "waiting": "Waiting for the agents on {host} to finish",
     "switchWhenIdle": "Switch when they finish",
     "switchNow": "Switch now"
+  },
+  "design": {
+    "markup": {
+      "card": "Markup {id} sent to the designer",
+      "cardTitle": "Markup {id}",
+      "pins": "{n} pin | {n} pins",
+      "strokes": "{n} stroke | {n} strokes",
+      "cardOpen": "Open {file}",
+      "cardImage": "Marked-up preview {id}",
+      "pinChange": "Pin {n}, change",
+      "pinNote": "Pin {n}, note",
+      "strokeArrow": "Arrow",
+      "strokeBox": "Box",
+      "strokePen": "Pen stroke",
+      "noElement": "no element",
+      "state": "state {state}",
+      "marks": "Marks of {id}"
+    },
+    "mode": {
+      "label": "Design",
+      "tooltip": "Design chats write only their design folder."
+    },
+    "start": {
+      "opening": "Opening design chat…",
+      "opened": "Design chat opened",
+      "reopened": "Design chat reopened",
+      "open": "Open design chat",
+      "finished": "Finished · v{version}",
+      "failed": "The design chat did not open",
+      "draft": "Draft"
+    },
+    "result": {
+      "title": "Design finished · v{version}",
+      "screens": "{n} screen | {n} screens",
+      "decisions": "{n} decision | {n} decisions",
+      "checkPassed": "check passed",
+      "warnings": "{n} warning | {n} warnings",
+      "decisionsLabel": "Decisions",
+      "warningsLabel": "Warnings",
+      "changedSince": "Changed since v{version}",
+      "openDesignChat": "Open design chat",
+      "designMd": "design.md",
+      "continue": "Continue",
+      "continueAria": "Continue with design v{version}",
+      "updatedTitle": "Design updated · v{from} → v{version}",
+      "updatedTitleFirst": "Design updated · v{version}",
+      "journeysPassed": "journeys passed",
+      "journeysLabel": "Journeys",
+      "journeyWaiver": "no interactive controls, so no journey needed",
+      "journeyUntested": "untested:",
+      "journeyComplete": "nothing listed as untested"
+    },
+    "planStrip": {
+      "label": "Linked design",
+      "records": "approval records v{version}"
+    },
+    "versionPrompt": {
+      "title": "The design changed after you approved the plan",
+      "approvedAgainst": "The plan was approved against v{version}.",
+      "approvedUnversioned": "The plan was approved before the design had a version.",
+      "nowList": "The design is now v{version}:",
+      "now": "The design is now v{version}.",
+      "changes": "Changes in v{version}",
+      "replan": "Update the plan and re-approve",
+      "finishFirst": "Finish v{version} first",
+      "finishFirstUnversioned": "Finish the approved plan first"
+    },
+    "approval": {
+      "title": "The design is ready for your approval",
+      "subtitle": "Approving makes a version and sends it to the main chat.",
+      "subtitleNoParent": "Approving makes a version. This design has no main chat to send it to.",
+      "details": "What you are approving",
+      "firstVersion": "This will be the design's first version.",
+      "noChanges": "No screen or decision changed.",
+      "approve": "Approve and send to main chat",
+      "approveNoParent": "Approve the version",
+      "requestChanges": "Request changes",
+      "stop": "Stop",
+      "noteLabel": "What should the designer change?",
+      "notePlaceholder": "Describe the changes you want…",
+      "sendNote": "Send to the designer"
+    },
+    "header": {
+      "label": "Design",
+      "parentChat": "Main chat",
+      "openParent": "Open the main chat: {title}",
+      "noParent": "No main chat",
+      "folderFiles": "Files in {folder}",
+      "filesLoading": "Loading files…",
+      "filesEmpty": "No files yet",
+      "filesFailed": "Could not list the design's files.",
+      "openFile": "Open {file}",
+      "decisions": "Decisions",
+      "noDecisions": "No decisions yet",
+      "draft": "Draft",
+      "version": "v{version}",
+      "off": "Design mode is off",
+      "edited": "v{version} · edited"
+    },
+    "browser": {
+      "open": "Open in browser",
+      "screens": "Screens",
+      "noScreens": "No screens yet",
+      "openScreen": "Open {file} in the browser"
+    },
+    "preview": {
+      "open": "Open preview",
+      "openScreen": "Open {file} in the preview tab"
+    },
+    "brief": {
+      "title": "Request from the main chat",
+      "reopened": "New request from the main chat"
+    },
+    "decision": {
+      "chip": "{id} {title}: {chosen}",
+      "source": {
+        "question": "From a question",
+        "chat": "From the chat",
+        "markup": "From markup",
+        "tweak": "From a tweak",
+        "reference": "From a reference",
+        "brief": "From a brief"
+      },
+      "supersedes": "replaces {id}",
+      "sourceRef": {
+        "tweak": "From tweak {ref}",
+        "reference": "From reference {reference} · {element}"
+      }
+    },
+    "tools": {
+      "inventory": "Inventory",
+      "extractTokens": "Extract tokens",
+      "importAsset": "Import asset",
+      "recordDecision": "Record decision",
+      "screenshot": "Screenshot",
+      "loadDesignSkill": "Load design skill",
+      "designCheck": "Design check",
+      "startDesign": "Start design",
+      "finishDesign": "Finish design",
+      "category": {
+        "components": "Components",
+        "tokens": "Tokens",
+        "breakpoints": "Breakpoints",
+        "types": "Types",
+        "screens": "Screens"
+      },
+      "tokenCount": "{n} token | {n} tokens",
+      "breakpoints": "Breakpoints",
+      "fonts": "Fonts",
+      "previewJourney": "Preview journey",
+      "declareTweaks": "Declare tweaks",
+      "mapReference": "Map reference",
+      "designParity": "Design parity",
+      "moreRefs": "{n} more"
+    },
+    "check": {
+      "errors": "{n} error | {n} errors",
+      "noErrors": "0 errors at {widths}",
+      "noErrorsStatic": "0 errors",
+      "widths": "{n} width | {n} widths",
+      "errorsLabel": "Errors",
+      "warningsLabel": "Warnings",
+      "footer": "Checked {attributes} against inventory.json and {tokens}, plus {hints}, at {widths}. No model call.",
+      "footerStatic": "Checked {attributes} against inventory.json and {tokens}, plus {hints}. No model call.",
+      "attributes": "{n} attribute | {n} attributes",
+      "tokens": "{n} token | {n} tokens",
+      "hints": "{n} skill hint | {n} skill hints",
+      "hint": "Skill hint",
+      "atBreakpoint": "{breakpoint} · {width} px",
+      "atWidth": "{width} px",
+      "rule": {
+        "ds": {
+          "component-known": "Unknown component",
+          "variant-known": "Unknown variant",
+          "bind-known": "Unknown binding",
+          "decision-known": "Unknown decision",
+          "new-cites-decision": "New element without a decision",
+          "hidden-required": "Required field hidden at a width"
+        },
+        "tokens": {
+          "color": "Color not from a token",
+          "spacing": "Spacing not from a token",
+          "radius": "Radius not from a token",
+          "unknown-var": "Unknown token",
+          "redefined": "Token set to a literal"
+        },
+        "screen": {
+          "states": "Undeclared state",
+          "size": "Screen too large"
+        },
+        "design": {
+          "frontmatter": "design.md frontmatter"
+        },
+        "fidelity": {
+          "static-no-scripts": "Script in a static design"
+        },
+        "links": {
+          "no-javascript": "javascript: link"
+        },
+        "net": {
+          "no-external": "External request"
+        },
+        "assets": {
+          "local-only": "Asset outside the design"
+        },
+        "a11y": {
+          "control-name": "Control without a name",
+          "input-label": "Field without a label",
+          "img-alt": "Image without alt text"
+        },
+        "layout": {
+          "overflow": "Wider than the viewport",
+          "viewport-font": "Font sized by the viewport",
+          "fixed-width": "Fixed width"
+        },
+        "journey": {
+          "required": "Journey missing"
+        },
+        "states": {
+          "empty-declared": "Empty state not declared",
+          "empty-action": "Empty state without an action",
+          "loading-declared": "Loading state not declared"
+        }
+      },
+      "more": "{n} more on this screen"
+    },
+    "screenshot": {
+      "outline": "This model reads no images, so it got a text outline of each width instead.",
+      "outlineArg": "text outline · {n} width | text outline · {n} widths"
+    },
+    "finish": {
+      "finished": "Design v{version} finished",
+      "reused": "No change since v{version}",
+      "refused": "Finish refused",
+      "changesRequested": "Changes requested",
+      "changesRequestedNote": "No version was made. The designer keeps working on your note.",
+      "yourNote": "Your note",
+      "stopped": "Stopped without a version",
+      "stoppedNote": "No version was made. The designer waits for your next message.",
+      "cancelled": "Approval closed",
+      "cancelledNote": "The approval closed without an answer, so no version was made.",
+      "delivery": {
+        "live": "Sent to the main chat",
+        "queued": "The main chat gets it when its turn settles",
+        "notified": "The main chat gets it when it opens",
+        "no-parent": "No main chat will receive it"
+      }
+    },
+    "sessionLabel": "Design chat",
+    "superseded": {
+      "title": "This design continues in another chat.",
+      "note": "This chat is read-only now.",
+      "open": "Open the current design chat"
+    },
+    "journey": {
+      "step": {
+        "fill": "Type {value} into {target}",
+        "clear": "Clear {target}",
+        "select": "Choose {value} in {target}",
+        "click": "Click {target}",
+        "press": "Press {key} in {target}",
+        "visible": "{target} is visible",
+        "hidden": "{target} is hidden",
+        "textContains": "{target} contains {value}",
+        "valueEquals": "{target} has the value {value}"
+      },
+      "target": {
+        "role": "{role} {name}",
+        "label": "field {name}",
+        "placeholder": "field with placeholder {name}",
+        "text": "text {name}"
+      },
+      "quoted": "“{text}”",
+      "empty": "(empty)",
+      "running": "Running the journey at each journey width…",
+      "widths": "Journey widths",
+      "counterAria": "{passed} of {total} steps passed",
+      "stepsLabel": "Journey steps",
+      "state": {
+        "pending": "waiting to run",
+        "waiting": "result coming",
+        "active": "running",
+        "pass": "passed",
+        "fail": "failed",
+        "notRun": "not run"
+      },
+      "hiddenAt": "Hidden at {width}",
+      "failure": {
+        "hidden": "No visible element matched",
+        "ambiguous": "More than one element matched",
+        "covered": "Another element covers the target",
+        "notEditable": "The target takes no typed value or option",
+        "noOption": "No option has that value",
+        "expectation": "The check did not hold within {seconds} s",
+        "error": "The step failed"
+      },
+      "untested": "Untested",
+      "outline": "This model reads no images, so it got a text outline of each width's page.",
+      "replay": "Replay in preview",
+      "replaying": "Replaying…",
+      "replayFailed": "The replay could not run.",
+      "footer": "Fresh page per width · {steps} of {max} steps"
+    },
+    "tweaks": {
+      "locked": "Locked by decision",
+      "lockedTitle": "Settled by {id}: {token}",
+      "stops": "{label} stops"
+    },
+    "reference": {
+      "title": "Reference {id}",
+      "savedAs": "saved by core as {file}",
+      "thumbnail": "Reference image {id}",
+      "open": "Open {file}",
+      "element": "Element",
+      "mapsTo": "Maps to",
+      "status": "Status",
+      "unmapped": "Nothing in the app",
+      "statusName": {
+        "mapped": "Mapped",
+        "needsDecision": "Needs decision",
+        "out": "Out"
+      },
+      "count": {
+        "mapped": "{n} mapped | {n} mapped",
+        "needsDecision": "{n} needs a decision | {n} need a decision",
+        "out": "{n} out | {n} out"
+      }
+    },
+    "parity": {
+      "running": "Comparing the app with the design at each width…",
+      "caption": "Parity of {url} with {screen}, per width",
+      "width": "Width",
+      "score": "Score",
+      "status": "Status",
+      "scoreAria": "{passes} of {total} checks passed",
+      "weakestAria": "Lowest score: {passes} of {total} checks passed",
+      "failedCount": "{n} failed check | {n} failed checks",
+      "failedAt": "Failed checks at {width}",
+      "imageCaption": "{width} · {source}",
+      "noImages": "This chat's model reads no images, so the result carries no captures; the background model judged them.",
+      "source": {
+        "design": "design",
+        "app": "app"
+      },
+      "footer": "{n} fixed yes/no checks per width. The score counts the passes; the judge model never sets it.",
+      "statusName": {
+        "verified": "Verified",
+        "needs_review": "Needs review",
+        "needs_iteration": "Needs iteration",
+        "failed": "Failed"
+      },
+      "dimension": {
+        "layout": "Layout",
+        "color": "Color",
+        "typography": "Typography",
+        "content": "Content",
+        "components": "Components"
+      },
+      "check": {
+        "layout": {
+          "column_count_match": "Column count",
+          "region_positions_match": "Region positions",
+          "hierarchy_preserved": "Visual hierarchy"
+        },
+        "color": {
+          "accent_color_match": "Accent color",
+          "palette_consistency_match": "Palette"
+        },
+        "typography": {
+          "font_family_match": "Font family",
+          "heading_hierarchy_match": "Heading scale"
+        },
+        "content": {
+          "text_labels_present": "Text labels",
+          "all_sections_present": "Sections"
+        },
+        "components": {
+          "repeated_pattern_count_match": "Repeated items",
+          "component_structure_match": "Component anatomy",
+          "icon_motif_match": "Icon style"
+        }
+      }
+    },
+    "change": {
+      "screenAdded": "{screen} added",
+      "screenChanged": "{screen} changed",
+      "screenRemoved": "{screen} removed",
+      "decisionAdded": "{id} {title} · {chosen}"
+    }
   }
 }

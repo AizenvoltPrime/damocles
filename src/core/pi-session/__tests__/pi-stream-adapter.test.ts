@@ -271,8 +271,8 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'partial', phase: 'text', text: 'Hello there!' },
       { type: 'toolStreaming', name: 'Read', input: { file_path: '/a.ts' } },
       { type: 'toolPending' },
-      { type: 'toolCompleted', toolName: 'Read', result: 'file contents' },
       { type: 'toolMetadata' },
+      { type: 'toolCompleted', toolName: 'Read', result: 'file contents' },
       { type: 'assistant' },
       { type: 'tokenUsageUpdate', inputTokens: 100, cacheReadTokens: 5, cacheCreationTokens: 3 },
       {
@@ -830,8 +830,8 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result, isError: true, durationMs: 812 });
 
     expect(out).toEqual([
-      { type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'Command aborted', durationMs: 812 },
       { type: 'toolMetadata', toolUseId: 't1', metadata: { damoclesCancelled: true } },
+      { type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'Command aborted', durationMs: 812 },
     ]);
   });
 
@@ -882,7 +882,8 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     out.length = 0;
     listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true } }, isError: true, durationMs: 90 });
 
-    expect(out.map((m) => m.type)).toEqual(['toolCompleted', 'toolMetadata']);
+    // The details land first, so the card never shows the call ended without its cancelled marker.
+    expect(out.map((m) => m.type)).toEqual(['toolMetadata', 'toolCompleted']);
   });
 
   it("reports pi's measured execution time, not the time since tool_execution_start, and none for a call that never ran", () => {

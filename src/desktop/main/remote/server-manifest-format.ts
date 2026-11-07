@@ -1,7 +1,7 @@
-// The server packages' manifest format, which app main reads and scripts/verify-desktop-package.mjs checks in a release
+// The server packages' manifest format, which app main reads and scripts/verify-desktop-package.ts checks in a release
 // app; no imports, so a script loads it with Node's type stripping.
 
-// scripts/server-targets.mjs SERVER_TARGETS; server-manifest.test.ts fails on drift
+// scripts/server-targets.ts SERVER_TARGETS; server-manifest.test.ts fails on drift
 export const SERVER_TARGETS = ['linux-x64', 'linux-arm64', 'alpine-x64', 'alpine-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'] as const;
 export type ServerTarget = (typeof SERVER_TARGETS)[number];
 
@@ -10,7 +10,7 @@ export interface ServerPackage {
   readonly file: string;
   readonly sha256: string;
   readonly size: number;
-  // `<version>+<build>` (scripts/build-server.mjs packageBuild): the host's install folder and the running server's version
+  // `<version>+<build>` (scripts/build-server.ts packageBuild): the host's install folder and the running server's version
   readonly serverVersion: string;
 }
 

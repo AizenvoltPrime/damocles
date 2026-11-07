@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
-import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.mjs';
+import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.ts';
 import { windowsTerminalEnvironment } from '../../src/desktop/main/workspace/windows-terminal-environment';
 import { coreLog, launchDesktop } from './support/app';
 import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE } from './support/hermetic';

@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
-import { PROCESS_STARTERS_CLI, PROCESS_STARTERS_CORE, PROCESS_STARTERS_DAEMON, PROCESS_STARTERS_DESKTOP } from '../../eslint.config.mjs';
+import { PROCESS_STARTERS_CLI, PROCESS_STARTERS_CORE, PROCESS_STARTERS_DAEMON, PROCESS_STARTERS_DESKTOP, PROCESS_STARTERS_MAIN } from '../../eslint.config.mjs';
 
 /**
  * A process start blocks the thread that makes it (CreateProcessW), so the UI thread, Damocles Core's thread and the extension
@@ -208,12 +208,21 @@ describe('the files allowed to start processes', () => {
     for (const file of ['src/desktop/cli/cli-remote.ts', 'src/desktop/cli/cli-protocol.ts']) expect(await processFindings(file)).toBe(PROCESS_FINDINGS);
   }, 60_000);
 
+  it.each(PROCESS_STARTERS_MAIN)('%s, the one file of main that starts a process, starts the design renderer and keeps the core bans of main', async (file) => {
+    expect(await processFindings(file)).toBe(0);
+    expect((await findings("import { a } from '../../../core/memory/memory-service';\nexport const probe = a;\n", file)).length).toBe(1);
+  }, 60_000);
+
+  it('rejects a child_process import in any other design file of main', async () => {
+    for (const file of ['src/desktop/main/design/design-renderer-host.ts', 'src/desktop/main/design/design-renderer.ts', 'src/desktop/main/design/design-runner.ts']) expect(await processFindings(file)).toBe(PROCESS_FINDINGS);
+  }, 60_000);
+
   it('rejects a child_process import in any other daemon file', async () => {
     for (const file of ['src/desktop/daemon/connections.ts', 'src/desktop/daemon/attach.ts', 'src/desktop/daemon/serve.ts']) expect(await processFindings(file)).toBe(PROCESS_FINDINGS);
   }, 60_000);
 
   it('lists only files and folders that exist', () => {
-    const paths = [...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_DAEMON, ...PROCESS_STARTERS_CLI, ...PROCESS_STARTERS_DESKTOP.map((glob: string) => glob.replace(/\/\*\*\/\*\.ts$/, ''))];
+    const paths = [...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_DAEMON, ...PROCESS_STARTERS_CLI, ...PROCESS_STARTERS_MAIN, ...PROCESS_STARTERS_DESKTOP.map((glob: string) => glob.replace(/\/\*\*\/\*\.ts$/, ''))];
     expect(paths.filter((file: string) => !existsSync(join(ROOT, file)))).toEqual([]);
   });
 

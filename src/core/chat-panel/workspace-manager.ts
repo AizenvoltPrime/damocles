@@ -218,12 +218,13 @@ export class WorkspaceManager {
    * Returns null if the path escapes that folder (path traversal defense).
    */
   resolveWorkspaceFilePath(filePath: string, folder: FolderTarget): string | null {
-    if (!folder.fsPath) return null;
-    const absolute = path.isAbsolute(filePath)
-      ? path.resolve(filePath)
-      : path.resolve(folder.fsPath, filePath);
-    const workspaceRoot = path.resolve(folder.fsPath);
-    const relative = path.relative(workspaceRoot, absolute);
+    return folder.fsPath ? this.resolveFileWithin(filePath, folder.fsPath) : null;
+  }
+
+  /** Resolves a webview-supplied file path to an absolute path contained in `root`, or null when it escapes it. */
+  resolveFileWithin(filePath: string, root: string): string | null {
+    const absolute = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(root, filePath);
+    const relative = path.relative(path.resolve(root), absolute);
     if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
     return absolute;
   }

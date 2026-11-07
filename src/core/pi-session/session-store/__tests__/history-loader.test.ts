@@ -167,6 +167,34 @@ describe('reconstructMessages — compaction', () => {
   });
 });
 
+describe('reconstructMessages — AskUserQuestion previews', () => {
+  const ask = (preview: unknown): SessionEntry => ({
+    id: 'a1',
+    type: 'message',
+    message: {
+      role: 'assistant',
+      content: [{
+        type: 'toolCall',
+        id: 'q1',
+        name: 'AskUserQuestion',
+        arguments: { questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A', description: 'a', preview }, { label: 'B', description: 'b' }] }] },
+      }],
+    },
+  }) as unknown as SessionEntry;
+  const firstOption = (branch: SessionEntry[]) => {
+    const tool = reconstructMessages(branch).messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []))[0]!;
+    return (tool.input as { questions: Array<{ options: Array<Record<string, unknown>> }> }).questions[0]!.options[0];
+  };
+
+  it('shows a string preview an older session stored as that text in markdown', () => {
+    expect(firstOption([userMsg('u1', 'hi'), ask('<b>Two columns</b>')])).toEqual({ label: 'A', description: 'a', preview: { kind: 'markdown', content: '<b>Two columns</b>' } });
+  });
+
+  it('keeps a typed preview as it was stored', () => {
+    expect(firstOption([userMsg('u1', 'hi'), ask({ kind: 'markdown', content: '- one' })])).toEqual({ label: 'A', description: 'a', preview: { kind: 'markdown', content: '- one' } });
+  });
+});
+
 describe('reconstructMessages — reply effort', () => {
   const replyAt = (id: string, provider: string, model: string, thinkingLevel?: string): SessionEntry =>
     ({ id, type: 'message', message: { role: 'assistant', provider, model, ...(thinkingLevel ? { thinkingLevel } : {}), content: [{ type: 'text', text: id }] } }) as unknown as SessionEntry;
@@ -554,6 +582,44 @@ describe('loadPiSessionHistory — mid-conversation system message', () => {
     const replays = posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
     expect(replays.map((r) => r.promptIndex)).toEqual([0, 1]);
     expect(replays.map((r) => r.content)).toEqual(['first prompt', 'second prompt']);
+  });
+
+  it('replays a preview markup\'s message with its F<n>, from the entry that names its user entry (PD-12)', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'Markup F1 on screens/S1.html at xl · 1280 · default:\nPin 1 (change) on ui/Table: Taller rows'),
+      { id: 'm1', type: 'custom', customType: 'damocles.design-markup', data: { userEntryId: 'u1', feedbackId: 'F1' } } as unknown as SessionEntry,
+      assistantMsg('a1', 'On it.'),
+      userMsg('u2', 'thanks'),
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-markup', (m) => posts.push(m));
+    const replays = posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+    expect(replays.map((r) => r.designMarkup)).toEqual([{ feedbackId: 'F1' }, undefined]);
+  });
+
+  it('replays a markup\'s marks from its entry, as the live echo carried them', async () => {
+    const markup = { file: 'screens/S1.html', breakpoint: 'xl', width: 1280, state: 'default', marks: [{ type: 'pin', n: 1, kind: 'change', element: 'ui/Table: rows', text: 'Taller rows' }] };
+    hoisted.branch = [
+      userMsg('u1', 'Markup F1 on screens/S1.html at xl · 1280 · default:\nPin 1 (change) on ui/Table: rows: Taller rows'),
+      { id: 'm1', type: 'custom', customType: 'damocles.design-markup', data: { userEntryId: 'u1', feedbackId: 'F1', markup } } as unknown as SessionEntry,
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-markup-marks', (m) => posts.push(m));
+    const replay = posts.find((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+    expect(replay?.designMarkup).toEqual({ feedbackId: 'F1', markup });
+  });
+
+  it('replays the references a message saved, from the entry that names its user entry (PD-40)', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'Like this one'),
+      { id: 'r1', type: 'custom', customType: 'damocles.design-references', data: { userEntryId: 'u1', references: [{ id: 'R1', image: 'references/R1.png', imageIndex: 0 }] } } as unknown as SessionEntry,
+      assistantMsg('a1', 'Mapping it.'),
+      userMsg('u2', 'thanks'),
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-references', (m) => posts.push(m));
+    const replays = posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+    expect(replays.map((r) => r.designReferences)).toEqual([[{ id: 'R1', image: 'references/R1.png', imageIndex: 0 }], undefined]);
   });
 });
 
@@ -1452,5 +1518,19 @@ describe('loadPiSessionHistory — usage totals', () => {
       usage: { totalInputTokens: 2, totalOutputTokens: 8, cacheReadTokens: 260, cacheCreationTokens: 0, costUsd: 0.375 },
       numTurns: 1,
     });
+  });
+});
+
+describe('reconstructMessages — design cards', () => {
+  it('replays a design result and a brief at their place in the branch, marked replayed', () => {
+    const at = (id: string, fields: Record<string, unknown>) => ({ id, parentId: null, timestamp: '2026-01-01T00:00:00.000Z', ...fields }) as unknown as SessionEntry;
+    const branch = [
+      at('u1', { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'design it' }] } }),
+      at('r1', { type: 'custom_message', customType: 'damocles-design-result', content: 'x', display: true, details: { designId: 'contacts-abcd1234', version: 1, title: 'Contacts' } }),
+      at('b1', { type: 'custom_message', customType: 'damocles-design-brief', content: 'x', display: true, details: { briefId: 'b-1', text: 'Add a filter', reopened: true } }),
+      at('o1', { type: 'custom_message', customType: 'some-other', content: 'x', display: true, details: {} }),
+    ];
+    const kinds = reconstructMessages(branch).messages.map((m) => (m.kind === 'design' ? `${m.message.type}:${m.message.entryId}:${String(m.message.replayed)}` : m.kind));
+    expect(kinds).toEqual(['user', 'designResult:r1:true', 'designBrief:b1:true']);
   });
 });

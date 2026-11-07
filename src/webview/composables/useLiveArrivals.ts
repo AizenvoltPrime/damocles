@@ -8,6 +8,7 @@ export const ARRIVAL_MS = 600;
 const ARRIVING_TYPES: ReadonlySet<VirtualItem['type']> = new Set([
   'user-message', 'tool-call', 'thinking-block', 'streaming-text', 'error-message', 'refusal-message',
   'background-label', 'compact-marker', 'cache-miss-notice', 'compaction-aborted-notice', 'thinking-dropped-notice',
+  'design-result', 'design-brief',
 ]);
 
 /**
@@ -25,7 +26,9 @@ export function useLiveArrivals(items: Ref<VirtualItem[]>): ReadonlySet<string> 
     for (const item of list) {
       if (seen.has(item.id)) continue;
       seen.add(item.id);
-      if (!seeded || item.message.isReplay || !ARRIVING_TYPES.has(item.type)) continue;
+      // A design card follows a message it is not part of, so it says itself whether it was replayed.
+      const replayed = item.designCard ? !item.designCard.live : item.message.isReplay;
+      if (!seeded || replayed || !ARRIVING_TYPES.has(item.type)) continue;
       arriving.add(item.id);
       const timer = setTimeout(() => {
         timers.delete(timer);

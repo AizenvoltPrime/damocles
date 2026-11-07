@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StoredSession } from '../../../shared/types/session';
-import { MAX_CHAT_TITLE_CHARS, chatTitle, storedTitle } from '../chat-title';
+import { MAX_CHAT_TITLE_CHARS, chatTitle, panelTitle, storedTitle } from '../chat-title';
 
 const row = (id: string, preview: string): StoredSession => ({ id, timestamp: 0, preview });
 
@@ -50,5 +50,13 @@ describe('storedTitle', () => {
     expect(title.endsWith('…')).toBe(true);
     expect(storedTitle({ preview: 'a\tb  c' })).toBe('a b c');
     expect(storedTitle({ preview: 'x'.repeat(MAX_CHAT_TITLE_CHARS) })).toBe('x'.repeat(MAX_CHAT_TITLE_CHARS));
+  });
+});
+
+describe('panelTitle', () => {
+  it('shows a core\'s panel title on one line, its hidden characters escaped, clipped as a row title', () => {
+    expect(panelTitle('Design · Contacts list')).toBe('Design · Contacts list');
+    expect(panelTitle('Design ·\n Contacts\u202e list ')).toBe('Design · Contacts\\u{202E} list');
+    expect(panelTitle(`Design · ${'x'.repeat(300)}`)).toHaveLength(MAX_CHAT_TITLE_CHARS);
   });
 });

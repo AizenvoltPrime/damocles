@@ -41,7 +41,7 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
     expect(paths.workerEntry('voiceExtract')).toBe(path.join(EXT, 'dist', 'voice-extract-worker.js'));
   });
 
-  it('sentinel: the sibling of dist/extension.js when packaged, and <repo>/dist/sentinel.js from source', () => {
+  it('sentinel: the sibling of dist/extension.cjs when packaged, and <repo>/dist/sentinel.js from source', () => {
     const packagedDirname = path.join(EXT, 'dist');
     expect(paths.workerEntry('sentinel')).toBe(path.join(packagedDirname, 'sentinel.js'));
     const sourceDirname = path.join(REPO_ROOT, 'src', 'extension', 'pi-session', 'tools');
@@ -50,8 +50,8 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
     );
   });
 
-  it('every worker entry is an outfile esbuild.config.mjs writes', () => {
-    const outfiles = [...readFileSync(path.join(REPO_ROOT, 'esbuild.config.mjs'), 'utf8').matchAll(/outfile: '([^']+)'/g)].map((m) => m[1]);
+  it('every worker entry is an outfile esbuild.config.ts writes', () => {
+    const outfiles = [...readFileSync(path.join(REPO_ROOT, 'esbuild.config.ts'), 'utf8').matchAll(/outfile: '([^']+)'/g)].map((m) => m[1]);
     for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const) {
       expect(outfiles).toContain(path.relative(EXT, paths.workerEntry(name)).split(path.sep).join('/'));
     }

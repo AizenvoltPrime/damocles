@@ -205,7 +205,7 @@ test('slice 7 captures', async ({ foreground: _foreground, home, launch }) => {
     await shell.getByTestId('editor-tab').filter({ hasText: 'feature_module_3.ts' }).click();
     await shell.mouse.move(5, 300);
     // At rest the slider has faded out (500 ms after the pointer left, then an 800 ms fade).
-    await expect(shell.getByTestId('editor-tab-scrollbar')).not.toHaveClass(/editor-tab-scrollbar-shown/);
+    await expect(shell.getByTestId('editor-tab-scrollbar')).not.toHaveClass(/d-overflow-scrollbar-shown/);
     await shot(shell, t('tab-strip-overflow-rest'), shell.getByTestId('editor-pane').locator('header'));
     await shell.getByTestId('editor-tabs').hover();
     await shot(shell, t('tab-strip-overflow-hover-slider'), shell.getByTestId('editor-pane').locator('header'));

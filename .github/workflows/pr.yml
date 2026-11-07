@@ -35,7 +35,7 @@ jobs:
 
       # The wire's compatibility check (src/remote/protocol-version.ts): the committed snapshot matches the contracts.
       - name: Protocol compatibility
-        run: node scripts/protocol-compat.mjs --check
+        run: node scripts/protocol-compat.ts --check
 
       # The contracts against the base branch's committed snapshot, so a regenerated snapshot cannot hide a breaking change.
       - name: Protocol compatibility with the base branch
@@ -49,10 +49,14 @@ jobs:
             exit 0
           fi
           git show "$snapshot" > "$RUNNER_TEMP/base-protocol-snapshot.json"
-          node scripts/protocol-compat.mjs --against "$RUNNER_TEMP/base-protocol-snapshot.json"
+          node scripts/protocol-compat.ts --against "$RUNNER_TEMP/base-protocol-snapshot.json"
 
       - name: Unit tests
         run: npm test
+
+      # PreviewJourney's committed contacts spec against its page, in the Google Chrome the ubuntu runner image ships (D91).
+      - name: Journey spec
+        run: npm run test:journey
 
   # The only Vitest run on Windows: every tree with a Windows-only test, such as win32-pipe.test.ts or cmd-scripts.test.ts
   # (scripts/__tests__/windows-unit-scope.test.ts fails on a Windows-only test outside these folders).
@@ -188,7 +192,7 @@ jobs:
       # The Alpine package's node-pty is compiled against musl in the pinned Alpine build image.
       - name: Build the Linux and Alpine server packages
         timeout-minutes: 20
-        run: node scripts/test-remote.mjs --build-server-packages linux-x64,alpine-x64
+        run: node scripts/test-remote.ts --build-server-packages linux-x64,alpine-x64
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

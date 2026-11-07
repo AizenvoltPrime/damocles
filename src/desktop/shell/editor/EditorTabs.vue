@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, inject, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
-import { CloudOff, CloudUpload, FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
+import { CloudOff, CloudUpload, FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, Monitor, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellHost, ShellProject } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { useSlidingIndicator, type IndicatorBox } from '@/composables/useSlidingIndicator';
 import { remPx } from '@/composables/useRemPx';
+import { useOverflowStrip } from '@/composables/useOverflowStrip';
 import SlidingIndicator from '@/components/SlidingIndicator.vue';
+import OverflowSlider from '@/components/OverflowSlider.vue';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
 import FileIcon from '../components/FileIcon.vue';
@@ -69,6 +71,7 @@ watch(() => [store.state.value?.activeTabId, store.tabs.value.map((tab) => tab.i
 
 const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; color: string }>> = {
   browser: { icon: Globe, color: 'var(--d-info)' },
+  designPreview: { icon: Monitor, color: 'var(--d-design)' },
   diff: { icon: GitCompare, color: 'var(--d-warning)' },
   changes: { icon: FileDiff, color: 'var(--d-warning)' },
   settings: { icon: Settings2, color: 'var(--d-muted)' },
@@ -160,33 +163,9 @@ const isMarkdown = (tab: ShellEditorTab): boolean => tab.kind === 'markdownPrevi
 const fileOf = (tab: ShellEditorTab): FileRef | undefined =>
   (tab.projectKey !== undefined && tab.relativePath !== undefined ? { projectKey: tab.projectKey, relativePath: tab.relativePath } : undefined);
 
-// Overflow: the strip scrolls sideways and fades the edge that has more tabs beyond it.
-const fadeStart = ref(false);
-const fadeEnd = ref(false);
-// VS Code's tab scrollbar (multiEditorTabsControl.ts, base/browser/ui/scrollbar): a 3px slider over the strip's bottom edge,
-// taking no layout height, shown while the strip is hovered or scrolls and faded out 500 ms after (HIDE_TIMEOUT).
-const SLIDER_HIDE_MS = 500;
-const SLIDER_MIN_REM = 1.25;
-const slider = ref<{ left: number; width: number } | null>(null);
-const sliderShown = ref(false);
-const hovered = ref(false);
-const sliderDrag = ref<{ pointerId: number; startX: number; startScroll: number } | null>(null);
-let hideTimer: ReturnType<typeof setTimeout> | undefined;
-
-function measureOverflow(): void {
-  const element = strip.value;
-  if (!element) return;
-  fadeStart.value = element.scrollLeft > 1;
-  fadeEnd.value = element.scrollLeft + element.clientWidth < element.scrollWidth - 1;
-  const { scrollLeft, clientWidth, scrollWidth } = element;
-  if (scrollWidth <= clientWidth + 1) {
-    slider.value = null;
-    return;
-  }
-  const width = Math.max(remPx(SLIDER_MIN_REM), (clientWidth * clientWidth) / scrollWidth);
-  slider.value = { width, left: ((clientWidth - width) * scrollLeft) / (scrollWidth - clientWidth) };
-}
-useResizeObserver([strip, content], measureOverflow);
+// Overflow: the strip scrolls sideways under VS Code's overlay slider and fades the edge that has more tabs beyond it.
+const overflow = useOverflowStrip(strip, content);
+const { fadeClass, onScroll, onWheel, onPointerEnter, onPointerLeave } = overflow;
 // only a change of width can fold or unfold a chip, and each re-measure unfolds every chip for a frame
 let stripWidth: number | undefined;
 useResizeObserver(strip, (entries) => {
@@ -196,70 +175,14 @@ useResizeObserver(strip, (entries) => {
   stripResizes.value++;
 });
 
-function revealSlider(): void {
-  sliderShown.value = true;
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => {
-    if (!hovered.value && !sliderDrag.value) sliderShown.value = false;
-  }, SLIDER_HIDE_MS);
-}
-
-function onScroll(): void {
-  measureOverflow();
-  revealSlider();
-}
-
-function onPointerEnter(): void {
-  hovered.value = true;
-  sliderShown.value = true;
-  clearTimeout(hideTimer);
-}
-
-function onPointerLeave(): void {
-  hovered.value = false;
-  revealSlider();
-}
-
-// Dragging the slider moves the strip by the same share of its scroll width.
-function onSliderDown(event: PointerEvent): void {
-  const element = strip.value;
-  if (event.button !== 0 || !element) return;
-  event.preventDefault();
-  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-  sliderDrag.value = { pointerId: event.pointerId, startX: event.clientX, startScroll: element.scrollLeft };
-}
-
-function onSliderMove(event: PointerEvent): void {
-  const element = strip.value;
-  const drag = sliderDrag.value;
-  if (!element || !slider.value || drag?.pointerId !== event.pointerId) return;
-  const ratio = (element.scrollWidth - element.clientWidth) / Math.max(1, element.clientWidth - slider.value.width);
-  element.scrollLeft = drag.startScroll + (event.clientX - drag.startX) * ratio;
-}
-
-function onSliderUp(event: PointerEvent): void {
-  if (sliderDrag.value?.pointerId !== event.pointerId) return;
-  sliderDrag.value = null;
-  revealSlider();
-}
-onBeforeUnmount(() => clearTimeout(hideTimer));
-
-function onWheel(event: WheelEvent): void {
-  const element = strip.value;
-  if (!element || element.scrollWidth <= element.clientWidth || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-  event.preventDefault();
-  element.scrollLeft += event.deltaY;
-}
-
 function tabElement(tabId: string | undefined): HTMLElement | null {
   return tabId === undefined ? null : content.value?.querySelector<HTMLElement>(`[data-editor-tab][data-tab-id="${CSS.escape(tabId)}"]`) ?? null;
 }
 
 watch(() => store.state.value?.activeTabId, (tabId) => void nextTick(() => {
   tabElement(tabId ?? undefined)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  measureOverflow();
+  overflow.measure();
 }));
-onMounted(measureOverflow);
 
 async function select(tab: ShellEditorTab): Promise<void> {
   await store.activate(tab.id);
@@ -318,6 +241,13 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     item('reloadPage', t('editor.browser.menu.reload'), 'rotate-cw'),
     item('devTools', t('editor.browser.menu.devTools'), 'square-code'),
     item('copyUrl', t('editor.browser.menu.copyUrl'), 'copy', { disabled: isBlankPage(tab.browser.url) }),
+  ] : tab.designPreview ? [
+    ...closing,
+    item('openInBrowser', t('editor.designPreview.menu.openInBrowser'), 'arrow-up-right'),
+    item('focusOverlay', t('editor.menu.focusOverlay'), 'maximize-2'),
+    item('mention', t('editor.menu.mention'), 'at-sign', { disabled: !tab.designPreview.info }),
+    separator,
+    item('copyPath', t('editor.menu.copyPath'), 'copy', { disabled: !tab.designPreview.info }),
   ] : [
     ...closing,
     ...(isMarkdown(tab)
@@ -351,6 +281,8 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
   } else if (id === 'mention') await props.api.mentionTab(tab.id);
   else if (id === 'openTimeline' && tab.git) await props.api.scm.run({ op: 'openTimeline', repoId: tab.git.repoId, path: tab.git.path });
   else if (id === 'revealInFiles' && file) emit('revealInFiles', file);
+  // Main toasts an Open in browser failure itself, and refuses a preview that left the selected chat meanwhile.
+  else if (id === 'openInBrowser') await props.api.designPreviewAction({ tabId: tab.id, action: 'openInBrowser' }).catch((error: unknown) => console.error('[design preview] main refused Open in browser', error));
   // Main tells the user of a failure they should see; a refusal for a page that closed meanwhile leaves nothing to do.
   else if (id === 'reloadPage' || id === 'devTools' || id === 'copyUrl') await props.api.browserAction({ tabId: tab.id, action: id === 'reloadPage' ? 'reload' : id }).catch(() => undefined);
   else if (id === 'close' || id === 'closeOthers' || id === 'closeRight' || id === 'closeAll' || id === 'openPreview' || id === 'openSource' || id === 'openFile' || id === 'copyPath' || id === 'revealInExplorer') {
@@ -386,8 +318,8 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
       role="tablist"
       :aria-label="t('editor.tabsLabel')"
       data-testid="editor-tabs"
-      class="editor-tab-strip flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden"
-      :class="{ 'editor-tab-strip-fade-start': fadeStart, 'editor-tab-strip-fade-end': fadeEnd }"
+      class="d-overflow-strip flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden"
+      :class="fadeClass"
       @wheel="onWheel"
       @scroll="onScroll"
     >
@@ -556,23 +488,9 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
         />
       </div>
     </div>
-    <!-- VS Code's slider: no shadcn part draws an overlay scrollbar. Hidden from AT; the tabs are reached by arrow keys. -->
-    <div
-      v-if="slider"
-      aria-hidden="true"
+    <OverflowSlider
+      :strip="overflow"
       data-testid="editor-tab-scrollbar"
-      class="editor-tab-scrollbar pointer-events-none absolute inset-x-0 bottom-0 h-0.75"
-      :class="sliderShown || sliderDrag ? 'editor-tab-scrollbar-shown' : ''"
-    >
-      <div
-        class="editor-tab-slider pointer-events-auto absolute top-0 left-0 h-full"
-        :data-active="sliderDrag !== null || undefined"
-        :style="{ width: `${slider.width}px`, transform: `translateX(${slider.left}px)` }"
-        @pointerdown="onSliderDown"
-        @pointermove="onSliderMove"
-        @pointerup="onSliderUp"
-        @pointercancel="onSliderUp"
-      />
-    </div>
+    />
   </div>
 </template>

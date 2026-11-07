@@ -145,3 +145,122 @@ describe('PanelManager routes nothing a webview sent after its ready until the r
     expect(routedTypes()).toEqual(['ready', 'sendMessage', 'cancelSession']);
   });
 });
+
+describe('design chats (PD-1, PD-50)', () => {
+  const seed = { designId: 'contacts-abcd1234', title: 'Contacts', parentSessionId: 'parent-1', ruleSet: 'full' as const };
+
+  it('opens a design chat beside its parent, in the parent\'s folder, with its model but none of its permissions', async () => {
+    h = createHarness([folderEntry(A)]);
+    const parentHost = makeFakeHost();
+    const parentId = await h.manager.initializeHost(parentHost);
+    h.instance(parentId).permissionHandler.setPermissionMode('plan');
+    h.instance(parentId).permissionHandler.setDangerouslySkipPermissions(true);
+
+    const sessionId = await h.manager.showDesign({ sourcePanelId: parentId, seed });
+
+    const created = h.platform.window.panels.at(-1)!;
+    // a host lists the chat under this title until its stored name is listed
+    expect(created.options).toMatchObject({ kind: 'chat', parent: parentHost, title: 'Design · Contacts' });
+    const designPanelId = [...h.manager.getPanels().keys()].find((id) => id !== parentId)!;
+    const design = h.instance(designPanelId);
+    const session = design.session as unknown as FakeSession;
+    expect(session.designSeed).toEqual(seed);
+    expect(session.initializeEarly).toHaveBeenCalled();
+    expect(sessionId).toBe(session.currentSessionId);
+    expect(design.folder.key).toBe(h.instance(parentId).folder.key);
+    expect(design.permissionHandler.getPermissions()).toEqual({ permissionMode: 'default', dangerouslySkipPermissions: false });
+  });
+
+  it('publishes each design chat\'s state again when the stored chats change, so its header shows the main chat\'s current title', async () => {
+    h = createHarness([folderEntry(A)]);
+    const parentId = await h.manager.initializeHost(makeFakeHost());
+    await h.manager.showDesign({ sourcePanelId: parentId, seed });
+    const designPanelId = [...h.manager.getPanels().keys()].find((id) => id !== parentId)!;
+    const design = h.instance(designPanelId).session as unknown as FakeSession;
+    design.design = { role: () => undefined, ownLink: () => undefined, isDesignChat: () => true } as unknown as FakeSession['design'];
+    h.manager.republishDesignChats();
+    expect(design.publishDesignState).toHaveBeenCalledTimes(1);
+    expect((h.instance(parentId).session as unknown as FakeSession).publishDesignState).not.toHaveBeenCalled();
+  });
+
+  it('refuses a design chat for a parent that is not loaded', async () => {
+    h = createHarness([folderEntry(A)]);
+    await expect(h.manager.showDesign({ sourcePanelId: 'host-404', seed })).rejects.toThrow(/not loaded/);
+  });
+
+  it('shows the panel holding a session, else reopens it through the resume a session list click runs', async () => {
+    h = createHarness([folderEntry(A)]);
+    const host = makeFakeHost();
+    const reveal = vi.spyOn(host, 'reveal');
+    const panelId = await h.manager.initializeHost(host);
+    (h.instance(panelId).session as unknown as FakeSession).storedId = 'held-1';
+    expect(await h.manager.showSession('held-1', A)).toBe('shown');
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(await h.manager.showSession('gone-1', A)).toBe('missing');
+
+    const opening = h.manager.openStored('stored-1');
+    await tick();
+    const opened = h.platform.window.panels.at(-1)!;
+    opened.fireMessage({ type: 'ready', panelToken: 'tok' });
+    const openedId = await opening;
+    expect(h.routed.filter((r) => r.panelId === openedId).map((r) => r.message)).toContainEqual({ type: 'resumeSession', sessionId: 'stored-1' });
+  });
+
+  // New Session runs `newSession`; Reload runs `resetConversations` with `authFailureCleared`.
+  const resets: Array<[string, (manager: Harness['manager']) => Promise<void>, string]> = [
+    ['New Session', (manager) => manager.newSession(), 'sessionCleared'],
+    ['Reload', (manager) => manager.resetConversations({ type: 'authFailureCleared' }), 'authFailureCleared'],
+  ];
+
+  it.each(resets)('%s leaves a seeded design chat and a panel restored onto a stored design chat alone before either started, and resets a plain panel', async (_name, reset, cleared) => {
+    h = createHarness([folderEntry(A)]);
+    const plainHost = makeFakeHost();
+    const plainId = await h.manager.initializeHost(plainHost);
+    await h.manager.showDesign({ sourcePanelId: plainId, seed });
+    const restoredId = await h.manager.initializeHost(makeFakeHost());
+    const restored = h.instance(restoredId).session as unknown as FakeSession;
+    restored.storedId = 'stored-design';
+    restored.isDesignConversation.mockImplementation(async () => restored.storedId === 'stored-design');
+    const seeded = h.sessions.find((s) => s.designSeed !== undefined)!;
+    const plain = h.instance(plainId).session as unknown as FakeSession;
+
+    await reset(h.manager);
+
+    expect(seeded.reset).not.toHaveBeenCalled();
+    expect(restored.reset).not.toHaveBeenCalled();
+    expect(plain.reset).toHaveBeenCalledTimes(1);
+    expect(plainHost.posted).toContainEqual({ type: cleared });
+  });
+
+  it('New Session leaves a panel alone that started on a design chat, or closed, while its check read the file', async () => {
+    h = createHarness([folderEntry(A)]);
+    const startedHost = makeFakeHost();
+    const started = h.instance(await h.manager.initializeHost(startedHost)).session as unknown as FakeSession;
+    started.isDesignConversation.mockImplementation(async () => {
+      started.design = { ...started.design, isDesignChat: () => true } as FakeSession['design'];
+      return false;
+    });
+    const closingHost = makeFakeHost();
+    const closing = h.instance(await h.manager.initializeHost(closingHost)).session as unknown as FakeSession;
+    closing.isDesignConversation.mockImplementation(async () => {
+      closingHost.closeFromUser();
+      return false;
+    });
+
+    await h.manager.newSession();
+
+    expect(started.reset).not.toHaveBeenCalled();
+    expect(closing.reset).not.toHaveBeenCalled();
+    expect(startedHost.posted).not.toContainEqual({ type: 'sessionCleared' });
+  });
+
+  it('fixes a design chat\'s mode: no plan mode, whatever asks for it', async () => {
+    h = createHarness([folderEntry(A)]);
+    const panelId = await h.manager.initializeHost(makeFakeHost());
+    const instance = h.instance(panelId);
+    (instance.session as unknown as { design: unknown }).design = { role: () => ({ designId: 'x' }) };
+    await instance.permissionHandler.activatePlanMode();
+    expect(instance.permissionHandler.getPermissionMode()).toBe('default');
+    expect(instance.permissionHandler.modeFixed()).toBe(true);
+  });
+});

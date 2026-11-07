@@ -4,8 +4,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runProcess } from '../../../../../core/process-launcher';
 import { PROMPT_CANCELLED, type AskpassServer, type CredentialPrompt } from '../../../../../core/scm/askpass/askpass-server';
-// @ts-expect-error -- plain .mjs script, no types
-import { compileAskpassTrampoline } from '../../../../../../scripts/askpass-trampoline.mjs';
+import { compileAskpassTrampoline } from '../../../../../../scripts/askpass-trampoline.ts';
 import type { SshPrompt } from '../../../../preload/overlay-channels';
 import { attemptPrompt, createMainAskpassServer, mainAskpassPaths, parseHostKeyPrompt, secretKindOf, type AttemptPromptState } from '../ssh-askpass';
 

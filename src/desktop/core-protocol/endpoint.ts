@@ -1,6 +1,6 @@
 import type { Disposable } from '../../platform/disposable';
 import type { ActorContext } from './actor';
-import { MAX_ID_CHARS, type Call, type Contract, type Method, type Tables } from './messages';
+import { MAX_ID_CHARS, type Contract, type Method, type Params, type Result, type Tables } from './messages';
 import { INVALID, type Parser } from './schema';
 
 /** One ordered, bidirectional message channel between main and core. */
@@ -94,16 +94,14 @@ function parseEnvelope(raw: unknown): Envelope | undefined {
 }
 
 type Key<T> = keyof T & string;
-type Params<C extends Contract, M extends Key<C['requests']>> = C['requests'][M] extends Call<infer P, unknown> ? P : never;
-type Result<C extends Contract, M extends Key<C['requests']>> = C['requests'][M] extends Call<unknown, infer R> ? R : never;
 type Of<T, K extends keyof T> = T[K];
 
 export type PanelEnvelope<T extends object> = { [O in Key<T>]: { readonly op: O; readonly payload: T[O] } }[Key<T>];
 
 /** Out: what this side sends (its requests' results are parsed with it); In: what it receives. */
 export interface Endpoint<Out extends Contract, In extends Contract> {
-  request<M extends Key<Out['requests']>>(method: M, params: Params<Out, M>, signal?: AbortSignal): Promise<Result<Out, M>>;
-  serve<M extends Key<In['requests']>>(method: M, handler: (params: Params<In, M>, signal: AbortSignal) => Result<In, M> | Promise<Result<In, M>>): void;
+  request<M extends Key<Out['requests']>>(method: M, params: Params<Out['requests'], M>, signal?: AbortSignal): Promise<Result<Out['requests'], M>>;
+  serve<M extends Key<In['requests']>>(method: M, handler: (params: Params<In['requests'], M>, signal: AbortSignal) => Result<In['requests'], M> | Promise<Result<In['requests'], M>>): void;
   emit<E extends Key<Out['events']>>(name: E, payload: Of<Out['events'], E>): void;
   onEvent<E extends Key<In['events']>>(name: E, listener: (payload: Of<In['events'], E>) => void): Disposable;
   // A delta for a topic goes out before any response that depends on it, on this same channel (the ordering rule).
@@ -127,7 +125,8 @@ export interface EndpointOptions<Out extends Contract, In extends Contract> {
   // envelopes and events this side sends carry the current one; unset: an envelope's actor is ignored and none is sent
   readonly actor?: ActorContext;
   // set: a request this side sends, or an answer it gives, that the tables refuse fails that one call here, logged as a bug,
-  // instead of reaching the other side as a violation that ends the channel; events, mirrors and panel posts are not checked
+  // and such an event is dropped, logged, instead of reaching the other side as a violation that ends the channel; mirrors and
+  // panel posts are not checked
   readonly checkOutgoing?: boolean;
 }
 
@@ -368,7 +367,12 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
       handlers.set(method, handler as (params: unknown, signal: AbortSignal) => unknown);
     },
     emit: (name, payload) => {
-      if (closed === undefined) transport.post({ kind: 'event', name, payload, ...stamp() });
+      if (closed !== undefined) return;
+      if (options.checkOutgoing && !parseWith(own(outgoing.events, name), payload).ok) {
+        log(`[core-protocol] Bug: a ${name} event outside the contract was dropped`);
+        return;
+      }
+      transport.post({ kind: 'event', name, payload, ...stamp() });
     },
     onEvent: (name, listener) => listen(eventListeners, name, listener as (payload: unknown) => void),
     publish: (topic, patch) => {

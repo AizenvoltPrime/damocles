@@ -8,6 +8,7 @@ import { CoreHost, type HostedCore } from '../core-host';
 import { createHostServices, type HostServices, type HostServicesDeps, type RelayView } from '../core-services/host-services';
 import { KeptPermissions } from '../kept-permissions';
 import type { Disposable } from '../../../platform/disposable';
+import { FEATURES } from '../../../remote/protocol-version';
 import type { RemoteConnection } from './connection';
 import { authorityProjectKeys } from './remote-project-keys';
 import type { UserRelays } from './user-relays';
@@ -278,6 +279,7 @@ export class RemoteCore {
       appInfo: services.init.appInfo,
       secretsPersistent: services.init.secretsPersistent,
       chatBrowserPane: services.init.chatBrowserPane,
+      features: FEATURES,
       mirrors: { trust: mirrors.trust, folders: mirrors.folders, editor: mirrors.editor, terminal: mirrors.terminal, language: mirrors.language, ...relayed.mirrors },
     };
     const ready = (async () => {

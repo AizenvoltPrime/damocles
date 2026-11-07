@@ -1,4 +1,4 @@
-import elBundle from '../../l10n/bundle.l10n.el.json';
+import elBundle from '../../l10n/bundle.l10n.el.json' with { type: 'json' };
 import { renderLocalizedText, type LocalizedText } from '../shared/localized-text';
 
 /** `text` as a view whose language is Greek renders it, from the shipped Greek bundle. */

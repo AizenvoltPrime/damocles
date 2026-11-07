@@ -770,3 +770,20 @@ describe.runIf(canLink)('EvaluatorManager.evaluate — links, junctions and 8.3 
     expect(await buildEvaluator({ permissionMode: 'acceptEdits' }).evaluate('Write', call(real), null)).toBe('deny');
   });
 });
+
+describe('a call only the user approves (a design chat\'s MCP call that is not read-only, PD-25)', () => {
+  const tool = createMcpToolName('figma', 'post_comment');
+
+  it('asks under YOLO, where every other call is allowed', () => {
+    const yolo = buildEvaluator({ dangerouslySkipPermissions: true });
+    expect(yolo.decide(tool, {}, null)).toBe('allow');
+    expect(yolo.decide(tool, {}, null, true)).toBe('ask');
+  });
+
+  it('asks over an allow rule and in acceptEdits, and a deny rule still denies', () => {
+    const evaluator = buildEvaluator({ permissionMode: 'acceptEdits' });
+    expect(evaluator.decide(tool, {}, 'allow', true)).toBe('ask');
+    expect(evaluator.decide(tool, {}, null, true)).toBe('ask');
+    expect(evaluator.decide(tool, {}, 'deny', true)).toBe('deny');
+  });
+});

@@ -1,4 +1,4 @@
-// scripts/generate-settings-schema.mjs imports this file through Node's type stripping: erasable TypeScript and no imports.
+// scripts/generate-settings-schema.ts imports this file through Node's type stripping: erasable TypeScript and no imports.
 // Desktop-only settings, merged into the desktop settings store's contributed set; they never enter package.json.
 
 export const THEME_SETTING = 'damocles.desktop.theme';
@@ -206,7 +206,7 @@ export interface DesktopSettingProperty {
   readonly items?: DesktopSettingValueSchema;
 }
 
-// The JSON Schema an object setting's values follow, which scripts/generate-settings-schema.mjs copies into the settings schema.
+// The JSON Schema an object setting's values follow, which scripts/generate-settings-schema.ts copies into the settings schema.
 export interface DesktopSettingValueSchema {
   readonly type?: string | readonly string[];
   readonly anyOf?: readonly DesktopSettingValueSchema[];

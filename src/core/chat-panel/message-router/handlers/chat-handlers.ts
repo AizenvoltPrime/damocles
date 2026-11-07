@@ -58,6 +58,16 @@ const QUEUE_REFUSED_REASONS: Readonly<Record<QueueRefusal, QueueRefusedReason>> 
   noRuntime: "queueNoRuntime",
 };
 
+// An image keeps its origin only when it is one core knows: the design preview's Screenshot, never saved as a reference (PD-40).
+export function withKnownImageOrigins(content: string | UserContentBlock[]): string | UserContentBlock[] {
+  if (typeof content === "string") return content;
+  return content.map((block) => {
+    if (block.type !== "image" || block.origin === undefined) return block;
+    const { origin, ...image } = block;
+    return origin === "designPreview" ? { ...image, origin } : image;
+  });
+}
+
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager, markUserTypedDuringTurn } = deps;
 
@@ -206,7 +216,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     sendMessage: async (msg, ctx) => {
       if (msg.type !== "sendMessage") return;
 
-      const msgContent = msg.content;
+      const msgContent = withKnownImageOrigins(msg.content);
       const originalTextContent = extractTextFromContent(msgContent);
       if (!originalTextContent.trim() && !hasImageContent(msgContent)) return;
 
@@ -350,7 +360,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     },
 
     clearSession: async (_msg, ctx) => {
-      ctx.session.clear();
+      if (!ctx.session.clear()) return;
       ctx.permissionHandler.resetForNewConversation(settingsFolderOf(ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
       postMessage(ctx.host, { type: "conversationCleared" });
@@ -359,7 +369,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     queueMessage: async (msg, ctx) => {
       if (msg.type !== "queueMessage") return;
 
-      const msgContent = msg.content;
+      const msgContent = withKnownImageOrigins(msg.content);
       const textContent = extractTextFromContent(msgContent);
       if (!textContent.trim() && !hasImageContent(msgContent)) return;
 

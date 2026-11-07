@@ -36,6 +36,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         undefined,
         msg.terminalAttachments,
         msg.timestamp,
+        { designMarkup: msg.designMarkup, designReferences: msg.designReferences },
       ));
     },
 

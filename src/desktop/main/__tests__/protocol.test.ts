@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() } }));
 
 import { protocol } from 'electron';
-import { appResourceUri, handleAppProtocol, mimeTypeFor, NOTIFIER_PAGE_URL, panelPageUrl, resolveAppRequest } from '../protocol';
+import { appResourceUri, handleAppProtocol, mimeTypeFor, NOTIFIER_PAGE_URL, panelPageUrl, registerAppScheme, resolveAppRequest } from '../protocol';
 
 let root: string;
 
@@ -29,6 +29,17 @@ beforeAll(() => {
 
 afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('registerAppScheme', () => {
+  it('registers the design scheme in the same call as app, standard and secure only (PD-31)', () => {
+    registerAppScheme();
+    expect(protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
+    expect(protocol.registerSchemesAsPrivileged).toHaveBeenCalledWith([
+      { scheme: 'app', privileges: { standard: true, secure: true } },
+      { scheme: 'damocles-design', privileges: { standard: true, secure: true } },
+    ]);
+  });
 });
 
 describe('resolveAppRequest', () => {

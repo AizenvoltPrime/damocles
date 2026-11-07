@@ -23,13 +23,13 @@ describe('deferred tools whose user-scope service a daemon\'s core cannot reach'
   it('stay eligible and deferred, so none becomes active, but leave the loadable snapshot', () => {
     expect(deferred).toEqual(expect.arrayContaining([...BROWSER_PI_TOOL_NAMES]));
     expect(initialActiveToolNames(eligible, deferred, new Set())).toEqual(['Read']);
-    const loadable = loadableToolNames(deferred, reach(false));
+    const loadable = loadableToolNames(deferred, reach(false), false);
     expect(loadable).toEqual([...COMPASS_PI_TOOL_NAMES]);
     expect(resolveToolSearchEntries(['browser'], loadable, new Map()).matches).toEqual([]);
   });
 
   it('are loadable on this computer\'s core', () => {
-    expect(loadableToolNames(deferred, reach(true))).toEqual(deferred);
+    expect(loadableToolNames(deferred, reach(true), false)).toEqual(deferred);
     expect(userScopeToolNames(reach(true)).size).toBe(0);
     expect([...userScopeToolNames(reach(false))].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
   });

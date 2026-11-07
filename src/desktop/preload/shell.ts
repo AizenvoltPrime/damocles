@@ -39,6 +39,10 @@ import {
   type SearchStartResult,
   type ContentBounds,
   type DamoclesShellApi,
+  type DesignReplayProgress,
+  type DesignFreeze,
+  type DesignMarkupSent,
+  type DesignPreviewClosed,
   type SelectChatResult,
   type ShellChatList,
   type ShellDocumentContent,
@@ -380,6 +384,26 @@ const api: DamoclesShellApi = {
   reportBrowserBounds: (area) => {
     ipcRenderer.send(SHELL_CHANNELS.browserBounds, area ? { x: area.x, y: area.y, width: area.width, height: area.height, radius: area.radius } : null);
   },
+  setDesignPreview: (request) => ipcRenderer.invoke(SHELL_CHANNELS.designSet, {
+    tabId: request.tabId,
+    ...(request.width !== undefined ? { width: request.width } : {}),
+    ...(request.state !== undefined ? { state: request.state } : {}),
+    ...(request.provenance !== undefined ? { provenance: request.provenance } : {}),
+  }) as Promise<void>,
+  designPreviewAction: (request) => ipcRenderer.invoke(SHELL_CHANNELS.designAction, { tabId: request.tabId, action: request.action }) as Promise<void>,
+  reportDesignPreviewBounds: (area) => {
+    ipcRenderer.send(SHELL_CHANNELS.designBounds, area ? { tabId: area.tabId, x: area.x, y: area.y, width: area.width, height: area.height, radius: area.radius, zoom: area.zoom } : null);
+  },
+  onDesignReplay: (listener) => subscribe<DesignReplayProgress>(SHELL_CHANNELS.designReplay, listener),
+  designFreeze: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designFreeze, tabId) as Promise<DesignFreeze>,
+  designMarkupEnter: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designMarkupEnter, tabId) as Promise<void>,
+  designMarkupExit: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designMarkupExit, tabId) as Promise<void>,
+  designMarkupSend: (request) => ipcRenderer.invoke(SHELL_CHANNELS.designMarkupSend, { tabId: request.tabId, png: request.png, json: request.json }) as Promise<DesignMarkupSent>,
+  designTweakApply: (request) => ipcRenderer.invoke(SHELL_CHANNELS.designTweakApply, { tabId: request.tabId, property: request.property, token: request.token }) as Promise<void>,
+  designTweakReset: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designTweakReset, tabId) as Promise<void>,
+  designTweakKeep: (request) => ipcRenderer.invoke(SHELL_CHANNELS.designTweakKeep, { tabId: request.tabId, tweakId: request.tweakId, value: request.value }) as Promise<void>,
+  designLastFrame: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designLastFrame, tabId) as Promise<string | null>,
+  onDesignPreviewClosed: (listener) => subscribe<DesignPreviewClosed>(SHELL_CHANNELS.designClosed, (closed) => listener(closed.tabId)),
   listFiles: (request) => ipcRenderer.invoke(SHELL_CHANNELS.filesList, { projectKey: request.projectKey, relativeDir: request.relativeDir, report: request.report === true }) as Promise<FilesListResult>,
   createFile: (request) =>
     ipcRenderer.invoke(SHELL_CHANNELS.filesCreate, { projectKey: request.projectKey, relativeDir: request.relativeDir, name: request.name, kind: request.kind }) as Promise<FilesMutationResult>,

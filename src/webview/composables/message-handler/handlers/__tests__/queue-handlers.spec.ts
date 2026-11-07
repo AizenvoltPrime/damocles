@@ -6,8 +6,8 @@ import type { HandlerContext, StoreContext } from '../../types';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { defined } from '@/__tests__/helpers';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import en from '@/i18n/locales/en.json';
-import el from '@/i18n/locales/el.json';
+import en from '@/i18n/locales/en.json' with { type: 'json' };
+import el from '@/i18n/locales/el.json' with { type: 'json' };
 
 const toastMock = vi.hoisted(() => ({ info: vi.fn() }));
 vi.mock('vue-sonner', () => ({ toast: toastMock }));

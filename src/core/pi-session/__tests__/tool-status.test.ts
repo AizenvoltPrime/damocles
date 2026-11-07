@@ -4,12 +4,13 @@ import type { CompassService } from '../../compass';
 import { PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
 import { CUSTOM_TOOL_NAMES } from '../tools';
 import { TEAM_MAIN_PI_TOOL_NAMES } from '../tools/team-tools';
-import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
-import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
+import { MEMORY_PI_TOOL_NAMES, MEMORY_WRITE_PI_TOOL_NAMES } from '../tools/memory-tools';
+import { BROWSER_PI_TOOL_NAMES, DESIGN_BROWSER_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE, MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
 import { fullActiveToolNames, activeToolNamesWithDeferral, buildToolStatus, type ToolStatusDeps } from '../tool-status';
-import { deferredToolNames } from '../tools/deferred-tools';
+import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
+import { DESIGN_PI_TOOL_NAMES, designRuleSet } from '../../design/rule-set';
 
 /** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
 function nth(names: readonly string[], i: number): string {
@@ -48,6 +49,9 @@ function deps(overrides: Partial<ToolStatusDeps>): ToolStatusDeps {
     mcpDeferrableToolNames: [],
     mcpResourceExposure: null,
     disabled: new Set<string>(),
+    designEnabled: false,
+    designRole: false,
+    ruleSet: designRuleSet({ designPreview: true }),
     ...overrides,
   };
 }
@@ -239,8 +243,8 @@ describe('buildToolStatus', () => {
     // guard so a future extraction can't quietly omit a subsystem and still pass every other test.
     const snap = buildToolStatus(deps({}));
     const groups = snap.groups.map((g) => g.group).sort();
-    expect(groups).toEqual(['browser', 'compass', 'core', 'image', 'memory', 'subagents', 'team', 'web']);
-    expect(snap.groups).toHaveLength(8);
+    expect(groups).toEqual(['browser', 'compass', 'core', 'design', 'image', 'memory', 'subagents', 'team', 'web']);
+    expect(snap.groups).toHaveLength(9);
   });
 
   it('reports the image group like the browser group: the master switch, availability and the reason it is unavailable', () => {
@@ -305,6 +309,11 @@ describe('buildToolStatus: switches the host\'s own settings file holds', () => 
     expect(snap.toolsSetOnHost).toBe(true);
   });
 
+  it('marks the design group setOnHost only while the host file holds its key', () => {
+    expect(group(buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({ 'damocles.design.enabled': true }) })), 'design').setOnHost).toBe(true);
+    expect(group(buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({}) })), 'design')).not.toHaveProperty('setOnHost');
+  });
+
   it('leaves both absent without host settings (this computer\'s core) or when the host file holds neither', () => {
     for (const snap of [buildToolStatus(deps({})), buildToolStatus(deps({ hostSettings: hostFile({}) }))]) {
       expect(snap.groups.some((g) => 'setOnHost' in g)).toBe(false);
@@ -354,5 +363,61 @@ describe('the MCP resource tools in the active set', () => {
     const d = deps({ mcpEnabled: true, mcpResourceExposure: 'direct', disabled: new Set(['read_mcp_resource']) });
     expect(fullActiveToolNames(d)).not.toContain('read_mcp_resource');
     expect(fullActiveToolNames(d)).toContain('list_mcp_resources');
+  });
+});
+
+describe('design tools in the active set (PD-15, PD-25)', () => {
+  const full = designRuleSet({ designPreview: true });
+  const reduced = designRuleSet({ designPreview: false });
+
+  it('adds no tools while design mode is off, and still sends the group so Settings can turn it on', () => {
+    const off = deps({ designEnabled: false });
+    expect(fullActiveToolNames(off).filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual([]);
+    const snapshot = buildToolStatus(off);
+    expect(group(snapshot, 'design')).toEqual({ group: 'design', enabled: false, available: true });
+    expect(snapshot.tools.some((t) => t.group === 'design')).toBe(false);
+  });
+
+  it('adds the parent tools to a main chat while design mode is on: DesignParity on FULL only, whatever the browser setting', () => {
+    expect(fullActiveToolNames(deps({ designEnabled: true })).filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual(['StartDesign', 'DesignParity']);
+    expect(fullActiveToolNames(deps({ designEnabled: true, browserEnabled: false })).filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual(['StartDesign', 'DesignParity']);
+    expect(fullActiveToolNames(deps({ designEnabled: true, ruleSet: designRuleSet({ designPreview: false }) })).filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual(['StartDesign']);
+    expect(group(buildToolStatus(deps({ designEnabled: true })), 'design')).toEqual({ group: 'design', enabled: true, available: true });
+  });
+
+  it('gives a design chat its rule set\'s built tools, and no plan mode, StartDesign or team tools', () => {
+    for (const [ruleSet, own] of [[full, ['DesignScreenshot', 'PreviewJourney', 'DeclareTweaks']], [reduced, []]] as const) {
+      const names = fullActiveToolNames(deps({ designEnabled: true, designRole: true, ruleSet, teamAvailable: true, teamEnabled: true }));
+      expect(names.filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference', ...own]);
+      for (const gone of ['EnterPlanMode', 'ExitPlanMode', 'StartDesign', 'DesignParity', ...TEAM_MAIN_PI_TOOL_NAMES]) expect(names).not.toContain(gone);
+    }
+  });
+
+  it('keeps a design chat\'s memory reads and drops its memory writes, which reach outside its folder', () => {
+    const names = fullActiveToolNames(deps({ designEnabled: true, designRole: true, memoryService: memEnabled }));
+    const reads = ['SearchMemories', 'GetMemoryDetails', 'ListNotes', 'GetMemoryHistory', 'GetRelatedMemories'];
+    // Every memory tool is a read or a write here, so a new memory tool must be sorted before a design chat gets it.
+    expect([...MEMORY_PI_TOOL_NAMES].sort()).toEqual([...reads, ...MEMORY_WRITE_PI_TOOL_NAMES].sort());
+    for (const write of MEMORY_WRITE_PI_TOOL_NAMES) expect(names).not.toContain(write);
+    for (const read of ['SearchMemories', 'GetMemoryDetails', 'ListNotes', 'GetMemoryHistory', 'GetRelatedMemories']) expect(names).toContain(read);
+    expect(fullActiveToolNames(deps({ designEnabled: true, memoryService: memEnabled }))).toContain('SaveMemory');
+  });
+
+  it('keeps a design chat\'s role while the setting is off, without its design tools', () => {
+    const names = fullActiveToolNames(deps({ designEnabled: false, designRole: true }));
+    expect(names.filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual([]);
+    expect(names).not.toContain('EnterPlanMode');
+  });
+
+  it('lets a design chat load only the read browser tools, and ToolSearch lists exactly the loadable set', () => {
+    const chat = deps({ designEnabled: true, designRole: true, browserEnabled: true });
+    const eligible = fullActiveToolNames(chat);
+    const browser = eligible.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n));
+    expect(new Set(browser)).toEqual(DESIGN_BROWSER_TOOL_NAMES);
+    expect(eligible).not.toContain('BrowserClick');
+    const loadable = loadableToolNames(deferredToolNames(eligible, []), { browser: true, relayedTool: () => true }, true);
+    expect(loadable.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n)).sort()).toEqual([...DESIGN_BROWSER_TOOL_NAMES].sort());
+    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserEnabled: true })), []), { browser: true, relayedTool: () => true }, false);
+    expect(parent).toContain('BrowserClick');
   });
 });

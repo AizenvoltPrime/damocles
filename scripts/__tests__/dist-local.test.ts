@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-// @ts-expect-error -- plain .mjs helper, no types
-import { manifestProblem, matchesPackage, outputDirectory, packagedUserData } from '../dist-local.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { sha256 } from '../server-archive.mjs';
+import { manifestProblem, matchesPackage, outputDirectory, packagedUserData } from '../dist-local.ts';
+import { sha256 } from '../server-archive.ts';
 
 describe('the packaged app\'s userData', () => {
   it('is under APPDATA on Windows, and refuses before any build when APPDATA is unset', () => {

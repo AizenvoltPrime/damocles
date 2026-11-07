@@ -74,7 +74,7 @@ describe('e2e foreground queue', () => {
   });
 
   function startWorker(name: string, dir: string, log: string[], env: Record<string, string>): Worker {
-    const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--input-type=module', '-e', WORKER], {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', WORKER], {
       env: { ...process.env, TEMP: dir, TMP: dir, TMPDIR: dir, ...env },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });

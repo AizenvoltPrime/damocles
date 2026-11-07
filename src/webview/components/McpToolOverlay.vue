@@ -218,6 +218,7 @@ function closeLightbox(): void {
               />
             </template>
             <ToolResultImages
+              class="pl-2"
               :tool="tool"
               :owner="owner"
               @open="openImageLightbox"

@@ -35,7 +35,7 @@ const copilotHaiku = catalogModel('github-copilot.json', 'anthropic-messages', '
 const copilotLuna = catalogModel('github-copilot.json', 'openai-responses', 'gpt-6-luna');
 
 describe('SUBCALL_THINKING', () => {
-  it('runs the judging and lookup jobs with thinking off and the writing jobs at low', () => {
+  it('runs the title, lookup and ranking jobs with thinking off and the writing and checking jobs at low', () => {
     expect(SUBCALL_THINKING).toEqual({
       'session-title': 'off',
       'memory-query-expansion': 'off',
@@ -45,6 +45,7 @@ describe('SUBCALL_THINKING', () => {
       'memory-profile': 'low',
       'memory-audit': 'low',
       'commit-message': 'low',
+      'design-parity': 'low',
     });
   });
 });

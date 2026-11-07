@@ -3,10 +3,8 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs script, no types
-import { compileBrowserHelper, PE_MACHINES, peMachine, signedHelperProblems, unsignedImage, versionResource, ZIG_ARCHIVES, zigArguments } from '../browser-helper.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { SERVER_TARGETS } from '../server-targets.mjs';
+import { compileBrowserHelper, PE_MACHINES, peMachine, signedHelperProblems, unsignedImage, versionResource, ZIG_ARCHIVES, zigArguments } from '../browser-helper.ts';
+import { SERVER_TARGETS } from '../server-targets.ts';
 
 // A minimal PE32+ image of `size` bytes for `machine`, unsigned.
 function image(machine: number, size = 0x400): Buffer {

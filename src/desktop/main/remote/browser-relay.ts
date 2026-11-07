@@ -7,8 +7,8 @@ import type { BrowserToolAnswer } from '../../../shared/remote-user';
 import { checkClientNavigation } from './ports/client-network-guard';
 import { rewriteInbound, rewriteOutbound, type ForwardingTunnels, type RewriteTunnel } from './ports/url-rewrite';
 
-// the input fields that name an address the browser opens
-const URL_FIELDS: Readonly<Record<string, string>> = { BrowserOpen: 'url', BrowserNavigate: 'url', BrowserTabs: 'url' };
+// the input fields that name an address the browser opens; DesignParityCapture is core's PARITY_CAPTURE_TOOL
+const URL_FIELDS: Readonly<Record<string, string>> = { BrowserOpen: 'url', BrowserNavigate: 'url', BrowserTabs: 'url', DesignParityCapture: 'url' };
 // its paths name files on the target, which this computer's browser cannot read
 const TARGET_PATH_TOOLS: ReadonlySet<string> = new Set(['BrowserUpload']);
 

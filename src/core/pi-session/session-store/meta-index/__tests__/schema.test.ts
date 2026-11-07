@@ -19,6 +19,7 @@ const FILLED_FROM_FILE: Record<Exclude<keyof StoredSession, 'workspaceFolder' | 
   createdAt: true,
   model: true,
   worktree: true,
+  design: true,
 };
 
 const TERMINAL_BLOCK = '<damocles_terminal_output source="command" command="npm test" exit_code="1" terminal="bash" omitted_lines="0">\n'
@@ -34,6 +35,7 @@ function entry(type: string, fields: Record<string, unknown>): SessionEntry {
 }
 const user = (text: string, timestamp?: number): SessionEntry => entry('message', { message: { role: 'user', content: [{ type: 'text', text }], ...(timestamp !== undefined ? { timestamp } : {}) } });
 const custom = (customType: string, data: unknown): SessionEntry => entry('custom', { customType, data });
+const toolResult = (toolName: string, details: unknown): SessionEntry => entry('message', { message: { role: 'toolResult', toolCallId: `c${clock}`, toolName, content: [], details, isError: false } });
 
 /** A manager over `entries` in file order, each the child of the one before, as pi's `SessionManager.open` reads such a file. */
 function manager(header: SessionHeader | null, entries: SessionEntry[], name?: string) {
@@ -69,6 +71,20 @@ function aiTitled(): SessionFileMeta {
   return sessionFileMeta(manager(header, [custom('damocles-tag', { tag: '' })], 'Generated title'), 1_767_225_800_000);
 }
 
+function designChat(): SessionFileMeta {
+  clock = 0;
+  const header = { type: 'session', version: 3, id: 'session-design', timestamp: '2026-01-01T00:00:00.000Z', cwd: '/w' } as SessionHeader;
+  const role = custom('damocles.design', { v: 1, designId: 'contacts-abcd1234', folder: '/ignored', parentSessionId: 'session-parent', ruleSet: 'full', title: 'Contacts' });
+  return sessionFileMeta(manager(header, [role, custom('damocles-user-renamed', {}), user('design the contacts list'), toolResult('FinishDesign', { designId: 'contacts-abcd1234', version: 1 })], 'Design · Add contacts'), 1_767_225_900_000);
+}
+
+function forkedDesignChat(): SessionFileMeta {
+  clock = 0;
+  const header = { type: 'session', version: 3, id: 'session-design-fork', timestamp: '2026-01-01T00:00:00.000Z', cwd: '/w' } as SessionHeader;
+  const role = custom('damocles.design', { v: 1, designId: 'contacts-fork5678', folder: '/ignored', parentSessionId: null, ruleSet: 'full', title: 'Contacts' });
+  return sessionFileMeta(manager(header, [role, user('try a denser table')]), 1_767_225_950_000);
+}
+
 function headerless(): SessionFileMeta {
   clock = 0;
   return sessionFileMeta(manager(null, [user('orphan')]), 1);
@@ -76,8 +92,8 @@ function headerless(): SessionFileMeta {
 
 describe('what the session metadata index stores', () => {
   it('changes only with SESSION_META_SCHEMA: a new output takes a new schema number, so apps never share rows that mean different things', () => {
-    expect({ schema: SESSION_META_SCHEMA, outputs: [everyField(), aiTitled(), headerless()] }).toEqual({
-      schema: 5,
+    expect({ schema: SESSION_META_SCHEMA, outputs: [everyField(), aiTitled(), designChat(), forkedDesignChat(), headerless()] }).toEqual({
+      schema: 8,
       outputs: [
         {
           stored: {
@@ -97,13 +113,36 @@ describe('what the session metadata index stores', () => {
           stored: { id: 'session-ai-titled', timestamp: 1_767_225_800_000, createdAt: 1_767_225_800_000, preview: '(no messages)', messageCount: 0, aiTitle: 'Generated title' },
           prompts: [],
         },
+        {
+          stored: {
+            id: 'session-design',
+            timestamp: 1_767_225_603_000,
+            createdAt: 1_767_225_600_000,
+            preview: 'design the contacts list',
+            messageCount: 1,
+            customTitle: 'Design · Add contacts',
+            design: { designId: 'contacts-abcd1234', parentSessionId: 'session-parent', finishedVersion: 1 },
+          },
+          prompts: ['design the contacts list'],
+        },
+        {
+          stored: {
+            id: 'session-design-fork',
+            timestamp: 1_767_225_602_000,
+            createdAt: 1_767_225_600_000,
+            preview: 'try a denser table',
+            messageCount: 1,
+            design: { designId: 'contacts-fork5678' },
+          },
+          prompts: ['try a denser table'],
+        },
         { stored: null, prompts: [] },
       ],
     });
   });
 
   it('the fixtures cover every field the file fills', () => {
-    const filled = new Set([everyField(), aiTitled()].flatMap((meta) => Object.keys(meta.stored ?? {})));
+    const filled = new Set([everyField(), aiTitled(), designChat()].flatMap((meta) => Object.keys(meta.stored ?? {})));
     expect([...filled].sort()).toEqual(Object.keys(FILLED_FROM_FILE).sort());
   });
 });

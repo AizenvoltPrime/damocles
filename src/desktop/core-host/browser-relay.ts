@@ -7,6 +7,7 @@ import { remoteProfileDir, type BrowserAgentScope, type BrowserServices } from '
 import { l } from '../../core/l10n';
 import type { PiCodingAgentModule } from '../../core/pi-session/pi-loader';
 import { buildBrowserPiTools } from '../../core/pi-session/tools/browser-tools';
+import { createParityCaptureTool, PARITY_CAPTURE_TOOL } from '../../core/design/parity-capture';
 import type { PanelHost } from '../../platform/window-service';
 import { LocalizedError } from '../../shared/localized-text';
 import { CHAT_BROWSER_SCOPE, FOREIGN_VIEW_NOT_ATTACHED, type BrowserToolAnswer } from '../../shared/remote-user';
@@ -38,6 +39,8 @@ export function createRemoteBrowsers(deps: RemoteBrowsersDeps): RemoteBrowsers {
       if (!deps.enabled()) throw new LocalizedError(l('The browser is off on the computer that shows this chat. Turn it on in Damocles\' Settings there.'));
       const view = deps.foreign(viewId);
       if (!view || view.authority !== authority) throw new Error(FOREIGN_VIEW_NOT_ATTACHED);
+      // the parity capture resizes its page, so it runs only in a scope made for it, never the chat's human one
+      if (tool === PARITY_CAPTURE_TOOL && scope === CHAT_BROWSER_SCOPE) throw new Error(`${PARITY_CAPTURE_TOOL} runs only in a scope of its own`);
       const pi = deps.pi();
       if (!pi) throw new Error('pi is not loaded on this computer');
       const key = JSON.stringify([authority, viewId, scope]);
@@ -45,7 +48,8 @@ export function createRemoteBrowsers(deps: RemoteBrowsersDeps): RemoteBrowsers {
       if (!entry || entry.host !== view.host) {
         const service = deps.browsers.forAuthority(authority);
         const agentScope: BrowserAgentScope = scope === CHAT_BROWSER_SCOPE ? service.chatScope(view.host) : service.createAgentScope(agentScopeId(viewId, scope), view.host);
-        entry = { authority, host: view.host, tools: new Map(buildBrowserPiTools({ pi, scope: agentScope }).map((definition) => [definition.name, definition])) };
+        const definitions = [...buildBrowserPiTools({ pi, scope: agentScope }), createParityCaptureTool(pi, agentScope)];
+        entry = { authority, host: view.host, tools: new Map(definitions.map((definition) => [definition.name, definition])) };
         built.set(key, entry);
         view.host.onDispose(() => {
           if (built.get(key) === entry) built.delete(key);

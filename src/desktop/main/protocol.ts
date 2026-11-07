@@ -137,9 +137,16 @@ async function serveFile(root: string, filePath: string): Promise<Response> {
   });
 }
 
-// Must run before app `ready`.
+// The design preview's scheme (PD-31): served only in the design-preview partition (design/design-session.ts).
+export const DESIGN_SCHEME = 'damocles-design';
+
+// Must run before app `ready`, once: Electron keeps only the last call's schemes. The design scheme gets no fetch, CORS,
+// service worker or CSP bypass privilege.
 export function registerAppScheme(): void {
-  protocol.registerSchemesAsPrivileged([{ scheme: APP_SCHEME, privileges: { standard: true, secure: true } }]);
+  protocol.registerSchemesAsPrivileged([
+    { scheme: APP_SCHEME, privileges: { standard: true, secure: true } },
+    { scheme: DESIGN_SCHEME, privileges: { standard: true, secure: true } },
+  ]);
 }
 
 function htmlPage(html: string): Response {

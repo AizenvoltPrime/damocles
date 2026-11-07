@@ -5,8 +5,11 @@ import { englishText, type LocalizedText } from '../../shared/localized-text';
 /** Derived from the message so the derivation can never drift from what the webview reads. */
 export type SessionState = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>['state'];
 
-/** What an unanswered prompt asks of the user; `input` covers forms, MCP elicitations and extension UI dialogs. */
-export type PendingKind = 'approval' | 'question' | 'plan' | 'input' | 'signIn';
+/**
+ * What an unanswered prompt asks of the user; `input` covers forms, MCP elicitations and extension UI dialogs, `designVersion` the
+ * version pause (PD-29), `designApproval` FinishDesign's approval.
+ */
+export type PendingKind = 'approval' | 'question' | 'plan' | 'input' | 'signIn' | 'designVersion' | 'designApproval';
 
 /** One unanswered prompt, for attention routing; a notification keys on `id`, so one prompt notifies once. */
 export interface PendingPrompt {

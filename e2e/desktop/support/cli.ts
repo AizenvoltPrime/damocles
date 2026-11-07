@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { hermeticEnv, REPO_ROOT, type HermeticHome } from './hermetic';
 
 // The development build's Electron, which runs dist/cli.js as Node as resources/bin/damocles runs the installed app's binary.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const ELECTRON = require('electron') as unknown as string;
+const ELECTRON = createRequire(import.meta.url)('electron') as string;
 export const CLI_SCRIPT = path.join(REPO_ROOT, 'dist', 'cli.js');
 
 export interface CliRun {

@@ -4,7 +4,7 @@ This page covers permission modes, YOLO mode, accepting edits from any prompt, a
 
 ## Permission modes
 
-`damocles.permissionMode` sets the default mode (`default`, `acceptEdits`, `plan`). Each panel can have its own permission mode independent of the global default. The mode button, Shift+Tab and YOLO also work while the agent works. A change applies from its next tool call, and switching into or out of Plan mode tells the agent, and any running team agents, at their next step. Plan mode is described in [Plan mode](plan-mode.md).
+`damocles.permissionMode` sets the default mode (`default`, `acceptEdits`, `plan`). Each panel can have its own permission mode independent of the global default. The mode button, Shift+Tab and YOLO also work while the agent works. A change applies from its next tool call, and switching into or out of Plan mode tells the agent, and any running team agents, at their next step. Plan mode is described in [Plan mode](plan-mode.md). A design chat stays in Default mode with fixed limits that hold under YOLO too, described in [Design mode](design-mode.md#what-a-design-chat-may-do).
 
 ## YOLO mode
 

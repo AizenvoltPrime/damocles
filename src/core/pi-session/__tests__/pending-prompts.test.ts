@@ -57,6 +57,14 @@ describe('pending prompt summaries', () => {
     expect(summaryOf({ type: 'requestSkillApproval', toolUseId: 'p1', skillName: 'review-pr', owner: MAIN })).toBe('use skill review-pr');
   });
 
+  it('names what a design approval does, which reads after "Needs your approval to", never the designer\'s summary', () => {
+    const approval = (hasParent: boolean): ExtensionToWebviewMessage => ({
+      type: 'requestDesignApproval', promptId: 'p1', designId: 'contacts-abcd1234', summary: 'The list.', previousVersion: null, changes: [], warnings: [], decisions: [], screens: [], hasParent, owner: MAIN,
+    });
+    expect(summaryOf(approval(true), 'designApproval')).toBe('send the design to its main chat');
+    expect(summaryOf(approval(false), 'designApproval')).toBe('make a version of the design');
+  });
+
   it('skips the blank lines before a command, and names nothing for a blank command or a file tool with no path', () => {
     expect(summaryOf(permission({ toolName: 'Bash', command: '\n   \r\n  npm test\nnpm run lint' }))).toBe('run `npm test`');
     expect(summaryOf(permission({ toolName: 'Bash', command: ' \n\t\n' }))).toBeUndefined();

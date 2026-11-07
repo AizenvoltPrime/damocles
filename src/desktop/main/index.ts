@@ -70,10 +70,22 @@ import { CORE_READY_TIMEOUT_MS } from './core-process';
 import { restartDecision, RESTART_LIMIT } from '../local-services/restart-policy';
 import type { CoreClient } from './core-client';
 import { BrowserTabs } from './browser-tabs';
+import { createDesignSession, serveDesignRequest, type DesignViewTarget } from './design/design-session';
+import { DesignPreviews, markupPngForModel, type DesignSupport } from './design/design-previews';
+import { DesignRunner } from './design/design-runner';
+import { DesignRendererHost } from './design/design-renderer-host';
+import { startDesignRenderer } from './design/design-renderer-start';
+import { isDesignRendererLaunch, runDesignRenderer } from './design/design-renderer';
+import { DesignServer } from './design/design-server';
+import type { BrowserTabSource } from './editor-pane';
+import { isDesignId, SCREEN_FILE } from '../../shared/design-paths';
+import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
+import type { DesignPreviewFile, JourneyStep } from '../../shared/types/design';
+import { parseJourneySteps } from '../../shared/design-journey';
 import { ChatUnloads, chatsToUnload, ChatWorkQueue } from './chat-pool';
 import { chatProjectKey } from './chat-project';
 import { isActiveActivity } from '../../shared/chat-retention';
-import { chatTitle, storedTitle } from './chat-title';
+import { chatTitle, panelTitle, storedTitle } from './chat-title';
 import { chatActions, refusesMirrored } from './chat-actions';
 import { parseCliPathAction, parseUserDataDir } from './cli';
 import { CoreHost } from './core-host';
@@ -297,7 +309,7 @@ import { clientGitCredential, createGitCredentialClient, type GitCredentialClien
 import { remoteServices } from './remote/remote-services';
 import { chatOfSelectedProject, keptChatWithheld, remoteSelection } from './remote/remote-selection';
 import type { RemoteChatRecord } from './remote/remote-state';
-import type { OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine } from '../preload/shell-channels';
+import type { DesignMarkupSendRequest, DesignMarkupSent, DesignTweakKeepRequest, OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine } from '../preload/shell-channels';
 import type { HostServicesDeps, HostTrust } from './core-services/host-services';
 import { ERROR_PAGE_STRINGS } from '../../shared/panel-html';
 import { createProjectTrust, createRemoteTrust, type RemoteTrustTarget } from './remote/remote-trust';
@@ -360,6 +372,8 @@ const REMOTE_DETACH_WAIT_MS = 3000;
 // a quit's wait for the running file transfers to stop and remove their parts, before the teardown's own bound starts
 const TRANSFER_CANCEL_WAIT_MS = 3000;
 const VERIFIED_ERASE_FEATURE = 'askpass.credential.verifiedErase';
+// the preview reads a remote design only through these (design.read, design.info)
+const DESIGN_PREVIEW_FEATURES: readonly string[] = ['design.read', 'design.info'];
 
 // A remote chat's status in the close dialog, from its activity.
 function closeStatusOf(activity: ChatActivity): CloseRemoteStatus {
@@ -402,6 +416,26 @@ function errorMessage(err: unknown): string {
 
 function isShellTag(tag: string | undefined): tag is string {
   return tag !== undefined && tag.trim().length > 0 && tag.length <= MAX_TAG_LENGTH;
+}
+
+function shellDesignOf(row: StoredSession): ShellChat['design'] {
+  if (!row.design) return undefined;
+  const { parentSessionId, finishedVersion, superseded } = row.design;
+  return {
+    ...(parentSessionId !== undefined ? { parentId: parentSessionId } : {}),
+    ...(finishedVersion !== undefined ? { finishedVersion } : {}),
+    ...(superseded === true ? { superseded } : {}),
+  };
+}
+
+// The one check of a design file a core names: a design id and a relative path with no Windows-unsafe segment; a `page` is
+// any .html below the design (a render), a `screen` is screens/<name>.html (a replay).
+function designTargetOf(authority: string, designId: string, relPath: string, kind: 'file' | 'page' | 'screen'): DesignViewTarget {
+  const file = isDesignId(designId) && isRelativeFilePath(relPath) && !hasUnsafeWindowsSegment(relPath);
+  if (kind === 'file' && !file) throw new Error('Not a design file');
+  if (kind === 'page' && !(file && relPath.toLowerCase().endsWith('.html'))) throw new Error('Not a design screen');
+  if (kind === 'screen' && !(file && SCREEN_FILE.test(relPath))) throw new Error('Not a design screen');
+  return { authority, designId };
 }
 
 function windowStateOf(window: BrowserWindow | undefined): ShellWindowState {
@@ -782,6 +816,14 @@ class DesktopApp {
   private window: BrowserWindow | undefined;
   private views: PanelViews | undefined;
   private browserTabs: BrowserTabs | undefined;
+  // the window's design preview tabs, and the editor's page tabs: its browser pages, then its design previews
+  private designPreviews: DesignPreviews | undefined;
+  private pageTabs: BrowserTabSource | undefined;
+  // main's Open in browser server and the design-preview session, one each per run
+  private designServer: DesignServer | undefined;
+  private designSessionReady: Promise<void> | undefined;
+  private designRunner: DesignRunner | undefined;
+  private designRenderer: DesignRendererHost | undefined;
   private shell: ShellHost | undefined;
   private overlay: OverlayHost | undefined;
   private overlaySettings: OverlaySettings | undefined;
@@ -874,6 +916,8 @@ class DesktopApp {
   // The project a chat was opened in, until core reports the chat's folder.
   private readonly openedInProject = new WeakMap<DesktopPanel, string>();
   private readonly lastViewed = new WeakMap<DesktopPanel, number>();
+  // A design chat core opened beside its parent chat: the parent's view, which the chat list nests it under until its row lists one.
+  private readonly designParents = new WeakMap<DesktopPanel, DesktopPanel>();
   private viewCount = 0;
   // Latest activity by core panel id; pruned when retention runs.
   private readonly activity = new Map<string, ChatActivity>();
@@ -1209,6 +1253,8 @@ class DesktopApp {
         onDidChange: (listener) => this.requirePorts().onClientNetwork(listener),
       },
       divert: (view, message) => this.divertViewMessage(view, message),
+      openDesignPreview: (corePanelId, designId, relPath) => this.openDesignPreview('local', corePanelId, designId, relPath),
+      designRender: this.designRenderFor('local'),
       git: git.available ? { available: true, path: git.path, version: git.version } : { available: false, reason: git.reason },
       e2eHooks: E2E_HOOKS,
       paths: {
@@ -1708,6 +1754,7 @@ class DesktopApp {
       client.onTakeover((sessionId) => {
         if (this.views) this.selectChat(sessionId, 'local').catch(this.report('Opening a conversation here'));
       }),
+      client.onDesignChanged((designId, paths) => this.designPreviews?.designChanged('local', designId, paths)),
       client.onWorktreeRecords((records) => this.worktreeRecords.apply(records)),
       client.onNewChatInWorktree((projectPath, worktreeId) => {
         this.newChatInWorktree({ projectKey: folderKey(projectPath), worktreeId }).catch(this.newChatInWorktreeFailure());
@@ -1792,8 +1839,10 @@ class DesktopApp {
   }
 
   // Restart Engine and the halt notice's Restart: the crash count starts again, and a new core replaces the running or
-  // halted one. A remote host's engine restarts in its daemon, which then reports the new epoch.
+  // halted one. A remote host's engine restarts in its daemon, which then reports the new epoch. Either lets a design
+  // renderer that ended too often start again.
   private restartEngine(authority: string): void {
+    this.designRenderer?.reset();
     if (authority === 'local') {
       this.coreCrashes = [];
       this.core.reload().catch(this.report('Restarting the engine'));
@@ -1819,7 +1868,7 @@ class DesktopApp {
   }
 
   // The view for a panel core creates: a chat core opens itself, or a browser page of a loaded chat.
-  private createCoreView(panelId: string, create: Omit<PanelCreate, 'owner'> & { readonly owner?: RelayView }, authority = 'local'): RelayView {
+  private createCoreView(panelId: string, create: Omit<PanelCreate, 'owner' | 'parent'> & { readonly owner?: RelayView; readonly parent?: RelayView }, authority = 'local'): RelayView {
     const { owner, ...rest } = create;
     const options: PanelOptions = { ...rest, localResourceRoots: [...rest.localResourceRoots], ...(owner ? { owner } : {}) };
     if (options.kind === 'chat') return this.openCoreChat(options, panelId, authority);
@@ -1930,9 +1979,19 @@ class DesktopApp {
       openExternal: (url) => this.requirePlatform().shell.openExternal(url),
       openExternalFailed: () => void this.notifications.error(this.requireLocalization().t('Damocles could not open the page in the system browser.')),
       copy: (text) => this.requirePlatform().clipboard.writeText(text),
-      // After the editor's republish, so the shell focuses the tab that took the page tab's place.
-      focusAway: () => setImmediate(() => this.focusOn(this.windowLayout.sidebar().grid.visible.editor && this.editorPane?.hasTabs() ? 'editor' : 'chat')),
+      focusAway: () => this.focusAwayFromPage(),
     });
+    const designPreviews = this.createDesignPreviews(window, () => views.retainingStates, () => overlay.restack());
+    const pageTabs: BrowserTabSource = {
+      tabs: () => [...browserTabs.tabs(), ...designPreviews.tabs()],
+      close: (tabId) => (designPreviews.holds(tabId) ? designPreviews.close(tabId) : browserTabs.close(tabId)),
+      activeChanged: (tabId) => {
+        browserTabs.activeChanged(tabId);
+        designPreviews.activeChanged(tabId);
+      },
+      copyPath: (tabId) => (designPreviews.holds(tabId) ? designPreviews.copyPath(tabId) : Promise.resolve()),
+      mention: (tabId) => (designPreviews.holds(tabId) ? designPreviews.mention(tabId) : Promise.resolve()),
+    };
     const views: PanelViews = new PanelViews(
       {
         window,
@@ -1959,7 +2018,17 @@ class DesktopApp {
         onQueueAction: (panel, action) => this.heldMessageAction(panel, action),
         takeCoreMessage: (panel, type, json) => this.takeHeldVerdict(panel, type, json),
         states: this.states,
-        pages: browserTabs,
+        pages: {
+          pageAdded: (page) => browserTabs.pageAdded(page),
+          pageRemoved: (page) => browserTabs.pageRemoved(page),
+          pageChanged: (page) => browserTabs.pageChanged(page),
+          pageRevealed: (page) => browserTabs.pageRevealed(page),
+          chatSelected: (chat) => designPreviews.chatSelected(chat, () => browserTabs.chatSelected(chat)),
+          chatClosed: (chat) => {
+            browserTabs.chatClosed(chat);
+            designPreviews.chatClosed(chat);
+          },
+        },
         log: (line) => log(line),
         onChange: () => this.viewsChanged(),
         onRestack: () => overlay.restack(),
@@ -2039,6 +2108,8 @@ class DesktopApp {
       this.flash('overlay', false);
       // A window left open would keep the app from quitting on Windows and Linux.
       this.notifier.dispose();
+      this.designRunner?.closeAll('The Damocles window closed.');
+      this.designRenderer?.stop('the Damocles window closed');
       this.search?.stopAll();
       this.terminals?.closeWindow();
       // the next window reattaches the remote terminals the daemons keep
@@ -2050,6 +2121,9 @@ class DesktopApp {
         this.window = undefined;
         this.views = undefined;
         this.browserTabs = undefined;
+        this.designPreviews?.dispose();
+        this.designPreviews = undefined;
+        this.pageTabs = undefined;
         this.shell = undefined;
         this.overlay = undefined;
         this.overlaySettings = undefined;
@@ -2087,6 +2161,8 @@ class DesktopApp {
     this.taskbar.reapply();
     this.views = views;
     this.browserTabs = browserTabs;
+    this.designPreviews = designPreviews;
+    this.pageTabs = pageTabs;
     this.shell = shell;
     this.overlay = overlay;
     this.overlaySettings = overlaySettings;
@@ -2346,6 +2422,7 @@ class DesktopApp {
       const restore = previous.then(async () => {
         await this.restoreInCore(core, host, host.savedFolderKey, kept.get(saved.panelId));
         this.restorePages(core, host, saved.browser.pages, saved.browser.activePage);
+        if (saved.designTabs) this.designPreviews?.restore(host, saved.designTabs);
         this.restoreHeldPrompt(core, host, saved.heldPrompt);
       });
       this.chatRestores.set(host, restore);
@@ -2410,10 +2487,15 @@ class DesktopApp {
   private openCoreChat(options: PanelOptions, panelId: string, authority: string): DesktopPanel {
     const core = this.requireChatCore(authority);
     const views = this.requireViews();
-    const host = views.create({ options, panelId, ...(authority !== 'local' ? { authority } : {}) });
-    // core opens it in its default folder, its own project's, while a project of another authority is selected
+    const { parent, ...viewOptions } = options;
+    const host = views.create({ options: viewOptions, panelId, ...(authority !== 'local' ? { authority } : {}) });
+    const parentChat = parent ? views.chats().find((chat) => chat === parent) : undefined;
+    if (parentChat) this.designParents.set(host, parentChat);
+    // core opens it in its default folder, its own project's, while a project of another authority is selected; a design
+    // chat opens in its parent's
     const selected = this.selectedProjectKey;
-    this.trackChat(host, selected !== undefined && authorityKeyOfProject(selected) === authority ? selected : this.defaultProjectKey(core));
+    const parentProject = parentChat ? this.projectOf(parentChat) : undefined;
+    this.trackChat(host, parentProject ?? (selected !== undefined && authorityKeyOfProject(selected) === authority ? selected : this.defaultProjectKey(core)));
     // Core sets the chat up once this returns; a mention or Add to Chat waits for that as for a chat main restores.
     this.chatRestores.set(host, this.beforeChatRestore().then(() => core.client.whenSetUp(host.panelId)));
     if (!this.settingsOpening.hold(host, authority === 'local')) this.showChat(host, { focus: true });
@@ -2815,7 +2897,7 @@ class DesktopApp {
         log(`[chats] the chat lists of ${core.authority} hold no chat ${chatId}`);
         return this.missingChat();
       }
-      // Another Damocles process holds the conversation: the selection stays where it is, and core offers a takeover.
+      // A local chat holding the conversation shows; another Damocles process's leaves the selection where it is, and core offers a takeover.
       if (await core.client.leaseRefused(chatId, true)) return { ok: false, reason: 'leased' };
       const views = this.requireViews();
       const workspaceFolderKey = core.client.keys.toCore(stored.projectKey);
@@ -2942,7 +3024,7 @@ class DesktopApp {
     const chats: ShellChat[] = withNewChats
       ? unlisted.sort((a, b) => (this.lastViewed.get(b) ?? 0) - (this.lastViewed.get(a) ?? 0)).map((chat) => ({
         id: this.chatIdOf(chat),
-        title: '',
+        ...this.unlistedDesignRow(chat),
         timestamp: Date.now(),
         status: statusOf(this.activityOf(chat)),
         loaded: true,
@@ -2953,6 +3035,7 @@ class DesktopApp {
     const tags = new Set<string>();
     for (const row of rows) {
       const chat = bySession.get(row.id);
+      const design = shellDesignOf(row);
       // A tag stored before tags were bounded never reaches the shell, which hands tags back in overlay requests.
       const tag = isShellTag(row.tag) ? row.tag : undefined;
       if (tag !== undefined) tags.add(tag);
@@ -2960,6 +3043,7 @@ class DesktopApp {
         id: row.id,
         title: storedTitle(row),
         timestamp: row.timestamp,
+        ...(design !== undefined ? { design } : {}),
         ...(tag !== undefined ? { tag } : {}),
         ...(row.model ? { model: { provider: row.model.provider, id: row.model.id } } : {}),
         // a chat another device runs on the host is shown by its core's activity, though this window has not loaded it
@@ -3179,7 +3263,7 @@ class DesktopApp {
       return [{
         id: chat.panelId,
         selected: chat === selected || settingsHold,
-        active: isActiveActivity(this.activityOf(chat)) || this.browserTabs?.holdsPages(chat) === true,
+        active: isActiveActivity(this.activityOf(chat)) || this.browserTabs?.holdsPages(chat) === true || this.designPreviews?.holdsTabs(chat) === true,
         holdsMessages,
         restoring: this.isRestoring(chat),
         hasSession: this.sessionIdOf(chat) !== undefined,
@@ -3559,6 +3643,20 @@ class DesktopApp {
         navigate: (request) => browserTabs.navigate(request.tabId, request.url),
         setBounds: (bounds, radius) => browserTabs.setBounds(bounds, radius),
       },
+      design: {
+        set: ({ tabId, ...change }) => this.requireDesignPreviews().set(tabId, change),
+        action: ({ tabId, action }) => (action === 'screenshot' ? this.designScreenshot(tabId) : this.requireDesignPreviews().openInBrowser(tabId)),
+        setBounds: (frame) => this.designPreviews?.setBounds(frame),
+        freeze: (tabId) => this.requireDesignPreviews().freeze(tabId),
+        markupEnter: (tabId) => this.requireDesignPreviews().markupEnter(tabId),
+        markupExit: (tabId) => this.requireDesignPreviews().markupExit(tabId),
+        markupSend: (request) => this.designMarkupSend(request),
+        tweakApply: ({ tabId, property, token }) => this.requireDesignPreviews().applyTweak(tabId, property, token),
+        tweakReset: (tabId) => this.requireDesignPreviews().resetTweaks(tabId),
+        tweakKeep: (request) => this.designTweakKeep(request),
+        lastFrame: (tabId) => this.requireDesignPreviews().lastFrame(tabId),
+        shellLoaded: () => this.designPreviews?.shellLoaded(),
+      },
       files: {
         list: (projectKey, relativeDir, report) => (report
           ? this.runFilesAction('list', { projectKey, relativePath: relativeDir }, () => this.requireFileTree().list(projectKey, relativeDir))
@@ -3775,7 +3873,7 @@ class DesktopApp {
       copy: (text) => platform.clipboard.writeText(text),
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
       mention: (target) => this.mentionInSelectedChat(target),
-      browser: () => this.browserTabs,
+      browser: () => this.pageTabs,
       warn: (message) => void this.notifications.warn(message),
       hostName: (authority) => this.hostName(authority),
       searchEditorClosed: (documentId) => this.search?.searchEditorClosed(documentId),
@@ -4186,6 +4284,189 @@ class DesktopApp {
     }
   }
 
+  private requireDesignPreviews(): DesignPreviews {
+    if (!this.designPreviews) throw new Error('Design previews used with no window open');
+    return this.designPreviews;
+  }
+
+  // The window's design preview tabs (PD-7, PD-31, PD-33); the design-preview session and main's server are built once per run.
+  private createDesignPreviews(window: BrowserWindow, retainingStates: () => boolean, onRestack: () => void): DesignPreviews {
+    const sessionReady = this.designSession();
+    this.designServer ??= new DesignServer({
+      read: (target, relPath) => this.designRead(target, relPath),
+      openExternal: (url) => this.requirePlatform().shell.openExternal(url),
+    });
+    const server = this.designServer;
+    return new DesignPreviews({
+      editor: this.requireEditorPane(),
+      window: { isDestroyed: () => window.isDestroyed(), getContentBounds: () => window.getContentBounds(), contentView: window.contentView },
+      onRestack,
+      support: (authority) => this.designSupport(authority),
+      info: (target, relPath) => this.requireDesignClient(target.authority).designInfo(target.designId, relPath),
+      setTabs: (chatPanelId, tabs) => this.states.setDesignTabs(chatPanelId, tabs),
+      retainingStates,
+      hostName: (authority) => (authority === 'local' ? undefined : this.hostName(authority)),
+      openInBrowser: (target, relPath) => server.open(target, relPath),
+      revoke: (target) => server.revoke(target),
+      copy: (text) => this.requirePlatform().clipboard.writeText(text),
+      mention: (chat, filePath) => this.mentionDesignFile(chat, filePath),
+      openInBrowserFailed: () => void this.notifications.error(this.requireLocalization().t('Damocles could not open the design in the browser.')),
+      focusAway: () => this.focusAwayFromPage(),
+      log: (line) => log(line),
+      sessionReady,
+      replayProgress: (progress) => this.shell?.designReplayProgress(progress),
+      tabClosed: (tabId) => this.shell?.designPreviewClosed(tabId),
+    });
+  }
+
+  // The preview's Send to designer, a user's click (PD-12): the flattened markup, fitted for the model (PD-41), goes to the
+  // tab's design chat on that chat's own core, which validates it, writes its files and sends it. A refusal is a toast, and
+  // keeps markup on so the marks can be sent again.
+  private async designMarkupSend(request: DesignMarkupSendRequest): Promise<DesignMarkupSent> {
+    const { t, render } = this.requireLocalization();
+    const chat = this.requireDesignPreviews().chatOfTab(request.tabId);
+    const panel = this.views?.panel(chat.panelId);
+    if (!panel || panel.kind !== 'chat') return this.refuseWithToast(t('The design chat is not loaded, so the markup was not sent.'));
+    if (panel.authority !== 'local' && !this.authorities?.connection(panel.authority)?.features?.includes('design.markup')) {
+      return this.refuseWithToast(t('Update the Damocles server on this host to send markup.'));
+    }
+    let png: string;
+    try {
+      png = markupPngForModel(request.png);
+    } catch (err) {
+      log(`[design] the markup image was refused: ${err instanceof Error ? err.message : String(err)}`);
+      return this.refuseWithToast(t('The markup image could not be prepared, so it was not sent.'));
+    }
+    const outcome = await this.chatHost(panel.authority).run('Markup', async (core) => {
+      const corePanelId = (await this.restoredCorePanel(panel)).corePanelId;
+      if (corePanelId === undefined) return undefined;
+      return core.client.designMarkup(corePanelId, png, request.json);
+    });
+    if (!outcome) return this.refuseWithToast(t('The design chat is not loaded, so the markup was not sent.'));
+    if ('refused' in outcome) return this.refuseWithToast(render(outcome.refused));
+    // Main ends markup itself: the user may have selected another chat meanwhile, and the shell drops its marks on this answer.
+    this.designPreviews?.markupExit(request.tabId);
+    return outcome;
+  }
+
+  // The Tweaks column's Keep, a user's click (PD-13): the tweak goes to the tab's design chat on that chat's own core, which checks
+  // it against its latest DeclareTweaks and sends it as its own prompt. A refusal is a toast.
+  private async designTweakKeep(request: DesignTweakKeepRequest): Promise<void> {
+    const { t, render } = this.requireLocalization();
+    const chat = this.requireDesignPreviews().chatOfTab(request.tabId);
+    const panel = this.views?.panel(chat.panelId);
+    if (!panel || panel.kind !== 'chat') return this.refuseWithToast(t('The design chat is not loaded, so the tweak was not kept.'));
+    if (panel.authority !== 'local' && !this.authorities?.connection(panel.authority)?.features?.includes('design.tweak')) {
+      return this.refuseWithToast(t('Update the Damocles server on this host to keep tweaks.'));
+    }
+    const outcome = await this.chatHost(panel.authority).run('Keep tweak', async (core) => {
+      const corePanelId = (await this.restoredCorePanel(panel)).corePanelId;
+      if (corePanelId === undefined) return undefined;
+      return core.client.designTweak(corePanelId, request.tweakId, request.value);
+    });
+    if (!outcome) return this.refuseWithToast(t('The design chat is not loaded, so the tweak was not kept.'));
+    if ('refused' in outcome) this.refuseWithToast(render(outcome.refused));
+  }
+
+  // The preview toolbar's Screenshot, a user's click: the live view's frame lands in its design chat's composer, marked as the
+  // preview's (PD-40), straight from main to that chat's page.
+  private async designScreenshot(tabId: string): Promise<void> {
+    const { chat, image } = await this.requireDesignPreviews().screenshot(tabId);
+    const panel = this.views?.panel(chat.panelId);
+    if (!panel || panel.kind !== 'chat') throw new Error('The design chat is not loaded');
+    const message: ExtensionToWebviewMessage = { type: 'composerAddImage', image, origin: 'designPreview' };
+    if (!(await panel.postMessage(message))) throw new Error('The design chat could not take the image');
+  }
+
+  // The design-preview session, built once per run: preview views and render windows load only through it.
+  private designSession(): Promise<void> {
+    if (!this.designSessionReady) {
+      const deps = { targetOf: (token: string) => this.designPreviews?.targetOf(token), read: (target: DesignViewTarget, relPath: string) => this.designRead(target, relPath), log: (line: string) => log(line) };
+      this.designSessionReady = createDesignSession((request) => serveDesignRequest(request, deps)).ready;
+      // each view and render refuses to load on a failure; this line names it once
+      this.designSessionReady.catch((err: unknown) => log(`[design] the preview session's proxy could not be set: ${err instanceof Error ? err.message : String(err)}`));
+    }
+    return this.designSessionReady;
+  }
+
+  // design.capture and design.probe from the authority's core (PD-41): its own design only, read through its design.read.
+  private designRenderFor(authority: string): HostServicesDeps['designRender'] {
+    const runner = (): DesignRunner => {
+      // a run's page lives in the design renderer process, which asks main for each design byte as the preview does
+      this.designRenderer ??= new DesignRendererHost({
+        start: () => startDesignRenderer(__filename, (line) => log(line)),
+        read: (method, url) => serveDesignRequest({ method, url }, { targetOf: (token) => this.designRunner?.targetOf(token), read: (target, relPath) => this.designRead(target, relPath), log: (line) => log(line) }),
+        log: (line) => log(line),
+      });
+      const host = this.designRenderer;
+      this.designRunner ??= new DesignRunner({ openPage: (origin, width, events) => host.openPage(origin, width, events), log: (line) => log(line) });
+      return this.designRunner;
+    };
+    const target = (designId: string, relPath: string): DesignViewTarget => designTargetOf(authority, designId, relPath, 'page');
+    return {
+      capture: ({ designId, relPath, width, state, scale }, signal) => runner().capture(target(designId, relPath), { relPath, width, state, scale }, signal),
+      probe: ({ designId, relPath, widths, state, sweepTo }, signal) => runner().probe(target(designId, relPath), { relPath, widths, state, ...(sweepTo !== undefined ? { sweepTo } : {}) }, signal),
+      journey: ({ designId, relPath, widths, state, steps, outline }, signal) => runner().journey(target(designId, relPath), { relPath, widths, state, steps, outline: outline === true }, signal),
+      replay: ({ panelId, designId, relPath, state, steps, reducedMotion }, signal) => this.replayDesignJourney(authority, panelId, { designId, relPath, state, steps, reducedMotion }, signal),
+    };
+  }
+
+  // design.replayJourney from a core: only the live preview of a screen of its own loaded design chat (D93), with the steps
+  // validated again here, since a remote core is another trust domain.
+  private async replayDesignJourney(authority: string, corePanelId: string, request: { readonly designId: string; readonly relPath: string; readonly state: string | null; readonly steps: readonly JourneyStep[]; readonly reducedMotion: boolean }, signal: AbortSignal): Promise<void> {
+    const { designId, relPath } = request;
+    designTargetOf(authority, designId, relPath, 'screen');
+    const parsed = parseJourneySteps(request.steps);
+    if (!('steps' in parsed)) throw new Error('Not journey steps');
+    const chat = this.panelOfCore(chatKey(authority, corePanelId));
+    if (!chat || chat.kind !== 'chat') throw new Error('The design chat is not loaded');
+    if (!this.designPreviews) throw new Error('No window shows design previews');
+    await this.designPreviews.replayJourney(chat, designId, relPath, request.state, parsed.steps, request.reducedMotion, signal);
+  }
+
+  // design.read and design.info exist on a daemon that names them (an older server shows its update message instead).
+  private designSupport(authority: string): DesignSupport {
+    if (!this.clientFor(authority)) return 'offline';
+    if (authority === 'local') return 'yes';
+    const features = this.authorities?.connection(authority)?.features;
+    if (!features) return 'offline';
+    return DESIGN_PREVIEW_FEATURES.every((feature) => features.includes(feature)) ? 'yes' : 'updateServer';
+  }
+
+  private requireDesignClient(authority: string): CoreClient {
+    const support = this.designSupport(authority);
+    if (support !== 'yes') throw new Error(support === 'offline' ? `The core of ${authority} is not connected` : `The server of ${authority} cannot serve designs`);
+    return this.clientFor(authority)!;
+  }
+
+  // Every design byte main serves, in the preview or the browser, comes from the chat's own core.
+  private designRead(target: DesignViewTarget, relPath: string): Promise<DesignPreviewFile | 'tooLarge' | undefined> {
+    return this.requireDesignClient(target.authority).designRead(target.designId, relPath);
+  }
+
+  // design.openPreview from a core: the tab of its design chat, never a browser (PD-35); the chat must be one of that core's.
+  private openDesignPreview(authority: string, corePanelId: string, designId: string, relPath: string): void {
+    designTargetOf(authority, designId, relPath, 'file');
+    const chat = this.panelOfCore(chatKey(authority, corePanelId));
+    if (!chat || chat.kind !== 'chat') throw new Error('The design chat is not loaded');
+    if (!this.designPreviews) {
+      log(`[design] no window to preview design ${designId} in`);
+      return;
+    }
+    this.designPreviews.open(chat, designId, relPath);
+  }
+
+  // A preview tab's @: the screen's real path, as its own core's design.info named it, so on the design chat's authority.
+  private async mentionDesignFile(chat: { readonly panelId: string; readonly authority: string }, filePath: string): Promise<void> {
+    const panel = this.views?.panel(chat.panelId);
+    if (!panel) throw new Error('The design chat is not loaded');
+    await this.chatHost(panel.authority).run('Mention', async (core) => {
+      const corePanelId = (await this.restoredCorePanel(panel)).corePanelId;
+      if (corePanelId === undefined) throw new Error('The design chat is not loaded');
+      await core.client.mention(corePanelId, { path: filePath, authority: panel.authority });
+    });
+  }
+
   private requireEditorPane(): EditorPane {
     if (!this.editorPane) throw new Error('The editor pane used before startup finished');
     return this.editorPane;
@@ -4573,6 +4854,7 @@ class DesktopApp {
       client.onTakeover((sessionId) => {
         if (this.views) this.selectChat(sessionId, authority).catch(this.report('Opening a conversation here'));
       }),
+      client.onDesignChanged((designId, paths) => this.designPreviews?.designChanged(authority, designId, paths)),
       // the host's worktree chats: its registry, its chats' worktree states and its New Chat in This Worktree
       client.onWorktreeRecords((records) => this.remoteRecordsOf(authority).apply(records)),
       client.onWorktreeState((event) => this.onWorktreeState({ ...event, panelId: key(event.panelId) })),
@@ -4621,6 +4903,7 @@ class DesktopApp {
     this.reselectRemote.delete(core.authority);
     this.reopenedRemoteChats.add(core.authority);
     this.saveRemoteChats(core.authority);
+    this.designPreviews?.connectionChanged(core.authority, true);
     this.scheduleRetention();
     await this.remoteSelection.coreOpened(core).catch(this.report('Opening the selected project\'s chat'));
   }
@@ -4869,6 +5152,8 @@ class DesktopApp {
         logs: deps.logs,
         language: deps.language,
         log: deps.log,
+        openDesignPreview: (corePanelId, designId, relPath) => this.openDesignPreview(authority, corePanelId, designId, relPath),
+        designRender: this.designRenderFor(authority),
       },
       t: (message, ...args) => this.requireLocalization().t(message, ...args),
     });
@@ -5143,6 +5428,7 @@ class DesktopApp {
     if (event.kind === 'suspect' || event.kind === 'lost') {
       this.terminals?.connectionLost(authority);
       this.latency?.disconnected(authority);
+      if (event.kind === 'lost') this.designPreviews?.connectionChanged(authority, false);
       this.offlineQueue?.hostLost(authority);
     }
     if (event.kind === 'permanent' && event.code === 'hostKeyChanged' && event.dropped) {
@@ -5150,7 +5436,10 @@ class DesktopApp {
       // the one failure that blocks: the security modal shows what changed and the command that removes the old key
       if (hostId !== undefined) this.openConnect(hostId);
     }
-    if (event.kind === 'gain') this.connectionGained(event.gain);
+    if (event.kind === 'gain') {
+      this.connectionGained(event.gain);
+      this.designPreviews?.connectionChanged(authority, true);
+    }
     this.overlaySettings?.authorityChanged(authority);
     this.shellStateChanged();
   }
@@ -7564,6 +7853,7 @@ class DesktopApp {
     const selected = chatOfSelectedProject(this.selectedProjectKey, shownChat);
     const selectedId = selected ? this.chatIdOf(selected) : undefined;
     const selectedTitle = selected ? this.titleOf(selected) : undefined;
+    const selectedDesign = selected ? this.designOf(selected) : undefined;
     const projectKey = this.selectedProjectKey ?? defaultKey;
     return {
       locale: this.requireLocalization().language,
@@ -7572,7 +7862,7 @@ class DesktopApp {
       projects,
       selected: { ...(projectKey !== undefined ? { projectKey } : {}), ...(selectedId !== undefined ? { chatId: selectedId } : {}) },
       chatViewShown: shownChat !== undefined && !this.chatWithheld(shownChat),
-      ...(selected && selectedId !== undefined ? { selectedChat: { id: selectedId, ...(selectedTitle !== undefined ? { title: selectedTitle } : {}), status: statusOf(this.activityOf(selected)) } } : {}),
+      ...(selected && selectedId !== undefined ? { selectedChat: { id: selectedId, ...(selectedTitle !== undefined ? { title: selectedTitle } : {}), status: statusOf(this.activityOf(selected)), ...(selectedDesign !== undefined ? { design: selectedDesign } : {}) } } : {}),
       effectiveTheme: currentThemeKind(),
       layout: this.windowLayout.sidebar(),
       layoutRevision: this.layoutRevision,
@@ -7594,6 +7884,23 @@ class DesktopApp {
     const groups = groupsOf(shownKeys);
     const order = this.hostStore?.groups(groups) ?? groups;
     return { order, collapsed: (this.hostStore?.collapsedGroups() ?? []).filter((group) => order.includes(group)) };
+  }
+
+  // A design chat its catalog has not listed yet: nested under its parent and named by its panel's title, the name core gives its
+  // session, which its stored row will have.
+  private unlistedDesignRow(chat: DesktopPanel): Pick<ShellChat, 'title' | 'design'> {
+    const parent = this.designParents.get(chat);
+    if (!parent) return { title: '' };
+    const parentChat = this.views?.chats().find((candidate) => candidate === parent);
+    return { title: panelTitle(chat.title), design: parentChat ? { parentId: this.chatIdOf(parentChat) } : {} };
+  }
+
+  // A loaded chat's design role as its chat list row has it.
+  private designOf(panel: DesktopPanel): ShellChat['design'] {
+    const sessionId = this.sessionIdOf(panel);
+    const projectKey = this.projectOf(panel);
+    const row = sessionId === undefined || projectKey === undefined ? undefined : this.catalogRows.get(projectKey)?.find((session) => session.id === sessionId);
+    return row ? shellDesignOf(row) : this.unlistedDesignRow(panel).design;
   }
 
   // undefined while the chat has a session no catalog read has titled yet; '' for a chat with no title
@@ -7700,7 +8007,7 @@ class DesktopApp {
     const views = this.views;
     if (!views) return undefined;
     if (this.notifier.focused) return 'toasts';
-    if (this.browserTabs?.focused()) return 'editor';
+    if (this.browserTabs?.focused() || this.designPreviews?.focused()) return 'editor';
     if (views.chatFocused()) return 'chat';
     return this.shell?.focused ? (this.shellFocusedPart ?? undefined) : undefined;
   }
@@ -7814,6 +8121,18 @@ class DesktopApp {
     else if ((part === 'editor' || part === 'terminal') && this.windowLayout.sidebar().grid.visible[part]) this.shell?.focusPart(part);
     else if (views.selected()) views.focusChat();
     else this.window?.webContents.focus();
+  }
+
+  // A page or design view that held focus closed or hid; after the editor's republish, so the shell focuses the tab that
+  // took its place.
+  private focusAwayFromPage(): void {
+    setImmediate(() => this.focusOn(this.windowLayout.sidebar().grid.visible.editor && this.editorPane?.hasTabs() ? 'editor' : 'chat'));
+  }
+
+  // A refusal of a user's click: a toast, and the shell's invoke rejects with the same text.
+  private refuseWithToast(message: string): never {
+    void this.notifications.error(message);
+    throw new Error(message);
   }
 
   // Each call that turns a reason on flashes again; the flash stops once no reason is left.
@@ -8169,6 +8488,10 @@ class DesktopApp {
       timeoutMs: DISPOSE_TIMEOUT_MS,
       log: (line) => log(line),
     });
+    // every Open in browser URL stops working at quit, and no render window outlives it
+    this.designRunner?.closeAll('Damocles is quitting.');
+    this.designRenderer?.stop('Damocles is quitting');
+    await this.designServer?.dispose();
     for (const disposable of this.disposables.reverse()) disposable.dispose();
     this.notificationCenter.dispose();
     this.taskbar.dispose();
@@ -8257,7 +8580,10 @@ app.on('session-created', (created) => {
 });
 
 const cliPathAction = parseCliPathAction(process.argv);
-if (cliPathAction !== undefined) {
+if (isDesignRendererLaunch(process.argv)) {
+  // main started this process for core's design renders (D85): no window, no lock, no store of the app's
+  runDesignRenderer(process.argv);
+} else if (cliPathAction !== undefined) {
   // before the single-instance lock, so a running Damocles neither blocks the installer nor hears this launch
   void withInstallerLog(path.join(app.getPath('userData'), 'logs'), MAIN_LOG_NAME, () => runCliPathAction(cliPathAction)).then((code) => app.exit(code));
 } else if (!app.requestSingleInstanceLock()) {

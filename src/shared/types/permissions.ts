@@ -66,13 +66,17 @@ export const ASK_USER_QUESTION_LIMITS = {
   MAX_OPTIONS: 4,
 } as const;
 
+/** Model input reaches this type only through `parseQuestionPreview` (src/shared/question-preview.ts). */
+export type QuestionPreview = { kind: 'markdown'; content: string } | { kind: 'design'; path: string };
+
 export interface QuestionOption {
   label: string;
   description: string;
-  preview?: string;
+  preview?: QuestionPreview;
 }
 
-export type QuestionAnnotations = Record<string, { preview?: string; notes?: string }>;
+/** `preview`: a single-select answer's; `previews`: a multi-select answer's, by option label. */
+export type QuestionAnnotations = Record<string, { preview?: QuestionPreview; previews?: Record<string, QuestionPreview>; notes?: string }>;
 
 export interface Question {
   question: string;
@@ -84,7 +88,7 @@ export interface Question {
 export interface PersistedQuestionOption {
   label: string;
   description?: string;
-  preview?: string;
+  preview?: QuestionPreview;
 }
 
 export interface PersistedQuestion {

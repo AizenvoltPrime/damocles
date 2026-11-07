@@ -217,6 +217,12 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
     return viewId;
   };
 
+  const parentOf = (parent: PanelHost): string => {
+    const viewId = ids.get(parent);
+    if (viewId === undefined) throw new Error('A design chat opens beside a loaded chat of this core');
+    return viewId;
+  };
+
   const subscriptions = [
     endpoint.onPanel((panelId, envelope) => {
       // an envelope for a panel core already closed crossed its close
@@ -237,6 +243,7 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
         localResourceRoots: options.localResourceRoots,
         ...(options.column !== undefined ? { column: options.column } : {}),
         ...(options.owner !== undefined ? { owner: ownerOf(options.owner) } : {}),
+        ...(options.parent !== undefined ? { parent: parentOf(options.parent) } : {}),
       };
       const panel = proxy(randomUUID(), options.kind);
       const panelId = ids.get(panel.host)!;

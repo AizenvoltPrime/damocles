@@ -1,11 +1,13 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { PendingPermissionInfo } from '@shared/types/permissions';
+import type { PlanApprovalDesignLink } from '@shared/types/design';
 
 interface PendingPlanApproval {
   toolUseId: string;
   planContent: string;
   planVersion?: number;
+  designLink?: PlanApprovalDesignLink;
 }
 
 interface ApprovedPlanInfo {

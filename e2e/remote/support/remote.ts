@@ -10,7 +10,7 @@ export { expect };
 
 // The default suite: SSH to the Docker fixtures, which every pull request runs.
 export const SSH_TAG = '@ssh';
-// Run only when --grep names them (scripts/test-remote.mjs), against the runner's own sshd in the nightly workflow.
+// Run only when --grep names them (scripts/test-remote.ts), against the runner's own sshd in the nightly workflow.
 export const WINDOWS_TARGET_TAG = '@windows-target';
 export const DARWIN_TARGET_TAG = '@darwin-target';
 // Runs against DAMOCLES_E2E_PACKAGED_APP, with no main-process access.

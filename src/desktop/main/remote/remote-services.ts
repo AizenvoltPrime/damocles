@@ -70,7 +70,7 @@ export interface RemoteServicesDeps {
   readonly notices: DesktopNotifications;
   // this computer's credentials and speech, which only a remote core is relayed
   readonly user: HostUser;
-  readonly base: Pick<HostServicesDeps, 'terminalToggle' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'divert' | 'render' | 'log'>;
+  readonly base: Pick<HostServicesDeps, 'terminalToggle' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'divert' | 'render' | 'log' | 'openDesignPreview' | 'designRender'>;
   readonly t: (message: string, ...args: string[]) => string;
 }
 

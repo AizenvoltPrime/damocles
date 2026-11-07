@@ -11,10 +11,8 @@ import type { AskpassServer } from '../../../../../core/scm/askpass/askpass-serv
 import { findOnAbsolutePathAsync, resolveSshExecutable } from '../../../../../core/system-tools';
 import type { ServerManifest } from '../../server-manifest-format';
 import { scratchDir } from '../../bootstrap/__tests__/shells';
-// @ts-expect-error -- plain .mjs script, no types
-import { tarGz } from '../../../../../../scripts/server-archive.mjs';
-// @ts-expect-error -- plain .mjs script, no types
-import { ALPINE_TARGET_IMAGE } from '../../../../../../scripts/server-targets.mjs';
+import { tarGz } from '../../../../../../scripts/server-archive.ts';
+import { ALPINE_TARGET_IMAGE } from '../../../../../../scripts/server-targets.ts';
 import { runSsh } from '../control-master';
 import { createMainAskpassServer } from '../ssh-askpass';
 import { SshConnectError, startSshTransport, type SshAttemptHooks, type SshTransportDeps, type SshTransportOptions } from '../ssh-transport';

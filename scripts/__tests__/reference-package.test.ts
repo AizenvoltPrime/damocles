@@ -3,8 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs script, no types
-import { refProblem, seedGrammars } from '../../e2e/remote/support/reference-package.mjs';
+import { grammarPin, refProblem, seedGrammars } from '../../e2e/remote/support/reference-package.mjs';
 
 const ROOT = join(__dirname, '..', '..');
 const SCRIPT = join(ROOT, 'e2e', 'remote', 'support', 'reference-package.mjs');
@@ -43,24 +42,46 @@ describe('the reference tag check', () => {
 });
 
 describe('the reference tree\'s grammars', () => {
-  const tree = (script: string, grammars: string[] = []): string => {
+  const PKG = 'tree-sitter-wasms@0.1.13';
+  const C_GO = ['tree-sitter-c.wasm', 'tree-sitter-go.wasm'];
+  const fetchScript = (pkg: string, files: readonly string[], eol = '\n'): string =>
+    [`const PKG = '${pkg}';`, '', 'const WASM_FILES = [', ...files.map((file) => `  '${file}',`), '];', ''].join(eol);
+  const tree = (script: string, grammars: readonly string[] = [], name = 'fetch-grammars.ts'): string => {
     const dir = tempDir('reference-tree-');
     mkdirSync(join(dir, 'scripts'), { recursive: true });
-    writeFileSync(join(dir, 'scripts', 'fetch-grammars.mjs'), script);
+    writeFileSync(join(dir, 'scripts', name), script);
     mkdirSync(join(dir, 'resources', 'grammars'), { recursive: true });
-    for (const name of grammars) writeFileSync(join(dir, 'resources', 'grammars', name), `wasm ${name}`);
+    for (const file of grammars) writeFileSync(join(dir, 'resources', 'grammars', file), `wasm ${file}`);
     return dir;
   };
 
-  it('are this tree\'s when both fetch the same grammars, whatever the line ends', () => {
-    const root = tree('const PKG = 1;\n', ['tree-sitter-c.wasm', 'tree-sitter-go.wasm', 'README.md']);
-    const out = tree('const PKG = 1;\r\n');
-    expect(seedGrammars(out, root)).toEqual(['tree-sitter-c.wasm', 'tree-sitter-go.wasm']);
+  it('reads the pinned package and the grammar list of a fetch script', () => {
+    expect(grammarPin(fetchScript(PKG, C_GO, '\r\n'))).toEqual({ pkg: PKG, files: C_GO });
+    expect(grammarPin('const PKG = 1;\n')).toBeUndefined();
+  });
+
+  it('are this tree\'s when both pin the same package, whatever the line ends', () => {
+    const root = tree(fetchScript(PKG, C_GO), [...C_GO, 'README.md']);
+    const out = tree(fetchScript(PKG, C_GO, '\r\n'));
+    expect(seedGrammars(out, root)).toEqual(C_GO);
     expect(readFileSync(join(out, 'resources', 'grammars', 'tree-sitter-go.wasm'), 'utf8')).toBe('wasm tree-sitter-go.wasm');
   });
 
-  it('are left to the reference tree\'s own fetch when its script differs', () => {
-    const root = tree('const PKG = 1;\n', ['tree-sitter-c.wasm']);
-    expect(seedGrammars(tree('const PKG = 2;\n'), root)).toEqual([]);
+  // The tag remote-protocol-ref predates the TypeScript scripts: its fetch script is an untyped .mjs.
+  it('are seeded into a reference tree whose fetch script is the .mjs form', () => {
+    const root = tree(`function fwd(p: string): string { return p; }\n${fetchScript(PKG, C_GO)}`, C_GO);
+    const out = tree(`function fwd(p) { return p; }\n${fetchScript(PKG, C_GO)}`, [], 'fetch-grammars.mjs');
+    expect(seedGrammars(out, root)).toEqual(C_GO);
+  });
+
+  it('are only the files on both lists', () => {
+    const root = tree(fetchScript(PKG, [...C_GO, 'tree-sitter-vue.wasm']), [...C_GO, 'tree-sitter-vue.wasm']);
+    expect(seedGrammars(tree(fetchScript(PKG, ['tree-sitter-go.wasm', 'tree-sitter-lua.wasm'])), root)).toEqual(['tree-sitter-go.wasm']);
+  });
+
+  it('are left to the reference tree\'s own fetch when it pins another package', () => {
+    const root = tree(fetchScript(PKG, C_GO), C_GO);
+    expect(seedGrammars(tree(fetchScript('tree-sitter-wasms@0.1.12', C_GO)), root)).toEqual([]);
+    expect(seedGrammars(tree('const PKG = 1;\n'), root)).toEqual([]);
   });
 });

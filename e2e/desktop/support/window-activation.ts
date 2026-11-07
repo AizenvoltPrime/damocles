@@ -75,7 +75,7 @@ function bindWindowsRestore(koffi: typeof Koffi): Activate {
   };
 }
 
-const loadKoffi = (): typeof Koffi => createRequire(__filename)('koffi') as typeof Koffi;
+const loadKoffi = (): typeof Koffi => createRequire(import.meta.url)('koffi') as typeof Koffi;
 
 async function mainWindowHandle(app: ElectronApplication): Promise<bigint> {
   const handle = await app.evaluate(({ BrowserWindow }, url) => {

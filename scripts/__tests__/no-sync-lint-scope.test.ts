@@ -84,10 +84,12 @@ describe.each(FOLDERS)('damocles/no-sync in %s', (dir) => {
 });
 
 it('exempts tests, wherever they sit, and worker-only files', async () => {
+  const workerOnly = WORKER_ONLY_FILES[0];
+  if (workerOnly === undefined) throw new Error('eslint.config.mjs lists no worker-only file');
   expect(await noSyncFindings('src/core/memory/__tests__/no-sync-lint-probe.test.ts')).toBe(0);
   expect(await noSyncFindings('src/core/memory/no-sync-lint-probe.test.ts')).toBe(0);
   expect(await noSyncFindings('src/core/memory/no-sync-lint-probe.bench.ts')).toBe(0);
-  expect(await noSyncFindings(WORKER_ONLY_FILES[0])).toBe(0);
+  expect(await noSyncFindings(workerOnly)).toBe(0);
 }, 60_000);
 
 it('exempts only the async queue helpers of `this` named like a sync call', async () => {

@@ -349,3 +349,26 @@ describe('toolAbandoned', () => {
     expect(subagentStore.getSubagent('agent-1')?.toolCalls[0]).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
   });
 });
+
+describe('a tool result as core delivers it: its details, then its end', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('lands the end status with the details already on the card, for the main chat and a subagent', () => {
+    const ctx = context();
+    const { streamingStore, subagentStore } = ctx.stores;
+    const handlers = createToolHandlers();
+    streamingStore.addToolCall({ id: 't-1', name: 'StartDesign', input: {} });
+    subagentStore.registerAgentTool('agent-1', { description: 'build', prompt: 'go' });
+    subagentStore.addToolCallToSubagent('agent-1', { id: 't-2', name: 'Bash', input: {}, status: 'running' });
+
+    handlers.toolMetadata!({ type: 'toolMetadata', toolUseId: 't-1', metadata: { designId: 'd-1' } }, ctx);
+    const main = (): unknown => streamingStore.messages.flatMap((m) => m.toolCalls ?? []).find((t) => t.id === 't-1');
+    expect(main()).toMatchObject({ status: 'pending', metadata: { designId: 'd-1' } });
+    handlers.toolCompleted!({ type: 'toolCompleted', toolUseId: 't-1', toolName: 'StartDesign', result: 'ok' }, ctx);
+    expect(main()).toMatchObject({ status: 'completed', metadata: { designId: 'd-1' } });
+
+    handlers.toolMetadata!({ type: 'toolMetadata', toolUseId: 't-2', metadata: { damoclesCancelled: true } }, ctx);
+    handlers.toolCompleted!({ type: 'toolCompleted', toolUseId: 't-2', toolName: 'Bash', result: 'Command aborted', parentToolUseId: 'agent-1' }, ctx);
+    expect(subagentStore.getSubagent('agent-1')?.toolCalls[0]).toMatchObject({ status: 'cancelled', metadata: { damoclesCancelled: true } });
+  });
+});

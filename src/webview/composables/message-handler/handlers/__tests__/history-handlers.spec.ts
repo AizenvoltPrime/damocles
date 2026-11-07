@@ -47,6 +47,29 @@ function dispatch(msg: ExtensionToWebviewMessage, ctx: HandlerContext, registry 
   handler(msg, ctx);
 }
 
+describe('a preview markup message', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
+  const content = ['Markup F1 on screens/S1.html at xl · 1280 · default:', 'Pin 1 (change) on ui/Table: Denser rows'].join('\n');
+
+  it('keeps its feedback id live, so the transcript shows the markup card', () => {
+    dispatch({ type: 'userMessage', content, contentBlocks: [{ type: 'text', text: content }, { ...image, origin: 'designPreview' }], correlationId: 'c1', promptIndex: 0, designMarkup: { feedbackId: 'F1' } }, context());
+    expect(useStreamingStore().messages.at(-1)).toMatchObject({ role: 'user', content, designMarkup: { feedbackId: 'F1' } });
+  });
+
+  it('keeps its feedback id on replay', () => {
+    dispatch({ type: 'userReplay', content, contentBlocks: [{ type: 'text', text: content }, image], designMarkup: { feedbackId: 'F1' }, promptIndex: 0 }, context());
+    useStreamingStore().flushReplayQueue();
+    expect(useStreamingStore().messages.at(-1)).toMatchObject({ role: 'user', isReplay: true, designMarkup: { feedbackId: 'F1' } });
+  });
+
+  it('marks no other user message', () => {
+    dispatch({ type: 'userMessage', content: 'Hello', correlationId: 'c2', promptIndex: 1 }, context());
+    expect(useStreamingStore().messages.at(-1)).not.toHaveProperty('designMarkup');
+  });
+});
+
 describe('a replayed credential refusal', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

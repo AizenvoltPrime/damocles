@@ -4,9 +4,10 @@ import { chatPageHtml, ERROR_PAGE_STRINGS, errorPageHtml } from '../panel-html';
 
 // Desktop pages are built by main with these builders; each CSP below is the one core built at 6dd3c95d
 // (panel-manager.ts getHtmlContent / getErrorHtml, browser-panel.ts buildHtml) for a desktop panel proxy, whose cspSource
-// was APP_ORIGIN and whose chat workerSrc was CHAT_WORKER_SRC, with the nonce NONCE.
+// was APP_ORIGIN and whose chat workerSrc was CHAT_WORKER_SRC, with the nonce NONCE; the chat page's img-src has since taken
+// `blob:` for the tool-result image cache.
 const ORIGIN = 'app://damocles';
-const CHAT_CSP_6DD3C95D = "default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-NONCE' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: https:; form-action 'none'; worker-src app://damocles/webview/assets/;";
+const CHAT_CSP_6DD3C95D = "default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-NONCE' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: blob: https:; form-action 'none'; worker-src app://damocles/webview/assets/;";
 const ERROR_CSP_6DD3C95D = "default-src 'none'; style-src 'unsafe-inline'; img-src app://damocles;";
 const BROWSER_CSP_6DD3C95D = "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-NONCE';";
 

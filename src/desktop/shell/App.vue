@@ -12,9 +12,12 @@ import FocusOverlay from './editor/FocusOverlay.vue';
 import ConnectionBanner from './components/ConnectionBanner.vue';
 import ChatPlaceholder from './components/ChatPlaceholder.vue';
 import { chatTitleText } from './components/chat-title';
+import { DESIGN_STRIP } from '@/components/design/design-strip';
 import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
 import { createScmStore, SCM_STORE } from './scm/scm-store';
+import { dropMarkupSession } from './editor/markup-session';
+import { dropTweaksSession } from './editor/tweaks-session';
 
 const props = defineProps<{ api: DamoclesShellApi }>();
 const { t } = useI18n();
@@ -41,6 +44,8 @@ const selectedHost = computed(() => {
   const hostId = selectedProject.value?.authority.hostId;
   return hostId === undefined ? undefined : state.value?.hosts.find((host) => host.hostId === hostId);
 });
+// The shell cannot see the chat page's design header; a design chat has one for its whole life, so the edge follows its role.
+const designEdgeShown = computed(() => state.value?.selectedChat?.design !== undefined && state.value.chatViewShown && !editor.focusOverlay.value);
 
 // Reveals waiting for main to show the sidebar they asked for.
 let sidebarWaiters: Array<() => void> = [];
@@ -79,6 +84,8 @@ onMounted(async () => {
   // Subscribed before the first read, so a change between the two is not lost.
   stops.push(props.api.onState(applyState));
   stops.push(props.api.onFocusPart(focusPart));
+  stops.push(props.api.onDesignPreviewClosed(dropMarkupSession));
+  stops.push(props.api.onDesignPreviewClosed(dropTweaksSession));
   // One project's shown folder (D31) between full states; the next state carries it too.
   stops.push(props.api.onShownFolder((shown) => {
     if (state.value) state.value = { ...state.value, shownFolders: { ...state.value.shownFolders, [shown.projectKey]: shown } };
@@ -164,11 +171,18 @@ onBeforeUnmount(() => {
         :sidebar-sliding="sidebarSliding"
       >
         <!-- Every banner sits under a header, a chat page's or the placeholder's, and the gutter's strip continues it; a kept
-             chat of another project is another host's or local, so it gets no strip. -->
+             chat of another project is another host's or local, so it gets no strip. A design chat's page puts its design
+             header between the two, so the gutter does too. -->
         <template
           v-if="state.selected.chatId !== undefined || !state.chatViewShown"
           #chatGutter
         >
+          <div
+            v-if="designEdgeShown"
+            aria-hidden="true"
+            data-testid="design-header-edge"
+            :class="DESIGN_STRIP"
+          />
           <ConnectionBanner
             :key="selectedHost?.hostId ?? 'none'"
             :host="selectedHost"
@@ -202,7 +216,7 @@ onBeforeUnmount(() => {
       </LayoutGrid>
     </div>
     <!-- The focus overlay's scrim dims the whole window below the expanded editor; a click on it returns the editor to its slot.
-         z-40 stays below .editor-focus's z-index (style.css). -->
+         z-40 stays below the focus overlay, which the overlay stack places from its base of 50 (EditorPane.vue). -->
     <Transition name="t-fade">
       <div
         v-if="editor.focusOverlay.value"

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { extractFile, listPackage } from '@electron/asar';
 import { afterEach, describe, expect, it } from 'vitest';
-import { asarFiles, readAsarFile, readAsarHeader, writeAsar } from '../asar-archive.mjs';
+import { asarFiles, readAsarFile, readAsarHeader, writeAsar } from '../asar-archive.ts';
 
 // Text, an empty file, a non-ASCII name (header byte length differs from its string length) and raw bytes.
 const TEXT = { 'package.json': '{"name":"x"}', 'dist/main.js': 'console.log(1);\n', 'dist/deep/ä.txt': 'ä', 'dist/empty.txt': '' };

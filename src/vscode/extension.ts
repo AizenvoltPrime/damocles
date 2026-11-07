@@ -118,9 +118,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("damocles.newSession", () => {
-      chatPanelProvider?.newSession();
-    })
+    vscode.commands.registerCommand("damocles.newSession", () => chatPanelProvider?.newSession())
   );
 
   context.subscriptions.push(

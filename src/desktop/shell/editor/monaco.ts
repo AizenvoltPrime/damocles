@@ -3,7 +3,7 @@
 import { getJavaScriptWorker, getTypeScriptWorker, javascriptDefaults, typescriptDefaults } from 'monaco-editor/languages/features/typescript/register';
 import TypeScriptWorker from 'monaco-editor/languages/features/typescript/ts.worker?worker';
 import { getWorker as getJsonWorker } from 'monaco-editor/languages/features/json/register';
-import settingsSchema from '@shared/generated/settings-schema.json';
+import settingsSchema from '@shared/generated/settings-schema.json' with { type: 'json' };
 import type { SettingsFileScope } from '@shared/types/messages';
 import { addLanguageWorker, baseEditorOptions, jsonDefaults, useMonaco, type Monaco } from '@/components/editor/useMonaco';
 import { builtinEdits, lineEdits, type BuiltinWorkers } from './format-edits';

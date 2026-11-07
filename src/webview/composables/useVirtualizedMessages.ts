@@ -3,6 +3,7 @@ import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, 
 import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
 import { TEAM_MANAGEMENT_TOOLS, TEAM_RESUME_TOOL, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
+import type { DesignTranscriptCard } from '@/stores/useDesignStore';
 
 export type VirtualItemType =
   | 'user-message'
@@ -16,7 +17,9 @@ export type VirtualItemType =
   | 'error-message'
   | 'refusal-message'
   | 'streaming-text'
-  | 'background-label';
+  | 'background-label'
+  | 'design-result'
+  | 'design-brief';
 
 export interface VirtualItem {
   id: string;
@@ -31,6 +34,7 @@ export interface VirtualItem {
   notice?: CacheMissNotice;
   compactionAborted?: CompactionAbortedNotice;
   thinkingDropped?: ThinkingDroppedNotice;
+  designCard?: DesignTranscriptCard;
   block?: ContentBlock;
   imageBlocks?: ImageBlock[];
   isStreaming?: boolean;
@@ -66,6 +70,7 @@ export interface VirtualizedMessageSources {
   cacheMissNotices: Ref<CacheMissNotice[] | undefined>;
   compactionAbortedNotices: Ref<CompactionAbortedNotice[] | undefined>;
   thinkingDroppedNotices: Ref<ThinkingDroppedNotice[] | undefined>;
+  designCards?: Ref<readonly DesignTranscriptCard[] | undefined>;
   streamingMessageId: Ref<string | null | undefined>;
 }
 
@@ -88,6 +93,8 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
       drops: sources.thinkingDroppedNotices.value ?? [],
     };
 
+    const designCards = designCardsByAnchor(sources.designCards?.value ?? [], msgs);
+
     // A processed queue bubble keeps its older timestamp at the end of the array, so each cut runs from the highest timestamp seen so far.
     let maxSeenTimestamp = 0;
     // The effort badge shown last in the current turn; a user message starts a new turn.
@@ -96,6 +103,8 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
     for (const [i, msg] of msgs.entries()) {
       const isStreaming = !!streamingId && msg.id === streamingId;
 
+      const previous = msgs[i - 1];
+      result.push(...designRows(designCards, previous?.id ?? null, previous ?? msg, Math.max(0, i - 1)));
       result.push(...collectAnnotations(annotations, maxSeenTimestamp, msg.timestamp, msg, i));
       maxSeenTimestamp = Math.max(maxSeenTimestamp, msg.timestamp);
 
@@ -192,6 +201,7 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
     };
 
     result.push(
+      ...designRows(designCards, msgs.length > 0 ? anchor.id : null, anchor, msgs.length - 1),
       ...collectAnnotations(annotations, maxSeenTimestamp, Number.POSITIVE_INFINITY, anchor, msgs.length - 1),
     );
 
@@ -199,6 +209,44 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
   });
 
   return { items };
+}
+
+// A compaction, a rewind, `assistantRetracted`, `promptReturned`, `interruptRecovery` and `combineQueuedMessages` can take
+// a card's message out of the transcript; the card then follows the nearest earlier message by timestamp, never vanishing.
+function designCardsByAnchor(cards: readonly DesignTranscriptCard[], msgs: readonly ChatMessage[]): Map<string | null, DesignTranscriptCard[]> {
+  const byAnchor = new Map<string | null, DesignTranscriptCard[]>();
+  const present = new Set(msgs.map((msg) => msg.id));
+  for (const card of cards) {
+    const anchor = card.afterMessageId === null || present.has(card.afterMessageId) ? card.afterMessageId : nearestEarlier(msgs, card.afterTimestamp);
+    const list = byAnchor.get(anchor);
+    if (list) list.push(card);
+    else byAnchor.set(anchor, [card]);
+  }
+  return byAnchor;
+}
+
+// The last message before which nothing later than `timestamp` appears, as annotations are placed; null before the first.
+function nearestEarlier(msgs: readonly ChatMessage[], timestamp: number): string | null {
+  let anchor: string | null = null;
+  let maxSeen = 0;
+  for (const msg of msgs) {
+    maxSeen = Math.max(maxSeen, msg.timestamp);
+    if (maxSeen > timestamp) break;
+    anchor = msg.id;
+  }
+  return anchor;
+}
+
+function designRows(cards: Map<string | null, DesignTranscriptCard[]>, anchorId: string | null, anchor: ChatMessage, anchorIndex: number): VirtualItem[] {
+  return (cards.get(anchorId) ?? []).map((card) => ({
+    id: `design-${card.entryId}`,
+    type: card.kind === 'result' ? 'design-result' : 'design-brief',
+    message: anchor,
+    originalMessageIndex: anchorIndex,
+    sourceMessageId: anchor.id,
+    spacingLevel: 1,
+    designCard: card,
+  }));
 }
 
 /** A reply's badge row: its thinking header when `ThinkingIndicator` renders one, else its first text row. */

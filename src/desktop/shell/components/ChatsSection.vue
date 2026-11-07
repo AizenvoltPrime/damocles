@@ -31,6 +31,7 @@ const { t } = useI18n();
 // Fixed row heights in rem; the virtual list positions rows from their px.
 const GROUP_ROW_REM = 1.625;
 const CHAT_ROW_REM = 2.875;
+const NESTED_ROW_REM = 2;
 const SEARCH_DEBOUNCE_MS = 150;
 const STATE_ACTION = 'h-auto rounded-7 border-(--d-border2) bg-transparent px-2.5 py-1 text-xs font-normal text-(--d-text) transition-none hover:border-(--d-accent) hover:bg-transparent hover:text-(--d-accent)';
 
@@ -124,7 +125,33 @@ const shown = computed(() => {
   return tagFilter.value === undefined ? source : source.filter((chat) => chat.tag === tagFilter.value);
 });
 const rows = computed<ChatListRow[]>(() => chatListRows(shown.value, now.value));
-const rowHeight = (row: ChatListRow | undefined): number => remPx(row?.kind === 'group' ? GROUP_ROW_REM : CHAT_ROW_REM);
+
+// A design chat that appears after the project's first list slides in once; the first list, and a virtual row scrolled back in, stay still.
+const arrived = ref(new Set<string>());
+let knownChats: { readonly projectKey: string; readonly ids: ReadonlySet<string> } | undefined;
+watch(list, (next) => {
+  if (!next) return;
+  const ids = new Set(next.chats.map((chat) => chat.id));
+  if (knownChats?.projectKey === next.projectKey) {
+    const fresh = next.chats.filter((chat) => chat.design !== undefined && !knownChats!.ids.has(chat.id)).map((chat) => chat.id);
+    if (fresh.length > 0) arrived.value = new Set([...arrived.value, ...fresh]);
+  } else {
+    arrived.value = new Set();
+  }
+  knownChats = { projectKey: next.projectKey, ids };
+  // A row that is not rendered never plays its slide, so it must not keep its mark for when it scrolls into view.
+  void nextTick(() => {
+    const rendered = new Set(visibleRows.value.flatMap(({ data: row }) => (row.kind === 'chat' ? [row.chat.id] : [])));
+    if ([...arrived.value].some((id) => !rendered.has(id))) arrived.value = new Set([...arrived.value].filter((id) => rendered.has(id)));
+  });
+});
+function settled(id: string): void {
+  if (!arrived.value.has(id)) return;
+  const next = new Set(arrived.value);
+  next.delete(id);
+  arrived.value = next;
+}
+const rowHeight = (row: ChatListRow | undefined): number => remPx(row?.kind === 'group' ? GROUP_ROW_REM : row?.nested ? NESTED_ROW_REM : CHAT_ROW_REM);
 const { list: visibleRows, containerProps, wrapperProps } = useVirtualList(rows, {
   itemHeight: (index) => rowHeight(rows.value[index]),
   overscan: 8,
@@ -675,11 +702,14 @@ defineExpose({
           <ChatRow
             v-else
             :chat="row.chat"
+            :nested="row.nested"
             :option-id="optionId(index)"
             :selected="row.chat.id === selectedChatId"
             :active="index === activeIndex"
             :renaming="row.chat.id === renamingId"
             :opens-here="canOpenHere(row.chat)"
+            :class="arrived.has(row.chat.id) ? 'd-row-arrive' : ''"
+            @animationend.self="settled(row.chat.id)"
             @select="select(row.chat)"
             @new-here="newChatHere(row.chat)"
             @menu="onRowMenu(row.chat, $event)"

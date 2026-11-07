@@ -110,6 +110,14 @@ export function createCorePlatform(
     editor,
     window,
     lifecycle: createLifecycleProxy(endpoint),
+    designPreview: {
+      open: (panelId, designId, relPath) => endpoint.request('design.openPreview', { panelId, designId, relPath }),
+      changed: (designId, paths) => endpoint.emit('design.changed', { designId, paths }),
+      capture: (designId, relPath, width, state, scale, signal) => endpoint.request('design.capture', { designId, relPath, width, state, scale }, signal),
+      probe: (designId, relPath, widths, state, sweepTo, signal) => endpoint.request('design.probe', { designId, relPath, widths, state, ...(sweepTo !== undefined ? { sweepTo } : {}) }, signal),
+      journey: (designId, relPath, widths, state, steps, outline, signal) => endpoint.request('design.journey', { designId, relPath, widths, state, steps, outline }, signal),
+      replayJourney: (panelId, designId, relPath, state, steps, reducedMotion, signal) => endpoint.request('design.replayJourney', { panelId, designId, relPath, state, steps, reducedMotion }, signal),
+    },
     logSinks: local.logSinks,
     get worktrees() {
       if (!worktrees) throw new Error('Worktree services read before core built them');

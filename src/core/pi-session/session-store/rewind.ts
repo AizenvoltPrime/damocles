@@ -12,7 +12,6 @@ import {
   PORTABLE_CONFIG,
   RepoManager,
   folderIdFor,
-  getCheckpointEntries,
   getFolderRepoDir,
   getFolderReposBaseDir,
   getNotRewindableEntries,
@@ -35,6 +34,8 @@ import { extractOriginalInputs } from './original-input';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
 import { storedTypedText } from './prompt-context';
 import { promptTest } from './prompt-index';
+import { decisionsOnBranch, designRoleOf } from '../../design/design-entries';
+import { rewindableCheckpoints } from '../../design/design-checkpoints';
 
 /**
  * The TRUE set of files a rewind to each `beforeCommit` would change: the live diff between the
@@ -109,7 +110,7 @@ async function computeLiveRewindDiffs(
 export function rewindableUserIdsOnBranch(branch: readonly unknown[]): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
-  for (const cp of getCheckpointEntries(branch)) {
+  for (const cp of rewindableCheckpoints(branch)) {
     if (seen.has(cp.userEntryId)) continue;
     seen.add(cp.userEntryId);
     ids.push(cp.userEntryId);
@@ -273,15 +274,39 @@ export function precedesHandOff(entries: readonly unknown[], messageId: string):
  * (`kind: 'compaction'`) carry the pi compaction entry id + summary and never restore files — selecting
  * one branches the tree at the compaction's parent to recover the full pre-compaction context.
  * `fileCheckpoints` is false for a chat with no project folder: every prompt is then a conversation-only
- * anchor and no checkpoint repo is read.
+ * anchor and no checkpoint repo is read. `checkpointFolder` is the folder the checkpoints capture, a design chat's design folder
+ * (PD-39); `cwd` finds the session file. A design chat's items also name the decisions each rewind removes.
  */
 export async function getPiRewindHistory(
   cwd: string,
   sessionId: string,
   maxFileSizeBytes: number,
   fileCheckpoints = true,
+  checkpointFolder: string = cwd,
 ): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[] }> {
-  const none = { items: [], restorePoints: [] };
+  const history = await rewindHistoryOf(cwd, sessionId, maxFileSizeBytes, fileCheckpoints, checkpointFolder);
+  return { ...history, items: withDesignDecisionsAfter(history.items, history.branch) };
+}
+
+/** In a design chat, each item's `designDecisionsAfter`: the branch's decisions at or after its entry, which a rewind there removes. */
+export function withDesignDecisionsAfter(items: RewindHistoryItem[], branch: readonly unknown[]): RewindHistoryItem[] {
+  if (!designRoleOf(branch)) return items;
+  const index = new Map(branch.map((entry, i) => [(entry as { id?: unknown }).id, i]));
+  return items.map((item) => {
+    const at = index.get(item.messageId);
+    const after = at === undefined ? [] : decisionsOnBranch(branch.slice(at));
+    return { ...item, designDecisionsAfter: after.map(({ id, title, chosen, rejected, source, supersedes }) => ({ id, title, chosen, rejected, source, ...(supersedes ? { supersedes } : {}) })) };
+  });
+}
+
+async function rewindHistoryOf(
+  cwd: string,
+  sessionId: string,
+  maxFileSizeBytes: number,
+  fileCheckpoints: boolean,
+  checkpointFolder: string,
+): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[]; branch: readonly unknown[] }> {
+  const none = { items: [], restorePoints: [], branch: [] };
   const pi = await initPiLoader();
   if (!pi) return none;
   const filePath = await resolvePiSessionFile(cwd, sessionId);
@@ -289,12 +314,12 @@ export async function getPiRewindHistory(
   try {
     const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-    const checkpoints = [...getCheckpointEntries(branch)];
+    const checkpoints = [...rewindableCheckpoints(branch)];
     // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
     // a sidecar recorded it, so the rewind list matches the transcript/up-arrow/preview.
     const originalInputs = extractOriginalInputs(branch);
     const typedText = typedTextOf(branch);
-    if (!fileCheckpoints) return { items: markHandOffs(conversationOnlyRewindItems(branch, originalInputs, typedText), sm.getEntries(), cwd), restorePoints: [] };
+    if (!fileCheckpoints) return { items: markHandOffs(conversationOnlyRewindItems(branch, originalInputs, typedText), sm.getEntries(), cwd), restorePoints: [], branch };
     // A checkpoint whose userEntryId matches a compaction entry is a compaction snapshot, not a prompt
     // turn: it must enrich the compaction anchor (below) instead of leaking a phantom empty-prompt row.
     const compactionIds = new Set<string>();
@@ -303,12 +328,12 @@ export async function getPiRewindHistory(
       if (e.type === 'compaction' && typeof e.id === 'string') compactionIds.add(e.id);
     }
     // Restore points of this folder, from every branch: an undo restores files, whichever branch is open.
-    const folderId = folderIdFor(cwd);
+    const folderId = folderIdFor(checkpointFolder);
     const preRewinds = getPreRewindEntries(sm.getEntries()).filter((r) => r.folderId === folderId);
     // Prefer the live diff (what the rewind will actually do); fall back to the static per-turn diff
     // when the checkpoint repo/git is unavailable (e.g. sessions recorded before checkpoints existed).
     const liveDiffs = await liveDiffsPerTarget(
-      cwd,
+      checkpointFolder,
       [
         ...checkpoints.map((cp) => ({ repoDir: repoDirOf(cp, filePath), commit: cp.beforeCommit })),
         ...preRewinds.map((r) => ({ repoDir: getFolderRepoDir(r.folderId), commit: r.commit })),
@@ -324,7 +349,7 @@ export async function getPiRewindHistory(
       createdAt: cp.createdAt,
       ...(cp.v === 3 ? { skipped: cp.skipped } : {}),
     }));
-    const { promptItemsOldestFirst, checkpointDiffsMap } = partitionCheckpointRows(rows, compactionIds, originalInputs, cwd);
+    const { promptItemsOldestFirst, checkpointDiffsMap } = partitionCheckpointRows(rows, compactionIds, originalInputs, checkpointFolder);
     const rewindable = new Set(checkpoints.map((c) => c.userEntryId));
     const notRewindableItems = getNotRewindableEntries(branch)
       .filter((r) => !rewindable.has(r.userEntryId) && !compactionIds.has(r.userEntryId))
@@ -347,7 +372,7 @@ export async function getPiRewindHistory(
           target: r.target,
           skipped: r.skipped,
           filesAffected: changes.length,
-          ...(changes.length > 0 ? { files: changes.map((fc) => ({ path: path.resolve(cwd, fc.path), displayName: fc.path })) } : {}),
+          ...(changes.length > 0 ? { files: changes.map((fc) => ({ path: path.resolve(checkpointFolder, fc.path), displayName: fc.path })) } : {}),
           ...(added || removed ? { linesChanged: { added, removed } } : {}),
         };
       })
@@ -357,9 +382,9 @@ export async function getPiRewindHistory(
     // newest-first); compaction items interleave by timestamp so each lands at its real point in time.
     const items = mergeRewindAnchorsNewestFirst(
       [...promptItemsOldestFirst.reverse(), ...notRewindableItems],
-      getCompactionRewindItems(branch, cwd, checkpointDiffsMap),
+      getCompactionRewindItems(branch, checkpointFolder, checkpointDiffsMap),
     );
-    return { items: markHandOffs(items, sm.getEntries(), cwd), restorePoints };
+    return { items: markHandOffs(items, sm.getEntries(), cwd), restorePoints, branch };
   } catch (err) {
     log('[session-store] getPiRewindHistory failed for %s: %O', sessionId, err);
     return none;
@@ -448,6 +473,7 @@ export async function getPiFileCheckpointContent(
   sessionId: string,
   userMessageId: string,
   filePath: string,
+  checkpointFolder: string = cwd,
 ): Promise<string | null> {
   const pi = await initPiLoader();
   if (!pi) return null;
@@ -456,9 +482,9 @@ export async function getPiFileCheckpointContent(
   try {
     const sm = pi.SessionManager.open(sessionFile, path.dirname(sessionFile));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-    const cp = [...getCheckpointEntries(branch)].reverse().find((c) => c.userEntryId === userMessageId);
+    const cp = [...rewindableCheckpoints(branch)].reverse().find((c) => c.userEntryId === userMessageId);
     if (!cp) return null;
-    const read = await checkpointCommitFile(repoDirOf(cp, sessionFile), cp.beforeCommit, path.relative(cwd, filePath).replace(/\\/g, '/'));
+    const read = await checkpointCommitFile(repoDirOf(cp, sessionFile), cp.beforeCommit, path.relative(checkpointFolder, filePath).replace(/\\/g, '/'));
     // binary content would render as mojibake in the text diff viewer, so the caller opens the live file instead
     return read.kind === 'text' ? read.text : read.kind === 'absent' ? '' : null;
   } catch {
@@ -471,7 +497,7 @@ export async function getPiFileCheckpointContent(
  * of a restore point (from any branch), read from the session file and the folder repo's manifest
  * without the folder lock. A v2 checkpoint records no list.
  */
-export async function getPiSkippedFiles(cwd: string, sessionId: string, target: SkippedFilesTarget): Promise<Result<SkippedFile[]>> {
+export async function getPiSkippedFiles(cwd: string, sessionId: string, target: SkippedFilesTarget, checkpointFolder: string = cwd): Promise<Result<SkippedFile[]>> {
   const pi = await initPiLoader();
   if (!pi) return { ok: false, error: 'the pi runtime is unavailable' };
   const sessionFile = await resolvePiSessionFile(cwd, sessionId);
@@ -480,12 +506,12 @@ export async function getPiSkippedFiles(cwd: string, sessionId: string, target: 
     const sm = pi.SessionManager.open(sessionFile, path.dirname(sessionFile));
     if (target.kind === 'restore-point') {
       const record = getPreRewindEntries(sm.getEntries()).find((r) => r.id === target.id);
-      return record ? await readSkippedManifest(record, cwd) : { ok: false, error: `no restore point ${target.id}` };
+      return record ? await readSkippedManifest(record, checkpointFolder) : { ok: false, error: `no restore point ${target.id}` };
     }
-    const cp = [...getCheckpointEntries(sm.getBranch(sm.getLeafId() ?? undefined))].reverse().find((c) => c.userEntryId === target.userEntryId);
+    const cp = [...rewindableCheckpoints(sm.getBranch(sm.getLeafId() ?? undefined))].reverse().find((c) => c.userEntryId === target.userEntryId);
     if (!cp) return { ok: false, error: `no checkpoint for ${target.userEntryId}` };
     if (cp.v !== 3) return { ok: false, error: `the checkpoint of ${target.userEntryId} records no skipped list` };
-    return await readSkippedManifest(cp, cwd);
+    return await readSkippedManifest(cp, checkpointFolder);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

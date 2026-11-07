@@ -23,7 +23,7 @@ export function unpackagedResourceRoot(mainBundleDir: string): string {
   return path.resolve(mainBundleDir, '..', '..');
 }
 
-// Worker bundle names match the esbuild.config.mjs outfiles under dist/.
+// Worker bundle names match the esbuild.config.ts outfiles under dist/.
 export function createDesktopAppPaths(layout: DesktopLayout): AppPaths {
   const resourceRoot = layout.packaged ? layout.asarPath : layout.repoRoot;
   const unpackedRoot = layout.packaged ? `${layout.asarPath}.unpacked` : layout.repoRoot;

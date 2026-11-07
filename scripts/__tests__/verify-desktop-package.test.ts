@@ -3,7 +3,6 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs script, no types
 import {
   ASKPASS_SCRIPTS,
   checkAppUpdate,
@@ -26,7 +25,7 @@ import {
   verifyPackage,
   WINDOWS_PUBLISHER,
   WORKERS,
-} from '../verify-desktop-package.mjs';
+} from '../verify-desktop-package.ts';
 import { parse } from 'yaml';
 import { ASAR_UNPACK } from '../../src/desktop/main/platform/unpacked-assets';
 
@@ -47,9 +46,10 @@ afterEach(() => {
 });
 
 describe('WORKERS', () => {
-  it('names every top-level dist script the build writes but the extension, Damocles Core, which stays packed, the loopback daemon, which never ships, and a target terminal\'s damocles command, which only a server package carries', () => {
-    const config = readFileSync(join(__dirname, '..', '..', 'esbuild.config.mjs'), 'utf8');
-    const outfiles = [...config.matchAll(/outfile: 'dist\/([^/']+\.js)'/g)].map((match) => match[1]).filter((name) => name !== 'extension.js' && name !== 'core-host.js' && name !== 'daemon.js' && name !== 'cli-remote.js');
+  it('names every top-level dist script the desktop build writes but Damocles Core, which stays packed, the loopback daemon, which never ships, and a target terminal\'s damocles command, which only a server package carries', async () => {
+    const { DESKTOP_BUNDLES } = await import('../../esbuild.config.ts');
+    const outfiles = DESKTOP_BUNDLES.map((bundle) => /^dist\/([^/]+\.js)$/.exec(bundle.outfile)?.[1])
+      .filter((name): name is string => name !== undefined && name !== 'core-host.js' && name !== 'daemon.js' && name !== 'cli-remote.js');
     expect(outfiles).toContain('cli.js');
     expect(outfiles).toContain('process-launcher-worker.js');
     expect([...WORKERS].sort()).toEqual(outfiles.sort());
@@ -122,8 +122,8 @@ describe('checkAsarEntries', () => {
 describe('checkNoDaemon', () => {
   it('passes a package without the loopback daemon and fails one that ships it, packed or unpacked', () => {
     expect(failures(checkNoDaemon([{ path: 'dist/core-host.js', entry: { unpacked: false } }], []))).toEqual([]);
-    expect(checkNoDaemon([{ path: 'dist/daemon.js', entry: { unpacked: false } }], [])[0].detail).toBe('dist/daemon.js ships in app.asar');
-    expect(checkNoDaemon([], ['dist/daemon.js'])[0].detail).toBe('dist/daemon.js ships in app.asar.unpacked');
+    expect(checkNoDaemon([{ path: 'dist/daemon.js', entry: { unpacked: false } }], [])[0]!.detail).toBe('dist/daemon.js ships in app.asar');
+    expect(checkNoDaemon([], ['dist/daemon.js'])[0]!.detail).toBe('dist/daemon.js ships in app.asar.unpacked');
   });
 });
 
@@ -140,15 +140,15 @@ describe('checkServerManifest', () => {
   });
 
   it('fails a missing manifest, one the app cannot read, another version\'s and one whose hashes differ', () => {
-    expect(checkServerManifest(undefined, '3.7.0', release('3.7.0', 'a'))[0].detail).toBe('dist/desktop/server-manifest.json is not in app.asar');
-    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), version: '..' }), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/does not parse/);
-    expect(checkServerManifest(JSON.stringify(release('3.6.0', 'a')), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/it is for 3\.6\.0, the app is 3\.7\.0/);
-    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'b')), '3.7.0', release('3.7.0', 'a'))[0].detail).toBe(`linux-x64 is not damocles-server-3.7.0-linux-x64.tar.gz with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}; win32-x64 is not damocles-server-3.7.0-win32-x64.zip with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}`);
+    expect(checkServerManifest(undefined, '3.7.0', release('3.7.0', 'a'))[0]!.detail).toBe('dist/desktop/server-manifest.json is not in app.asar');
+    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), version: '..' }), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/does not parse/);
+    expect(checkServerManifest(JSON.stringify(release('3.6.0', 'a')), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/it is for 3\.6\.0, the app is 3\.7\.0/);
+    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'b')), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toBe(`linux-x64 is not damocles-server-3.7.0-linux-x64.tar.gz with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}; win32-x64 is not damocles-server-3.7.0-win32-x64.zip with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}`);
   });
 
   it('fails an unpublished manifest, whose hosts would never download, and another build\'s server versions', () => {
-    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), published: false }), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/^it is unpublished/);
-    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'a', 'b'.repeat(12))), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/^linux-x64 is not .* server version 3\.7\.0\+a{12}; win32-x64/);
+    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), published: false }), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/^it is unpublished/);
+    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'a', 'b'.repeat(12))), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/^linux-x64 is not .* server version 3\.7\.0\+a{12}; win32-x64/);
   });
 });
 
@@ -161,9 +161,9 @@ describe('checkCoreHost', () => {
   });
 
   it('fails a missing bundle, one marked unpacked and an unpacked copy', () => {
-    expect(checkCoreHost([], [])[0].detail).toBe('not in app.asar');
-    expect(checkCoreHost([{ path: 'dist/core-host.js', entry: { unpacked: true } }], [])[0].detail).toBe('marked unpacked in app.asar');
-    expect(checkCoreHost([packed], ['dist/core-host.js'])[0].detail).toBe('has a copy in app.asar.unpacked');
+    expect(checkCoreHost([], [])[0]!.detail).toBe('not in app.asar');
+    expect(checkCoreHost([{ path: 'dist/core-host.js', entry: { unpacked: true } }], [])[0]!.detail).toBe('marked unpacked in app.asar');
+    expect(checkCoreHost([packed], ['dist/core-host.js'])[0]!.detail).toBe('has a copy in app.asar.unpacked');
   });
 });
 
@@ -386,7 +386,7 @@ describe('checkChangelog', () => {
 });
 
 describe('verifyPackage', () => {
-  function fakeApp(platform: 'win32' | 'darwin', omitPacked: string[] = []): { repoRoot: string; app: string; unpacked: string } {
+  function fakeApp(platform: 'win32' | 'darwin', omitPacked: string[] = [], manifest: Record<string, unknown> = {}): { repoRoot: string; app: string; unpacked: string } {
     const root = mkdtempSync(join(tmpdir(), 'vdp'));
     tempDirs.push(root);
     const repoRoot = join(root, 'repo');
@@ -403,6 +403,7 @@ describe('verifyPackage', () => {
     put(join(resources, 'app-update.yml'), `owner: AizenvoltPrime\nrepo: damocles\nprovider: github\n${platform === 'win32' ? 'channel: latest-x64\npublisherName:\n  - SignPath Foundation\n' : ''}updaterCacheDirName: damocles-updater\n`);
     const target = platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
     const unpackedFiles = [
+      'dist/package.json',
       'dist/compass-worker.js',
       'dist/usage-stats-worker.js',
       'dist/sentinel.js',
@@ -433,6 +434,7 @@ describe('verifyPackage', () => {
       ),
     ];
     for (const file of unpackedFiles) put(join(unpacked, file));
+    put(join(unpacked, 'dist', 'package.json'), '{"type":"commonjs"}\n');
     if (platform === 'win32') put(join(unpacked, 'dist', 'askpass', 'ssh-askpass.exe'), 'MZ trampoline');
     // the desktop build gives the askpass scripts 0755 for every target, and a POSIX host checks it
     for (const file of ASKPASS_SCRIPTS) chmodSync(join(unpacked, 'dist', 'askpass', file), 0o755);
@@ -447,7 +449,7 @@ describe('verifyPackage', () => {
     put(join(unpacked, 'resources', 'grammars', 'tree-sitter-go.wasm'), 'go-grammar');
     for (const [file, content] of Object.entries(WAKE_FILES)) put(join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'wake', file), content);
     const packed: Record<string, string> = {
-      'package.json': JSON.stringify({ name: 'damocles', version: '2.36.0', main: 'dist/desktop/main.js' }),
+      'package.json': JSON.stringify({ name: 'damocles', version: '2.36.0', main: 'dist/desktop/main.js', type: 'commonjs', ...manifest }),
       'node_modules/node-pty/package.json': '{}',
       'node_modules/node-pty/lib/index.js': '',
       'dist/desktop/main.js': '',
@@ -468,6 +470,23 @@ describe('verifyPackage', () => {
     expect(failures(results)).toEqual([]);
     expect(fuseTarget).toBe(join(app, 'Damocles.exe'));
     expect(ASAR_UNPACK.length).toBeGreaterThan(0);
+  });
+
+  // Electron loads main as ESM under "type": "module", which the repo's own package.json declares
+  it('fails a packaged manifest that does not declare the bundles CommonJS', async () => {
+    for (const type of ['module', undefined]) {
+      const { repoRoot, app } = fakeApp('win32', [], { type });
+      const results: Result[] = await verifyPackage({ platform: 'win32', arch: 'x64', app, repoRoot, readFuseWire: async () => EXPECTED_WIRE });
+      expect(failures(results)).toEqual(['package.json']);
+    }
+  });
+
+  // without it, a package.json above the install folder decides how Node loads the unpacked bundles
+  it('fails an unpacked dist/package.json that does not declare the bundles CommonJS', async () => {
+    const { repoRoot, app, unpacked } = fakeApp('win32');
+    put(join(unpacked, 'dist', 'package.json'), '{"type":"module"}');
+    const results: Result[] = await verifyPackage({ platform: 'win32', arch: 'x64', app, repoRoot, readFuseWire: async () => EXPECTED_WIRE });
+    expect(failures(results)).toEqual(['dist scope']);
   });
 
   it('fails a Windows package that ships the @parcel/watcher prebuild, which nothing there loads', async () => {

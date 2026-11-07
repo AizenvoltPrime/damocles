@@ -13,7 +13,7 @@ describe('daemonE2eHooks', () => {
     expect(daemonE2eHooks({}, false)).toBe(false);
   });
 
-  it('is a dev-tree daemon in source; build-server.mjs flips the flag in the package bundle', () => {
+  it('is a dev-tree daemon in source; build-server.ts flips the flag in the package bundle', () => {
     expect(SERVER_PACKAGE).toBe(false);
     expect(daemonE2eHooks({ DAMOCLES_E2E_HOOKS: '1' })).toBe(true);
   });

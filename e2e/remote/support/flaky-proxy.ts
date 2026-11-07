@@ -10,7 +10,7 @@ import * as path from 'node:path';
 //   loss; the bytes are held as TCP retransmits them, and restore delivers them in order on the same connections.
 // - delay: every chunk either way is forwarded that many ms late, in order.
 
-const CONNECTOR = path.join(__dirname, 'proxy-connect.cjs');
+const CONNECTOR = path.join(import.meta.dirname, 'proxy-connect.cjs');
 // ssh's config parser reads a backslash as an escape
 const configPath = (file: string): string => file.split(path.sep).join('/');
 

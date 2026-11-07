@@ -82,7 +82,7 @@ describe('GenerateImage tool card', () => {
     await nextTick();
 
     const img = document.body.querySelector<HTMLImageElement>('[data-testid="tool-result-images"] img');
-    expect(img?.getAttribute('src')).toBe(`data:image/png;base64,${BASE64}`);
+    expect(img?.getAttribute('src')).toMatch(/^blob:/);
     expect(JSON.stringify(pinia.state.value)).not.toContain(BASE64);
   });
 });

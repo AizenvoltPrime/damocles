@@ -5,7 +5,7 @@ import { SUBSCRIPTION_SOURCE } from '../../../src/core/pi-session/subscription';
 import { describeLeftovers } from './file-holders';
 import { STUB_MODEL_ID } from './openai-stub';
 
-export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+export const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 
 export interface HermeticHome {
   readonly root: string;
@@ -73,8 +73,11 @@ export function createHermeticHome(): HermeticHome {
   };
 }
 
-/** Registers the stub as pi's `openai` provider with an api_key credential, and selects its model. */
-export function seedStubModel(h: HermeticHome, baseUrl: string): void {
+/**
+ * Registers the stub as pi's `openai` provider with an api_key credential, and selects its model. `input` is what pi
+ * believes the stub model reads; image-reading tools answer a text-only model with text.
+ */
+export function seedStubModel(h: HermeticHome, baseUrl: string, input: readonly ('text' | 'image')[] = ['text']): void {
   const models = {
     providers: {
       openai: {
@@ -85,7 +88,7 @@ export function seedStubModel(h: HermeticHome, baseUrl: string): void {
             id: STUB_MODEL_ID,
             name: 'Stub model',
             reasoning: false,
-            input: ['text'],
+            input,
             contextWindow: 272000,
             maxTokens: 4096,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -109,7 +112,7 @@ export function seedSubscriptionPlugin(h: HermeticHome): void {
   const repo = new URL(SUBSCRIPTION_SOURCE.slice(0, SUBSCRIPTION_SOURCE.lastIndexOf('@')));
   const clone = path.join(h.agentDir, 'git', repo.hostname, ...repo.pathname.split('/').filter(Boolean));
   fs.mkdirSync(path.join(clone, 'src'), { recursive: true });
-  fs.copyFileSync(path.join(__dirname, '..', 'fixtures', 'subscription-plugin', 'src', 'index.ts'), path.join(clone, 'src', 'index.ts'));
+  fs.copyFileSync(path.join(import.meta.dirname, '..', 'fixtures', 'subscription-plugin', 'src', 'index.ts'), path.join(clone, 'src', 'index.ts'));
   fs.writeFileSync(path.join(clone, 'package.json'), JSON.stringify({ name: 'subscription-plugin-stub', type: 'module', pi: { extensions: ['./src/index.ts'] } }, null, 2));
   const settings = path.join(h.agentDir, 'settings.json');
   const current = fs.existsSync(settings) ? (JSON.parse(fs.readFileSync(settings, 'utf8')) as Record<string, unknown>) : {};

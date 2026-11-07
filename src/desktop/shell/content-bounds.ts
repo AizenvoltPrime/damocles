@@ -1,6 +1,6 @@
 import type { ContentBounds } from '../preload/shell-channels';
 
-function boundsOf(element: HTMLElement): ContentBounds {
+export function boundsOf(element: HTMLElement): ContentBounds {
   const rect = element.getBoundingClientRect();
   // Rounding the edges, not the size, keeps the view flush with its neighbours.
   const left = Math.max(0, Math.round(rect.left));

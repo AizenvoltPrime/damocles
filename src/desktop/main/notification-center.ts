@@ -179,8 +179,8 @@ export function promptEntry(prompt: PendingPrompt, chat: ChatRef, render: Render
       action: { kind: 'team', chat, teamId: owner.teamId },
     };
   }
-  // the webview shows a Sign-in needed card as a question-like attention card
-  const kind: AttentionKind = prompt.kind === 'input' || prompt.kind === 'signIn' ? 'question' : prompt.kind;
+  // the webview shows a Sign-in needed card and the design version prompt as question-like attention cards, the design approval as an approval card
+  const kind: AttentionKind = prompt.kind === 'input' || prompt.kind === 'signIn' || prompt.kind === 'designVersion' ? 'question' : prompt.kind === 'designApproval' ? 'approval' : prompt.kind;
   return { body: { kind, chat: chatOf(chat), ...(summary ? { summary } : {}) }, action: { kind: 'attention', chat, attention: kind } };
 }
 

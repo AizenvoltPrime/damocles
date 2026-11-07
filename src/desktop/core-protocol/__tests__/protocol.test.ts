@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createEndpoint, CoreProtocolError } from '../endpoint';
 import { createLoopback } from '../loopback';
-import { CORE_TO_MAIN, MAIN_TO_CORE, type CoreToMain, type MainToCore } from '../messages';
+import { CORE_TO_MAIN, MAIN_TO_CORE, MAX_KEY_CHARS, type CoreToMain, type MainToCore } from '../messages';
+import { MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
+import { MAX_CHANGED_PATHS } from '../../../shared/design-render';
+import { MAX_MARKUP_JSON_CHARS } from '../../../shared/design-markup';
 import { arr, data, INVALID, obj, opt, str } from '../schema';
 import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
@@ -104,6 +107,104 @@ describe('a session file write', () => {
       expect(result({ ...read, sessionFile: false }), method).toBe(INVALID);
       expect(result({ kind: 'missing', sessionFile: 'yes' }), method).toBe(INVALID);
     }
+  });
+});
+
+describe('the design preview’s wire', () => {
+  it('takes a design file as bytes with a fidelity, tooLarge or nothing, and nothing else', () => {
+    const read = MAIN_TO_CORE.requests['design.read'].result;
+    expect(read({ bytes: new Uint8Array([1]), fidelity: 'static' })).not.toBe(INVALID);
+    expect(read({ bytes: new Uint8Array([1]), fidelity: null })).not.toBe(INVALID);
+    expect(read('tooLarge')).toBe('tooLarge');
+    expect(read(undefined)).toBeUndefined();
+    expect(read({ bytes: 'text', fidelity: 'static' })).toBe(INVALID);
+    expect(read({ bytes: new Uint8Array([1]), fidelity: 'scripted' })).toBe(INVALID);
+  });
+
+  it('takes design.markup with a bounded base64 PNG and the markup for core to parse, answering F<n> or a localized refusal', () => {
+    const markup = MAIN_TO_CORE.requests['design.markup'];
+    const json = { screen: 'S1', file: 'screens/S1.html', viewport: { breakpoint: 'xl', width: 1280 }, zoom: 1, pixelRatio: 2, state: 'default', marks: [] };
+    expect(markup.params({ panelId: 'p', png: 'iVBORw0KGgo=', json })).toEqual({ panelId: 'p', png: 'iVBORw0KGgo=', json });
+    expect(markup.params({ panelId: 'p', png: 'A'.repeat(3_932_161), json })).toBe(INVALID);
+    expect(markup.params({ panelId: 'p', png: 42, json })).toBe(INVALID);
+    expect(markup.result({ feedbackId: 'F1' })).toEqual({ feedbackId: 'F1' });
+    expect(markup.result({ refused: { message: 'This design chat is not running.' } })).toEqual({ refused: { message: 'This design chat is not running.' } });
+    expect(markup.result({ refused: 'plain text' })).toBe(INVALID);
+  });
+
+  it('takes a screen’s facts only with whole widths and bounded names', () => {
+    const info = MAIN_TO_CORE.requests['design.info'].result;
+    const facts = { path: '/home/u/.damocles/designs/d/screens/S1.html', screenId: 'S1', title: null, breakpoints: [{ name: 'xl', width: 1280 }], primary: 1280, checked: [640], journey: [], states: ['default'] };
+    expect(info(facts)).not.toBe(INVALID);
+    expect(info({ ...facts, primary: 12.5 })).toBe(INVALID);
+    expect(info({ ...facts, states: ['x'.repeat(200)] })).toBe(INVALID);
+    expect(info({ ...facts, breakpoints: [{ name: 'xl', width: -1 }] })).toBe(INVALID);
+  });
+
+  it('takes the tweaks of design.info only with token names, 2 to 5 controls and 2 to 8 stops, and absent from an older core', () => {
+    const info = MAIN_TO_CORE.requests['design.info'].result;
+    const facts = { path: '/p/screens/S1.html', screenId: 'S1', title: null, breakpoints: [], primary: 1280, checked: [], journey: [], states: [] };
+    const control = (id: string, property: string, stops: string[]) => ({ id, label: id, property, kind: 'segment', stops: stops.map((token) => ({ token, value: '1px' })), locked: null });
+    const tweaks = { toolCallId: 'call-1', controls: [control('radius', '--radius', ['--radius-sm', '--radius-lg']), { ...control('accent', '--accent', ['--a', '--b']), kind: 'swatch', locked: { decisionId: 'D1', value: '--a' } }] };
+    expect(info(facts)).toEqual(facts);
+    expect(info({ ...facts, tweaks: null })).toEqual({ ...facts, tweaks: null });
+    expect(info({ ...facts, tweaks })).toEqual({ ...facts, tweaks });
+    expect(info({ ...facts, tweaks: { ...tweaks, controls: [tweaks.controls[0]] } })).toBe(INVALID);
+    expect(info({ ...facts, tweaks: { ...tweaks, controls: [control('radius', 'radius', ['--a', '--b']), tweaks.controls[1]] } })).toBe(INVALID);
+    expect(info({ ...facts, tweaks: { ...tweaks, controls: [control('radius', '--radius', ['--a', '--b);}']), tweaks.controls[1]] } })).toBe(INVALID);
+    expect(info({ ...facts, tweaks: { ...tweaks, controls: [control('radius', '--radius', ['--a']), tweaks.controls[1]] } })).toBe(INVALID);
+  });
+
+  it('takes design.tweak with a tweak id and a token, answering kept or a localized refusal', () => {
+    const tweak = MAIN_TO_CORE.requests['design.tweak'];
+    expect(tweak.params({ panelId: 'p', tweakId: 'radius', value: '--radius-lg' })).toEqual({ panelId: 'p', tweakId: 'radius', value: '--radius-lg' });
+    expect(tweak.params({ panelId: 'p', tweakId: 'radius', value: '12px' })).toBe(INVALID);
+    expect(tweak.result({ kept: true })).toEqual({ kept: true });
+    expect(tweak.result({ kept: false })).toBe(INVALID);
+    expect(tweak.result({ refused: { message: 'This design continues in another chat.' } })).toEqual({ refused: { message: 'This design continues in another chat.' } });
+    expect(tweak.result({ refused: 'plain text' })).toBe(INVALID);
+  });
+
+  it('takes design.openPreview with a design and a path only, and design.changed with at most MAX_CHANGED_PATHS paths', () => {
+    const open = CORE_TO_MAIN.requests['design.openPreview'].params;
+    expect(open({ panelId: 'p', designId: 'd', relPath: 'screens/S1.html' })).toEqual({ panelId: 'p', designId: 'd', relPath: 'screens/S1.html' });
+    expect(open({ panelId: 'p', designId: 'd', relPath: 'screens/S1.html', width: 900, url: 'https://example.com/' })).toEqual({ panelId: 'p', designId: 'd', relPath: 'screens/S1.html' });
+    const changed = CORE_TO_MAIN.events['design.changed'];
+    expect(changed({ designId: 'd', paths: Array.from({ length: MAX_CHANGED_PATHS }, (_, index) => `f${index}`) })).not.toBe(INVALID);
+    expect(changed({ designId: 'd', paths: Array.from({ length: MAX_CHANGED_PATHS + 1 }, (_, index) => `f${index}`) })).toBe(INVALID);
+  });
+
+  it('bounds every design message\'s design id by MAX_DESIGN_ID_CHARS, which core\'s ids never pass', () => {
+    const longest = 'd'.repeat(MAX_DESIGN_ID_CHARS);
+    const over = `${longest}d`;
+    const file = { relPath: 'screens/S1.html' };
+    const capture = { ...file, width: 390, state: null, scale: 2 };
+    for (const [parser, params] of [
+      [CORE_TO_MAIN.requests['design.openPreview'].params, { panelId: 'p', ...file }],
+      [CORE_TO_MAIN.requests['design.capture'].params, capture],
+      [MAIN_TO_CORE.requests['design.read'].params, file],
+      [MAIN_TO_CORE.requests['design.info'].params, file],
+      [CORE_TO_MAIN.events['design.changed'], { paths: [] }],
+    ] as const) {
+      expect((parser as (raw: unknown) => unknown)({ ...params, designId: longest })).not.toBe(INVALID);
+      expect((parser as (raw: unknown) => unknown)({ ...params, designId: over })).toBe(INVALID);
+    }
+  });
+
+  it('takes the markup main sends core only as plain JSON data within MAX_MARKUP_JSON_CHARS', () => {
+    const params = MAIN_TO_CORE.requests['design.markup'].params;
+    expect(params({ panelId: 'p', png: 'iVBORw0KGgo=', json: { marks: [{ text: 'x'.repeat(MAX_MARKUP_JSON_CHARS - 64) }] } })).not.toBe(INVALID);
+    expect(params({ panelId: 'p', png: 'iVBORw0KGgo=', json: { marks: [{ text: 'x'.repeat(MAX_MARKUP_JSON_CHARS) }] } })).toBe(INVALID);
+    expect(params({ panelId: 'p', png: 'iVBORw0KGgo=', json: { at: new Date(0) } })).toBe(INVALID);
+  });
+
+  it('takes a tweak declaration\'s tool call id at a key\'s bound, since a provider\'s call id has no fixed length', () => {
+    const info = MAIN_TO_CORE.requests['design.info'].result;
+    const control = (id: string, property: string) => ({ id, label: id, property, kind: 'segment', stops: [{ token: '--a', value: '1px' }, { token: '--b', value: '2px' }], locked: null });
+    const facts = { path: '/p/screens/S1.html', screenId: 'S1', title: null, breakpoints: [], primary: 1280, checked: [], journey: [], states: [] };
+    const tweaks = { toolCallId: 'c'.repeat(MAX_KEY_CHARS), controls: [control('radius', '--radius'), control('space', '--space')] };
+    expect(info({ ...facts, tweaks })).toEqual({ ...facts, tweaks });
+    expect(info({ ...facts, tweaks: { ...tweaks, toolCallId: 'c'.repeat(MAX_KEY_CHARS + 1) } })).toBe(INVALID);
   });
 });
 
@@ -264,6 +365,54 @@ describe('core\'s own requests and answers outside the contract', () => {
     coreEnd.serve('user.memory.resolve', async () => [{ id: 'g1', memory: { id: 'g1', kind: 'fact' as const, content: 'c', contentHash: 'h', tags, createdAt: 1, updatedAt: 1 } }]);
     await expect(mainEnd.request('user.memory.resolve', { ids: ['g1'] })).rejects.toThrow(/answer to user\.memory\.resolve/);
     expect(violations).toEqual([]);
+  });
+});
+
+describe('main\'s requests and answers, and either side\'s events, outside the contract', () => {
+  const tooLong = 'd'.repeat(129);
+
+  it('fail main\'s request in main and its answer in core, so core never sees them as a violation and stays up', async () => {
+    const { main, core } = createLoopback();
+    const violations: CoreProtocolError[] = [];
+    const logged: string[] = [];
+    const mainEnd = createMainEndpoint(main, (line) => logged.push(line));
+    const coreEnd = createCoreEndpoint(core, quiet, (error) => violations.push(error));
+    const served = vi.fn(() => undefined);
+    coreEnd.serve('design.info', served);
+    await expect(mainEnd.request('design.info', { designId: tooLong, relPath: 'screens/S1.html' })).rejects.toThrow(CoreProtocolError);
+    expect(served).not.toHaveBeenCalled();
+    mainEnd.serve('design.capture', () => ({ png: new Uint8Array([1]), cssWidth: 390, cssHeight: 0, contentHeight: 0, scale: 2 }));
+    await expect(coreEnd.request('design.capture', { designId: 'd', relPath: 'screens/S1.html', width: 390, state: null, scale: 2 })).rejects.toThrow(/answer to design\.capture/);
+    expect(violations).toEqual([]);
+    expect(logged.filter((line) => line.includes('Bug'))).toHaveLength(2);
+    await expect(mainEnd.request('design.info', { designId: 'd', relPath: 'screens/S1.html' })).resolves.toBeUndefined();
+  });
+
+  it('drop an event outside the contract on the sending side with a log line, never ending the receiving side', () => {
+    const { main, core } = createLoopback();
+    const violations: CoreProtocolError[] = [];
+    const logged: string[] = [];
+    const mainEnd = createMainEndpoint(main, quiet, (error) => violations.push(error));
+    const coreEnd = createCoreEndpoint(core, (line) => logged.push(line), (error) => violations.push(error));
+    const changed = vi.fn();
+    mainEnd.onEvent('design.changed', changed);
+    coreEnd.emit('design.changed', { designId: tooLong, paths: [] });
+    coreEnd.emit('design.changed', { designId: 'd', paths: [] });
+    expect(changed.mock.calls).toEqual([[{ designId: 'd', paths: [] }]]);
+    expect(logged).toEqual(['[core-protocol] Bug: a design.changed event outside the contract was dropped']);
+    const steps = vi.fn();
+    coreEnd.onEvent('worktrees.setupStep', steps);
+    mainEnd.emit('worktrees.setupStep', { worktreeId: 'w'.repeat(10_000) } as never);
+    expect(steps).not.toHaveBeenCalled();
+    expect(violations).toEqual([]);
+  });
+
+  it('still end the channel where the receiving side parses what a peer posted past its own check', () => {
+    const { main, core } = createLoopback();
+    const violations: CoreProtocolError[] = [];
+    createMainEndpoint(main, quiet, (error) => violations.push(error));
+    core.post({ kind: 'event', name: 'design.changed', payload: { designId: tooLong, paths: [] } });
+    expect(violations.map((error) => error.message)).toEqual(['Core protocol violation: event design.changed']);
   });
 });
 
@@ -459,5 +608,19 @@ describe('a message name', () => {
     expect(() => transports.main.post({ kind: 'mirror', topic: 'toString', version: 1, patch: {} })).toThrow(CoreProtocolError);
     expect(() => transports.main.post({ kind: 'panel', panelId: 'p', op: 'hasOwnProperty', payload: {} })).toThrow(CoreProtocolError);
     expect(() => transports.main.post({ kind: 'event', name: 'secrets.changed\n[core] forged', payload: { key: 'k' } })).toThrow(/malformed envelope/);
+  });
+});
+
+describe('PanelCreate.parent', () => {
+  const create = { kind: 'chat', title: 'Damocles', localResourceRoots: ['/r'] };
+
+  it('carries a design chat\'s parent by its view id, and parses a create without one as before', () => {
+    expect(CORE_TO_MAIN.panelOps.create({ ...create, parent: 'view-parent-1' })).toEqual({ ...create, parent: 'view-parent-1' });
+    expect(CORE_TO_MAIN.panelOps.create(create)).toEqual(create);
+  });
+
+  it('refuses a parent that is not a view id', () => {
+    expect(CORE_TO_MAIN.panelOps.create({ ...create, parent: 42 })).toBe(INVALID);
+    expect(CORE_TO_MAIN.panelOps.create({ ...create, parent: '' })).toBe(INVALID);
   });
 });

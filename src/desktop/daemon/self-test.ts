@@ -1,4 +1,4 @@
-// `daemon.js self-test`: proves a server package runs on this machine with its own Node (scripts/verify-server-package.mjs).
+// `daemon.js self-test`: proves a server package runs on this machine with its own Node (scripts/verify-server-package.ts).
 // Every package of node_modules is present, every external the bundles load is imported, node:sqlite opens with FTS5,
 // ripgrep runs through the launcher's worker thread, the pty host's node-pty runs echo, and Damocles Core forks and answers
 // its init through parentChannel().
@@ -24,7 +24,7 @@ import { localRunPaths } from './token';
 const STEP_TIMEOUT_MS = 60_000;
 const MARKER = 'damocles-self-test';
 
-// scripts/build-server.mjs writes it at the package root
+// scripts/build-server.ts writes it at the package root
 interface PackageInfo {
   readonly version: string;
   readonly target: string;

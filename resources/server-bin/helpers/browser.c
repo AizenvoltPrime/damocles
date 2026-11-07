@@ -1,6 +1,6 @@
 // BROWSER on a Windows host: Node runs the relay (dist/cli-remote.js --open-external) with the caller's command line after the
 // program name passed on unchanged, so no cmd.exe parses & or % in an address (CERT VU#123335) and Node's C runtime splits it
-// as this program's would. Built without a C runtime by scripts/browser-helper.mjs; DAMOCLES_CHECKOUT runs the Node on PATH.
+// as this program's would. Built without a C runtime by scripts/browser-helper.ts; DAMOCLES_CHECKOUT runs the Node on PATH.
 #include <windows.h>
 
 // CreateProcessW's limit on a command line, in characters with the terminating null

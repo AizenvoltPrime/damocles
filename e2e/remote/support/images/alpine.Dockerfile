@@ -1,4 +1,4 @@
-# scripts/test-remote.mjs passes ALPINE_TARGET_IMAGE (scripts/server-targets.mjs), the clean Alpine the server packages self-test in.
+# scripts/test-remote.ts passes ALPINE_TARGET_IMAGE (scripts/server-targets.ts), the clean Alpine the server packages self-test in.
 ARG ALPINE_IMAGE
 FROM ${ALPINE_IMAGE}
 RUN apk add --no-cache openssh-server libstdc++ libgcc bash git procps \

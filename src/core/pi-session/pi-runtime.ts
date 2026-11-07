@@ -378,6 +378,12 @@ export interface LiveSessionMutator extends LiveSessionMetaSource {
    *  let go, which must abort the delete rather than orphan a live writer on a removed path. */
   detachFromDeletedSession(): Promise<void>;
   publishAccountInfo(): void;
+  /** A version of design `designId` was finished: a parent whose own link names it reconciles now (PD-27). */
+  offerDesignResult(designId: string): void;
+  /** Brief `briefId` was written for this design chat: it reconciles now (PD-27). */
+  offerDesignBrief(briefId: string): void;
+  /** This design chat opens the preview tab of `relPath` of its design `designId`; false when it cannot (PD-33). */
+  openDesignPreview(designId: string, relPath: string): Promise<boolean>;
 }
 
 /**
@@ -2705,6 +2711,12 @@ export class PiRuntime {
     return this.subCallModelFor(purpose) !== null;
   }
 
+  /** Whether the model a sub-call of `purpose` runs on reads images; null when it has no model. */
+  subCallReadsImages(purpose: StructuredSubCallPurpose): boolean | null {
+    const choice = this.subCallModelFor(purpose);
+    return choice === null ? null : choice.model.input.includes('image');
+  }
+
   /**
    * Key providers whose applied key bills a flat subscription (on a daemon's core, the pinned client's); empty before the
    * model runtime exists.
@@ -2773,6 +2785,10 @@ export class PiRuntime {
       const choice = this.subCallModelFor(req.purpose);
       if (!modelRuntime || !choice) return UNREACHABLE;
       const { model } = choice;
+      if (req.userImages && req.userImages.length > 0 && !model.input.includes('image')) {
+        log('[PiRuntime] runStructuredCompletion: %s/%s reads no images, sub-call %s skipped', model.provider, model.id, req.purpose);
+        return UNREACHABLE;
+      }
       // Fail soft when the model's provider has no configured credential (mirrors the old "no API key"
       // guard) — completeSimple would otherwise error trying to resolve auth.
       if (!modelRuntime.hasConfiguredAuth(model.provider)) {

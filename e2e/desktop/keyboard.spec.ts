@@ -51,7 +51,7 @@ async function nextSelected(app: ElectronApplication, previous: string | undefin
   return { id: (await selectedChat(app))!, page };
 }
 
-const HOLD_CHAT_PAGES = path.join(__dirname, 'support', 'hold-chat-pages.cjs');
+const HOLD_CHAT_PAGES = path.join(import.meta.dirname, 'support', 'hold-chat-pages.cjs');
 
 interface ChatPages {
   held(): number;

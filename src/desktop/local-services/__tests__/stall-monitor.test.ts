@@ -382,7 +382,7 @@ describe('StallMonitor on V8\'s profiler', () => {
 });
 
 describe('formatStall', () => {
-  it('names the process its monitor watches, as stall-report.mjs reads it', () => {
+  it('names the process its monitor watches, as stall-report.ts reads it', () => {
     const summary = { sampledMs: 1200, idleMs: 0, stacks: [{ frames: ['parse session.js:1'], ms: 1200 }] };
     expect(formatStall('core', 1400, 1300, summary, undefined)).toBe('[stall] the core process was blocked for 1400 ms; 1200 ms sampled, 0 ms idle, 1300 ms main-thread CPU\n  1200 ms  parse session.js:1');
     expect(formatStall('main', 1400, 1300, summary, undefined)).toMatch(/^\[stall\] the main process was blocked/);

@@ -107,6 +107,26 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'ExtensionToWebviewMessage[type="prefillInput"].text': USER,
   'ExtensionToWebviewMessage[type="promptReturned"].content[][type="text"].text': USER,
   'ExtensionToWebviewMessage[type="promptReturned"].parts[].content[][type="text"].text': USER,
+  'ExtensionToWebviewMessage[type="designBrief"].brief.text': MODEL,
+  // DesignCheck's finding, written for the model like a linter's message; the view names the rule by its id beside it
+  'ExtensionToWebviewMessage[type="designResult"].result.check.warnings[].message': CODE,
+  'ExtensionToWebviewMessage[type="designResult"].result.decisions[].title': MODEL,
+  'ExtensionToWebviewMessage[type="designResult"].result.changes[][kind="decisionAdded"].title': MODEL,
+  'ExtensionToWebviewMessage[type="requestDesignVersionDecision"].changes[][kind="decisionAdded"].title': MODEL,
+  'ExtensionToWebviewMessage[type="requestDesignApproval"].changes[][kind="decisionAdded"].title': MODEL,
+  'ExtensionToWebviewMessage[type="requestDesignApproval"].decisions[].title': MODEL,
+  'ExtensionToWebviewMessage[type="requestDesignApproval"].warnings[].message': CODE,
+  // a markup pin's comment, which the user typed in the preview
+  'ExtensionToWebviewMessage[type="userMessage"].designMarkup.markup.marks[][type="pin"].text': USER,
+  'ExtensionToWebviewMessage[type="userReplay"].designMarkup.markup.marks[][type="pin"].text': USER,
+  'ExtensionToWebviewMessage[type="designResult"].result.title': MODEL,
+  'ExtensionToWebviewMessage[type="designState"].design.decisions[].title': MODEL,
+  'ExtensionToWebviewMessage[type="designState"].design.title': MODEL,
+  'ExtensionToWebviewMessage[type="designState"].link.title': MODEL,
+  'ExtensionToWebviewMessage[type="rewindHistory"].prompts[].designDecisionsAfter[].title': MODEL,
+  'ExtensionToWebviewMessage[type="requestPlanApproval"].designLink.title': MODEL,
+  // The same DesignCheck findings the design result card shows, on the plan approval strip
+  'ExtensionToWebviewMessage[type="requestPlanApproval"].designLink.warnings[].message': CODE,
   'ExtensionToWebviewMessage[type="queueBatchProcessed"].contentBlocks[][type="text"].text': USER,
   'ExtensionToWebviewMessage[type="relatedMemories"].entries[].title': NAME,
   'ExtensionToWebviewMessage[type="requestElicitation"].message': THIRD_PARTY,
@@ -169,6 +189,15 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'MainRequests.user.mcp.servers.result[].description': THIRD_PARTY,
   'MainRequests.user.mcp.servers.result[].tools[].description': THIRD_PARTY,
   'MainRequests.user.mcp.servers.result[].tools[].title': THIRD_PARTY,
+  // a design screen's <title>, which the designer wrote; the preview tab shows it as the tab's name
+  'MainRequests.design.info.result.title': NAME,
+  // a tweak control's label, which the designer wrote in DeclareTweaks; the Tweaks column shows it as written
+  'MainRequests.design.info.result.tweaks.controls[].label': MODEL,
+  // a journey step's target: an accessible name or text the designer wrote into the design, matched in the page, never shown as UI text
+  'CoreRequests.design.journey.params.steps[].target.label': MODEL,
+  'CoreRequests.design.journey.params.steps[].target.text': MODEL,
+  'CoreRequests.design.replayJourney.params.steps[].target.label': MODEL,
+  'CoreRequests.design.replayJourney.params.steps[].target.text': MODEL,
   'CoreEvents.chat.worktreeState.event.state.heldPrompt.text': USER,
   'CoreMirrorTopics.chats.entry.folder.label': NAME,
   'CoreMirrorTopics.folderTargets.targets[].label': NAME,

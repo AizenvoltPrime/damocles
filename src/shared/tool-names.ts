@@ -27,6 +27,24 @@ export const TOOL_CRON_LIST = "CronList";
 export const TOOL_POWERSHELL = "PowerShell";
 export const TOOL_STRUCTURED_OUTPUT = "StructuredOutput";
 export const TOOL_GENERATE_IMAGE = "GenerateImage";
+export const TOOL_START_DESIGN = "StartDesign";
+export const TOOL_FINISH_DESIGN = "FinishDesign";
+export const TOOL_INVENTORY = "Inventory";
+export const TOOL_EXTRACT_TOKENS = "ExtractTokens";
+export const TOOL_IMPORT_ASSET = "ImportAsset";
+export const TOOL_RECORD_DECISION = "RecordDecision";
+export const TOOL_DESIGN_CHECK = "DesignCheck";
+export const TOOL_DESIGN_SCREENSHOT = "DesignScreenshot";
+export const TOOL_LOAD_DESIGN_SKILL = "LoadDesignSkill";
+export const TOOL_PREVIEW_JOURNEY = "PreviewJourney";
+export const TOOL_DECLARE_TWEAKS = "DeclareTweaks";
+export const TOOL_MAP_REFERENCE = "MapReference";
+export const TOOL_DESIGN_PARITY = "DesignParity";
+
+/** The design chat's tools that `DesignToolCard` renders; StartDesign, FinishDesign, PreviewJourney and DesignParity have their own cards. */
+export const DESIGN_CHAT_TOOLS: ReadonlySet<string> = new Set([
+  TOOL_INVENTORY, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_DESIGN_CHECK, TOOL_RECORD_DECISION, TOOL_DESIGN_SCREENSHOT, TOOL_LOAD_DESIGN_SKILL, TOOL_DECLARE_TWEAKS, TOOL_MAP_REFERENCE,
+]);
 
 /** The cross-server MCP resource tools (pi 1.4.0's names); each call names its server in `input.server`. */
 export const MCP_RESOURCE_TOOL_NAMES = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'] as const;

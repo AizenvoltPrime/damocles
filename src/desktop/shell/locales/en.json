@@ -156,7 +156,11 @@
     "keyboardHelp": "Arrow keys move, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu.",
     "newOptions": "New chat options",
     "newGroup": "Start a chat",
-    "newOptionsNoProject": "New chat options are available once Damocles has started"
+    "newOptionsNoProject": "New chat options are available once Damocles has started",
+    "designChat": "Design chat",
+    "designFinished": "Finished v{version}",
+    "designReadOnly": "Read-only",
+    "designReadOnlyHint": "Read-only. This design continues in another chat."
   },
   "content": {
     "empty": "No chat selected",
@@ -1118,6 +1122,124 @@
       },
       "forwardedFrom": "Forwarded from {target}",
       "forwardedFromPrefix": "Forwarded from"
+    },
+    "designPreview": {
+      "menu": {
+        "openInBrowser": "Open in browser"
+      },
+      "label": "Design preview",
+      "widthToolbar": "Preview width",
+      "viewToolbar": "Preview view",
+      "breakpoints": "Breakpoint",
+      "presetPrimary": "{preset} · primary width (design.md)",
+      "width": "Preview width in CSS px, {min} to {max}",
+      "fit": "Fit",
+      "fitTitle": "Set the width to the room the pane has",
+      "browser": "Browser",
+      "browserTitle": "Open in your browser on this computer",
+      "states": "State",
+      "provenance": "Provenance",
+      "provenanceTitle": "Outline elements and show their data-ds attributes on hover",
+      "screenshot": "Screenshot",
+      "screenshotTitle": "Add a screenshot of the preview to the design chat",
+      "screenshotAdded": "Screenshot added to the design chat.",
+      "screenshotFailed": "The screenshot failed.",
+      "handle": "Preview width",
+      "handleTitle": "Drag to resize. Arrow keys: 1 px, Shift: 10 px",
+      "sandboxed": "sandboxed · network off",
+      "loading": "Loading preview…",
+      "reconnecting": "Reconnecting…",
+      "updateServer": "Update the Damocles server on this host to preview designs.",
+      "failed": "The preview could not load.",
+      "tooNarrow": "The pane is too narrow to show {width} px. Widen it or choose a smaller width.",
+      "replay": {
+        "label": "Journey replay",
+        "running": "Replaying · step {n} of {total}",
+        "passed": "Replay passed · {passed}/{total}",
+        "failed": "Replay failed at step {n}",
+        "stopped": "Replay stopped · {passed}/{total}"
+      },
+      "markup": {
+        "button": "Markup",
+        "buttonTitle": "Freeze the preview and mark it up for the designer",
+        "buttonWaiting": "Markup, {n} mark waiting | Markup, {n} marks waiting",
+        "freezeFailed": "Couldn't freeze the preview",
+        "toolbar": "Markup",
+        "tools": "Markup tools",
+        "pen": "Pen",
+        "penTitle": "Pen: draw freehand",
+        "arrow": "Arrow",
+        "arrowTitle": "Arrow: drag from tail to head",
+        "box": "Box",
+        "boxTitle": "Box: drag a rectangle",
+        "pin": "Pin",
+        "pinTitle": "Pin: click an element to comment on it",
+        "undo": "Undo",
+        "undoTitle": "Undo ({key})",
+        "clear": "Clear",
+        "clearTitle": "Remove every mark (Undo brings them back)",
+        "frozen": "Frozen at {band} · {width} · {state}",
+        "frozenTitle": "Markup draws on a still capture of the preview at this width and state",
+        "exit": "Exit",
+        "exitTitle": "Leave markup. Your marks stay until you send or clear them",
+        "send": "Send to designer ({n})",
+        "sending": "Sending…",
+        "sendFailed": "Couldn't send the markup. Your marks are kept.",
+        "sent": "Sent to the design chat as {id}",
+        "limit": "Markup holds at most {max} marks",
+        "canvas": "Markup canvas",
+        "canvasHelp": "Draw with the selected tool. With Pin, press Enter to place a pin in the middle. Arrow keys move a focused pin, Enter opens it, Delete removes it.",
+        "image": "Frozen preview of {screen} at {width} px",
+        "pinLabel": "Pin {n}, {kind}, on {element}",
+        "pinLabelNone": "Pin {n}, {kind}, on no element",
+        "noElement": "No element",
+        "popover": "Pin {n}",
+        "text": "Comment for pin {n}",
+        "placeholderChange": "Describe the change…",
+        "placeholderNote": "Add a note…",
+        "kind": "Pin kind",
+        "change": "Change",
+        "note": "Note",
+        "delete": "Delete",
+        "done": "Done",
+        "added": {
+          "pin": "Pin {n} added on {element}",
+          "pinNone": "Pin {n} added",
+          "pen": "Pen stroke added",
+          "arrow": "Arrow added",
+          "box": "Box added"
+        },
+        "moved": "Pin {n} on {element}",
+        "deleted": "Pin {n} deleted",
+        "undone": "Undone",
+        "cleared": "Cleared {n} mark | Cleared {n} marks",
+        "tweaksApplied": "Reset the tweaks before marking up: the designer's files do not have them"
+      },
+      "tweaks": {
+        "button": "Tweaks",
+        "buttonTitle": "Try the designer's open choices on the live preview",
+        "applied": "{n} tweak applied | {n} tweaks applied",
+        "panel": "Tweaks",
+        "title": "Tweaks",
+        "subtitle": "Live preview only · files unchanged",
+        "paused": "Paused while marking up",
+        "close": "Close tweaks",
+        "stop": "{label}: {stop}, {value}",
+        "locked": "Locked by decision {id}",
+        "lockedTitle": "Settled by decision {id}",
+        "reset": "Reset",
+        "resetTitle": "Remove every tweak from the live preview",
+        "resetDone": "Tweaks removed from the preview",
+        "resetFailed": "Couldn't reset the tweaks.",
+        "keep": "Keep",
+        "keepMany": "Keep {n}",
+        "keepTitle": "Send to the designer: {list}",
+        "keepNone": "Pick a stop to keep",
+        "keepLine": "{label} → {token}",
+        "kept": "Sent to the designer: {list}",
+        "keepFailed": "Couldn't send Keep for {label}.",
+        "applyFailed": "Couldn't apply {label} to the preview."
+      }
     }
   },
   "files": {
@@ -3039,6 +3161,29 @@
       "wslpathFailed": "{distro} could not map {name} to a Linux path.",
       "unknownDistro": "wsl.exe no longer lists {distro}.",
       "connectFailed": "Damocles could not connect to {distro}."
+    }
+  },
+  "design": {
+    "journey": {
+      "step": {
+        "fill": "Type {value} into {target}",
+        "clear": "Clear {target}",
+        "select": "Choose {value} in {target}",
+        "click": "Click {target}",
+        "press": "Press {key} in {target}",
+        "visible": "{target} is visible",
+        "hidden": "{target} is hidden",
+        "textContains": "{target} contains {value}",
+        "valueEquals": "{target} has the value {value}"
+      },
+      "target": {
+        "role": "{role} {name}",
+        "label": "field {name}",
+        "placeholder": "field with placeholder {name}",
+        "text": "text {name}"
+      },
+      "quoted": "“{text}”",
+      "empty": "(empty)"
     }
   }
 }

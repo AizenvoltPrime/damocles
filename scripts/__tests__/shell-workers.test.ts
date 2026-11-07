@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SHELL_OWN_WORKERS, shellWorkerTest } from '../shell-workers.mjs';
+import { SHELL_OWN_WORKERS, shellWorkerTest } from '../shell-workers.ts';
 
 const root = path.resolve(__dirname, '..', '..');
 const allowed = shellWorkerTest(root);

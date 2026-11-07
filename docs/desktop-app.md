@@ -51,7 +51,7 @@ Drag a project, or use Move up and Move down in its context menu or Alt+Up and A
 
 Chats lists the selected project's conversations by Today, Yesterday and Earlier, each with its status, model and tag. Search and the tag filter narrow the list, and a row's buttons or context menu rename, tag or delete a chat; deleting a chat that is running or waiting for you warns first. A new chat with no conversation yet offers only Open and Delete, and if the list cannot load, the section says so and offers Try again.
 
-**Chats in the background.** A chat that is running, waiting for you or holding browser pages stays loaded while you look at another, so it keeps working and switching back is instant. The three most recently viewed idle chats stay loaded too. An older chat unloads and reloads its history when you select it.
+**Chats in the background.** A chat that is running, waiting for you or holding browser pages or design previews stays loaded while you look at another, so it keeps working and switching back is instant. The three most recently viewed idle chats stay loaded too. An older chat unloads and reloads its history when you select it.
 
 ### Settings
 

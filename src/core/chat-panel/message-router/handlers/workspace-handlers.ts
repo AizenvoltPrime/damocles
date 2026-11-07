@@ -318,9 +318,13 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openRewindDiff: async (msg, ctx) => {
       if (msg.type !== "openRewindDiff") return;
       const sessionId = ctx.session.currentSessionId;
-      const sanitizedPath = workspaceManager.resolveWorkspaceFilePath(msg.filePath, ctx.folder);
+      // A design chat's checkpoints capture its design folder, which lies outside the panel folder (PD-39).
+      const designFolder = ctx.session.design.role() ? ctx.session.checkpointFolder() : undefined;
+      const sanitizedPath = designFolder !== undefined
+        ? workspaceManager.resolveFileWithin(msg.filePath, designFolder)
+        : workspaceManager.resolveWorkspaceFilePath(msg.filePath, ctx.folder);
       if (!sanitizedPath) {
-        log("[MessageRouter] Rejecting rewind diff for a path outside the panel folder:", msg.filePath);
+        log("[MessageRouter] Rejecting rewind diff for a path outside the checkpointed folder:", msg.filePath);
         return;
       }
       if (!sessionId) {
@@ -333,6 +337,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           sessionId,
           msg.userMessageId,
           sanitizedPath,
+          ctx.session.checkpointFolder(),
         );
         if (beforeContent === null) {
           await workspaceManager.handleOpenFile(ctx.panelId, sanitizedPath, undefined, ctx.folder);

@@ -10,7 +10,7 @@ import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { addSettingsMessages } from '../overlay/settings/settings-messages';
 import { shellI18n } from '../i18n';
-import shellEl from '../locales/el.json';
+import shellEl from '../locales/el.json' with { type: 'json' };
 import { FakeResizeObserver, fakeOverlayApi } from './fakes';
 
 // One overlay page per file, as in the app: the bridge is installed before anything uses it.

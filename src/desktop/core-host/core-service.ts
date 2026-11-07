@@ -1,7 +1,7 @@
 import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ChatPanelProvider, flushCoreWrites } from '../../core/chat-panel';
-import { announceLeaseRefusal, leaseRefusalFor } from '../../core/chat-panel/session-ownership';
+import { announceLeaseRefusal, findStoredSessionHolder, leaseRefusalFor } from '../../core/chat-panel/session-ownership';
 import { listMirroredSessions, mirroredProjectFolder, mirroredSessionFile } from '../../core/chat-panel/transcript-view';
 import type { PanelManager } from '../../core/chat-panel/panel-manager';
 import type { AttachedView, CompassViewsHandle, HostInstance } from '../../core/chat-panel/types';
@@ -9,6 +9,9 @@ import { log } from '../../core/logger';
 import { runCheckpointMaintenance, setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
 import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
+import { SessionDesign } from '../../core/design/session-design';
+import { designPreviewInfo, readPreviewFile } from '../../core/design/design-preview';
+import { isSafeAgentPathId } from '../../shared/agent-path-id';
 import { getPiCodingAgent } from '../../core/pi-session/pi-loader';
 import { writeSessionFile } from '../../core/pi-session/session-store/session-file-write';
 import { BrowserServices, type BrowserService } from '../../core/browser';
@@ -369,6 +372,12 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('chats.projectBusy', ({ projectKey }) => [...panelManager.getPanels()].some(([panelId, instance]) =>
     (instance.folder.ownerKey ?? instance.folder.key) === projectKey && (instance.session.processing || isActiveActivity(activities.get(panelId)))));
   endpoint.serve('chats.leaseRefusal', ({ sessionId, announce }) => {
+    // A local open shows the chat holding the conversation, since its claim refuses a second panel; a remote core's view joins it (views.join).
+    const holder = announce && !platform.init.remote ? findStoredSessionHolder(panelManager.getPanels(), undefined, sessionId) : undefined;
+    if (holder) {
+      holder.host.reveal();
+      return true;
+    }
     const refusal = leaseRefusalFor(sessionId);
     if (!refusal) return false;
     if (announce) {
@@ -396,6 +405,20 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     if (!owner) throw new Error('The chat is not loaded');
     return owner.browser.openNewPageForChat(owner.host, url);
   });
+  // only a design a chat of this core holds, so main never names an arbitrary folder
+  const heldDesign = (designId: string): string | undefined => (isSafeAgentPathId(designId) ? SessionDesign.heldFolderOf(designId) : undefined);
+  endpoint.serve('design.read', async ({ designId, relPath }) => {
+    const folder = heldDesign(designId);
+    return folder === undefined ? undefined : readPreviewFile(folder, designId, relPath);
+  });
+  endpoint.serve('design.info', async ({ designId, relPath }) => {
+    const folder = heldDesign(designId);
+    if (folder === undefined) return undefined;
+    const info = await designPreviewInfo(folder, relPath);
+    return info && { ...info, tweaks: SessionDesign.tweaksOf(designId) };
+  });
+  endpoint.serve('design.markup', ({ panelId, png, json }) => requireInstance(panelId).session.sendDesignMarkup(png, json));
+  endpoint.serve('design.tweak', ({ panelId, tweakId, value }) => requireInstance(panelId).session.keepDesignTweak(tweakId, value));
   endpoint.serve('user.browser.tool', (params, signal) => remoteBrowsers.tool(params, signal));
   endpoint.serve('user.browser.release', ({ authority, agentScope }) => (agentScope ? remoteBrowsers.release(authority, agentScope) : remoteBrowsers.releaseAuthority(authority)));
   // this computer's user scope for remote chats: main asks only this core, and checks every answer before it leaves

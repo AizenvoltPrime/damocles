@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const STUB = path.join(__dirname, '..', 'fixtures', 'prettier-stub', 'index.js');
+const STUB = path.join(import.meta.dirname, '..', 'fixtures', 'prettier-stub', 'index.js');
 
 /** Copies the stub `prettier` package into dir/node_modules/prettier, with the version that picks its API; delayMs slows format. */
 export function installPrettierStub(dir: string, version: string, delayMs = 0): string {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { ScmHead, ScmOperation } from '../../preload/scm-channels';
-import en from '../locales/en.json';
-import el from '../locales/el.json';
+import en from '../locales/en.json' with { type: 'json' };
+import el from '../locales/el.json' with { type: 'json' };
 import {
   branchMenu,
   branchRowMenu,

@@ -17,7 +17,7 @@ let tmp: string;
 beforeAll(async () => {
   bundleDir = await mkdtemp(join(tmpdir(), "damocles-voice-extract-bundle-"));
   workerPath = join(bundleDir, "dist", "voice-extract-worker.js");
-  // The real worker bundle, tar included, as esbuild.config.mjs builds it.
+  // The real worker bundle, tar included, as esbuild.config.ts builds it.
   await build({
     entryPoints: [join(__dirname, "..", "extract-worker.ts")],
     bundle: true,

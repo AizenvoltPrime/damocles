@@ -2,7 +2,7 @@
 import { computed, type Component } from 'vue';
 
 const props = defineProps<{
-  tone: 'warning' | 'danger' | 'info';
+  tone: 'warning' | 'danger' | 'info' | 'design';
   icon: Component;
   title: string;
   /** A short chip beside the title, e.g. a refusal category. */

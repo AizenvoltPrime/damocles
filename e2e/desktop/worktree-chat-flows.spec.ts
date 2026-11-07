@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
-import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { writeAsar } from '../../scripts/asar-archive.ts';
 import { appHolders } from './support/app';
 import { ARCHIVE } from './support/asar';
 import { describeLeftovers } from './support/file-holders';
@@ -26,7 +26,7 @@ import { submenuItem } from './support/scm';
 // message waits, the palette's hand-off commands, the leftover report, a worktree removed in a terminal, Delete of a leftover
 // or a watched worktree holding .asar archives, and the .asar files a new worktree gets.
 
-const MCP_SERVER = path.join(__dirname, 'support', 'mcp-stdio-server.cjs');
+const MCP_SERVER = path.join(import.meta.dirname, 'support', 'mcp-stdio-server.cjs');
 const windows = process.platform === 'win32';
 // A shell with integration, so a terminal running a program asks before it is killed.
 const INTEGRATED = windows ? 'windows-powershell' : 'bash';

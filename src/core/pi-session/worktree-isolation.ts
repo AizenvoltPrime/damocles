@@ -133,7 +133,7 @@ type ToolShell = 'bash' | 'wsl';
  * The start of the shell pi's bash tool runs: `shellPath` with -c, or WSL's System32 bash.exe with the command on stdin, in
  * the distribution's environment; undefined for a shell whose text this check does not read as bash.
  */
-function toolShell(shellPath: string | undefined): ToolShell | undefined {
+export function toolShell(shellPath: string | undefined): ToolShell | undefined {
   if (shellPath === undefined) return 'bash';
   const name = commandName(shellPath);
   // pi tells WSL's bash by %SystemRoot%; any System32 or Sysnative folder counts here, which can only block more.

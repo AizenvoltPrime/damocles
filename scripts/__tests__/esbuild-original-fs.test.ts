@@ -6,7 +6,7 @@ import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
 import { afterAll, describe, expect, it } from 'vitest';
 import { BUNDLED_TREES, backendSourceFiles } from '../../src/__mocks__/source-tree';
-import { originalFs } from '../esbuild-original-fs.mjs';
+import { originalFs } from '../esbuild-original-fs.ts';
 
 /**
  * The build maps every bundled fs import to a shim that picks original-fs under Electron and node:fs under plain Node
@@ -189,7 +189,7 @@ describe('the getBuiltinModule lint guard', () => {
 
   it.each(NODE_FILES)('refuses an fs lookup in %s and allows node:sqlite and require.resolve', async (file) => {
     const [result] = await eslint.lintText(PROBE, { filePath: join(ROOT, file) });
-    const lines = (result?.messages ?? []).filter((message) => message.message.includes('scripts/esbuild-original-fs.mjs')).map((message) => message.line);
+    const lines = (result?.messages ?? []).filter((message) => message.message.includes('scripts/esbuild-original-fs.ts')).map((message) => message.line);
     expect(lines).toEqual([1, 2, 3, 4, 5]);
   }, 60_000);
 });

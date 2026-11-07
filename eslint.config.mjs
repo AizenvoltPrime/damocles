@@ -2,7 +2,6 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import vue from 'eslint-plugin-vue';
 import vueParser from 'vue-eslint-parser';
-import globals from 'globals';
 import betterTailwindcss from 'eslint-plugin-better-tailwindcss';
 import { getDefaultSelectors } from 'eslint-plugin-better-tailwindcss/defaults';
 
@@ -22,7 +21,29 @@ const noSync = {
     };
   },
 };
-const damoclesPlugin = { rules: { 'no-sync': noSync } };
+// Node's ESM loader, which Playwright and the build scripts load sources through, refuses a JSON import without its type.
+const isJsonSource = (source) => source?.type === 'Literal' && typeof source.value === 'string' && source.value.endsWith('.json');
+const jsonImportAttributes = {
+  meta: { type: 'problem', messages: { missing: "Import JSON with `with { type: 'json' }`, which Node's ESM loader requires." }, schema: [] },
+  create(context) {
+    const report = (node) => context.report({ node, messageId: 'missing' });
+    return {
+      ImportDeclaration: (node) => {
+        if (node.importKind !== 'type' && isJsonSource(node.source) && node.attributes.length === 0) report(node.source);
+      },
+      ImportExpression: (node) => {
+        if (isJsonSource(node.source) && node.options == null) report(node.source);
+      },
+      ExportNamedDeclaration: (node) => {
+        if (node.exportKind !== 'type' && isJsonSource(node.source) && node.attributes.length === 0) report(node.source);
+      },
+      ExportAllDeclaration: (node) => {
+        if (node.exportKind !== 'type' && isJsonSource(node.source) && node.attributes.length === 0) report(node.source);
+      },
+    };
+  },
+};
+const damoclesPlugin = { rules: { 'no-sync': noSync, 'json-import-attributes': jsonImportAttributes } };
 // Files only worker threads load, where a synchronous call blocks no UI or chat thread. Listed one by one, because a
 // folder can hold a file the host imports (compass/detect.ts); scripts/__tests__/no-sync-lint-scope.test.ts fails when
 // a host bundle includes one.
@@ -160,9 +181,9 @@ const PROCESS_BAN = {
     { selector: "CallExpression[callee.name='require'][arguments.0.value=/^(?:node:)?child_process$|^cross-spawn$/]", message: NO_PROCESS_START },
   ],
 };
-// The build maps every bundled fs import to original-fs under Electron (scripts/esbuild-original-fs.mjs); a runtime lookup
+// The build maps every bundled fs import to original-fs under Electron (scripts/esbuild-original-fs.ts); a runtime lookup
 // bypasses it. An esquery regex cannot contain a raw slash, hence \u002F.
-const NO_FS_BUILTIN = 'Import fs; the build maps it to original-fs under Electron (scripts/esbuild-original-fs.mjs, docs/invariants.md "Desktop packaging and updates").';
+const NO_FS_BUILTIN = 'Import fs; the build maps it to original-fs under Electron (scripts/esbuild-original-fs.ts, docs/invariants.md "Desktop packaging and updates").';
 const FS_MODULE = '/^(?:node:)?(?:fs(?:\\u002Fpromises)?|original-fs)$/';
 const FS_BUILTIN_BAN = [
   { selector: `CallExpression[callee.property.name='getBuiltinModule'][arguments.0.value=${FS_MODULE}]`, message: NO_FS_BUILTIN },
@@ -190,6 +211,8 @@ const NODE_HOST_ROOTS = PROCESS_STARTERS_DESKTOP.map((glob) => glob.replace(/\/\
 export const PROCESS_STARTERS_DAEMON = ['src/desktop/daemon/process-starts.ts'];
 // the damocles command on this computer, a program of its own that starts the app detached (docs/perf.md "Starts outside the launcher")
 export const PROCESS_STARTERS_CLI = ['src/desktop/cli/cli.ts'];
+// main's start of the design renderer, whose IPC channel belongs to main's thread (docs/perf.md "Starts outside the launcher")
+export const PROCESS_STARTERS_MAIN = ['src/desktop/main/design/design-renderer-start.ts'];
 const testsUnder = (root) => [`${root}/**/__tests__/**`, `${root}/**/*.test.ts`, `${root}/**/*.bench.ts`];
 const WORKER_ROOTS = ['src/desktop/quick-open-worker', 'src/desktop/watch-worker', 'src/desktop/askpass'];
 // Damocles Core, its protocol, the per-process services both main and Core load, the host-neutral workspace modules and the
@@ -213,6 +236,9 @@ export const MAIN_CORE_IMPORTS = [
   'config/read-contributed-configuration',
   'config/retired-secrets',
   'config/settings-file',
+  // Open in browser on desktop (PD-35): main serves designs from its own loopback server, reading through the chat's core
+  'design/design-http-server',
+  'design/serve-policy',
   'executable-path',
   // l() and verbatim(): text main hands a chat page, which renders it in its own language
   'l10n',
@@ -373,8 +399,9 @@ export default [
       'src/**/__mocks__/**',
       'src/**/__tests__/fixtures/**',
       '**/*.d.ts',
-      'scripts/generate-agent-profiles.mjs',
-      'scripts/query-db.js',
+      'scripts/query-db.cjs',
+      // Its own project (scripts/demo-video/tsconfig.json), outside scripts/tsconfig.json.
+      'scripts/demo-video/**',
     ],
   },
   js.configs.recommended,
@@ -432,16 +459,6 @@ export default [
     },
   },
   {
-    files: ['scripts/**/*.{js,mjs,cjs}'],
-    languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      globals: {
-        ...globals.node,
-      },
-    },
-  },
-  {
     files: ['src/**/*.{ts,tsx,vue}'],
     ignores: ['src/vscode/**', 'src/desktop/**'],
     rules: {
@@ -483,6 +500,17 @@ export default [
         patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN_SUBFOLDER.pattern, WORKSPACE_FROM_MAIN_SUBFOLDER.pattern],
       }],
       'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN_SUBFOLDER.syntax, ...WORKSPACE_FROM_MAIN_SUBFOLDER.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // main's one file of direct starts keeps its subfolder's core, core-host and workspace bans
+    files: PROCESS_STARTERS_MAIN,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }],
+        patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN_SUBFOLDER.pattern, WORKSPACE_FROM_MAIN_SUBFOLDER.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN_SUBFOLDER.syntax, ...WORKSPACE_FROM_MAIN_SUBFOLDER.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -681,6 +709,11 @@ export default [
     ignores: [...testsUnder('src'), ...WORKER_ONLY_FILES],
     plugins: { damocles: damoclesPlugin },
     rules: { 'damocles/no-sync': 'error' },
+  },
+  {
+    files: ['**/*.{ts,tsx,vue,mjs}'],
+    plugins: { damocles: damoclesPlugin },
+    rules: { 'damocles/json-import-attributes': 'error' },
   },
   remSizing(['src/webview/**/*.{ts,vue}'], 'src/webview/style.css', [...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax]),
   // The shell, overlay and popup pages all import this stylesheet, which carries the webview theme.

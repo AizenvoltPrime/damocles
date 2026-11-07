@@ -15,6 +15,7 @@ export type SubCallPurpose =
   | "memory-audit"
   | "memory-query-expansion"
   | "commit-message"
+  | "design-parity"
   | "btw";
 
 export interface SubCallAttribution {

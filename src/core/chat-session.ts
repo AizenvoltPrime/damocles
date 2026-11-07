@@ -3,6 +3,9 @@ import type { McpServerStatusInfo } from '../shared/types/mcp';
 import type { ToolsSnapshot } from '../shared/types/tools';
 import type { LocalizedText } from '../shared/localized-text';
 import type { ImageBlock, UserContentBlock } from '../shared/types/content';
+import type { DesignReferenceNote } from '../shared/types/design';
+import type { DesignMarkupNote } from '../shared/design-markup';
+import type { TweakKept } from './design/tweaks';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
 import type { SlashCommandInfo } from '../shared/types/commands';
 import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
@@ -12,6 +15,7 @@ import type { ActivitySource } from './chat-panel/activity';
 import type { ChatReviewSnapshot, CommentPlace, DraftComment, ReviewFileDiff, ReviewSubmitOutcome } from './pi-session/chat-review';
 import type { ChatScope } from './pi-session/chat-changes';
 import type { SessionWorktree } from './pi-session/session-worktree';
+import type { SessionDesign } from './design/session-design';
 import type { McpUserResourcePort } from './pi-session/mcp/tool-source';
 import type { ChatAttachmentInfo } from '../shared/types/chat-attachment';
 import type { AgentSession, SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -26,6 +30,12 @@ export interface UserBroadcast {
   terminalAttachments?: ChatAttachmentInfo[];
   // the prompt's last images are the attachments' own, which their chips stand for
   attachmentImageCount?: number;
+  // a preview's markup, which the transcript shows as its card (PD-12)
+  designMarkup?: DesignMarkupNote;
+  // the prompt's images core saves as the design's references once its entry commits (PD-40)
+  designReferences?: DesignReferenceNote[];
+  // a tweak the user kept, whose entry is appended once the prompt commits (PD-13); never sent to a view
+  designTweakKept?: TweakKept;
 }
 
 /**
@@ -118,6 +128,15 @@ export interface ChatSession extends ActivitySource {
 
   /** Where the chat works (AD12): its place, read-only state, isolation and `worktreeState`. */
   readonly worktree: SessionWorktree;
+  /** The chat's design role or its own design link (PD-23), read from its branch. */
+  readonly design: SessionDesign;
+  /**
+   * Whether the panel's conversation is a design chat, its session started or not: the live branch has a role entry, a design
+   * seed is pending, or the stored conversation the panel will open (a resume or fork target) has one in its file, read only.
+   */
+  isDesignConversation(): Promise<boolean>;
+  /** Publishes `designState`, its one publisher. */
+  publishDesignState(): void;
   /** D61's note naming the chat's new working folder, delivered with the next prompt. */
   noteWorkingFolder(folder: string): void;
   /** Whether this session is on, starting on, or switching to stored session `sessionId`. */
@@ -151,6 +170,10 @@ export interface ChatSession extends ActivitySource {
   chatReviewStale(drafts: readonly DraftComment[]): Promise<DraftComment[]>;
   /** The review comments as one user message composed from core's own diff; a running chat queues it. */
   submitReview(drafts: readonly DraftComment[]): Promise<ReviewSubmitOutcome>;
+  /** A preview's markup as its own user prompt of this design chat (PD-12); a busy chat holds it until it settles. */
+  sendDesignMarkup(png: unknown, json: unknown): Promise<{ readonly feedbackId: string } | { readonly refused: LocalizedText }>;
+  /** A tweak the user kept in the preview (PD-13), as its own user prompt of this design chat; a busy chat holds it until it settles. */
+  keepDesignTweak(tweakId: string, value: string): Promise<{ readonly kept: true } | { readonly refused: LocalizedText }>;
   initializeEarly(): Promise<void>;
   /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
    *  side is still awaiting. Called from the `ready` handler. */
@@ -203,7 +226,8 @@ export interface ChatSession extends ActivitySource {
   /** Manually compact the conversation, optionally focusing the summary with `instructions` (US-030). `onAccepted` runs only when it is not refused; `target` as `sendMessage`'s. */
   compact(instructions?: string, onAccepted?: () => void, target?: string): Promise<void>;
   reset(): void;
-  clear(): void;
+  /** Starts a new conversation in the panel, as `reset` does; false, telling the user why, in a design chat, which keeps its conversation (D70). */
+  clear(): boolean;
   dispose(): Promise<void>;
   /** The user's stop of one subagent; false when it had already finished. */
   stopSubagent(agentId: string): boolean;
@@ -266,6 +290,8 @@ export interface ChatSession extends ActivitySource {
   seedCheckpoints(userMessageIds: Iterable<string>): void;
   /** False for a chat with no project folder: its files are never checkpointed, so only its conversation can be rewound. */
   readonly fileCheckpoints: boolean;
+  /** The folder this chat's checkpoints capture: its design folder in a design chat, else its working folder. */
+  checkpointFolder(): string;
   getAccumulatedCost(): number;
 
   /**

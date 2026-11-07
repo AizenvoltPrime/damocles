@@ -19,6 +19,8 @@ import TranscriptNotice from './TranscriptNotice.vue';
 import EffortBadge from './EffortBadge.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
 import AuthFailureNotice from './AuthFailureNotice.vue';
+import DesignResultCard from './design/DesignResultCard.vue';
+import DesignBriefNote from './design/DesignBriefNote.vue';
 import { errorRowText } from '@/composables/useLocalizedText';
 
 const { t } = useI18n();
@@ -40,7 +42,7 @@ const emit = defineEmits<{
   (e: 'rewindToCompaction', entryId: string): void;
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'viewContext', promptIndex: number): void;
-  (e: 'openLightbox', block: ImageBlock): void;
+  (e: 'openLightbox', image: string | ImageBlock): void;
   (e: 'toggleUserMessageExpanded'): void;
   (e: 'mounted', el: HTMLElement): void;
   (e: 'unmounted'): void;
@@ -56,6 +58,7 @@ const userMessageId = computed<string | null>(() => {
 const animationClass = computed(() => {
   if (!props.arriving) return '';
   if (props.item.isStreaming) return 'animate-[o-fade_.2s_var(--ease-out)]';
+  if (props.item.type === 'design-result') return 'animate-[d-up_.3s_var(--ease-out)_both]';
   return 'd-arrive';
 });
 
@@ -152,8 +155,20 @@ onUnmounted(() => {
         :message="item.message"
         :subagents="subagents"
         @expand-subagent="emit('expandSubagent', $event)"
+        @open-lightbox="emit('openLightbox', $event)"
       />
     </div>
+
+    <DesignResultCard
+      v-else-if="item.type === 'design-result' && item.designCard?.kind === 'result'"
+      :result="item.designCard.result"
+      :entry-id="item.designCard.entryId"
+    />
+
+    <DesignBriefNote
+      v-else-if="item.type === 'design-brief' && item.designCard?.kind === 'brief'"
+      :brief="item.designCard.brief"
+    />
 
     <AuthFailureNotice
       v-else-if="item.type === 'error-message' && item.message.authFailure"

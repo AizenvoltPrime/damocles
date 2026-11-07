@@ -87,3 +87,18 @@ describe('which transcript rows count as arriving', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('design cards arriving', () => {
+  const result = { designId: 'd', version: 1, folder: 'f', title: 'T', screens: [], decisions: [], check: { errors: 0 as const, warnings: [] }, journeys: [], previousVersion: null, changes: [] };
+
+  // A design card follows a message it is not part of: a live card after replayed history still enters, a replayed one never does.
+  it.each([[true, true], [false, false]])('a card posted live=%s enters=%s whatever its anchor message is', async (live, enters) => {
+    const items = ref<VirtualItem[]>([item('a', 'text-block', true)]);
+    const arriving = useLiveArrivals(items);
+
+    items.value = [...items.value, { ...item('design-r', 'design-result', true), designCard: { kind: 'result', entryId: 'r', afterMessageId: 'm-a', afterTimestamp: 1, live, result } }];
+    await nextTick();
+
+    expect(arriving.has('design-r')).toBe(enters);
+  });
+});

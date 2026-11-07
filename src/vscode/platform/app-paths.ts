@@ -11,7 +11,7 @@ const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   voiceExtract: 'voice-extract-worker.js',
 };
 
-// Worker bundle names must match the esbuild.config.mjs outfiles under dist/.
+// Worker bundle names must match the esbuild.config.ts outfiles under dist/.
 export function createVsCodeAppPaths(extensionPath: string): AppPaths {
   return {
     resourceRoot: extensionPath,

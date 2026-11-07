@@ -9,6 +9,13 @@ import { isWslDistroName } from './remote/wsl/distro-name';
 import type { PanelTheme } from '../preload/panel-channels';
 import {
   BROWSER_ACTIONS,
+  DESIGN_PREVIEW_ACTIONS,
+  MAX_DESIGN_WIDTH,
+  MAX_DESIGN_ZOOM,
+  MIN_DESIGN_WIDTH,
+  MIN_DESIGN_ZOOM,
+  type DesignPreviewActionRequest,
+  type DesignPreviewSet,
   EDITOR_TAB_ACTIONS,
   MAX_FORMAT_ERROR_CHARS,
   MAX_FORMAT_TAB_SIZE,
@@ -63,6 +70,12 @@ import {
   type GridPane,
   type GridSlot,
   type EditorCommand,
+  type DesignReplayProgress,
+  type DesignFreeze,
+  type DesignMarkupSendRequest,
+  type DesignTweakApplyRequest,
+  type DesignTweakKeepRequest,
+  type DesignMarkupSent,
   type FilesChanged,
   type ShellDocumentContent,
   type ShellEditorState,
@@ -181,8 +194,11 @@ import { PROJECTS_VIEWS } from '../local-services/desktop-configuration';
 import { parseOverlayRequest, parseRect } from './overlay';
 import { APP_ORIGIN, SHELL_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
-import { isPanelSender } from './views';
+import { asJsonValue, isPanelSender } from './views';
 import { parseGridSizes, parseSearchEditorConfig, parseSidebarLayout } from './window-layout-store';
+import { TWEAK_ID, TWEAK_TOKEN_NAME } from '../../shared/design-tweaks';
+import { MAX_DESIGN_NAME_CHARS } from '../../shared/design-paths';
+import { MAX_MARKUP_JSON_CHARS } from '../../shared/design-markup';
 
 // What the shell may ask for; every key and chat id is resolved against main's own lists by the implementation.
 export interface ShellActions {
@@ -263,6 +279,7 @@ export interface ShellActions {
   readonly search: ShellSearchActions;
   readonly searchEditor: ShellSearchEditorActions;
   readonly browser: ShellBrowserActions;
+  readonly design: ShellDesignActions;
   readonly terminal: ShellTerminalActions;
   readonly scm: ShellScmActions;
   readonly review: ShellReviewActions;
@@ -364,6 +381,24 @@ export interface ShellBrowserActions {
   navigate(request: BrowserNavigateRequest): Promise<boolean>;
   // window DIP; undefined while no browser tab shows its page area; radius rounds the page view's corners
   setBounds(bounds: Rectangle | undefined, radius: number): void;
+}
+
+export interface ShellDesignActions {
+  set(request: DesignPreviewSet): void;
+  action(request: DesignPreviewActionRequest): Promise<void>;
+  freeze(tabId: string): Promise<DesignFreeze>;
+  markupEnter(tabId: string): void;
+  markupExit(tabId: string): void;
+  markupSend(request: DesignMarkupSendRequest): Promise<DesignMarkupSent>;
+  tweakApply(request: DesignTweakApplyRequest): void;
+  tweakReset(tabId: string): void;
+  tweakKeep(request: DesignTweakKeepRequest): Promise<void>;
+  // a reconnecting tab's last frame, a JPEG data: URL; null when it has none
+  lastFrame(tabId: string): string | null;
+  // the shell's page loaded, so no markup it drew is left
+  shellLoaded(): void;
+  // window DIP and the view's zoom factor (the frame's zoom times the shell's); undefined while no design tab shows its frame
+  setBounds(frame: { readonly tabId: string; readonly bounds: Rectangle; readonly radius: number; readonly zoomFactor: number } | undefined): void;
 }
 
 // Search: searchIds come from the shell, match ids from main, and both are checked against main's running search.
@@ -876,6 +911,77 @@ export function parseBrowserAction(raw: unknown): BrowserActionRequest | undefin
   const tabId = value ? own(value, 'tabId') : undefined;
   const action = value ? own(value, 'action') : undefined;
   return isShellId(tabId) && oneOf(BROWSER_ACTIONS, action) ? { tabId, action } : undefined;
+}
+
+export function parseDesignPreviewSet(raw: unknown): DesignPreviewSet | undefined {
+  const value = record(raw);
+  if (!value) return undefined;
+  const tabId = own(value, 'tabId');
+  const width = own(value, 'width');
+  const state = own(value, 'state');
+  const provenance = own(value, 'provenance');
+  if (!isShellId(tabId) || (width === undefined && state === undefined && provenance === undefined)) return undefined;
+  if (width !== undefined && !(typeof width === 'number' && Number.isFinite(width) && width >= MIN_DESIGN_WIDTH && width <= MAX_DESIGN_WIDTH)) return undefined;
+  if (state !== undefined && !(typeof state === 'string' && state.length > 0 && state.length <= MAX_DESIGN_NAME_CHARS)) return undefined;
+  if (provenance !== undefined && typeof provenance !== 'boolean') return undefined;
+  return { tabId, ...(width !== undefined ? { width } : {}), ...(state !== undefined ? { state } : {}), ...(provenance !== undefined ? { provenance } : {}) };
+}
+
+export function parseDesignPreviewAction(raw: unknown): DesignPreviewActionRequest | undefined {
+  const value = record(raw);
+  const tabId = value ? own(value, 'tabId') : undefined;
+  const action = value ? own(value, 'action') : undefined;
+  return isShellId(tabId) && oneOf(DESIGN_PREVIEW_ACTIONS, action) ? { tabId, action } : undefined;
+}
+
+// The shell flattens onto the freeze capture, at most 1950 px a side (PD-41): uncompressed RGBA in base64 is about 20 MiB.
+const MAX_MARKUP_PNG_URL_CHARS = 24 * 1024 * 1024;
+const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
+
+/** A markup send from the shell: a tab, a PNG data URL and an object core parses as the markup; undefined when malformed. */
+export function parseDesignMarkupSend(raw: unknown): DesignMarkupSendRequest | undefined {
+  const value = record(raw);
+  if (!value) return undefined;
+  const tabId = own(value, 'tabId');
+  const png = own(value, 'png');
+  const json = own(value, 'json');
+  if (!isShellId(tabId) || typeof png !== 'string' || png.length > MAX_MARKUP_PNG_URL_CHARS || !png.startsWith(PNG_DATA_URL_PREFIX)) return undefined;
+  // core's design.markup takes only plain JSON data within this bound; structured clone also carries a Date or a Map
+  const normalized = asJsonValue(json, MAX_MARKUP_JSON_CHARS);
+  if (!normalized || !record(normalized.value)) return undefined;
+  return { tabId, png, json: normalized.value as DesignMarkupSendRequest['json'] };
+}
+
+/** A tweak stop from the shell: a tab and two token names; undefined when malformed. */
+export function parseDesignTweakApply(raw: unknown): DesignTweakApplyRequest | undefined {
+  const value = record(raw);
+  if (!value) return undefined;
+  const tabId = own(value, 'tabId');
+  const property = own(value, 'property');
+  const token = own(value, 'token');
+  if (!isShellId(tabId) || typeof property !== 'string' || !TWEAK_TOKEN_NAME.test(property) || typeof token !== 'string' || !TWEAK_TOKEN_NAME.test(token)) return undefined;
+  return { tabId, property, token };
+}
+
+/** A Keep from the shell: a tab, a tweak id and a token name; undefined when malformed. */
+export function parseDesignTweakKeep(raw: unknown): DesignTweakKeepRequest | undefined {
+  const value = record(raw);
+  if (!value) return undefined;
+  const tabId = own(value, 'tabId');
+  const tweakId = own(value, 'tweakId');
+  const tweakValue = own(value, 'value');
+  if (!isShellId(tabId) || typeof tweakId !== 'string' || !TWEAK_ID.test(tweakId) || typeof tweakValue !== 'string' || !TWEAK_TOKEN_NAME.test(tweakValue)) return undefined;
+  return { tabId, tweakId, value: tweakValue };
+}
+
+/** A design tab's frame in window DIP, its corner radius and the view's zoom factor, from the shell's CSS px report; undefined when malformed. */
+export function designFrameToDip(raw: unknown, shellZoom: number): { readonly tabId: string; readonly bounds: Rectangle; readonly radius: number; readonly zoomFactor: number } | undefined {
+  const area = browserPageAreaToDip(raw, shellZoom);
+  const value = area ? record(raw) : undefined;
+  const tabId = value ? own(value, 'tabId') : undefined;
+  const zoom = value ? own(value, 'zoom') : undefined;
+  if (!area || !isShellId(tabId) || typeof zoom !== 'number' || !Number.isFinite(zoom) || zoom < MIN_DESIGN_ZOOM || zoom > MAX_DESIGN_ZOOM) return undefined;
+  return { tabId, bounds: area.bounds, radius: area.radius, zoomFactor: zoom * shellZoom };
 }
 
 export function parseBrowserNavigate(raw: unknown): BrowserNavigateRequest | undefined {
@@ -1430,6 +1536,7 @@ export class ShellHost {
       this.actions.editor.setFocusOverlay(false);
       this.sendState();
       this.actions.terminal.shellLoaded();
+      this.actions.design.shellLoaded();
     });
     contents.on('render-process-gone', (_event, details) => {
       this.loaded = false;
@@ -1582,6 +1689,60 @@ export class ShellHost {
         return;
       }
       browser.setBounds(area?.bounds, area?.radius ?? 0);
+    });
+    const design = this.actions.design;
+    this.handle(SHELL_CHANNELS.designSet, (raw) => {
+      const request = parseDesignPreviewSet(raw);
+      if (!request) throw new Error('Malformed design preview change from the shell');
+      design.set(request);
+    });
+    this.handle(SHELL_CHANNELS.designAction, (raw) => {
+      const request = parseDesignPreviewAction(raw);
+      if (!request) throw new Error('Malformed design preview action from the shell');
+      return design.action(request);
+    });
+    this.handle(SHELL_CHANNELS.designFreeze, (tabId) => {
+      if (!isShellId(tabId)) throw new Error('Malformed design tab id from the shell');
+      return design.freeze(tabId);
+    });
+    this.handle(SHELL_CHANNELS.designMarkupEnter, (tabId) => {
+      if (!isShellId(tabId)) throw new Error('Malformed design tab id from the shell');
+      design.markupEnter(tabId);
+    });
+    this.handle(SHELL_CHANNELS.designMarkupExit, (tabId) => {
+      if (!isShellId(tabId)) throw new Error('Malformed design tab id from the shell');
+      design.markupExit(tabId);
+    });
+    this.handle(SHELL_CHANNELS.designMarkupSend, (raw) => {
+      const request = parseDesignMarkupSend(raw);
+      if (!request) throw new Error('Malformed markup from the shell');
+      return design.markupSend(request);
+    });
+    this.handle(SHELL_CHANNELS.designTweakApply, (raw) => {
+      const request = parseDesignTweakApply(raw);
+      if (!request) throw new Error('Malformed tweak from the shell');
+      design.tweakApply(request);
+    });
+    this.handle(SHELL_CHANNELS.designTweakReset, (tabId) => {
+      if (!isShellId(tabId)) throw new Error('Malformed design tab id from the shell');
+      design.tweakReset(tabId);
+    });
+    this.handle(SHELL_CHANNELS.designTweakKeep, (raw) => {
+      const request = parseDesignTweakKeep(raw);
+      if (!request) throw new Error('Malformed kept tweak from the shell');
+      return design.tweakKeep(request);
+    });
+    this.handle(SHELL_CHANNELS.designLastFrame, (tabId) => {
+      if (!isShellId(tabId)) throw new Error('Malformed design tab id from the shell');
+      return design.lastFrame(tabId);
+    });
+    this.on(SHELL_CHANNELS.designBounds, (raw) => {
+      const frame = raw === null ? undefined : designFrameToDip(raw, this.window.webContents.getZoomFactor());
+      if (raw !== null && !frame) {
+        this.log('[shell] ignoring malformed design bounds');
+        return;
+      }
+      design.setBounds(frame);
     });
   }
 
@@ -2038,6 +2199,14 @@ export class ShellHost {
 
   filesChanged(change: FilesChanged): void {
     this.send(SHELL_CHANNELS.filesChanged, change);
+  }
+
+  designReplayProgress(progress: DesignReplayProgress): void {
+    this.send(SHELL_CHANNELS.designReplay, progress);
+  }
+
+  designPreviewClosed(tabId: string): void {
+    this.send(SHELL_CHANNELS.designClosed, { tabId });
   }
 
   filesTransferProgress(progress: FilesTransferProgress): void {

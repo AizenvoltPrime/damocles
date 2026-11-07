@@ -2,6 +2,8 @@ import type { HostCapabilities } from '../shared/types/messages';
 import type { AppInfo } from './app-info';
 import type { AppPaths } from './app-paths';
 import type { ClipboardService } from './clipboard-service';
+import type { DesignHost } from './design-host';
+import type { DesignPreviewHost } from './design-preview';
 import type { DialogService } from './dialog-service';
 import type { EditorService } from './editor-service';
 import type { FileConfinement } from './file-confinement';
@@ -42,4 +44,8 @@ export interface Platform {
   readonly logSinks: LogSinkFactory;
   // set only for a daemon's core (desktop CoreInit.remote): user scope, AI sign-ins and the trash are the client's, not this host's
   readonly remote?: RemoteHost;
+  // set only where a chat's own buttons open designs in the browser (VS Code); never on desktop (PD-35)
+  readonly design?: DesignHost;
+  // set only where a design opens in a preview tab (desktop, a daemon's core included)
+  readonly designPreview?: DesignPreviewHost;
 }

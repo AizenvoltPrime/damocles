@@ -23,7 +23,7 @@ function setUp() {
   };
   const instance = {
     host: panel,
-    session: { clear: vi.fn(), cancelToolCall: () => false },
+    session: { clear: vi.fn(() => true), cancelToolCall: () => false },
     permissionHandler: { resetForNewConversation: vi.fn() },
     ideContextManager: {},
     terminalAttachments: {},

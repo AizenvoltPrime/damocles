@@ -3,7 +3,7 @@
 .vscode-test/**
 .github/**
 node_modules/**
-# >>> AUTO-GENERATED node_modules allowlist (scripts/sync-vscodeignore.mjs) — do not edit by hand
+# >>> AUTO-GENERATED node_modules allowlist (scripts/sync-vscodeignore.ts) — do not edit by hand
 !node_modules/@anthropic-ai/sdk/**/*.js
 !node_modules/@anthropic-ai/sdk/**/*.json
 !node_modules/@anthropic-ai/sdk/**/*.mjs
@@ -144,8 +144,24 @@ node_modules/**
 !node_modules/yaml/**
 !node_modules/zod/**
 # <<< AUTO-GENERATED node_modules allowlist
+# >>> AUTO-GENERATED dist allowlist (scripts/sync-vscodeignore.ts) — do not edit by hand
+dist/*
+dist/!(webview)/**
+!dist/package.json
+!dist/extension.cjs
+!dist/compass-worker.js
+!dist/usage-stats-worker.js
+!dist/memory-integrity-worker.js
+!dist/session-meta-index-worker.js
+!dist/voice-extract-worker.js
+!dist/process-launcher-worker.js
+!dist/sentinel.js
+# <<< AUTO-GENERATED dist allowlist
 src/**
 scripts/**
+# Sources of generated modules (skills.generated.ts, agent-profiles.generated.ts); vsce's *.md and NOTICE rules match only root files
+design-skills/**
+agent-profiles/**
 .claude/**
 .damocles/**
 logs/**
@@ -157,11 +173,12 @@ docs/**
 .gitignore
 .eslintrc*
 eslint.config.mjs
+eslint-suppressions.json
 stylelint.config.mjs
 tsconfig*.json
 vite.config.ts
 vitest.config.ts
-esbuild.config.mjs
+esbuild.config.ts
 tailwind.config.js
 postcss.config.js
 components.json
@@ -174,7 +191,7 @@ bun.lockb
 package-lock.json
 **/*.log
 
-# Desktop app: build output, the daemon and server packages, packaging config, end-to-end suite, Windows icon, terminal shell-integration scripts, and the askpass helper and its scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
+# Desktop app: build output, the daemon and server packages, packaging config, end-to-end suite, Windows icon, terminal shell-integration scripts, and the askpass helper and its scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.ts)
 dist/desktop/**
 dist/desktop-shell/**
 dist/core-host.js
@@ -194,8 +211,7 @@ e2e/**
 build/**
 types/**
 electron-builder.yml
-playwright.desktop.config.ts
-playwright.remote.config.ts
+playwright.*.config.ts
 vite.shell.config.ts
 resources/icon.ico
 resources/shell-integration/**

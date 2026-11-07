@@ -2,6 +2,7 @@ import type { Disposable } from "../../platform/disposable";
 import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
 import type { ChatPermissions } from "../permission-handler";
+import type { DesignPanels } from "../design/tools/start-design";
 import * as path from "path";
 import { PanelManager } from "./panel-manager";
 import { onListingChange, StorageManager } from "./storage-manager";
@@ -352,9 +353,18 @@ export class ChatPanelProvider {
       platform: this.platform,
       languagePreference: (clientId) => this.messageRouter.languagePreference(clientId),
       folderRegistry: this.folderRegistry,
-      createSessionForPanel: async (host, permissionHandler, panelId, folder, forkContext) => {
+      createSessionForPanel: async (host, permissionHandler, panelId, folder, forkContext, designSeed) => {
         const onSpawnFork = (args: import("../../shared/types/session").ForkSpawnArgs) =>
           this.panelManager.showForked(args).then(() => undefined);
+        // A design chat and its parent share their working folder (PD-50), so both look each other up from this one.
+        const designPanels: DesignPanels = {
+          openDesignChat: (seed) => this.panelManager.showDesign({ sourcePanelId: panelId, seed }),
+          showSession: (sessionId) => this.panelManager.showSession(sessionId, folder.fsPath),
+          sessionTitle: async (sessionId) => {
+            const stored = await this.storageManager.storedSession(sessionId);
+            return stored ? stored.customTitle || stored.aiTitle || stored.preview : undefined;
+          },
+        };
         const session = await this.sessionManager.createSessionForPanel(
           host,
           permissionHandler,
@@ -362,6 +372,13 @@ export class ChatPanelProvider {
           folder,
           onSpawnFork,
           forkContext,
+          {
+            ...(designSeed ? { seed: designSeed } : {}),
+            panels: designPanels,
+            republishSettings: () => {
+              this.settingsManager.sendCurrentSettings(host, permissionHandler, folder).catch((err: unknown) => log("[ChatPanelProvider] republishing the settings failed: %O", err));
+            },
+          },
         );
         // The session start may have started this folder's index before the panel joined the map.
         for (const msg of this.compassStatusMessages(folder.key)) this.panelManager.postMessage(host, msg);
@@ -405,6 +422,8 @@ export class ChatPanelProvider {
     });
     // A chat created, deleted or handed off changes how many chats share a worktree, and which deleted records any chat uses.
     if (worktreeHost) this.subscriptions.push(this.storageManager.onDidChangeSessions(() => void this.panelManager.worktrees.storedSessionsChanged()));
+    // A rename or an AI title of a main chat changes its design chat's header.
+    this.subscriptions.push(this.storageManager.onDidChangeSessions(() => this.panelManager.republishDesignChats()));
 
     this.subscriptions.push(this.panelManager.onDidChangeAttachment((panelId) => this.webviewPrompts.resurface(panelId)));
 
@@ -813,20 +832,16 @@ export class ChatPanelProvider {
     await this.browserService.restorePanel(host, url);
   }
 
-  newSession(): void {
-    this.panelManager.newSession();
+  newSession(): Promise<void> {
+    return this.panelManager.newSession();
   }
 
   cancelSession(): void {
     this.panelManager.cancelSession();
   }
 
-  async reloadActiveSession(): Promise<void> {
-    for (const [, instance] of this.panelManager.getPanels()) {
-      instance.session.reset();
-      this.panelManager.postMessage(instance.host, { type: "processing", isProcessing: false });
-      this.panelManager.postMessage(instance.host, { type: "authFailureCleared" });
-    }
+  reloadActiveSession(): Promise<void> {
+    return this.panelManager.resetConversations({ type: "authFailureCleared" });
   }
 
   /**

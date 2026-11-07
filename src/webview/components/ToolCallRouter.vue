@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from '@shared/tool-names';
+import type { ImageBlock } from '@shared/types/content';
+import { DESIGN_CHAT_TOOLS, TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_DESIGN_PARITY, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_FINISH_DESIGN, TOOL_PREVIEW_JOURNEY, TOOL_SKILL, TOOL_START_DESIGN, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from '@shared/tool-names';
 import ToolCallCard from './ToolCallCard.vue';
 import QuestionToolCard from './QuestionToolCard.vue';
 import FormToolCard from './FormToolCard.vue';
@@ -11,6 +12,11 @@ import SkillToolCard from './SkillToolCard.vue';
 import SubagentCard from './SubagentCard.vue';
 import TeamCard from './TeamCard.vue';
 import SteerSubagentToolCard from './SteerSubagentToolCard.vue';
+import StartDesignToolCard from './design/StartDesignToolCard.vue';
+import FinishDesignToolCard from './design/FinishDesignToolCard.vue';
+import DesignToolCard from './design/DesignToolCard.vue';
+import PreviewJourneyToolCard from './design/PreviewJourneyToolCard.vue';
+import DesignParityToolCard from './design/DesignParityToolCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { computed } from 'vue';
 
@@ -26,6 +32,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'expandSubagent', subagentId: string): void;
+  // The transcript's own lightbox shows a card's image, so it outlives the card's row.
+  (e: 'openLightbox', image: string | ImageBlock): void;
 }>();
 
 const teamByToolUseId = computed(() => {
@@ -83,6 +91,28 @@ const agentSubagent = computed(() =>
   <SteerSubagentToolCard
     v-else-if="toolName === TOOL_STEER_SUBAGENT"
     :tool-call="toolCall"
+  />
+  <StartDesignToolCard
+    v-else-if="toolName === TOOL_START_DESIGN"
+    :tool-call="toolCall"
+  />
+  <FinishDesignToolCard
+    v-else-if="toolName === TOOL_FINISH_DESIGN"
+    :tool-call="toolCall"
+  />
+  <PreviewJourneyToolCard
+    v-else-if="toolName === TOOL_PREVIEW_JOURNEY"
+    :tool-call="toolCall"
+  />
+  <DesignParityToolCard
+    v-else-if="toolName === TOOL_DESIGN_PARITY"
+    :tool-call="toolCall"
+    @open-lightbox="emit('openLightbox', $event)"
+  />
+  <DesignToolCard
+    v-else-if="DESIGN_CHAT_TOOLS.has(toolName)"
+    :tool-call="toolCall"
+    @open-lightbox="emit('openLightbox', $event)"
   />
   <ToolCallCard
     v-else-if="toolName !== TEAM_CREATE_TOOL"

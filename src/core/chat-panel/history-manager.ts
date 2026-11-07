@@ -129,13 +129,13 @@ export class HistoryManager {
     return replaySessionFileReadOnly(filePath, sessionId, post, signal, this.modelReasons?.());
   }
 
-  async extractRewindHistory(cwd: string, sessionId: string, fileCheckpoints: boolean): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[] }> {
-    return getPiRewindHistory(cwd, sessionId, this.maxCheckpointFileSizeBytes(), fileCheckpoints);
+  async extractRewindHistory(cwd: string, sessionId: string, fileCheckpoints: boolean, checkpointFolder: string): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[] }> {
+    return getPiRewindHistory(cwd, sessionId, this.maxCheckpointFileSizeBytes(), fileCheckpoints, checkpointFolder);
   }
 
   /** The full list of files a checkpoint or restore point left out, read from its manifest without the folder lock. */
-  async readSkippedFiles(cwd: string, sessionId: string, target: SkippedFilesTarget): Promise<Result<SkippedFile[]>> {
-    return getPiSkippedFiles(cwd, sessionId, target);
+  async readSkippedFiles(cwd: string, sessionId: string, target: SkippedFilesTarget, checkpointFolder: string): Promise<Result<SkippedFile[]>> {
+    return getPiSkippedFiles(cwd, sessionId, target, checkpointFolder);
   }
 
   async getFileCheckpointContent(
@@ -143,7 +143,8 @@ export class HistoryManager {
     sessionId: string,
     userMessageId: string,
     filePath: string,
+    checkpointFolder: string,
   ): Promise<string | null> {
-    return getPiFileCheckpointContent(cwd, sessionId, userMessageId, filePath);
+    return getPiFileCheckpointContent(cwd, sessionId, userMessageId, filePath, checkpointFolder);
   }
 }

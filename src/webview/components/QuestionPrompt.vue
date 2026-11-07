@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick, onBeforeUnmount, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Bot, Check, ChevronRight, Eye, MessageCircleQuestion, MessageSquare, SendHorizontal } from 'lucide-vue-next';
-import DOMPurify from 'dompurify';
 import { ListboxRoot, ListboxItem } from 'reka-ui';
 import DockPromptOptions from './DockPromptOptions.vue';
+import QuestionDesignGrid from './QuestionDesignGrid.vue';
+import MarkdownRenderer from './MarkdownRenderer.vue';
 import { Textarea } from '@/components/ui/textarea';
 import SlidingIndicator from './SlidingIndicator.vue';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
 import { useAttentionCard } from '@/composables/useAttention';
 import { useQuestionStore } from '@/stores/useQuestionStore';
-import type { Question, QuestionAnnotations } from '@shared/types/permissions';
+import type { Question, QuestionAnnotations, QuestionOption } from '@shared/types/permissions';
 
 const { t } = useI18n();
 
@@ -27,7 +28,13 @@ const emit = defineEmits<{
 const store = useQuestionStore();
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 const customInputValue = ref('');
-const previewingOptionLabel = ref<string | null>(null);
+const pointerOptionLabel = ref<string | null>(null);
+const focusedOptionLabel = ref<string | null>(null);
+const previewPaneRef = ref<HTMLElement | null>(null);
+const optionsGridRef = ref<HTMLElement | null>(null);
+const previewHintId = useId();
+const previewTitleId = useId();
+const previewOptionId = useId();
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('question', cardRef);
 const tabRow = ref<HTMLElement | null>(null);
@@ -46,14 +53,25 @@ const currentCustomInput = computed(() => store.currentCustomInput);
 
 const isMultiSelect = computed(() => currentQuestion.value?.multiSelect ?? false);
 
-const activePreview = computed(() => {
-  const q = currentQuestion.value;
-  if (!q || !previewingOptionLabel.value) return null;
-  const option = q.options.find(o => o.label === previewingOptionLabel.value);
-  const raw = option?.preview;
-  if (!raw) return null;
-  // Model-written markup must not restyle or cover the panel or pose as a control, so it keeps no styles, app classes or form elements.
-  return DOMPurify.sanitize(raw, { FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'], FORBID_ATTR: ['style', 'class'] });
+type MarkdownOption = QuestionOption & { preview: { kind: 'markdown'; content: string } };
+
+const markdownOptions = computed(() =>
+  (currentQuestion.value?.options ?? []).filter((o): o is MarkdownOption => o.preview?.kind === 'markdown'),
+);
+
+const hasPreviewPane = computed(() => markdownOptions.value.length > 0);
+
+// Design previews replace the option list with a grid of option cards.
+const hasDesignPreviews = computed(() => (currentQuestion.value?.options ?? []).some((o) => o.preview?.kind === 'design'));
+
+const shownPreviewOption = computed<MarkdownOption | null>(() => {
+  const options = markdownOptions.value;
+  const byLabel = (label: string | null) => (label === null ? undefined : options.find(o => o.label === label));
+  return byLabel(pointerOptionLabel.value)
+    ?? byLabel(focusedOptionLabel.value)
+    ?? options.find(o => currentSelections.value.has(o.label))
+    ?? options[0]
+    ?? null;
 });
 
 const hasCustomInput = computed(() => currentCustomInput.value.trim().length > 0);
@@ -94,12 +112,51 @@ function isOptionSelected(optionLabel: string): boolean {
   return currentSelections.value.has(optionLabel);
 }
 
-function togglePreview(optionLabel: string) {
-  previewingOptionLabel.value = previewingOptionLabel.value === optionLabel ? null : optionLabel;
+function optionLabelOf(event: Event): string | null {
+  return event.target instanceof Element ? event.target.closest('[data-option-label]')?.getAttribute('data-option-label') ?? null : null;
+}
+
+// The pane sits beside or below the list, so the pointer heading for it crosses other rows: it keeps the hovered preview
+// over the Other row and in the pane, and moves to another option only once the pointer rests there this long.
+const HOVER_INTENT_MS = 120;
+let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+
+function setPointerOption(label: string | null) {
+  clearTimeout(hoverTimer);
+  pointerOptionLabel.value = label;
+}
+
+function handleOptionPointer(event: PointerEvent) {
+  const label = optionLabelOf(event);
+  clearTimeout(hoverTimer);
+  if (label === null || label === pointerOptionLabel.value) return;
+  if (pointerOptionLabel.value === null) setPointerOption(label);
+  else hoverTimer = setTimeout(() => setPointerOption(label), HOVER_INTENT_MS);
+}
+
+onBeforeUnmount(() => clearTimeout(hoverTimer));
+
+// A keyboard move outranks where the pointer rests, so the pane always shows the option focus is on.
+function handleOptionFocus(event: FocusEvent) {
+  if (!(event.target instanceof Element)) return;
+  // Focus entering the pane keeps the preview it shows, whatever the pointer does next.
+  if (previewPaneRef.value?.contains(event.target)) {
+    focusedOptionLabel.value = shownPreviewOption.value?.label ?? null;
+    setPointerOption(null);
+    return;
+  }
+  // The list itself takes focus on its way to an option.
+  if (!event.target.closest('[role="option"]')) return;
+  focusedOptionLabel.value = optionLabelOf(event);
+  setPointerOption(null);
+}
+
+function handleOptionBlur(event: FocusEvent) {
+  if (event.relatedTarget instanceof Node && optionsGridRef.value?.contains(event.relatedTarget)) return;
+  focusedOptionLabel.value = null;
 }
 
 function handleTabClick(index: number) {
-  previewingOptionLabel.value = null;
   store.goToTab(index);
 }
 
@@ -108,10 +165,16 @@ function handleOptionSelect(optionLabel: string) {
   store.toggleOption(currentQuestion.value.question, optionLabel, isMultiSelect.value);
 }
 
+function handleDesignChoose(optionLabel: string) {
+  if (currentQuestion.value) store.chooseOption(currentQuestion.value.question, optionLabel);
+}
+
 useDockPromptDigits(cardRef, (digit) => {
   const option = isOnSubmitTab.value || isCustomInputMode.value ? undefined : currentQuestion.value?.options[digit - 1];
   if (!option) return false;
-  handleOptionSelect(option.label);
+  // The single-select grid keeps a choice on its tab, as its radios do.
+  if (hasDesignPreviews.value && !isMultiSelect.value) handleDesignChoose(option.label);
+  else handleOptionSelect(option.label);
   return true;
 });
 
@@ -170,7 +233,8 @@ function getAnswerSummary(question: Question): string {
 }
 
 watch(() => store.currentTabIndex, () => {
-  previewingOptionLabel.value = null;
+  setPointerOption(null);
+  focusedOptionLabel.value = null;
 });
 </script>
 
@@ -184,7 +248,7 @@ watch(() => store.currentTabIndex, () => {
     data-dock-prompt
     data-testid="question-card"
   >
-    <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent)_10%,transparent)] to-transparent px-3 py-2">
+    <div class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent)_10%,transparent)] to-transparent px-3 py-2">
       <span
         class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
         aria-hidden="true"
@@ -204,7 +268,7 @@ watch(() => store.currentTabIndex, () => {
         />
         <span class="truncate">{{ agentDescription }}</span>
       </span>
-    </header>
+    </div>
 
     <div
       ref="tabRow"
@@ -242,112 +306,199 @@ watch(() => store.currentTabIndex, () => {
       </div>
 
       <div
-        v-if="!isCustomInputMode"
-        class="px-1.5 pt-1 pb-1.5"
+        v-if="!isCustomInputMode && hasDesignPreviews && store.pendingQuestion"
+        data-testid="question-design-grid"
       >
-        <!-- Keyed by question, so each question's options mount and take focus as dock prompt options do. -->
-        <ListboxRoot
+        <QuestionDesignGrid
           :key="currentQuestion.question"
-          class="flex flex-col outline-none"
-          orientation="vertical"
+          :tool-use-id="store.pendingQuestion.toolUseId"
+          :question-index="store.currentTabIndex"
+          :question="currentQuestion"
+          :selected="currentSelections"
+          @choose="handleDesignChoose"
+          @toggle="handleOptionSelect"
+          @confirm="handleNextOrSubmit"
+        />
+        <div class="flex flex-wrap items-center gap-2 px-3 pt-0.5 pb-2.5">
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none hover:border-(--d-border2) focus-visible:border-(--d-accent)"
+            data-testid="question-design-other"
+            @click="handleCustomInputClick"
+          >
+            <Check
+              v-if="hasCustomInput"
+              class="size-3.25 flex-none text-(--d-accent)"
+              aria-hidden="true"
+            />
+            <MessageSquare
+              v-else
+              class="size-3.25 flex-none text-(--d-faint)"
+              aria-hidden="true"
+            />
+            <span
+              class="min-w-0 flex-1 truncate text-12.5"
+              :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
+            >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
+            <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-7.5 flex-none items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
+            :disabled="!hasAnswerFor(currentQuestion)"
+            data-testid="question-design-next"
+            @click="handleNextOrSubmit"
+          >
+            {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
+            <ChevronRight
+              class="size-3.25"
+              aria-hidden="true"
+            />
+          </button>
+        </div>
+      </div>
+
+      <div
+        v-else-if="!isCustomInputMode"
+        class="px-1.5 pt-1 pb-1.5"
+        :class="hasPreviewPane ? '@container/question' : undefined"
+      >
+        <div
+          ref="optionsGridRef"
+          :class="hasPreviewPane ? 'grid gap-1.5 @min-[36rem]/question:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]' : undefined"
+          data-testid="question-options"
+          @pointerover="handleOptionPointer"
+          @pointerleave="setPointerOption(null)"
+          @focusin="handleOptionFocus"
+          @focusout="handleOptionBlur"
         >
-          <DockPromptOptions :aria-label="currentQuestion.question">
-            <ListboxItem
-              v-for="(option, index) in currentQuestion.options"
-              :key="option.label"
-              :value="option.label"
-              class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 text-left transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
-              @select="handleOptionSelect(option.label)"
-            >
-              <span
-                class="flex size-5 flex-none items-center justify-center border font-mono text-11 transition-colors"
-                :class="[
-                  isMultiSelect ? 'rounded-md' : 'rounded-full',
-                  isOptionSelected(option.label)
-                    ? 'border-(--d-accent) bg-(--d-accent) text-(--d-on-accent)'
-                    : 'border-(--d-border2) group-data-highlighted:border-(--d-accent)',
-                ]"
-                aria-hidden="true"
+          <!-- Keyed by question, so each question's options mount and take focus as dock prompt options do. -->
+          <ListboxRoot
+            :key="currentQuestion.question"
+            class="flex flex-col outline-none"
+            orientation="vertical"
+          >
+            <DockPromptOptions :aria-label="currentQuestion.question">
+              <ListboxItem
+                v-for="(option, index) in currentQuestion.options"
+                :key="option.label"
+                :value="option.label"
+                class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 text-left transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
+                :data-option-label="option.label"
+                :aria-describedby="option.preview?.kind === 'markdown' ? previewHintId : undefined"
+                @select="handleOptionSelect(option.label)"
+              >
+                <span
+                  class="flex size-5 flex-none items-center justify-center border font-mono text-11 transition-colors"
+                  :class="[
+                    isMultiSelect ? 'rounded-md' : 'rounded-full',
+                    isOptionSelected(option.label)
+                      ? 'border-(--d-accent) bg-(--d-accent) text-(--d-on-accent)'
+                      : 'border-(--d-border2) group-data-highlighted:border-(--d-accent)',
+                  ]"
+                  aria-hidden="true"
+                >
+                  <Check
+                    v-if="isOptionSelected(option.label)"
+                    class="size-3"
+                  />
+                  <template v-else>
+                    {{ index + 1 }}
+                  </template>
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block font-medium">{{ option.label }}</span>
+                  <span
+                    v-if="option.description"
+                    class="block text-xs text-pretty text-(--d-faint) group-data-highlighted:text-(--d-faint-text)"
+                  >
+                    {{ option.description }}
+                  </span>
+                </span>
+                <Eye
+                  v-if="option.preview?.kind === 'markdown'"
+                  class="size-3.25 flex-none transition-colors"
+                  :class="shownPreviewOption?.label === option.label ? 'text-(--d-accent)' : 'text-(--d-faint)'"
+                  aria-hidden="true"
+                />
+              </ListboxItem>
+
+              <ListboxItem
+                value="__custom__"
+                class="mx-1 mt-0.75 flex items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none data-highlighted:border-(--d-accent)"
+                @select="handleCustomInputClick"
               >
                 <Check
-                  v-if="isOptionSelected(option.label)"
-                  class="size-3"
+                  v-if="hasCustomInput"
+                  class="size-3.25 flex-none text-(--d-accent)"
+                  aria-hidden="true"
                 />
-                <template v-else>
-                  {{ index + 1 }}
-                </template>
-              </span>
-              <span class="min-w-0 flex-1">
-                <span class="block font-medium">{{ option.label }}</span>
+                <MessageSquare
+                  v-else
+                  class="size-3.25 flex-none text-(--d-faint)"
+                  aria-hidden="true"
+                />
                 <span
-                  v-if="option.description"
-                  class="block text-xs text-pretty text-(--d-faint) group-data-highlighted:text-(--d-faint-text)"
-                >
-                  {{ option.description }}
-                </span>
-              </span>
-              <button
-                v-if="option.preview && !isMultiSelect"
-                type="button"
-                class="flex flex-none rounded-md p-1.25 transition-colors hover:bg-(--d-border2)"
-                :class="previewingOptionLabel === option.label ? 'text-(--d-accent)' : 'text-(--d-muted)'"
-                :title="previewingOptionLabel === option.label ? t('question.hidePreview') : t('question.showPreview')"
-                :aria-label="previewingOptionLabel === option.label ? t('question.hidePreview') : t('question.showPreview')"
-                :aria-pressed="previewingOptionLabel === option.label"
-                @click.stop.prevent="togglePreview(option.label)"
+                  class="min-w-0 flex-1 truncate text-12.5"
+                  :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
+                >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
+                <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
+              </ListboxItem>
+
+              <ListboxItem
+                v-if="isMultiSelect"
+                value="__next__"
+                class="mt-1 flex items-center justify-end gap-1.5 rounded-9 px-2.5 py-1.25 text-12.5 font-semibold text-(--d-accent) transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
+                @select="handleNextOrSubmit"
               >
-                <Eye
+                {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
+                <ChevronRight
                   class="size-3.25"
                   aria-hidden="true"
                 />
-              </button>
-            </ListboxItem>
+              </ListboxItem>
+            </DockPromptOptions>
+          </ListboxRoot>
 
-            <ListboxItem
-              value="__custom__"
-              class="mx-1 mt-0.75 flex items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none data-highlighted:border-(--d-accent)"
-              @select="handleCustomInputClick"
-            >
-              <Check
-                v-if="hasCustomInput"
-                class="size-3.25 flex-none text-(--d-accent)"
-                aria-hidden="true"
-              />
-              <MessageSquare
-                v-else
-                class="size-3.25 flex-none text-(--d-faint)"
+          <div
+            v-if="shownPreviewOption"
+            ref="previewPaneRef"
+            class="mx-1 flex h-72 min-w-0 flex-col overflow-hidden rounded-10 border border-(--d-border) bg-(--d-code) @min-[36rem]/question:ms-0"
+            data-testid="question-option-preview"
+          >
+            <div class="flex items-center gap-1.5 border-b border-(--d-border) px-2.5 py-1.25 text-11 font-medium text-(--d-muted)">
+              <Eye
+                class="size-3 flex-none"
                 aria-hidden="true"
               />
               <span
-                class="min-w-0 flex-1 truncate text-12.5"
-                :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
-              >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
-              <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
-            </ListboxItem>
-
-            <ListboxItem
-              v-if="isMultiSelect"
-              value="__next__"
-              class="mt-1 flex items-center justify-end gap-1.5 rounded-9 px-2.5 py-1.25 text-12.5 font-semibold text-(--d-accent) transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
-              @select="handleNextOrSubmit"
+                :id="previewTitleId"
+                class="flex-none"
+              >{{ t('question.previewTitle') }}</span>
+              <span
+                :id="previewOptionId"
+                class="ms-auto min-w-0 truncate text-(--d-faint)"
+              >{{ shownPreviewOption.label }}</span>
+            </div>
+            <section
+              :key="shownPreviewOption.label"
+              :aria-labelledby="`${previewTitleId} ${previewOptionId}`"
+              tabindex="0"
+              class="min-h-0 flex-1 animate-[d-swap-in_.2s_var(--ease-out)] overflow-auto px-3 py-1.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-inset [&_.markdown-renderer>:first-child]:mt-0! [&_.markdown-renderer>:last-child]:mb-0!"
+              data-testid="question-option-preview-body"
             >
-              {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
-              <ChevronRight
-                class="size-3.25"
-                aria-hidden="true"
+              <MarkdownRenderer
+                :content="shownPreviewOption.preview.content"
+                :allow-remote-images="false"
               />
-            </ListboxItem>
-          </DockPromptOptions>
-        </ListboxRoot>
-
-        <!-- eslint-disable vue/no-v-html -- DOMPurify sanitizes activePreview -->
-        <div
-          v-if="activePreview"
-          class="mx-1 mt-1.5 max-h-48 overflow-auto rounded-lg border border-(--d-border) bg-(--d-code) p-3 text-xs"
-          data-testid="question-option-preview"
-          v-html="activePreview"
-        />
-        <!-- eslint-enable vue/no-v-html -->
+            </section>
+          </div>
+        </div>
+        <span
+          v-if="hasPreviewPane"
+          :id="previewHintId"
+          class="sr-only"
+        >{{ t('question.previewHint') }}</span>
       </div>
 
       <div

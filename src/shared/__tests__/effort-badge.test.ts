@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EFFORT_BADGE_LEVELS, effortBadgeLabelKey, isEffortBadgeLevel, publishedEffort, sessionEffort } from '../effort-badge';
-import en from '../../webview/i18n/locales/en.json';
-import el from '../../webview/i18n/locales/el.json';
+import en from '../../webview/i18n/locales/en.json' with { type: 'json' };
+import el from '../../webview/i18n/locales/el.json' with { type: 'json' };
 
 describe('effort badge mapping', () => {
   it('maps every pi thinking level one to one', () => {

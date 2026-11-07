@@ -5,6 +5,8 @@ copyright: Copyright © AizenvoltPrime
 extraMetadata:
   # package.json `main` is the VS Code extension entry.
   main: dist/desktop/main.js
+  # The repo's "type": "module" is for its sources; Electron would load main as ESM under it, and every bundle is CommonJS.
+  type: commonjs
   # The Windows file metadata CompanyName.
   author:
     name: AizenvoltPrime
@@ -14,12 +16,14 @@ directories:
   buildResources: build
 
 files:
+  # the bundles' module scope (esbuild.config.ts writeDistScope)
+  - dist/package.json
   - dist/desktop/**
   - dist/desktop-shell/**
   - dist/webview/**
   # Damocles Core's bundle, forked from inside app.asar and never unpacked (coreHostEntryPath).
   - dist/core-host.js
-  # dist/daemon.js, the loopback daemon, is dev and e2e only and never ships; verify-desktop-package.mjs checks it is absent.
+  # dist/daemon.js, the loopback daemon, is dev and e2e only and never ships; verify-desktop-package.ts checks it is absent.
   # dist/subscription-plugin/ is its core's, so it never ships either.
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
@@ -67,7 +71,7 @@ files:
   # Bundled into dist/desktop/main.js and required by no shipped package.
   - '!node_modules/smol-toml{,/**}'
   # node-pty ships only this target's prebuild, without its debug symbols and native sources, the conpty copy its postinstall writes to
-  # build/, or any .node a source build leaves in build/, which node-pty loads ahead of the prebuild. scripts/verify-desktop-package.mjs checks the result.
+  # build/, or any .node a source build leaves in build/, which node-pty loads ahead of the prebuild. scripts/verify-desktop-package.ts checks the result.
   - '!node_modules/node-pty/prebuilds/!(${platform}-${arch}){,/**}'
   - '!node_modules/node-pty/**/*.pdb'
   - '!node_modules/node-pty/{build,deps,src,third_party,scripts}{,/**}'
@@ -91,6 +95,7 @@ asar:
   # asarUnpack below is the complete unpacked set; it must equal ASAR_UNPACK in src/desktop/main/platform/unpacked-assets.ts.
   smartUnpack: false
 asarUnpack:
+  - dist/package.json
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
   - dist/sentinel.js
@@ -116,7 +121,7 @@ asarUnpack:
   - node_modules/node-pty/prebuilds/**
   - node_modules/@devcontainers/cli/**
 
-# docs/invariants.md "Desktop packaging and updates"; scripts/verify-desktop-package.mjs reads these back from every built binary.
+# docs/invariants.md "Desktop packaging and updates"; scripts/verify-desktop-package.ts reads these back from every built binary.
 electronFuses:
   runAsNode: true
   enableCookieEncryption: true
@@ -136,7 +141,7 @@ win:
   target: nsis
   icon: resources/icon.ico
   # The release certificate's common name, written into app-update.yml; electron-updater refuses an update signed by anyone else.
-  # Must equal WINDOWS_PUBLISHER in scripts/verify-desktop-package.mjs.
+  # Must equal WINDOWS_PUBLISHER in scripts/verify-desktop-package.ts.
   signtoolOptions:
     publisherName: SignPath Foundation
 

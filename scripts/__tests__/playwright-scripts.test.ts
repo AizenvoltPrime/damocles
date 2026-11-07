@@ -41,13 +41,13 @@ function playwrightScripts(): Array<[string, string[]]> {
 
 describe('the package.json Playwright scripts', () => {
   it('lists the scripts it checks', () => {
-    expect(playwrightScripts().map(([name]) => name)).toEqual(['test:desktop', 'test:desktop:packaged']);
+    expect(playwrightScripts().map(([name]) => name)).toEqual(['test:desktop', 'test:desktop:packaged', 'test:journey']);
   });
 
   // npm appends `npm run <script> -- <args>` to the script's last command, after its --project
   it.each(playwrightScripts())('%s keeps a spec given after -- a test filter, not a project', (_name, args) => {
     const parsed = parsePlaywrightTest([...args, 'e2e/desktop/loopback-core.spec.ts']);
-    expect(parsed.projects).toHaveLength(1);
+    expect(parsed.projects ?? []).toEqual(args.filter((arg) => arg.startsWith('--project=')).map((arg) => arg.slice('--project='.length)));
     expect(parsed.filters).toEqual(['e2e/desktop/loopback-core.spec.ts']);
   });
 });

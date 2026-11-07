@@ -16,7 +16,7 @@ function setup(read: () => Promise<{ ok: true; value: SkippedFile[] } | { ok: fa
     postMessage: vi.fn((_host: unknown, msg: ExtensionToWebviewMessage) => { posted.push(msg); }),
     historyManager: { readSkippedFiles },
   } as unknown as HandlerDependencies;
-  const ctx = { host: {}, session: { currentSessionId: "sess-1" }, folder: { fsPath: "/ws" } } as unknown as HandlerContext;
+  const ctx = { host: {}, session: { currentSessionId: "sess-1", checkpointFolder: () => "/designs/d1" }, folder: { fsPath: "/ws" } } as unknown as HandlerContext;
   const handler = createHistoryHandlers(deps).requestSkippedFiles!;
   const send = (target: unknown) => handler({ type: "requestSkippedFiles", target } as never, ctx);
   return { send, posted, readSkippedFiles };
@@ -26,7 +26,7 @@ describe("requestSkippedFiles", () => {
   it("reads the list for a checkpoint and echoes its target", async () => {
     const { send, posted, readSkippedFiles } = setup(async () => ({ ok: true, value: FILES }));
     await send({ kind: "turn", userEntryId: "u1" });
-    expect(readSkippedFiles).toHaveBeenCalledWith("/ws", "sess-1", { kind: "turn", userEntryId: "u1" });
+    expect(readSkippedFiles).toHaveBeenCalledWith("/ws", "sess-1", { kind: "turn", userEntryId: "u1" }, "/designs/d1");
     expect(posted).toEqual([{ type: "skippedFiles", target: { kind: "turn", userEntryId: "u1" }, files: FILES }]);
   });
 

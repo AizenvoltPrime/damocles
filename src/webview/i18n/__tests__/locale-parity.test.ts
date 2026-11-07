@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import en from '../locales/en.json';
-import el from '../locales/el.json';
-import nlsEn from '../../../../package.nls.json';
-import nlsEl from '../../../../package.nls.el.json';
-import l10nEn from '../../../../l10n/bundle.l10n.json';
-import l10nEl from '../../../../l10n/bundle.l10n.el.json';
-import shellEn from '../../../desktop/shell/locales/en.json';
-import shellEl from '../../../desktop/shell/locales/el.json';
+import en from '../locales/en.json' with { type: 'json' };
+import el from '../locales/el.json' with { type: 'json' };
+import nlsEn from '../../../../package.nls.json' with { type: 'json' };
+import nlsEl from '../../../../package.nls.el.json' with { type: 'json' };
+import l10nEn from '../../../../l10n/bundle.l10n.json' with { type: 'json' };
+import l10nEl from '../../../../l10n/bundle.l10n.el.json' with { type: 'json' };
+import shellEn from '../../../desktop/shell/locales/en.json' with { type: 'json' };
+import shellEl from '../../../desktop/shell/locales/el.json' with { type: 'json' };
 
 /**
  * Both locale bundles checked as data rather than through a rendered component.

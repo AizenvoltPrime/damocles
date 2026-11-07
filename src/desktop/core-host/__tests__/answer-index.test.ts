@@ -30,13 +30,13 @@ describe('an answer main gives core', () => {
     expect(await notifications.info({ message: 'Saved' })).toBeUndefined();
   });
 
-  it('is a protocol violation past the last index any notice can offer', async () => {
+  it('past the last index any notice can offer is outside the contract, so main fails that one request instead of ending core', async () => {
     const { main, core, violations } = channel();
     main.serve('notifications.show', () => MAX_ACTIONS);
     main.serve('dialogs.ask', () => MAX_ACTIONS);
-    await expect(core.request('notifications.show', { severity: 'info', message: { message: 'x' }, actions: [] })).rejects.toThrow(CoreProtocolError);
-    await expect(core.request('dialogs.ask', { severity: 'info', message: { message: 'x' }, actions: [] })).rejects.toThrow(CoreProtocolError);
-    expect(violations).toHaveLength(2);
+    await expect(core.request('notifications.show', { severity: 'info', message: { message: 'x' }, actions: [] })).rejects.toThrow('Core protocol violation: the answer to notifications.show');
+    await expect(core.request('dialogs.ask', { severity: 'info', message: { message: 'x' }, actions: [] })).rejects.toThrow('Core protocol violation: the answer to dialogs.ask');
+    expect(violations).toEqual([]);
   });
 
   it('a default action past the last index any question can offer is outside the contract, so core never sends it', async () => {

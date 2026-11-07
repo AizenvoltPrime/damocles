@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, type Component } from "vue";
 import { useI18n } from "vue-i18n";
-import type { ToolAbandonReason, ToolCall } from "@shared/types/session";
+import type { ToolCall } from "@shared/types/session";
 import { TOOL_STRUCTURED_OUTPUT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS, isMcpToolName } from "@shared/tool-names";
 import { TEAM_TOOL_PRESENTATION } from "@shared/team-tool-labels";
 import { useDiffStore } from "@/stores/useDiffStore";
@@ -12,11 +12,13 @@ import { ownEntry } from "@/utils/ownEntry";
 import { buildFileDiff, fileChangeSource } from "@/utils/parseUnifiedDiff";
 import { usePermissionStore } from "@/stores/usePermissionStore";
 import {
-  Ban, Bot, Brain, Check, CircleCheck, CircleQuestionMark, CircleX, ClipboardList, Clock, Code, Compass, Eye, FilePen,
+  Ban, Bot, Brain, Check, CircleCheck, ClipboardList, Clock, Code, Compass, Eye, FilePen,
   FilePlus, FileText, Folder, FolderSearch, Globe, ImagePlus, Layers, MessageSquare, Play, Plug,
   RotateCcw, Search, Send, Signal, SquareTerminal, TriangleAlert, Users, Wrench, X, ChevronDown,
 } from "lucide-vue-next";
 import ToolCardFrame from "./ToolCardFrame.vue";
+import ToolErrorStrip from "./ToolErrorStrip.vue";
+import ToolBlockedReason from "./ToolBlockedReason.vue";
 import LiveOutputPane from "./LiveOutputPane.vue";
 import ToolCancelControl from "./ToolCancelControl.vue";
 import DiffView from "./DiffView.vue";
@@ -156,9 +158,6 @@ const changeMeta = computed(() => {
 
 const isRunning = computed(() => props.toolCall.status === "running");
 const isFailed = computed(() => props.toolCall.status === "failed");
-const isAbandoned = computed(() => props.toolCall.status === "abandoned");
-const isCancelled = computed(() => props.toolCall.status === "cancelled");
-const isUnrecorded = computed(() => props.toolCall.status === "unrecorded");
 
 const showLiveOutput = computed(() =>
   isRunning.value && LIVE_OUTPUT_TOOLS.has(props.toolCall.name) && props.toolCall.liveOutput !== undefined
@@ -238,14 +237,6 @@ const cronListMeta = computed(() => {
   if (!Array.isArray(jobs)) return null;
   return { jobs };
 });
-
-function formatToolDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.floor((ms % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
-}
 
 function truncate(value: string, max = 50): string {
   return value.length > max ? value.slice(0, max) + "..." : value;
@@ -352,21 +343,6 @@ const outputSummary = computed(() => {
 
 const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.value && Boolean(inputSummary.value || outputSummary.value));
 
-const ABANDONED_DESCRIPTION_KEYS: Record<ToolAbandonReason, string> = {
-  stopped: "toolCall.abandonedStopped",
-  failed: "toolCall.abandonedFailed",
-};
-const abandonedDescription = computed(() => {
-  const reason = props.toolCall.abandonReason;
-  return reason ? t(ABANDONED_DESCRIPTION_KEYS[reason]) : undefined;
-});
-
-const statusNote = computed(() => {
-  if (isAbandoned.value) return { icon: Ban, title: t('toolCall.notExecuted'), description: abandonedDescription.value };
-  if (isCancelled.value) return { icon: Ban, title: t('toolCall.cancelled'), description: t('toolCall.cancelledDescription') };
-  if (isUnrecorded.value) return { icon: CircleQuestionMark, title: t('toolCall.outcomeUnrecorded'), description: t('toolCall.outcomeUnrecordedDescription') };
-  return null;
-});
 </script>
 
 <template>
@@ -377,6 +353,9 @@ const statusNote = computed(() => {
     :arg-title="filePath || undefined"
     :status="toolCall.status"
     :expandable="isExpandable"
+    :duration-ms="toolCall.durationMs"
+    status-note
+    :abandon-reason="toolCall.abandonReason"
     data-testid="tool-card"
     @expand="uiStore.expandTool(toolCall.id, source)"
   >
@@ -403,10 +382,6 @@ const statusNote = computed(() => {
         :tool-call="toolCall"
         :source="source"
       />
-      <span
-        v-if="toolCall.durationMs !== undefined"
-        class="flex-none font-mono text-10.5 text-(--d-faint)"
-      >{{ formatToolDuration(toolCall.durationMs) }}</span>
     </template>
     <template #trailing>
       <button
@@ -524,38 +499,18 @@ const statusNote = computed(() => {
       </div>
     </div>
 
-    <div
+    <ToolErrorStrip
       v-if="isFailed && toolCall.errorMessage"
-      class="flex items-start gap-2 border-t border-[color-mix(in_srgb,var(--d-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)"
-    >
-      <CircleX
-        class="size-3.25 mt-px flex-none"
-        aria-hidden="true"
-      />
-      <span>{{ toolCall.errorMessage }}</span>
-    </div>
+      :message="toolCall.errorMessage"
+    />
 
     <Transition name="t-tuck">
-      <p
+      <ToolBlockedReason
         v-if="toolCall.status === 'blocked' && toolCall.feedback"
-        class="pr-3 pb-2.5 pl-10 text-xs text-pretty wrap-anywhere text-(--d-muted)"
+        :reason="toolCall.feedback"
         data-testid="tool-card-blocked-reason"
-      >
-        {{ toolCall.feedback }}
-      </p>
-    </Transition>
-
-    <div
-      v-if="statusNote"
-      class="flex items-start gap-2 border-t border-(--d-border) px-3 py-2 text-xs text-(--d-muted)"
-    >
-      <component
-        :is="statusNote.icon"
-        class="size-3.25 mt-px flex-none text-(--d-faint)"
-        aria-hidden="true"
       />
-      <span><span class="font-semibold text-(--d-text)">{{ statusNote.title }}</span><template v-if="statusNote.description"> · {{ statusNote.description }}</template></span>
-    </div>
+    </Transition>
 
     <div
       v-if="isRunning"

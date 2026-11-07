@@ -162,7 +162,10 @@ test('rewind: the checkpoint diff opens as a diff tab in the editor pane, and ro
     await tab.getByRole('button', { name: 'Rewind conversation to this message' }).first().click();
     const modal = tab.getByRole('alertdialog');
     await expect(modal.getByText('Restore Options')).toBeVisible();
-    await modal.getByRole('button', { name: 'Show affected files' }).click();
+    const filesToggle = modal.getByTestId('rewind-files-toggle');
+    // The checkpoint holds the one edited file.
+    await expect(filesToggle).toHaveText('1 file affected');
+    await filesToggle.click();
     await modal.getByTitle(`View checkpoint diff for ${file}`).click();
 
     // D15: only approval diffs stay in the chat; a checkpoint diff is a pane tab.

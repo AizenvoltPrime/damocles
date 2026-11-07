@@ -20,14 +20,14 @@ import { l } from "../l10n";
 const HANDOFF_POLL_MS = 250;
 const HANDOFF_POLLS = Math.ceil(SESSION_RELEASE_REQUEST_TTL_MS / HANDOFF_POLL_MS);
 
-/** The panel other than `requester` that holds stored session `sessionId`, if any. Read-only. */
+/** The panel other than `requester` (any panel without one) that holds stored session `sessionId`, if any. Read-only. */
 export function findStoredSessionHolder(
   panels: Map<string, HostInstance>,
-  requester: { panelId: string },
+  requester: { panelId: string } | undefined,
   sessionId: string,
 ): HostInstance | undefined {
   for (const [panelId, instance] of panels) {
-    if (panelId !== requester.panelId && instance.session.holdsSession(sessionId)) return instance;
+    if (panelId !== requester?.panelId && instance.session.holdsSession(sessionId)) return instance;
   }
   return undefined;
 }

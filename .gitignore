@@ -30,7 +30,7 @@ python/damocles_voice_sidecar/build/
 python/damocles_voice_sidecar/dist/
 
 # Wake model files (MODEL_MANIFEST.json `wake_model.files`) — fetched at build time by
-# `npm run fetch:wake-models` (see scripts/fetch-wake-models.mjs) and shipped via vsix. The .gitkeep in
+# `npm run fetch:wake-models` (see scripts/fetch-wake-models.ts) and shipped via vsix. The .gitkeep in
 # this directory documents that the files belong to the build, not source.
 python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/*.onnx
 python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/tokens.txt

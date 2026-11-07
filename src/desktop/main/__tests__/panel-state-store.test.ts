@@ -3,6 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_BROWSER_URL_LENGTH } from '../../../shared/typed-address';
+import { MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
+import { MAX_DESIGN_TABS } from '../../preload/shell-channels';
 import { NO_PAGES, PANEL_STATE_FILE, PanelStateStore } from '../panel-state-store';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
@@ -137,6 +139,70 @@ describe('PanelStateStore v2', () => {
     // a block keeps only the fields of its kind
     writeFile({ version: 2, chats: [{ panelId: 'c', state: null, pages: [], heldPrompt: [{ type: 'text', text: 'x', extra: 1 }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA', url: 'u' }, cache: true }] }] });
     expect(new PanelStateStore(dir, log).get('c')?.heldPrompt).toEqual([{ type: 'text', text: 'x' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }]);
+  });
+
+  it('keeps a chat\'s design tabs and held prompt across a state update, and its tabs across a reopen', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'a', state: null });
+    const tabs = [{ designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 1280, state: 'empty', provenance: true }, { designId: 'contacts-1a2b3c4d', relPath: 'screens/S2.html' }];
+    const held = [{ type: 'text' as const, text: 'Fix the login' }];
+    store.setDesignTabs('a', tabs);
+    store.setHeldPrompt('a', held);
+    store.set({ panelId: 'a', state: { sessionId: 's' } });
+    expect(store.get('a')).toEqual({ panelId: 'a', state: { sessionId: 's' }, browser: NO_PAGES, designTabs: tabs, heldPrompt: held });
+    await store.flush();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8')).chats[0].designTabs).toEqual(tabs);
+    expect(new PanelStateStore(dir, log).get('a')).toEqual({ panelId: 'a', state: { sessionId: 's' }, browser: NO_PAGES, designTabs: tabs, heldPrompt: held });
+    store.setDesignTabs('a', []);
+    await store.flush();
+    expect(new PanelStateStore(dir, log).get('a')?.designTabs).toBeUndefined();
+  });
+
+  it('ignores design tabs for a chat it does not hold, and keeps at most MAX_DESIGN_TABS of a chat', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.setDesignTabs('missing', [{ designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' }]);
+    expect(store.get('missing')).toBeUndefined();
+    store.set({ panelId: 'a', state: null });
+    const many = Array.from({ length: MAX_DESIGN_TABS + 1 }, (_, index) => ({ designId: 'contacts-1a2b3c4d', relPath: `screens/S${index}.html` }));
+    store.setDesignTabs('a', many);
+    expect(store.get('a')?.designTabs).toEqual(many.slice(0, MAX_DESIGN_TABS));
+    writeFile({ version: 2, chats: [{ panelId: 'b', state: null, pages: [], designTabs: many }] });
+    expect(new PanelStateStore(dir, log).get('b')?.designTabs).toEqual(many.slice(0, MAX_DESIGN_TABS));
+  });
+
+  it('reads an older file with no design tabs, and drops each malformed tab, or only a tab\'s malformed width, state or provenance', () => {
+    writeFile({ version: 2, chats: [{ panelId: 'old', state: null, pages: [] }] });
+    expect(new PanelStateStore(dir, log).get('old')).toEqual({ panelId: 'old', state: null, browser: NO_PAGES });
+    const tab = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' };
+    writeFile({ version: 2, chats: [{ panelId: 'a', state: null, pages: [], designTabs: 'tabs' }] });
+    expect(new PanelStateStore(dir, log).get('a')?.designTabs).toBeUndefined();
+    expect(lines).toContain('[panels] chat a: dropping malformed design tabs');
+    lines.length = 0;
+    const dropped = [
+      'tab',
+      { relPath: tab.relPath },
+      { ...tab, designId: '../x' },
+      // one character past the core protocol's design id, which every design.info of the tab would fail on
+      { ...tab, designId: 'd'.repeat(MAX_DESIGN_ID_CHARS + 1) },
+      { ...tab, relPath: '/etc/passwd' },
+      { ...tab, relPath: 'screens/../../x.html' },
+      { ...tab, relPath: 'screens/CON.html' },
+      { ...tab, relPath: `screens/${'a'.repeat(4096)}.html` },
+    ];
+    const kept = [
+      { ...tab, designId: 'd'.repeat(MAX_DESIGN_ID_CHARS) },
+      { ...tab, relPath: 'screens/S2.html', width: 12.5, state: 'x'.repeat(65), provenance: 'yes' },
+      { ...tab, relPath: 'screens/S3.html', width: 100_000, state: 'two words' },
+      { ...tab, relPath: 'screens/S4.html', width: 390, state: 'empty', provenance: true },
+    ];
+    writeFile({ version: 2, chats: [{ panelId: 'a', state: null, pages: [], designTabs: [...dropped, ...kept] }] });
+    expect(new PanelStateStore(dir, log).get('a')?.designTabs).toEqual([
+      { ...tab, designId: 'd'.repeat(MAX_DESIGN_ID_CHARS) },
+      { ...tab, relPath: 'screens/S2.html' },
+      { ...tab, relPath: 'screens/S3.html' },
+      { ...tab, relPath: 'screens/S4.html', width: 390, state: 'empty', provenance: true },
+    ]);
+    expect(lines).toEqual(Array.from({ length: dropped.length }, () => '[panels] chat a: dropping a malformed design tab'));
   });
 
   it('keeps the selected project and session when the selected chat unloads', async () => {

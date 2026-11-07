@@ -1,0 +1,282 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import matter from 'gray-matter';
+import { isEntryPoint } from './entry-point.ts';
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+export const OUTPUT_FILE = path.join(ROOT, 'src', 'core', 'team', 'agent-profiles.generated.ts');
+
+const IDENTITY_PATTERN = /^(identity|role|role\s*definition|identity\s*(and|&)\s*(role|memory)|your\s*identity)/i;
+const MISSION_PATTERN = /^(core\s*mission|your\s*core\s*mission|mission|brand\s*mission|your\s*core\s*beliefs|your\s*core\s*responsibilities|core\s*competencies|competencies)/i;
+const RULES_PATTERN = /^(critical\s*rules|rules|guardrails|non[- ]negotiable\s*rules|rules\s*of\s*engagement|your\s*mandatory\s*process)/i;
+
+interface Sections {
+  identity: string;
+  mission: string;
+  rules: string;
+}
+
+interface Profile extends Sections {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly category: string;
+  readonly emoji: string;
+  readonly vibe: string;
+}
+
+export interface RenderedProfiles {
+  readonly text: string;
+  readonly fileCount: number;
+  readonly profileCount: number;
+  readonly categoryCount: number;
+  readonly warnings: readonly string[];
+}
+
+function stripEmoji(text: string): string {
+  return text
+    .replace(/^(?:[\p{Emoji_Presentation}\p{Extended_Pictographic}\u2764\u2600-\u26ff\u2700-\u27bf]|\u200d|\ufe0f)+\s*/u, '')
+    .replace(/^:[a-z_]+:\s*/i, '')
+    .replace(/^[^a-zA-Z]+/, '')
+    .trim();
+}
+
+function extractSections(content: string): Sections {
+  const sections = content.split(/^#{1,2}\s+/m);
+  const result: Sections = { identity: '', mission: '', rules: '' };
+  const found = new Set<keyof Sections>();
+
+  for (const section of sections) {
+    if (!section.trim()) continue;
+
+    const newlineIdx = section.indexOf('\n');
+    if (newlineIdx === -1) continue;
+
+    const rawHeader = section.slice(0, newlineIdx).trim();
+    const header = stripEmoji(rawHeader).toLowerCase();
+    const body = section.slice(newlineIdx + 1).trim();
+
+    if (!found.has('identity') && IDENTITY_PATTERN.test(header)) {
+      result.identity = body;
+      found.add('identity');
+    } else if (!found.has('mission') && MISSION_PATTERN.test(header)) {
+      result.mission = body;
+      found.add('mission');
+    } else if (!found.has('rules') && RULES_PATTERN.test(header)) {
+      result.rules = body;
+      found.add('rules');
+    }
+  }
+
+  return result;
+}
+
+function inferCategory(relPath: string): string {
+  const firstDir = relPath.split(/[/\\]/)[0] ?? '';
+  return firstDir
+    .split('-')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+function deriveId(filename: string): string {
+  return path.basename(filename, '.md');
+}
+
+function collectMdFiles(dir: string): string[] {
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectMdFiles(fullPath));
+    } else if (entry.name.endsWith('.md')) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+function escapeForTs(str: string): string {
+  return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
+// The catalog ships in the team system prompt, so descriptions are capped rather than sent whole — the
+// full text stays available on the profile itself. The cap is a budget, not a sentence boundary: cut on
+// whitespace so a word is never split, and mark the elision so a truncated description cannot be read
+// as a complete one.
+const CATALOG_DESCRIPTION_LIMIT = 180;
+
+function catalogDescription(description: string): string {
+  if (!description) return '';
+  if (description.length <= CATALOG_DESCRIPTION_LIMIT) return description;
+  const head = description.slice(0, CATALOG_DESCRIPTION_LIMIT);
+  const lastSpace = head.lastIndexOf(' ');
+  const cut = lastSpace > 0 ? head.slice(0, lastSpace) : head;
+  return `${cut.replace(/[\s,;:—-]+$/, '')}…`;
+}
+
+// A frontmatter field the catalog renders as text, absent or null read as empty.
+function textField(data: Readonly<Record<string, unknown>>, field: string, filePath: string): string {
+  const value = data[field] ?? '';
+  if (typeof value !== 'string') throw new Error(`${filePath}: frontmatter ${field} must be text`);
+  return value;
+}
+
+/** Render the generated module from `<root>/agent-profiles`. Throws on a catalog that must not ship. */
+export function renderAgentProfiles(root = ROOT): RenderedProfiles {
+  const profilesDir = path.join(root, 'agent-profiles');
+  const files = collectMdFiles(profilesDir);
+
+  const profiles: Profile[] = [];
+  const seenIds = new Map<string, string>();
+  const warnings: string[] = [];
+
+  for (const filePath of files) {
+    // A Windows checkout with core.autocrlf holds the sources with CRLF; the output must not depend on it.
+    const raw = fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
+
+    if (!raw.startsWith('---')) {
+      continue;
+    }
+
+    let parsed: matter.GrayMatterFile<string>;
+    try {
+      parsed = matter(raw);
+    } catch {
+      warnings.push(`Failed to parse frontmatter: ${filePath}`);
+      continue;
+    }
+
+    const data: Readonly<Record<string, unknown>> = parsed.data;
+    const { content } = parsed;
+    if (!data.name) {
+      continue;
+    }
+
+    const relPath = path.relative(profilesDir, filePath);
+    const id = deriveId(path.basename(filePath));
+
+    // Two profiles resolving to one ID means one of them silently vanishes from the catalog. Since IDs
+    // are the handle `team_spawn_specialist` resolves, that is a wrong-agent-spawned bug, not a warning.
+    if (seenIds.has(id)) {
+      throw new Error(
+        `Duplicate profile ID "${id}"\n  ${seenIds.get(id)}\n  ${relPath}\n` +
+          'Profile IDs derive from the filename and must be unique across all divisions.',
+      );
+    }
+    seenIds.set(id, relPath);
+
+    const category = inferCategory(relPath);
+    const sections = extractSections(content);
+
+    const missingSections = [];
+    if (!sections.identity) missingSections.push('Identity');
+    if (!sections.mission) missingSections.push('Mission');
+    if (!sections.rules) missingSections.push('Rules');
+    if (missingSections.length > 0) {
+      warnings.push(`${relPath} missing sections: ${missingSections.join(', ')}`);
+    }
+
+    profiles.push({
+      id,
+      name: textField(data, 'name', filePath),
+      description: textField(data, 'description', filePath),
+      category,
+      emoji: textField(data, 'emoji', filePath),
+      vibe: textField(data, 'vibe', filePath),
+      identity: sections.identity,
+      mission: sections.mission,
+      rules: sections.rules,
+    });
+  }
+
+  if (profiles.length === 0) {
+    throw new Error('No valid profiles found. Ensure agent-profiles/ contains .md files with YAML frontmatter.');
+  }
+
+  profiles.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+
+  const catalogLines = ['Available specialist profiles (use the profile ID with the `profile` parameter on `team_spawn_specialist`):\n'];
+  const byCategory = new Map<string, Profile[]>();
+  for (const p of profiles) {
+    let items = byCategory.get(p.category);
+    if (!items) byCategory.set(p.category, (items = []));
+    items.push(p);
+  }
+  for (const [category, items] of byCategory) {
+    catalogLines.push(`**${category}** (${items.length})`);
+    for (const p of items) {
+      const desc = catalogDescription(p.description);
+      const vibe = p.vibe ? ` [${p.vibe}]` : '';
+      catalogLines.push(`- ${p.id} — ${p.emoji} ${p.name}: ${desc}${vibe}`);
+    }
+    catalogLines.push('');
+  }
+  const catalog = catalogLines.join('\n').trim();
+
+  const profileEntries = profiles.map(p => {
+    return `  {
+    id: \`${escapeForTs(p.id)}\`,
+    name: \`${escapeForTs(p.name)}\`,
+    description: \`${escapeForTs(p.description)}\`,
+    category: \`${escapeForTs(p.category)}\`,
+    emoji: \`${escapeForTs(p.emoji)}\`,
+    vibe: \`${escapeForTs(p.vibe)}\`,
+    identity: \`${escapeForTs(p.identity)}\`,
+    mission: \`${escapeForTs(p.mission)}\`,
+    rules: \`${escapeForTs(p.rules)}\`,
+  }`;
+  });
+
+  const output = `// AUTO-GENERATED — do not edit manually.
+// Run: npm run generate:profiles
+
+export interface AgentProfile {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  emoji: string;
+  vibe: string;
+  identity: string;
+  mission: string;
+  rules: string;
+}
+
+export const AGENT_PROFILES: readonly AgentProfile[] = [
+${profileEntries.join(',\n')},
+] as const;
+
+export const AGENT_PROFILE_MAP: ReadonlyMap<string, AgentProfile> = new Map(
+  AGENT_PROFILES.map((p: AgentProfile): [string, AgentProfile] => [p.id, p]),
+);
+
+export const AGENT_PROFILE_CATALOG: string = \`${escapeForTs(catalog)}\`;
+`;
+
+  return { text: output, fileCount: files.length, profileCount: profiles.length, categoryCount: byCategory.size, warnings };
+}
+
+function main(): void {
+  const { text, fileCount, profileCount, categoryCount, warnings } = renderAgentProfiles();
+  console.log(`Found ${fileCount} .md files in ${path.join(ROOT, 'agent-profiles')}`);
+  for (const warning of warnings) console.warn(`  WARN: ${warning}`);
+
+  fs.mkdirSync(path.dirname(OUTPUT_FILE), { recursive: true });
+  fs.writeFileSync(OUTPUT_FILE, text, 'utf-8');
+
+  console.log(`\nGenerated ${OUTPUT_FILE}`);
+  console.log(`  Profiles: ${profileCount}`);
+  console.log(`  Categories: ${categoryCount}`);
+  console.log(`  Warnings: ${warnings.length}`);
+}
+
+if (isEntryPoint(import.meta.url)) {
+  try {
+    main();
+  } catch (err) {
+    console.error('ERROR: Profile generation failed:', err);
+    process.exit(1);
+  }
+}

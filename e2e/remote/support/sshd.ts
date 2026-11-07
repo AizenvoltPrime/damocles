@@ -8,13 +8,13 @@ import { shellQuote } from '../../../src/desktop/main/remote/bootstrap/quote';
 
 // The sshd fixtures: one Docker container per fixture, its sshd on a localhost port, and a temp ~/.ssh on this computer.
 
-// scripts/test-remote.mjs FIXTURE_IMAGES, which builds only the images a selected spec names as `image: '<name>'`.
+// scripts/test-remote.ts FIXTURE_IMAGES, which builds only the images a selected spec names as `image: '<name>'`.
 export type FixtureImage = 'ubuntu' | 'alpine' | 'centos7';
 export const imageTag = (image: FixtureImage): string => `damocles-e2e-sshd-${image}`;
-// Containers and networks carry both labels, so scripts/test-remote.mjs removes what a run left once its process is gone.
+// Containers and networks carry both labels, so scripts/test-remote.ts removes what a run left once its process is gone.
 export const FIXTURE_LABEL = 'damocles-e2e-sshd';
 const RUN_LABEL = 'damocles-e2e-run';
-// test-remote.mjs's pid; under a bare `playwright test`, the runner's, every worker's parent.
+// test-remote.ts's pid; under a bare `playwright test`, the runner's, every worker's parent.
 const RUN = process.env['DAMOCLES_E2E_RUN'] ?? String(process.ppid);
 export const fixtureLabels = (): string[] => ['--label', FIXTURE_LABEL, '--label', `${RUN_LABEL}=${RUN}`];
 export const TARGET_USER = 'dev';
@@ -120,7 +120,7 @@ export interface SshdFixture {
   dispose(): Promise<void>;
 }
 
-/** Starts a fixture container from its image (scripts/test-remote.mjs builds them) and its sshd. */
+/** Starts a fixture container from its image (scripts/test-remote.ts builds them) and its sshd. */
 export async function startSshd(options: SshdOptions = {}): Promise<SshdFixture> {
   const image = options.image ?? 'ubuntu';
   const tag = imageTag(image);

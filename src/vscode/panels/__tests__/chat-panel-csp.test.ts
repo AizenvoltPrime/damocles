@@ -6,7 +6,7 @@ import { createHarness, folderEntry, type Harness } from '../../../core/chat-pan
 
 // The VS Code chat panel CSP, which carries no desktop-only directive (worker-src); any change to it is a VS Code-visible change.
 const VSCODE_CHAT_PANEL_CSP =
-  "default-src 'none'; style-src vscode-csp-source 'unsafe-inline'; script-src 'nonce-<nonce>' 'wasm-unsafe-eval'; font-src vscode-csp-source; img-src vscode-csp-source data: https:; form-action 'none';";
+  "default-src 'none'; style-src vscode-csp-source 'unsafe-inline'; script-src 'nonce-<nonce>' 'wasm-unsafe-eval'; font-src vscode-csp-source; img-src vscode-csp-source data: blob: https:; form-action 'none';";
 
 function cspOf(html: string): string {
   const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1];

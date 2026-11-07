@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import Ajv from 'ajv';
-// @ts-expect-error -- plain .mjs helper, no types
-import { renderSettingsSchemas, OUTPUT, PERMISSION_LISTS } from '../generate-settings-schema.mjs';
+import { renderSettingsSchemas, OUTPUT, PERMISSION_LISTS } from '../generate-settings-schema.ts';
 import { readContributedConfiguration } from '../../src/core/config/read-contributed-configuration';
 import { DESKTOP_CONFIGURATION } from '../../src/desktop/local-services/desktop-configuration';
 import type { FilePermissions } from '../../src/core/permission-handler/permission-settings';
@@ -18,7 +17,7 @@ interface Schemas {
   project: FileSchema;
 }
 
-const schemas = JSON.parse(readFileSync(OUTPUT as string, 'utf8')) as Schemas;
+const schemas = JSON.parse(readFileSync(OUTPUT, 'utf8')) as Schemas;
 const desktopKeys = Object.keys(DESKTOP_CONFIGURATION);
 const desktopUserOnlyKeys = Object.entries(DESKTOP_CONFIGURATION).filter(([, property]) => property.scope === 'application').map(([key]) => key);
 
@@ -29,13 +28,14 @@ function validator(schema: FileSchema) {
 
 describe('settings schema', () => {
   it('the committed file is what the generator produces', () => {
-    const committed = readFileSync(OUTPUT as string, 'utf8').replace(/\r\n/g, '\n');
-    expect(committed).toBe((renderSettingsSchemas as (root: string) => string)(ROOT));
+    const committed = readFileSync(OUTPUT, 'utf8').replace(/\r\n/g, '\n');
+    expect(committed).toBe(renderSettingsSchemas(ROOT));
   });
 
   it('lists exactly the permission rule lists the permission reader accepts', () => {
-    const readerLists: Record<keyof FilePermissions, true> = { allow: true, deny: true, ask: true };
-    expect(Object.keys(PERMISSION_LISTS as object).sort()).toEqual(Object.keys(readerLists).sort());
+    // root is the folder a file's `/path` rules are relative to, not a rule list
+    const readerLists: Record<Exclude<keyof FilePermissions, 'root'>, true> = { allow: true, deny: true, ask: true };
+    expect(Object.keys(PERMISSION_LISTS).sort()).toEqual(Object.keys(readerLists).sort());
   });
 
   it('describes every contributed key and every desktop-only key in both variants', () => {

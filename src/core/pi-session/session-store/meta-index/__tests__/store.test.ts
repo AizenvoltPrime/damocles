@@ -34,15 +34,15 @@ afterEach(() => {
 
 describe('session metadata index store', () => {
   it('names its file by the schema and the pi version, so a pi upgrade starts a new file', () => {
-    expect(SESSION_META_SCHEMA).toBe(5);
-    expect(indexFileName('1.3.0')).toBe('index.s5.pi-1.3.0.db');
-    expect(indexFileName('2.0.0-beta/1')).toBe('index.s5.pi-2.0.0-beta_1.db');
+    expect(SESSION_META_SCHEMA).toBe(8);
+    expect(indexFileName('1.3.0')).toBe('index.s8.pi-1.3.0.db');
+    expect(indexFileName('2.0.0-beta/1')).toBe('index.s8.pi-2.0.0-beta_1.db');
 
     const old = openStore('1.3.0');
     old.write([row('a.jsonl', 10)]);
     const upgraded = openStore('1.4.0');
 
-    expect(upgraded.file).toBe(path.join(CACHE_DIR, 'index.s5.pi-1.4.0.db'));
+    expect(upgraded.file).toBe(path.join(CACHE_DIR, 'index.s8.pi-1.4.0.db'));
     expect(upgraded.entry(row('a.jsonl', 10).key)).toBeUndefined();
     expect(old.entry(row('a.jsonl', 10).key)).toMatchObject({ size: 10 });
   });

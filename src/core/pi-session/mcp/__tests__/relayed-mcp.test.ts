@@ -169,8 +169,8 @@ describe('the relayed transport on a daemon\'s core', () => {
   it('takes relayed tools out of the loadable snapshot while the device they come from is out of reach', () => {
     setRelayedToolNames('test', new Map([['mcp__notes__search', { server: 'notes', tool: 'search' }]]));
     expect(relayedToolNames()).toEqual(['mcp__notes__search']);
-    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, relayedTool: () => true })).toEqual(['mcp__notes__search', 'mcp__local__x']);
-    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, relayedTool: () => false })).toEqual(['mcp__local__x']);
+    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, relayedTool: () => true }, false)).toEqual(['mcp__notes__search', 'mcp__local__x']);
+    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, relayedTool: () => false }, false)).toEqual(['mcp__local__x']);
   });
 });
 
@@ -251,13 +251,13 @@ describe('two devices attached to one daemon\'s core, relaying different servers
     const both = ['mcp__notes__search', 'mcp__diary__write'];
     fake.setActing('client-a');
     await runPinnedTurn(fake.remote, 'panel-a', async () => {
-      expect(loadableToolNames(both, userScopeReach())).toEqual(['mcp__notes__search']);
+      expect(loadableToolNames(both, userScopeReach(), false)).toEqual(['mcp__notes__search']);
       fake.setActing('client-b');
       await Promise.resolve();
-      expect(loadableToolNames(both, userScopeReach())).toEqual(['mcp__notes__search']);
+      expect(loadableToolNames(both, userScopeReach(), false)).toEqual(['mcp__notes__search']);
     });
     await runPinnedTurn(fake.remote, 'panel-b', async () => {
-      expect(loadableToolNames(both, userScopeReach())).toEqual(['mcp__diary__write']);
+      expect(loadableToolNames(both, userScopeReach(), false)).toEqual(['mcp__diary__write']);
     });
   });
 

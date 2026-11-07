@@ -1,11 +1,12 @@
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { defineConfig } from '@playwright/test';
 import { PACKAGED_SPECS, packagedAppPath } from './e2e/desktop/support/packaged-app';
-import { devElectronDist } from './scripts/dev-electron-binary.mjs';
+import { devElectronDist } from './scripts/dev-electron-binary.ts';
 
 // Playwright launches require('electron'); on Windows that is the branded copy test:desktop writes, as for dev:desktop.
 if (process.platform === 'win32' && packagedAppPath() === undefined) {
-  process.env.ELECTRON_OVERRIDE_DIST_PATH = devElectronDist(path.dirname(require.resolve('electron/package.json')));
+  process.env.ELECTRON_OVERRIDE_DIST_PATH = devElectronDist(path.dirname(createRequire(import.meta.url).resolve('electron/package.json')));
 }
 
 // A CI leg runs both projects in turn and uploads the parent folders, so neither run's results replace the other's.

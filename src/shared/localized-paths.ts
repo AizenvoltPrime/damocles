@@ -39,11 +39,13 @@ export function malformedLocalizedText(value: unknown, paths: readonly string[],
 
 /** Where each ExtensionToWebviewMessage carries LocalizedText, by its type. */
 export const WEBVIEW_LOCALIZED_TEXT: Readonly<Record<string, readonly string[]>> = {
-  assistantReplay: ['.tools[].agentMessages[].error'],
+  assistantReplay: ['.tools[].agentMessages[].error', '.tools[].metadata.refusal', '.tools[].metadata.widthChecks.skipped'],
   btwError: ['.message'],
   claudeAuthError: ['.error'],
   clearOpenAIApiKeyAck: ['.error'],
   clearProviderApiKeyAck: ['.error'],
+  designPreviewImage: ['.error'],
+  designJourneyReplayed: ['.error'],
   editorShowDiff: ['.title'],
   error: ['.message'],
   errorReplay: ['.content'],
@@ -69,6 +71,7 @@ export const WEBVIEW_LOCALIZED_TEXT: Readonly<Record<string, readonly string[]>>
   subagentMessagesUpdate: ['.messages[].error'],
   subscriptionUsage: ['.data.claude.error', '.data.claude.profileError', '.data.gpt.error', '.data.gpt.profileError'],
   teamAgentDataLoaded: ['.messages[].error'],
+  toolMetadata: ['.metadata.refusal', '.metadata.widthChecks.skipped'],
   transcriptionError: ['.message'],
   usageStats: ['.error'],
   voiceModelDownloadProgress: ['.message'],

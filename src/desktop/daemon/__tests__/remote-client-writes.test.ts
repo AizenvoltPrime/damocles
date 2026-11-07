@@ -23,6 +23,8 @@ import { KEY_PROVIDER_IDS } from '../../../shared/settings-sections';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 import { runPinnedTurn } from '../../../core/client-snapshots';
 import { createCoreEndpoint, createLoopback, createMainEndpoint } from '../../core-protocol';
+import { FEATURES } from '../../../remote/protocol-version';
+import { MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
 import { createActorContext, processActor, type ActorContext } from '../../core-protocol/actor';
 import { DesktopSettingsStore } from '../../local-services/settings-store';
 import { createClientMirrors, createCoreRouter, type CoreRouter } from '../core-routes';
@@ -381,5 +383,123 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     expect(store).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
     expect(PiRuntime.exists).toBe(false);
+  });
+});
+
+// A daemon whose one client lists every feature of this build and shows chat panel-1 in view-1. A compromised core sends
+// whatever it likes, so `post` puts a raw request envelope on core's channel, past the sending endpoint's own check: what
+// reaches the client is what the daemon's parser let through, and what it refuses is a violation that closes core's channel.
+async function designDaemon() {
+  const coreLoop = createLoopback();
+  // the answers to the raw requests below reach this endpoint, which never sent them
+  const core = createCoreEndpoint(coreLoop.core, quiet, () => undefined);
+  const violations: string[] = [];
+  const state = createDaemonState(path.join(dir, 'state'), quiet);
+  router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, (error) => violations.push(error.message)), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
+  const loop = createLoopback();
+  const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+  router.attach({
+    id: 'connection-1', clientId: 'client-1', hostId: 'h1', features: new Set(FEATURES), transport: loop.core,
+    mirrors: { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } },
+    close: vi.fn(), drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }),
+  });
+  core.serve('chats.restore', () => undefined);
+  await main.request('chats.restore', { viewId: 'view-1' });
+  core.publish('chats', { panelId: 'panel-1', entry: { panelId: 'panel-1', viewId: 'view-1', hasConversation: true, folder: { key: '/srv/app', fsPath: '/srv/app', name: 'app', label: 'app', projectScope: true }, permissions: { permissionMode: 'default', dangerouslySkipPermissions: false } } });
+  let nextId = 1_000_000;
+  const post = (method: string, params: unknown): void => coreLoop.core.post({ kind: 'request', id: ++nextId, method, params });
+  return { core, main, post, violations };
+}
+
+const STEPS = [{ action: 'press', target: { label: 'Name' }, key: 'Escape' }, { action: 'assert', target: { role: 'dialog', name: 'New contact' }, expect: { visible: false } }];
+const OUTSIDE_STEPS = [{ action: 'click', target: { selector: 'body' } }, STEPS[1]];
+
+// PD-35: desktop opens a design in the browser only from main's own UI. A daemon's core asking for a preview reaches the
+// client as a design and a path for a tab (main's host services open a tab, relay.test.ts), never as a URL to open.
+describe("a daemon's core opens no URL on this computer through a design preview", () => {
+  it('design.openPreview reaches the client as a design and a path, any URL it carries dropped, and opens nothing', async () => {
+    const { main, post } = await designDaemon();
+    const previews: unknown[] = [];
+    const opened: unknown[] = [];
+    main.serve('design.openPreview', (params) => {
+      previews.push(params);
+    });
+    main.serve('shell.openExternal', (params) => {
+      opened.push(params);
+      return false;
+    });
+    post('design.openPreview', { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', url: 'https://example.com' });
+    await vi.waitFor(() => expect(previews).toEqual([{ panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' }]));
+    expect(opened).toEqual([]);
+  });
+});
+
+// PD-11: a daemon's core asks the attached client to render a design it holds by its id and a path below it; the client's
+// main reads the bytes back through that core's design.read, so no path of this computer and no bytes cross with the ask.
+describe("a daemon's core renders a design on this computer only by its id and path", () => {
+  it('design.capture and design.probe reach the client with the design, the path and the render settings, and nothing else', async () => {
+    const { main, post } = await designDaemon();
+    const asked: unknown[] = [];
+    main.serve('design.capture', (params) => {
+      asked.push(params);
+      return { png: new Uint8Array([1]), cssWidth: 390, cssHeight: 900, contentHeight: 900, scale: 2 };
+    });
+    main.serve('design.probe', (params) => {
+      asked.push(params);
+      return { widths: [], consoleErrors: [] };
+    });
+    const elsewhere = { folder: '/home/u/.ssh', bytes: new Uint8Array([1]), url: 'https://example.com' };
+    post('design.capture', { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 2, ...elsewhere });
+    post('design.probe', { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null, sweepTo: 1280, ...elsewhere });
+    await vi.waitFor(() => expect(asked).toEqual([
+      { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 2 },
+      { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null, sweepTo: 1280 },
+    ]));
+  });
+
+  it('a capture or probe outside the contract never reaches the client: the daemon refuses it as a violation', async () => {
+    const { main, post, violations } = await designDaemon();
+    const asked = vi.fn();
+    main.serve('design.capture', asked);
+    main.serve('design.probe', asked);
+    post('design.capture', { designId: 'x'.repeat(MAX_DESIGN_ID_CHARS + 1), relPath: 'screens/S1.html', width: 390, state: null, scale: 2 });
+    post('design.probe', { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [100_000], state: null });
+    expect(violations).toHaveLength(2);
+    expect(asked).not.toHaveBeenCalled();
+  });
+});
+
+// D92, D93: a daemon's core asks for a journey or a replay by a design, a screen and steps the wire parser validates again, and a
+// replay by its own chat's panel; it names no view, page, URL or selector, so it drives nothing on this computer but a fresh
+// render page or that design's preview.
+describe("a daemon's core runs and replays a journey only as validated steps of a design screen", () => {
+  it('design.journey and design.replayJourney reach the client without any other field', async () => {
+    const { main, post } = await designDaemon();
+    const asked: unknown[] = [];
+    main.serve('design.journey', (params) => {
+      asked.push(params);
+      return { widths: [{ width: 390, passed: true, steps: [{ ok: true }, { ok: true }] }], consoleErrors: [] };
+    });
+    main.serve('design.replayJourney', (params) => {
+      asked.push(params);
+    });
+    const elsewhere = { url: 'https://example.com', viewId: 'settings', selector: 'body' };
+    post('design.journey', { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null, steps: STEPS, outline: false, ...elsewhere });
+    post('design.replayJourney', { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', state: null, steps: STEPS, reducedMotion: false, ...elsewhere });
+    await vi.waitFor(() => expect(asked).toEqual([
+      { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null, steps: STEPS, outline: false },
+      { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', state: null, steps: STEPS, reducedMotion: false },
+    ]));
+  });
+
+  it('steps outside the format never reach the client: the daemon refuses them as a violation', async () => {
+    const { main, post, violations } = await designDaemon();
+    const asked = vi.fn();
+    main.serve('design.journey', asked);
+    main.serve('design.replayJourney', asked);
+    post('design.journey', { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null, steps: OUTSIDE_STEPS });
+    post('design.replayJourney', { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', state: null, steps: OUTSIDE_STEPS, reducedMotion: false });
+    expect(violations).toEqual([expect.stringContaining('request design.journey'), expect.stringContaining('request design.replayJourney')]);
+    expect(asked).not.toHaveBeenCalled();
   });
 });

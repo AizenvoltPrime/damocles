@@ -2,8 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs script, no types
-import { assemblyInfo, compileAskpassTrampoline, cscPath } from '../askpass-trampoline.mjs';
+import { assemblyInfo, compileAskpassTrampoline, cscPath } from '../askpass-trampoline.ts';
 
 describe('the askpass trampoline build', () => {
   it('writes the release version as FileVersion and its four-part form as the assembly and product versions', () => {

@@ -4,12 +4,12 @@ import vue from '@vitejs/plugin-vue';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from './src/desktop/main/desktop-fonts';
-import { shellWorkerTest } from './scripts/shell-workers.mjs';
+import { shellWorkerTest } from './scripts/shell-workers.ts';
 import { MATERIAL_ICON_DIR, materialIconNames } from './src/desktop/shell/material-icons';
 
 // Copies the desktop fonts and their licences to dist/desktop-shell/fonts/ under the names theme.ts's @font-face rules load.
 function desktopFonts(): Plugin {
-  const packageFile = (pkg: string, file: string): Buffer => readFileSync(resolve(__dirname, 'node_modules', pkg, file));
+  const packageFile = (pkg: string, file: string): Buffer => readFileSync(resolve(import.meta.dirname, 'node_modules', pkg, file));
   return {
     name: 'damocles-desktop-fonts',
     generateBundle() {
@@ -25,7 +25,7 @@ function desktopFonts(): Plugin {
 
 // Every icon materialIconUrl() can load, under the directory it names, with the package's licence beside them.
 function materialFileIcons(): Plugin {
-  const packageDir = resolve(__dirname, 'node_modules', 'material-icon-theme');
+  const packageDir = resolve(import.meta.dirname, 'node_modules', 'material-icon-theme');
   return {
     name: 'damocles-material-file-icons',
     generateBundle() {
@@ -50,9 +50,9 @@ function requiredPageAssets(): Plugin {
   };
 }
 
-// Any worker entry scripts/shell-workers.mjs does not allow fails the build.
+// Any worker entry scripts/shell-workers.ts does not allow fails the build.
 function shellWorkersOnly(): Plugin {
-  const allowed = shellWorkerTest(__dirname);
+  const allowed = shellWorkerTest(import.meta.dirname);
   return {
     name: 'damocles-shell-workers-only',
     generateBundle(_options, bundle) {
@@ -79,8 +79,8 @@ export default defineConfig({
     rollupOptions: {
       // Each entry imports its own stylesheet; a stylesheet both imported would land in a shared chunk's CSS instead.
       input: {
-        index: resolve(__dirname, 'src/desktop/shell/index.html'),
-        overlay: resolve(__dirname, 'src/desktop/shell/overlay/main.ts'),
+        index: resolve(import.meta.dirname, 'src/desktop/shell/index.html'),
+        overlay: resolve(import.meta.dirname, 'src/desktop/shell/overlay/main.ts'),
       },
       output: {
         entryFileNames: 'assets/[name].js',
@@ -104,8 +104,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@shared': resolve(__dirname, 'src/shared'),
-      '@': resolve(__dirname, 'src/webview'),
+      '@shared': resolve(import.meta.dirname, 'src/shared'),
+      '@': resolve(import.meta.dirname, 'src/webview'),
     },
   },
 });

@@ -1,4 +1,7 @@
-import { ASK_USER_QUESTION_LIMITS, type Question, type QuestionAnnotations } from '../../../shared/types/permissions';
+import { ASK_USER_QUESTION_LIMITS, type Question, type QuestionAnnotations, type QuestionOption, type QuestionPreview } from '../../../shared/types/permissions';
+import { parseQuestionPreview, QUESTION_PREVIEW_FORM } from '../../../shared/question-preview';
+import { statDesignFile } from '../../design/design-file-read';
+import { isDesignPreviewPath, MAX_SCREEN_BYTES } from '../../design/design-paths';
 import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, QuestionResult, PostMessageFn } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -12,7 +15,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function validateQuestions(input: unknown): ValidationResult {
+export function invalidQuestionInput(reason: string): string {
+  return `AskUserQuestion input invalid: ${reason}`;
+}
+
+function optionPreview(raw: unknown, at: string, designPreviews: boolean): { ok: true; preview: QuestionPreview } | { ok: false; reason: string } {
+  const parsed = parseQuestionPreview(raw);
+  if (!parsed.ok) return { ok: false, reason: `${at}.${parsed.reason}` };
+  if (parsed.preview.kind === 'design') {
+    if (!designPreviews) return { ok: false, reason: `${at}.preview: design previews are not available in this chat; use ${QUESTION_PREVIEW_FORM}` };
+    const { path } = parsed.preview;
+    if (!isDesignPreviewPath(path)) {
+      return { ok: false, reason: `${at}.preview.path must be an .html file of this design below screens/ or variants/, relative to the design folder, such as variants/a/S1.html` };
+    }
+  }
+  return parsed;
+}
+
+/** The first option preview `validateQuestions` refuses; the tool checks it ahead of pi's schema validation, whose error names no form. */
+export function questionPreviewRefusal(questions: unknown, designPreviews: boolean): string | undefined {
+  if (!Array.isArray(questions)) return undefined;
+  for (const [i, q] of questions.entries()) {
+    const options: unknown[] = isRecord(q) && Array.isArray(q['options']) ? q['options'] : [];
+    for (const [j, o] of options.entries()) {
+      if (!isRecord(o) || o['preview'] === undefined) continue;
+      const checked = optionPreview(o['preview'], `questions[${i}].options[${j}]`, designPreviews);
+      if (!checked.ok) return checked.reason;
+    }
+  }
+  return undefined;
+}
+
+/** `designPreviews`: a design chat's, which also takes `{kind:'design', path}` (its file is checked by `designPreviewRefusal`). */
+export function validateQuestions(input: unknown, designPreviews = false): ValidationResult {
   if (!Array.isArray(input)) {
     return { ok: false, reason: 'questions must be an array' };
   }
@@ -20,6 +55,7 @@ export function validateQuestions(input: unknown): ValidationResult {
   if (input.length < MIN_QUESTIONS || input.length > MAX_QUESTIONS) {
     return { ok: false, reason: `questions must have ${MIN_QUESTIONS}-${MAX_QUESTIONS} items, got ${input.length}` };
   }
+  const questions: Question[] = [];
   for (let i = 0; i < input.length; i++) {
     const q = input[i];
     if (!isRecord(q)) {
@@ -41,6 +77,7 @@ export function validateQuestions(input: unknown): ValidationResult {
     if (!Array.isArray(options) || options.length < MIN_OPTIONS || options.length > MAX_OPTIONS) {
       return { ok: false, reason: `questions[${i}].options must have ${MIN_OPTIONS}-${MAX_OPTIONS} items` };
     }
+    const parsedOptions: QuestionOption[] = [];
     for (let j = 0; j < options.length; j++) {
       const o = options[j];
       if (!isRecord(o)) {
@@ -50,21 +87,45 @@ export function validateQuestions(input: unknown): ValidationResult {
       if (typeof label !== 'string' || !label.trim()) {
         return { ok: false, reason: `questions[${i}].options[${j}].label must be a non-empty string` };
       }
-      if (typeof o['description'] !== 'string') {
+      const description = o['description'];
+      if (typeof description !== 'string') {
         return { ok: false, reason: `questions[${i}].options[${j}].description must be a string` };
       }
-      const preview = o['preview'];
-      if (preview !== undefined && typeof preview !== 'string') {
-        return { ok: false, reason: `questions[${i}].options[${j}].preview must be a string when provided` };
+      if (o['preview'] === undefined) {
+        parsedOptions.push({ label, description });
+        continue;
       }
+      const preview = optionPreview(o['preview'], `questions[${i}].options[${j}]`, designPreviews);
+      if (!preview.ok) return preview;
+      parsedOptions.push({ label, description, preview: preview.preview });
+    }
+    // A design preview turns the question into a grid of screens, which has no place for a markdown preview.
+    const kinds = new Set(parsedOptions.flatMap((option) => (option.preview ? [option.preview.kind] : [])));
+    if (kinds.size > 1) {
+      return { ok: false, reason: `questions[${i}].options mix markdown and design previews; give every preview of one question the same kind, or ask the markdown comparison as a separate question` };
+    }
+    questions.push({ question, header, multiSelect, options: parsedOptions });
+  }
+  return { ok: true, questions };
+}
+
+/** The first design-kind preview whose file is not a readable screen of `folder`; every path check runs before the read. */
+export async function designPreviewRefusal(questions: readonly Question[], folder: string): Promise<string | undefined> {
+  for (const [i, question] of questions.entries()) {
+    for (const [j, option] of question.options.entries()) {
+      if (option.preview?.kind !== 'design') continue;
+      const file = await statDesignFile(folder, option.preview.path, MAX_SCREEN_BYTES);
+      if (file.kind !== 'file') return `questions[${i}].options[${j}].preview.path: ${option.preview.path} is not a screen of this design (${file.kind}); write it first`;
     }
   }
-  return { ok: true, questions: input as Question[] };
+  return undefined;
 }
 
 export class QuestionManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
+  // the design folder of a design chat, whose questions take design-kind previews; undefined elsewhere
+  private designFolder: () => string | undefined = () => undefined;
 
   constructor(
     state: PermissionState,
@@ -74,15 +135,22 @@ export class QuestionManager {
     this.getPostMessage = getPostMessage;
   }
 
+  setDesignFolder(folder: () => string | undefined): void {
+    this.designFolder = folder;
+  }
+
   async handleQuestion(
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    const validated = validateQuestions(input['questions']);
+    const folder = this.designFolder();
+    const validated = validateQuestions(input['questions'], folder !== undefined);
     if (!validated.ok) {
-      return buildUnaskedDenyResult(undefined, `AskUserQuestion input invalid: ${validated.reason}`);
+      return buildUnaskedDenyResult(undefined, invalidQuestionInput(validated.reason));
     }
     const questions = validated.questions;
+    const missing = folder === undefined ? undefined : await designPreviewRefusal(questions, folder);
+    if (missing) return buildUnaskedDenyResult(undefined, invalidQuestionInput(missing));
 
     const result = await this.requestQuestionFromWebview(questions, context);
 

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { writeAsar } from '../../scripts/asar-archive.ts';
 import { ARCHIVE } from './support/asar';
 import { overlayPage, popupPage, popupToasts, recordedToasts, recordToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
 import { chooseMenuItem, menuItem, overlayMenu } from './support/overlay';

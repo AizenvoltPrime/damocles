@@ -21,6 +21,8 @@ import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
 import { buildPlanModeGuidance, PLAN_MODE_SECTION } from './plan-mode-guidance';
+import { designLinkSection, designSection } from '../design/guidance';
+import type { DesignRuleSet } from '../design/rule-set';
 import { mainPlanModeStatement, planModeNoticeAtPromptStart } from './plan-mode-change';
 import { mechanismLabels, SESSION_TEAM_RULE } from './delivery-mechanisms';
 import { isWebSearchEnabled } from './web-access';
@@ -149,6 +151,16 @@ export interface DamoclesSystemPromptInputs {
   skillFileReadTool: SkillFileReadTool | undefined;
   /** The models that wrote the chat's replies before its latest switch. Produce it with `earlierModelRuns` from the chat's branch and `env.model`, never by hand. */
   earlierModels: readonly string[];
+  /** A design chat's folder and rule set: its `damocles_design` section replaces the plan sections. */
+  design?: { folder: string; ruleSet: DesignRuleSet };
+  /** A parent's own design link: its `damocles_design_link` section. */
+  designLink?: { folder: string };
+}
+
+/** The design inputs of a chat's system prompt, read from its branch per turn. */
+export interface DesignPromptInputs {
+  design?: { folder: string; ruleSet: DesignRuleSet };
+  designLink?: { folder: string };
 }
 
 /** The Damocles-owned pieces of the system prompt. `preamble` becomes pi's `customPrompt`, which pi
@@ -176,13 +188,17 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): Dam
   if (i.webSearchEnabled) sections['damocles_web_verification'] = WEB_VERIFICATION_SECTION;
   if (i.teamEnabled) sections['damocles_team'] = SESSION_TEAM_RULE;
   if (i.memoryEnabled) sections['damocles_memory'] = MEMORY_SYSTEM_PROMPT;
-  if (i.planMode) {
+  if (i.design) {
+    // A design chat never plans (its mode is fixed at default), so the plan sections give way to its own.
+    sections['damocles_design'] = designSection(i.design.folder, i.design.ruleSet);
+  } else if (i.planMode) {
     // Plan mode names the write-target path (the model may not have written the file yet).
     sections[PLAN_MODE_SECTION] = buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled });
   } else if (i.existingPlanFile) {
     sections['damocles_plan_file'] = planFileReminder(i.existingPlanFile);
     sections['damocles_plan_execution'] = planExecutionDirective(i.teamEnabled);
   }
+  if (!i.design && i.designLink) sections['damocles_design_link'] = designLinkSection(i.designLink.folder);
   const projectContext = renderContextFiles(i.contextFiles);
   if (projectContext) sections['project_context'] = projectContext;
   const skills = renderSkills(i.skills, i.skillFileReadTool);
@@ -228,6 +244,7 @@ async function buildDamoclesSystemPrompt(
     skills: event.systemPromptOptions.skills,
     skillFileReadTool: resolveSkillFileReadTool(event.systemPromptOptions.selectedTools),
     earlierModels: earlierModelRuns(sessionManager.getBranch(), env.model),
+    ...(panel.designPrompt?.() ?? {}),
   });
 }
 

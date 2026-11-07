@@ -75,6 +75,7 @@ async function liveChatOn(file: string, name = 'live'): Promise<LiveSessionMutat
   const pi = (await initPiLoader())!;
   const sm = pi.SessionManager.open(file, path.dirname(file));
   return {
+    openDesignPreview: async () => false,
     renameActiveSession: async (newName: string) => {
       sm.appendSessionInfo(newName);
       sm.appendCustomEntry(DAMOCLES_USER_RENAMED_ENTRY);
@@ -84,6 +85,8 @@ async function liveChatOn(file: string, name = 'live'): Promise<LiveSessionMutat
       sm.appendSessionInfo(title);
       return true;
     },
+    offerDesignResult: () => undefined,
+    offerDesignBrief: () => undefined,
     detachFromDeletedSession: async () => {
       await new Promise((r) => setTimeout(r, 0));
       H.order.push(`detach:${name}`);

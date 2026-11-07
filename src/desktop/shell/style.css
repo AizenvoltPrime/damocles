@@ -3,11 +3,16 @@
 /* A shared webview component the shell page renders itself; Tailwind emits only the utilities it finds in scanned files. */
 @source "../../webview/components/SlidingIndicator.vue";
 @source "../../webview/components/SegmentedToggle.vue";
+@source "../../webview/components/ToggleSwitch.vue";
 @source "../../webview/components/RollingNumber.vue";
 @source "../../webview/components/icons/ProviderLogo.vue";
 @source "../../webview/components/HostBadge.vue";
 @source "../../webview/components/HostUpdateBanner.vue";
 @source "../../webview/components/banner-tone.ts";
+@source "../../webview/components/OverflowSlider.vue";
+@source "../../webview/components/design/design-strip.ts";
+@source "../../webview/components/design/design-tone.ts";
+@source "../../webview/components/design/JourneyStepText.vue";
 
 @theme {
   --font-mono: var(--d-mono);
@@ -207,54 +212,6 @@
   box-shadow: inset 0 0 0 1px var(--d-accent);
 }
 
-/* The tab strip scrolls under VS Code's overlay slider (EditorTabs.vue), so its native scrollbar never takes room. */
-.editor-tab-strip {
-  scrollbar-width: none;
-}
-
-/*
- * VS Code's scrollbar fade (base/browser/ui/scrollbar/media/scrollbars.css): in over 100 ms, out over 800 ms. The slider takes
- * scrollbarSlider.background, hoverBackground and activeBackground at VS Code's alphas (40%, 70%, 40%) of --d-muted and --d-text.
- */
-.editor-tab-scrollbar {
-  opacity: 0;
-  transition: opacity 0.8s linear;
-}
-
-.editor-tab-scrollbar-shown {
-  opacity: 1;
-  transition: opacity 0.1s linear;
-}
-
-.editor-tab-slider {
-  background-color: color-mix(in srgb, var(--d-muted) 40%, transparent);
-}
-
-/* A hidden slider takes no clicks: the tabs under the strip's bottom edge keep them. */
-.editor-tab-scrollbar:not(.editor-tab-scrollbar-shown) .editor-tab-slider {
-  pointer-events: none;
-}
-
-.editor-tab-slider:hover {
-  background-color: color-mix(in srgb, var(--d-muted) 70%, transparent);
-}
-
-.editor-tab-slider[data-active] {
-  background-color: color-mix(in srgb, var(--d-text) 40%, transparent);
-}
-
-.editor-tab-strip-fade-start {
-  mask-image: linear-gradient(90deg, transparent, #000 1.5rem);
-}
-
-.editor-tab-strip-fade-end {
-  mask-image: linear-gradient(90deg, #000 calc(100% - 1.5rem), transparent);
-}
-
-.editor-tab-strip-fade-start.editor-tab-strip-fade-end {
-  mask-image: linear-gradient(90deg, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
-}
-
 /* The close control: faint on idle tabs, clear on the active and hovered one; a dirty tab's dot turns into the X on hover or focus. */
 .editor-tab-close {
   opacity: 0.4;
@@ -334,13 +291,13 @@
   transition: transform 0.2s var(--ease-out), opacity 0.3s ease 0.2s;
 }
 
-/* AD1 focus overlay: the editor pane leaves its slot for the window's middle, zooming in, and zooms out before it goes back. */
+/* AD1 focus overlay: the editor pane leaves its slot for the window's middle, zooming in, and zooms out before it goes back.
+   Its z-index is the overlay stack's (EditorPane.vue), so popper content inside it paints above it. */
 .editor-focus {
   position: fixed;
   inset: 3.5rem 4rem 2.5rem;
   width: auto;
   height: auto;
-  z-index: 50;
   border: 1px solid var(--d-border2);
   border-radius: 0.875rem;
   box-shadow: var(--d-shadow);
@@ -383,6 +340,40 @@
 
 .files-row[data-cut] {
   opacity: var(--d-opacity-disabled);
+}
+
+/* Design preview: the frame sits on a dim checkerboard, and only a preset change glides its width (and the handle with it). */
+.design-stage {
+  background-color: color-mix(in srgb, var(--d-bg) 70%, var(--d-scrim));
+  background-image: conic-gradient(color-mix(in srgb, var(--d-hover) 45%, transparent) 25%, transparent 0 50%, color-mix(in srgb, var(--d-hover) 45%, transparent) 0 75%, transparent 0);
+  background-size: 1rem 1rem;
+}
+
+.design-frame-glide {
+  transition: width 0.35s var(--ease-out), transform 0.35s var(--ease-out);
+}
+
+/* The drag handle: a pill in the gutter beside the frame that grows and takes the accent on hover, focus and drag. */
+.design-handle::before {
+  content: "";
+  width: 0.25rem;
+  height: 2.5rem;
+  border-radius: 0.125rem;
+  background: var(--d-border2);
+  transition: background-color 0.15s var(--ease-out), height 0.2s var(--ease-out);
+}
+
+.design-handle:hover::before,
+.design-handle:focus-visible::before,
+.design-handle[data-dragging]::before {
+  height: 4rem;
+  background: var(--d-accent);
+}
+
+.design-handle:focus-visible {
+  border-radius: 0.375rem;
+  outline: 2px solid var(--d-accent);
+  outline-offset: 1px;
 }
 
 /* Image preview: a checkerboard behind the image shows its transparency. */

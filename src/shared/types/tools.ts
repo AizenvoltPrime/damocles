@@ -6,10 +6,10 @@
  */
 
 /** Subsystem a tool belongs to. `core` tools are always on; the rest gate on a subsystem flag. */
-export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'image' | 'subagents' | 'team';
+export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'image' | 'subagents' | 'team' | 'design';
 
 /** The groups with a master switch. */
-export type SwitchableToolGroup = Extract<ToolGroup, 'memory' | 'compass' | 'browser' | 'web' | 'team' | 'image'>;
+export type SwitchableToolGroup = Extract<ToolGroup, 'memory' | 'compass' | 'browser' | 'web' | 'team' | 'image' | 'design'>;
 
 /** The damocles.* setting each group's master switch writes. */
 export const TOOL_GROUP_SETTINGS: Readonly<Record<SwitchableToolGroup, string>> = {
@@ -19,6 +19,7 @@ export const TOOL_GROUP_SETTINGS: Readonly<Record<SwitchableToolGroup, string>> 
   web: 'damocles.pi.webSearch.enabled',
   team: 'damocles.team.enabled',
   image: 'damocles.imageGeneration.enabled',
+  design: 'damocles.design.enabled',
 };
 
 /** The per-tool switches' list: the active-set names (and URI-scoped entries) turned off. */

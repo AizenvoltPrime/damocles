@@ -12,6 +12,7 @@ import type { BrowserService } from './browser';
 import type { TeamService } from './team';
 import type { CompassService } from './compass';
 import type { ForkContext, ForkSpawnArgs } from '../shared/types/session';
+import type { DesignPanels, DesignSeed } from './design/tools/start-design';
 
 /** MCP servers one panel may use, split by scope so user-scope servers share one connection window-wide. */
 export interface McpScope {
@@ -66,6 +67,12 @@ export interface SessionOptions {
   /** Whether to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */
   getPreferOpenAIApiKey?: () => boolean;
   secrets?: SecretsStore;
+  /** A new design chat's identity, recorded as its role entry at its first bind (PD-23). */
+  design?: DesignSeed;
+  /** How StartDesign opens and shows design chats; absent where the host has no panels for them. */
+  designPanels?: DesignPanels;
+  /** Posts the panel's settings again after core changed one on its own: a design chat binds in default mode (PD-25). */
+  republishSettings?: () => void;
 }
 
 /** Content input type — text string or array of content blocks (text + images). */

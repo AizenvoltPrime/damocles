@@ -5,7 +5,7 @@ import type { SessionOptions } from '../../session-types';
 import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
 import { processLauncher } from '../../process-launcher';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
+import { MAX_IMAGE_BASE64_LENGTH, type UserContentBlock } from '../../../shared/types/content';
 import { formatUserSteerPrefix, type UserSteerNote } from '../../../shared/steer';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
 import type { AccountInfo, AutoCompactConfig } from '../../../shared/types/settings';
@@ -415,10 +415,14 @@ import { formatMcpResourceAttachmentBlock, formatTerminalAttachmentBlock } from 
 import { getPiCodingAgent } from '../pi-loader';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
-import { computePlanFilePath } from '../../paths';
+import { computePlanFilePath, DAMOCLES_DESIGNS_DIR } from '../../paths';
+import { updateDesignLink } from '../../design/design-state';
+import { stampDesignVersion } from '../../design/__tests__/design-harness';
+import { designFolderOf, designStateDirOf } from '../../design/design-paths';
 import { PLAN_MODE_EXCLUDED_TOOLS, PI_EXCLUDED_TOOLS, PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
 import { buildAccountInfo } from '../account-billing';
 import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
+import { DESIGN_PI_TOOL_NAMES, designRuleSet } from '../../design/rule-set';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
@@ -470,7 +474,7 @@ import * as realPi from '@earendil-works/pi-coding-agent';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { installLogSink } from '../../logger';
 import { SESSION_LEASE_DIR, acquireSessionLease, releaseSessionLease, sessionLeaseBlocker, sessionLeasePath, sessionLeasesOf } from '../session-store/session-lease';
-import elBundle from '../../../../l10n/bundle.l10n.el.json';
+import elBundle from '../../../../l10n/bundle.l10n.el.json' with { type: 'json' };
 import { resumeStoredSession } from '../../chat-panel/message-router/handlers/resume-session';
 import { createSessionHandlers } from '../../chat-panel/message-router/handlers/session-handlers';
 import type { HandlerContext, HandlerDependencies } from '../../chat-panel/message-router/types';
@@ -744,17 +748,17 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   it('session replacement re-subscribes once and re-disables compaction, old unsub first', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    // Each bind subscribes three times: the stream adapter, the unpersisted tool image cache and the wind-down notice.
-    expect(H.seq).toEqual(['subscribe', 'subscribe', 'subscribe', 'compaction-off']);
+    // Each bind subscribes five times: the stream adapter, the unpersisted tool image cache, the wind-down notice, the design entries and the stored-file announcement.
+    expect(H.seq).toEqual(['subscribe', 'subscribe', 'subscribe', 'subscribe', 'subscribe', 'compaction-off']);
 
     session.reset(); // -> runtime.newSession() exercises the replacement seam
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(6);
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(10);
     expect(H.seq.filter((s) => s === 'compaction-off')).toHaveLength(2);
     const oldUnsubs = H.seq.flatMap((s, i) => (s === 'unsub' ? [i] : []));
-    const newSubscribes = H.seq.flatMap((s, i) => (s === 'subscribe' ? [i] : [])).slice(3);
-    expect(oldUnsubs).toHaveLength(3);
+    const newSubscribes = H.seq.flatMap((s, i) => (s === 'subscribe' ? [i] : [])).slice(5);
+    expect(oldUnsubs).toHaveLength(5);
     expect(Math.max(...oldUnsubs)).toBeLessThan(Math.min(...newSubscribes));
   });
 
@@ -3353,6 +3357,36 @@ describe('PiSession runtime registration with two panels on one session id', () 
     }
   });
 
+  // A design chat's first run starts from its brief, a custom message, so pi writes its file at the first reply; main
+  // names the loaded chat by the stored id, and until then lists the file as a second, unloaded row.
+  it('announces a new conversation stored once pi writes its file at the first reply of a run no prompt opened', async () => {
+    const fs = await import('fs');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-stored-'));
+    const file = path.join(dir, 'new.jsonl');
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onSessionPersisted = vi.fn();
+    const session = new PiSession(makeOptions(messages, { onSessionPersisted }));
+    try {
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      (live.sessionManager.getSessionFile as ReturnType<typeof vi.fn>).mockReturnValue(file);
+      expect(session.storedSessionId).toBeNull();
+
+      const reply = { role: 'assistant', content: [{ type: 'text', text: 'Sketching the screens.' }] };
+      // pi notifies listeners of the message_end, then appends the message, which writes the file.
+      for (const listener of [...live.listeners]) listener({ type: 'message_end', message: reply });
+      fs.writeFileSync(file, '{}\n');
+      await Promise.resolve();
+
+      expect(session.storedSessionId).toBe(live.sessionId);
+      expect(messages.filter((m) => m.type === 'sessionStarted')).toEqual([{ type: 'sessionStarted', sessionId: live.sessionId, stored: true }]);
+      expect(onSessionPersisted.mock.calls).toEqual([[live.sessionId]]);
+    } finally {
+      await session.dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('hasConversation is true only for a pending resume or fork, a running turn, or a session with messages', async () => {
     // The panel asks before replacing the session on a folder switch, so a false positive nags and a
     // false negative discards a conversation without asking.
@@ -4657,6 +4691,9 @@ describe('plan-mode active set — exclusion model', () => {
     mcpDeferrableToolNames: ['mcp__git__status', 'mcp__git__commit'],
     mcpResourceExposure: null,
     disabled: new Set<string>(),
+    designEnabled: false,
+    designRole: false,
+    ruleSet: designRuleSet({ designPreview: true }),
   };
 
   const planSet = (): string[] => {
@@ -4768,7 +4805,8 @@ describe('plan-mode active set — exclusion model', () => {
     // Every toggleable subsystem names its tools by active-set identity, which is what plan mode filters.
     // The `team_*` AGENT tools are catalogued for the panel but built per team-agent, so they are in no
     // panel active set in ANY mode — their absence says nothing about plan mode.
-    const agentOnly = new Set(TEAM_AGENT_PI_TOOL_NAMES);
+    // The design tools follow design mode and the chat's role, never the permission mode (StartDesign in plan mode: tool-status.test.ts).
+    const agentOnly = new Set([...TEAM_AGENT_PI_TOOL_NAMES, ...DESIGN_PI_TOOL_NAMES]);
     for (const entry of FULL_TOOL_CATALOG.filter((e) => e.toggleable && !agentOnly.has(e.name))) {
       if (names.has(entry.name)) continue;
       expect(
@@ -7229,9 +7267,9 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     await detaching;
     await starting;
 
-    // Two binds, each subscribing the adapter, the image cache and the wind-down notice: the one start() made, and the
-    // replacement that detach forced. Without the wait there is only start()'s, and the panel is left live on the deleted file.
-    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(6);
+    // Two binds, each subscribing the adapter, the image cache, the wind-down notice, the design entries and the stored-file
+    // announcement: the one start() made, and the replacement that detach forced. Without the wait there is only start()'s, and the panel is left live on the deleted file.
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(10);
   });
 
   it('a resume that lands while start() builds the runtime switches to it once the runtime exists', async () => {
@@ -9701,7 +9739,7 @@ describe('the shell session job is scoped to the panel', () => {
     session.reset();
     await new Promise((r) => setTimeout(r, 0));
     // Non-vacuous: a reset that never replaced the pi session would leave every assertion below trivially true.
-    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(3);
+    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(5);
 
     // A job rebuilt per conversation would mint a second handle and close the first, killing anything the
     // user had deliberately backgrounded before the reset.
@@ -14144,6 +14182,558 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
     expect(session.queueInput('for A', 'q3', 'for A', a.id)).toBe('queued');
     await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledWith('for A', expect.anything()));
     live.isStreaming = false;
+    await session.dispose();
+  });
+});
+
+describe('PiSession and the design version pause (PD-29)', () => {
+  beforeEach(() => {
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+  });
+
+  type SettleEvt = { type: 'agent_before_settle'; entries: unknown[]; continue: boolean; context: { contextMessages: unknown[] } };
+  const toolTurn = { message: { role: 'assistant', content: [{ type: 'toolCall', id: 'r1', name: 'Read', arguments: {} }] }, toolResults: [{ toolCallId: 'r1', isError: false }] } as unknown as AgentTurnContext;
+
+  async function fireBeforeSettle(event: SettleEvt): Promise<unknown> {
+    const live = H.getLastSession()!;
+    const panel = (cwdFolder() as unknown as {
+      _panelRegistry: Map<string, { onBeforeSettle?: (e: SettleEvt) => Promise<unknown> }>;
+    })._panelRegistry.get(live.sessionId as string)!;
+    return panel.onBeforeSettle!(event);
+  }
+
+  it('the turn decider ends the run at the next turn boundary while a pause is owed, never with something the user queued', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const owed = vi.spyOn(session.design, 'pauseOwed').mockReturnValue(false);
+    expect(await live.agent.finishTurn?.(toolTurn)).toBeUndefined();
+
+    owed.mockReturnValue(true);
+    expect(await live.agent.finishTurn?.(toolTurn)).toEqual({ action: 'end' });
+    expect(owed).toHaveBeenCalledWith(live);
+    expect(live.abort).not.toHaveBeenCalled();
+
+    live.agent.peekQueuedMessages = () => [{ role: 'user' }];
+    expect(await live.agent.finishTurn?.(toolTurn)).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('a plan-mode run that owes a pause settles with no plan-mode nudge', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const cleanStop: SettleEvt = {
+      type: 'agent_before_settle', entries: [], continue: false,
+      context: { contextMessages: [{ role: 'system', content: '', sections: { damocles_plan_mode: 'Plan mode is active.' } }, { role: 'user', content: [{ type: 'text', text: 'go' }] }, { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'p' }] }] },
+    };
+    expect(await fireBeforeSettle(cleanStop)).toMatchObject({ customType: 'damocles-plan-mode-nudge' });
+    vi.spyOn(session.design, 'pauseOwed').mockReturnValue(true);
+    expect(await fireBeforeSettle(cleanStop)).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('a settled turn tells SessionDesign the chat became idle, once', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const settled = vi.spyOn(session.design, 'idle');
+    const priv = session as unknown as { setTurnState: (...change: unknown[]) => void };
+    priv.setTurnState('running');
+    expect(settled).not.toHaveBeenCalled();
+    priv.setTurnState('idle', { kind: 'completed' });
+    expect(settled).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+});
+
+describe('design deliveries on a live chat (D67)', () => {
+  const DESIGN = 'contacts-5e5e5e5e';
+  beforeEach(() => {
+    H.captured.services.length = 0;
+    H.resetServices();
+    fsSync.rmSync(DAMOCLES_DESIGNS_DIR, { recursive: true, force: true });
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+    fsSync.rmSync(DAMOCLES_DESIGNS_DIR, { recursive: true, force: true });
+  });
+
+  interface Internals {
+    designDeliveryState(session: unknown, trigger: string): string;
+    trackReplacement(replacement: Promise<void>): void;
+    runStarted(session: unknown): void;
+    turnState: string;
+  }
+  const finishVersion = (version: number) => stampDesignVersion(designStateDirOf(DESIGN), { sessionId: 'design-1', stillCurrent: () => true }, `hash-${version}`, [], (v) => ({
+    schemaVersion: 1, version: v, designId: DESIGN, title: 'Contacts', sessionId: 'design-1', toolCallId: `c${v}`, contentHash: `hash-${version}`, decisions: [], screens: [],
+    check: { errors: 0, warnings: [] }, journeys: [], summary: 's', changedSinceLast: [], finishedAt: '2026-01-01T00:00:00.000Z',
+  }));
+
+  /** A started main chat whose branch links design `DESIGN`, with a finished v1 it has not received. */
+  async function linkedParent(messages: ExtensionToWebviewMessage[]) {
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([{ type: 'custom', id: 'link', customType: 'damocles.design-link', data: { v: 1, designId: DESIGN, folder: designFolderOf(DESIGN), parentSessionId: live.sessionId, title: 'Contacts' } }]);
+    await updateDesignLink(designStateDirOf(DESIGN), () => ({ schemaVersion: 1, designId: DESIGN, folder: designFolderOf(DESIGN), title: 'Contacts', parentSessionId: live.sessionId as string, designSessionId: 'design-1', superseded: [] }));
+    await finishVersion(1);
+    const send = live.sendCustomMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    const cardRuns = (): boolean[] => send.mock.calls.filter((c) => (c[0] as { customType: string }).customType === 'damocles-design-result').map((c) => (c[1] as { triggerTurn: boolean }).triggerTurn);
+    return { session, live, getBranch, send, cardRuns, priv: session as unknown as Internals };
+  }
+
+  it('a resume switch delivers the owed card at its bind with no run, and once it settled a live offer starts a run', async () => {
+    // the panel holds sess-A, and sess-B is a stored main chat that links the design and was away when v1 was finished
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
+    const stored = [{ id: 'sess-A', branch: [] as unknown[] }, { id: 'sess-B', branch: [{ type: 'custom', id: 'link', customType: 'damocles.design-link', data: { v: 1, designId: DESIGN, folder: designFolderOf(DESIGN), parentSessionId: 'sess-B', title: 'Contacts' } }] }];
+    H.setSessionSetup((s) => {
+      const next = stored.shift();
+      if (!next) return;
+      (s as unknown as { sessionId: string }).sessionId = next.id;
+      ((s as unknown as { sessionManager: { getBranch: ReturnType<typeof vi.fn> } }).sessionManager.getBranch).mockReturnValue([...next.branch]);
+    });
+    await updateDesignLink(designStateDirOf(DESIGN), () => ({ schemaVersion: 1, designId: DESIGN, folder: designFolderOf(DESIGN), title: 'Contacts', parentSessionId: 'sess-B', designSessionId: 'design-1', superseded: [] }));
+    await finishVersion(1);
+    try {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      session.setResumeSession('sess-B');
+      await session.whenReplaced();
+      const live = H.getLastSession()!;
+      expect(live.sessionId).toBe('sess-B');
+      const send = live.sendCustomMessage as ReturnType<typeof vi.fn>;
+      const cardRuns = (): boolean[] => send.mock.calls.filter((c) => (c[0] as { customType: string }).customType === 'damocles-design-result').map((c) => (c[1] as { triggerTurn: boolean }).triggerTurn);
+      await vi.waitFor(() => expect(cardRuns()).toEqual([false]));
+      expect((session as unknown as Internals).designDeliveryState(live, 'live')).toBe('idle');
+      await finishVersion(2);
+      session.offerDesignResult(DESIGN);
+      await vi.waitFor(() => expect(cardRuns()).toEqual([false, true]));
+      await session.dispose();
+    } finally {
+      H.setSessionSetup(null);
+      delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+      vi.mocked(resolvePiSessionFile).mockReset();
+    }
+  });
+
+  it('a reset that settled leaves no replacement in flight, and the chat is idle for deliveries again', async () => {
+    const { session, priv } = await linkedParent([]);
+    session.reset();
+    await session.whenReplaced();
+    expect(priv.designDeliveryState(H.getLastSession(), 'live')).toBe('idle');
+    await session.dispose();
+  });
+
+  it('a delivery deferred by a compaction lands with its run once the compaction ends', async () => {
+    const { session, live, cardRuns } = await linkedParent([]);
+    let release!: () => void;
+    (live.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ summary: 's', firstKeptEntryId: 'k', tokensBefore: 1 }); }));
+    const compacting = session.compact(undefined, undefined, live.sessionId as string);
+    await vi.waitFor(() => expect(live.compact).toHaveBeenCalled());
+    session.offerDesignResult(DESIGN);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(cardRuns()).toEqual([]);
+    release();
+    await compacting;
+    await vi.waitFor(() => expect(cardRuns()).toEqual([true]));
+    await session.dispose();
+  });
+
+  it('starts no run that a send would be refused: a finish action, design mode off, the budget; the card lands with no run', async () => {
+    const { session, cardRuns } = await linkedParent([]);
+    const finishing = vi.spyOn(session.worktree, 'finishing').mockReturnValue('merge');
+    session.offerDesignResult(DESIGN);
+    await vi.waitFor(() => expect(cardRuns()).toEqual([false]));
+    finishing.mockRestore();
+    vi.spyOn(session.design, 'enabled').mockReturnValue(false);
+    await finishVersion(2);
+    session.offerDesignResult(DESIGN);
+    await vi.waitFor(() => expect(cardRuns()).toEqual([false, false]));
+    expect(session.design.sendRefusal('delivery')).toEqual({ message: 'Turn on design mode in Settings to continue this design.' });
+    expect(session.design.sendRefusal('send')).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('a delivery run pi never starts ends its turn and lands the card with no run, never opening the run it failed', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, send, cardRuns, priv } = await linkedParent(messages);
+    const runStarted = vi.spyOn(priv, 'runStarted');
+    const original = send.getMockImplementation() as (...args: unknown[]) => Promise<undefined>;
+    send.mockImplementationOnce(async (message: unknown, options: { triggerTurn?: boolean }) => {
+      if (options?.triggerTurn) throw new Error('credentials expired');
+      return original(message, options);
+    });
+    session.offerDesignResult(DESIGN);
+    await vi.waitFor(() => expect(cardRuns()).toEqual([true, false]));
+    expect(runStarted).not.toHaveBeenCalled();
+    expect(priv.turnState).toBe('idle');
+    expect(messages).toContainEqual({ type: 'processing', isProcessing: false });
+    expect(session.turnRunning).toBe(false);
+    await session.dispose();
+  });
+
+  it('keeps the user\'s answers when decisions.md cannot be written, and says so', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    vi.spyOn(session.design, 'role').mockReturnValue({ designId: DESIGN, folder: designFolderOf(DESIGN), parentSessionId: 'parent', ruleSet: 'full', title: 'Contacts' });
+    vi.spyOn(session.design, 'decisionsChanged').mockRejectedValue(new Error('EPERM: decisions.md is locked'));
+    const deps = (session as unknown as { designToolDeps: (s: () => unknown, b: readonly unknown[]) => { questionDecisions: (q: unknown[], a: Record<string, string>) => Promise<unknown[]> } }).designToolDeps(() => live, []);
+    const questions = [{ question: 'Which layout?', header: 'Layout', multiSelect: false, options: [{ label: 'Cards', description: '' }, { label: 'Table', description: '' }] }];
+    const records = await deps.questionDecisions(questions, { 'Which layout?': 'Cards' });
+    expect(records).toEqual([expect.objectContaining({ title: 'Layout', chosen: 'Cards' })]);
+    expect(messages.some((m) => m.type === 'notification' && englishText(m.message).startsWith('Damocles could not update decisions.md: EPERM'))).toBe(true);
+    await session.dispose();
+  });
+
+  it('republishes the settings when a design chat binds in a panel whose mode was not default', async () => {
+    let mode = 'plan';
+    const republishSettings = vi.fn();
+    const options = makeOptions([], { republishSettings });
+    Object.assign(options.permissionHandler, { getPermissionMode: () => mode, setPermissionMode: (next: string) => { mode = next; } });
+    const session = new PiSession(options);
+    await session.initializeEarly();
+    vi.spyOn(session.design, 'role').mockReturnValue({ designId: DESIGN, folder: designFolderOf(DESIGN), parentSessionId: 'parent', ruleSet: 'full', title: 'Contacts' });
+    (session as unknown as { announceSessionId(id: string, resumed: boolean): void }).announceSessionId(H.getLastSession()!.sessionId as string, true);
+    expect(mode).toBe('default');
+    expect(republishSettings).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('goes behind what the user queued for the settled run: the card lands with no run', async () => {
+    const { session, cardRuns } = await linkedParent([]);
+    (session as unknown as { afterSettleInputs: unknown[] }).afterSettleInputs = [{ id: 'q1', text: 'next', images: [], content: 'next' }];
+    session.offerDesignResult(DESIGN);
+    await vi.waitFor(() => expect(cardRuns()).toEqual([false]));
+    (session as unknown as { afterSettleInputs: unknown[] }).afterSettleInputs = [];
+    await session.dispose();
+  });
+});
+
+describe('a preview markup sent into its design chat (PD-12, PD-40)', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const MARKUP = {
+    screen: 'S1', file: 'screens/S1.html', viewport: { breakpoint: 'xl', width: 1280 }, zoom: 1, pixelRatio: 2, state: 'default',
+    marks: [{ type: 'pin', n: 1, kind: 'change', text: 'Taller rows', at: [40, 200], anchor: { element: 'ui/Table', facts: [] } }],
+  };
+  const TEXT = 'Markup F1 on screens/S1.html at xl · 1280 · default:\nPin 1 (change) on ui/Table: Taller rows';
+  // The card's marks, which the echo and the entry carry so no view parses TEXT.
+  const VIEW = { file: 'screens/S1.html', breakpoint: 'xl', width: 1280, state: 'default', marks: [{ type: 'pin', n: 1, kind: 'change', element: 'ui/Table', text: 'Taller rows' }] };
+  let folder: string;
+  beforeEach(() => {
+    folder = fsSync.mkdtempSync(path.join(os.tmpdir(), 'markup-send-'));
+  });
+  afterEach(() => {
+    fsSync.rmSync(folder, { recursive: true, force: true });
+  });
+
+  /** A started design chat whose turn baselines resolve only when the test says so. */
+  async function designChat(messages: ExtensionToWebviewMessage[]) {
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    vi.spyOn(session.design, 'role').mockReturnValue({ designId: 'contacts-1a2b3c4d', folder, parentSessionId: 'parent', ruleSet: 'full', title: 'Contacts' });
+    vi.spyOn(session.design, 'ruleSet').mockReturnValue({ preview: true } as never);
+    vi.spyOn(session.design, 'readLink').mockResolvedValue({ kind: 'current' });
+    vi.spyOn(session.design, 'sendRefusal').mockReturnValue(undefined);
+    const service = (session as unknown as { checkpointService: CheckpointService }).checkpointService;
+    const baselines = new Map<string, () => void>();
+    const waited = vi.spyOn(service, 'awaitBaselineOf').mockImplementation((userEntryId) => new Promise<boolean>((resolve) => baselines.set(userEntryId, () => resolve(true))));
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    return { session, live, getBranch, baselines, waited, append };
+  }
+
+  const userEntry = (id: string, text: string) => ({ type: 'message', id, message: { role: 'user', content: [{ type: 'text', text }] } });
+  const feedbackFiles = () => (fsSync.existsSync(path.join(folder, 'feedback')) ? fsSync.readdirSync(path.join(folder, 'feedback')).sort() : []);
+
+  it('sends one prompt marked as the preview\'s and writes F1 only after its turn\'s baseline', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch, baselines, waited, append } = await designChat(messages);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-markup', TEXT)]));
+
+    expect(await session.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+    await vi.waitFor(() => expect(waited).toHaveBeenCalledWith('u-markup', expect.anything(), 'design.markup'));
+
+    expect(live.prompt).toHaveBeenCalledTimes(1);
+    expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(TEXT);
+    expect(((live.prompt as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { images?: unknown[] }).images).toEqual([{ type: 'image', data: PNG, mimeType: 'image/png' }]);
+    const echo = messages.find((m) => m.type === 'userMessage');
+    expect(echo).toMatchObject({ content: TEXT, designMarkup: { feedbackId: 'F1', markup: VIEW } });
+    expect((echo as { contentBlocks: unknown[] }).contentBlocks[1]).toMatchObject({ type: 'image', origin: 'designPreview' });
+    expect(append.mock.calls.filter((c) => c[0] === 'damocles.design-markup').map((c) => c[1])).toEqual([{ userEntryId: 'u-markup', feedbackId: 'F1', markup: VIEW }]);
+    expect(feedbackFiles()).toEqual([]);
+
+    baselines.get('u-markup')!();
+    await vi.waitFor(() => expect(feedbackFiles()).toEqual(['F1.json', 'F1.png']));
+    expect(JSON.parse(fsSync.readFileSync(path.join(folder, 'feedback', 'F1.json'), 'utf8'))).toEqual({ ...MARKUP, image: 'feedback/F1.png' });
+    expect(fsSync.readFileSync(path.join(folder, 'feedback', 'F1.png')).toString('base64')).toBe(PNG);
+    await session.dispose();
+  });
+
+  it('holds a markup while the chat is busy, then sends it alone after the run settles, with its own baseline', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch, baselines, waited } = await designChat(messages);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    (live.prompt as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_text: string, opts: unknown) => {
+        piRuns(opts, getBranch, [userEntry('u-work', 'make the table')]);
+        await gate;
+      })
+      .mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-markup', TEXT)]));
+    const working = session.sendMessage('make the table', undefined, 'c1', { content: 'make the table' });
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(1));
+
+    expect(await session.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+    const queued = messages.find((m) => m.type === 'messageQueued') as { message: { id: string } } | undefined;
+    expect(queued).toBeDefined();
+    expect(live.prompt).toHaveBeenCalledTimes(1);
+
+    release();
+    await working;
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(2));
+    // its own prompt: the markup's text alone, never merged with the turn it waited for or steered into it
+    expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls[1]![0]).toBe(TEXT);
+    expect(((live.prompt as ReturnType<typeof vi.fn>).mock.calls[1]![1] as { streamingBehavior?: string }).streamingBehavior).toBeUndefined();
+    expect(messages).toContainEqual({ type: 'queueCancelled', messageId: queued!.message.id, sentAs: expect.any(String) });
+    await vi.waitFor(() => expect(waited).toHaveBeenCalledWith('u-markup', expect.anything(), 'design.markup'));
+    expect(waited.mock.calls.map((c) => c[0])).toEqual(['u-markup']);
+    expect(feedbackFiles()).toEqual([]);
+    baselines.get('u-markup')!();
+    await vi.waitFor(() => expect(feedbackFiles()).toEqual(['F1.json', 'F1.png']));
+    await session.dispose();
+  });
+
+  it('drops a held markup at a Stop: its chip goes, no file is written, the user is told, and its number is free again', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch } = await designChat(messages);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [userEntry('u-work', 'make the table')]);
+      await gate;
+    });
+    const working = session.sendMessage('make the table', undefined, 'c1', { content: 'make the table' });
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(1));
+    await session.sendDesignMarkup(PNG, MARKUP);
+    const queued = messages.find((m) => m.type === 'messageQueued') as { message: { id: string } };
+
+    session.cancel();
+    await vi.waitFor(() => expect(messages).toContainEqual({ type: 'queueCancelled', messageId: queued.message.id }));
+    expect(messages.some((m) => m.type === 'notification' && englishText(m.message).includes('The markup F1 was not sent'))).toBe(true);
+    release();
+    await working;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(live.prompt).toHaveBeenCalledTimes(1);
+    expect(feedbackFiles()).toEqual([]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-markup', TEXT)]));
+    expect(await session.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+    await session.dispose();
+  });
+
+  it('numbers two markups that arrive together F1 and F2, and refuses neither', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch } = await designChat(messages);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // the first prompt's run holds the chat, so neither markup has committed while the second is numbered
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, []);
+      await gate;
+    });
+    expect(await Promise.all([session.sendDesignMarkup(PNG, MARKUP), session.sendDesignMarkup(PNG, MARKUP)])).toEqual([{ feedbackId: 'F1' }, { feedbackId: 'F2' }]);
+    release();
+    await session.dispose();
+  });
+
+  it('refuses a markup outside a design chat and one that breaks the contract, sending nothing', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live } = await designChat(messages);
+    const refused = async (png: unknown, json: unknown) => {
+      const outcome = await session.sendDesignMarkup(png, json);
+      return 'refused' in outcome ? englishText(outcome.refused) : outcome;
+    };
+    expect(await refused(PNG, { ...MARKUP, marks: [] })).toBe('The markup could not be read, so it was not sent.');
+    expect(await refused('not base64!', MARKUP)).toBe('The markup could not be read, so it was not sent.');
+    vi.mocked(session.design.role).mockReturnValue(undefined);
+    expect(await refused(PNG, MARKUP)).toBe('Markup goes only to a design chat in the Damocles app.');
+    expect(live.prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+});
+
+describe('a kept tweak and saved references in a design chat (PD-13, PD-40)', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const DECLARED = {
+    type: 'message',
+    id: 'tweaks-1',
+    message: {
+      role: 'toolResult', toolCallId: 'call-tweaks', toolName: 'DeclareTweaks', content: [], details: { controls: [
+        { id: 'radius', label: 'Corner radius', property: '--radius', kind: 'segment', stops: [{ token: '--radius-sm', value: '4px' }, { token: '--radius-lg', value: '12px' }], locked: null },
+        { id: 'accent', label: 'Accent', property: '--accent', kind: 'swatch', stops: [{ token: '--accent-blue', value: '#2563eb' }, { token: '--accent-green', value: '#16a34a' }], locked: null },
+      ] },
+    },
+  };
+  let folder: string;
+  beforeEach(() => {
+    folder = fsSync.mkdtempSync(path.join(os.tmpdir(), 'tweak-send-'));
+  });
+  afterEach(() => {
+    fsSync.rmSync(folder, { recursive: true, force: true });
+  });
+
+  async function designChat(messages: ExtensionToWebviewMessage[], branch: unknown[]) {
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue(branch);
+    vi.spyOn(session.design, 'role').mockReturnValue({ designId: 'contacts-1a2b3c4d', folder, parentSessionId: 'parent', ruleSet: 'full', title: 'Contacts' });
+    vi.spyOn(session.design, 'ruleSet').mockReturnValue({ preview: true } as never);
+    vi.spyOn(session.design, 'readLink').mockResolvedValue({ kind: 'current' });
+    vi.spyOn(session.design, 'sendRefusal').mockReturnValue(undefined);
+    const service = (session as unknown as { checkpointService: CheckpointService }).checkpointService;
+    const baselines = new Map<string, () => void>();
+    const waited = vi.spyOn(service, 'awaitBaselineOf').mockImplementation((userEntryId) => new Promise<boolean>((resolve) => baselines.set(userEntryId, () => resolve(true))));
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    return { session, live, getBranch, baselines, waited, append };
+  }
+  const userEntry = (id: string, text: string) => ({ type: 'message', id, message: { role: 'user', content: [{ type: 'text', text }] } });
+  const referenceFiles = () => (fsSync.existsSync(path.join(folder, 'references')) ? fsSync.readdirSync(path.join(folder, 'references')).sort() : []);
+
+  it('sends Keep as its own user prompt and records the kept entry when it commits, with no decision', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const branch: unknown[] = [DECLARED];
+    const { session, live, getBranch, append } = await designChat(messages, branch);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [...branch, userEntry('u-keep', 'Keep: Corner radius → --radius-lg')]));
+    expect(await session.keepDesignTweak('radius', '--radius-lg')).toEqual({ kept: true });
+    await vi.waitFor(() => expect(append.mock.calls.some((c) => c[0] === 'damocles-design-tweak-kept')).toBe(true));
+    expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('Keep: Corner radius → --radius-lg');
+    expect(((live.prompt as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { streamingBehavior?: string }).streamingBehavior).toBeUndefined();
+    expect(append.mock.calls.filter((c) => c[0] === 'damocles-design-tweak-kept').map((c) => c[1])).toEqual([{ userEntryId: 'u-keep', toolCallId: 'call-tweaks', tweakId: 'radius', label: 'Corner radius', property: '--radius', value: '--radius-lg' }]);
+    expect(append.mock.calls.some((c) => JSON.stringify(c[1] ?? '').includes('designDecisions'))).toBe(false);
+    await session.dispose();
+  });
+
+  it('holds two Keeps while the chat is busy and sends each as its own prompt after the run, in order', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const branch: unknown[] = [DECLARED];
+    const { session, live, getBranch } = await designChat(messages, branch);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    (live.prompt as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_text: string, opts: unknown) => {
+        piRuns(opts, getBranch, [...branch, userEntry('u-work', 'try radius')]);
+        await gate;
+      })
+      .mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [...branch, userEntry('u-k1', 'Keep: Corner radius → --radius-lg')]))
+      .mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [...branch, userEntry('u-k2', 'Keep: Accent → --accent-green')]));
+    const working = session.sendMessage('try radius', undefined, 'c1', { content: 'try radius' });
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(1));
+    expect(await session.keepDesignTweak('radius', '--radius-lg')).toEqual({ kept: true });
+    expect(await session.keepDesignTweak('accent', '--accent-green')).toEqual({ kept: true });
+    expect(messages.filter((m) => m.type === 'messageQueued')).toHaveLength(2);
+    release();
+    await working;
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(3));
+    expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls.slice(1).map((c) => c[0])).toEqual(['Keep: Corner radius → --radius-lg', 'Keep: Accent → --accent-green']);
+    await session.dispose();
+  });
+
+  it('refuses a Keep of a value that is no stop, of a locked control, and outside a design chat', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const kept = { type: 'custom', id: 'k1', customType: 'damocles-design-tweak-kept', data: { userEntryId: 'u1', toolCallId: 'call-tweaks', tweakId: 'radius', label: 'Corner radius', property: '--radius', value: '--radius-lg' } };
+    const decision = { type: 'message', id: 'd1', message: { role: 'toolResult', toolCallId: 'c-d', toolName: 'RecordDecision', content: [], details: { designDecisions: [{ v: 1, id: 'D1', title: 'Corner radius', chosen: '--radius-lg', rejected: [], source: { kind: 'tweak', ref: 'radius' }, files: [] }] } } };
+    const { session, live } = await designChat(messages, [DECLARED, kept, decision]);
+    const refused = async (tweakId: string, value: string) => {
+      const outcome = await session.keepDesignTweak(tweakId, value);
+      return 'refused' in outcome ? englishText(outcome.refused) : outcome;
+    };
+    expect(await refused('radius', '--radius-sm')).toBe('A decision already settled this tweak, so it was not kept.');
+    expect(await refused('accent', '--radius-lg')).toBe('The designer no longer offers this tweak, so it was not kept.');
+    vi.mocked(session.design.role).mockReturnValue(undefined);
+    expect(await refused('accent', '--accent-blue')).toBe('Tweaks go only to a design chat in the Damocles app.');
+    expect(live.prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('saves an attached image as R1 after its turn\'s baseline and leaves the preview\'s own image out', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch, baselines, waited, append } = await designChat(messages, []);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-ref', 'Like this one')]));
+    const blocks: UserContentBlock[] = [
+      { type: 'text', text: 'Like this one' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG }, origin: 'designPreview' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+    ];
+    expect(await session.sendMessage(blocks, undefined, 'c-ref', { content: 'Like this one', contentBlocks: blocks })).toBe('sent');
+    const echo = messages.find((m) => m.type === 'userMessage');
+    expect(echo).toMatchObject({ content: 'Like this one', designReferences: [{ id: 'R1', image: 'references/R1.png', imageIndex: 1 }] });
+    // the model reads which reference the image is
+    expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('Like this one\n\n[Damocles saved the attached image as R1 (references/R1.png). Map it with MapReference.]');
+    await vi.waitFor(() => expect(waited).toHaveBeenCalledWith('u-ref', expect.anything(), 'design.references'));
+    expect(append.mock.calls.filter((c) => c[0] === 'damocles.design-references').map((c) => c[1])).toEqual([{ userEntryId: 'u-ref', references: [{ id: 'R1', image: 'references/R1.png', imageIndex: 1 }] }]);
+    expect(referenceFiles()).toEqual([]);
+    // MapReference and RecordDecision wait for the write the baseline released (designToolDeps.referenceWritten)
+    const deps = (session as unknown as { designToolDeps: (s: () => unknown, b: readonly unknown[]) => { chat: { referenceWritten(id: string): Promise<void> } } }).designToolDeps(() => live, []);
+    let written = false;
+    const waiting = deps.chat.referenceWritten('R1').then(() => { written = referenceFiles().length === 2; });
+    baselines.get('u-ref')!();
+    await waiting;
+    expect(written).toBe(true);
+    await vi.waitFor(() => expect(referenceFiles()).toEqual(['R1.json', 'R1.png']));
+    expect(JSON.parse(fsSync.readFileSync(path.join(folder, 'references', 'R1.json'), 'utf8'))).toMatchObject({ schemaVersion: 1, image: 'references/R1.png', userEntryId: 'u-ref' });
+    await session.dispose();
+  });
+
+  it('frees the numbers of a prompt pi queued that a Stop takes back, so the next image is R1 again', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch } = await designChat(messages, []);
+    const blocks: UserContentBlock[] = [{ type: 'text', text: 'Like this' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }];
+    const followUps: string[] = [];
+    Object.assign(live, { isStreaming: true, getFollowUpMessages: () => followUps });
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+      followUps.push(text);
+      opts.preflightResult('queued');
+    });
+    expect(await session.sendMessage(blocks, undefined, 'c-queued', { content: 'Like this', contentBlocks: blocks })).toBe('sent');
+    const planned = (session as unknown as { plannedReferences: Map<string, unknown> }).plannedReferences;
+    expect([...planned.keys()]).toEqual(['c-queued']);
+    session.cancel();
+    expect(planned.size).toBe(0);
+    (live as { isStreaming: boolean }).isStreaming = false;
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-next', 'Like this')]));
+    await session.sendMessage(blocks, undefined, 'c-next', { content: 'Like this', contentBlocks: blocks });
+    expect(messages.filter((m) => m.type === 'userMessage').at(-1)).toMatchObject({ designReferences: [{ id: 'R1' }] });
+    await session.dispose();
+  });
+
+  it('saves nothing for a message with only the preview\'s images, or outside a design chat', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, getBranch, append } = await designChat(messages, []);
+    (live.prompt as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-1', 'shot')]))
+      .mockImplementationOnce(async (_text: string, opts: unknown) => piRuns(opts, getBranch, [userEntry('u-2', 'other')]));
+    const shot: UserContentBlock[] = [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG }, origin: 'designPreview' }];
+    await session.sendMessage(shot, undefined, 'c-1', { content: '', contentBlocks: shot });
+    vi.mocked(session.design.role).mockReturnValue(undefined);
+    const outside: UserContentBlock[] = [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }];
+    await session.sendMessage(outside, undefined, 'c-2', { content: '', contentBlocks: outside });
+    expect(messages.filter((m) => m.type === 'userMessage').some((m) => 'designReferences' in m)).toBe(false);
+    expect(append.mock.calls.some((c) => c[0] === 'damocles.design-references')).toBe(false);
+    expect(referenceFiles()).toEqual([]);
     await session.dispose();
   });
 });

@@ -18,7 +18,7 @@ import type { SshdFixture } from './support/sshd';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 
 const APP = '/srv/app';
-const DEV_SERVER = fs.readFileSync(path.join(__dirname, 'support', 'dev-server.mjs'), 'utf8');
+const DEV_SERVER = fs.readFileSync(path.join(import.meta.dirname, 'support', 'dev-server.mjs'), 'utf8');
 const LOCAL_NETWORK_SWITCH = "Let the agent's browser reach this computer's local network";
 // the host forms a page may name this computer by (docs/invariants.md "Ports and the remote browser")
 const FORMS = ['localhost', '127.0.0.1', '2130706433', '[::ffff:7f00:1]', '0.0.0.0', '127.0.0.1.nip.io', 'rebind.e2e.test'] as const;

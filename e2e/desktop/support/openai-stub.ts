@@ -40,6 +40,9 @@ export interface OpenAIStub {
 
 export const STUB_MODEL_ID = 'gpt-6-luna';
 
+/** A reply that only calls the tool `name` with `args`. */
+export const call = (name: string, args: Record<string, unknown>): StubReply => ({ chunks: [], toolCalls: [{ name, arguments: args }] });
+
 function chunk(id: string, delta: Record<string, unknown>, finishReason: string | null): string {
   const payload = {
     id,
@@ -177,4 +180,14 @@ export function lastToolResultRequest(stub: OpenAIStub): string {
   const last = bodies.at(-1);
   if (last === undefined) throw new Error('no chat request carried a tool result');
   return last;
+}
+
+/** The text of the last tool result the agent's turns carried back to the model. */
+export function lastToolResult(stub: OpenAIStub): string {
+  for (const request of [...agentRequests(stub)].reverse()) {
+    const tool = [...((request.body as { messages?: ChatMessage[] }).messages ?? [])].reverse().find((message) => message.role === 'tool');
+    if (tool === undefined) continue;
+    return typeof tool.content === 'string' ? tool.content : (tool.content ?? []).map((part) => part.text ?? '').join('');
+  }
+  throw new Error('no agent request carried a tool result');
 }

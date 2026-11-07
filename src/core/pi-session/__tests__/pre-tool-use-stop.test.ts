@@ -77,7 +77,7 @@ function deps(toolCall: HookEntry[]): DispatchDeps {
 function permissionHandler(canUse: () => Promise<PermissionResult> = async () => ({ behavior: 'allow', updatedInput: {} })) {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(canUse);
   const matchRule = vi.fn<PermissionHandler['matchRule']>(async () => null);
-  const handler = { canUseTool, matchRule, decide: () => 'allow', isPlanFile: () => false } as unknown as PermissionHandler;
+  const handler = { canUseTool, matchRule, decide: () => 'allow', isPlanFile: () => false, sessionCwd: () => process.cwd() } as unknown as PermissionHandler;
   return { handler, canUseTool, matchRule };
 }
 

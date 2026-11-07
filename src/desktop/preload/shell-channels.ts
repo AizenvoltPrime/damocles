@@ -8,6 +8,8 @@ import type { SettingsFileScope } from '../../shared/types/messages';
 import type { AuthorityKind } from '../../shared/project-location';
 import type { HostLatency, HostReconnect } from '../../shared/host-connection';
 import type { HostColor } from '../../shared/host-colors';
+import type { JourneyStep, JourneyStepResult, TweaksDeclaration } from '../../shared/types/design';
+import type { MarkupJsonInput } from '../../shared/design-markup';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab, ScmMergeInputsResult } from './scm-channels';
@@ -184,6 +186,36 @@ export const SHELL_CHANNELS = {
   // Browser tabs, renderer → main, send
   // BrowserPageArea | null: the active browser tab's page area, which main covers with the page's view
   browserBounds: 'damocles:shell:browser:bounds',
+
+  // Design preview tabs (PD-7, PD-33): the selected design chat's screens, renderer → main, invoke
+  // DesignPreviewSet: the tab's width (persisted), state or provenance
+  designSet: 'damocles:shell:design:set',
+  // DesignPreviewActionRequest: a user's click on the toolbar or the tab menu
+  designAction: 'damocles:shell:design:action',
+  // tabId → DesignFreeze: the live view captured for markup, which turns markup on (the view hides until markupExit); refused while a tweak is applied
+  designFreeze: 'damocles:shell:design:freeze',
+  // tabId: markup on again over the capture the shell kept, with no new capture
+  designMarkupEnter: 'damocles:shell:design:markupEnter',
+  // tabId: markup off, so the view shows again
+  designMarkupExit: 'damocles:shell:design:markupExit',
+  // DesignMarkupSendRequest → DesignMarkupSent: the markup to the tab's design chat; once sent, markup is off
+  designMarkupSend: 'damocles:shell:design:markupSend',
+  // DesignTweakApplyRequest: one stop of a declared tweak applied to the tab's live view, replacing that property's earlier one
+  designTweakApply: 'damocles:shell:design:tweakApply',
+  // tabId: every applied tweak of the tab removed
+  designTweakReset: 'damocles:shell:design:tweakReset',
+  // DesignTweakKeepRequest: the tweak's value kept, sent to the tab's design chat as its own prompt
+  designTweakKeep: 'damocles:shell:design:tweakKeep',
+  // tabId → string | null: a reconnecting tab's last frame (ShellDesignPreview.lastFrameId names it), kept out of every publish
+  designLastFrame: 'damocles:shell:design:lastFrame',
+  // Design preview tabs, renderer → main, send
+  // DesignPreviewArea | null: the active design tab's frame, which main covers with the design's view
+  designBounds: 'damocles:shell:design:bounds',
+  // Design preview tabs, main → renderer
+  // DesignReplayProgress: a journey replay in a design tab's live view, after each change; the last one has done
+  designReplay: 'damocles:shell:design:replay',
+  // DesignPreviewClosed: a design tab closed for good (its close, its chat's close, the window's), never a chat switch
+  designClosed: 'damocles:shell:design:closed',
 
   // Files, renderer → main, invoke
   // FilesListRequest → FilesListResult
@@ -397,6 +429,9 @@ export interface ShellChat {
   readonly readOnly: boolean;
   // what the row's menu, buttons and keys offer besides Open; main refuses the others for this chat
   readonly actions: readonly ShellChatAction[];
+  // a design chat, with the id of its parent chat as this list issues it (a forked one has none), under which the list nests it;
+  // superseded: a rewind moved its design to another chat, so it is read-only (D70)
+  readonly design?: { readonly parentId?: string; readonly finishedVersion?: number; readonly superseded?: boolean };
 }
 
 export type ShellChatAction = 'rename' | 'tag' | 'delete';
@@ -728,7 +763,7 @@ export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
 export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal'];
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
-export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge';
+export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge' | 'designPreview';
 export type EditorReadOnlyReason = 'encoding' | 'log' | 'snapshot' | 'tooLarge';
 
 // A browser page of the selected chat (D14), as main observed it from the host messages core posts to the page.
@@ -744,6 +779,57 @@ export interface ShellBrowserPage {
   // a remote chat's page on a forwarded port: the host and the page's address as the target names it (http://localhost:5173/...)
   readonly forwardedFrom?: { readonly hostId: string; readonly hostName: string; readonly hostColor?: HostColor; readonly targetUrl: string };
 }
+
+// A design's widths and a screen's states, as the chat's core reads them (design.info).
+export interface ShellDesignInfo {
+  // inventory.json's breakpoints, ascending by width; the shell adds base for the band below the smallest (PD-8)
+  readonly breakpoints: readonly { readonly name: string; readonly width: number }[];
+  // CSS px; design.md's viewports.primary, resolved
+  readonly primary: number;
+  readonly checked: readonly number[];
+  readonly journey: readonly number[];
+  // <html data-ds-states>, in order; empty when the screen declares none
+  readonly states: readonly string[];
+  // the design chat's latest DeclareTweaks, with its locks as core read them; null when there is none
+  readonly tweaks: TweaksDeclaration | null;
+}
+
+// loading: the view is not shown yet; reconnecting: the chat's host dropped, lastFrameId names what the view showed;
+// updateServer: the host's daemon lacks design.read or design.info; failed: the screen could not be read
+export type DesignPreviewStatus = 'loading' | 'ready' | 'reconnecting' | 'updateServer' | 'failed';
+
+export const MIN_DESIGN_WIDTH = 320;
+export const MAX_DESIGN_WIDTH = 2560;
+// the frame's scale the shell reports (DesignPreviewArea.zoom); main refuses a report outside it
+export const MIN_DESIGN_ZOOM = 0.05;
+export const MAX_DESIGN_ZOOM = 4;
+// A chat holds and persists at most this many design tabs; core cannot flood the editor with design.openPreview.
+export const MAX_DESIGN_TABS = 64;
+
+// A design preview tab of the selected design chat (PD-33). Main shows its view over the frame only while status is ready.
+export interface ShellDesignPreview {
+  readonly designId: string;
+  // '/' separated, below the design folder: screens/S1-contacts.html
+  readonly relPath: string;
+  // the file's absolute path on the chat's machine (Copy path, the mention); relPath until info answered
+  readonly path: string;
+  // the chat's remote host as this computer names it; absent for this computer
+  readonly hostName?: string;
+  readonly status: DesignPreviewStatus;
+  // absent until design.info answered
+  readonly info?: ShellDesignInfo;
+  // CSS px, MIN_DESIGN_WIDTH..MAX_DESIGN_WIDTH; info.primary until a width is chosen, then persisted
+  readonly width: number;
+  // one of info.states, or 'default' when the screen declares none
+  readonly state: string;
+  readonly provenance: boolean;
+  // reconnecting only: the id of the view's last frame, which designLastFrame answers (a JPEG data: URL of at most
+  // MAX_DESIGN_LAST_FRAME_CHARS); a new id is a new frame
+  readonly lastFrameId?: number;
+  // the tweaks main applied to the tab, property → stop token, re-applied on every document; absent when none
+  readonly tweaks?: Readonly<Record<string, string>>;
+}
+export const MAX_DESIGN_LAST_FRAME_CHARS: number = 512 * 1024;
 
 export interface ShellEditorTab {
   readonly id: string;
@@ -764,6 +850,8 @@ export interface ShellEditorTab {
   };
   // browser tabs only
   readonly browser?: ShellBrowserPage;
+  // designPreview tabs only, titled "S1 · Contacts" (the screen's data-ds-screen and <title>, else its file name)
+  readonly designPreview?: ShellDesignPreview;
   // a browser tab's is the page's own title, which the shell shows without bidi controls
   readonly title: string;
   // absent for files outside every project, untitled and core-generated documents; the root key (folder-root.ts)
@@ -1171,6 +1259,102 @@ export interface BrowserNavigateRequest {
   readonly url: string;
 }
 
+// A design tab's frame in CSS px, its inner corner radius, and zoom: rect.width ÷ the design width, in shell CSS px per
+// design px. Main sets the view's zoom factor to zoom × the shell's zoom, so the page's CSS viewport is the design width.
+export interface DesignPreviewArea extends BrowserPageArea {
+  readonly tabId: string;
+  readonly zoom: number;
+}
+
+// At least one field; main resolves tabId among the selected chat's design tabs and rounds and clamps width.
+export interface DesignPreviewSet {
+  readonly tabId: string;
+  readonly width?: number;
+  // one of the tab's info.states
+  readonly state?: string;
+  readonly provenance?: boolean;
+}
+
+// screenshot: resolves once the live view's capture reached its design chat's composer, rejects otherwise
+export const DESIGN_PREVIEW_ACTIONS = ['openInBrowser', 'screenshot'] as const;
+export interface DesignPreviewActionRequest {
+  readonly tabId: string;
+  readonly action: (typeof DESIGN_PREVIEW_ACTIONS)[number];
+}
+
+// A preview's capture for markup (PD-12, PD-41). png is the live view's viewport, imageWidth × imageHeight px, rendered at
+// PD-41's scale (up to 2, longest side at most 1950 px) whatever zoom the tab shows; width and height are that viewport in CSS px
+// (width is the tab's width), and scale = imageWidth ÷ width. zoom is the view's zoom factor and pixelRatio the screen's device
+// px per DIP, as the user saw the view. A CSS px is an image px × width ÷ imageWidth.
+export interface DesignFreeze {
+  readonly png: string;
+  readonly imageWidth: number;
+  readonly imageHeight: number;
+  readonly width: number;
+  readonly height: number;
+  // 'base', or the widest breakpoint at or below width
+  readonly breakpoint: string;
+  readonly zoom: number;
+  readonly pixelRatio: number;
+  readonly scale: number;
+  readonly state: string;
+  // the screen's data-ds-screen, null when absent
+  readonly screen: string | null;
+  // screens/<name>.html
+  readonly file: string;
+  readonly elements: readonly DesignFreezeElement[];
+}
+
+// An element with a data-ds-* provenance attribute, in document order: element is its data-ds-component, else its tag; rect is
+// its getBoundingClientRect in viewport CSS px (it may start before or end past the viewport); facts as the provenance label
+// names them ('variant compact', 'bind Contact.name', 'decision D3', 'new').
+export interface DesignFreezeElement {
+  readonly element: string;
+  readonly rect: readonly [number, number, number, number];
+  readonly facts: readonly string[];
+}
+
+// png: the capture with the marks drawn on it, a data:image/png;base64 URL; main scales it to at most 1950 px a side.
+export interface DesignMarkupSendRequest {
+  readonly tabId: string;
+  readonly png: string;
+  readonly json: MarkupJsonInput;
+}
+
+export interface DesignMarkupSent {
+  readonly feedbackId: string;
+}
+
+export interface DesignTweakApplyRequest {
+  readonly tabId: string;
+  // a control's property and one of its stops, both token names (TWEAK_TOKEN_NAME)
+  readonly property: string;
+  readonly token: string;
+}
+
+export interface DesignTweakKeepRequest {
+  readonly tabId: string;
+  readonly tweakId: string;
+  // one of the control's stop tokens
+  readonly value: string;
+}
+
+export interface DesignPreviewClosed {
+  readonly tabId: string;
+}
+
+// A journey replay in a preview tab (PD-13, PD-45). steps are the journey's, which main validated; active is the index of the
+// step running (null before the first and once done); results has one entry per step finished, in order, and a failed step
+// ends the replay; reducedMotion: main runs the steps with no pause, so the shell shows each result at once.
+export interface DesignReplayProgress {
+  readonly tabId: string;
+  readonly steps: readonly JourneyStep[];
+  readonly active: number | null;
+  readonly results: readonly JourneyStepResult[];
+  readonly done: boolean;
+  readonly reducedMotion: boolean;
+}
+
 // Files (main's files/file-tree.ts). '' is the project folder itself.
 export interface FileRef {
   readonly projectKey: string;
@@ -1539,8 +1723,8 @@ export interface ShellState {
   // a chat view covers the chat slot: the selected chat, or another project's kept while the project's core opens its own;
   // false while none is selected or the kept one is withheld (keptChatWithheld), and the slot shows the shell's placeholder
   readonly chatViewShown: boolean;
-  // the breadcrumb's chat; title is absent until main has read it, and '' for a chat with no title yet
-  readonly selectedChat?: { readonly id: string; readonly title?: string; readonly status: ChatStatus };
+  // the breadcrumb's chat; title is absent until main has read it, and '' for a chat with no title yet; design as its chat list row has it
+  readonly selectedChat?: { readonly id: string; readonly title?: string; readonly status: ChatStatus; readonly design?: ShellChat['design'] };
   // by project key, every project of the list (D31)
   readonly shownFolders: { readonly [projectKey: string]: ShownFolder };
   readonly effectiveTheme: 'dark' | 'light';
@@ -1718,6 +1902,23 @@ export interface DamoclesShellApi {
   navigateBrowser(request: BrowserNavigateRequest): Promise<boolean>;
   // the active browser tab's page area in CSS px, null while no browser tab shows one
   reportBrowserBounds(area: BrowserPageArea | null): void;
+  // Design preview tabs; a failure main reports is a toast
+  setDesignPreview(request: DesignPreviewSet): Promise<void>;
+  designPreviewAction(request: DesignPreviewActionRequest): Promise<void>;
+  // the active design tab's frame, null while no design tab shows one; sent per frame, never debounced
+  reportDesignPreviewBounds(area: DesignPreviewArea | null): void;
+  onDesignReplay(listener: (progress: DesignReplayProgress) => void): () => void;
+  // Markup (PD-12): while it is on for a tab, main keeps the tab's view hidden; a failed send rejects after main's toast
+  designFreeze(tabId: string): Promise<DesignFreeze>;
+  designMarkupEnter(tabId: string): Promise<void>;
+  designMarkupExit(tabId: string): Promise<void>;
+  designMarkupSend(request: DesignMarkupSendRequest): Promise<DesignMarkupSent>;
+  // Tweaks (PD-13): applied through main's insertCSS only, never a file; a refused Keep rejects after main's toast
+  designTweakApply(request: DesignTweakApplyRequest): Promise<void>;
+  designTweakReset(tabId: string): Promise<void>;
+  designTweakKeep(request: DesignTweakKeepRequest): Promise<void>;
+  designLastFrame(tabId: string): Promise<string | null>;
+  onDesignPreviewClosed(listener: (tabId: string) => void): () => void;
   // Files
   listFiles(request: FilesListRequest): Promise<FilesListResult>;
   createFile(request: FilesCreateRequest): Promise<FilesMutationResult>;

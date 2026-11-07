@@ -2,8 +2,8 @@
 import type { Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ShieldBan } from 'lucide-vue-next';
-import type { ToolCall } from '@shared/types/session';
-import { useToolCardStatus } from '@/composables/useToolCardStatus';
+import type { ToolAbandonReason, ToolCall } from '@shared/types/session';
+import { formatToolDuration, useToolCardStatus, useToolStatusNote } from '@/composables/useToolCardStatus';
 
 /**
  * The reference's tool card (Chat Panel.dc.html m.isTool): a 36px row with the tile, the name, a mono argument,
@@ -18,7 +18,14 @@ const props = withDefaults(defineProps<{
   argTitle?: string | undefined;
   status: ToolCall['status'];
   expandable?: boolean;
-}>(), { expandable: false });
+  /** The icon tile's tint and color. */
+  tileClass?: string;
+  /** pi's measured `execute()` time, shown after the meta; absent for a call that never ran. */
+  durationMs?: number | undefined;
+  /** Shows the note for a call that never ran, was cancelled or has no recorded outcome, under the card's body. */
+  statusNote?: boolean;
+  abandonReason?: ToolAbandonReason | undefined;
+}>(), { expandable: false, tileClass: 'bg-(--d-accent-soft) text-(--d-accent)', statusNote: false });
 
 const emit = defineEmits<{
   (e: 'expand'): void;
@@ -26,6 +33,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.status);
+const note = useToolStatusNote(() => props.status, () => props.abandonReason);
 
 function handleCardClick(): void {
   if (props.expandable) emit('expand');
@@ -51,7 +59,8 @@ function handleNameKeydown(event: KeyboardEvent): void {
       :class="expandable && 'cursor-pointer transition-colors hover:bg-(--d-hover)'"
     >
       <span
-        class="flex size-5.5 flex-none items-center justify-center rounded-md bg-(--d-accent-soft) text-(--d-accent)"
+        class="flex size-5.5 flex-none items-center justify-center rounded-md"
+        :class="tileClass"
         aria-hidden="true"
       >
         <component
@@ -80,6 +89,11 @@ function handleNameKeydown(event: KeyboardEvent): void {
         >{{ arg }}</span>
       </slot>
       <slot name="meta" />
+      <span
+        v-if="durationMs !== undefined"
+        class="flex-none font-mono text-10.5 text-(--d-faint)"
+        data-testid="tool-card-duration"
+      >{{ formatToolDuration(durationMs) }}</span>
       <span
         v-if="status === 'awaiting_approval'"
         class="flex flex-none items-center gap-1.25 rounded-full bg-[color-mix(in_srgb,var(--d-warning)_13%,transparent)] py-px pr-2 pl-1.5 text-11 font-medium text-(--d-warning-text)"
@@ -115,5 +129,17 @@ function handleNameKeydown(event: KeyboardEvent): void {
       <slot name="trailing" />
     </div>
     <slot />
+    <div
+      v-if="statusNote && note"
+      class="flex items-start gap-2 border-t border-(--d-border) px-3 py-2 text-xs text-(--d-muted)"
+      data-testid="tool-card-status-note"
+    >
+      <component
+        :is="note.icon"
+        class="mt-px size-3.25 flex-none text-(--d-faint)"
+        aria-hidden="true"
+      />
+      <span><span class="font-semibold text-(--d-text)">{{ note.title }}</span><template v-if="note.description"> · {{ note.description }}</template></span>
+    </div>
   </div>
 </template>

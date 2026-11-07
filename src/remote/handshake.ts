@@ -13,7 +13,7 @@ export const HELLO_TIMEOUT_MS = 30_000;
 export const HANDSHAKE_MAX_BYTES: number = 64 * 1024;
 const HANDSHAKE_MAX_ITEMS = 512;
 const MAX_TEXT = 4096;
-const MAX_FEATURES = 256;
+export const MAX_FEATURES = 256;
 const DAEMON_LABEL = Buffer.from('damocles-daemon');
 const BRIDGE_LABEL = Buffer.from('damocles-bridge');
 
@@ -95,6 +95,8 @@ const NAME = /^[A-Za-z0-9._-]{1,128}$/;
 const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
 export const isVersionText = (value: unknown): value is string => typeof value === 'string' && VERSION.test(value);
 const isName = (value: unknown): value is string => typeof value === 'string' && NAME.test(value);
+/** A name of FEATURES, as welcome and an app's core attach carry it. */
+export const isFeatureName: (value: unknown) => value is string = isName;
 const isDisplayText = (value: unknown, max: number): value is string => typeof value === 'string' && value.length <= max && !UNSAFE_TEXT.test(value);
 
 const field = (fields: Fields, key: string): unknown => (Object.hasOwn(fields, key) ? fields[key] : undefined);

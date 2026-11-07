@@ -22,6 +22,7 @@ import {
 import type { DaemonState } from '../daemon-state';
 import { createRunRegistry, type RunRegistry } from '../run-registry';
 import { CodecError, decode, encode } from '../../../remote/codec';
+import { FEATURES } from '../../../remote/protocol-version';
 
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -57,10 +58,22 @@ interface Harness {
   readonly reload: ReturnType<typeof vi.fn>;
   readonly secrets: Map<string, string | undefined>;
   readonly mirrors: ClientMirrors;
-  // clientId: the hello's, the connection id when absent
   // lose and resume: the connection enters and leaves its reconnection grace
-  client(id: string, hostId?: string, drained?: () => Promise<void>, clientId?: string): { readonly main: MainEndpoint; readonly close: ReturnType<typeof vi.fn>; readonly raw: { post(message: unknown): void }; detach(): void; lose(): void; resume(): void };
+  client(id: string, options?: ClientOptions): { readonly main: MainEndpoint; readonly close: ReturnType<typeof vi.fn>; readonly raw: { post(message: unknown): void }; detach(): void; lose(): void; resume(): void };
 }
+
+interface ClientOptions {
+  readonly hostId?: string;
+  readonly drained?: (() => Promise<void>) | undefined;
+  // the hello's; the connection id when absent
+  readonly clientId?: string;
+  // the names of FEATURES its attach listed; none when absent, as an app that predates core.attachFeatures
+  readonly features?: readonly string[] | undefined;
+}
+
+// an app that renders designs but predates journeys and design.openPreview
+const RENDER_FEATURES = ['design.capture', 'design.probe'];
+const DESIGN_FEATURES = ['design.capture', 'design.probe', 'design.journey', 'design.replayJourney', 'design.openPreview', 'design.changed'];
 
 let current: Harness | undefined;
 
@@ -82,7 +95,7 @@ function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; 
     reload,
     secrets,
     mirrors,
-    client: (id, hostId = 'h1', drained = () => Promise.resolve(), clientId = id) => {
+    client: (id, { hostId = 'h1', drained = () => Promise.resolve(), clientId = id, features = [] } = {}) => {
       const loop = createLoopback();
       const close = vi.fn();
       const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
@@ -96,7 +109,7 @@ function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; 
         lostChange.add(listener);
         return { dispose: () => { lostChange.delete(listener); } };
       };
-      const attached = router.attach({ id, clientId, hostId, transport: loop.core, mirrors: emptyMirrors, close, drained, lost: () => lost, onLostChange });
+      const attached = router.attach({ id, clientId, hostId, features: new Set(features), transport: loop.core, mirrors: emptyMirrors, close, drained, lost: () => lost, onLostChange });
       return { main, close, raw: loop.main, detach: () => attached.dispose(), lose: () => setLost(true), resume: () => setLost(false) };
     },
   };
@@ -122,7 +135,7 @@ describe('core routes', () => {
   it('tells the daemon each time a client\'s clientPolicy changes, once the router holds the new value', async () => {
     const seen: Array<boolean | undefined> = [];
     const h: Harness = setUp({ clientPolicyChanged: () => seen.push(h.mirrors.clientPolicy.get('device-a')?.agentForwarding) });
-    const client = h.client('connection-1', 'h1', undefined, 'device-a');
+    const client = h.client('connection-1', { clientId: 'device-a' });
     await vi.waitFor(() => expect(seen).toEqual([undefined]));
     client.main.publish('clientPolicy', { value: { ...emptyMirrors.clientPolicy, agentForwarding: true } });
     await vi.waitFor(() => expect(seen).toEqual([undefined, true]));
@@ -182,6 +195,186 @@ describe('core routes', () => {
     await after.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
     await flush();
     expect(seen.filter((entry) => entry !== 'acting:none')).toEqual(['acting:connection-1', 'acting:connection-2']);
+  });
+
+  it('send design.openPreview to a client that shows the design chat and lists it, answer nothing otherwise, and pass design.read and design.info through', async () => {
+    const h = setUp();
+    const open = { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' };
+    // no window to open a tab in, and never a browser
+    expect(await h.core.request('design.openPreview', open)).toBeUndefined();
+    h.core.serve('chats.restore', () => undefined);
+    const client = h.client('c1', { features: DESIGN_FEATURES });
+    const opened: unknown[] = [];
+    client.main.serve('design.openPreview', (params) => {
+      opened.push(params);
+    });
+    // the chat is not one this client shows
+    expect(await h.core.request('design.openPreview', open)).toBeUndefined();
+    await client.main.request('chats.restore', { viewId: 'view-1' });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    // an app that predates design.openPreview attached last, so it is the acting client, and is never asked
+    const older = h.client('c-old', { features: RENDER_FEATURES });
+    older.main.serve('design.openPreview', () => {
+      opened.push('older');
+    });
+    await h.core.request('design.openPreview', open);
+    expect(opened).toEqual([open]);
+    // the daemon hands core the client's request as it was sent: core alone confines it to a design it holds
+    const asked: unknown[] = [];
+    h.core.serve('design.read', (params) => {
+      asked.push(params);
+      return { bytes: new Uint8Array([60, 104, 62]), fidelity: 'static' as const };
+    });
+    h.core.serve('design.info', (params) => {
+      asked.push(params);
+      return undefined;
+    });
+    expect(await client.main.request('design.read', { designId: open.designId, relPath: 'manifest.json' })).toEqual({ bytes: new Uint8Array([60, 104, 62]), fidelity: 'static' });
+    expect(await client.main.request('design.info', { designId: open.designId, relPath: 'screens/S1.html' })).toBeUndefined();
+    expect(asked).toEqual([{ designId: open.designId, relPath: 'manifest.json' }, { designId: open.designId, relPath: 'screens/S1.html' }]);
+    expect(CORE_REQUEST_ROUTES['design.openPreview']).toMatchObject({ to: 'chatClient', needs: 'design.openPreview' });
+    expect(MAIN_REQUEST_ROUTES['design.read']).toBe('core');
+    expect(MAIN_REQUEST_ROUTES['design.info']).toBe('core');
+  });
+
+  it('send design.changed only to the clients whose attach listed it', async () => {
+    const h = setUp();
+    const older = h.client('c-old', { features: RENDER_FEATURES });
+    const client = h.client('c1', { features: DESIGN_FEATURES });
+    const changed: Array<[string, unknown]> = [];
+    older.main.onEvent('design.changed', (event) => changed.push(['c-old', event]));
+    client.main.onEvent('design.changed', (event) => changed.push(['c1', event]));
+    h.core.emit('design.changed', { designId: 'contacts-1a2b3c4d', paths: ['screens/S1.html'] });
+    await flush();
+    expect(changed).toEqual([['c1', { designId: 'contacts-1a2b3c4d', paths: ['screens/S1.html'] }]]);
+    expect(older.close).not.toHaveBeenCalled();
+  });
+
+  it('name only features the app has in every route\'s needs', () => {
+    const needs = [...Object.values(CORE_REQUEST_ROUTES), ...Object.values(CORE_EVENT_ROUTES)].flatMap((route) => (typeof route === 'object' && 'needs' in route && route.needs !== undefined ? [route.needs] : []));
+    expect(needs.length).toBeGreaterThan(0);
+    for (const name of needs) expect(FEATURES).toContain(name);
+  });
+
+  it('pass design.markup from a client to its core, which writes the markup into its own design folder', async () => {
+    const h = setUp();
+    const client = h.client('c1');
+    const asked: unknown[] = [];
+    h.core.serve('design.markup', (params) => {
+      asked.push(params);
+      return { feedbackId: 'F1' };
+    });
+    const request = { panelId: 'panel-1', png: 'iVBORw0KGgo=', json: { file: 'screens/S1.html', marks: [] } };
+    expect(await client.main.request('design.markup', request)).toEqual({ feedbackId: 'F1' });
+    expect(asked).toEqual([request]);
+    expect(MAIN_REQUEST_ROUTES['design.markup']).toBe('core');
+  });
+
+  it('pass design.tweak from a client to its core, which sends the kept tweak in its own design chat', async () => {
+    const h = setUp();
+    const client = h.client('c1');
+    const asked: unknown[] = [];
+    h.core.serve('design.tweak', (params) => {
+      asked.push(params);
+      return { kept: true as const };
+    });
+    const request = { panelId: 'panel-1', tweakId: 'radius', value: '--radius-lg' };
+    expect(await client.main.request('design.tweak', request)).toEqual({ kept: true });
+    expect(asked).toEqual([request]);
+    expect(MAIN_REQUEST_ROUTES['design.tweak']).toBe('core');
+  });
+
+  it('send design.capture and design.probe to a client that lists them, the acting one or another, refusing with the exact text otherwise', async () => {
+    const h = setUp();
+    const capture = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 2 };
+    const probe = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390, 640], state: null, sweepTo: 1536 };
+    const refusal = 'No Damocles app is attached to render this design.';
+    await expect(h.core.request('design.capture', capture)).rejects.toThrow(refusal);
+    await expect(h.core.request('design.probe', probe)).rejects.toThrow(refusal);
+    // an app that predates design renders lists neither and is never asked
+    const older = h.client('c-old');
+    let asked = 0;
+    older.main.serve('design.capture', () => {
+      asked++;
+      throw new Error('asked');
+    });
+    older.main.serve('design.probe', () => {
+      asked++;
+      throw new Error('asked');
+    });
+    await expect(h.core.request('design.capture', capture)).rejects.toThrow(refusal);
+    expect(asked).toBe(0);
+    const client = h.client('c1', { features: RENDER_FEATURES });
+    // the older app acts last; the render still goes to the attached app that can render
+    await older.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    const png = new Uint8Array([137, 80, 78, 71]);
+    const signals: AbortSignal[] = [];
+    client.main.serve('design.capture', (params, signal) => {
+      signals.push(signal);
+      return { png, cssWidth: params.width, cssHeight: 900, contentHeight: 1200, scale: 2 };
+    });
+    client.main.serve('design.probe', ({ widths, sweepTo }) => ({ widths: widths.map((width) => ({ width, contentHeight: 1200, scrollWidth: width, clientWidth: width, overflow: false, overflowing: [], elements: [] })), consoleErrors: [], sweep: { from: 320, to: sweepTo!, step: 8, overflowAt: [] } }));
+    expect(await h.core.request('design.capture', capture)).toEqual({ png, cssWidth: 390, cssHeight: 900, contentHeight: 1200, scale: 2 });
+    expect((await h.core.request('design.probe', probe)).widths.map((measured) => measured.width)).toEqual([390, 640]);
+    expect(asked).toBe(0);
+    expect(CORE_REQUEST_ROUTES['design.capture']).toMatchObject({ to: 'client', needs: 'design.capture' });
+    expect(CORE_REQUEST_ROUTES['design.probe']).toMatchObject({ to: 'client', needs: 'design.probe' });
+  });
+
+  it('send design.journey to a client that lists it and design.replayJourney to one that also shows the chat, refusing with the render text otherwise', async () => {
+    const h = setUp();
+    h.core.serve('chats.restore', () => undefined);
+    const step = { action: 'click' as const, target: { role: 'button', name: 'Add contact' } };
+    const shown = { action: 'assert' as const, target: { role: 'dialog', name: 'New contact' }, expect: { visible: true } };
+    const journey = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390, 1280], state: null, steps: [step, shown], outline: false };
+    const replay = { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', state: null, steps: [step, shown], reducedMotion: true };
+    const refusal = 'No Damocles app is attached to render this design.';
+    await expect(h.core.request('design.journey', journey)).rejects.toThrow(refusal);
+    await expect(h.core.request('design.replayJourney', replay)).rejects.toThrow(refusal);
+    // an app that renders designs but predates journeys would close the channel on the request's name, so it is never asked
+    const older = h.client('c-old', { features: RENDER_FEATURES });
+    let asked = 0;
+    older.main.serve('design.journey', () => {
+      asked++;
+      throw new Error('asked');
+    });
+    await expect(h.core.request('design.journey', journey)).rejects.toThrow(refusal);
+    await expect(h.core.request('design.replayJourney', replay)).rejects.toThrow(refusal);
+    expect(asked).toBe(0);
+    older.detach();
+    const client = h.client('c1', { features: DESIGN_FEATURES });
+    const replayed: unknown[] = [];
+    client.main.serve('design.journey', ({ widths, steps }) => ({ widths: widths.map((width) => ({ width, passed: true, steps: steps.map(() => ({ ok: true })) })), consoleErrors: [] }));
+    client.main.serve('design.replayJourney', (params) => {
+      replayed.push(params);
+    });
+    expect((await h.core.request('design.journey', journey)).widths.map((width) => [width.width, width.passed])).toEqual([[390, true], [1280, true]]);
+    // a replay drives the chat's own preview tab, which only a client showing the chat has
+    await expect(h.core.request('design.replayJourney', replay)).rejects.toThrow(refusal);
+    await client.main.request('chats.restore', { viewId: 'view-1' });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    await h.core.request('design.replayJourney', replay);
+    expect(replayed).toEqual([replay]);
+    expect(CORE_REQUEST_ROUTES['design.journey']).toMatchObject({ to: 'client', needs: 'design.journey' });
+    expect(CORE_REQUEST_ROUTES['design.replayJourney']).toMatchObject({ to: 'chatClient', needs: 'design.replayJourney' });
+  });
+
+  it('end the capture of a client when core cancels it, so Stop in the design chat ends a running capture', async () => {
+    const h = setUp();
+    const client = h.client('c1', { features: RENDER_FEATURES });
+    let ended: unknown;
+    client.main.serve('design.capture', (_params, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        ended = signal.reason;
+        reject(new Error('stopped'));
+      });
+    }));
+    const stop = new AbortController();
+    const running = h.core.request('design.capture', { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 2 }, stop.signal);
+    await flush();
+    stop.abort();
+    await expect(running).rejects.toThrow();
+    await vi.waitFor(() => expect(ended).toBeDefined());
   });
 
   it('read editor.readText with no client only inside an open project', async () => {
@@ -244,7 +437,7 @@ describe('core routes', () => {
 
   it('keep core\'s secrets in the acting client\'s namespace for the host, and refuse provider keys', async () => {
     const h = setUp();
-    const client = h.client('c1', 'host-a');
+    const client = h.client('c1', { hostId: 'host-a' });
     const store = new Map<string, string>([['remote/host-a/mcp.token', 'secret'], ['remote/other/x', 'y'], ['remote/host-a/damocles.openai.apiKey', 'sk-client']]);
     client.main.serve('secrets.get', ({ key }) => store.get(key));
     client.main.serve('secrets.store', ({ key, value }) => { store.set(key, value); });
@@ -295,7 +488,7 @@ describe('core routes', () => {
 
   it('give every client the held memory queues, a fresh one the last list, and take or discard a queue as the asking client', async () => {
     const h = setUp();
-    const first = h.client('connection-1', 'h1', undefined, 'device-a');
+    const first = h.client('connection-1', { clientId: 'device-a' });
     const queues = [{ queueId: 'device-old', count: 3, lastSeen: 1_700_000_000_000 }];
     const firstSeen: unknown[] = [];
     first.main.onMirror('heldMemory', (patch) => firstSeen.push(patch));
@@ -477,7 +670,7 @@ describe('core routes', () => {
   it('answer views.drained once the viewing client\'s core channel drained, and at once for a view no client shows', async () => {
     const h = setUp();
     let release!: () => void;
-    h.client('c1', 'h1', () => new Promise<void>((resolve) => (release = resolve)));
+    h.client('c1', { drained: () => new Promise<void>((resolve) => (release = resolve)) });
     h.core.postPanel('view-1', 'create', { kind: 'chat', title: 'Replay', localResourceRoots: [] });
     await expect(h.core.request('views.drained', { viewId: 'view-9' })).resolves.toBeUndefined();
     let answered = false;
@@ -507,8 +700,8 @@ describe('core routes', () => {
 
   it('give a run to the client whose work started it, else to the acting client', async () => {
     const h = setUp();
-    h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
-    h.client('connection-2', 'h1', () => Promise.resolve(), 'device-b');
+    h.client('connection-1', { clientId: 'device-a' });
+    h.client('connection-2', { clientId: 'device-b' });
     const running = { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } as const;
     processActor.run('device-a', () => h.core.emit('chat.activity', { panelId: 'panel-1', activity: running }));
     h.core.emit('chat.activity', { panelId: 'panel-2', activity: running });
@@ -692,18 +885,18 @@ describe('a client the wire refuses a message for', () => {
 
 describe('several clients', () => {
   // client a shows panel-1 in view-1 (its page holds token-1); client b joins it by its stored session
-  async function shared(h: Harness, drainedB?: () => Promise<void>) {
+  async function shared(h: Harness, drainedB?: () => Promise<void>, features?: readonly string[]) {
     h.core.serve('chats.restore', () => undefined);
     const joins: Array<Record<string, unknown>> = [];
     h.core.serve('views.join', (params) => {
       joins.push(params);
       return { panelId: 'panel-1' };
     });
-    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const a = h.client('connection-1', { clientId: 'device-a', features });
     await a.main.request('chats.restore', { viewId: 'view-1' });
     a.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
     h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
-    const b = h.client('connection-2', 'h1', drainedB, 'device-b');
+    const b = h.client('connection-2', { drained: drainedB, clientId: 'device-b', features });
     expect(await b.main.request('views.join', { viewId: 'view-b', viewKey: 'token-of-b', sessionId: 'S1' })).toEqual({ panelId: 'panel-1' });
     const keyOfB = joins[0]!['joining'] as string;
     return { a, b, joins, keyOfB };
@@ -717,6 +910,61 @@ describe('several clients', () => {
     b.main.onMirror('chats', (patch) => chats.push(patch));
     h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
     expect(chats).toEqual([{ panelId: 'panel-1', entry: { ...entry('panel-1', 'view-1'), viewId: 'view-b' } }]);
+  });
+
+  it('send design.openPreview and design.replayJourney to a client that shows the chat, the actor\'s first, never to one that does not', async () => {
+    const h = setUp();
+    const { a, b } = await shared(h, undefined, DESIGN_FEATURES);
+    const other = h.client('connection-3', { clientId: 'device-c', features: DESIGN_FEATURES });
+    const asked: string[] = [];
+    for (const [name, client] of [['a', a], ['b', b], ['c', other]] as const) {
+      client.main.serve('design.openPreview', () => {
+        asked.push(`open ${name}`);
+      });
+      client.main.serve('design.replayJourney', () => {
+        asked.push(`replay ${name}`);
+      });
+    }
+    const open = { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' };
+    const step = { action: 'click' as const, target: { role: 'button', name: 'Add contact' } };
+    const shown = { action: 'assert' as const, target: { role: 'dialog', name: 'New contact' }, expect: { visible: true } };
+    const replay = { ...open, state: null, steps: [step, shown], reducedMotion: true };
+    // device c acts last but shows no view of the chat
+    await other.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    await h.core.request('design.openPreview', open);
+    await h.core.request('design.replayJourney', replay);
+    // device b shows it under its own view and acts
+    await b.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    await h.core.request('design.openPreview', open);
+    await h.core.request('design.replayJourney', replay);
+    expect(asked).toEqual(['open a', 'replay a', 'open b', 'replay b']);
+  });
+
+  it('name a new panel\'s parent by the view the acting client shows it under, and drop a parent that client does not show', async () => {
+    const h = setUp();
+    const { a, b } = await shared(h);
+    const created: Array<[string, string, unknown]> = [];
+    a.main.onPanel((viewId, envelope) => {
+      if (envelope.op === 'create') created.push(['a', viewId, envelope.payload]);
+    });
+    b.main.onPanel((viewId, envelope) => {
+      if (envelope.op === 'create') created.push(['b', viewId, envelope.payload]);
+    });
+    const create = { kind: 'chat' as const, title: 'Design · Contacts', localResourceRoots: [], parent: 'view-1' };
+    // device b rejoined the parent chat under its own view id, and its StartDesign opens the design chat
+    await b.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    h.core.postPanel('view-design-1', 'create', create);
+    // a device that does not show the parent acts next
+    const c = h.client('connection-3', { clientId: 'device-c' });
+    c.main.onPanel((viewId, envelope) => {
+      if (envelope.op === 'create') created.push(['c', viewId, envelope.payload]);
+    });
+    h.core.postPanel('view-design-2', 'create', create);
+    await flush();
+    expect(created).toEqual([
+      ['b', 'view-design-1', { ...create, parent: 'view-b' }],
+      ['c', 'view-design-2', { kind: 'chat', title: 'Design · Contacts', localResourceRoots: [] }],
+    ]);
   });
 
   it('fan panel ops out to every view, a keyed post to that view alone and an except post to the others', async () => {
@@ -769,7 +1017,7 @@ describe('several clients', () => {
       if (envelope.op === 'disposed') ops.push([viewId, envelope.op, envelope.payload]);
     });
     b.main.postPanel('view-b', 'disposed', { reason: 'user' });
-    const c = h.client('connection-3', 'h1', () => Promise.resolve(), 'device-c');
+    const c = h.client('connection-3', { clientId: 'device-c' });
     expect(await c.main.request('views.join', { viewId: 'view-c', viewKey: 'token-1' })).toEqual({ panelId: 'panel-1' });
     a.detach();
     expect(ops).toEqual([]);
@@ -892,7 +1140,7 @@ describe('several clients', () => {
 describe('a client inside its reconnection grace', () => {
   it('is absent for a credential ask, and answers again once it resumed', async () => {
     const h = setUp();
-    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const a = h.client('connection-1', { clientId: 'device-a' });
     a.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-a' }));
     a.lose();
     await expect(h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' })).rejects.toThrow('credential-client-absent');
@@ -902,7 +1150,7 @@ describe('a client inside its reconnection grace', () => {
 
   it('makes a credential ask it was answering fail as absent the moment it is lost', async () => {
     const h = setUp();
-    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const a = h.client('connection-1', { clientId: 'device-a' });
     let asked!: () => void;
     const pending = new Promise<void>((resolve) => (asked = resolve));
     a.main.serve('user.credentials', async () => {
@@ -919,7 +1167,7 @@ describe('a client inside its reconnection grace', () => {
     const h = setUp();
     const auth: unknown[] = [];
     h.core.onMirror('clientAuth', (patch) => auth.push(patch));
-    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const a = h.client('connection-1', { clientId: 'device-a' });
     await flush();
     auth.length = 0;
     a.lose();
@@ -935,11 +1183,11 @@ describe('a client inside its reconnection grace', () => {
     const { b } = await (async () => {
       h.core.serve('chats.restore', () => undefined);
       h.core.serve('views.join', () => ({ panelId: 'panel-1' }));
-      const first = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+      const first = h.client('connection-1', { clientId: 'device-a' });
       await first.main.request('chats.restore', { viewId: 'view-1' });
       first.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
       h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
-      const second = h.client('connection-2', 'h1', () => new Promise<void>(() => undefined), 'device-b');
+      const second = h.client('connection-2', { drained: () => new Promise<void>(() => undefined), clientId: 'device-b' });
       await second.main.request('views.join', { viewId: 'view-b', viewKey: 'token-1' });
       return { b: second };
     })();
@@ -962,11 +1210,11 @@ describe('a client inside its reconnection grace', () => {
       joins.push(params);
       return { panelId: 'panel-1' };
     });
-    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const a = h.client('connection-1', { clientId: 'device-a' });
     await a.main.request('chats.restore', { viewId: 'view-1' });
     a.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
     h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
-    const b = h.client('connection-2', 'h1', () => new Promise<void>(() => undefined), 'device-b');
+    const b = h.client('connection-2', { drained: () => new Promise<void>(() => undefined), clientId: 'device-b' });
     await b.main.request('views.join', { viewId: 'view-b', viewKey: 'token-1' });
     const keyOfB = joins[0]!['joining'] as string;
     let answered = false;
@@ -980,8 +1228,8 @@ describe('a client inside its reconnection grace', () => {
 
   it('is left out of the clientAuth and actingClient mirrors a restarted core starts from, and back in them on its resume', async () => {
     const h = setUp();
-    const b = h.client('connection-2', 'h1', () => Promise.resolve(), 'device-b');
-    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const b = h.client('connection-2', { clientId: 'device-b' });
+    const a = h.client('connection-1', { clientId: 'device-a' });
     await flush();
     expect(h.mirrors.actingClient).toEqual({ clientId: 'device-a' });
     a.lose();
@@ -1039,8 +1287,8 @@ describe('the actor of core\'s work', () => {
 
   it('keeps core\'s secrets in the namespace of the client whose work stores them, not the acting client\'s', async () => {
     const h = setUp();
-    const a = h.client('c1', 'host-a');
-    const b = h.client('c2', 'host-b');
+    const a = h.client('c1', { hostId: 'host-a' });
+    const b = h.client('c2', { hostId: 'host-b' });
     const stored: string[] = [];
     a.main.serve('secrets.store', ({ key }) => { stored.push(`a:${key}`); });
     b.main.serve('secrets.store', ({ key }) => { stored.push(`b:${key}`); });
@@ -1054,11 +1302,11 @@ describe('a device that attaches again', () => {
     const h = setUp();
     const auth: unknown[] = [];
     h.core.onMirror('clientAuth', (patch) => auth.push(patch));
-    const old = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const old = h.client('connection-1', { clientId: 'device-a' });
     old.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-old' }));
-    const other = h.client('connection-2', 'h1', () => Promise.resolve(), 'device-b');
+    const other = h.client('connection-2', { clientId: 'device-b' });
     other.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-b' }));
-    const fresh = h.client('connection-3', 'h1', () => Promise.resolve(), 'device-a');
+    const fresh = h.client('connection-3', { clientId: 'device-a' });
     fresh.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-new' }));
     expect(await h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' })).toEqual({ type: 'api_key', key: 'from-new' });
     auth.length = 0;
@@ -1072,7 +1320,7 @@ describe('a device that attaches again', () => {
 
   it('makes a credential ask whose client went away while it answered fail as the client being absent', async () => {
     const h = setUp();
-    const client = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    const client = h.client('connection-1', { clientId: 'device-a' });
     let asked!: () => void;
     const pending = new Promise<void>((resolve) => (asked = resolve));
     client.main.serve('user.credentials', async () => {

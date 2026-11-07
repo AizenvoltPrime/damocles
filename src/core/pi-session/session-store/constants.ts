@@ -84,6 +84,24 @@ export const DAMOCLES_AGENT_LAUNCH_ENTRY = 'damocles-agent-launch';
 export const DAMOCLES_CREDENTIAL_SOURCE_ENTRY = 'damocles-credential-source';
 /** Where a chat works (AD12): `{ worktreeId, projectPath, place }`; the latest decides the folder a resume binds to. */
 export const DAMOCLES_WORKTREE_ENTRY = 'damocles.worktree';
+/** A design chat's role (PD-23): `{ v: 1, designId, folder, parentSessionId | null, ruleSet, title }`; the latest one on the branch decides. */
+export const DAMOCLES_DESIGN_ENTRY = 'damocles.design';
+/** A parent's link to its design (PD-23): `{ v: 1, designId, folder, parentSessionId, title }`; inert unless `parentSessionId` is the session's own id. */
+export const DAMOCLES_DESIGN_LINK_ENTRY = 'damocles.design-link';
+/** Parent custom message (display): a delivered design version, `DesignResultView` details; one per `(designId, version)` per branch. */
+export const DAMOCLES_DESIGN_RESULT = 'damocles-design-result';
+/** Design chat custom message (display): a brief from the parent, `DesignBriefView` details; one per `briefId` per branch. */
+export const DAMOCLES_DESIGN_BRIEF = 'damocles-design-brief';
+/** Parent custom entry (hidden): the version pause's answer (PD-29), `{ v: 1, designId, fromVersion, toVersion, choice }`; one per `(designId, toVersion)` per branch. */
+export const DAMOCLES_DESIGN_VERSION_CHOICE = 'damocles-design-version-choice';
+/** Design chat custom entry (hidden): `{ userEntryId, feedbackId }`, the user message a preview's markup was sent as (PD-12). */
+export const DAMOCLES_DESIGN_MARKUP_ENTRY = 'damocles.design-markup';
+/** Design chat custom entry (hidden): `{ userEntryId, references: [{ id, image, imageIndex }] }`, the user message's images saved as references (PD-40). */
+export const DAMOCLES_DESIGN_REFERENCES_ENTRY = 'damocles.design-references';
+/** Design chat custom entry (hidden): `{ userEntryId, toolCallId, tweakId, label, property, value }`, a tweak the user kept (PD-13); RecordDecision reads the latest per tweak. */
+export const DAMOCLES_DESIGN_TWEAK_KEPT = 'damocles-design-tweak-kept';
+/** Parent custom message (hidden): the model's instruction for the version pause's answer, sent after its choice entry. */
+export const DAMOCLES_DESIGN_VERSION_INSTRUCTION = 'damocles-design-version-instruction';
 
 /** Agent-file custom entry: a resume starts here; later messages render on that resume call's card. */
 export const DAMOCLES_AGENT_SEGMENT_ENTRY = 'damocles-agent-segment';

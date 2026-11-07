@@ -1,0 +1,18 @@
+{
+  "screen": "screens/S1-contacts.html",
+  "state": "default",
+  "untested": ["Saving a contact", "Deleting a contact", "Search with no results"],
+  "steps": [
+    { "action": "fill", "target": { "placeholder": "Search contacts" }, "value": "Grace" },
+    { "action": "assert", "target": { "role": "list", "name": "Contacts" }, "expect": { "textContains": "Grace Hopper" } },
+    { "action": "click", "target": { "role": "button", "name": "Add contact" } },
+    { "action": "assert", "target": { "role": "dialog", "name": "New contact" }, "expect": { "visible": true } },
+    { "action": "fill", "target": { "label": "Name" }, "value": "Ada Lovelace" },
+    { "action": "assert", "target": { "label": "Name" }, "expect": { "valueEquals": "Ada Lovelace" } },
+    { "action": "select", "target": { "label": "Group" }, "value": "work" },
+    { "action": "assert", "target": { "label": "Group" }, "expect": { "valueEquals": "work" } },
+    { "action": "press", "target": { "label": "Name" }, "key": "Escape" },
+    { "action": "assert", "target": { "role": "dialog", "name": "New contact" }, "expect": { "visible": false } },
+    { "action": "assert", "target": { "text": "Grace Hopper" }, "expect": { "visible": true } }
+  ]
+}

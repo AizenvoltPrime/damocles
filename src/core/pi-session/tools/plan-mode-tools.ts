@@ -7,14 +7,15 @@ import { buildPlanModeGuidance } from '../plan-mode-guidance';
 import { isWebSearchEnabled } from '../web-access';
 import { TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE } from '../../../shared/tool-names';
 import { PLAN_VERSION_DETAIL_KEY } from '../../../shared/types/session';
+import { DESIGN_VERSION_DETAIL_KEY, type DesignVersionStamp } from '../../../shared/types/design';
 import { planVersionOnBranch } from '../plan-version';
+import { designVersionStamp, planApprovalDesignLink } from '../../design/design-entries';
 
 const enterPlanSchema = Type.Object({}, { additionalProperties: false });
 const exitPlanSchema = Type.Object({}, { additionalProperties: false });
 
-// null: the call showed the user no plan, so it is no plan version.
-type ExitPlanModeDetails = { [PLAN_VERSION_DETAIL_KEY]: number | null };
-const NO_PLAN_VERSION: ExitPlanModeDetails = { [PLAN_VERSION_DETAIL_KEY]: null };
+// Plan version null: the call showed the user no plan. Design version null: the chat has no own link with a delivered version.
+type ExitPlanModeDetails = { [PLAN_VERSION_DETAIL_KEY]: number | null; [DESIGN_VERSION_DETAIL_KEY]: DesignVersionStamp | null };
 
 /**
  * Build the `EnterPlanMode`/`ExitPlanMode` tools. Per the tool-interaction ownership split (US-004),
@@ -68,23 +69,28 @@ export function createPlanModeTools(
     // The plan file a call batched before it writes must exist when it reads the plan.
     executionMode: 'sequential',
     execute: async (toolCallId, _params, signal, _onUpdate, ctx) => {
-      const planVersion = planVersionOnBranch(ctx.sessionManager.getBranch(), toolCallId);
-      // Recorded on every outcome, so a reload shows the number the call was stamped with.
-      const details: ExitPlanModeDetails = { [PLAN_VERSION_DETAIL_KEY]: planVersion };
+      const branch = ctx.sessionManager.getBranch();
+      const sessionId = ctx.sessionManager.getSessionId();
+      const planVersion = planVersionOnBranch(branch, toolCallId);
+      // Both recorded on every outcome, so a reload shows what the call was stamped with; the design version is what an approval records (PD-16).
+      const designVersion = designVersionStamp(branch, sessionId);
+      const details: ExitPlanModeDetails = { [PLAN_VERSION_DETAIL_KEY]: planVersion, [DESIGN_VERSION_DETAIL_KEY]: designVersion };
+      const notShown: ExitPlanModeDetails = { ...details, [PLAN_VERSION_DETAIL_KEY]: null };
       if (permissionHandler.turnPermissionMode() !== 'plan') {
-        return { content: [{ type: 'text', text: 'Not in plan mode; proceeding.' }], details: NO_PLAN_VERSION };
+        return { content: [{ type: 'text', text: 'Not in plan mode; proceeding.' }], details: notShown };
       }
+      const designLink = planApprovalDesignLink(branch, sessionId);
       const result = await permissionHandler.canUseTool(
         TOOL_EXIT_PLAN_MODE,
         {},
-        { ...buildCanUseToolContext(toolCallId, signal), planVersion },
+        { ...buildCanUseToolContext(toolCallId, signal), planVersion, ...(designLink ? { designLink } : {}) },
       );
       if (result.behavior === 'deny') {
         // A rejected plan is an error result, which the webview renders as the "denied" card instead of a
         // green "completed" over the optimistic denied state; the marker keeps it "denied", not "failed".
         // Returned rather than thrown, because a thrown error's result drops `details`.
         const text = result.policy ? formatPolicyBlockReason(result.message) : formatDenyReason(result.message);
-        return { content: [{ type: 'text', text }], details: result.planShown ? details : NO_PLAN_VERSION, isError: true };
+        return { content: [{ type: 'text', text }], details: result.planShown ? details : notShown, isError: true };
       }
       const text = result.editedPlan === undefined
         ? 'Plan approved. Proceeding with implementation.'

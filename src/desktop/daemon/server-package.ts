@@ -1,12 +1,12 @@
 import * as path from 'node:path';
 
-// scripts/build-server.mjs replaces this module's source with `true` when it bundles a server package; the dev tree's
-// daemon (dist/daemon.js from esbuild.config.mjs) keeps `false`.
+// scripts/build-server.ts replaces this module's source with `true` when it bundles a server package; the dev tree's
+// daemon (dist/daemon.js from esbuild.config.ts) keeps `false`.
 export const SERVER_PACKAGE: boolean = false;
 
 /**
  * The folder holding the terminals' remote-cli and helpers: a server package's bin/, or in a checkout the dist/server-bin
- * the desktop build writes (esbuild.config.mjs writeCheckoutServerBin), whose scripts run this checkout's dist/cli-remote.js.
+ * the desktop build writes (esbuild.config.ts writeCheckoutServerBin), whose scripts run this checkout's dist/cli-remote.js.
  */
 export function terminalBinFolder(root: string, serverPackage: boolean = SERVER_PACKAGE): string {
   return serverPackage ? path.join(root, 'bin') : path.join(root, 'dist', 'server-bin');

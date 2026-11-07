@@ -1,4 +1,4 @@
-// esbuild's text loader (esbuild.config.mjs desktopMainOptions) and vitest's stage-script-text plugin import these as text.
+// esbuild's text loader (esbuild.config.ts desktopMainOptions) and vitest's stage-script-text plugin import these as text.
 declare module '*.sh' {
   const text: string;
   export default text;

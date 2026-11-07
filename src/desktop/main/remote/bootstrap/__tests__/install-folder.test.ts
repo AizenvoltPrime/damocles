@@ -8,7 +8,7 @@ import { buildPosixStage1, buildWindowsStage1 } from '../stage1';
 import WINDOWS_STAGE1 from '../stage1-windows.ps1';
 import { powerShell, runPowerShell, runSh, scratchDir, shellPath, stageMessages, withPosixDefinitions, withWindowsDefinitions } from './shells';
 
-// pinned as scripts/server-targets.mjs ALPINE_TARGET_IMAGE pins it
+// pinned as scripts/server-targets.ts ALPINE_TARGET_IMAGE pins it
 const ALPINE = 'alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a';
 
 const ago = (file: string, minutes: number): void => {

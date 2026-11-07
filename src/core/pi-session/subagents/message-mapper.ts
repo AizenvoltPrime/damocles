@@ -10,6 +10,8 @@
 
 import type { HistoryAgentContentBlock, HistoryAgentMessage } from '../../../shared/types/content';
 import { mapPiToolName, normalizeToolDetails, normalizeToolInput } from '../tool-normalization';
+import { TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
+import { persistedQuestionInput } from '../../../shared/question-preview';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
 import { nestedCallError, nestedCallFailure } from '../nested-call-failures';
@@ -125,11 +127,13 @@ export function piMessagesToHistoryAgentMessages(
         const unexecuted = stoppedToolCallIds.has(block.id) && recorded?.durationMs === undefined;
         const result = unexecuted ? undefined : recorded;
         const reason = unexecuted ? 'stopped' : abandoned;
+        const name = mapPiToolName(block.name);
+        const input = normalizeToolInput(block.name, block.arguments ?? {});
         const toolUse: Extract<HistoryAgentContentBlock, { type: 'tool_use' }> = {
           type: 'tool_use',
           id: block.id,
-          name: mapPiToolName(block.name),
-          input: normalizeToolInput(block.name, block.arguments ?? {}),
+          name,
+          input: name === TOOL_ASK_USER_QUESTION ? persistedQuestionInput(input) : input,
           ...(result !== undefined ? { result: result.text } : {}),
           ...(result?.isError ? { isError: true } : {}),
           ...(result && result.imageCount > 0 ? { imageCount: result.imageCount } : {}),

@@ -11,7 +11,7 @@ import type { ClaudeAuthStatus } from './subscription';
 
 export type AnthropicStreamSimple = NonNullable<ProviderConfig['streamSimple']>;
 
-/** Where a package's core finds the bundled plugin: `dist/subscription-plugin` (PLUGIN_DIR in scripts/subscription-plugin.mjs). */
+/** Where a package's core finds the bundled plugin: `dist/subscription-plugin` (PLUGIN_DIR in scripts/subscription-plugin.ts). */
 export function subscriptionPluginDir(resourceRoot: string): string {
   return path.join(resourceRoot, 'dist', 'subscription-plugin');
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { installFakePlatform } from "../../../../__mocks__/fake-platform";
-import tarballChecksums from "../tarball-checksums.json";
+import tarballChecksums from "../tarball-checksums.json" with { type: "json" };
 import { englishText } from "../../../../shared/localized-text";
 import {
   UnsupportedPlatformError,

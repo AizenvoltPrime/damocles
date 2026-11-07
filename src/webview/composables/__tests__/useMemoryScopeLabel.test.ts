@@ -4,7 +4,7 @@ import { defineComponent, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import { i18n, applyLocale } from '@/i18n';
-import en from '../../i18n/locales/en.json';
+import en from '../../i18n/locales/en.json' with { type: 'json' };
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import { GLOBAL_SERVER_VARIANTS, memoryScopeKey, memorySavedToastKey, useMemoryScopeLabel } from '../useMemoryScopeLabel';

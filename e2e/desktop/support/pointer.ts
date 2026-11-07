@@ -57,7 +57,7 @@ interface Cursor {
   set(point: Point): void;
 }
 
-const loadKoffi = (): typeof Koffi => createRequire(__filename)('koffi') as typeof Koffi;
+const loadKoffi = (): typeof Koffi => createRequire(import.meta.url)('koffi') as typeof Koffi;
 
 function bindWindows(koffi: typeof Koffi): Cursor {
   const user32 = koffi.load('user32.dll');

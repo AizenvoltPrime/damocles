@@ -7,7 +7,7 @@ import { closeRemoteResult, OverlayHost, parseCloseRemoteRequest, parseCloseRemo
 import { OVERLAY_PAGE_URL } from '../protocol';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
 import { DESKTOP_CONFIGURATION, REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING } from '../../local-services/desktop-configuration';
-import schema from '../../../shared/generated/settings-schema.json';
+import schema from '../../../shared/generated/settings-schema.json' with { type: 'json' };
 
 const ROW: CloseRemoteRow = { hostId: 'h1', panelId: 'p1', title: 'Rotate logs', projectLabel: 'api', hostLabel: 'prod-1', status: 'running' };
 

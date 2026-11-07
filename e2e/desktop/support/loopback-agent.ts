@@ -11,7 +11,7 @@ import { chatInput, clickMenu } from './ui';
 
 // What the loopback agent spec shares: the target's files, a stub the daemon's core may use, witnesses and scans.
 
-export const WITNESS = path.join(__dirname, 'process-witness.cjs');
+export const WITNESS = path.join(import.meta.dirname, 'process-witness.cjs');
 
 /** The daemon's ~/.damocles: its settings (machine scope), memory database, worktree registry and pi agent dir. */
 export const targetDamoclesDir = (home: HermeticHome): string => path.join(loopbackHome(home), '.damocles');

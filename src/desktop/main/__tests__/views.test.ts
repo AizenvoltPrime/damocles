@@ -169,7 +169,7 @@ describe('PanelViews pages', () => {
     const chat = open(tabs);
     chat.showPage({ kind: 'chat' });
     const first = tabs.htmlFor(chat.panelId);
-    expect(csp(first)).toBe("default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-NONCE' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: https:; form-action 'none'; worker-src app://damocles/webview/assets/;");
+    expect(csp(first)).toBe("default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-NONCE' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: blob: https:; form-action 'none'; worker-src app://damocles/webview/assets/;");
     expect(first).toContain('<html lang="el">');
     chat.showPage({ kind: 'chat' });
     expect(tabs.htmlFor(chat.panelId)).not.toBe(first);

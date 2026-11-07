@@ -15,6 +15,12 @@ import WorktreeDeletedCard from "./components/composer/WorktreeDeletedCard.vue";
 import MirroredChatCard from "./components/composer/MirroredChatCard.vue";
 import HeldMessageChips from "./components/composer/HeldMessageChips.vue";
 import ConnectionBanner from "./components/ConnectionBanner.vue";
+import DesignHeader from "./components/design/DesignHeader.vue";
+import DesignSupersededCard from "./components/design/DesignSupersededCard.vue";
+import DesignVersionPrompt from "./components/design/DesignVersionPrompt.vue";
+import DesignApprovalPrompt from "./components/design/DesignApprovalPrompt.vue";
+import { useDesignStore } from "./stores/useDesignStore";
+import { provideSendPrompt } from "./composables/useSendPrompt";
 import { useConnectionStore } from "./stores/useConnectionStore";
 import { chatOffline, useChatHost } from "./composables/useChatHost";
 import { useMcpPanelWrites } from "./composables/useMcpPanelWrites";
@@ -296,6 +302,7 @@ const messageContainerRef = ref<HTMLElement | null>(null);
 provide("messageScrollContainer", messageContainerRef);
 const messageListRef = ref<InstanceType<typeof VirtualizedMessageList> | null>(null);
 provideMessageListRef(messageListRef);
+const designStore = useDesignStore();
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 
 const navigatorStore = usePromptNavigatorStore();
@@ -492,7 +499,8 @@ const elicitationStore = useElicitationStore();
 const extensionUiStore = useExtensionUiStore();
 const hasPendingPrompt = computed(() => Boolean(
   currentPermission.value || pendingQuestion.value || pendingFormSchema.value || pendingSkillApproval.value
-  || permissionStore.pendingSignIns.length > 0 || elicitationStore.pendingElicitations.length > 0 || extensionUiStore.current,
+  || permissionStore.pendingSignIns.length > 0 || elicitationStore.pendingElicitations.length > 0 || extensionUiStore.current
+  || designStore.versionPrompts.length > 0 || designStore.approvalPrompts.length > 0,
 ));
 // On desktop a resuming chat's composer waits for core to say where the chat works, so the wrong one never shows.
 const composerAwaitsPlace = computed(() => uiStore.placePending && offline === undefined);
@@ -663,6 +671,10 @@ function handleOpenMcpPanel() {
 
 function handleSetMcpRemoteAvailable(serverName: string, available: boolean) {
   postMessage({ type: "mcpSetRemoteAvailable", serverName, available });
+}
+
+function focusComposer() {
+  void nextTick(() => chatInputRef.value?.focus());
 }
 
 // As VS Code's picker hands its pick to the chat, an attach closes the picker and the panel; the chip lands in the composer.
@@ -978,9 +990,10 @@ const statusOverride = computed(() => {
 });
 
 // A suggestion sends at once, as the reference's chips do, without touching the draft.
-function handleSuggestion(prompt: string) {
-  chatInputRef.value?.sendPrompt(prompt);
+function handleSuggestion(prompt: string): boolean {
+  return chatInputRef.value?.sendPrompt(prompt) ?? false;
 }
+provideSendPrompt(handleSuggestion);
 
 </script>
 
@@ -1011,6 +1024,10 @@ function handleSuggestion(prompt: string) {
         />
       </template>
     </ChatHeader>
+    <DesignHeader
+      v-if="designStore.design"
+      :design="designStore.design"
+    />
     <ConnectionBanner />
 
     <!-- The message area is the scroll-to-bottom button's positioning context. -->
@@ -1189,6 +1206,10 @@ function handleSuggestion(prompt: string) {
           <ElicitationPrompt />
 
           <SignInPrompt />
+
+          <DesignVersionPrompt />
+
+          <DesignApprovalPrompt @release-focus="focusComposer" />
         </div>
 
         <PlanReadyBanner />
@@ -1226,7 +1247,7 @@ function handleSuggestion(prompt: string) {
           :style="placeholderStyle"
           data-testid="composer-placeholder"
         />
-        <!-- Rule 18: a chat whose worktree was deleted is read-only; the card takes the composer's place. -->
+        <!-- Rule 18 and PD-36: a read-only chat's card takes the composer's place. -->
         <Transition
           v-else
           name="t-up"
@@ -1239,6 +1260,10 @@ function handleSuggestion(prompt: string) {
           <WorktreeDeletedCard
             v-else-if="uiStore.worktree?.phase === 'deleted'"
             @new-chat="postMessage({ type: 'worktreeAction', action: 'newChatInProject' })"
+          />
+          <DesignSupersededCard
+            v-else-if="designStore.design?.superseded"
+            :design-id="designStore.design.designId"
           />
           <ChatInput
             v-else
@@ -1429,6 +1454,8 @@ function handleSuggestion(prompt: string) {
       :not-rewindable="selectedRewindItem?.notRewindable"
       :crosses-hand-off="selectedRewindItem?.crossesHandOff"
       :checkpoint-id="selectedRewindItem?.messageId"
+      :design="designStore.design"
+      :design-decisions-after="selectedRewindItem?.designDecisionsAfter"
       :loading-metadata="rewindMetadataLoading"
       @confirm="handleTypeSelected"
       @cancel="uiStore.cancelTypeSelection"
@@ -1461,6 +1488,7 @@ function handleSuggestion(prompt: string) {
     <!-- Compaction rewind confirmation (shared by the boundary card and the rewind picker) -->
     <CompactionRewindConfirm
       :open="pendingCompactionRewindId !== null"
+      :design="designStore.design !== null"
       @confirm="confirmCompactionRewind"
       @cancel="cancelCompactionRewind"
     />
@@ -1524,6 +1552,7 @@ function handleSuggestion(prompt: string) {
       <PlanApprovalOverlay
         v-if="pendingPlanApproval && isPlanOverlayVisible"
         :plan-content="pendingPlanApproval.planContent"
+        :design-link="pendingPlanApproval.designLink"
         @approve="handlePlanApprove"
         @feedback="handlePlanFeedback"
         @dismiss="handlePlanDismiss"

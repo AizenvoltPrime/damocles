@@ -1,7 +1,7 @@
 import { createI18n } from 'vue-i18n';
 import type { ShellLocale } from '../preload/shell-channels';
 import { LOCALE_HOLD_BOUND_MS } from '../../shared/locale-hold';
-import en from './locales/en.json';
+import en from './locales/en.json' with { type: 'json' };
 
 export const shellI18n = createI18n({
   legacy: false,
@@ -12,7 +12,7 @@ export const shellI18n = createI18n({
 
 // English ships in the entry; any other language is its own lazy chunk.
 const LOADERS: Readonly<Record<Exclude<ShellLocale, 'en'>, () => Promise<typeof en>>> = {
-  el: () => import('./locales/el.json').then((catalog) => catalog.default),
+  el: () => import('./locales/el.json', { with: { type: 'json' } }).then((catalog) => catalog.default),
 };
 
 const loaded = new Set<ShellLocale>(['en']);

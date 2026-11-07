@@ -10,7 +10,8 @@ import { attachedTransport, createLoopback, type ChatEntry, type ChatPermissions
 import { createEndpoint } from '../../../core-protocol/endpoint';
 import { ERROR_CODEC } from '../../../core-protocol/errors';
 import { CORE_TO_MAIN, MAIN_TO_CORE } from '../../../core-protocol/messages';
-import type { CoreAttach, CoreState } from '../../../daemon/control-messages';
+import { CLIENT_TO_CONTROL, type CoreAttach, type CoreState } from '../../../daemon/control-messages';
+import { INVALID } from '../../../core-protocol/schema';
 import { createDesktopKeyValueState } from '../../../local-services/key-value-state';
 import type { RelayView } from '../../core-services/host-services';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
@@ -236,6 +237,22 @@ describe('RemoteCore', () => {
     expect(daemon.attaches[0]!.mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
     expect(daemon.attaches[0]!.mirrors.clientAuth).toEqual({ providers: {} });
     expect(core.epoch()).toBe(EPOCH_A);
+  });
+
+  // the daemon sends this app only the requests and events whose feature its attach lists (core-routes.ts needs), so an app
+  // whose attach lost them would never be asked to render, preview or replay a design
+  it("attaches with this app's own features, which the daemon's parser keeps whole, whatever the daemon's welcome lists", async () => {
+    for (const features of [FEATURES, FEATURES.filter((feature) => !feature.startsWith('design.'))]) {
+      const daemon = fakeDaemon(EPOCH_A, 'running', features);
+      const { core } = remote(daemon, EPOCH_A);
+      core.connected(daemon.connection);
+      await core.host.ready();
+      expect(daemon.attaches[0]!.features).toEqual(FEATURES);
+      const parsed = CLIENT_TO_CONTROL.requests.attachCore.params(structuredClone(daemon.attaches[0]!));
+      if (parsed === INVALID) throw new Error('the attach does not parse');
+      expect(parsed.features).toEqual(FEATURES);
+      expect(FEATURES).toEqual(expect.arrayContaining(['core.attachFeatures', 'design.capture', 'design.probe', 'design.journey', 'design.replayJourney', 'design.openPreview', 'design.changed']));
+    }
   });
 
   it('attaches to a daemon whose welcome does not list clientMcp without sending it a clientMcp mirror, then or on a change', async () => {

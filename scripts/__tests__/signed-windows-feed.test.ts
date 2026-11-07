@@ -2,8 +2,7 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain .mjs script, no types
-import { feedProblems, rewriteFeed } from '../signed-windows-feed.mjs';
+import { feedProblems, rewriteFeed } from '../signed-windows-feed.ts';
 
 const INSTALLER = 'Damocles-Setup-1.2.3-x64.exe';
 

@@ -1,5 +1,6 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { log } from '../logger';
+import { rewindableCheckpoints } from '../design/design-checkpoints';
 import { perfSpan } from '../perf';
 import type { SettingsStore } from '../../platform/settings-store';
 import {
@@ -43,7 +44,10 @@ export const RESTORE_WAIT_MS = 30_000;
 
 /** What the service needs from the owning `PiSession`. */
 export interface CheckpointHost {
+  /** The folder the checkpoints capture: the chat's working folder, or a design chat's design folder (PD-39). */
   cwd: string;
+  /** False for a folder that is no git project, as a design folder is. */
+  capturesTracked?: boolean;
   sessionId: string;
   /** A turn's checkpoint became available (just finalized, or pre-existing on resume). Idempotent. */
   onCheckpointReady(userEntryId: string): void;
@@ -131,6 +135,8 @@ export class CheckpointService {
   private turn: CurrentTurn | null = null;
   /** Every user entry this service started a turn for or found recorded; a turn is never started twice. */
   private readonly knownTurns = new Set<string>();
+  /** `awaitBaselineOf` callers whose turn has not started yet, by its user entry. */
+  private readonly turnWaiters = new Map<string, Array<() => void>>();
   private disposed = false;
   private readonly disposal = new AbortController();
 
@@ -174,6 +180,7 @@ export class CheckpointService {
       sessionId: this.host.sessionId,
       sessionFile,
       cwd: this.host.cwd,
+      ...(this.host.capturesTracked === false ? { capturesTracked: false } : {}),
       maxFileSizeBytes: () => this.host.maxFileSizeBytes(),
       createTurnId: () => `turn-${++this.turnCounter}`,
       now: () => new Date(),
@@ -209,6 +216,9 @@ export class CheckpointService {
       timeoutParams: {},
     };
     this.turn = turn;
+    const waiters = this.turnWaiters.get(userEntryId) ?? [];
+    this.turnWaiters.delete(userEntryId);
+    for (const started of waiters) started();
     turn.baseline = this.enqueue('baseline', async () => {
       const producer = await this.ensureProducer(sm);
       if (!producer) return;
@@ -294,6 +304,36 @@ export class CheckpointService {
     this.host.onBaselineTimeout(waitMs);
   }
 
+  /**
+   * `awaitBaseline` for the turn `userEntryId` opens, which a prompt pi queued as a follow-up opens only at its first assistant
+   * message. False when `signal` aborted or the service was disposed before that turn started; true once its wait ended, at
+   * once for a turn already past.
+   */
+  async awaitBaselineOf(userEntryId: string, signal: AbortSignal, toolName: string): Promise<boolean> {
+    if (!this.knownTurns.has(userEntryId)) {
+      const started = await new Promise<boolean>((resolve) => {
+        if (signal.aborted || this.disposed) return resolve(false);
+        const onStart = (): void => {
+          signal.removeEventListener('abort', onStop);
+          this.disposal.signal.removeEventListener('abort', onStop);
+          resolve(true);
+        };
+        const onStop = (): void => {
+          const waiting = this.turnWaiters.get(userEntryId)?.filter((waiter) => waiter !== onStart) ?? [];
+          if (waiting.length > 0) this.turnWaiters.set(userEntryId, waiting);
+          else this.turnWaiters.delete(userEntryId);
+          resolve(false);
+        };
+        signal.addEventListener('abort', onStop, { once: true });
+        this.disposal.signal.addEventListener('abort', onStop, { once: true });
+        this.turnWaiters.set(userEntryId, [...(this.turnWaiters.get(userEntryId) ?? []), onStart]);
+      });
+      if (!started) return false;
+    }
+    if (this.turn?.userEntryId === userEntryId) await this.awaitBaseline(signal, toolName);
+    return !signal.aborted && !this.disposed;
+  }
+
   /** The running turn's baseline (the producer's in-memory before-commit), once taken; undefined when none is usable. */
   pendingBaseline(): Promise<PendingBaseline | undefined> {
     return this.producer && !this.disposed ? this.producer.pendingBaseline() : Promise.resolve(undefined);
@@ -370,10 +410,8 @@ export class CheckpointService {
     try {
       const branch = sm.getBranch(sm.getLeafId() ?? undefined);
       for (const record of getNotRewindableEntries(branch)) this.knownTurns.add(record.userEntryId);
-      for (const cp of getCheckpointEntries(branch)) {
-        this.knownTurns.add(cp.userEntryId);
-        this.host.onCheckpointReady(cp.userEntryId);
-      }
+      for (const cp of getCheckpointEntries(branch)) this.knownTurns.add(cp.userEntryId);
+      for (const cp of rewindableCheckpoints(branch)) this.host.onCheckpointReady(cp.userEntryId);
     } catch (err) {
       log('[CheckpointService] hydrate failed: %O', err);
     }

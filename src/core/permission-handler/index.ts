@@ -10,13 +10,16 @@ import { PlanManager } from './managers/plan-manager';
 import { SkillManager } from './managers/skill-manager';
 import { EvaluatorManager } from './managers/evaluator-manager';
 import { ElicitationManager } from './managers/elicitation-manager';
+import { DesignVersionManager, type DesignVersionAsk } from './managers/design-version-manager';
+import { DesignApprovalManager, type DesignApprovalAsk } from './managers/design-approval-manager';
+import type { DesignApprovalChoice, DesignVersionChoice } from '../../shared/types/design';
 import type { ElicitationRequest, ElicitationResult } from '../../shared/types/elicitation';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
-import type { PermissionUpdate, PromptApprover, PromptOwner } from '../../shared/types/permissions';
+import type { PermissionUpdate, PromptApprover, PromptOwner, Question } from '../../shared/types/permissions';
 import { log } from '../logger';
 import { bypassAllowed, hostDefaultMode } from '../client-snapshots';
-import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions } from './types';
+import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions, MatchRuleOptions, DesignApprovalAnswer } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import type { McpResourceRuleFilter } from './mcp-resource-rule';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
@@ -36,8 +39,11 @@ export class PermissionHandler {
   private skillManager: SkillManager;
   private evaluatorManager: EvaluatorManager;
   private elicitationManager: ElicitationManager;
+  private designVersionManager: DesignVersionManager;
+  private designApprovalManager: DesignApprovalManager;
   private readonly platform: Platform;
   private onPlanModeActivated: (() => Promise<void>) | null = null;
+  private fixedMode: () => boolean = () => false;
   private onPermissionsChanged: (() => void) | null = null;
 
   // panelId is the chat panel this handler belongs to; proposal diffs are shown there on hosts that render editors in the panel.
@@ -71,6 +77,8 @@ export class PermissionHandler {
     );
     this.evaluatorManager = new EvaluatorManager(this.state, platform);
     this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
+    this.designVersionManager = new DesignVersionManager(this.state, getPostMessage);
+    this.designApprovalManager = new DesignApprovalManager(this.state, getPostMessage);
 
     // a daemon's core starts a new chat in the mode the acting client configured for this host, else the settings' default
     this.state.permissionMode = hostDefaultMode(platform) ?? platform.settings.get<PermissionMode>('damocles.permissionMode', 'default', settingsFolder);
@@ -251,8 +259,29 @@ export class PermissionHandler {
     this.onPlanModeActivated = callback;
   }
 
+  /** Fixes the chat's mode at default while `fixed` (a design chat, PD-25): no mode change and no plan mode. */
+  setModeFixed(fixed: () => boolean): void {
+    this.fixedMode = fixed;
+  }
+
+  /** The questions of the open AskUserQuestion prompt `toolUseId`, else undefined. */
+  openQuestions(toolUseId: string): readonly Question[] | undefined {
+    const request = this.state.pendingQuestions.get(toolUseId)?.request;
+    return request?.type === 'requestQuestion' ? request.questions : undefined;
+  }
+
+  /** The design folder of a design chat, whose questions take design-kind previews (PD-18); undefined for any other chat. */
+  setDesignQuestionFolder(folder: () => string | undefined): void {
+    this.questionManager.setDesignFolder(folder);
+  }
+
+  /** The chat's mode is fixed at default; a mode change is ignored. */
+  modeFixed(): boolean {
+    return this.fixedMode();
+  }
+
   async activatePlanMode(): Promise<void> {
-    if (this.state.permissionMode === 'plan') {
+    if (this.state.permissionMode === 'plan' || this.fixedMode()) {
       return;
     }
 
@@ -292,14 +321,19 @@ export class PermissionHandler {
     return this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath, mcpTool);
   }
 
-  /** The behavior of the settings rule the call matches, or null when none does or YOLO is on. */
-  async matchRule(toolName: string, input: Record<string, unknown>, mcpTool?: McpToolIdentity): Promise<'allow' | 'deny' | 'ask' | null> {
-    return this.evaluatorManager.matchRule(toolName, input, this.state.workspacePath, mcpTool);
+  /** The behavior of the settings rule the call matches, or null when none does or YOLO is on; `ignoreBypass` as `EvaluatorManager.matchRule`. */
+  async matchRule(toolName: string, input: Record<string, unknown>, mcpTool?: McpToolIdentity, options: MatchRuleOptions = {}): Promise<'allow' | 'deny' | 'ask' | null> {
+    return this.evaluatorManager.matchRule(toolName, input, this.state.workspacePath, mcpTool, options);
   }
 
-  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO. */
-  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null): 'allow' | 'deny' | 'ask' {
-    return this.evaluatorManager.decide(toolName, input, rule);
+  /** The session cwd, which a tool resolves a relative path against. */
+  sessionCwd(): string {
+    return this.evaluatorManager.sessionCwd();
+  }
+
+  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO; `requiresUser` as `EvaluatorManager.decide`. */
+  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null, requiresUser = false): 'allow' | 'deny' | 'ask' {
+    return this.evaluatorManager.decide(toolName, input, rule, requiresUser);
   }
 
   /** Whether a `Read` deny or ask rule covers a file, for Grep and Glob to leave it out of their results. */
@@ -334,9 +368,11 @@ export class PermissionHandler {
       return this.formManager.handleForm(input, context);
     }
 
-    const evaluation = context.rule !== undefined
-      ? this.decide(toolName, input, context.rule)
-      : await this.evaluatePermission(toolName, input, context.mcpTool);
+    const evaluation = context.requiresUser
+      ? this.decide(toolName, input, context.rule, true)
+      : context.rule !== undefined
+        ? this.decide(toolName, input, context.rule)
+        : await this.evaluatePermission(toolName, input, context.mcpTool);
 
     if (evaluation === 'allow') {
       return { behavior: 'allow', updatedInput: input };
@@ -410,6 +446,24 @@ export class PermissionHandler {
 
   resolveElicitation(elicitationId: string, result: ElicitationResult): void {
     this.elicitationManager.resolveElicitation(elicitationId, result);
+  }
+
+  /** Raises the version pause's prompt (PD-29) until the user answers or `signal` aborts (undefined). */
+  requestDesignVersionDecision(ask: DesignVersionAsk, signal: AbortSignal): Promise<DesignVersionChoice | undefined> {
+    return this.designVersionManager.requestDesignVersionDecision(ask, signal);
+  }
+
+  resolveDesignVersionDecision(promptId: string, choice: DesignVersionChoice): void {
+    this.designVersionManager.resolveDesignVersionDecision(promptId, choice);
+  }
+
+  /** Raises FinishDesign's approval prompt until the user answers or `signal` aborts (undefined); in every mode, YOLO included. */
+  requestDesignApproval(ask: DesignApprovalAsk, signal: AbortSignal): Promise<DesignApprovalAnswer | undefined> {
+    return this.designApprovalManager.requestDesignApproval(ask, signal);
+  }
+
+  resolveDesignApproval(promptId: string, choice: DesignApprovalChoice, feedback: string | undefined): void {
+    this.designApprovalManager.resolveDesignApproval(promptId, choice, feedback);
   }
 
   async dispose(): Promise<void> {

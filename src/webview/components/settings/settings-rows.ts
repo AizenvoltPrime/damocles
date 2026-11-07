@@ -117,6 +117,7 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('integrations', 'damocles.browser.enabled', 'browser', ['damocles.browser.enabled']),
   row('integrations', 'damocles.browser.headless', 'browserHeadless', ['damocles.browser.headless']),
   row('integrations', 'damocles.pi.webSearch.enabled', 'webSearch', ['damocles.pi.webSearch.enabled']),
+  row('integrations', 'damocles.design.enabled', 'design', ['damocles.design.enabled']),
   row('integrations', 'damocles.imageGeneration.enabled', 'imageGeneration', ['damocles.imageGeneration.enabled']),
   row('integrations', 'damocles.imageGeneration.model', 'imageModel', ['damocles.imageGeneration.model']),
 

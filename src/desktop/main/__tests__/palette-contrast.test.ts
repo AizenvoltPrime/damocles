@@ -4,10 +4,10 @@ import { DARK_THEME, LIGHT_THEME, type ThemePalette } from '../../theme-palettes
 
 // WCAG 2.2 AA for normal-size text (D21). docs/invariants.md "Design tokens" lists every value adjusted to reach it.
 const AA = 4.5;
-const TEXT_TOKENS = ['--d-text', '--d-muted', '--d-faint', '--d-accent', '--d-success', '--d-warning', '--d-danger', '--d-info'] as const;
+const TEXT_TOKENS = ['--d-text', '--d-muted', '--d-faint', '--d-accent', '--d-success', '--d-warning', '--d-danger', '--d-info', '--d-design'] as const;
 const SYNTAX_TOKENS = ['--s-kw', '--s-str', '--s-num', '--s-com', '--s-fn', '--s-type'] as const;
 const SURFACES = ['--d-bg', '--d-panel', '--d-card', '--d-code'] as const;
-const TONES = ['accent', 'success', 'warning', 'danger', 'info'] as const;
+const TONES = ['accent', 'success', 'warning', 'danger', 'info', 'design'] as const;
 const TINTED_SURFACES = ['--d-bg', '--d-panel', '--d-card', '--d-hover', '--d-code'] as const;
 // The strongest tint of its own tone that a tone's text sits on; docs/invariants.md "Design tokens" states it.
 const MAX_TINT = 0.22;
@@ -126,6 +126,13 @@ describe('desktop palette contrast', () => {
 
     it('text on a hovered row reaches AA', () => {
       expect(failures(palette, HOVER_TEXT, ['--d-hover'])).toEqual([]);
+    });
+
+    // DESIGN_STRIP (design-strip.ts): the design hue at 5% over the chat background, under the design header's labels.
+    it('faint text on the design header strip reaches AA', () => {
+      const strip = colorMix(opaque(palette, '--d-design'), 0.05, opaque(palette, '--d-bg'));
+      const failing = ROW_TEXT.filter((text) => contrast(opaque(palette, text), strip) < AA);
+      expect(failing).toEqual([]);
     });
 
     // ToggleSwitch's knob on its off track (WCAG 1.4.11 non-text contrast).

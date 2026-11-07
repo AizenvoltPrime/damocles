@@ -30,15 +30,15 @@ const sharedTest = {
 const hermeticHome = 'src/__mocks__/hermetic-home.setup.ts';
 const fakePlatform = 'src/__mocks__/fake-platform.setup.ts';
 
-// Main imports the remote stage scripts as text, as esbuild's text loader bundles them (esbuild.config.mjs desktopMainOptions).
+// Main imports the remote stage scripts as text, as esbuild's text loader bundles them (esbuild.config.ts desktopMainOptions).
 const stageScriptText = {
   name: 'stage-script-text',
   enforce: 'pre' as const,
   transform: (code: string, id: string) => (/\.(sh|ps1)$/.test(id) ? { code: `export default ${JSON.stringify(code)};`, map: null } : undefined),
 };
 
-const sharedAlias = { '@shared': path.resolve(__dirname, 'src/shared') };
-const webviewAlias = { '@': path.resolve(__dirname, 'src/webview') };
+const sharedAlias = { '@shared': path.resolve(import.meta.dirname, 'src/shared') };
+const webviewAlias = { '@': path.resolve(import.meta.dirname, 'src/webview') };
 
 export default defineConfig({
   test: {
@@ -52,7 +52,7 @@ export default defineConfig({
         test: {
           ...sharedTest,
           name: 'core',
-          // scripts/ tests need no host; release-targets.test.ts reports drift between scripts/release-targets.mjs and the release workflow matrix.
+          // scripts/ tests need no host; release-targets.test.ts reports drift between scripts/release-targets.ts and the release workflow matrix.
           include: [...tests(['src/core', 'src/platform', 'src/shared', 'src/remote']), 'scripts/**/*.test.ts'],
           setupFiles: [hermeticHome, fakePlatform],
           benchmark: { include: ['src/core/**/*.bench.ts'] },
@@ -62,7 +62,7 @@ export default defineConfig({
         resolve: {
           alias: {
             ...sharedAlias,
-            'vscode': path.resolve(__dirname, 'src/__mocks__/vscode.ts'),
+            'vscode': path.resolve(import.meta.dirname, 'src/__mocks__/vscode.ts'),
           },
         },
         test: {
@@ -79,7 +79,7 @@ export default defineConfig({
             ...sharedAlias,
             // a core host test feeds what a panel posts to the real chat page stores
             ...webviewAlias,
-            'electron': path.resolve(__dirname, 'src/__mocks__/electron-unmocked.ts'),
+            'electron': path.resolve(import.meta.dirname, 'src/__mocks__/electron-unmocked.ts'),
           },
         },
         test: {

@@ -7,7 +7,7 @@ import { control, expect, remoteHosts } from './remote';
 import { runProgram } from './sshd';
 
 // The Dev Containers suite: the app builds and attaches containers through the engine this computer (or a fixture's host)
-// runs. scripts/test-remote.mjs reads the tag from Playwright's listing and builds the Linux and Alpine packages for it.
+// runs. scripts/test-remote.ts reads the tag from Playwright's listing and builds the Linux and Alpine packages for it.
 export const DEVCONTAINER_TAG = '@devcontainer';
 
 // Every container and image the specs make carries this label (the fixture's runArgs and Dockerfile, and the attach target's
@@ -17,7 +17,7 @@ export const E2E_LABEL = 'damocles.e2e=devcontainer';
 export const dataVolume = (key: string): string => `damocles-data-${key}`;
 // The Node image the fixture builds from, pinned by its multi-arch index digest.
 export const NODE_IMAGE = 'node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f';
-export const FIXTURE_DIR = path.join(__dirname, 'devcontainer');
+export const FIXTURE_DIR = path.join(import.meta.dirname, 'devcontainer');
 // The env a launch needs: the e2e hooks; the server packages come from the dev build's cache.
 export const CONTAINER_ENV = { DAMOCLES_E2E_HOOKS: '1' };
 
@@ -47,7 +47,7 @@ export function editConfig(folder: string, edit: (config: Record<string, unknown
 }
 
 // The devcontainer CLI the app bundles, run here under the test's Node as a user's own CLI would run.
-const DEVCONTAINER_CLI = path.resolve(__dirname, '..', '..', '..', 'node_modules', '@devcontainers', 'cli', 'devcontainer.js');
+const DEVCONTAINER_CLI = path.resolve(import.meta.dirname, '..', '..', '..', 'node_modules', '@devcontainers', 'cli', 'devcontainer.js');
 
 /**
  * `devcontainer up` for the folder outside Damocles, as VS Code or the plain CLI makes a container: no data volume. The

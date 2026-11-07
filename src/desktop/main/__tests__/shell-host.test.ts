@@ -181,6 +181,7 @@ describe('ShellHost', () => {
       toggleSidebar: vi.fn(),
       terminal: { shellLoaded: vi.fn(), setInputFocused: vi.fn() },
       editor: { setFocusOverlay: vi.fn() },
+      design: { shellLoaded: vi.fn() },
     } as unknown as ShellActions;
   });
 
@@ -799,7 +800,7 @@ describe('terminal channels', () => {
     gestures = Object.fromEntries(['pasteKey', 'middleClick', 'contextMenu', 'blurred'].map((name) => [name, vi.fn()]));
     openAppMenu = vi.fn();
     showSidebar = vi.fn();
-    const actions = { terminal, gestures, openAppMenu, showSidebar, state: vi.fn(() => ({ projects: [], selected: {} })), setFocusedPart: vi.fn(), editor: { setFocusOverlay: vi.fn() } } as unknown as ShellActions;
+    const actions = { terminal, gestures, openAppMenu, showSidebar, state: vi.fn(() => ({ projects: [], selected: {} })), setFocusedPart: vi.fn(), editor: { setFocusOverlay: vi.fn() }, design: { shellLoaded: vi.fn() } } as unknown as ShellActions;
     shell = new ShellHost(window, actions, (line) => lines.push(line), () => undefined);
   });
 

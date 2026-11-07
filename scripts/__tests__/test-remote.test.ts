@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-// @ts-expect-error -- plain .mjs helper, no types
-import { fixtureImagesIn, fixturesToRemove, grepOf, isElfFor, platformDigestRef, playwrightArgs, prebuiltParts, selection, serverPackageTargets, serverTargetsFor, specFilesOf, sshdSources } from '../test-remote.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { npmCliPath } from '../npm-cli.mjs';
+import { fixtureImagesIn, fixturesToRemove, grepOf, isElfFor, platformDigestRef, playwrightArgs, prebuiltParts, selection, serverPackageTargets, serverTargetsFor, specFilesOf, sshdSources } from '../test-remote.ts';
+import { npmCliPath } from '../npm-cli.ts';
 
 describe('test-remote --grep', () => {
   it('reads every spelling of --grep', () => {

@@ -4,25 +4,21 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-// @ts-expect-error -- plain .mjs helper, no types
-import { ALPINE_PREREQUISITES, ALPINE_TARGET_IMAGE, SERVER_TARGETS, NODE_RELEASES, electronNodeVersions, nodeReleaseProblem, nodeArchive, serverArtifact } from '../server-targets.mjs';
-// @ts-expect-error -- plain .mjs helper, no types
-import { DESKTOP_TARGETS, serverArtifactProblems } from '../release-targets.mjs';
+import { ALPINE_PREREQUISITES, ALPINE_TARGET_IMAGE, SERVER_TARGETS, NODE_RELEASES, electronNodeVersions, nodeReleaseProblem, nodeArchive, serverArtifact, type ElectronVersions, type ServerTarget } from '../server-targets.ts';
+import { DESKTOP_TARGETS, serverArtifactProblems } from '../release-targets.ts';
 
-type Versions = { node: string; modules: string; napi: string; electron?: string };
-type ServerSpec = { platform: string; arch: string; libc: string | null; runner: string; alpine: boolean; natives: string[]; ptyPrebuild: string };
 type Step = { name?: string; run?: string; uses?: string; if?: string; with?: Record<string, string> };
 type Job = { needs?: string | string[]; outputs?: Record<string, string>; env?: Record<string, string>; steps: Step[]; strategy?: { matrix: { include: Record<string, string | boolean | number>[] } } };
 
 const ROOT = join(__dirname, '..', '..');
-const targets = SERVER_TARGETS as Record<string, ServerSpec>;
+const targets: Record<string, ServerTarget> = SERVER_TARGETS;
 const releases = NODE_RELEASES as Record<string, { modules: string; napi: string; alpineImage: string; archives: Record<string, { url: string; sha256: string }> }>;
 const workflow = parse(readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')) as { jobs: Record<string, Job> };
-const PINNED: Versions = { node: '24.22.1', modules: '150', napi: '10', electron: '45.2.1' };
+const PINNED: ElectronVersions = { node: '24.22.1', modules: '150', napi: '10', electron: '45.2.1' };
 
 describe('the server Node is derived from Electron', () => {
   it('reads the versions of the executable it runs as Node', () => {
-    const versions = electronNodeVersions(process.execPath) as Versions;
+    const versions = electronNodeVersions(process.execPath);
     expect(versions).toEqual({ node: process.versions.node, modules: process.versions.modules, napi: process.versions.napi });
   });
 
@@ -32,7 +28,7 @@ describe('the server Node is derived from Electron', () => {
     return existsSync(pathFile) ? join(ROOT, 'node_modules', 'electron', 'dist', readFileSync(pathFile, 'utf8')) : undefined;
   })();
   it.skipIf(electronBinary === undefined || !existsSync(electronBinary))('pins the archives of the Node the installed Electron embeds', () => {
-    const versions = electronNodeVersions(electronBinary) as Versions;
+    const versions = electronNodeVersions(electronBinary);
     const { devDependencies } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { devDependencies: Record<string, string> };
     expect(versions.electron).toBe(devDependencies['electron']);
     expect(nodeReleaseProblem(versions)).toBeUndefined();
@@ -50,7 +46,7 @@ describe('the server Node is derived from Electron', () => {
 
   it('fails when a pinned release lacks a target archive', () => {
     const { 'win32-arm64': _dropped, ...archives } = releases['24.22.1']!.archives;
-    expect(nodeReleaseProblem(PINNED, { '24.22.1': { ...releases['24.22.1'], archives } })).toMatch(/no archive for win32-arm64/);
+    expect(nodeReleaseProblem(PINNED, { '24.22.1': { ...releases['24.22.1']!, archives } })).toMatch(/no archive for win32-arm64/);
     expect(() => nodeArchive('win32-x64', '24.23.0')).toThrow(/No Node 24\.23\.0 archive is pinned/);
   });
 
@@ -83,7 +79,7 @@ describe('SERVER_TARGETS mirrors the release workflow', () => {
       'server-alpine-build-image': '${{ steps.server-node.outputs.alpine-build-image }}',
       'server-alpine-target-image': '${{ steps.server-node.outputs.alpine-target-image }}',
     });
-    expect(verify.steps.find((step) => step.run?.includes('outputs=$(node scripts/server-targets.mjs --github-outputs)\n'))).toBeDefined();
+    expect(verify.steps.find((step) => step.run?.includes('outputs=$(node scripts/server-targets.ts --github-outputs)\n'))).toBeDefined();
     const job = workflow.jobs['package-server']!;
     expect(job.env).toMatchObject({
       NODE_VERSION: '${{ needs.verify.outputs.server-node-version }}',
@@ -104,7 +100,7 @@ describe('SERVER_TARGETS mirrors the release workflow', () => {
 
   it('self-tests every leg: on its runner, or for Alpine in the clean image with only the documented prerequisites', () => {
     const steps = workflow.jobs['package-server']!.steps;
-    const verifies = steps.filter((step) => step.run?.includes('verify-server-package.mjs'));
+    const verifies = steps.filter((step) => step.run?.includes('verify-server-package.ts'));
     expect(verifies.find((step) => step.if === '${{ !matrix.alpine }}')?.run).toContain('--require-self-test');
     expect(verifies.find((step) => step.if === '${{ matrix.alpine }}')?.run).toContain('--skip-self-test');
     const clean = steps.find((step) => step.run?.includes('"$ALPINE_TARGET_IMAGE" sh -c'));
@@ -115,7 +111,7 @@ describe('SERVER_TARGETS mirrors the release workflow', () => {
 
   it('verifies every leg before uploading it as server-<target>, never to a release', () => {
     const job = workflow.jobs['package-server']!;
-    const verify = job.steps.findIndex((step) => step.run?.includes('verify-server-package.mjs'));
+    const verify = job.steps.findIndex((step) => step.run?.includes('verify-server-package.ts'));
     const upload = job.steps.findIndex((step) => step.uses?.startsWith('actions/upload-artifact@'));
     expect(verify).toBeGreaterThan(-1);
     expect(upload).toBeGreaterThan(verify);
@@ -135,7 +131,7 @@ describe('SERVER_TARGETS mirrors the release workflow', () => {
 
   it('embeds the manifest of every package before electron-builder runs', () => {
     const steps = workflow.jobs['package-desktop']!.steps;
-    const manifest = steps.findIndex((step) => step.run?.includes('build-server.mjs --write-manifest'));
+    const manifest = steps.findIndex((step) => step.run?.includes('build-server.ts --write-manifest'));
     const builder = steps.findIndex((step) => step.run?.includes('npx electron-builder'));
     expect(manifest).toBeGreaterThan(-1);
     expect(builder).toBeGreaterThan(manifest);
@@ -168,7 +164,7 @@ describe('--check-server-artifacts', () => {
       const dir = mkdtempSync(join(tmpdir(), 'server-artifacts-'));
       try {
         for (const name of files) writeFileSync(join(dir, name), '');
-        return spawnSync(process.execPath, [join(ROOT, 'scripts', 'release-targets.mjs'), '--check-server-artifacts', 'all', dir], { encoding: 'utf8' });
+        return spawnSync(process.execPath, [join(ROOT, 'scripts', 'release-targets.ts'), '--check-server-artifacts', 'all', dir], { encoding: 'utf8' });
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

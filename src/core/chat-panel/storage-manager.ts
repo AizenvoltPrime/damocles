@@ -28,6 +28,8 @@ import { perfSpan } from "../perf";
 import { folderKey } from "../workspace-folders/folder-key";
 import { worktreeSessionFolders } from "../worktrees/personal-config";
 import type { WorktreeRegistry } from "../worktrees/registry";
+import { readDesignLink } from "../design/design-state";
+import { designStateDirOf } from "../design/design-paths";
 
 const CHANGE_DEBOUNCE_MS = 300;
 const PARSED_ROWS_PUSH_MS = 250;
@@ -72,7 +74,38 @@ function sameListing(a: StoredSession, b: StoredSession): boolean {
     && a.model?.provider === b.model?.provider
     && a.model?.id === b.model?.id
     && a.worktree?.worktreeId === b.worktree?.worktreeId
-    && a.worktree?.place === b.worktree?.place;
+    && a.worktree?.place === b.worktree?.place
+    && a.design?.designId === b.design?.designId
+    && a.design?.parentSessionId === b.design?.parentSessionId
+    && a.design?.finishedVersion === b.design?.finishedVersion
+    && a.design?.superseded === b.design?.superseded;
+}
+
+/**
+ * `rows` with each design chat marked `superseded` while its design's `link.json` names another chat (D70, as
+ * `SessionDesign.standing` reads it), each link read once; a link that cannot be read leaves its rows unmarked.
+ */
+async function withDesignStanding(rows: readonly StoredSession[]): Promise<StoredSession[]> {
+  const holders = new Map<string, Promise<string | null | undefined>>();
+  const holderOf = (designId: string): Promise<string | null | undefined> => {
+    let read = holders.get(designId);
+    if (!read) {
+      read = (async () => (await readDesignLink(designStateDirOf(designId)))?.designSessionId)().catch((err: unknown) => {
+        log("[StorageManager] reading the link of design %s failed: %O", designId, err);
+        return undefined;
+      });
+      holders.set(designId, read);
+    }
+    return read;
+  };
+  return Promise.all(rows.map(async (row) => {
+    if (!row.design) return row;
+    const holder = await holderOf(row.design.designId);
+    const superseded = holder != null && holder !== row.id;
+    if (superseded === (row.design.superseded === true)) return row;
+    const { superseded: _was, ...design } = row.design;
+    return { ...row, design: superseded ? { ...design, superseded } : design };
+  }));
 }
 
 /**
@@ -172,6 +205,11 @@ export class StorageManager {
     return all.filter((s) => s.workspaceFolder?.key === folderKey);
   }
 
+  /** Stored session `sessionId`'s row in the list of every open folder; undefined while the list holds none. */
+  async storedSession(sessionId: string): Promise<StoredSession | undefined> {
+    return (await this.ensureSessionsLoaded()).find((s) => s.id === sessionId);
+  }
+
   /** `sessionsOf` once the index parsed every file of the list: for a decision a missing row would make wrong, so it rejects when a file yielded no row. */
   async completeSessionsOf(folderKey: string): Promise<StoredSession[]> {
     const { sessions, complete } = await this.completeSessions();
@@ -235,7 +273,7 @@ export class StorageManager {
         await Promise.all(applied);
         return complete;
       }));
-      return sessions.map((s) => (listedFrom !== undefined ? { ...this.stamp(s, folder), listedFrom } : this.stamp(s, folder)));
+      return (await withDesignStanding(sessions)).map((s) => (listedFrom !== undefined ? { ...this.stamp(s, folder), listedFrom } : this.stamp(s, folder)));
     };
     const perFolder = await Promise.all(this.folders().map(async (folder) => {
       void this.pruneOrphanCheckpointReposOnce(folder);
@@ -591,12 +629,13 @@ export class StorageManager {
     options?: { ifChanged?: boolean; fromList?: { listedFrom: string | undefined }; listedFrom?: string },
   ): Promise<boolean> {
     if (rows.length === 0 || generation !== this.sessionsGeneration || !this.openFolder(folderKey)) return false;
+    const standing = await withDesignStanding(rows);
     const all = await this.ensureSessionsLoaded();
     const folder = this.openFolder(folderKey);
     if (generation !== this.sessionsGeneration || !folder) return false;
     let applied = false;
     let changed = false;
-    for (const metadata of rows) {
+    for (const metadata of standing) {
       const existingIndex = all.findIndex((s) => s.id === metadata.id);
       const existing = existingIndex >= 0 ? all[existingIndex]! : undefined;
       const fromList = options?.fromList;

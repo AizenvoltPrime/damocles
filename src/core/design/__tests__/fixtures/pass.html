@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" data-ds-screen="S1" data-ds-states="default empty">
+<head>
+  <meta charset="utf-8">
+  <title>Contacts</title>
+  <link rel="stylesheet" href="../tokens.css">
+  <style>
+    .page { padding: calc(var(--spacing) * 6); background: var(--color-surface); color: var(--color-muted-foreground); }
+    .card { border: 1px solid var(--color-border); border-radius: var(--radius-md); margin: 0; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>Contacts</h1>
+    <button data-ds-component="Button" data-ds-variant="primary" data-ds-decision="D1">New contact</button>
+    <label for="search">Search contacts</label>
+    <input id="search" type="search" data-ds-component="Input">
+    <table data-ds-component="Table" data-ds-variant="compact" data-ds-decision="D2">
+      <tr><td data-ds-bind="Contact.name">Ada Lovelace</td><td data-ds-bind="Contact.email">ada@example.com</td></tr>
+    </table>
+    <span data-ds-new="D2" style="border-radius: var(--radius-sm)">Starred</span>
+    <img src="../assets/logo.png" alt="Company logo">
+    <section data-ds-state-only="empty"><p>No contacts yet.</p></section>
+  </main>
+</body>
+</html>

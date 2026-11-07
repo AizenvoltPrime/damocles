@@ -10,6 +10,8 @@ export const DAMOCLES_HOME_DIR: string = path.join(os.homedir(), ".damocles");
 
 export const DAMOCLES_PLANS_DIR: string = path.join(DAMOCLES_HOME_DIR, "plans");
 export const DAMOCLES_EXPLORES_DIR: string = path.join(DAMOCLES_HOME_DIR, "explores");
+/** Design folders, `<designId>/`, and core's state folder for them, `.state/<designId>/`. */
+export const DAMOCLES_DESIGNS_DIR: string = path.join(DAMOCLES_HOME_DIR, "designs");
 
 export const DAMOCLES_USAGE_DIR: string = path.join(DAMOCLES_HOME_DIR, "usage");
 /** Append-only JSONL of internal sub-call usage (titles, memory, /btw), which no session file records. */
@@ -41,8 +43,13 @@ export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DI
  * path with no stored state — correct across reload, clear-context, and re-planning.
  */
 export function computePlanFilePath(sessionId: string, firstMessage: string): string {
+  return path.join(DAMOCLES_PLANS_DIR, `${planFileStem(sessionId, firstMessage)}.md`);
+}
+
+/** `<slug>-<id8>`, the plan file's name without `.md`; a design folder of the same session takes the same name. */
+export function planFileStem(sessionId: string, firstMessage: string): string {
   const slug = slugify(firstMessage).slice(0, 50).replace(/-+$/, "") || "plan";
-  return path.join(DAMOCLES_PLANS_DIR, `${slug}-${planFileIdSuffix(sessionId)}.md`);
+  return `${slug}-${planFileIdSuffix(sessionId)}`;
 }
 
 /**
@@ -91,24 +98,43 @@ export async function findSessionPlanFiles(sessionId: string): Promise<string[]>
  * single carve-out used to auto-allow `Edit`/`Write` to the plan file in every permission mode — including
  * plan mode, where all other writes are blocked — so the model can maintain its plan as it designs.
  * Pass the absolute path the tool writes: a relative one resolves against this process's cwd, not the session's.
- * Both the path as written and the file it resolves to through links must sit below the plans folder,
- * compared as the file system spells them and, on win32, ignoring case, and an existing file must have
- * no other hard link.
  */
 export function isPlanFilePath(filePath: string): boolean {
-  if (!filePath) return false;
+  const canonical = canonicalPathBelow(DAMOCLES_PLANS_DIR, filePath);
+  return canonical !== undefined && (process.platform === "win32" ? canonical.toLowerCase() : canonical).endsWith(".md");
+}
+
+/**
+ * Whether `filePath` names an entry below `dir`. Both the path as written and the path it resolves to through
+ * links must sit below `dir`, compared as the file system spells them (8.3 names expanded, stored case, no
+ * `\\?\` prefix), and an existing entry must have an `nlink` of 1, so no other hard link shares it. It does not
+ * check that the entry is a file: an existing directory passes only where its `nlink` is 1, as on NTFS.
+ * Pass an absolute path: a relative one resolves against this process's cwd.
+ */
+export function isFileBelow(dir: string, filePath: string): boolean {
+  return canonicalPathBelow(dir, filePath) !== undefined;
+}
+
+/** The canonical path of `filePath` when `isFileBelow(dir, filePath)` holds, else undefined. */
+function canonicalPathBelow(dir: string, filePath: string): string | undefined {
+  if (!filePath) return undefined;
   const requested = path.resolve(filePath);
-  const fold = (value: string): string => (process.platform === "win32" ? value.toLowerCase() : value);
-  const below = (dir: string, target: string): boolean => {
-    const relative = path.relative(dir, target);
+  const below = (parent: string, target: string): boolean => {
+    const relative = path.relative(parent, target);
     return relative !== "" && !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`);
   };
   const canonical = canonicalPath(requested);
-  return below(spelledPath(DAMOCLES_PLANS_DIR), spelledPath(requested))
-    && below(canonicalPath(DAMOCLES_PLANS_DIR), canonical)
-    && fold(canonical).endsWith(".md")
-    // A hard link shares its content with a name outside the plans folder, which no path comparison sees.
-    && (statSync(canonical, { throwIfNoEntry: false })?.nlink ?? 1) === 1;
+  return below(spelledPath(dir), spelledPath(requested))
+    && below(canonicalPath(dir), canonical)
+    // A hard link shares its content with a name outside `dir`, which no path comparison sees.
+    && !hasOtherHardLink(canonical)
+    ? canonical
+    : undefined;
+}
+
+/** Whether an existing entry at canonical path `canonical` has an `nlink` above 1; false when nothing is there. */
+export function hasOtherHardLink(canonical: string): boolean {
+  return (statSync(canonical, { throwIfNoEntry: false })?.nlink ?? 1) !== 1;
 }
 
 export function workspaceHash(workspacePath: string): string {

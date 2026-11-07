@@ -66,7 +66,14 @@ export function isImageBlock(block: unknown): block is ImageBlock {
 
 export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | ImageBlock;
 
-export type UserContentBlock = TextBlock | ImageBlock;
+/** Where a user image came from: `designPreview` is the design preview's Screenshot, never saved as a design reference (PD-40). */
+export type UserImageOrigin = 'designPreview';
+
+export interface UserImageBlock extends ImageBlock {
+  origin?: UserImageOrigin;
+}
+
+export type UserContentBlock = TextBlock | UserImageBlock;
 
 export type HistoryAgentContentBlock =
   | { type: 'thinking'; thinking: string }
@@ -120,8 +127,16 @@ export interface HistoryToolCall {
   agentDollarBilled?: boolean;
   /** The effort this invocation's own run ran at, from its segment record, else its launch record. */
   agentEffort?: import('../effort-badge').EffortBadgeLevel;
-  metadata?: Record<string, unknown>;
+  metadata?: ToolResultMetadata;
 }
+
+/** A tool result's `details`, as `toolMetadata` and a replayed call carry them; the LocalizedText fields a tool puts there are named, so each page's bridge parses them. */
+export type ToolResultMetadata = Record<string, unknown> & {
+  /** DesignParity's refusal (D97). */
+  refusal?: LocalizedText;
+  /** DesignCheck's and FinishDesign's summary when the width checks did not run (D86). */
+  widthChecks?: { skipped: LocalizedText };
+};
 
 export interface HistoryMessage {
   type: "user" | "assistant" | "error";

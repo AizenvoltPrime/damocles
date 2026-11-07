@@ -8,6 +8,7 @@ import { CUSTOM_TOOL_NAMES } from '../index';
 import { PI_TOOL_NAME_MAP } from '../../tool-normalization';
 import { WEB_TOOLS, PLAN_MODE_EXCLUDED_TOOLS } from '../../pi-models';
 import { TOOL_BROWSER_REQUEST_INPUT } from '../../../../shared/tool-names';
+import { DESIGN_PI_TOOL_NAMES } from '../../../design/rule-set';
 
 const MODULE_NAMES = [...MEMORY_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES];
 const TEAM_NAMES = [...TEAM_MAIN_PI_TOOL_NAMES, ...TEAM_AGENT_PI_TOOL_NAMES];
@@ -104,5 +105,25 @@ describe('BrowserRequestInput (Slice 4)', () => {
 
   it('survives the plan-mode subtraction (the planner may ask the user to fill a live form)', () => {
     expect(PLAN_MODE_EXCLUDED_TOOLS).not.toContain(TOOL_BROWSER_REQUEST_INPUT);
+  });
+});
+
+describe('the design group (PD-42)', () => {
+  const design = FULL_TOOL_CATALOG.filter((e) => e.group === 'design').map((e) => e.name);
+
+  it('lists the built design tools, toggleable, apart from the module tools and the custom set', () => {
+    expect(design).toEqual(['StartDesign', 'Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'DesignScreenshot', 'PreviewJourney', 'DeclareTweaks', 'MapReference', 'DesignParity']);
+    // the card and the Tools panel name it apart from the browser's BrowserScreenshot (PD-42)
+    expect(FULL_TOOL_CATALOG.find((e) => e.name === 'DesignScreenshot')?.label).toBe('Screenshot');
+    expect(FULL_TOOL_CATALOG.filter((e) => e.group === 'design').every((e) => e.toggleable)).toBe(true);
+    for (const name of design) {
+      expect(GATEABLE_MODULE_NAMES.has(name), `${name} would never wait for the checkpoint baseline`).toBe(false);
+      expect(CUSTOM_TOOL_NAMES).not.toContain(name);
+      expect(DESIGN_PI_TOOL_NAMES.has(name)).toBe(true);
+    }
+  });
+
+  it('keeps StartDesign in plan mode (PD-49)', () => {
+    expect(PLAN_MODE_EXCLUDED_TOOLS).not.toContain('StartDesign');
   });
 });
