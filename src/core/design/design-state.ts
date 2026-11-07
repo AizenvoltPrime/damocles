@@ -61,6 +61,8 @@ export type DesignBriefContext = { readonly kind: 'takeover' } | { readonly kind
 export interface DesignBriefRecord {
   readonly schemaVersion: 1;
   readonly briefId: string;
+  /** Write order within the state folder, assigned under its lock; briefs are delivered in this order. */
+  readonly seq: number;
   readonly parentSessionId: string;
   readonly designSessionId: string | null;
   readonly text: string;
@@ -236,13 +238,13 @@ function briefFile(stateDir: string, briefId: string): string {
 
 function briefRecordOf(value: unknown): DesignBriefRecord | undefined {
   if (!isRecord(value) || value['schemaVersion'] !== 1) return undefined;
-  const { briefId, parentSessionId, designSessionId, text, reopened, createdAt } = value;
-  if (!isSessionId(briefId) || !isSessionId(parentSessionId)) return undefined;
+  const { briefId, seq, parentSessionId, designSessionId, text, reopened, createdAt } = value;
+  if (!isSessionId(briefId) || !Number.isSafeInteger(seq) || (seq as number) < 1 || !isSessionId(parentSessionId)) return undefined;
   if (designSessionId !== null && !isSessionId(designSessionId)) return undefined;
   if (typeof text !== 'string' || typeof reopened !== 'boolean' || typeof createdAt !== 'string') return undefined;
   const context = briefContextOf(value['context']);
   if (context === null) return undefined;
-  return { schemaVersion: 1, briefId, parentSessionId, designSessionId, text, reopened, ...(context ? { context } : {}), createdAt };
+  return { schemaVersion: 1, briefId, seq: seq as number, parentSessionId, designSessionId, text, reopened, ...(context ? { context } : {}), createdAt };
 }
 
 // undefined: none; null: not a context.
@@ -254,24 +256,30 @@ function briefContextOf(value: unknown): DesignBriefContext | undefined | null {
   return null;
 }
 
-/** Writes a brief's outbox record before anything delivers it. */
-export async function writeBriefRecord(stateDir: string, brief: Omit<DesignBriefRecord, 'schemaVersion' | 'briefId' | 'createdAt'>): Promise<DesignBriefRecord> {
-  const record: DesignBriefRecord = { schemaVersion: 1, briefId: `b${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`, createdAt: new Date().toISOString(), ...brief };
-  await withDesignStateLock(stateDir, () => writeJsonAtomic(briefFile(stateDir, record.briefId), record));
+type NewBrief = Omit<DesignBriefRecord, 'schemaVersion' | 'briefId' | 'seq' | 'createdAt'>;
+
+// The caller holds the state folder's lock, so no other writer takes the same seq.
+async function writeNewBrief(stateDir: string, brief: NewBrief): Promise<DesignBriefRecord> {
+  const seq = (await readBriefRecords(stateDir)).reduce((max, record) => Math.max(max, record.seq), 0) + 1;
+  const record: DesignBriefRecord = { schemaVersion: 1, briefId: `b${seq}-${randomUUID().slice(0, 8)}`, seq, createdAt: new Date().toISOString(), ...brief };
+  await writeJsonAtomic(briefFile(stateDir, record.briefId), record);
   return record;
+}
+
+/** Writes a brief's outbox record before anything delivers it. */
+export function writeBriefRecord(stateDir: string, brief: NewBrief): Promise<DesignBriefRecord> {
+  return withDesignStateLock(stateDir, () => writeNewBrief(stateDir, brief));
 }
 
 /**
  * Writes a brief addressed to the design chat `link.json` names, read under the lock a takeover writes it under, so a brief is
  * never addressed to a chat a takeover just superseded (PD-36). Undefined, writing nothing, when no chat holds the link.
  */
-export function writeBriefToCurrentChat(stateDir: string, brief: Omit<DesignBriefRecord, 'schemaVersion' | 'briefId' | 'createdAt' | 'designSessionId'>): Promise<DesignBriefRecord | undefined> {
+export function writeBriefToCurrentChat(stateDir: string, brief: Omit<NewBrief, 'designSessionId'>): Promise<DesignBriefRecord | undefined> {
   return withDesignStateLock(stateDir, async () => {
     const designSessionId = (await readDesignLink(stateDir))?.designSessionId ?? null;
     if (designSessionId === null) return undefined;
-    const record: DesignBriefRecord = { schemaVersion: 1, briefId: `b${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`, createdAt: new Date().toISOString(), ...brief, designSessionId };
-    await writeJsonAtomic(briefFile(stateDir, record.briefId), record);
-    return record;
+    return writeNewBrief(stateDir, { ...brief, designSessionId });
   });
 }
 
@@ -299,7 +307,7 @@ export async function readBriefRecords(stateDir: string): Promise<DesignBriefRec
     const record = briefRecordOf(value);
     if (record) records.push(record);
   }
-  return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.briefId.localeCompare(b.briefId));
+  return records.sort((a, b) => a.seq - b.seq);
 }
 
 function versionRecordOf(value: unknown): DesignVersionRecord | undefined {

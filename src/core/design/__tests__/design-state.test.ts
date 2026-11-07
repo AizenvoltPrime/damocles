@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   commitDesignVersion,
   DESIGN_MOVED_FINISH,
@@ -130,6 +130,22 @@ describe('the design state folder', () => {
     const briefs = await readBriefRecords(dir);
     expect(briefs.map((b) => [b.briefId, b.designSessionId])).toEqual([[forOld.briefId, 'old-chat'], [pending.briefId, 'new-chat']]);
     expect(briefs[1]?.context).toEqual({ kind: 'takeover' });
+  });
+
+  it('reads briefs in write order when they share a timestamp', async () => {
+    const dir = stateDir();
+    await updateDesignLink(dir, () => ({ schemaVersion: 1, designId: 'contacts-abcd1234', folder: '/f', title: 'Contacts', parentSessionId: 'parent-1', designSessionId: 'design-1', superseded: [] }));
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-07T20:00:00.000Z') });
+    try {
+      const written = [];
+      for (const text of ['one', 'two', 'three', 'four', 'five']) {
+        written.push(await writeBriefRecord(dir, { parentSessionId: 'parent-1', designSessionId: 'design-1', text, reopened: false }));
+      }
+      written.push((await writeBriefToCurrentChat(dir, { parentSessionId: 'parent-1', text: 'six', reopened: true }))!);
+      expect((await readBriefRecords(dir)).map((b) => b.briefId)).toEqual(written.map((b) => b.briefId));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('skips a brief file that is not JSON, so the other briefs still read and the link can still be claimed', async () => {
