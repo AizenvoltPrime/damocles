@@ -1,7 +1,7 @@
-import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type * as vscode from 'vscode';
+import { EXTENSION_BUNDLES } from '../../../../esbuild.config.ts';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createVsCodeAppPaths } from '../app-paths';
 import { createVsCodePlatform } from '../index';
@@ -51,7 +51,7 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
   });
 
   it('every worker entry is an outfile esbuild.config.ts writes', () => {
-    const outfiles = [...readFileSync(path.join(REPO_ROOT, 'esbuild.config.ts'), 'utf8').matchAll(/outfile: '([^']+)'/g)].map((m) => m[1]);
+    const outfiles = EXTENSION_BUNDLES.map((bundle) => bundle.outfile);
     for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const) {
       expect(outfiles).toContain(path.relative(EXT, paths.workerEntry(name)).split(path.sep).join('/'));
     }
