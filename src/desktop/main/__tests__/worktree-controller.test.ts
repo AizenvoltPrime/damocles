@@ -688,6 +688,8 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       reveal: async () => undefined,
       mention: async () => undefined,
       browser: () => undefined,
+      terminals: () => undefined,
+      htmlPreviews: { state: () => ({ status: 'loading', trusted: false }), tabsChanged: () => undefined, focusPage: () => false },
       warn: () => undefined,
       hostName: (authority) => authority,
       searchEditorClosed: () => undefined,

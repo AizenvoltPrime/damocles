@@ -644,12 +644,104 @@
   animation: o-fade-out 0.14s ease-in both;
 }
 
-.terminal-row-move {
-  transition: transform 0.22s var(--ease-out);
+.terminal-row {
+  transition: background-color 0.15s, color 0.15s, opacity 0.15s var(--ease-out);
 }
 
-.terminal-row {
-  transition: background-color 0.15s, color 0.15s;
+/* After .terminal-row, whose equally specific transition would otherwise drop the transform TransitionGroup's slide needs. */
+.terminal-row-move {
+  transition: transform 0.22s var(--ease-out), background-color 0.15s, color 0.15s, opacity 0.15s var(--ease-out);
+}
+
+.terminal-row[data-dragging],
+.terminal-tab[data-dragging],
+.editor-tab[data-dragging] {
+  opacity: 0.45;
+}
+
+.editor-tab-drop {
+  position: relative;
+  color: var(--d-text);
+  background-color: color-mix(in srgb, var(--d-accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--d-accent) 45%, transparent);
+  transform-origin: left center;
+}
+
+.editor-tab-drop::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 0.125rem;
+  background-color: var(--d-accent);
+}
+
+.editor-tab-drop-enter-active {
+  transition: opacity 0.15s var(--ease-out), transform 0.24s var(--ease-spring);
+}
+
+.editor-tab-drop-leave-active {
+  transition: opacity 0.12s ease-in, transform 0.12s ease-in;
+}
+
+.editor-tab-drop-enter-from,
+.editor-tab-drop-leave-to {
+  opacity: 0;
+  transform: translateX(-0.5rem) scale(0.96);
+}
+
+.terminal-empty {
+  transition: background-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
+}
+
+.terminal-empty[data-drop] {
+  background-color: color-mix(in srgb, var(--d-accent) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--d-accent) 60%, transparent);
+}
+
+.terminal-empty-icon {
+  transition: transform 0.24s var(--ease-spring), color 0.15s, border-color 0.15s;
+}
+
+.terminal-empty[data-drop] .terminal-empty-icon {
+  transform: translateY(-0.125rem) scale(1.06);
+  color: var(--d-accent);
+  border-color: var(--d-accent);
+}
+
+.terminal-header,
+.terminal-list {
+  transition: background-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
+}
+
+.terminal-header {
+  position: relative;
+}
+
+.terminal-header[data-drop],
+.terminal-list[data-drop] {
+  background-color: color-mix(in srgb, var(--d-accent) 8%, var(--d-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--d-accent) 60%, transparent);
+}
+
+.terminal-header::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -0.0625rem;
+  height: 0.125rem;
+  pointer-events: none;
+  background-color: var(--d-accent);
+  transform: scaleX(0);
+  transition: transform 0.24s var(--ease-spring);
+}
+
+.terminal-header[data-drop]::after {
+  transform: scaleX(1);
+}
+
+.terminal-drop-line {
+  transition: transform 0.1s var(--ease-out);
 }
 
 .terminal-row:focus-visible {
@@ -709,8 +801,44 @@
   animation: d-pane-out 0.16s ease-in both;
 }
 
+/* Contains xterm's own z-indexed layers, so the drop overlay after it paints above them by DOM order. */
+.terminal-view {
+  isolation: isolate;
+}
+
+.terminal-drop-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-color: color-mix(in srgb, var(--d-accent) 14%, transparent);
+  outline: 1px solid var(--d-accent);
+  outline-offset: -1px;
+  transition: inset 0.07s var(--ease-out), opacity 0.15s var(--ease-out);
+}
+
+.terminal-drop-overlay[data-side="before"] {
+  right: 50%;
+}
+
+.terminal-drop-overlay[data-side="after"] {
+  left: 50%;
+}
+
+.terminal-drop-overlay[data-refused] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: color-mix(in srgb, var(--d-danger) 8%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--d-danger) 70%, transparent);
+}
+
+.terminal-drop-enter-from,
+.terminal-drop-leave-to {
+  opacity: 0;
+}
+
 .terminal-tab {
-  transition: color 0.15s;
+  transition: color 0.15s, opacity 0.15s var(--ease-out);
 }
 
 .terminal-tab:focus-visible {

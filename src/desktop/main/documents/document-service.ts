@@ -359,6 +359,7 @@ export class DocumentService {
   private readonly listeners = new Set<(change: DocumentChange) => void>();
   private readonly replacements = new Set<(replacement: DocumentReplacement) => void>();
   private readonly textListeners = new Set<(change: TextChange) => void>();
+  private readonly saveListeners = new Set<(location: Location) => void>();
   // each document's last queued save, overwrite or revert, by document id
   private readonly turns = new Map<string, Promise<void>>();
   // documents whose file is being written; their backup stays until the write settles
@@ -396,6 +397,12 @@ export class DocumentService {
   onDidChangeText(listener: (change: TextChange) => void): Disposable {
     this.textListeners.add(listener);
     return { dispose: () => this.textListeners.delete(listener) };
+  }
+
+  /** A file a save wrote, once the write landed: Save, Save As, Overwrite and an offline save's upload alike. */
+  onDidSave(listener: (location: Location) => void): Disposable {
+    this.saveListeners.add(listener);
+    return { dispose: () => this.saveListeners.delete(listener) };
   }
 
   get(id: string): Document | undefined {
@@ -1879,6 +1886,7 @@ export class DocumentService {
     if (isDirty(document)) this.deps.backups.changed(document);
     else this.deps.backups.remove(document.backupId);
     this.emit(document.id, false);
+    for (const listener of [...this.saveListeners]) listener(location);
     return { ok: true };
   }
 

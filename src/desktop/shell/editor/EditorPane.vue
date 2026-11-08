@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, ref, watch, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { AtSign, CircleAlert, CloudOff, ExternalLink, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
@@ -18,6 +18,7 @@ import MarkdownPreview from './MarkdownPreview.vue';
 import ImagePreview from './ImagePreview.vue';
 import BrowserTab from './BrowserTab.vue';
 import DesignPreviewTab from './DesignPreviewTab.vue';
+import HtmlPreviewTab from './HtmlPreviewTab.vue';
 import SearchEditorTab from './SearchEditorTab.vue';
 import ScmChangesTab from './ScmChangesTab.vue';
 import PatchChangesTab from './PatchChangesTab.vue';
@@ -27,11 +28,14 @@ import MergeEditor from './merge/MergeEditor.vue';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
 import LoadFailedNotice from './LoadFailedNotice.vue';
 import { parseRootKey } from '../../preload/folder-root';
+import { gridAreas, slotOf } from '../layout/layout-model';
+import { TERMINAL_STORE } from '../terminal/terminal-store';
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef] }>();
 const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
+const terminals = inject(TERMINAL_STORE)!;
 
 const root = ref<HTMLElement | null>(null);
 const tab = computed(() => store.activeTab.value);
@@ -76,11 +80,28 @@ const changesTab = computed(() => (tab.value?.changes ? (tab.value as ShellEdito
 const patchTab = computed(() => (tab.value?.patch ? (tab.value as ShellEditorTab & { patch: NonNullable<ShellEditorTab['patch']> }) : undefined));
 const browserTab = computed(() => (tab.value?.browser ? (tab.value as ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> }) : undefined));
 const designPreviewTab = computed(() => (tab.value?.designPreview ? (tab.value as ShellEditorTab & { designPreview: NonNullable<ShellEditorTab['designPreview']> }) : undefined));
+const htmlPreviewTab = computed(() => (tab.value?.htmlPreview ? (tab.value as ShellEditorTab & { htmlPreview: NonNullable<ShellEditorTab['htmlPreview']> }) : undefined));
 const reviewTab = computed(() => (tab.value?.review ? (tab.value as ShellEditorTab & { review: NonNullable<ShellEditorTab['review']> }) : undefined));
 const timelineTab = computed(() => (tab.value?.timeline && tab.value.kind === 'timeline' ? (tab.value as ShellEditorTab & { timeline: NonNullable<ShellEditorTab['timeline']> }) : undefined));
 const mergeTab = computed(() => (tab.value?.merge ? (tab.value as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> }) : undefined));
-// Tabs that are no file of their own: no mention and no breadcrumbs; each names what it shows in its own header.
-const OWN_HEADER_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['changes', 'review', 'timeline', 'merge']);
+// Tabs that are no file of their own: no mention and no breadcrumbs; each names what it shows in its own header or tab.
+const OWN_HEADER_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['changes', 'review', 'timeline', 'merge', 'terminal']);
+
+// One host per terminal tab, kept while the tab is open, so the terminal's teleported view never loses its parent when
+// another tab shows; the terminal pane renders the view itself (TerminalPanes.vue).
+const terminalTabs = computed(() => store.tabs.value.flatMap((candidate) => (candidate.terminal ? [{ tabId: candidate.id, terminalId: candidate.terminal.id }] : [])));
+const hostElements = new Map<string, HTMLElement>();
+function setHost(terminalId: string, element: unknown): void {
+  if (element instanceof HTMLElement) {
+    if (hostElements.get(terminalId) === element) return;
+    hostElements.set(terminalId, element);
+  } else if (!hostElements.delete(terminalId)) return;
+  terminals.editorHosts.value = new Map(hostElements);
+}
+const editorVisible = computed(() => gridAreas(props.state.layout.grid)[slotOf(props.state.layout.grid, 'editor')]);
+watchEffect(() => {
+  terminals.editorShown.value = editorVisible.value && tab.value?.terminal ? tab.value.terminal.id : null;
+});
 // A design preview is a file (main mentions its path in the design chat), but it names it in its own toolbar.
 const showsBreadcrumbs = computed(() => tab.value !== null && !OWN_HEADER_KINDS.has(tab.value.kind) && tab.value.kind !== 'designPreview');
 // A design preview knows its file's path only once main read the screen's info.
@@ -272,12 +293,26 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
         />
         <span class="min-w-0 flex-1 wrap-break-word">{{ store.saveError.value.message }}</span>
       </div>
+    </template>
+    <!-- Always rendered: a terminal host must never unmount under its teleported view, whatever the active tab. -->
+    <div
+      v-show="tab"
+      id="editor-panel"
+      role="tabpanel"
+      :aria-labelledby="tab ? `editor-tab-${tab.id}` : undefined"
+      class="relative min-h-0 flex-1"
+    >
       <div
-        id="editor-panel"
-        role="tabpanel"
-        :aria-labelledby="`editor-tab-${tab.id}`"
-        class="relative min-h-0 flex-1"
-      >
+        v-for="host in terminalTabs"
+        v-show="host.tabId === tab?.id"
+        :id="`terminal-editor-host-${host.terminalId}`"
+        :key="host.tabId"
+        :ref="(element) => setHost(host.terminalId, element)"
+        data-testid="terminal-editor-host"
+        :data-terminal-id="host.terminalId"
+        class="absolute inset-0"
+      />
+      <template v-if="tab">
         <LoadFailedNotice
           v-if="loadFailure"
           :tab="loadFailure"
@@ -380,8 +415,15 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           :tab="designPreviewTab"
           :platform="state.platform"
         />
+        <!-- Keyed, so switching between two previews reports the old one's page area gone before the new one's. -->
+        <HtmlPreviewTab
+          v-else-if="htmlPreviewTab"
+          :key="htmlPreviewTab.id"
+          :api="api"
+          :tab="htmlPreviewTab"
+        />
         <NotDisplayedNotice
-          v-else-if="!openedAnyway"
+          v-else-if="!openedAnyway && tab.kind !== 'terminal'"
           :key="tab.id"
           data-testid="editor-not-displayed"
           :reason="notDisplayed?.reason ?? 'binary'"
@@ -413,7 +455,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
             </Button>
           </div>
         </NotDisplayedNotice>
-      </div>
-    </template>
+      </template>
+    </div>
   </section>
 </template>

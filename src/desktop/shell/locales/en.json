@@ -1014,6 +1014,7 @@
     "tabsLabel": "Open editors",
     "mention": "Mention this file in chat",
     "closePane": "Close pane",
+    "enterPage": "Go to the page",
     "empty": "Click a file in the sidebar to open it here.",
     "emptyHint": "Or press {shortcut} to search files in every project.",
     "breadcrumbs": "File path",
@@ -1048,7 +1049,9 @@
       "copyPath": "Copy path",
       "revealInFiles": "Reveal in Files",
       "revealInExplorer": "Reveal in File Explorer",
-      "openTimeline": "Open Timeline"
+      "openTimeline": "Open Timeline",
+      "openPreview": "Open preview",
+      "openSource": "Open source"
     },
     "contextMenu": {
       "label": "Editor context menu",
@@ -1122,6 +1125,19 @@
       },
       "forwardedFrom": "Forwarded from {target}",
       "forwardedFromPrefix": "Forwarded from"
+    },
+    "htmlPreview": {
+      "label": "HTML preview",
+      "toolbar": "Preview actions",
+      "reload": "Reload",
+      "reloadTitle": "Reload the page",
+      "openInBrowser": "Open in browser",
+      "openInBrowserTitle": "Open the page in your browser on this computer",
+      "untrusted": "Scripts are off because this folder is not trusted.",
+      "trustFolder": "Trust Folder...",
+      "loading": "Loading preview…",
+      "offline": "{host} is not connected.",
+      "failed": "The preview could not load."
     },
     "designPreview": {
       "menu": {
@@ -1567,6 +1583,13 @@
       "resize": "Resize between {left} and {right}",
       "sizes": "{left} {leftPercent}%, {right} {rightPercent}%"
     },
+    "arrange": {
+      "moved": "{title} moved to position {position} of {count}",
+      "movedSplit": "{title} moved to position {position} of {count}, split {index} of {panes}",
+      "full": "This split already has {max} terminals",
+      "dropIntoPanel": "Drop to move {title} into the panel",
+      "task": "A worktree's Setup terminal runs in a tab of its own"
+    },
     "status": {
       "starting": "Starting",
       "running": "Running",
@@ -1589,11 +1612,19 @@
     "pick": {
       "profileLabel": "New terminal shell",
       "projectLabel": "New terminal project",
-      "profilePlaceholder": "Select a shell for the new terminal",
+      "profilePlaceholder": "Select a shell on {host}",
+      "profilePlaceholderLocal": "Select a shell on this computer",
       "projectPlaceholder": "Select the project the terminal starts in",
       "default": "Default",
       "current": "Current",
-      "shiftHint": "Shift+Enter starts it in {project}"
+      "shiftHint": "Shift+Enter starts the host's default shell",
+      "notConnected": "Not connected",
+      "home": "Home folder",
+      "noShells": "No shells were found on {host}.",
+      "noShellsLocal": "No shells were found on this computer.",
+      "loadFailed": "The shells of {host} could not be loaded.",
+      "loadFailedLocal": "The shells of this computer could not be loaded.",
+      "hostNotConnected": "{host} is not connected."
     },
     "renameLabel": "Rename {title}",
     "renamePlaceholder": "Terminal name",
@@ -1606,6 +1637,11 @@
       "rename": "Rename...",
       "split": "Split Terminal",
       "unsplit": "Unsplit Terminal",
+      "joinTerminals": "Join Terminals...",
+      "moveUp": "Move Up",
+      "moveDown": "Move Down",
+      "moveToEditor": "Move Terminal into Editor Area",
+      "moveToPanel": "Move Terminal into Panel",
       "changeIcon": "Change Icon...",
       "changeColor": "Change Color...",
       "kill": "Kill Terminal",
@@ -1623,9 +1659,7 @@
       "web": "click to follow link"
     },
     "newMenu": {
-      "button": "Launch Profile...",
-      "label": "New terminal with a shell",
-      "selectDefault": "Select Default Profile..."
+      "button": "Launch Profile..."
     },
     "mark": {
       "unnamed": "Command",
@@ -2079,7 +2113,10 @@
     "stashAria": "{name}: {description}, {detail}"
   },
   "quickPick": {
-    "echo": "“{query}”"
+    "echo": "“{query}”",
+    "count": "{count} of {max} selected",
+    "manyHint": "Down Arrow moves into the list, Space or a click checks a row, Enter or OK accepts",
+    "ok": "OK"
   },
   "quickInput": {
     "browseFailed": "The folder picker could not be opened. Try again.",
@@ -3146,6 +3183,19 @@
     "once": "Allow once",
     "always": "Always for {host}",
     "deny": "Deny"
+  },
+  "clientCertificate": {
+    "title": "Choose a certificate for {site}",
+    "body": "{site} asks for a client certificate. Until you quit Damocles, the browser sends the one you choose to this site without asking again. The browser restarts and reopens your pages.",
+    "listLabel": "Certificates for {site}",
+    "issuedBy": "Issued by {issuer}",
+    "validity": "Valid from {start} to {end}",
+    "expired": "Expired",
+    "notYetValid": "Not yet valid",
+    "indistinct": "Another certificate has the same names, so the browser cannot tell them apart.",
+    "noName": "(no name)",
+    "use": "Use Certificate",
+    "cancel": "Cancel"
   },
   "wsl": {
     "notice": {

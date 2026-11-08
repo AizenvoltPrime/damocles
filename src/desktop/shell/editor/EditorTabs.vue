@@ -2,7 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
-import { CloudOff, CloudUpload, FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, Monitor, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
+import { AppWindow, CloudOff, CloudUpload, FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, Monitor, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellHost, ShellProject } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
@@ -15,6 +15,7 @@ import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
 import FileIcon from '../components/FileIcon.vue';
 import { tidyMenu } from '../../preload/overlay-channels';
+import { isServablePreviewPath } from '../../main/html-preview/serve-policy';
 import { EDITOR_STORE } from './editor-store';
 import { placeChipFolds, placeOf, tabPlaces } from './editor-place';
 import TabPlaceChip from './TabPlaceChip.vue';
@@ -23,6 +24,13 @@ import { TONE_TEXT } from '../scm/scm-list';
 import StatusLetter from '../scm/StatusLetter.vue';
 import { isBlankPage, pageText, pageTitle } from './browser-page';
 import { tabDescriptions, tabHostName } from './tab-labels';
+import type { TerminalInfo } from '../../preload/terminal-channels';
+import { prefersReducedMotion } from '@/utils/reducedMotion';
+import { TERMINAL_STORE } from '../terminal/terminal-store';
+import { draggedTerminal, endTerminalDrag, startTerminalDrag, terminalDragOf, terminalDropOf } from '../terminal/terminal-drag';
+import { terminalGlyph } from '../terminal/terminal-icons';
+import { runTerminalTabAction, terminalProjectLabel, terminalStatusLabel, terminalTabMenuItems } from '../terminal/terminal-menu';
+import TerminalRename from '../terminal/TerminalRename.vue';
 
 const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string; projects: readonly ShellProject[]; hosts: readonly ShellHost[] }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef]; focusOverlay: [] }>();
@@ -31,6 +39,14 @@ const store = inject(EDITOR_STORE)!;
 const places = computed(() => tabPlaces(store.tabs.value));
 
 const scm = inject(SCM_STORE)!;
+const terminals = inject(TERMINAL_STORE)!;
+// A terminal tab shows its terminal as the terminal pane does: glyph, colour, title and status, live from main's state.
+const terminalOf = (tab: ShellEditorTab): TerminalInfo | undefined => (tab.terminal ? terminals.state.value?.terminals.find((terminal) => terminal.id === tab.terminal!.id) : undefined);
+const terminalBusy = (terminal: TerminalInfo | undefined): boolean => terminal?.status === 'starting' || terminal?.status === 'reconnecting';
+const renamingTerminal = (tab: ShellEditorTab): TerminalInfo | undefined => {
+  const terminal = terminalOf(tab);
+  return terminal && terminals.renaming.value?.id === terminal.id ? terminal : undefined;
+};
 
 // The strip scrolls; the tabs and the active tab's bar sit in its content row, so the bar scrolls and clips with the tabs.
 const strip = ref<HTMLElement | null>(null);
@@ -72,6 +88,7 @@ watch(() => [store.state.value?.activeTabId, store.tabs.value.map((tab) => tab.i
 const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; color: string }>> = {
   browser: { icon: Globe, color: 'var(--d-info)' },
   designPreview: { icon: Monitor, color: 'var(--d-design)' },
+  htmlPreview: { icon: AppWindow, color: 'var(--d-accent)' },
   diff: { icon: GitCompare, color: 'var(--d-warning)' },
   changes: { icon: FileDiff, color: 'var(--d-warning)' },
   settings: { icon: Settings2, color: 'var(--d-muted)' },
@@ -81,7 +98,7 @@ const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; colo
   timeline: { icon: History, color: 'var(--d-info)' },
   merge: { icon: GitMerge, color: 'var(--d-warning)' },
 };
-const titleOf = (tab: ShellEditorTab): string => (tab.browser ? pageTitle(tab, t('editor.browser.newPage')) : tab.title);
+const titleOf = (tab: ShellEditorTab): string => (tab.browser ? pageTitle(tab, t('editor.browser.newPage')) : terminalOf(tab)?.title ?? tab.title);
 const hostOf = (tab: ShellEditorTab): string | undefined => tabHostName(tab, props.projects, props.hosts);
 // A same-named tab's description, as VS Code tells such tabs apart.
 const descriptions = computed(() => tabDescriptions(store.tabs.value, hostOf, t('projects.group.local')));
@@ -114,12 +131,16 @@ watch([chipInputs, stripResizes], async () => {
 }, { flush: 'post' });
 const tooltipOf = (tab: ShellEditorTab): string => {
   if (tab.browser) return pageText(tab.displayPath);
+  const terminal = terminalOf(tab);
+  if (terminal) return [terminal.title, terminal.description, terminalProjectLabel(terminal, t)].filter((part) => part).join(' · ');
   const host = hostOf(tab);
   return host === undefined ? visibleText(tab.displayPath) : t('editor.tab.hostPath', { host, path: visibleText(tab.displayPath) });
 };
 // A deleted or conflicted file's tab says so under its path, as VS Code's "Deleted" decoration does.
-const hoverOf = (tab: ShellEditorTab): string =>
-  [tooltipOf(tab), ...(tab.deleted ? [t('editor.tab.deleted')] : []), ...(tab.conflict ? [t('editor.tab.conflict')] : [])].join('\n');
+const hoverOf = (tab: ShellEditorTab): string => {
+  const terminal = terminalOf(tab);
+  return [tooltipOf(tab), ...(terminal ? [terminalStatusLabel(terminal, t)] : []), ...(tab.deleted ? [t('editor.tab.deleted')] : []), ...(tab.conflict ? [t('editor.tab.conflict')] : [])].join('\n');
+};
 const badgeOf = (tab: ShellEditorTab): string | undefined => {
   if (tab.kind === 'markdownPreview') return t('editor.tab.preview');
   if (tab.kind === 'log') return t('editor.tab.readOnly');
@@ -160,6 +181,9 @@ onBeforeUnmount(() => {
   for (const timer of uploadedTimers) clearTimeout(timer);
 });
 const isMarkdown = (tab: ShellEditorTab): boolean => tab.kind === 'markdownPreview' || (tab.kind === 'code' && /\.md$/i.test(tab.title));
+// Only a project's file previews, and only one its serve policy would serve: the preview serves the project's folder.
+const previewsAsHtml = (tab: ShellEditorTab): boolean =>
+  tab.kind === 'code' && tab.projectKey !== undefined && tab.relativePath !== undefined && /\.html?$/i.test(tab.relativePath) && isServablePreviewPath(tab.relativePath);
 const fileOf = (tab: ShellEditorTab): FileRef | undefined =>
   (tab.projectKey !== undefined && tab.relativePath !== undefined ? { projectKey: tab.projectKey, relativePath: tab.relativePath } : undefined);
 
@@ -214,6 +238,9 @@ function onKeydown(event: KeyboardEvent, index: number, tab: ShellEditorTab): vo
   } else if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
     void select(tab);
+  } else if (tab.terminal && event.key === 'F2' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    event.preventDefault();
+    terminals.startRename(tab.terminal.id, 'tab');
   } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
     event.preventDefault();
     void openMenu(tab, (event.currentTarget as HTMLElement).getBoundingClientRect());
@@ -236,7 +263,10 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     item('closeAll', t('editor.menu.closeAll'), 'circle-x'),
     separator,
   ];
-  const items: OverlayMenuItem[] = tab.browser ? [
+  const items: OverlayMenuItem[] = tab.terminal ? [
+    ...closing,
+    ...terminalTabMenuItems(t),
+  ] : tab.browser ? [
     ...closing,
     item('reloadPage', t('editor.browser.menu.reload'), 'rotate-cw'),
     item('devTools', t('editor.browser.menu.devTools'), 'square-code'),
@@ -248,8 +278,21 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     item('mention', t('editor.menu.mention'), 'at-sign', { disabled: !tab.designPreview.info }),
     separator,
     item('copyPath', t('editor.menu.copyPath'), 'copy', { disabled: !tab.designPreview.info }),
+  ] : tab.htmlPreview ? [
+    ...closing,
+    item('reloadPreview', t('editor.htmlPreview.reload'), 'rotate-cw'),
+    item('openInBrowser', t('editor.htmlPreview.openInBrowser'), 'arrow-up-right'),
+    separator,
+    item('openSource', t('editor.menu.openSource'), 'code'),
+    item('focusOverlay', t('editor.menu.focusOverlay'), 'maximize-2'),
+    ...(file ? [item('mention', t('editor.menu.mention'), 'at-sign')] : []),
+    separator,
+    item('copyPath', t('editor.menu.copyPath'), 'copy'),
+    ...(file ? [item('revealInFiles', t('editor.menu.revealInFiles'), 'list-tree')] : []),
+    ...(tab.revealable ? [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')] : []),
   ] : [
     ...closing,
+    ...(previewsAsHtml(tab) ? [item('openPreview', t('editor.menu.openPreview'), 'eye'), separator] : []),
     ...(isMarkdown(tab)
       ? [
           item('openPreview', t('editor.menu.showPreview'), 'eye', { checked: tab.kind === 'markdownPreview' }),
@@ -275,12 +318,18 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
   });
   if (answer.kind !== 'menu') return;
   const id = answer.itemId;
+  if (tab.terminal && runTerminalTabAction(id, tab.terminal.id, { api: props.api.terminal, store: terminals })) return;
   if (id === 'focusOverlay') {
     await store.activate(tab.id);
     emit('focusOverlay');
   } else if (id === 'mention') await props.api.mentionTab(tab.id);
   else if (id === 'openTimeline' && tab.git) await props.api.scm.run({ op: 'openTimeline', repoId: tab.git.repoId, path: tab.git.path });
   else if (id === 'revealInFiles' && file) emit('revealInFiles', file);
+  // Main toasts a failure the user should see.
+  else if (tab.htmlPreview && (id === 'reloadPreview' || id === 'openInBrowser')) {
+    const action = id === 'reloadPreview' ? 'reload' : 'openInBrowser';
+    await props.api.htmlPreviewAction({ tabId: tab.id, action }).catch((error: unknown) => console.error(`[html preview] main refused ${action}`, error));
+  }
   // Main toasts an Open in browser failure itself, and refuses a preview that left the selected chat meanwhile.
   else if (id === 'openInBrowser') await props.api.designPreviewAction({ tabId: tab.id, action: 'openInBrowser' }).catch((error: unknown) => console.error('[design preview] main refused Open in browser', error));
   // Main tells the user of a failure they should see; a refusal for a page that closed meanwhile leaves nothing to do.
@@ -290,8 +339,13 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
   }
 }
 
-// A project file's tab drags like its Files row: the composer turns the drop into a mention. Other tabs have no file to name.
+// A project file's tab drags like its Files row: the composer turns the drop into a mention. A terminal tab drags like its
+// list row, onto the terminal list or a pane half. Other tabs have no file to name.
 function onDragStart(event: DragEvent, tab: ShellEditorTab): void {
+  if (tab.terminal) {
+    startTerminalDrag(event, tab.terminal.id);
+    return;
+  }
   const file = fileOf(tab);
   if (!file || !event.dataTransfer) {
     event.preventDefault();
@@ -299,6 +353,42 @@ function onDragStart(event: DragEvent, tab: ShellEditorTab): void {
   }
   event.dataTransfer.setData(FILE_DRAG_MIME, serializeFileDragPayload(file));
   event.dataTransfer.effectAllowed = 'copy';
+}
+
+// A panel terminal dragged over the strip moves into the editor area as its last tab, where a ghost tab shows it landing.
+// A task terminal stays in the panel, and an editor terminal is in the strip already.
+const stripDrop = shallowRef<TerminalInfo | null>(null);
+const dropGhost = ref<HTMLElement | null>(null);
+watch(draggedTerminal, (id) => {
+  if (id === null) stripDrop.value = null;
+});
+
+function movableTerminal(id: string | null): TerminalInfo | null {
+  const terminal = id === null ? undefined : terminals.state.value?.terminals.find((candidate) => candidate.id === id);
+  return terminal?.placement === 'panel' && terminal.task !== true ? terminal : null;
+}
+
+function onStripDragOver(event: DragEvent): void {
+  const terminal = movableTerminal(terminalDragOf(event));
+  if (!terminal) return;
+  event.preventDefault();
+  event.dataTransfer!.dropEffect = 'move';
+  if (stripDrop.value?.id === terminal.id) return;
+  stripDrop.value = terminal;
+  void nextTick(() => dropGhost.value?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' }));
+}
+
+function onStripDragLeave(event: DragEvent): void {
+  if (!strip.value?.contains(event.relatedTarget as Node | null)) stripDrop.value = null;
+}
+
+function onStripDrop(event: DragEvent): void {
+  stripDrop.value = null;
+  const terminal = movableTerminal(terminalDropOf(event));
+  if (!terminal) return;
+  event.preventDefault();
+  endTerminalDrag();
+  terminals.move({ kind: 'toEditor', id: terminal.id });
 }
 
 function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
@@ -322,6 +412,10 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
       :class="fadeClass"
       @wheel="onWheel"
       @scroll="onScroll"
+      @dragenter="onStripDragOver"
+      @dragover="onStripDragOver"
+      @dragleave="onStripDragLeave"
+      @drop="onStripDrop"
     >
       <div
         ref="content"
@@ -344,7 +438,11 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             aria-controls="editor-panel"
             :tabindex="tab.id === store.state.value?.activeTabId || (activeIndex < 0 && index === 0) ? 0 : -1"
             :title="hoverOf(tab)"
-            :draggable="fileOf(tab) !== undefined"
+            :aria-keyshortcuts="tab.terminal ? 'F2 Shift+F10' : undefined"
+            :draggable="tab.terminal ? !renamingTerminal(tab) : fileOf(tab) !== undefined"
+            :data-terminal-id="tab.terminal?.id"
+            :data-status="terminalOf(tab)?.status"
+            :data-dragging="tab.terminal && draggedTerminal === tab.terminal.id ? 'true' : undefined"
             class="editor-tab group/tab relative flex shrink-0 cursor-pointer items-center gap-1.75 border-r border-(--d-border) pr-2 pl-3 outline-none select-none"
             :class="[tab.id === store.state.value?.activeTabId ? 'bg-(--d-bg) text-(--d-text)' : 'text-(--d-muted) hover:text-(--d-text)', placeOf(tab, places) ? PLACE_TAB_WIDTH : TAB_WIDTH]"
             @click="select(tab)"
@@ -353,12 +451,24 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             @keydown="onKeydown($event, index, tab)"
             @contextmenu="onContextMenu($event, tab)"
             @dragstart="onDragStart($event, tab)"
+            @dragend="tab.terminal && endTerminalDrag()"
           >
             <LoaderCircle
-              v-if="tab.browser?.loading"
+              v-if="tab.browser?.loading || terminalBusy(terminalOf(tab))"
               aria-hidden="true"
               data-testid="editor-tab-loading"
-              class="d-spinning size-3.25 shrink-0 text-(--d-info)"
+              class="d-spinning size-3.25 shrink-0"
+              :class="tab.browser ? 'text-(--d-info)' : 'text-(--d-muted)'"
+            />
+            <component
+              :is="terminalGlyph(terminalOf(tab)!).icon"
+              v-else-if="terminalOf(tab)"
+              aria-hidden="true"
+              data-testid="editor-tab-terminal-icon"
+              :data-glyph="terminalOf(tab)!.customIcon ?? terminalOf(tab)!.icon"
+              :data-color="terminalOf(tab)!.color ?? undefined"
+              class="terminal-glyph size-3.25 shrink-0"
+              :style="{ color: terminalGlyph(terminalOf(tab)!).color }"
             />
             <img
               v-else-if="tab.browser?.iconDataUrl"
@@ -379,7 +489,15 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               :path="tab.displayPath || tab.title"
               class="size-3.25 shrink-0"
             />
+            <TerminalRename
+              v-if="renamingTerminal(tab)"
+              :api="api"
+              :terminal="renamingTerminal(tab)!"
+              class="-mx-1.25 w-auto max-w-full flex-none text-12.5 field-sizing-content"
+              @done="tabElement(tab.id)?.focus()"
+            />
             <span
+              v-else
               data-testid="editor-tab-title"
               class="truncate text-12.5"
               :class="tab.deleted ? 'text-(--d-danger-text) line-through' : tab.conflict ? 'text-(--d-warning-text)' : decorationOf(tab)?.strike ? 'line-through' : ''"
@@ -446,6 +564,10 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               class="sr-only"
             >{{ t('editor.browser.loading') }}</span>
             <span
+              v-if="terminalOf(tab)"
+              class="sr-only"
+            >{{ terminalStatusLabel(terminalOf(tab)!, t) }}</span>
+            <span
               v-if="tab.diff"
               class="shrink-0 font-mono text-10 text-(--d-faint-text)"
             >{{ t('editor.tab.diff') }}</span>
@@ -479,6 +601,23 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             </button>
           </div>
         </TransitionGroup>
+        <Transition name="editor-tab-drop">
+          <div
+            v-if="stripDrop"
+            ref="dropGhost"
+            aria-hidden="true"
+            data-testid="editor-tab-drop"
+            :data-terminal-id="stripDrop.id"
+            class="editor-tab-drop pointer-events-none flex max-w-50 shrink-0 items-center gap-1.75 px-3"
+          >
+            <component
+              :is="terminalGlyph(stripDrop).icon"
+              class="terminal-glyph size-3.25 shrink-0"
+              :style="{ color: terminalGlyph(stripDrop).color }"
+            />
+            <span class="truncate text-12.5">{{ stripDrop.title }}</span>
+          </div>
+        </Transition>
         <SlidingIndicator
           class="text-(--d-accent)"
           data-testid="editor-tab-indicator"

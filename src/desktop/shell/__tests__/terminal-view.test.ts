@@ -180,7 +180,7 @@ afterEach(() => {
 });
 
 const info: TerminalInfo = {
-  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true, restoring: false, windowsBuild: null, pathFlavor: 'posix',
+  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true, restoring: false, windowsBuild: null, pathFlavor: 'posix', placement: 'panel',
 };
 
 interface MountOptions {
@@ -195,6 +195,7 @@ interface MountOptions {
   // a screen waits in the store for this view
   screenWaits?: () => boolean;
   host?: ShellHost;
+  placement?: TerminalInfo['placement'];
 }
 
 async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellApi; xterm: FakeXterm | undefined; sinks: TerminalSink[]; requestFocus: ReturnType<typeof vi.fn> }> {
@@ -216,7 +217,7 @@ async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellAp
   wrapper = mount(TerminalView, {
     props: {
       api,
-      terminal: { ...info, status: options.status ?? info.status, integrated: options.integrated ?? true, restoring: options.restoring ?? false, windowsBuild: options.windowsBuild ?? null, pathFlavor: options.pathFlavor ?? 'posix' },
+      terminal: { ...info, status: options.status ?? info.status, integrated: options.integrated ?? true, restoring: options.restoring ?? false, windowsBuild: options.windowsBuild ?? null, pathFlavor: options.pathFlavor ?? 'posix', placement: options.placement ?? 'panel' },
       shown: true,
       settings: { ...TERMINAL_STATE.settings, ...options.settings },
       passKeys: [],
@@ -235,6 +236,25 @@ async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellAp
 const key = (code: string, init: KeyboardEventInit = {}): KeyboardEvent => new KeyboardEvent('keydown', { code, key: code, ...init });
 const shellEvents = (sink: TerminalSink, ...events: TerminalShellEvent[]): void => sink({ data: '', events: events.map((event) => ({ offset: 0, event })) });
 const RANGE: IBufferRange = { start: { x: 1, y: 1 }, end: { x: 10, y: 1 } };
+
+describe('the input focus report', () => {
+  // Main's terminal commands target the terminal whose xterm input had focus last, wherever its view is hosted.
+  it('names this terminal while its xterm input has focus and none once it lost it; a field of its own is no input', async () => {
+    const { api } = await mountView();
+    const host = wrapper!.get('.terminal-host').element;
+    const input = document.createElement('textarea');
+    input.className = 'xterm-helper-textarea';
+    const field = document.createElement('input');
+    host.append(input, field);
+    input.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    expect(api.terminal.reportInputFocus).toHaveBeenLastCalledWith('term-1');
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    expect(api.terminal.reportInputFocus).toHaveBeenLastCalledWith(null);
+    field.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    field.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    expect(api.terminal.reportInputFocus).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('a restored remote terminal whose host is not connected', () => {
   it('says Reconnecting until main reattaches it, and its list row and tab read the same state', async () => {
@@ -551,6 +571,15 @@ describe('the tab panel', () => {
     expect(panel.attributes('role')).toBe('tabpanel');
     expect(panel.attributes('id')).toBe('terminal-panel-term-1');
     expect(panel.attributes('aria-labelledby')).toBe('terminal-row-term-1 terminal-tab-term-1');
+  });
+
+  // The editor's #editor-panel is the tabpanel there, named by the terminal's editor tab.
+  it('is no tabpanel of its own in the editor area, where no list row or single tab names it', async () => {
+    await mountView({ placement: 'editor' });
+    const panel = wrapper!.get('[data-testid="terminal-view"]');
+    expect(panel.attributes('role')).toBeUndefined();
+    expect(panel.attributes('aria-labelledby')).toBeUndefined();
+    expect(panel.attributes('aria-label')).toBeUndefined();
   });
 });
 

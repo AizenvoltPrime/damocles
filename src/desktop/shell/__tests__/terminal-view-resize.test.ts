@@ -100,7 +100,7 @@ let wrapper: VueWrapper | undefined;
 afterEach(() => wrapper?.unmount());
 
 const info: TerminalInfo = {
-  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true, restoring: false, windowsBuild: null, pathFlavor: 'posix',
+  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true, restoring: false, windowsBuild: null, pathFlavor: 'posix', placement: 'panel',
 };
 
 describe('terminal view pty size', () => {

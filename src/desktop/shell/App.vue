@@ -14,6 +14,7 @@ import ChatPlaceholder from './components/ChatPlaceholder.vue';
 import { chatTitleText } from './components/chat-title';
 import { DESIGN_STRIP } from '@/components/design/design-strip';
 import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
+import { editorTabElement, enterPage } from './editor/page-focus';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
 import { createScmStore, SCM_STORE } from './scm/scm-store';
 import { dropMarkupSession } from './editor/markup-session';
@@ -61,7 +62,7 @@ const stops: Array<() => void> = [];
 let stopBounds: (() => void) | undefined;
 
 // F6 landed on a part: the sidebar's current row, the active terminal, or the active editor tab's own focus target (its
-// editor, a page tab's address field), else that tab in the strip.
+// editor, a browser tab's address field, a preview's page view), else that tab in the strip.
 function focusPart(part: ShellFocusPart): void {
   if (part === 'sidebar') {
     sidebar.value?.focusCurrentRow();
@@ -74,9 +75,15 @@ function focusPart(part: ShellFocusPart): void {
   }
   const active = editor.activeTab.value;
   if (part !== 'editor' || !active) return;
+  if (active.htmlPreview || active.designPreview) {
+    void enterPage(props.api, active.id).then((entered) => {
+      if (!entered) editorTabElement(active.id)?.focus();
+    });
+    return;
+  }
   editor.requestFocus(active.id);
   void nextTick(() => {
-    if (editor.takeFocus(active.id)) document.querySelector<HTMLElement>(`[data-editor-tab][data-tab-id="${CSS.escape(active.id)}"]`)?.focus();
+    if (editor.takeFocus(active.id)) editorTabElement(active.id)?.focus();
   });
 }
 

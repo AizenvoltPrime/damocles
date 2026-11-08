@@ -9,7 +9,7 @@ import { appliedWrite, isSchemaAhead, memoryDatabasePath, openDatabaseAsync, rec
 import { createMemoryIntegrity, MEMORY_WRITE_HOLD_MS, type IntegrityVerdict, type MemoryIntegrity, type RepairOutcome } from './integrity';
 import { repairMarkerPath } from './integrity-protocol';
 import { expandMemoryTerms, expandMemoryTermsWithStatus, clearExpansionCache } from './query-expansion';
-import { NoteManager } from './managers/note-manager';
+import { anyTagCondition, NoteManager } from './managers/note-manager';
 import { ObservationManager } from './managers/observation-manager';
 import { RetrievalManager } from './managers/retrieval-manager';
 import { InjectionManager, MERGED_FORGET_REASON, mergeTargetOf, USER_FORGET_REASONS, type BuildInjectionArgs, type InjectionBuildResult } from './managers/injection-manager';
@@ -63,7 +63,7 @@ import { notifySchemaAhead } from '../schema-skew';
 import { globalMemoryChangeReason, globalMemoryClosedReason, globalMemoryReadReason, globalMemoryUnavailableReason, userScopeRemote } from '../user-scope';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { localOnly } from './local-only';
-import { MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, USER_SCOPE_UNAVAILABLE, type ClientGlobalProfile, type GlobalMemoryKind, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type RelayedGlobalMemory, type SearchedGlobalMemory } from '../../shared/remote-user';
+import { carriesAnyTag, CLIENT_MEMORY_OFF, listedMemoryBytes, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_GLOBAL_MEMORY_TAGS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, USER_SCOPE_UNAVAILABLE, type ClientGlobalProfile, type GlobalMemoryKind, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type ListedGlobalMemory, type RelayedGlobalMemory, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { RemoteHost } from '../../platform/remote-host';
 import { GlobalMemoryRelay, globalMemoryId, parseGlobalMemoryId, type GlobalMemoryFields } from './global-memory-relay';
 import { MemoryOutbox } from './memory-outbox';
@@ -118,9 +118,17 @@ const CHAIN_WHERE = 'root_id = ? OR (root_id IS NULL AND id = ?)';
 // the tiers of global rows: a global fact, preference or episode, and a note
 const GLOBAL_TIERS: ReadonlySet<MemoryTier> = new Set(['global', 'note']);
 
+// the memory panel's rows: live graph rows, forgotten ones included; observations page separately
+const PANEL_ROWS = "is_latest = 1 AND kind IN ('fact','preference','episode','note')";
+
 /** On a daemon's core a relayed global id names a row of its client, which only that client changes or shows; refused before any lookup here. */
 function refuseRelayedId(id: string, reason: () => LocalizedText = globalMemoryChangeReason): void {
   if (userScopeRemote() && parseGlobalMemoryId(id) !== undefined) throw new LocalizedError(reason());
+}
+
+/** This store's global rows as a remote chat's page manages them are this computer's: a daemon's core holds none to show. */
+function refuseOnDaemon(): void {
+  if (userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
 }
 
 /** Global memory is the client's: on a daemon's core an operation that names a global row is refused, before it enters the write queue. */
@@ -195,7 +203,7 @@ export interface MemoryServiceDeps {
 
 const SNIPPET_CHARS = 120;
 
-function relayedEntry(memory: RelayedGlobalMemory): MemoryEntry {
+function relayedEntry(memory: ListedGlobalMemory): MemoryEntry {
   return {
     id: memory.id,
     tier: memory.kind === 'note' ? 'note' : 'global',
@@ -208,6 +216,7 @@ function relayedEntry(memory: RelayedGlobalMemory): MemoryEntry {
     workspace: null,
     createdAt: memory.createdAt,
     updatedAt: memory.updatedAt,
+    ...(memory.forgotten === true ? { forgotten: true } : {}),
   };
 }
 
@@ -222,9 +231,14 @@ function relayedSearchResult(memory: RelayedGlobalMemory): SearchResult {
   };
 }
 
-/** A row of this store as a client's core returns it to a remote core, within the user.memory tables' bounds. */
-function toRelayed(row: MemoryRow): RelayedGlobalMemory {
-  const tags = [...new Set(JSON.parse(row.tags) as string[])].filter((tag) => tag.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS).slice(0, MAX_GLOBAL_MEMORY_TAGS);
+/**
+ * A row of this store as a client's core returns it to a remote core, within the user.memory tables' bounds; the tags a list
+ * asked for go first, so the bound never drops the tag the row was listed by.
+ */
+function toRelayed(row: MemoryRow, asked: readonly string[] = []): RelayedGlobalMemory {
+  const unique = [...new Set(JSON.parse(row.tags) as string[])].filter((tag) => tag.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS);
+  const matched = unique.filter((tag) => carriesAnyTag([tag], asked));
+  const tags = [...matched, ...unique.filter((tag) => !matched.includes(tag))].slice(0, MAX_GLOBAL_MEMORY_TAGS);
   return {
     id: row.id,
     kind: row.kind as GlobalMemoryKind,
@@ -325,6 +339,13 @@ export class MemoryService {
     return relayedEntry({ id: globalMemoryId(outcome.clientId, outcome.id), contentHash: normalizedContentHash(fields.content), createdAt: now, updatedAt: now, ...fields });
   }
 
+  /** This computer's core: the open store a remote core's requested read runs on, refused with CLIENT_MEMORY_OFF while memory is off here. */
+  private openForRelayedRead(): DatabaseInstance {
+    if (!this.isEnabled) throw new Error(CLIENT_MEMORY_OFF);
+    if (!this.db) throw new LocalizedError(l('Memory system is not available'));
+    return this.db;
+  }
+
   /**
    * This computer's core: its global memory a remote core searches (user.memory.search). For an injection, the injection's own
    * lexical gate over its global facts, preferences and episodes, each saying whether it may render full; else the search
@@ -332,7 +353,9 @@ export class MemoryService {
    */
   async relaySearch(query: string, k: number, tiers: readonly ('global' | 'note')[], injection = false, filters: GlobalMemorySearchFilters = {}): Promise<SearchedGlobalMemory[]> {
     await this.ensureInitialized();
+    // an injection runs before every turn and stays quiet; a search someone asked for says why it has no rows
     if (injection) {
+      if (!this.isEnabled) return [];
       const gated = await this.whileOpen([], async () => this.injectionManager?.gatedGlobals(query, k) ?? []);
       return gated.map(({ row, fullAllowed, matchedTerms }) => ({
         ...toRelayed(row),
@@ -340,6 +363,7 @@ export class MemoryService {
         matchedTerms: matchedTerms.filter((term) => term.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS).slice(0, MAX_RELAYED_MEMORIES),
       }));
     }
+    this.openForRelayedRead();
     // with no query the filters alone answer, as search_memories does here
     const found = await this.whileOpen([], async () => (await this.retrievalManager?.search({ query, tiers: [...tiers], limit: k, allWorkspaces: true, ...filters })) ?? []);
     const db = this.db;
@@ -354,18 +378,18 @@ export class MemoryService {
   /**
    * This computer's core: its global profile with the globals a remote chat injects once per context, as a local chat does
    * (user.memory.profile): its live pinned global facts, preferences and episodes, and its live global preferences, each
-   * list as the local injection ranks it and bounded.
+   * list as the local injection ranks it and bounded; empty while memory is off here.
    */
   async relayProfile(): Promise<ClientGlobalProfile> {
     await this.ensureInitialized();
+    const db = this.isEnabled ? this.db : null;
+    if (!db) return { profile: { static: '', dynamic: '' }, pinned: [], preferences: [] };
     const profile = this.getProfile('global', '');
-    const db = this.db;
-    if (!db) return { profile, pinned: [], preferences: [] };
     const live = "scope = 'global' AND is_latest = 1 AND forgotten = 0 AND (forget_after IS NULL OR forget_after >= ?)";
     const now = Date.now();
     const pinned = db.prepare(`SELECT * FROM memories WHERE ${live} AND pinned = 1 AND kind IN ('fact','preference','episode') ORDER BY updated_at DESC LIMIT ?`).all(now, MAX_STANDING_GLOBALS) as MemoryRow[];
     const preferences = db.prepare(`SELECT * FROM memories WHERE ${live} AND kind = 'preference' ORDER BY pinned DESC, source_count DESC, updated_at DESC LIMIT ?`).all(now, MAX_STANDING_GLOBALS) as MemoryRow[];
-    return { profile, pinned: pinned.map(toRelayed), preferences: preferences.map(toRelayed) };
+    return { profile, pinned: pinned.map((row) => toRelayed(row)), preferences: preferences.map((row) => toRelayed(row)) };
   }
 
   /**
@@ -373,11 +397,11 @@ export class MemoryService {
    * the rules of its own injection's notices: a superseded row answers its chain's live head, a merged one the row it was
    * folded into, a forgotten or deleted one that it is gone, by the user for a user forget or an applied audit proposal. A
    * merge recorded without an edge gets no answer, so it stays as shown. A row of any other scope is gone, so no project
-   * memory leaves this computer by id.
+   * memory leaves this computer by id. None while memory is off here.
    */
   async relayResolve(ids: readonly string[]): Promise<GlobalMemoryResolution[]> {
     await this.ensureInitialized();
-    const db = this.db;
+    const db = this.isEnabled ? this.db : null;
     if (!db) return [];
     return ids.flatMap((id): GlobalMemoryResolution[] => {
       const row = db.prepare("SELECT * FROM memories WHERE id = ? AND scope = 'global'").get(id) as MemoryRow | undefined;
@@ -390,6 +414,43 @@ export class MemoryService {
       const head = db.prepare(`SELECT * FROM memories WHERE (${CHAIN_WHERE}) AND scope = 'global' AND is_latest = 1 AND forgotten = 0 ORDER BY updated_at DESC LIMIT 1`).get(root, root) as MemoryRow | undefined;
       return [head ? { id, memory: toRelayed(head) } : { id, gone: true, byUser: false }];
     });
+  }
+
+  /**
+   * This computer's core: one page of its latest global rows of the kinds and any of the tags a remote core lists
+   * (user.memory.list), forgotten ones included as its own notes list shows them, in created_at DESC, id DESC order below the
+   * cursor: at most MAX_RELAYED_MEMORIES rows and MAX_GLOBAL_MEMORY_LIST_BYTES of JSON unless the first row alone is larger,
+   * with next while more rows remain.
+   */
+  async relayList(request: GlobalMemoryListRequest): Promise<GlobalMemoryListPage> {
+    await this.ensureInitialized();
+    const db = this.openForRelayedRead();
+    const tags = request.tags ?? [];
+    const tagged = anyTagCondition(tags);
+    const kinds = [...new Set(request.kinds)];
+    const select = `SELECT * FROM memories WHERE scope = 'global' AND is_latest = 1 AND kind IN (${kinds.map(() => '?').join(',')})${tagged.sql}`;
+    const first = db.prepare(`${select} ORDER BY created_at DESC, id DESC LIMIT ?`);
+    const after = db.prepare(`${select} AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`);
+    const rows: ListedGlobalMemory[] = [];
+    let bytes = 0;
+    let scanned = request.cursor;
+    for (;;) {
+      const batch = (scanned === undefined
+        ? first.all(...kinds, ...tagged.params, MAX_RELAYED_MEMORIES + 1)
+        : after.all(...kinds, ...tagged.params, scanned.createdAt, scanned.createdAt, scanned.id, MAX_RELAYED_MEMORIES + 1)) as MemoryRow[];
+      for (const row of batch) {
+        scanned = { createdAt: row.created_at, id: row.id };
+        const listed: ListedGlobalMemory = { ...toRelayed(row, tags), ...(row.forgotten === 1 ? { forgotten: true as const } : {}) };
+        // a row the LIKE matched only inside another tag's text carries none of the tags asked for
+        if (tags.length > 0 && !carriesAnyTag(listed.tags, tags)) continue;
+        const size = listedMemoryBytes(listed);
+        const last = rows.at(-1);
+        if (last && (rows.length === MAX_RELAYED_MEMORIES || bytes + size > MAX_GLOBAL_MEMORY_LIST_BYTES)) return { rows, next: { createdAt: last.createdAt, id: last.id } };
+        rows.push(listed);
+        bytes += size;
+      }
+      if (batch.length <= MAX_RELAYED_MEMORIES) return { rows };
+    }
   }
 
   /**
@@ -926,12 +987,40 @@ export class MemoryService {
     if (!this.db) return [];
     const rows = this.db.prepare(
       `SELECT * FROM memories
-       WHERE is_latest = 1
-         AND kind IN ('fact','preference','episode','note')
+       WHERE ${PANEL_ROWS}
          AND (scope = 'global' OR workspace = ? OR (session_id = ? AND scope = 'session'))${localOnly()}
        ORDER BY updated_at DESC`
     ).all(workspace, sessionId ?? '') as MemoryRow[];
     return rows.map(rowToEntry);
+  }
+
+  /** This computer's core: its global facts, preferences, episodes and notes, as the panel lists them, for a remote chat's page. */
+  userScopeMemories(): MemoryEntry[] {
+    refuseOnDaemon();
+    if (!this.db) return [];
+    return (this.db.prepare(`SELECT * FROM memories WHERE ${PANEL_ROWS} AND scope = 'global' ORDER BY updated_at DESC`).all() as MemoryRow[]).map(rowToEntry);
+  }
+
+  /**
+   * This computer's core: whether the id names a global row of this store, the check a remote chat page's read or change of a
+   * row passes before any other lookup. A relayed `global:<clientId>:<id>` names a row of another store, never one of this.
+   */
+  isUserScopeRow(id: string): boolean {
+    refuseOnDaemon();
+    if (!this.db || parseGlobalMemoryId(id) !== undefined) return false;
+    return this.db.prepare("SELECT 1 FROM memories WHERE id = ? AND scope = 'global'").get(id) !== undefined;
+  }
+
+  /** This computer's core: a global row's version chain for a remote chat's page, its global versions only. */
+  userScopeHistory(id: string): MemoryEntry[] {
+    refuseOnDaemon();
+    return this.getMemoryHistory(id).filter((entry) => entry.scope === 'global');
+  }
+
+  /** This computer's core: a global row's fact-graph neighbours for a remote chat's page, global rows only. */
+  userScopeRelated(id: string): MemoryEntry[] {
+    refuseOnDaemon();
+    return this.getRelatedMemories(id).filter((entry) => entry.scope === 'global');
   }
 
   /**
@@ -1002,9 +1091,9 @@ export class MemoryService {
     return changed;
   }
 
-  listNotes(tags?: string[]): MemoryEntry[] {
-    // every note is global
-    if (userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
+  /** Every note, forgotten ones included; on a daemon's core the acting client's, read through its relay. */
+  async listNotes(tags?: string[]): Promise<MemoryEntry[]> {
+    if (this.globals) return (await this.globals.listNotes(tags)).map(relayedEntry);
     return this.noteManager?.list(tags) ?? [];
   }
 
@@ -1053,12 +1142,12 @@ export class MemoryService {
     };
     // with no query the client's filters alone answer, as this store's search does
     const found = await this.globals.search(query.query ?? '', limit, globalTiers, filters);
-    // a client that left during the search is away, as one that was away before it
-    if (found === undefined) {
-      if (globalOnly) throw new LocalizedError(globalMemoryClosedReason());
+    // a mixed search keeps this host's rows when the client has none to give; a global-only one says why
+    if ('unreachable' in found) {
+      if (globalOnly) throw new LocalizedError(found.unreachable);
       return own;
     }
-    const theirs = found.map(relayedSearchResult);
+    const theirs = found.rows.map(relayedSearchResult);
     const byId = new Map([...own, ...theirs].map((result) => [result.id, result]));
     return fuseRankedLists([own.map((result) => result.id), theirs.map((result) => result.id)])
       .slice(0, limit)

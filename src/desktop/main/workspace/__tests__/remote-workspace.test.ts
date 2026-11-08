@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Endpoint } from '../../../core-protocol/endpoint';
 import type { ClientToWorkspace, WorkspaceToClient } from '../../../workspace/messages';
-import { createRemoteWorkspace, TransfersUnsupportedError } from '../remote-workspace';
+import type { StreamChannel } from '../../../../remote/mux';
+import { createRemoteWorkspace, RangedReadsUnsupportedError, TransfersUnsupportedError } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 
 const notConnected = (): NotConnectedError => new NotConnectedError('Local daemon is not connected.');
@@ -26,6 +27,7 @@ const workspaceOver = (answers: Record<string, unknown>, sent: Array<[string, un
   notConnected,
   watchReady: false,
   transfers: false,
+  rangedReads: false,
   outside: false,
   listing: false,
   openStream: () => { throw new Error('no transfer streams in this suite'); },
@@ -74,6 +76,7 @@ describe('remote workspace client', () => {
       notConnected,
       watchReady: false,
       transfers: false,
+      rangedReads: false,
       outside: false,
       listing: false,
       openStream: () => { throw new Error('no transfer streams in this suite'); },
@@ -110,6 +113,7 @@ describe('remote workspace client', () => {
       notConnected,
       watchReady: false,
       transfers: false,
+      rangedReads: false,
       outside: false,
       listing: false,
       openStream: () => { throw new Error('no transfer streams in this suite'); },
@@ -154,6 +158,7 @@ describe('remote workspace client', () => {
       notConnected,
       watchReady: false,
       transfers: false,
+      rangedReads: false,
       outside: false,
       listing: false,
       openStream: () => { throw new Error('no transfer streams in this suite'); },
@@ -172,7 +177,7 @@ describe('remote workspace client', () => {
       ...fakeEndpoint({}, []),
       request: (method: string) => (method === 'files.watch' ? new Promise<void>((resolve, reject) => answers.push({ resolve, reject })) : Promise.resolve()),
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, outside: false, listing: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, rangedReads: false, outside: false, listing: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const settled = (ready: Promise<void>): { done: boolean } => {
       const state = { done: false };
       void ready.then(() => {
@@ -224,6 +229,61 @@ describe('remote workspace client', () => {
     expect(sent.map(([method]) => method)).toEqual(['files.realpath']);
   });
 
+  it('fails a ranged read whose answer is not exactly the span asked for, clamped to the file, or names no resolved path, and releases its stream', async () => {
+    const cases: Array<[offset: number, length: number, answer: { size: number; offset: number; length: number; resolvedPath?: string | undefined }, ok: boolean]> = [
+      [10, 5, { size: 100, offset: 10, length: 5 }, true],
+      [200, 5, { size: 100, offset: 100, length: 0 }, true],
+      [-5, 5, { size: 100, offset: 95, length: 5 }, true],
+      [-500, 500, { size: 100, offset: 0, length: 100 }, true],
+      [98, 5, { size: 100, offset: 98, length: 2 }, true],
+      [0, Number.MAX_SAFE_INTEGER, { size: 100, offset: 0, length: 100 }, true],
+      // fewer than the file holds of the span, so a response declaring the span would end short
+      [10, 5, { size: 100, offset: 10, length: 4 }, false],
+      [0, Number.MAX_SAFE_INTEGER, { size: 100, offset: 0, length: 99 }, false],
+      // more than asked for, from another offset, past the end of the file, or a suffix that does not start where the end is
+      [10, 5, { size: 100, offset: 10, length: 6 }, false],
+      [10, 5, { size: 100, offset: 11, length: 5 }, false],
+      [98, 5, { size: 100, offset: 98, length: 5 }, false],
+      [200, 5, { size: 100, offset: 200, length: 0 }, false],
+      [-5, 5, { size: 100, offset: 0, length: 5 }, false],
+      [-5, 5, { size: 100, offset: 96, length: 5 }, false],
+      // the span, with no resolved path for the deny list
+      [10, 5, { size: 100, offset: 10, length: 5, resolvedPath: undefined }, false],
+    ];
+    for (const [offset, length, answer, ok] of cases) {
+      const ended: number[] = [];
+      const stream = { id: 7, closed: false, write: () => true, end: () => ended.push(7), onData: () => ({ dispose: () => undefined }), onEnd: () => ({ dispose: () => undefined }), onDrain: () => ({ dispose: () => undefined }), pause: () => undefined, resume: () => undefined } satisfies StreamChannel;
+      const logged: string[] = [];
+      const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({ 'files.readFileRange': { ok: true, resolvedPath: 'media/clip.mp4', ...answer } }, []), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: true, outside: false, listing: false, openStream: () => stream, log: (line) => logged.push(line) });
+      const read = await files.readFileRange(project, 'clip.mp4', offset, length);
+      const label = JSON.stringify([offset, length, answer]);
+      if (ok) {
+        expect(read, label).toMatchObject({ ok: true, resolvedPath: 'media/clip.mp4', ...answer });
+        expect(ended, label).toEqual([]);
+        if (read.ok) await read.chunks[Symbol.asyncIterator]().return?.();
+      } else {
+        expect(read, label).toEqual({ ok: false, reason: 'failed' });
+        expect(ended, label).toEqual([7]);
+        expect(logged, label).toHaveLength(1);
+      }
+    }
+  });
+
+  it('answers a folder as one, and a link or FIFO as no folder, from a daemon that may leave folder out', async () => {
+    const stream = { id: 7, closed: false, write: () => true, end: () => undefined, onData: () => ({ dispose: () => undefined }), onEnd: () => ({ dispose: () => undefined }), onDrain: () => ({ dispose: () => undefined }), pause: () => undefined, resume: () => undefined } satisfies StreamChannel;
+    for (const [answer, folder] of [[{ ok: false, reason: 'notAFile', folder: true }, true], [{ ok: false, reason: 'notAFile', folder: false }, false], [{ ok: false, reason: 'notAFile' }, false]] as const) {
+      const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({ 'files.readFileRange': answer }, []), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: true, outside: false, listing: false, openStream: () => stream, log: () => undefined });
+      expect(await files.readFileRange(project, 'docs', 0, 1)).toEqual({ ok: false, reason: 'notAFile', folder });
+    }
+  });
+
+  it('sends no ranged read to a daemon that does not list files.readFileRange.resolvedPath', async () => {
+    const sent: Array<[string, unknown]> = [];
+    const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({}, sent), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: false, outside: false, listing: false, openStream: () => { throw new Error('no stream for a refused read'); }, log: () => undefined });
+    await expect(files.readFileRange(project, 'clip.mp4', 0, 1)).rejects.toBeInstanceOf(RangedReadsUnsupportedError);
+    expect(sent).toEqual([]);
+  });
+
   it('sends a folder\'s mode and a copy\'s cancel to a daemon that carries transfers', async () => {
     const requests: Array<[string, unknown, AbortSignal | undefined]> = [];
     const endpoint = {
@@ -233,7 +293,7 @@ describe('remote workspace client', () => {
         return { ok: true };
       },
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, outside: false, listing: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: false, outside: false, listing: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const controller = new AbortController();
     await files.makeFolder(project, '', 'lib', 0o700);
     await files.copy(project, 'a.ts', project, 'lib', 'a.ts', false, controller.signal);

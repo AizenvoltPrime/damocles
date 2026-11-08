@@ -24,7 +24,7 @@ import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injecti
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { carriesOutsideFiles, carriesTransfers, createRemoteWorkspace, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
+import { carriesOutsideFiles, carriesTransfers, createRemoteWorkspace, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, RANGED_READS_FEATURE, RangedReadsUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
@@ -76,18 +76,26 @@ async function localAdapter(): Promise<Adapter> {
   return { workspace, keyOf: folderKey, dispose: () => factory.close() };
 }
 
-// features: what the client takes from the daemon's welcome, every name by default
-async function remoteAdapter(features: (listed: readonly string[]) => readonly string[] = (listed) => listed): Promise<Adapter> {
+// features: what the client takes from the daemon's welcome, every name by default; requested: each request method it sends
+async function remoteAdapter(features: (listed: readonly string[]) => readonly string[] = (listed) => listed, requested: string[] = []): Promise<Adapter> {
   const daemon = await startInProcessDaemon({ starters: NO_HOSTS, watchWorker });
   const connection = await connect({ stream: await daemon.connect(), appVersion: '0.0.0-test', clientId: 'conformance', deviceName: 'test', terminalIdleDays: 30, log: () => undefined });
+  const endpoint = connection.workspace;
   const workspace = createRemoteWorkspace({
-    endpoint: connection.workspace,
+    endpoint: {
+      ...endpoint,
+      request: (method, params, signal) => {
+        requested.push(method);
+        return endpoint.request(method, params, signal);
+      },
+    },
     authorityKey: 'loopback',
     projectOfCwd: () => undefined,
     onClose: (listener) => connection.onClose(listener),
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: connection.features.includes(WATCH_READY_FEATURE),
     transfers: carriesTransfers(features(connection.features)),
+    rangedReads: features(connection.features).includes(RANGED_READS_FEATURE),
     outside: carriesOutsideFiles(features(connection.features)),
     listing: features(connection.features).includes(OUTSIDE_LISTING_FEATURE),
     openStream: () => connection.openStream(),
@@ -336,6 +344,74 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     }
   });
 
+  it('reads a byte range of a file on the host, clamped to its size, and refuses what readFile refuses', async () => {
+    const big = Buffer.from(Array.from({ length: 700 * 1024 }, (_, i) => i % 251));
+    fs.writeFileSync(file('src/big.bin'), big);
+    const bytesOf = async (offset: number, length: number): Promise<{ offset: number; length: number; bytes: Buffer }> => {
+      const read = await workspace.files.readFileRange(project, 'src/big.bin', offset, length);
+      if (!read.ok) throw new Error(read.reason);
+      expect(read.size).toBe(big.length);
+      const parts: Buffer[] = [];
+      for await (const chunk of read.chunks) parts.push(Buffer.from(chunk));
+      return { offset: read.offset, length: read.length, bytes: Buffer.concat(parts) };
+    };
+    const middle = await bytesOf(300 * 1024 + 7, 200 * 1024);
+    expect(middle.offset).toBe(300 * 1024 + 7);
+    expect(middle.bytes.equals(big.subarray(300 * 1024 + 7, 500 * 1024 + 7))).toBe(true);
+    const suffix = await bytesOf(-10, 10);
+    expect(suffix.offset).toBe(big.length - 10);
+    expect(suffix.bytes.equals(big.subarray(-10))).toBe(true);
+    expect(await bytesOf(big.length, 10)).toEqual({ offset: big.length, length: 0, bytes: Buffer.alloc(0) });
+    // the spans a preview asks for the whole file and for a suffix longer than it
+    for (const [offset, length] of [[0, Number.MAX_SAFE_INTEGER], [-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]] as const) {
+      const whole = await bytesOf(offset, length);
+      expect(whole.offset).toBe(0);
+      expect(whole.length).toBe(big.length);
+      expect(whole.bytes.equals(big)).toBe(true);
+    }
+    expect(await workspace.files.readFileRange(project, 'src', 0, 1)).toEqual({ ok: false, reason: 'notAFile', folder: true });
+    expect(await workspace.files.readFileRange(project, 'src/gone.bin', 0, 1)).toEqual({ ok: false, reason: 'missing' });
+  });
+
+  it("answers a ranged read with the file's path relative to the project's real root, through folder links", async () => {
+    fs.mkdirSync(file('.git'));
+    fs.writeFileSync(file('.git/config'), 'secret');
+    fs.mkdirSync(file('node_modules/.pnpm/lib@1.0.0/node_modules/lib'), { recursive: true });
+    fs.writeFileSync(file('node_modules/.pnpm/lib@1.0.0/node_modules/lib/index.js'), 'lib');
+    fs.symlinkSync(file('.git'), file('src/x'), 'junction');
+    fs.symlinkSync(file('node_modules/.pnpm/lib@1.0.0/node_modules/lib'), file('node_modules/lib'), 'junction');
+    const resolved = async (relativePath: string): Promise<string> => {
+      const read = await workspace.files.readFileRange(project, relativePath, 0, 1);
+      if (!read.ok) throw new Error(read.reason);
+      await read.chunks[Symbol.asyncIterator]().return?.();
+      return read.resolvedPath;
+    };
+    expect(await resolved('src/x/config')).toBe('.git/config');
+    expect(await resolved('node_modules/lib/index.js')).toBe('node_modules/.pnpm/lib@1.0.0/node_modules/lib/index.js');
+  });
+
+  it('closes the host\'s handle of a ranged read returned unread', async () => {
+    // past the stream's credit window, so the host still holds its handle while no byte is read
+    fs.writeFileSync(file('src/huge.bin'), Buffer.alloc(4 * 1024 * 1024));
+    // FileHandle is not exported, so its prototype comes from a handle; the host's handle is the one it stats as it opens, and
+    // a closed handle's fd is -1
+    const probe = await fs.promises.open(file('src/huge.bin'), 'r');
+    const stat = vi.spyOn(Object.getPrototypeOf(probe) as fs.promises.FileHandle, 'stat');
+    await probe.close();
+    try {
+      const unread = await workspace.files.readFileRange(project, 'src/huge.bin', 0, 4 * 1024 * 1024);
+      if (!unread.ok) throw new Error(unread.reason);
+      const opened = stat.mock.contexts as fs.promises.FileHandle[];
+      expect(opened).toHaveLength(1);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(opened[0]!.fd).toBeGreaterThanOrEqual(0);
+      await unread.chunks[Symbol.asyncIterator]().return?.();
+      await expect.poll(() => opened[0]!.fd).toBe(-1);
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
   it('walks in pages, finds clashes, and copies, moves, makes and removes folders on the host', async () => {
     fs.mkdirSync(file('src/deep'));
     fs.writeFileSync(file('src/deep/c.txt'), 'see');
@@ -458,8 +534,8 @@ describe('transfers over a loopback connection', () => {
   let root: string;
   let project: Project;
 
-  const start = async (features?: (listed: readonly string[]) => readonly string[]): Promise<void> => {
-    adapter = await remoteAdapter(features);
+  const start = async (features?: (listed: readonly string[]) => readonly string[], requested?: string[]): Promise<void> => {
+    adapter = await remoteAdapter(features, requested);
     root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-conf-transfer-')));
     const folder = path.join(root, 'proj');
     fs.mkdirSync(path.join(folder, 'src'), { recursive: true });
@@ -506,6 +582,18 @@ describe('transfers over a loopback connection', () => {
     await expect(files.writeOutside(target, Buffer.from('x'))).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
     expect(fs.readFileSync(target, 'utf8')).toBe('a');
     expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: target });
+  });
+
+  it('sends no ranged read to a daemon that does not list files.readFileRange.resolvedPath, and its whole-file read still works', async () => {
+    const requested: string[] = [];
+    await start((listed) => listed.filter((feature) => feature !== RANGED_READS_FEATURE), requested);
+    const { files } = adapter.workspace;
+    await expect(files.readFileRange(project, 'src/a.ts', 0, 1)).rejects.toBeInstanceOf(RangedReadsUnsupportedError);
+    expect(requested).toEqual([]);
+    const read = await files.readFile(project, 'src/a.ts');
+    expect(requested).toEqual(['files.readFile']);
+    if (!read.ok) throw new Error(read.reason);
+    for await (const chunk of read.chunks) expect(Buffer.from(chunk).toString('utf8')).toBe('a');
   });
 
   it('sends no listing to a daemon that does not list files.listOutside, and the connection stays up', async () => {

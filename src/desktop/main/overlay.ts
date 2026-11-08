@@ -92,6 +92,7 @@ import {
   type DevcontainerTrustField,
   type DevcontainerTrustRequest,
   type DevcontainerTrustValue,
+  type ClientCertificateRow,
 } from '../preload/overlay-channels';
 import { isWslDistroName } from './remote/wsl/distro-name';
 import { CONTAINER_KEY } from './remote/containers/container-key';
@@ -260,14 +261,16 @@ function parseMenuItems(rawItems: unknown): OverlayMenuItem[] | undefined {
         const label = shownLabel(field(rawItem, 'label'));
         const icon = field(rawItem, 'icon');
         const children = field(rawItem, 'items');
+        const hint = field(rawItem, 'hint') === undefined ? undefined : shownLabel(field(rawItem, 'hint'));
         if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !label || !claim(id)) return undefined;
+        if (field(rawItem, 'hint') !== undefined && !hint) return undefined;
         if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
         if (!Array.isArray(children) || children.length === 0) return undefined;
         total += children.length;
         if (children.length > MAX_OVERLAY_ITEMS || total > MAX_MENU_ITEMS) return undefined;
         const parsed = parseLevel(children as unknown[], true);
         if (!parsed) return undefined;
-        items.push({ kind: 'submenu', id, label, ...(icon !== undefined ? { icon: icon as OverlayIcon } : {}), items: parsed });
+        items.push({ kind: 'submenu', id, label, ...(icon !== undefined ? { icon: icon as OverlayIcon } : {}), ...(hint !== undefined ? { hint } : {}), items: parsed });
         continue;
       }
       const item = parseMenuItem(rawItem);
@@ -500,7 +503,7 @@ function shownText(value: unknown): string | undefined {
  * and bidi characters as escapes; labels, descriptions and hints past their bound keep their tail behind '…' (a path keeps its
  * folder name); a group's items must be contiguous, so the picker heads each group once.
  */
-export function parseQuickPickRequest(placeholder: string, rawItems: readonly unknown[]): Extract<OverlayRequest, { kind: 'quickPick' }> | undefined {
+export function parseQuickPickRequest(placeholder: string, rawItems: readonly unknown[], pickMany?: { readonly max: number }): Extract<OverlayRequest, { kind: 'quickPick' }> | undefined {
   if (!isNonEmptyText(placeholder, MAX_OVERLAY_LABEL_LENGTH) || rawItems.length === 0 || !fitsQuickPick(rawItems)) return undefined;
   const ids = new Set<string>();
   const groups = new Set<string>();
@@ -552,7 +555,25 @@ export function parseQuickPickRequest(placeholder: string, rawItems: readonly un
       ...(info === true ? { info: true as const } : {}),
     });
   }
-  return { kind: 'quickPick', placeholder, items };
+  if (pickMany === undefined) return { kind: 'quickPick', placeholder, items };
+  const selectable = items.filter((item) => !item.info).length;
+  if (!Number.isInteger(pickMany.max) || pickMany.max < 1 || pickMany.max > selectable) return undefined;
+  return { kind: 'quickPick', placeholder, items, pickMany: { max: pickMany.max } };
+}
+
+// A pickMany accept: 1..max distinct offered ids, none an info row, in the request's item order.
+function parseQuickPickMany(raw: Record<string, unknown>, request: Extract<OverlayRequest, { kind: 'quickPick' }>): OverlayAnswer | undefined {
+  const itemIds = field(raw, 'itemIds');
+  const max = request.pickMany?.max;
+  if (max === undefined || Object.keys(raw).length !== 2 || !Array.isArray(itemIds) || itemIds.length === 0 || itemIds.length > max) return undefined;
+  const offered = request.items.filter((item) => !item.info).map((item) => item.id);
+  let last = -1;
+  for (const id of itemIds as unknown[]) {
+    const index = offered.indexOf(id as string);
+    if (index <= last) return undefined;
+    last = index;
+  }
+  return { kind: 'quickPickMany', itemIds: [...(itemIds as string[])] };
 }
 
 /** The box's current value an inputBrowse call carries, exactly `{ value }`; throws on anything else. */
@@ -1064,6 +1085,21 @@ export function devcontainerTrustAccepted(answer: OverlayAnswer): boolean {
   return answer.kind === 'devcontainerTrust' && answer.accept;
 }
 
+/** The certificate picker's request within the overlay's bounds, with unique row ids; undefined otherwise. */
+export function parseClientCertificateRequest(site: string, certificates: readonly ClientCertificateRow[]): Extract<OverlayRequest, { kind: 'clientCertificate' }> | undefined {
+  if (!isNonEmptyText(site, MAX_OVERLAY_LABEL_LENGTH) || certificates.length === 0 || certificates.length > MAX_OVERLAY_ITEMS) return undefined;
+  const seconds = (value: unknown): boolean => typeof value === 'number' && Number.isSafeInteger(value);
+  const valid = certificates.every((row) => isNonEmptyText(row.id, MAX_OVERLAY_ID_LENGTH) && isText(row.subject, MAX_OVERLAY_LABEL_LENGTH) && isText(row.issuer, MAX_OVERLAY_LABEL_LENGTH)
+    && seconds(row.validStart) && seconds(row.validExpiry) && typeof row.distinct === 'boolean');
+  if (!valid || new Set(certificates.map((row) => row.id)).size !== certificates.length) return undefined;
+  return { kind: 'clientCertificate', site, certificates: certificates.map(({ id, subject, issuer, validStart, validExpiry, distinct }) => ({ id, subject, issuer, validStart, validExpiry, distinct })) };
+}
+
+/** The picked row's id; undefined for Cancel, Escape or a withdrawn request. parseOverlayAnswer already refused any other id. */
+export function clientCertificateChoice(answer: OverlayAnswer): string | undefined {
+  return answer.kind === 'clientCertificate' ? answer.id : undefined;
+}
+
 /** A message dialog main asks (D41) within the overlay's bounds, or undefined, when main asks with the OS message box instead. */
 export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kind: 'message' }> | undefined {
   if (!isRecord(raw) || field(raw, 'kind') !== 'message') return undefined;
@@ -1203,6 +1239,7 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (!isRecord(raw)) return undefined;
   const kind = field(raw, 'kind');
   if (kind === 'dismissed') return { kind: 'dismissed' };
+  if (kind === 'quickPickMany' && request.kind === 'quickPick') return parseQuickPickMany(raw, request);
   if (kind !== request.kind) return undefined;
   if (request.kind === 'menu') {
     const itemId = field(raw, 'itemId');
@@ -1226,14 +1263,16 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (request.kind === 'newTerminal') {
     const profileId = field(raw, 'profileId');
     const projectKey = field(raw, 'projectKey');
-    const projectOffered = projectKey === null ? request.projects.length === 0 : request.projects.some((project) => project.key === projectKey);
-    const offered = request.profiles.some((profile) => profile.id === profileId) && projectOffered;
-    return offered ? { kind: 'newTerminal', profileId: profileId as string, projectKey: projectKey as string | null } : undefined;
+    const reachable = request.projects.filter((project) => project.reachable);
+    const projectOffered = projectKey === null ? reachable.length === 0 : reachable.some((project) => project.key === projectKey);
+    // which shells were served for the project is the pick session's to check
+    const profileShaped = profileId === null || isNonEmptyText(profileId, MAX_OVERLAY_ID_LENGTH);
+    return projectOffered && profileShaped ? { kind: 'newTerminal', projectKey: projectKey as string | null, profileId: profileId as string | null } : undefined;
   }
   if (request.kind === 'quickPick') {
     const itemId = field(raw, 'itemId');
     const query = field(raw, 'query');
-    if (!isText(query, MAX_INPUT_VALUE_LENGTH)) return undefined;
+    if (request.pickMany || !isText(query, MAX_INPUT_VALUE_LENGTH)) return undefined;
     return request.items.some((item) => item.id === itemId && !item.info) ? { kind: 'quickPick', itemId: itemId as string, query } : undefined;
   }
   if (request.kind === 'input') {
@@ -1262,6 +1301,10 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (request.kind === 'devcontainerTrust') {
     const accept = field(raw, 'accept');
     return Object.keys(raw).length === 2 && typeof accept === 'boolean' ? { kind: 'devcontainerTrust', accept } : undefined;
+  }
+  if (request.kind === 'clientCertificate') {
+    const id = field(raw, 'id');
+    return Object.keys(raw).length === 2 && request.certificates.some((row) => row.id === id && row.distinct) ? { kind: 'clientCertificate', id: id as string } : undefined;
   }
   if (request.kind === 'closeRemote') {
     const choice = field(raw, 'choice');
@@ -1361,28 +1404,42 @@ export interface QuickPickAskerDeps {
 /** The quick pick asker main's flows use; like the QuickInput asker it settles every failure here, telling the user once. */
 export function createQuickPickAsker(deps: QuickPickAskerDeps): AskQuickPick {
   return async (placeholder, items) => {
-    const overlay = deps.overlay();
-    if (!fitsQuickPick(items)) {
-      deps.log(`[quick pick] ${items.length} items exceed the overlay's bounds; nothing asked`);
-      deps.tooLarge();
-      return undefined;
-    }
-    const request = parseQuickPickRequest(placeholder, items);
-    if (!request || !overlay) {
-      deps.log(`[quick pick] ${request ? 'no overlay to ask in' : 'the request is malformed'}; nothing asked`);
-      deps.unavailable();
-      return undefined;
-    }
-    let answer: OverlayAnswer;
-    try {
-      answer = await overlay.request(request, deps.focused());
-    } catch (err) {
-      deps.log(`[quick pick] the overlay could not ask (${err instanceof Error ? err.message : String(err)})`);
-      deps.unavailable();
-      return undefined;
-    }
-    return answer.kind === 'quickPick' ? { id: answer.itemId, query: answer.query } : undefined;
+    const answer = await askQuickPick(deps, placeholder, items, undefined);
+    return answer?.kind === 'quickPick' ? { id: answer.itemId, query: answer.query } : undefined;
   };
+}
+
+/** Asks a pickMany quick pick; resolves the picked ids in the items' order, or undefined for Escape or when it cannot ask. */
+export type AskQuickPickMany = (placeholder: string, items: readonly unknown[], max: number) => Promise<readonly string[] | undefined>;
+
+/** The multi-select quick pick asker, settling every failure as createQuickPickAsker does. */
+export function createQuickPickManyAsker(deps: QuickPickAskerDeps): AskQuickPickMany {
+  return async (placeholder, items, max) => {
+    const answer = await askQuickPick(deps, placeholder, items, { max });
+    return answer?.kind === 'quickPickMany' ? answer.itemIds : undefined;
+  };
+}
+
+async function askQuickPick(deps: QuickPickAskerDeps, placeholder: string, items: readonly unknown[], pickMany: { readonly max: number } | undefined): Promise<OverlayAnswer | undefined> {
+  const overlay = deps.overlay();
+  if (!fitsQuickPick(items)) {
+    deps.log(`[quick pick] ${items.length} items exceed the overlay's bounds; nothing asked`);
+    deps.tooLarge();
+    return undefined;
+  }
+  const request = parseQuickPickRequest(placeholder, items, pickMany);
+  if (!request || !overlay) {
+    deps.log(`[quick pick] ${request ? 'no overlay to ask in' : 'the request is malformed'}; nothing asked`);
+    deps.unavailable();
+    return undefined;
+  }
+  try {
+    return await overlay.request(request, deps.focused());
+  } catch (err) {
+    deps.log(`[quick pick] the overlay could not ask (${err instanceof Error ? err.message : String(err)})`);
+    deps.unavailable();
+    return undefined;
+  }
 }
 
 /** The overlay page main serves at OVERLAY_PAGE_URL: the built overlay app under a fresh script nonce, the current theme and the UI language. */

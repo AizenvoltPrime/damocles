@@ -46,6 +46,7 @@ import { CORE_TO_MAIN, MAIN_TO_CORE } from '../../../desktop/core-protocol/messa
 import { INVALID } from '../../../desktop/core-protocol/schema';
 import { CORE_MAX_MESSAGE_BYTES } from '../../../desktop/core-protocol/attached-transport';
 import { globalMemoryId } from '../global-memory-relay';
+import { globalMemoryClosedReason } from '../../user-scope';
 
 let dir: string;
 let outbox: MemoryOutbox;
@@ -174,7 +175,7 @@ describe('what the relay sends a client', () => {
 
   it('answers a search the client left during as away', async () => {
     vi.mocked(fake.remote.memorySearch).mockRejectedValueOnce(new Error(CREDENTIAL_CLIENT_ABSENT));
-    await expect(relay.search('kiwi', 5, ['global'])).resolves.toBeUndefined();
+    await expect(relay.search('kiwi', 5, ['global'])).resolves.toEqual({ unreachable: globalMemoryClosedReason() });
   });
 
   it('sends a write\'s tags each once and at most MAX_GLOBAL_MEMORY_TAGS of them, applied or queued', async () => {

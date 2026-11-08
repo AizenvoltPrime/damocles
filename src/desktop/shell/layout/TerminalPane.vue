@@ -3,12 +3,12 @@ import { computed, inject, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ChevronDown, Columns2, Maximize2, Minimize2, Plus, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
-import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
 import { MAX_TERMINAL_GROUP_PANES, type TerminalInfo } from '../../preload/terminal-channels';
-import { groupPanes, TERMINAL_STORE } from '../terminal/terminal-store';
+import { groupPanes, panelTerminals, TERMINAL_STORE } from '../terminal/terminal-store';
+import { draggedTerminal, endTerminalDrag, panelEndDrop, panelEndTarget, startTerminalDrag } from '../terminal/terminal-drag';
 import { terminalGlyph } from '../terminal/terminal-icons';
-import { isShiftF10, isXtermInput } from '../terminal/terminal-keys';
+import { isShiftF10 } from '../terminal/terminal-keys';
 import { openTabMenu, terminalProjectLabel, terminalStatusLabel } from '../terminal/terminal-menu';
 import TerminalPanel from '../terminal/TerminalPanel.vue';
 import TerminalRename from '../terminal/TerminalRename.vue';
@@ -23,7 +23,7 @@ const store = inject(TERMINAL_STORE)!;
 
 const root = ref<HTMLElement | null>(null);
 const maximizeLabel = computed(() => (props.maximized ? t('grid.terminal.restore') : t('grid.terminal.maximize')));
-const terminals = computed(() => store.state.value?.terminals ?? []);
+const terminals = computed(() => panelTerminals(store.state.value));
 const active = computed(() => store.active.value);
 const canCreate = computed(() => store.state.value?.canCreate === true);
 const activeGlyph = computed(() => (active.value ? terminalGlyph(active.value) : null));
@@ -34,9 +34,11 @@ const newMenuOpen = ref(false);
 const activeProject = computed(() => (active.value ? terminalProjectLabel(active.value, t) : ''));
 const tabLabel = computed(() => (active.value ? [active.value.title, active.value.description, activeProject.value, terminalStatusLabel(active.value, t)].filter((part) => part).join(', ') : ''));
 const canSplit = computed(() => active.value !== null && groupPanes(store.state.value, active.value.id) < MAX_TERMINAL_GROUP_PANES);
+// The header strip is part of the panel's end target, as VS Code's whole tabs container is.
+const headerDrop = panelEndTarget('header', store);
 
-// Shift+click starts the default profile in the current project, else the home folder; a plain click opens the new-terminal
-// quick pick.
+// Shift+click starts the current project's host's default shell there, else this computer's in the home folder; a plain click
+// opens the new-terminal pick.
 async function onNew(event: MouseEvent): Promise<void> {
   if (!event.shiftKey) {
     props.api.terminal.openNew();
@@ -46,15 +48,12 @@ async function onNew(event: MouseEvent): Promise<void> {
   if (result.ok) store.requestFocus(result.id);
 }
 
-// F6 parts: focus anywhere in the pane is the terminal part. The skip list and Edit › Paste apply only while that focus is an
-// xterm's input, not a row, the tab or a field (Find, the inline rename), so main needs to know which.
-function onFocusIn(event: FocusEvent): void {
+// F6 parts: focus anywhere in the pane is the terminal part. Each view reports its own xterm input's focus.
+function onFocusIn(): void {
   props.api.reportFocusedPart('terminal');
-  props.api.terminal.reportInputFocus(isXtermInput(event.target));
 }
 
 function onFocusOut(event: FocusEvent): void {
-  if (isXtermInput(event.target)) props.api.terminal.reportInputFocus(false);
   if (event.relatedTarget instanceof Node && root.value?.contains(event.relatedTarget)) return;
   props.api.reportFocusedPart(null);
 }
@@ -95,30 +94,15 @@ function onTabKeydown(event: KeyboardEvent, terminal: TerminalInfo): void {
   event.preventDefault();
 }
 
-// The New Terminal button's dropdown (VS Code's launch profile menu): each detected shell starts in the current project, else
-// the home folder, and Select Default Profile... asks main's quick pick.
+// The New Terminal button's dropdown (VS Code's launch profile menu), which main builds: each project's host's shells, then
+// Select Default Profile...; main starts and focuses the terminal chosen.
 async function openNewMenu(): Promise<void> {
   const group = newGroup.value;
-  const profiles = store.state.value?.profiles ?? [];
   if (!group || newMenuOpen.value) return;
   const rect = group.getBoundingClientRect();
-  const items: OverlayMenuItem[] = [
-    ...profiles.map((profile): OverlayMenuItem => ({ kind: 'item', id: `profile:${profile.id}`, label: profile.name, glyph: profile.customIcon ?? profile.icon, ...(profile.color ? { color: profile.color } : {}) })),
-    ...(profiles.length > 0 ? [{ kind: 'separator' } as const] : []),
-    { kind: 'item', id: 'selectDefaultProfile', label: t('terminal.newMenu.selectDefault') },
-  ];
   newMenuOpen.value = true;
   try {
-    const answer = await props.api.requestOverlay({ kind: 'menu', label: t('terminal.newMenu.label'), anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, items });
-    if (answer.kind !== 'menu') return;
-    if (answer.itemId === 'selectDefaultProfile') {
-      props.api.terminal.selectDefaultProfile();
-      return;
-    }
-    const profile = profiles.find((option) => `profile:${option.id}` === answer.itemId);
-    if (!profile) return;
-    const result = await props.api.terminal.create({ profileId: profile.id, target: { current: true } });
-    if (result.ok) store.requestFocus(result.id);
+    await props.api.terminal.openNewMenu({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
   } finally {
     newMenuOpen.value = false;
   }
@@ -135,7 +119,15 @@ async function openNewMenu(): Promise<void> {
     @focusout="onFocusOut"
   >
     <!-- The chat header's height (h-11.5), background and border, so the pane tops read as one row across the grid. -->
-    <header class="flex h-11.5 shrink-0 items-stretch border-b border-(--d-border) bg-(--d-panel)">
+    <header
+      data-testid="terminal-header"
+      :data-drop="panelEndDrop ? 'true' : undefined"
+      class="terminal-header flex h-11.5 shrink-0 items-stretch border-b border-(--d-border) bg-(--d-panel)"
+      @dragenter="headerDrop.over"
+      @dragover="headerDrop.over"
+      @dragleave="headerDrop.leave"
+      @drop="headerDrop.drop"
+    >
       <span class="flex w-4 shrink-0 items-center justify-center">
         <PaneGrip
           pane="terminal"
@@ -170,10 +162,14 @@ async function openNewMenu(): Promise<void> {
               data-testid="terminal-tab"
               :data-terminal-id="active.id"
               :title="[active.title, active.description, activeProject].filter((part) => part).join(' · ')"
+              :draggable="store.renaming.value?.id !== active.id"
+              :data-dragging="draggedTerminal === active.id ? 'true' : undefined"
               class="terminal-tab group/tab relative flex max-w-60 min-w-0 cursor-pointer items-center gap-1.75 border-x border-(--d-border) bg-(--d-bg) pr-1.5 pl-3 text-(--d-text) outline-none select-none"
               @click="focusTab(active.id)"
               @keydown="onTabKeydown($event, active)"
               @contextmenu="onTabContextMenu($event, active)"
+              @dragstart="startTerminalDrag($event, active.id)"
+              @dragend="endTerminalDrag"
             >
               <span
                 aria-hidden="true"

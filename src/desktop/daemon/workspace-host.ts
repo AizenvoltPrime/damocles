@@ -7,9 +7,9 @@ import type { Disposable } from '../../platform/disposable';
 import type { StreamChannel } from '../../remote/mux';
 import { streamBytes, writeBytes } from '../../remote/tunnel-pipe';
 import type { EntryIdentity, WorkspaceFileSystem } from '../workspace/file-system';
-import type { TransferEntry } from '../workspace/transfer-ops';
+import type { ReadRangeResult, ReadResult, TransferEntry } from '../workspace/transfer-ops';
 import type { Formatter } from '../workspace/format/formatter';
-import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WalkPage, type WireConfinedEntry, type WireReadResult, type WireIdentity, type WireTransferEntry, type WorkspaceToClient } from '../workspace/messages';
+import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WalkPage, type WireConfinedEntry, type WireReadRangeResult, type WireReadResult, type WireIdentity, type WireTransferEntry, type WorkspaceToClient } from '../workspace/messages';
 import type { QuickOpenListing } from '../workspace/quick-open-listing';
 import type { SearchRunner } from '../workspace/search/search-runner';
 import type { TerminalBackend } from '../workspace/terminal/terminal-backend';
@@ -164,9 +164,10 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
           bytes.end();
         }
       });
-      endpoint.serve('files.readFile', async ({ project, relativePath, stream }): Promise<WireReadResult> => {
+      // a read whose bytes follow on the client's stream once it is answered; a refusal or a throw ends the stream at once
+      const streamRead = async <R extends ReadResult | ReadRangeResult>(stream: number, relativePath: string, reading: () => Promise<R>): Promise<R> => {
         const bytes = claim(stream);
-        const read = await files.readFile(project, relativePath).catch((err: unknown) => {
+        const read = await reading().catch((err: unknown) => {
           bytes.end();
           throw err;
         });
@@ -178,7 +179,15 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         setImmediate(() => {
           writeBytes(bytes, read.chunks).catch((err: unknown) => log(`[workspace] reading ${relativePath} for ${connectionId} failed: ${err instanceof Error ? err.message : String(err)}`));
         });
-        return { ok: true, size: read.size };
+        return read;
+      };
+      endpoint.serve('files.readFile', async ({ project, relativePath, stream }): Promise<WireReadResult> => {
+        const read = await streamRead(stream, relativePath, () => files.readFile(project, relativePath));
+        return read.ok ? { ok: true, size: read.size } : read;
+      });
+      endpoint.serve('files.readFileRange', async ({ project, relativePath, stream, offset, length }): Promise<WireReadRangeResult> => {
+        const read = await streamRead(stream, relativePath, () => files.readFileRange(project, relativePath, offset, length));
+        return read.ok ? { ok: true, size: read.size, offset: read.offset, length: read.length, resolvedPath: read.resolvedPath } : read;
       });
       // the client's cancel of either stops it between files and removes the part being written (feature files.cancel)
       endpoint.serve('files.copy', ({ from, relativePath, to, toDir, name, replace }, signal) => files.copy(from, relativePath, to, toDir, name, replace, signal));

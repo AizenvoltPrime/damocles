@@ -1,16 +1,22 @@
-// A remote chat's voice, its user-setting writes and its browser on this computer go through a foreign view proxy on the
-// local core. The view's VOICE_VIEW_MESSAGES go to the local core's voice service and its REMOTE_CHAT_USER_SETTING_MESSAGES
-// to that core's user settings; the proxy's VOICE_VIEW_POSTS and FOREIGN_SETTING_POSTS come back to it. The proxy owns the
-// chat's browser pages.
+// A remote chat's voice, its user-setting writes, its reads and memory changes of this computer's user scope and its browser on
+// this computer go through a foreign view proxy on the local core. The view's VOICE_VIEW_MESSAGES go to the local core's voice
+// service, its REMOTE_CHAT_USER_SETTING_MESSAGES to that core's user settings and its REMOTE_CHAT_LOCAL_REQUESTS (usage, notes
+// and global memories) to that core's own data; the proxy's VOICE_VIEW_POSTS, FOREIGN_SETTING_POSTS and REMOTE_CHAT_LOCAL_POSTS
+// come back to it. The proxy owns the chat's browser pages.
 // Every check reads main's own views, never an authority or view id a core named.
 import {
   FOREIGN_SETTING_POSTS,
   FOREIGN_VIEW_NOT_ATTACHED,
+  isRemoteChatLocalRequest,
   isRemoteChatSettingMessage,
+  REMOTE_CHAT_LOCAL_POSTS,
   REMOTE_CHAT_SETTING_FAILURES,
+  remoteChatLocalFailure,
   remoteChatSettingKey,
+  USER_MEMORY_VIEW_SOURCES,
   VOICE_VIEW_MESSAGES,
   VOICE_VIEW_POSTS,
+  type RemoteChatLocalRequest,
   type RemoteChatSettingMessage,
 } from '../../../shared/remote-user';
 import type { LocalizedText } from '../../../shared/localized-text';
@@ -50,9 +56,16 @@ export interface ForeignViewRelayDeps {
 
 interface AttachedView {
   readonly authority: string;
-  // each view's messages go in order
+  // the local core holds the view's proxy once this settles
+  readonly attached: Promise<void>;
+  // each view's voice, setting writes and changes go in order
   queue: Promise<void>;
+  // reads in flight, which go beside the queue; the proxy is detached only after them
+  readonly reads: Set<Promise<void>>;
 }
+
+// a read changes nothing, so it waits behind none of the view's other messages
+const isRead = (type: RemoteChatLocalRequest): boolean => type === 'requestSubscriptionUsage' || USER_MEMORY_VIEW_SOURCES[type] === undefined;
 
 function typeOf(message: unknown): string | undefined {
   const type = (message as { readonly type?: unknown } | null)?.type;
@@ -61,6 +74,9 @@ function typeOf(message: unknown): string | undefined {
 
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 const isNotAttached = (err: unknown): boolean => err instanceof Error && err.message === FOREIGN_VIEW_NOT_ATTACHED;
+// why the local core never answered a message main sent it
+const unansweredDetail = (err: unknown): LocalizedText =>
+  err instanceof CoreNotRunningError ? l("This computer's Damocles engine is not running.") : l('An unexpected error occurred. The log has the details.');
 
 export class ForeignViewRelay {
   private readonly deps: ForeignViewRelayDeps;
@@ -81,8 +97,9 @@ export class ForeignViewRelay {
   }
 
   /**
-   * A chat page's message: true when it is a remote chat's voice or user-setting message, which goes to the local core and
-   * never to its own. A setting write lands on this computer, so it goes whether or not the chat's core is attached.
+   * A chat page's message: true when it is one of a remote chat's FOREIGN_VIEW_MESSAGES, which goes to the local core and
+   * never to its own. A setting write or a user-scope request is answered on this computer, so it goes whether or not the chat's
+   * core is attached.
    */
   fromView(viewId: string, message: unknown): boolean {
     const view = this.deps.chatView(viewId);
@@ -90,6 +107,10 @@ export class ForeignViewRelay {
     if (!view || view.authority === 'local' || type === undefined) return false;
     if (isRemoteChatSettingMessage(type)) {
       this.settingWrite(viewId, view, type, message);
+      return true;
+    }
+    if (isRemoteChatLocalRequest(type)) {
+      this.localRequest(viewId, view.authority, type, message);
       return true;
     }
     if (!VOICE_VIEW_MESSAGES.has(type)) return false;
@@ -128,10 +149,30 @@ export class ForeignViewRelay {
       .catch((err: unknown) => {
         this.deps.log(`[foreign-view] ${type} from a chat on ${current.authority} failed: ${errorText(err)}`);
         // the local core never answered (it was down, restarting or refused the message), so main does, and the switch reverts
-        const detail = err instanceof CoreNotRunningError ? l("This computer's Damocles engine is not running.") : l('An unexpected error occurred. The log has the details.');
-        this.answerFailed(viewId, type, message, detail);
+        this.answerFailed(viewId, type, message, unansweredDetail(err));
       })
       .finally(() => this.writeSettled(viewId));
+  }
+
+  // A memory change goes in the view's order and a read once the proxy is attached, transcript pages included: both act on
+  // this computer's own data.
+  private localRequest(viewId: string, authority: string, type: RemoteChatLocalRequest, message: unknown): void {
+    const current = this.entryOf(viewId, authority);
+    const run = (after: Promise<void>): Promise<void> => after
+      .then(() => this.send(viewId, current, message))
+      .catch((err: unknown) => {
+        this.deps.log(`[foreign-view] ${type} from a chat on ${authority} failed: ${errorText(err)}`);
+        // the local core never answered, so main does and the page never waits on it
+        const answer = remoteChatLocalFailure(type, message, unansweredDetail(err));
+        this.deps.chatView(viewId)?.postJson(answer.type, JSON.stringify(answer));
+      });
+    if (!isRead(type)) {
+      current.queue = run(current.queue);
+      return;
+    }
+    const read = run(current.attached);
+    current.reads.add(read);
+    void read.finally(() => current.reads.delete(read));
   }
 
   // A proxy the local core lost to its restart (the view's entry was taken before localCoreStarted) is attached once more.
@@ -187,7 +228,7 @@ export class ForeignViewRelay {
     const known = this.attachedViews.get(viewId);
     if (known && known.authority === authority) return known;
     const attach = this.deps.local.attachForeign(authority, viewId);
-    const entry: AttachedView = { authority, queue: attach };
+    const entry: AttachedView = { authority, attached: attach, queue: attach, reads: new Set() };
     this.attachedViews.set(viewId, entry);
     // a refused attach is not kept: the view's next message or browser call attaches again
     attach.catch(() => {
@@ -198,7 +239,8 @@ export class ForeignViewRelay {
 
   /**
    * The local core posted to a foreign proxy, delivered only to that live remote chat view, and only while its authority is
-   * attached, except a setting write's result and toast while one of the view's writes waits for its answer.
+   * attached, except a setting write's result and toast while one of the view's writes waits for its answer, and an answer
+   * to a user-scope request, which is this computer's own data.
    */
   foreignPost(viewId: string, message: unknown): void {
     const entry = this.attachedViews.get(viewId);
@@ -206,8 +248,9 @@ export class ForeignViewRelay {
     const type = typeOf(message);
     const live = entry !== undefined && view !== undefined && view.authority === entry.authority;
     const setting = type !== undefined && FOREIGN_SETTING_POSTS.has(type);
-    const known = setting || (type !== undefined && VOICE_VIEW_POSTS.has(type));
-    const deliver = live && known && (this.deps.attached(view.authority) || (setting && this.pendingWrites.has(viewId)));
+    const localPost = type !== undefined && REMOTE_CHAT_LOCAL_POSTS.has(type);
+    const known = setting || localPost || (type !== undefined && VOICE_VIEW_POSTS.has(type));
+    const deliver = live && known && (localPost || this.deps.attached(view.authority) || (setting && this.pendingWrites.has(viewId)));
     if (!deliver || type === undefined) {
       this.deps.log(`[foreign-view] dropped a ${type?.slice(0, 64) ?? 'malformed'} post for view ${viewId.slice(0, 64)}, which this proxy does not deliver`);
       return;
@@ -222,13 +265,12 @@ export class ForeignViewRelay {
     await this.deps.local.speak(viewId, text);
   }
 
-  /** The view closed: the local core lets go of its proxy once the messages the view queued before it reached that core. */
+  /** The view closed: the local core lets go of its proxy once the messages the view sent before it reached that core. */
   viewClosed(viewId: string): void {
     const entry = this.attachedViews.get(viewId);
     if (!entry) return;
     this.attachedViews.delete(viewId);
-    entry.queue = entry.queue
-      .catch(() => undefined)
+    entry.queue = Promise.allSettled([entry.queue, ...entry.reads])
       .then(() => this.deps.local.detachForeign(viewId))
       .catch((err: unknown) => this.deps.log(`[foreign-view] detaching a remote chat view failed: ${errorText(err)}`));
   }

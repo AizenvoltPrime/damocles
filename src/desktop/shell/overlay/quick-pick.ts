@@ -1,9 +1,10 @@
 import type { Component } from 'vue';
-import { Folder } from 'lucide-vue-next';
+import { Folder, House } from 'lucide-vue-next';
 import { quickOpenRowKey, type OverlayQuickPickIcon, type OverlayQuickPickItem, type PaletteCommand, type QuickOpenMatch, type QuickOpenPick, type QuickOpenResponse, type QuickOpenResult } from '../../preload/overlay-channels';
 import type { TerminalProfileOption, TerminalProjectOption } from '../../preload/terminal-channels';
 import { compareScoredItems, prepareQuery, scoreItem, type FuzzyItem, type ItemScore, type PreparedQuery } from '../../../core/quick-open/fuzzy-match';
 import { glyphLook, terminalGlyph } from '../terminal/terminal-icons';
+import { hostColorLook, isHostColor, isHostTone, type HostColor, type HostColorLook } from '../../../shared/host-colors';
 import { QUICK_PICK_ICON_COMPONENTS } from './icons';
 
 // The quick pick's rows: a reusable list of items with match ranges, grouped under separators. Quick Open fills it with
@@ -17,6 +18,8 @@ export interface QuickPickItem {
   readonly icon?: Component;
   // a --d-* colour token
   readonly iconColor?: string;
+  // a host's custom colour, drawn as a dot on the icon through .d-tone-custom
+  readonly iconDot?: HostColorLook;
   // a Quick Open file's project-relative or absolute path, drawn as its file icon in place of `icon`
   readonly file?: string;
   // the project chip at the row's end
@@ -294,15 +297,8 @@ function filterItems<T>(entries: readonly T[], rawQuery: string, label: (entry: 
   return scored.map(({ entry, score }) => ({ kind: 'item', item: item(entry, score.labelMatches) }));
 }
 
-export interface TerminalPickLabels {
-  isDefault: string;
-  current: string;
-  // what Shift+Enter does on a profile row, naming the current project
-  shiftHint?: string;
-}
-
-/** The new-terminal pick's first step: the detected shells, the default one first and marked, so Enter starts it. */
-export function terminalProfilesModel(profiles: readonly TerminalProfileOption[], query: string, labels: TerminalPickLabels): QuickPickModel {
+/** The new-terminal pick's shell step: the host's shells, the default one first and marked, so Enter starts it. */
+export function terminalProfilesModel(profiles: readonly TerminalProfileOption[], query: string, labels: { readonly isDefault: string }): QuickPickModel {
   const ordered = [...profiles.filter((profile) => profile.isDefault), ...profiles.filter((profile) => !profile.isDefault)];
   const rows = filterItems(ordered, query, (profile) => profile.name, (profile, labelMatches) => ({
     id: profile.id,
@@ -315,22 +311,68 @@ export function terminalProfilesModel(profiles: readonly TerminalProfileOption[]
     iconColor: terminalGlyph(profile).color,
     ...(profile.isDefault ? { badge: labels.isDefault } : {}),
   }));
-  return { rows, ...(labels.shiftHint === undefined ? {} : { hint: labels.shiftHint }) };
+  return { rows };
 }
 
-/** The second step: the open projects whose folder the terminal starts in, the current one first and marked. */
-export function terminalProjectsModel(projects: readonly TerminalProjectOption[], query: string, labels: TerminalPickLabels): QuickPickModel {
-  const rows = filterItems(projects, query, (project) => project.name, (project, labelMatches) => ({
-    id: project.key,
-    label: project.name,
-    description: project.path,
-    labelMatches,
-    descriptionMatches: [],
-    icon: Folder,
-    iconColor: 'var(--d-muted)',
-    ...(project.current ? { badge: labels.current } : {}),
-  }));
-  return { rows };
+export interface TerminalProjectLabels {
+  current: string;
+  // this computer's heading, as the Projects sidebar names it
+  local: string;
+  notConnected: string;
+  home: string;
+  // what Shift+Enter does on a project row
+  shiftHint: string;
+}
+
+// The project step's row for the home folder; no project key starts with a colon.
+export const TERMINAL_HOME_ROW = ':home';
+
+// A host's folder icons as its Projects group icon draws: a tone's AA text shade, or for a custom colour, which has no contrast
+// floor, the muted icon with the colour as a dot.
+function hostIcon(color: HostColor | undefined): Pick<QuickPickItem, 'iconColor' | 'iconDot'> {
+  if (color === undefined || !isHostColor(color)) return { iconColor: 'var(--d-muted)' };
+  return isHostTone(color) ? { iconColor: `var(--d-${color}-text)` } : { iconColor: 'var(--d-muted)', iconDot: hostColorLook(color) };
+}
+
+/**
+ * The new-terminal pick's project step, laid out as the Projects sidebar's grouped view: the hosts' projects in the order main
+ * gave, under each host's heading once they span more than one host. The list starts on the current project; a project whose
+ * host is not connected is disabled and says so. While no project is reachable a Home folder row leads under this computer's
+ * heading. A query filters the rows in place, each heading above its first match.
+ */
+export function terminalProjectsModel(projects: readonly TerminalProjectOption[], rawQuery: string, labels: TerminalProjectLabels): QuickPickModel {
+  const entries: Array<{ readonly item: Omit<QuickPickItem, 'labelMatches' | 'descriptionMatches'>; readonly group: string }> = [];
+  if (!projects.some((project) => project.reachable)) entries.push({ item: { id: TERMINAL_HOME_ROW, label: labels.home, icon: House, iconColor: 'var(--d-muted)' }, group: labels.local });
+  for (const project of projects) {
+    entries.push({
+      group: project.authority.name ?? labels.local,
+      item: {
+        id: project.key,
+        label: project.name,
+        description: project.reachable ? project.path : labels.notConnected,
+        icon: Folder,
+        ...hostIcon(project.authority.color),
+        ...(project.current ? { badge: labels.current } : {}),
+        ...(project.reachable ? {} : { disabled: true }),
+      },
+    });
+  }
+  const headed = new Set(entries.map((entry) => entry.group)).size > 1;
+  const query = prepareQuery(rawQuery.trim());
+  const rows: QuickPickRow[] = [];
+  let group: string | undefined;
+  for (const entry of entries) {
+    const labelMatches = query.normalized ? scoreLabel(entry.item.label, query) : undefined;
+    if (labelMatches && labelMatches.score === 0) continue;
+    if (headed && entry.group !== group) rows.push({ kind: 'separator', label: entry.group });
+    group = entry.group;
+    rows.push({ kind: 'item', item: { ...entry.item, labelMatches: labelMatches?.labelMatches ?? [], descriptionMatches: [] } });
+  }
+  const enabled = rows.flatMap((row) => (row.kind === 'item' && !row.item.disabled ? [row.item] : []));
+  const current = query.normalized ? undefined : projects.find((project) => project.current && project.reachable);
+  const activeId = current?.key ?? enabled[0]?.id;
+  const shiftable = projects.some((project) => project.reachable);
+  return { rows, ...(activeId === undefined ? {} : { activeId }), ...(shiftable ? { hint: labels.shiftHint } : {}) };
 }
 
 // A quick pick icon's tint: local branches in the accent, tags in the warning hue as the prototype's ref chips, stashes in the

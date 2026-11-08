@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHandlerRegistry } from '../handler-registry';
 import { MessageRouter, type MessageRouterConfig } from '..';
 import type { HandlerContext, HandlerDependencies, ViewHandlerRegistry } from '../types';
-import { REMOTE_CHAT_SETTING_FAILURES, REMOTE_CHAT_USER_SETTING_MESSAGES, remoteChatSettingKey, VOICE_VIEW_MESSAGES } from '../../../../shared/remote-user';
+import { FOREIGN_VIEW_MESSAGES, REMOTE_CHAT_SETTING_FAILURES, REMOTE_CHAT_USER_SETTING_MESSAGES, remoteChatSettingKey, USER_MEMORY_VIEW_SOURCES, VOICE_VIEW_MESSAGES } from '../../../../shared/remote-user';
 import { MAX_DISABLED_TOOLS } from '../../../../shared/types/tools';
 import { createFakePlatform, type FakePlatformInit } from '../../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../../__mocks__/fake-remote-host';
@@ -29,10 +29,14 @@ const send = (handlers: ViewHandlerRegistry, message: Record<string, unknown>) =
 describe("a remote chat view's messages on this computer's core", () => {
   it('each has a handler that reads only the host it replies to', () => {
     const { handlers, foreignHandlers } = registry(createFakePlatform());
-    expect(Object.keys(foreignHandlers).sort()).toEqual([...VOICE_VIEW_MESSAGES, ...REMOTE_CHAT_USER_SETTING_MESSAGES].sort());
+    expect(Object.keys(foreignHandlers).sort()).toEqual([...FOREIGN_VIEW_MESSAGES].sort());
     for (const type of VOICE_VIEW_MESSAGES) expect(handlers[type], type).toBe(foreignHandlers[type]);
     // the chat's own setters write where its value is read; a remote chat's go to this computer's user file alone
     for (const type of REMOTE_CHAT_USER_SETTING_MESSAGES) expect(handlers[type], type).not.toBe(foreignHandlers[type]);
+    // a chat's own read replies to the asking view, a remote chat's to the foreign host it came through
+    expect(handlers['requestSubscriptionUsage']).toBeTypeOf('function');
+    // a local chat's popup manages this computer's memories with its own types; these reach this core only from a remote chat's page
+    for (const type of Object.keys(USER_MEMORY_VIEW_SOURCES)) expect(handlers[type], type).toBeUndefined();
     const handler: ViewHandlerRegistry[string] = (_message, ctx) => {
       // @ts-expect-error no chat of this core stands behind a remote chat's view
       void ctx.session;
@@ -40,9 +44,19 @@ describe("a remote chat view's messages on this computer's core", () => {
     expect(handler).toBeTypeOf('function');
   });
 
-  it('dispatchForeign refuses every other message', async () => {
+  it('dispatchForeign takes a user-scope read and refuses every other message', async () => {
     const platform = createFakePlatform();
     const router = new MessageRouter({ postMessage: () => undefined, platform, subscriptions: [], getPanels: () => new Map() } as unknown as MessageRouterConfig);
+    const usage = vi.fn();
+    (router as unknown as { foreignHandlers: ViewHandlerRegistry }).foreignHandlers.requestSubscriptionUsage = usage;
+    await router.dispatchForeign(host, { type: 'requestSubscriptionUsage' });
+    expect(usage).toHaveBeenCalledWith({ type: 'requestSubscriptionUsage' }, { host });
+    const userMemories = vi.fn();
+    (router as unknown as { foreignHandlers: ViewHandlerRegistry }).foreignHandlers.pinUserMemory = userMemories;
+    await router.dispatchForeign(host, { type: 'pinUserMemory', id: 'm1' });
+    expect(userMemories).toHaveBeenCalledWith({ type: 'pinUserMemory', id: 'm1' }, { host });
+    await expect(router.dispatchForeign(host, { type: 'requestMemories' } as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
+    await expect(router.dispatchForeign(host, { type: 'pinMemory', id: 'm1' } as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
     await expect(router.dispatchForeign(host, { type: 'setPermissionMode', mode: 'default' } as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
     await expect(router.dispatchForeign(host, { type: 'constructor' } as unknown as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
   });

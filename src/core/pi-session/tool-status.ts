@@ -1,4 +1,4 @@
-import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING, type ToolsSnapshot, type ToolGroupStatus, type ToolStatusInfo, type ToolGroup, type SwitchableToolGroup } from '../../shared/types/tools';
+import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING, type ToolsSnapshot, type ToolGroupStatus, type ToolStatusInfo, type ToolGroup, isSwitchableToolGroup } from '../../shared/types/tools';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { ImageAvailability } from './tools/image-tools';
 import type { MemoryService } from '../memory';
@@ -54,7 +54,10 @@ export interface ToolStatusDeps {
   mcpResourceExposure: 'direct' | 'deferred' | null;
   /** `this.disabledToolSet()`. */
   disabled: Set<string>;
-  /** A daemon's core only: its settings, whose machineValue marks a switch the host's own file holds (setOnHost). */
+  /**
+   * A daemon's core only: its settings, whose machineValue marks a switch the host's own file holds (setOnHost).
+   * A client-only key (application scope, voice) never reports a machineValue.
+   */
   hostSettings?: Pick<SettingsStore, 'inspect'>;
   /** `damocles.design.enabled`, a user-scope setting. */
   designEnabled: boolean;
@@ -152,25 +155,26 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     design: deps.designEnabled,
   };
   const heldOnHost = (key: string): boolean => deps.hostSettings?.inspect(key).machineValue !== undefined;
-  const hostHeld = (group: SwitchableToolGroup): { setOnHost?: true } => (heldOnHost(TOOL_GROUP_SETTINGS[group]) ? { setOnHost: true } : {});
-  const groups: ToolGroupStatus[] = [
-    { group: 'memory', enabled: groupEnabled.memory, available: !!deps.memoryService, ...hostHeld('memory') },
-    { group: 'compass', enabled: groupEnabled.compass, available: !!deps.compassService, ...hostHeld('compass') },
-    { group: 'browser', enabled: groupEnabled.browser, available: deps.browserAvailable, ...hostHeld('browser') },
-    { group: 'web', enabled: groupEnabled.web, available: true, ...hostHeld('web') },
+  const entries: ToolGroupStatus[] = [
+    { group: 'memory', enabled: groupEnabled.memory, available: !!deps.memoryService },
+    { group: 'compass', enabled: groupEnabled.compass, available: !!deps.compassService },
+    { group: 'browser', enabled: groupEnabled.browser, available: deps.browserAvailable },
+    { group: 'web', enabled: groupEnabled.web, available: true },
     {
       group: 'image',
       enabled: groupEnabled.image,
       available: deps.imageAvailability.available,
       ...(deps.imageAvailability.available ? {} : { unavailableReason: deps.imageAvailability.reason }),
-      ...hostHeld('image'),
     },
     { group: 'subagents', enabled: groupEnabled.subagents, available: true },
-    { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable, ...hostHeld('team') },
+    { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable },
     // Settings' design switch renders from this entry, so it is sent while off too; the Tools panel hides a group with no tools (PD-22).
-    { group: 'design', enabled: groupEnabled.design, available: true, ...hostHeld('design') },
+    { group: 'design', enabled: groupEnabled.design, available: true },
     { group: 'core', enabled: true, available: true },
   ];
+  const groups = entries.map((entry) =>
+    isSwitchableToolGroup(entry.group) && heldOnHost(TOOL_GROUP_SETTINGS[entry.group]) ? { ...entry, setOnHost: true as const } : entry,
+  );
   const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.filter((entry) => entry.group !== 'design' || deps.designEnabled).map((entry) => ({
     ...entry,
     enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,

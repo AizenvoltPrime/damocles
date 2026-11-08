@@ -57,7 +57,7 @@ describe('memory database migrated by a newer app while open', () => {
     expect(await service.deleteMemory(seed!.id)).toBe(false);
     expect(await service.setProfileSection('global', os.homedir(), 'static', 'x')).toBe(false);
     expect((await service.getMemoryDetails([seed!.id])).map((m) => m.id)).toEqual([seed!.id]);
-    expect(service.listNotes().map((n) => n.id)).toEqual([seed!.id]);
+    expect((await service.listNotes()).map((n) => n.id)).toEqual([seed!.id]);
 
     expect(fake.notifications.calls).toEqual([
       { level: 'warn', message: expect.stringContaining('the memory database') as string, text: { message: 'Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', args: [{ message: 'the memory database' }] }, actions: [] },

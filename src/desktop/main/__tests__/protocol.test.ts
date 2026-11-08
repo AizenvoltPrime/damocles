@@ -32,12 +32,14 @@ afterAll(() => {
 });
 
 describe('registerAppScheme', () => {
-  it('registers the design scheme in the same call as app, standard and secure only (PD-31)', () => {
+  it('registers the design and preview schemes in the same call as app; only the preview scheme gets fetch and CORS (PD-31)', () => {
     registerAppScheme();
     expect(protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
     expect(protocol.registerSchemesAsPrivileged).toHaveBeenCalledWith([
       { scheme: 'app', privileges: { standard: true, secure: true } },
       { scheme: 'damocles-design', privileges: { standard: true, secure: true } },
+      // no service worker, code cache, stream or CSP bypass privilege
+      { scheme: 'damocles-preview', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
     ]);
   });
 });

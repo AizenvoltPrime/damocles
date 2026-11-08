@@ -1,4 +1,4 @@
-import type { BrokerAnswer, BrowserToolAnswer, ClientGlobalProfile, ClientPolicy, ClientUser, GlobalMemoryResolution, GlobalMemorySearchFilters, GlobalMemoryWrite, HeldAuth, HeldMemoryQueue, RelayedMcpServer, SearchedGlobalMemory } from '../shared/remote-user';
+import type { BrokerAnswer, BrowserToolAnswer, ClientGlobalProfile, ClientPolicy, ClientUser, GlobalMemoryListPage, GlobalMemoryListRequest, GlobalMemoryResolution, GlobalMemorySearchFilters, GlobalMemoryWrite, HeldAuth, HeldMemoryQueue, RelayedMcpServer, SearchedGlobalMemory } from '../shared/remote-user';
 
 import type { Disposable } from './disposable';
 import type { ActiveEditorContext } from './editor-service';
@@ -75,6 +75,9 @@ export interface RemoteHost {
   memoryProfile(clientId: string): Promise<ClientGlobalProfile>;
   memoryResolve(clientId: string, ids: readonly string[]): Promise<readonly GlobalMemoryResolution[]>;
   memoryApply(clientId: string, entries: readonly { readonly end: number; readonly write: GlobalMemoryWrite }[]): Promise<{ readonly through: number; readonly ids?: readonly string[] }>;
+  // one page of its latest global rows of the kinds and tags asked for, below the cursor; also refused with
+  // CLIENT_FEATURE_MISSING when its attach did not list user.memory.list
+  memoryList(clientId: string, request: GlobalMemoryListRequest): Promise<GlobalMemoryListPage>;
   // the outboxes held for devices long away, which every attached client shows with Deliver here and Discard
   heldMemoryChanged(queues: readonly HeldMemoryQueue[]): void;
   // exactly that client's personal MCP server, which it runs (user.mcp.*); each answer is the server's MCP result

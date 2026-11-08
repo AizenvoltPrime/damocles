@@ -4,7 +4,7 @@ import type { WebContents } from 'electron';
 
 vi.mock('electron', () => ({ protocol: {} }));
 
-import { hardenWebContents, loadAppPage, registerDesignContents } from '../security';
+import { hardenWebContents, loadAppPage, registerLockedContents } from '../security';
 
 function contents(): EventEmitter & { openHandler?: (details: { url: string }) => { action: string }; loadURL: () => Promise<void> } {
   const fake = Object.assign(new EventEmitter(), {
@@ -27,7 +27,7 @@ describe('hardenWebContents', () => {
       opened.push(url);
       return true;
     }, () => undefined);
-    registerDesignContents(web as unknown as WebContents, 'damocles-design://0123456789abcdef0123456789abcdef');
+    registerLockedContents(web as unknown as WebContents, 'damocles-design://0123456789abcdef0123456789abcdef');
 
     const navigation = (url: string) => ({ url, preventDefault: vi.fn() });
     const sameOrigin = navigation('damocles-design://0123456789abcdef0123456789abcdef/screens/S2.html');
@@ -37,11 +37,13 @@ describe('hardenWebContents', () => {
     const app = navigation('app://damocles/shell/index.html');
     web.emit('will-navigate', sameOrigin);
     for (const event of [otherView, web1, file, app]) web.emit('will-navigate', event);
-    const redirect = navigation('https://example.com/');
+    const redirect = { ...navigation('https://example.com/'), isMainFrame: true };
+    const iframeRedirect = { ...navigation('https://example.com/embed'), isMainFrame: false };
     web.emit('will-redirect', redirect);
+    web.emit('will-redirect', iframeRedirect);
 
     expect(sameOrigin.preventDefault).not.toHaveBeenCalled();
-    for (const event of [otherView, web1, file, app, redirect]) expect(event.preventDefault, event.url).toHaveBeenCalled();
+    for (const event of [otherView, web1, file, app, redirect, iframeRedirect]) expect(event.preventDefault, event.url).toHaveBeenCalled();
     expect(web.openHandler!({ url: 'https://example.com/' })).toEqual({ action: 'deny' });
     expect(web.openHandler!({ url: 'damocles-design://0123456789abcdef0123456789abcdef/screens/S2.html' })).toEqual({ action: 'deny' });
     expect(opened).toEqual([]);
@@ -53,13 +55,63 @@ describe('hardenWebContents', () => {
     const lines: string[] = [];
     for (const [web, token] of [[first, 'a'.repeat(32)], [second, 'b'.repeat(32)]] as const) {
       hardenWebContents(web as unknown as WebContents, async () => true, (line) => lines.push(line));
-      registerDesignContents(web as unknown as WebContents, `damocles-design://${token}`);
+      registerLockedContents(web as unknown as WebContents, `damocles-design://${token}`);
     }
     const blocked = Array.from({ length: 50 }, () => ({ url: 'https://example.com/', preventDefault: vi.fn() }));
     for (const event of blocked) first.emit('will-navigate', event);
     second.emit('will-redirect', { url: 'https://example.com/', preventDefault: vi.fn() });
     expect(blocked.every((event) => event.preventDefault.mock.calls.length === 1)).toBe(true);
     expect(lines).toHaveLength(2);
+  });
+
+  it('keeps an HTML preview within its root origin and opens a main-frame http(s) link outside only when the user clicked it', () => {
+    const web = contents();
+    const opened: string[] = [];
+    let clicked = false;
+    hardenWebContents(web as unknown as WebContents, async (url) => {
+      opened.push(url);
+      return true;
+    }, () => undefined);
+    registerLockedContents(web as unknown as WebContents, 'damocles-preview://0123456789abcdef0123456789abcdef', () => {
+      const taken = clicked;
+      clicked = false;
+      return taken;
+    });
+    const navigation = (url: string) => ({ url, preventDefault: vi.fn() });
+
+    const sameRoot = navigation('damocles-preview://0123456789abcdef0123456789abcdef/docs/index.html');
+    web.emit('will-navigate', sameRoot);
+    expect(sameRoot.preventDefault).not.toHaveBeenCalled();
+
+    // a script or <meta refresh> with no click: blocked, nothing opens
+    const unclicked = navigation('https://example.com/');
+    web.emit('will-navigate', unclicked);
+    expect(web.openHandler!({ url: 'https://example.com/popup' })).toEqual({ action: 'deny' });
+    expect(unclicked.preventDefault).toHaveBeenCalled();
+    expect(opened).toEqual([]);
+
+    clicked = true;
+    const link = navigation('https://example.com/docs');
+    web.emit('will-navigate', link);
+    expect(link.preventDefault).toHaveBeenCalled();
+    clicked = true;
+    expect(web.openHandler!({ url: 'https://example.com/popup' })).toEqual({ action: 'deny' });
+    expect(opened).toEqual(['https://example.com/docs', 'https://example.com/popup']);
+
+    // a main-frame redirect off the origin and any other scheme never open, clicked or not
+    for (const [event, url] of [['will-redirect', 'https://example.com/r'], ['will-navigate', 'file:///C:/Windows/win.ini'], ['will-navigate', 'app://damocles/shell/index.html'], ['will-navigate', 'damocles-preview://fedcba9876543210fedcba9876543210/a.html']] as const) {
+      clicked = true;
+      const blocked = { ...navigation(url), isMainFrame: true };
+      web.emit(event, blocked);
+      expect(blocked.preventDefault, url).toHaveBeenCalled();
+    }
+    // an iframe's redirect (http to https, an embed) loads; the partition's webRequest refuses other schemes
+    const iframe = { ...navigation('https://www.example.com/embed'), isMainFrame: false };
+    web.emit('will-redirect', iframe);
+    expect(iframe.preventDefault).not.toHaveBeenCalled();
+    clicked = true;
+    expect(web.openHandler!({ url: 'file:///C:/Windows/win.ini' })).toEqual({ action: 'deny' });
+    expect(opened).toEqual(['https://example.com/docs', 'https://example.com/popup']);
   });
 
   it('judges a navigation by the event url, allowing only the page main loaded', async () => {

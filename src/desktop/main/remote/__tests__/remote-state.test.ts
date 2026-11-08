@@ -38,6 +38,46 @@ describe('RemoteState', () => {
     expect(reread.terminals('wsl+Ubuntu')).toEqual([]);
   });
 
+  // a write replaces only its own authority's records, so a host whose write is skipped keeps its own
+  it('reads back no record of a terminal a write left out, another host\'s records untouched, and a restarted one\'s new nonce', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    const [running, exited, away] = [record('term-111111111111111'), record('term-222222222222222'), record('term-333333333333333')];
+    await state.setTerminals('loopback', [running, exited]);
+    await state.setTerminals('ssh+away', [away]);
+    await state.setTerminals('loopback', [running]);
+    const relaunched = await RemoteState.open(userData, () => undefined);
+    expect(relaunched.terminals('loopback')).toEqual([running]);
+    expect(relaunched.terminals('ssh+away')).toEqual([away]);
+    await relaunched.setTerminals('loopback', []);
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8')).authorities).toEqual({ 'ssh+away': expect.anything() });
+    await relaunched.setTerminals('loopback', [{ ...exited, nonce: 'fresh' }]);
+    expect((await RemoteState.open(userData, () => undefined)).terminals('loopback')).toEqual([{ ...exited, nonce: 'fresh' }]);
+  });
+
+  it('drops a killed terminal\'s record and keeps its id for the next reattach in one write, across a relaunch, until the reattach is done with it', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    const [killed, kept] = [record('term-111111111111111'), record('term-222222222222222')];
+    await state.setTerminals('loopback', [killed, kept]);
+    await state.killOnReattach('loopback', killed.id);
+    await state.killOnReattach('loopback', killed.id);
+    const relaunched = await RemoteState.open(userData, () => undefined);
+    expect(relaunched.terminals('loopback')).toEqual([kept]);
+    expect(relaunched.pendingKills('loopback')).toEqual([killed.id]);
+    expect(relaunched.pendingKills('ssh+abc')).toEqual([]);
+    // the records a reattach writes leave the kill waiting
+    await relaunched.setTerminals('loopback', []);
+    expect((await RemoteState.open(userData, () => undefined)).pendingKills('loopback')).toEqual([killed.id]);
+    await relaunched.killsDone('loopback', [killed.id]);
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8')).authorities).toEqual({});
+  });
+
+  it('reads only well-formed, distinct terminal ids as pending kills', async () => {
+    fs.writeFileSync(path.join(userData, REMOTE_STATE_FILE), JSON.stringify({ version: 1, authorities: { loopback: { terminals: [], pendingKills: ['term-111111111111111', '../x', 7, 'term-111111111111111'] }, 'ssh+abc': { terminals: [], pendingKills: 'x' } } }));
+    const state = await RemoteState.open(userData, () => undefined);
+    expect(state.pendingKills('loopback')).toEqual(['term-111111111111111']);
+    expect(state.pendingKills('ssh+abc')).toEqual([]);
+  });
+
   it('keeps each authority\'s open chats with the core epoch they are open under, beside its terminals', async () => {
     const state = await RemoteState.open(userData, () => undefined);
     const chat = { authority: 'loopback', sessionId: 's-1', panelToken: '6f1c2a9e-0d4b-4c1e-9a1f-1b2c3d4e5f60' };
@@ -118,7 +158,7 @@ describe('RemoteState', () => {
   it('writes its records to remote-state.json alone, leaving panels.json and window-layout.json as they were', async () => {
     const layout = new WindowLayoutStore(userData, () => undefined);
     const panels = new PanelStateStore(userData, () => undefined);
-    layout.setTerminals({ terminals: [{ profileId: 'pwsh', projectKey: 'c:\\work\\local', name: null, customIcon: null, color: null }], active: 0, listWidthRem: 12, groups: [{ panes: 1, activePane: 0, sizes: [1] }] });
+    layout.setTerminals({ version: 2, listWidthRem: 12, groups: [{ panes: [{ kind: 'local', profileId: 'pwsh', projectKey: 'c:\\work\\local', name: null, customIcon: null, color: null }], activePane: 0, sizes: [1] }], active: 0, editor: [] });
     panels.select({ projectKey: 'c:\\work\\local' });
     await Promise.all([layout.flush(), panels.flush()]);
     const layoutBefore = fs.readFileSync(path.join(userData, WINDOW_LAYOUT_FILE), 'utf8');
@@ -129,8 +169,8 @@ describe('RemoteState', () => {
     expect(fs.readFileSync(path.join(userData, WINDOW_LAYOUT_FILE), 'utf8')).toBe(layoutBefore);
     expect(fs.readFileSync(path.join(userData, PANEL_STATE_FILE), 'utf8')).toBe(panelsBefore);
     expect(layoutBefore).not.toContain('loopback|');
-    expect(JSON.parse(layoutBefore).terminals.terminals[0]).toEqual({ profileId: 'pwsh', projectKey: 'c:\\work\\local', name: null, customIcon: null, color: null });
-    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8'))).toEqual({ version: 1, authorities: { loopback: { terminals: [record('term-123456789012345')], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] } } });
+    expect(JSON.parse(layoutBefore).terminals.groups[0].panes[0]).toEqual({ kind: 'local', profileId: 'pwsh', projectKey: 'c:\\work\\local', name: null, customIcon: null, color: null });
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8'))).toEqual({ version: 1, authorities: { loopback: { terminals: [record('term-123456789012345')], pendingKills: [], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] } } });
   });
 });
 

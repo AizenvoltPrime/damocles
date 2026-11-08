@@ -21,9 +21,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountFiles(options: { platform?: 'win32' | 'linux' | 'darwin'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string; remote?: boolean; offline?: boolean; transfersUnsupportedOn?: string } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
+async function mountFiles(options: { platform?: 'win32' | 'linux' | 'darwin'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string; remote?: boolean; offline?: boolean; transfersUnsupportedOn?: string; files?: readonly string[]; folders?: readonly string[] } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
+  const files = options.files ?? ['notes.txt', 'todo.md'];
   const api = fakeShellApi([], {
-    listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'src', kind: 'dir' as const }, { name: 'notes.txt', kind: 'file' as const }, { name: 'todo.md', kind: 'file' as const }] })),
+    listFiles: vi.fn(async () => ({ ok: true as const, entries: [...(options.folders ?? ['src']).map((name) => ({ name, kind: 'dir' as const })), ...files.map((name) => ({ name, kind: 'file' as const }))] })),
   });
   const wrapper = mount(FilesSection, {
     props: { api, projectKey: options.projectKey ?? 'home', projectName: 'Home', platform: options.platform ?? 'win32', projectPlatform: options.projectPlatform ?? options.platform ?? 'win32', trash: options.trash ?? true, collapsed: false, remote: options.remote ?? false, offline: options.offline ?? false, ...(options.shown ? { shown: options.shown } : {}), ...(options.transfersUnsupportedOn !== undefined ? { transfersUnsupportedOn: options.transfersUnsupportedOn } : {}) },
@@ -305,6 +306,51 @@ describe('Files Open as project', () => {
     worktree.api.answerNext({ kind: 'menu', itemId: 'openAsProject' });
     expect(await menuOf(worktree.wrapper, worktree.api, 'src')).toContain('openAsProject');
     expect(worktree.api.openAsProject).toHaveBeenCalledWith({ projectKey: 'home|w1', relativePath: 'src' });
+  });
+});
+
+describe('Files Open preview for HTML', () => {
+  const menuOf = async (wrapper: VueWrapper, api: FakeShellApi, path: string): Promise<string[]> => {
+    await row(wrapper, path).trigger('contextmenu', { clientX: 10, clientY: 10 });
+    await flushPromises();
+    const request = api.overlayRequests.at(-1);
+    return request?.kind === 'menu' ? request.items.flatMap((item) => (item.kind === 'item' ? [item.id] : [])) : [];
+  };
+
+  it('offers Open preview right after Open on .html and .htm files only, labelled as Markdown\'s', async () => {
+    const { wrapper, api } = await mountFiles({ files: ['index.html', 'PAGE.HTM', 'notes.txt', 'todo.md'] });
+    for (const path of ['index.html', 'PAGE.HTM']) {
+      const items = await menuOf(wrapper, api, path);
+      expect(items.slice(0, 3), path).toEqual(['open', 'openPreview', 'focusOverlay']);
+    }
+    const request = api.overlayRequests.at(-1);
+    const label = request?.kind === 'menu' ? request.items.find((item) => item.kind === 'item' && item.id === 'openPreview') : undefined;
+    expect(label?.kind === 'item' && label.label).toBe('Open preview');
+    expect(await menuOf(wrapper, api, 'notes.txt')).not.toContain('openPreview');
+    expect(await menuOf(wrapper, api, 'src')).not.toContain('openPreview');
+    // Markdown keeps its own pair, preview first
+    expect((await menuOf(wrapper, api, 'todo.md')).slice(0, 2)).toEqual(['openPreview', 'openSource']);
+  });
+
+  it('offers no Open preview for a page the preview would not serve: none inside a dot folder but .well-known', async () => {
+    const { wrapper, api } = await mountFiles({ folders: ['.vitepress', '.well-known'], files: ['index.html'] });
+    for (const folder of ['.vitepress', '.well-known']) {
+      await row(wrapper, folder).trigger('click');
+      await flushPromises();
+    }
+    expect(await menuOf(wrapper, api, '.vitepress/index.html')).not.toContain('openPreview');
+    expect(await menuOf(wrapper, api, '.well-known/index.html')).toContain('openPreview');
+    expect(await menuOf(wrapper, api, 'index.html')).toContain('openPreview');
+  });
+
+  it('opens the preview from the menu, while a click on the file opens its code', async () => {
+    const { wrapper, api } = await mountFiles({ files: ['index.html'] });
+    api.answerNext({ kind: 'menu', itemId: 'openPreview' });
+    await menuOf(wrapper, api, 'index.html');
+    expect(api.openEditor).toHaveBeenLastCalledWith({ projectKey: 'home', relativePath: 'index.html', as: 'preview' });
+    await row(wrapper, 'index.html').trigger('click');
+    await flushPromises();
+    expect(api.openEditor).toHaveBeenLastCalledWith({ projectKey: 'home', relativePath: 'index.html' });
   });
 });
 

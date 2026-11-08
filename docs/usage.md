@@ -105,6 +105,8 @@ Type `/` for built-in commands and custom commands from `.damocles/commands/`, `
 | `/btw <question>`          | Ask a side question using conversation context                         |
 | `/steer <agent> <message>` | Send a steering message to a running subagent                          |
 
+In a desktop chat on a remote host, `/usage` shows this computer's subscription usage, read by Damocles on this computer, so it works while the host is offline.
+
 ### Custom commands
 
 Custom commands are loaded from `.damocles/commands/*.md`, `.claude/commands/*.md` and `.codex/prompts/*.md` (project) plus their `~/` user equivalents.

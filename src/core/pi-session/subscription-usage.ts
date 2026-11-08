@@ -351,7 +351,7 @@ async function fetchWhamUsage(token: string, chatgpt: boolean): Promise<Provider
 }
 
 export async function fetchSubscriptionUsage(runtime: PiRuntime): Promise<SubscriptionUsageData> {
-  // usage windows are user scope: this computer's core reads them, and a daemon's core never pulls a client's tokens for them
+  // usage windows are user scope: a daemon's core never pulls a client's tokens for them
   if (installedPlatform()?.remote) {
     const elsewhere: ProviderUsage = { status: 'error', bars: [], error: l('Subscription usage is read on your computer, not on a remote host') };
     return { claude: elsewhere, gpt: elsewhere, fetchedAt: Date.now() };

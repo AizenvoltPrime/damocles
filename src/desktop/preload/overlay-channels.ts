@@ -12,7 +12,7 @@ import type { ScmLetter } from './scm-channels';
 import type { HostLatency, HostReconnect } from '../../shared/host-connection';
 import type { HostColor } from '../../shared/host-colors';
 import type { PermissionMode } from '../../shared/types/settings';
-import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
+import type { TerminalColor, TerminalGlyph, TerminalPickShells, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
 import { visibleText } from '../../shared/visible-text';
 import { MAX_HELD_MEMORY_QUEUES, type HeldMemoryQueue } from '../../shared/remote-user';
@@ -79,6 +79,10 @@ export const OVERLAY_CHANNELS = {
   commandsList: 'damocles:overlay:commands:list',
   // {} → TerminalProfileReport for Settings › Terminal; answers closed unless the settings modal is open
   terminalProfiles: 'damocles:overlay:terminal:profiles',
+  // exactly { projectKey } → TerminalPickShells: the project's host's shells once detected, its default first, or notConnected
+  // for a host gone since the pick opened; projectKey one the open newTerminal request offers, null for the home folder;
+  // answers closed unless a newTerminal request is open
+  terminalPickProfiles: 'damocles:overlay:terminal:pick-profiles',
   // { value } → InputBrowseResult | null; answers closed unless an input request is open, null unless it has browse
   inputBrowse: 'damocles:overlay:input:browse',
   // {} → ChatsWorktreeOptions for the open newChatMenu request's project; answers closed unless one is open
@@ -946,8 +950,9 @@ export type OverlayMenuItem =
       readonly radio?: boolean;
     }
   | { readonly kind: 'separator' }
-  // one level deep: its items are items and separators, never another submenu; its own id is never an answer
-  | { readonly kind: 'submenu'; readonly id: string; readonly label: string; readonly icon?: OverlayIcon; readonly items: readonly OverlayMenuItem[] };
+  // one level deep: its items are items and separators, never another submenu; its own id is never an answer. hint: a second
+  // line under the label, within MAX_OVERLAY_LABEL_LENGTH
+  | { readonly kind: 'submenu'; readonly id: string; readonly label: string; readonly icon?: OverlayIcon; readonly hint?: string; readonly items: readonly OverlayMenuItem[] };
 
 /**
  * Drops separators at either end and repeated ones, which conditional menu sections and dropped items leave behind, and a
@@ -1053,13 +1058,15 @@ export type OverlayRequest =
   // quickOpenQuery, commands mode through commandsList; a leading '>' switches files to commands, as VS Code does. A scope
   // limits the files to one folder of one project.
   | { readonly kind: 'quickOpen'; readonly mode: QuickOpenMode; readonly scope?: QuickOpenScope }
-  // New Terminal (Ctrl+Shift+` or the terminal pane's +); only main opens it. Step 1 picks a profile; step 2 a project, skipped
-  // when projects has one entry, or none (the home folder). Shift+click or Shift+Enter on a profile answers with the current
-  // project.
-  | { readonly kind: 'newTerminal'; readonly profiles: readonly TerminalProfileOption[]; readonly projects: readonly TerminalProjectOption[] }
+  // New Terminal (Ctrl+Shift+`, the terminal pane's + or its empty state's button); only main opens it. Step 1 picks a project,
+  // in the sidebar's order under its host headings, skipped when projects is one reachable entry or none (the home folder); a
+  // Home folder row joins it while no project is reachable. Step 2 picks a shell of that project's host, which the overlay
+  // fetches through terminalPickProfiles. Shift+click or Shift+Enter on a project answers with its host's default shell.
+  | { readonly kind: 'newTerminal'; readonly projects: readonly TerminalProjectOption[] }
   // A list main offers (a terminal's icon, color or default profile, a ref, stash, tag, remote or worktree picker); only
   // main opens it. Ungrouped, the current item is focused first; filtering matches label and description.
-  | { readonly kind: 'quickPick'; readonly placeholder: string; readonly items: readonly OverlayQuickPickItem[] }
+  // With pickMany the rows are checkboxes, at most max checked (1..the selectable items), answered by quickPickMany.
+  | { readonly kind: 'quickPick'; readonly placeholder: string; readonly items: readonly OverlayQuickPickItem[]; readonly pickMany?: { readonly max: number } }
   // A text box main asks through askInput; only main opens it.
   | ({ readonly kind: 'input' } & InputRequest)
   // a pane dragged past the shell's threshold; grid is the layout grid's rectangle, pointer where the drag is now
@@ -1115,7 +1122,21 @@ export type OverlayRequest =
   | ({ readonly kind: 'devcontainerTrust' } & DevcontainerTrustRequest)
   // Allow YOLO on a saved host whose switch is off, hung from the control that asked (only main asks it); it stacks as a
   // message does, so it shows above the settings modal
-  | { readonly kind: 'allowYolo'; readonly hostName: string; readonly hostColor?: HostColor; readonly anchor: OverlayRect };
+  | { readonly kind: 'allowYolo'; readonly hostName: string; readonly hostColor?: HostColor; readonly anchor: OverlayRect }
+  // Choose Client Certificate for This Site...: the certificates the site accepts, which Chrome would offer for it; site is the
+  // page's host as its address bar names it
+  | { readonly kind: 'clientCertificate'; readonly site: string; readonly certificates: readonly ClientCertificateRow[] };
+
+// What the picker shows of one certificate, and the opaque id main maps back to it; validity in seconds since the epoch.
+// distinct false: Chrome's auto-selection could not tell it from another one offered, so it cannot be chosen.
+export interface ClientCertificateRow {
+  readonly id: string;
+  readonly subject: string;
+  readonly issuer: string;
+  readonly validStart: number;
+  readonly validExpiry: number;
+  readonly distinct: boolean;
+}
 
 // The host's name and tone come from this computer's host store; credentialHost is the https host the target's git asked
 // for, as main validated it; targetHelper: the target's git has a credential helper of its own that would save the credential.
@@ -1371,12 +1392,15 @@ export type OverlayAnswer =
   | { readonly kind: 'quickOpen'; readonly pick: QuickOpenPick | null }
   // a PaletteCommand id; main runs it only when it is listed and enabled for the captured focus context
   | { readonly kind: 'quickOpen'; readonly command: string }
-  // Escape answers dismissed; main refuses a profile or project the request did not offer; null projectKey: the request
-  // offered no project, so the terminal starts in the home folder
-  | { readonly kind: 'newTerminal'; readonly profileId: string; readonly projectKey: string | null }
+  // Escape answers dismissed. projectKey: a reachable project the request offered, or null (the home folder) while it offered
+  // none reachable; profileId: one terminalPickProfiles served for that project, or null for its host's default shell
+  | { readonly kind: 'newTerminal'; readonly projectKey: string | null; readonly profileId: string | null }
   // Escape answers dismissed; main refuses an id the request did not offer. query: the filter text as typed, within
   // MAX_INPUT_VALUE_LENGTH
   | { readonly kind: 'quickPick'; readonly itemId: string; readonly query: string }
+  // a pickMany quick pick's accept: 1..max distinct ids the request offered, none an info row, in the request's item order;
+  // Escape answers dismissed
+  | { readonly kind: 'quickPickMany'; readonly itemIds: readonly string[] }
   // Escape answers dismissed; main refuses a value its validation kind rejects
   | { readonly kind: 'input'; readonly value: string }
   // null: dropped outside every zone, or Escape
@@ -1397,7 +1421,9 @@ export type OverlayAnswer =
   // Escape, the scrim and Cancel refuse as accept: false does
   | { readonly kind: 'devcontainerTrust'; readonly accept: boolean }
   // every way the user closes it answers allow false
-  | { readonly kind: 'allowYolo'; readonly allow: boolean };
+  | { readonly kind: 'allowYolo'; readonly allow: boolean }
+  // a distinct row's id; Cancel and Escape answer dismissed
+  | { readonly kind: 'clientCertificate'; readonly id: string };
 
 // Each answers only the dialog of the same name.
 export type WorktreeDialogAnswer =
@@ -1741,6 +1767,8 @@ export interface DamoclesOverlayApi {
   getTerminalProfiles(): Promise<PopupAnswer<TerminalProfileReport>>;
   // returns the unsubscribe
   onTerminalProfiles(listener: (report: TerminalProfileReport) => void): () => void;
+  // the open newTerminal request's step 2; answers closed unless one is open
+  terminalPickProfiles(request: { readonly projectKey: string | null }): Promise<PopupAnswer<TerminalPickShells>>;
   // the open input request's browse button; null leaves the box as it is; answers closed unless an input request is open
   browseInput(value: string): Promise<PopupAnswer<InputBrowseResult | null>>;
   // the shell's pane drag while a dropZones request is open; returns the unsubscribe

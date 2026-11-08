@@ -38,20 +38,22 @@ import {
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_HISTORY, MAX_SEARCH_PATTERN_LENGTH } from '../../shared/text-search';
 import { SEARCH_DEFAULT_VIEW_MODES } from '../local-services/desktop-configuration';
 import { isRelativeFilePath } from '../../shared/relative-path';
-import { isAbsoluteFolderKey } from '../../shared/project-location';
+import { authorityKeyOfProject, isAbsoluteFolderKey } from '../../shared/project-location';
 import { MAX_RECENT_FILES, type PersistedEditor, type PersistedTab } from './editor-pane';
 import {
   clampListWidth,
   DEFAULT_PERSISTED_TERMINALS,
+  equalPaneSizes,
   isTerminalColor,
   isTerminalCustomIcon,
   parsePaneSizes,
   parseTerminalName,
-  type PersistedTerminal,
+  type PersistedPane,
   type PersistedTerminalGroup,
   type PersistedTerminals,
 } from './terminal/terminal-service';
 import { MAX_TERMINAL_GROUP_PANES } from '../preload/terminal-channels';
+import { isTerminalId } from '../pty-host/protocol';
 import { isFullRefName } from '../preload/scm-channels';
 
 // An absolute path saved for a tab outside every project.
@@ -472,6 +474,10 @@ export function parsePersistedTab(raw: unknown): PersistedTab | undefined {
     const scope = field(raw, 'scope');
     return scope === 'user' || scope === 'project' || scope === 'local' ? { kind, scope, ...withBackup } : undefined;
   }
+  if (kind === 'htmlPreview') {
+    const ref = parseFileRef(field(raw, 'file'));
+    return ref && backup.backupId === undefined ? { kind, file: ref } : undefined;
+  }
   if (kind !== 'code' && kind !== 'markdownPreview' && kind !== 'image' && kind !== 'notDisplayed') return undefined;
   const file = field(raw, 'file');
   if (file !== undefined) {
@@ -520,8 +526,11 @@ export function parsePersistedEditor(raw: unknown, log: Log): PersistedEditor {
   return { tabs, active, recent };
 }
 
-// A name, icon or color that main would not accept now is dropped and logged; the terminal itself is kept.
-function parsePersistedTerminal(raw: unknown, log: Log): PersistedTerminal | undefined {
+type LocalPane = Extract<PersistedPane, { kind: 'local' }>;
+
+// A local pane's fields, kind aside. A name, icon or color that main would not accept now is dropped and logged; the terminal
+// itself is kept.
+function parseLocalPane(raw: unknown, log: Log): LocalPane | undefined {
   if (!isRecord(raw)) return undefined;
   const profileId = field(raw, 'profileId');
   const projectKey = field(raw, 'projectKey');
@@ -536,10 +545,113 @@ function parsePersistedTerminal(raw: unknown, log: Log): PersistedTerminal | und
   if (name === undefined) log('[layout] dropping the malformed name of a terminal');
   if (customIcon === undefined) log('[layout] dropping the unknown icon of a terminal');
   if (color === undefined) log('[layout] dropping the unknown color of a terminal');
-  return { profileId, projectKey, name: name ?? null, customIcon: customIcon ?? null, color: color ?? null };
+  return { kind: 'local', profileId, projectKey, name: name ?? null, customIcon: customIcon ?? null, color: color ?? null };
 }
 
-function parsePersistedGroup(raw: unknown): PersistedTerminalGroup | undefined {
+// A local pane never names a remote root, whose terminals the layout names by id alone.
+function parsePane(raw: unknown, log: Log): PersistedPane | undefined {
+  if (!isRecord(raw)) return undefined;
+  const kind = field(raw, 'kind');
+  if (kind === 'local') {
+    const pane = parseLocalPane(raw, log);
+    return pane && (pane.projectKey === null || authorityKeyOfProject(pane.projectKey) === 'local') ? pane : undefined;
+  }
+  const id = field(raw, 'id');
+  return kind === 'remote' && isTerminalId(id) ? { kind, id } : undefined;
+}
+
+// One saved group: a malformed pane or a remote one named twice is dropped and logged, and the panes past the bound are
+// dropped unread with one log line. A dropped active pane hands over to the pane at its index, else the last, as a removal
+// does. Undefined, logged, when the group is malformed or no pane is left. Sizes that do not fit the panes kept are shared
+// equally.
+function parseGroup(raw: unknown, room: number, remoteIds: Set<string>, log: Log): PersistedTerminalGroup | undefined {
+  const rawPanes = isRecord(raw) ? field(raw, 'panes') : undefined;
+  if (!isRecord(raw) || !Array.isArray(rawPanes)) {
+    log('[layout] dropping a malformed terminal group');
+    return undefined;
+  }
+  const rawActive = field(raw, 'activePane');
+  const read = (rawPanes as unknown[]).slice(0, Math.min(room, MAX_TERMINAL_GROUP_PANES));
+  if (read.length < rawPanes.length) log(`[layout] dropping a group's terminals past the layout's bounds: ${rawPanes.length - read.length}`);
+  const panes: PersistedPane[] = [];
+  // the panes kept before the saved active one
+  let activePane: number | undefined;
+  read.forEach((rawPane, index) => {
+    if (index === rawActive) activePane = panes.length;
+    const pane = parsePane(rawPane, log);
+    if (!pane || (pane.kind === 'remote' && remoteIds.has(pane.id))) {
+      log('[layout] dropping a malformed terminal');
+      return;
+    }
+    if (pane.kind === 'remote') remoteIds.add(pane.id);
+    panes.push(pane);
+  });
+  if (typeof rawActive === 'number' && Number.isInteger(rawActive) && rawActive >= read.length && rawActive < rawPanes.length) activePane = panes.length;
+  if (panes.length === 0) {
+    log('[layout] dropping a terminal group with no terminal left');
+    return undefined;
+  }
+  const rawSizes = field(raw, 'sizes');
+  const sizes = panes.length === rawPanes.length && Array.isArray(rawSizes) ? parsePaneSizes(rawSizes as unknown[], panes.length) : undefined;
+  if (!sizes) log('[layout] sharing a terminal group\'s sizes equally: the saved ones do not fit its terminals');
+  return { panes, activePane: activePane === undefined ? 0 : Math.min(activePane, panes.length - 1), sizes: sizes ?? equalPaneSizes(panes.length) };
+}
+
+// The saved groups: a malformed one is dropped and logged, and the groups past MAX_PERSISTED_TERMINALS terminals are dropped
+// unread with one log line. active names a group kept, else is null.
+function parseVersion2Terminals(raw: Record<string, unknown>, listWidthRem: number, log: Log): PersistedTerminals {
+  const rawGroups = field(raw, 'groups');
+  const rawActive = field(raw, 'active');
+  const groups: PersistedTerminalGroup[] = [];
+  const remoteIds = new Set<string>();
+  let active: number | null = null;
+  let room = MAX_PERSISTED_TERMINALS;
+  if (!Array.isArray(rawGroups)) log('[layout] dropping malformed terminal groups');
+  const list = Array.isArray(rawGroups) ? (rawGroups as unknown[]) : [];
+  // each kept group holds a terminal, so no more than MAX_PERSISTED_TERMINALS of them are read
+  let read = 0;
+  for (; read < Math.min(list.length, MAX_PERSISTED_TERMINALS) && room > 0; read++) {
+    const group = parseGroup(list[read], room, remoteIds, log);
+    if (!group) continue;
+    room -= group.panes.length;
+    if (read === rawActive) active = groups.length;
+    groups.push(group);
+  }
+  if (read < list.length) log(`[layout] dropping terminal groups past the layout's bounds: ${list.length - read}`);
+  return { version: 2, listWidthRem, groups, active, editor: parseEditorTerminals(field(raw, 'editor'), room, remoteIds, log) };
+}
+
+// The editor's terminals, missing in a layout saved before they could move there; a malformed one and a remote one named
+// before are dropped and logged, and those past the layout's room are dropped unread with one log line.
+function parseEditorTerminals(raw: unknown, room: number, remoteIds: Set<string>, log: Log): PersistedPane[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    log('[layout] dropping malformed editor terminals');
+    return [];
+  }
+  const read = (raw as unknown[]).slice(0, room);
+  if (read.length < raw.length) log(`[layout] dropping editor terminals past the layout's bounds: ${raw.length - read.length}`);
+  const panes: PersistedPane[] = [];
+  for (const rawPane of read) {
+    const pane = parsePane(rawPane, log);
+    if (!pane || (pane.kind === 'remote' && remoteIds.has(pane.id))) {
+      log('[layout] dropping a malformed terminal');
+      continue;
+    }
+    if (pane.kind === 'remote') remoteIds.add(pane.id);
+    panes.push(pane);
+  }
+  return panes;
+}
+
+// The form written before remote panes joined the layout: a flat terminal list (all local) cut into groups by their pane counts.
+interface Version1Group {
+  readonly panes: number;
+  readonly activePane: number;
+  readonly sizes: readonly number[];
+}
+
+function parseVersion1Group(raw: unknown): Version1Group | undefined {
   if (!isRecord(raw)) return undefined;
   const panes = field(raw, 'panes');
   const activePane = field(raw, 'activePane');
@@ -550,46 +662,64 @@ function parsePersistedGroup(raw: unknown): PersistedTerminalGroup | undefined {
   return sizes && { panes, activePane, sizes };
 }
 
-const singleGroups = (count: number): PersistedTerminalGroup[] => Array.from({ length: count }, () => ({ panes: 1, activePane: 0, sizes: [1] }));
+const singleGroups = (count: number): Version1Group[] => Array.from({ length: count }, () => ({ panes: 1, activePane: 0, sizes: [1] }));
 
 // The groups only as saved alongside exactly these terminals; anything else gives each terminal its own group. A list saved
 // before split groups existed has none and needs no log line.
-function parsePersistedGroups(raw: unknown, terminals: number, droppedTerminal: boolean, log: Log): PersistedTerminalGroup[] {
+function parseVersion1Groups(raw: unknown, terminals: number, droppedTerminal: boolean, log: Log): Version1Group[] {
   if (raw === undefined) return singleGroups(terminals);
-  const groups = Array.isArray(raw) ? (raw as unknown[]).map(parsePersistedGroup) : [];
-  const valid = groups.every((group): group is PersistedTerminalGroup => group !== undefined);
+  const groups = Array.isArray(raw) ? (raw as unknown[]).map(parseVersion1Group) : [];
+  const valid = groups.every((group): group is Version1Group => group !== undefined);
   if (!droppedTerminal && Array.isArray(raw) && valid && groups.reduce((sum, group) => sum + group.panes, 0) === terminals) return groups;
   log('[layout] the saved terminal groups do not fit the terminal list; giving each terminal its own group');
   return singleGroups(terminals);
 }
 
+// The older form as the current one: its local groups in order, the active terminal its group's active pane. The remote
+// terminals it never named follow at restore as groups of one, and the next change writes the current form.
+function parseVersion1Terminals(raw: Record<string, unknown>, listWidthRem: number, log: Log): PersistedTerminals {
+  const rawTerminals = field(raw, 'terminals');
+  const rawActive = field(raw, 'active');
+  const terminals: LocalPane[] = [];
+  let activeTerminal: number | undefined;
+  (Array.isArray(rawTerminals) ? (rawTerminals as unknown[]) : []).slice(0, MAX_PERSISTED_TERMINALS).forEach((rawTerminal, index) => {
+    const terminal = parseLocalPane(rawTerminal, log);
+    if (!terminal) {
+      log('[layout] dropping a malformed terminal');
+      return;
+    }
+    if (index === rawActive) activeTerminal = terminals.length;
+    terminals.push(terminal);
+  });
+  const kept = Array.isArray(rawTerminals) ? Math.min(rawTerminals.length, MAX_PERSISTED_TERMINALS) : 0;
+  let start = 0;
+  let active: number | null = null;
+  const groups = parseVersion1Groups(field(raw, 'groups'), terminals.length, terminals.length !== kept, log).map((group, index): PersistedTerminalGroup => {
+    const first = start;
+    start += group.panes;
+    const holdsActive = activeTerminal !== undefined && activeTerminal >= first && activeTerminal < start;
+    if (holdsActive) active = index;
+    return { panes: terminals.slice(first, start), activePane: holdsActive ? activeTerminal! - first : group.activePane, sizes: group.sizes };
+  });
+  return { version: 2, listWidthRem, groups, active, editor: [] };
+}
+
 /**
- * The saved terminal list: each malformed terminal is dropped and logged, an out-of-range list width clamped, and groups that
- * do not fit the list replaced by one group per terminal.
+ * The saved terminal layout, in its current form or migrated from the older one; an out-of-range list width is clamped, and
+ * keys it does not know are ignored. Each malformed group or terminal is dropped and logged.
  */
 export function parsePersistedTerminals(raw: unknown, log: Log): PersistedTerminals {
   if (!isRecord(raw)) {
     log('[layout] dropping a malformed terminal list');
     return DEFAULT_PERSISTED_TERMINALS;
   }
-  const rawTerminals = field(raw, 'terminals');
-  const rawActive = field(raw, 'active');
+  const version = field(raw, 'version');
   const rawWidth = field(raw, 'listWidthRem');
-  const terminals: PersistedTerminal[] = [];
-  let active: number | null = null;
-  (Array.isArray(rawTerminals) ? (rawTerminals as unknown[]) : []).slice(0, MAX_PERSISTED_TERMINALS).forEach((rawTerminal, index) => {
-    const terminal = parsePersistedTerminal(rawTerminal, log);
-    if (!terminal) {
-      log('[layout] dropping a malformed terminal');
-      return;
-    }
-    if (index === rawActive) active = terminals.length;
-    terminals.push(terminal);
-  });
   const listWidthRem = typeof rawWidth === 'number' && Number.isFinite(rawWidth) ? clampListWidth(rawWidth) : DEFAULT_PERSISTED_TERMINALS.listWidthRem;
-  const kept = Array.isArray(rawTerminals) ? Math.min(rawTerminals.length, MAX_PERSISTED_TERMINALS) : 0;
-  const groups = parsePersistedGroups(field(raw, 'groups'), terminals.length, terminals.length !== kept, log);
-  return { terminals, active, listWidthRem, groups };
+  if (version === undefined) return parseVersion1Terminals(raw, listWidthRem, log);
+  if (version === 2) return parseVersion2Terminals(raw, listWidthRem, log);
+  log('[layout] ignoring the terminal layout: unknown version');
+  return DEFAULT_PERSISTED_TERMINALS;
 }
 
 export function parseWindowLayout(text: string, log: Log): WindowLayout {

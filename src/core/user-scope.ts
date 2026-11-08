@@ -52,7 +52,7 @@ export function browserUnavailableReason(): LocalizedText {
   return l('{0} is not available in a chat on a remote host yet: it runs on your computer ({1}).', l('The browser'), USER_SCOPE_UNAVAILABLE);
 }
 
-/** A global memory operation a chat on a remote host has no relay for (the notes list, a global row's history). */
+/** A global memory operation a chat on a remote host has no relay for (a global row by id, the global profile's edit). */
 export function globalMemoryUnavailableReason(): LocalizedText {
   return l('{0} is not available in a chat on a remote host yet: it runs on your computer ({1}).', l('Global memory'), USER_SCOPE_UNAVAILABLE);
 }
@@ -70,6 +70,16 @@ export function globalMemoryReadReason(): LocalizedText {
 /** A global memory search of a chat on a remote host while no client is attached. */
 export function globalMemoryClosedReason(): LocalizedText {
   return l('Your global memories live on your computer and Damocles is closed.');
+}
+
+/** An agent's read of the acting client's notes or global memories while memory is off on that client (CLIENT_MEMORY_OFF). */
+export function globalMemoryOffReason(): LocalizedText {
+  return l('Memory is off on your computer.');
+}
+
+/** The notes list of a chat on a remote host while the acting client's Damocles predates user.memory.list. */
+export function globalMemoryListOutdatedReason(): LocalizedText {
+  return l('Your notes are on your computer, whose Damocles is too old to list them for a chat on a remote host. Update Damocles there.');
 }
 
 /** A call to a personal MCP server of a chat on a remote host while its client is not attached. */

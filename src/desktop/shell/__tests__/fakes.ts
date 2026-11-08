@@ -3,7 +3,7 @@ import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type Desi
 import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HeldMemoryResult, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsAttached, OverlaySettingsAway, OverlaySettingsAwayState, OverlaySettingsPage, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult, WslDistroInfo } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesPortsApi, PortsView } from '../../preload/ports-channels';
-import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
+import type { DamoclesTerminalApi, TerminalData, TerminalPickShells, TerminalProfileReport, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
 import type { DamoclesScmApi, ScmArtifacts, ScmArtifactsChanged, ScmArtifactsRequest, ScmArtifactsResult, ScmCloneState, ScmCommitDetailsResult, ScmCommitInput, ScmHistoryResult, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
 import type { SettingsTarget } from '../../../shared/settings-sections';
@@ -81,7 +81,6 @@ export const TERMINAL_STATE: TerminalState = {
   canCreate: true,
   profilesReady: true,
   passKeys: ['CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'CmdOrCtrl+B', 'CmdOrCtrl+,', 'CmdOrCtrl+N', 'F6', 'Shift+F6'],
-  profiles: [],
   screenReader: false,
 };
 
@@ -142,6 +141,7 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
     onRunAction: vi.fn(runAction.listen),
     create: vi.fn(async () => ({ ok: true as const, id: 'term-1' })),
     openNew: vi.fn(),
+    openNewMenu: vi.fn(async () => undefined),
     input: vi.fn(),
     resize: vi.fn(),
     ack: vi.fn(),
@@ -162,6 +162,8 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
     addToChat: vi.fn(),
     split: vi.fn(),
     unsplit: vi.fn(),
+    move: vi.fn(),
+    joinPick: vi.fn(),
     resizePanes: vi.fn(),
     pushState: states.emit,
     data: data.emit,
@@ -415,6 +417,9 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     setDesignPreview: vi.fn(async () => {}),
     designPreviewAction: vi.fn(async () => {}),
     reportDesignPreviewBounds: vi.fn(),
+    htmlPreviewAction: vi.fn(async () => {}),
+    reportHtmlPreviewBounds: vi.fn(),
+    focusPage: vi.fn(async () => true),
     onDesignReplay: vi.fn(designReplay.listen),
     designFreeze: vi.fn(async () => { throw new Error('no freeze scripted'); }),
     designMarkupEnter: vi.fn(async () => {}),
@@ -541,6 +546,8 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   // what getTerminalProfiles answers, and main's push after it validates the profiles again
   terminalProfiles: { report: TerminalProfileReport };
   pushTerminalProfiles: (report: TerminalProfileReport) => void;
+  // what terminalPickProfiles answers for a New Terminal pick's chosen target
+  terminalPick: { answer: (projectKey: string | null) => Promise<PopupAnswer<TerminalPickShells>> };
   dropZonesPointer: (pointer: DropZonesPointer) => void;
   // what worktreeOptions and generateWorktreeMessage answer
   worktree: { options: PopupAnswer<ChatsWorktreeOptions>; continue: PopupAnswer<readonly ChatsContinueWorktree[]>; message: PopupAnswer<{ readonly message: string } | null> };
@@ -603,6 +610,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const commands: { list: PaletteCommand[] } = { list: [] };
   const terminalProfiles: { report: TerminalProfileReport } = { report: { profiles: [], hidden: [], problems: [] } };
   const profilesChanged = emitter<TerminalProfileReport>();
+  const terminalPick: FakeOverlayApi['terminalPick'] = { answer: async () => opened({ kind: 'shells', profiles: [] }) };
   const connectStep = emitter<ConnectStepEvent>();
   const connectHosts = emitter<readonly HostCardInfo[]>();
   const connectDistros = emitter<readonly WslDistroInfo[]>();
@@ -666,6 +674,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     listCommands: vi.fn(async () => opened(commands.list)),
     getTerminalProfiles: vi.fn(async (): Promise<PopupAnswer<TerminalProfileReport>> => opened(terminalProfiles.report)),
     onTerminalProfiles: vi.fn(profilesChanged.listen),
+    terminalPickProfiles: vi.fn((request: { readonly projectKey: string | null }) => terminalPick.answer(request.projectKey)),
     onDropZonesPointer: vi.fn(pointer.listen),
     browseInput: vi.fn(async (): Promise<PopupAnswer<InputBrowseResult | null>> => opened(null)),
     worktreeOptions: vi.fn(async () => worktree.options),
@@ -752,6 +761,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     quickOpen,
     commands,
     terminalProfiles,
+    terminalPick,
     pushTerminalProfiles: (report) => { terminalProfiles.report = report; profilesChanged.emit(report); },
     dropZonesPointer: pointer.emit,
   };

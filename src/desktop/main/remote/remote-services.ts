@@ -7,7 +7,7 @@ import { localizedNotifications, type DesktopNotifications } from '../platform/n
 import type { OpenFolder } from '../../../platform/workspace-folders';
 import type { SecretsStore } from '../../../platform/secrets-store';
 import type { Project } from '../../local-services/confine';
-import { VOICE_VIEW_POSTS } from '../../../shared/remote-user';
+import { REMOTE_CHAT_LOCAL_POSTS, VOICE_VIEW_POSTS } from '../../../shared/remote-user';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import type { HostPlatform, HostServicesDeps, HostState, HostTrust, HostUi, HostUser } from '../core-services/host-services';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
@@ -73,6 +73,9 @@ export interface RemoteServicesDeps {
   readonly base: Pick<HostServicesDeps, 'terminalToggle' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'divert' | 'render' | 'log' | 'openDesignPreview' | 'designRender'>;
   readonly t: (message: string, ...args: string[]) => string;
 }
+
+// voice view state and this computer's usage, notes and global memories reach a remote chat's view only from this computer's core (foreign-view-relay.ts)
+export const REMOTE_CORE_REFUSED_POSTS: ReadonlySet<string> = new Set([...VOICE_VIEW_POSTS, ...REMOTE_CHAT_LOCAL_POSTS]);
 
 const refused = (what: string): Promise<never> => Promise.reject(new Error(`${what} is not available to a remote core`));
 
@@ -224,7 +227,6 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     power: { onSuspend: () => ({ dispose: () => undefined }), onResume: () => ({ dispose: () => undefined }) },
     ui,
     user: deps.user,
-    // voice view state reaches a remote chat's view only from this computer's core (foreign-view-relay.ts)
-    refusedPosts: VOICE_VIEW_POSTS,
+    refusedPosts: REMOTE_CORE_REFUSED_POSTS,
   };
 }

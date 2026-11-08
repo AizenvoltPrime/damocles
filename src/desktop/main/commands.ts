@@ -65,6 +65,9 @@ export const MENU_IDS = {
   focusPreviousTerminal: 'damocles.terminal.focusPrevious',
   splitTerminal: 'damocles.terminal.split',
   unsplitTerminal: 'damocles.terminal.unsplit',
+  joinTerminals: 'damocles.terminal.join',
+  moveTerminalToEditor: 'damocles.terminal.moveToEditor',
+  moveTerminalToPanel: 'damocles.terminal.moveToPanel',
   focusPreviousTerminalPane: 'damocles.terminal.focusPreviousPane',
   focusNextTerminalPane: 'damocles.terminal.focusNextPane',
   resizeTerminalPaneLeft: 'damocles.terminal.resizePaneLeft',
@@ -85,6 +88,7 @@ export const MENU_IDS = {
   togglePromptNavigator: 'damocles.togglePromptNavigator',
   newBrowserPage: 'damocles.browser.newPage',
   toggleBrowserDevTools: 'damocles.browser.toggleDevTools',
+  chooseClientCertificate: 'damocles.browser.chooseClientCertificate',
   showLog: 'damocles.showLog',
   restartEngine: 'damocles.restartEngine',
   connectToHost: 'damocles.remote.connectToHost',
@@ -264,6 +268,8 @@ export const REPLACE_IN_FILES_ACCELERATOR = 'CmdOrCtrl+Shift+H';
 // VS Code's search keys (searchActionsNav.ts, searchEditor.contribution.ts).
 export const SEARCH_AGAIN_ACCELERATOR = 'CmdOrCtrl+Shift+R';
 export const TOGGLE_QUERY_DETAILS_ACCELERATOR = 'CmdOrCtrl+Shift+J';
+export const FOCUS_NEXT_PART_ACCELERATOR = 'F6';
+export const FOCUS_PREVIOUS_PART_ACCELERATOR = 'Shift+F6';
 export const FOCUS_NEXT_SEARCH_RESULT_ACCELERATOR = 'F4';
 export const FOCUS_PREVIOUS_SEARCH_RESULT_ACCELERATOR = 'Shift+F4';
 // VS Code's Format Document on Windows and macOS.
@@ -329,8 +335,12 @@ export interface Command {
   readonly run: (context: MenuState, source: CommandSource) => void;
 }
 
-// Save, Save As, Format Document and Close Editor act on the active editor tab; their keys fire only from the editor.
+// Save, Save As, Format Document and Close Editor act on the active editor tab; their keys fire only from the editor. Close
+// takes any tab, Save As copies a read-only document too, Save writes a writable one, and Format changes writable source.
 const hasEditor = (context: MenuState): boolean => context.editor;
+const hasDocument = (context: MenuState): boolean => context.editorDocument !== undefined;
+const hasWritableDocument = (context: MenuState): boolean => context.editorDocument?.writable === true;
+const hasFormattableDocument = (context: MenuState): boolean => context.editorDocument?.formattable === true;
 const editorFocus = (context: MenuState): boolean => context.focus === 'editor';
 
 const hasChat = (context: MenuState): boolean => context.chat;
@@ -338,9 +348,11 @@ const hasChat = (context: MenuState): boolean => context.chat;
 const hasLiveChat = (context: MenuState): boolean => context.liveChat;
 
 const hasTerminal = (context: MenuState): boolean => context.terminal !== undefined;
+// The group commands act on a panel terminal; an editor terminal is in no group (one editor group, no editor splits).
+const hasPanelTerminal = (context: MenuState): boolean => context.terminal !== undefined && !context.terminalEditor;
 
-// VS Code's terminalFocus, the xterm's own input rather than anywhere in the pane, and splitTerminalActive (terminalActions.ts).
-const terminalFocus = (context: MenuState): boolean => context.focus === 'terminal' && context.terminalInput;
+// VS Code's terminalFocus, the xterm's own input rather than anywhere in its part, and splitTerminalActive (terminalActions.ts).
+const terminalFocus = (context: MenuState): boolean => (context.focus === 'terminal' || context.focus === 'editor') && context.terminalInput;
 const splitTerminalFocus = (context: MenuState): boolean => terminalFocus(context) && context.terminalSplit;
 
 // A Search Editor tab is the active editor and the editor holds keyboard focus (VS Code's InSearchEditor).
@@ -705,12 +717,12 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
       run: () => actions.openChatForProject(project.fsPath),
     })),
     { id: MENU_IDS.quickOpen, title: t('Quick Open...'), category: file, accelerator: QUICK_OPEN_ACCELERATOR, inTerminal: true, run: () => actions.quickOpen() },
-    { id: MENU_IDS.save, title: t('Save'), category: file, accelerator: 'CmdOrCtrl+S', enabled: hasEditor, keyWhen: editorFocus, run: () => actions.saveEditor() },
-    { id: MENU_IDS.saveAs, title: t('Save As...'), category: file, accelerator: 'CmdOrCtrl+Shift+S', enabled: hasEditor, keyWhen: editorFocus, run: () => actions.saveEditorAs() },
+    { id: MENU_IDS.save, title: t('Save'), category: file, accelerator: 'CmdOrCtrl+S', enabled: hasWritableDocument, keyWhen: editorFocus, run: () => actions.saveEditor() },
+    { id: MENU_IDS.saveAs, title: t('Save As...'), category: file, accelerator: 'CmdOrCtrl+Shift+S', enabled: hasDocument, keyWhen: editorFocus, run: () => actions.saveEditorAs() },
     { id: MENU_IDS.addProject, title: t('Add Project...'), category: file, run: () => actions.addProject() },
     { id: MENU_IDS.openSettings, title: t('Settings...'), category: file, accelerator: OPEN_SETTINGS_ACCELERATOR, inTerminal: true, run: () => actions.openSettings() },
     { id: MENU_IDS.closeEditor, title: t('Close Editor'), category: file, accelerator: CLOSE_EDITOR_ACCELERATOR, enabled: hasEditor, keyWhen: editorFocus, run: () => actions.closeEditor() },
-    { id: MENU_IDS.formatDocument, title: t('Format Document'), category: edit, accelerator: FORMAT_DOCUMENT_ACCELERATOR, enabled: hasEditor, keyWhen: editorFocus, run: () => actions.formatDocument() },
+    { id: MENU_IDS.formatDocument, title: t('Format Document'), category: edit, accelerator: FORMAT_DOCUMENT_ACCELERATOR, enabled: hasFormattableDocument, keyWhen: editorFocus, run: () => actions.formatDocument() },
     { id: MENU_IDS.findInFiles, title: t('Find in Files'), category: search, accelerator: FIND_IN_FILES_ACCELERATOR, run: () => actions.searchInFiles(false) },
     { id: MENU_IDS.replaceInFiles, title: t('Replace in Files'), category: search, accelerator: REPLACE_IN_FILES_ACCELERATOR, run: () => actions.searchInFiles(true) },
     // F4 walks the focused Search Editor's results, else the Search view's (VS Code's HasSearchResults and InSearchEditor rules).
@@ -766,8 +778,8 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.previousChat, title: t('Previous Chat'), category: view, accelerator: mac ? 'Cmd+Shift+[' : 'Ctrl+Shift+Tab', run: relative(-1) },
     { id: MENU_IDS.nextEditor, title: t('Next Editor'), category: view, accelerator: 'Ctrl+Tab', registerAccelerator: false, enabled: (context) => context.editor, run: () => actions.cycleEditor(1) },
     { id: MENU_IDS.previousEditor, title: t('Previous Editor'), category: view, accelerator: 'Ctrl+Shift+Tab', registerAccelerator: false, enabled: (context) => context.editor, run: () => actions.cycleEditor(-1) },
-    { id: MENU_IDS.focusNextPart, title: t('Focus Next Part'), category: view, accelerator: 'F6', inTerminal: true, run: () => actions.focusPart(1) },
-    { id: MENU_IDS.focusPreviousPart, title: t('Focus Previous Part'), category: view, accelerator: 'Shift+F6', inTerminal: true, run: () => actions.focusPart(-1) },
+    { id: MENU_IDS.focusNextPart, title: t('Focus Next Part'), category: view, accelerator: FOCUS_NEXT_PART_ACCELERATOR, inTerminal: true, run: () => actions.focusPart(1) },
+    { id: MENU_IDS.focusPreviousPart, title: t('Focus Previous Part'), category: view, accelerator: FOCUS_PREVIOUS_PART_ACCELERATOR, inTerminal: true, run: () => actions.focusPart(-1) },
     { id: MENU_IDS.newTerminal, title: t('New Terminal'), category: terminal, accelerator: NEW_TERMINAL_ACCELERATOR, enabled: (context) => context.terminalCreate, run: () => actions.newTerminal() },
     { id: MENU_IDS.killTerminal, title: t('Kill Terminal'), category: terminal, enabled: (context) => context.terminal !== undefined, run: () => actions.killTerminal() },
     { id: MENU_IDS.restartTerminal, title: t('Restart Terminal'), category: terminal, enabled: (context) => context.terminal === 'exited', run: () => actions.restartTerminal() },
@@ -778,15 +790,20 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.changeTerminalIcon, title: t('Change Icon...'), category: terminal, enabled: hasTerminal, run: () => actions.changeTerminalIcon() },
     { id: MENU_IDS.changeTerminalColor, title: t('Change Color...'), category: terminal, enabled: hasTerminal, run: () => actions.changeTerminalColor() },
     // Palette only: VS Code's Ctrl+PageDown and Ctrl+PageUp (Cmd+Shift+] and [ on macOS) are Next and Previous Chat here.
-    { id: MENU_IDS.focusNextTerminal, title: t('Focus Next Terminal Group'), category: terminal, enabled: hasTerminal, run: () => actions.focusRelativeTerminal(1) },
-    { id: MENU_IDS.focusPreviousTerminal, title: t('Focus Previous Terminal Group'), category: terminal, enabled: hasTerminal, run: () => actions.focusRelativeTerminal(-1) },
+    { id: MENU_IDS.focusNextTerminal, title: t('Focus Next Terminal Group'), category: terminal, enabled: hasPanelTerminal, run: () => actions.focusRelativeTerminal(1) },
+    { id: MENU_IDS.focusPreviousTerminal, title: t('Focus Previous Terminal Group'), category: terminal, enabled: hasPanelTerminal, run: () => actions.focusRelativeTerminal(-1) },
     { id: MENU_IDS.killAllTerminals, title: t('Kill All Terminals'), category: terminal, enabled: hasTerminal, run: () => actions.killAllTerminals() },
     // VS Code's split group commands (terminalActions.ts) with its keys, when clauses and preconditions; Resize Pane has no
     // Windows key there.
-    { id: MENU_IDS.splitTerminal, title: t('Split Terminal'), category: terminal, accelerator: splitTerminalAccelerator(platform), inTerminal: true, keyWhen: terminalFocus, enabled: hasTerminal, run: () => actions.splitTerminal() },
-    { id: MENU_IDS.unsplitTerminal, title: t('Unsplit Terminal'), category: terminal, enabled: hasTerminal, run: () => actions.unsplitTerminal() },
-    { id: MENU_IDS.focusPreviousTerminalPane, title: t('Focus Previous Terminal in Terminal Group'), category: terminal, accelerator: mac ? 'Alt+Cmd+Left' : 'Alt+Left', inTerminal: true, keyWhen: splitTerminalFocus, enabled: hasTerminal, run: () => actions.focusTerminalPane(-1) },
-    { id: MENU_IDS.focusNextTerminalPane, title: t('Focus Next Terminal in Terminal Group'), category: terminal, accelerator: mac ? 'Alt+Cmd+Right' : 'Alt+Right', inTerminal: true, keyWhen: splitTerminalFocus, enabled: hasTerminal, run: () => actions.focusTerminalPane(1) },
+    // An editor terminal has no group to split, so the key reaches its pty.
+    { id: MENU_IDS.splitTerminal, title: t('Split Terminal'), category: terminal, accelerator: splitTerminalAccelerator(platform), inTerminal: true, keyWhen: (context) => terminalFocus(context) && !context.terminalEditor, enabled: hasPanelTerminal, run: () => actions.splitTerminal() },
+    { id: MENU_IDS.unsplitTerminal, title: t('Unsplit Terminal'), category: terminal, enabled: hasPanelTerminal, run: () => actions.unsplitTerminal() },
+    { id: MENU_IDS.joinTerminals, title: t('Join Terminals...'), category: terminal, enabled: (context) => context.terminalJoin, run: () => actions.joinTerminals() },
+    // VS Code's moveToEditor and moveToTerminalPanel; a task terminal stays in the panel.
+    { id: MENU_IDS.moveTerminalToEditor, title: t('Move Terminal into Editor Area'), category: terminal, enabled: (context) => hasPanelTerminal(context) && !context.terminalTask, run: () => actions.moveTerminalToEditor() },
+    { id: MENU_IDS.moveTerminalToPanel, title: t('Move Terminal into Panel'), category: terminal, enabled: (context) => context.terminal !== undefined && context.terminalEditor, run: () => actions.moveTerminalToPanel() },
+    { id: MENU_IDS.focusPreviousTerminalPane, title: t('Focus Previous Terminal in Terminal Group'), category: terminal, accelerator: mac ? 'Alt+Cmd+Left' : 'Alt+Left', inTerminal: true, keyWhen: splitTerminalFocus, enabled: hasPanelTerminal, run: () => actions.focusTerminalPane(-1) },
+    { id: MENU_IDS.focusNextTerminalPane, title: t('Focus Next Terminal in Terminal Group'), category: terminal, accelerator: mac ? 'Alt+Cmd+Right' : 'Alt+Right', inTerminal: true, keyWhen: splitTerminalFocus, enabled: hasPanelTerminal, run: () => actions.focusTerminalPane(1) },
     {
       id: MENU_IDS.resizeTerminalPaneLeft,
       title: t('Resize Terminal Left'),
@@ -794,7 +811,7 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
       ...(mac ? { accelerator: 'Cmd+Ctrl+Left' } : linux ? { accelerator: 'Ctrl+Shift+Left' } : {}),
       inTerminal: true,
       keyWhen: terminalFocus,
-      enabled: hasTerminal,
+      enabled: hasPanelTerminal,
       run: () => actions.resizeTerminalPane('left'),
     },
     {
@@ -804,10 +821,10 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
       ...(mac ? { accelerator: 'Cmd+Ctrl+Right' } : linux ? { accelerator: 'Ctrl+Shift+Right' } : {}),
       inTerminal: true,
       keyWhen: terminalFocus,
-      enabled: hasTerminal,
+      enabled: hasPanelTerminal,
       run: () => actions.resizeTerminalPane('right'),
     },
-    // The shell carries these out on the active terminal's buffer (VS Code's terminal clipboard and chat actions).
+    // The shell carries these out on the command target's buffer (VS Code's terminal clipboard and chat actions).
     { id: MENU_IDS.copyLastTerminalCommand, title: t('Copy Last Command'), category: terminal, enabled: hasTerminal, run: () => actions.runTerminalAction('copyLastCommand') },
     { id: MENU_IDS.copyLastTerminalCommandOutput, title: t('Copy Last Command Output'), category: terminal, enabled: hasTerminal, run: () => actions.runTerminalAction('copyLastCommandOutput') },
     { id: MENU_IDS.addTerminalToChat, title: t('Add to Chat'), category: terminal, enabled: hasTerminal, run: () => actions.runTerminalAction('addToChat') },
@@ -816,6 +833,7 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.scrollToNextTerminalCommand, title: t('Scroll to Next Command'), category: terminal, accelerator: 'CmdOrCtrl+Down', registerAccelerator: false, enabled: hasTerminal, run: () => actions.runTerminalAction('scrollToNextCommand') },
     { id: MENU_IDS.newBrowserPage, title: t('New Browser Page'), category: view, enabled: (context) => context.liveChat && context.browser, run: () => actions.newBrowserPage() },
     { id: MENU_IDS.toggleBrowserDevTools, title: t('Toggle Browser Developer Tools'), category: view, accelerator: 'F12', enabled: (context) => context.page, run: () => actions.toggleBrowserDevTools() },
+    { id: MENU_IDS.chooseClientCertificate, title: t('Choose Client Certificate for This Site...'), category: view, enabled: (context) => context.clientCertificateSite, run: () => actions.chooseClientCertificate() },
     { id: MENU_IDS.newSession, title: pkg('command.newSession.title'), category: chat, run: () => actions.newSession() },
     { id: MENU_IDS.cancelSession, title: pkg('command.cancelSession.title'), category: chat, run: () => actions.cancelSession() },
     { id: MENU_IDS.togglePromptNavigator, title: t('Toggle Prompt Navigator'), category: chat, accelerator: 'CmdOrCtrl+K', enabled: hasChat, run: () => actions.togglePromptNavigator() },
@@ -885,7 +903,7 @@ export function keyFires(command: Command, context: MenuState): boolean {
 
 /**
  * The accelerators of the skip list whose when clause holds in a focused terminal, which the shell's xterm leaves unhandled so
- * they reach the menu; context.terminalSplit: the active terminal group has more than one pane.
+ * they reach the menu; context.terminalSplit and context.terminalEditor describe the command target.
  */
 export function terminalPassKeys(commands: readonly Command[], context: MenuState): string[] {
   const terminal: MenuState = { ...context, focus: 'terminal', terminalInput: true };

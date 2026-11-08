@@ -16,6 +16,8 @@ import {
   MIN_DESIGN_ZOOM,
   type DesignPreviewActionRequest,
   type DesignPreviewSet,
+  HTML_PREVIEW_ACTIONS,
+  type HtmlPreviewActionRequest,
   EDITOR_TAB_ACTIONS,
   MAX_FORMAT_ERROR_CHARS,
   MAX_FORMAT_TAB_SIZE,
@@ -52,6 +54,7 @@ import {
   type EditorSaveResult,
   type EditorSelectionRange,
   type EditorTabRequest,
+  type EditorFocusPageRequest,
   type EditorEdit,
   type EditorTextChange,
   type EditorTextRequest,
@@ -139,6 +142,7 @@ import {
   MAX_TERMINAL_WEB_LINK_CHARS,
   MAX_TERMINAL_ROWS,
   TERMINAL_CHANNELS,
+  TERMINAL_DROP_SIDES,
   isTerminalPasteChord,
   type TerminalAction,
   type TerminalAddToChat,
@@ -147,7 +151,9 @@ import {
   type TerminalCreateResult,
   type TerminalData,
   type TerminalScreen,
+  type TerminalDropSide,
   type TerminalLinkKind,
+  type TerminalMove,
   type TerminalOpenLink,
   type TerminalOpenWebLink,
   type TerminalPaste,
@@ -280,6 +286,7 @@ export interface ShellActions {
   readonly searchEditor: ShellSearchEditorActions;
   readonly browser: ShellBrowserActions;
   readonly design: ShellDesignActions;
+  readonly htmlPreview: ShellHtmlPreviewActions;
   readonly terminal: ShellTerminalActions;
   readonly scm: ShellScmActions;
   readonly review: ShellReviewActions;
@@ -340,6 +347,8 @@ export interface ShellTerminalActions {
   create(request: TerminalCreateRequest): TerminalCreateResult;
   // the new-terminal quick pick
   openNew(): void;
+  // the New Terminal arrow's menu under anchor; settles once it closed
+  openNewMenu(anchor: OverlayRect): Promise<void>;
   input(id: string, data: string): void;
   resize(id: string, cols: number, rows: number): void;
   ack(id: string, chars: number): void;
@@ -350,6 +359,10 @@ export interface ShellTerminalActions {
   select(id: string): void;
   split(id: string): void;
   unsplit(id: string): void;
+  // the terminal service checks the ids against its own order
+  move(move: TerminalMove): void;
+  // Join Terminals... anchored on that terminal
+  joinPick(id: string): void;
   // finite numbers, one per pane at most; the terminal service checks them against the group
   resizePanes(groupId: string, sizes: readonly number[]): void;
   // a finite number; main clamps it
@@ -358,8 +371,8 @@ export interface ShellTerminalActions {
   shellLoaded(): void;
   // main reads the clipboard and writes it to the pty, only with a grant a user's paste gesture issued for that terminal
   paste(request: TerminalPaste): void;
-  // whether focus in the terminal pane is an xterm's own input
-  setInputFocused(focused: boolean): void;
+  // the terminal whose xterm input has keyboard focus, panel or editor; null: none
+  setInputFocused(id: string | null): void;
   // each path resolved against the terminal's project, index-aligned
   resolveLinks(request: TerminalResolveLinks): Promise<Array<TerminalLinkKind | null>>;
   openLink(request: TerminalOpenLink): void;
@@ -399,6 +412,13 @@ export interface ShellDesignActions {
   shellLoaded(): void;
   // window DIP and the view's zoom factor (the frame's zoom times the shell's); undefined while no design tab shows its frame
   setBounds(frame: { readonly tabId: string; readonly bounds: Rectangle; readonly radius: number; readonly zoomFactor: number } | undefined): void;
+}
+
+// HTML preview tabs: main resolves tabId among the editor pane's preview tabs.
+export interface ShellHtmlPreviewActions {
+  action(request: HtmlPreviewActionRequest): Promise<void>;
+  // window DIP; undefined while no preview tab shows its page card
+  setBounds(frame: { readonly tabId: string; readonly bounds: Rectangle; readonly radius: number } | undefined): void;
 }
 
 // Search: searchIds come from the shell, match ids from main, and both are checked against main's running search.
@@ -443,6 +463,8 @@ export interface ShellEditorActions {
   uploadMergeInputs(tabId: string): ScmMergeInputsResult;
   completeUploadMerge(tabId: string): Promise<void>;
   setFocusOverlay(open: boolean): void;
+  // keyboard focus into the tab's page view; false while none shows
+  focusPage(tabId: string): boolean;
   flushed(requestId: string): void;
 }
 
@@ -491,14 +513,40 @@ export function parseTerminalCreate(raw: unknown): TerminalCreateRequest | undef
   return isKeyOrNull(profileId) && target ? { profileId, target } : undefined;
 }
 
-export function parseTerminalInputFocus(raw: unknown): boolean | undefined {
-  const focused = exactFields(raw, ['focused'])?.['focused'];
-  return typeof focused === 'boolean' ? focused : undefined;
+// Wrapped, since null is a valid id and undefined means refused.
+export function parseTerminalInputFocus(raw: unknown): { readonly id: string | null } | undefined {
+  const id = exactFields(raw, ['id'])?.['id'];
+  return id === null || isTerminalId(id) ? { id } : undefined;
 }
 
 export function parseTerminalRef(raw: unknown): string | undefined {
   const id = exactFields(raw, ['id'])?.['id'];
   return isTerminalId(id) ? id : undefined;
+}
+
+const isDropSide = (value: unknown): value is TerminalDropSide => (TERMINAL_DROP_SIDES as readonly unknown[]).includes(value);
+
+/** terminal:move: one kind of the closed union with exactly its fields; the ids are checked against main's order later. */
+export function parseTerminalMove(raw: unknown): TerminalMove | undefined {
+  const kind = record(raw)?.['kind'];
+  if (kind === 'reorder' || kind === 'join') {
+    const value = exactFields(raw, ['kind', 'id', 'target', 'side']);
+    const id = value?.['id'];
+    const target = value?.['target'];
+    const side = value?.['side'];
+    return isTerminalId(id) && isTerminalId(target) && isDropSide(side) ? { kind, id, target, side } : undefined;
+  }
+  if (kind === 'detach' || kind === 'toEditor') {
+    const id = exactFields(raw, ['kind', 'id'])?.['id'];
+    return isTerminalId(id) ? { kind, id } : undefined;
+  }
+  if (kind === 'step') {
+    const value = exactFields(raw, ['kind', 'id', 'delta']);
+    const id = value?.['id'];
+    const delta = value?.['delta'];
+    return isTerminalId(id) && (delta === -1 || delta === 1) ? { kind, id, delta } : undefined;
+  }
+  return undefined;
 }
 
 export function parseTerminalInput(raw: unknown): { id: string; data: string } | undefined {
@@ -627,6 +675,11 @@ function exactRecord(raw: unknown, keys: readonly string[]): Record<string, unkn
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const value = raw as Record<string, unknown>;
   return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)) ? value : undefined;
+}
+
+// An anchor with exactly a rect's four fields.
+function exactRect(raw: unknown): OverlayRect | undefined {
+  return exactRecord(raw, ['x', 'y', 'width', 'height']) && parseRect(raw);
 }
 
 /**
@@ -906,6 +959,11 @@ export function parseEditorTab(raw: unknown): EditorTabRequest | undefined {
   return oneOf(EDITOR_TAB_ACTIONS, action) && isShellId(tabId) ? { action, tabId } : undefined;
 }
 
+export function parseEditorFocusPage(raw: unknown): EditorFocusPageRequest | undefined {
+  const tabId = exactRecord(raw, ['tabId'])?.['tabId'];
+  return isShellId(tabId) ? { tabId } : undefined;
+}
+
 export function parseBrowserAction(raw: unknown): BrowserActionRequest | undefined {
   const value = record(raw);
   const tabId = value ? own(value, 'tabId') : undefined;
@@ -972,6 +1030,21 @@ export function parseDesignTweakKeep(raw: unknown): DesignTweakKeepRequest | und
   const tweakValue = own(value, 'value');
   if (!isShellId(tabId) || typeof tweakId !== 'string' || !TWEAK_ID.test(tweakId) || typeof tweakValue !== 'string' || !TWEAK_TOKEN_NAME.test(tweakValue)) return undefined;
   return { tabId, tweakId, value: tweakValue };
+}
+
+export function parseHtmlPreviewAction(raw: unknown): HtmlPreviewActionRequest | undefined {
+  const value = exactRecord(raw, ['tabId', 'action']);
+  const tabId = value?.['tabId'];
+  const action = value?.['action'];
+  return isShellId(tabId) && oneOf(HTML_PREVIEW_ACTIONS, action) ? { tabId, action } : undefined;
+}
+
+/** An HTML preview tab's page card in window DIP, its radius scaled as browserPageAreaToDip does; undefined when malformed. */
+export function htmlPreviewAreaToDip(raw: unknown, shellZoom: number): { readonly tabId: string; readonly bounds: Rectangle; readonly radius: number } | undefined {
+  const value = exactRecord(raw, ['tabId', 'x', 'y', 'width', 'height', 'radius']);
+  const area = value ? browserPageAreaToDip(value, shellZoom) : undefined;
+  const tabId = value?.['tabId'];
+  return area && isShellId(tabId) ? { tabId, bounds: area.bounds, radius: area.radius } : undefined;
 }
 
 /** A design tab's frame in window DIP, its corner radius and the view's zoom factor, from the shell's CSS px report; undefined when malformed. */
@@ -1363,7 +1436,7 @@ export class ShellHost {
     });
     this.handle(SHELL_CHANNELS.hostsShowCard, (raw) => {
       const call = exactRecord(raw, ['hostId', 'anchor']);
-      const anchor = call ? parseRect(call['anchor']) : undefined;
+      const anchor = call ? exactRect(call['anchor']) : undefined;
       if (!call || !isHostId(call['hostId']) || !anchor) throw new Error('Malformed host details request from the shell');
       return this.actions.showHostCard(call['hostId'], anchor);
     });
@@ -1532,7 +1605,7 @@ export class ShellHost {
     contents.on('did-finish-load', () => {
       if (this.loadFailed) return;
       this.loaded = true;
-      this.actions.terminal.setInputFocused(false);
+      this.actions.terminal.setInputFocused(null);
       this.actions.editor.setFocusOverlay(false);
       this.sendState();
       this.actions.terminal.shellLoaded();
@@ -1542,7 +1615,7 @@ export class ShellHost {
       this.loaded = false;
       this.log(`[shell] renderer gone (${details.reason})`);
       this.actions.setFocusedPart(null);
-      this.actions.terminal.setInputFocused(false);
+      this.actions.terminal.setInputFocused(null);
       this.actions.editor.setFocusOverlay(false);
       if (this.disposed || details.reason === 'clean-exit') return;
       const now = Date.now();
@@ -1652,6 +1725,12 @@ export class ShellHost {
       if (typeof open !== 'boolean') throw new Error('Malformed focus overlay flag from the shell');
       editor.setFocusOverlay(open);
     });
+    // a request that arrives after focus left the shell page moves nothing
+    this.handle(SHELL_CHANNELS.editorFocusPage, (raw) => {
+      const request = parseEditorFocusPage(raw);
+      if (!request) throw new Error('Malformed page focus request from the shell');
+      return this.window.webContents.isFocused() && editor.focusPage(request.tabId);
+    });
     this.on(SHELL_CHANNELS.editorEdit, (raw) => {
       const report = parseEditorEdit(raw);
       if (!report?.edit) this.log('[shell] refusing a malformed edit');
@@ -1743,6 +1822,20 @@ export class ShellHost {
         return;
       }
       design.setBounds(frame);
+    });
+    const htmlPreview = this.actions.htmlPreview;
+    this.handle(SHELL_CHANNELS.htmlPreviewAction, (raw) => {
+      const request = parseHtmlPreviewAction(raw);
+      if (!request) throw new Error('Malformed HTML preview action from the shell');
+      return htmlPreview.action(request);
+    });
+    this.on(SHELL_CHANNELS.htmlPreviewBounds, (raw) => {
+      const frame = raw === null ? undefined : htmlPreviewAreaToDip(raw, this.window.webContents.getZoomFactor());
+      if (raw !== null && !frame) {
+        this.log('[shell] ignoring malformed HTML preview bounds');
+        return;
+      }
+      htmlPreview.setBounds(frame);
     });
   }
 
@@ -1913,6 +2006,12 @@ export class ShellHost {
       return terminal.create(request);
     });
     this.on(TERMINAL_CHANNELS.new, () => terminal.openNew());
+    this.handle(TERMINAL_CHANNELS.newMenu, (raw) => {
+      const call = exactRecord(raw, ['anchor']);
+      const anchor = call ? exactRect(call['anchor']) : undefined;
+      if (!anchor) throw new Error('Malformed New Terminal menu request from the shell');
+      return terminal.openNewMenu(anchor);
+    });
     this.onTerminal(TERMINAL_CHANNELS.input, parseTerminalInput, ({ id, data }) => terminal.input(id, data));
     this.onTerminal(TERMINAL_CHANNELS.resize, parseTerminalResize, ({ id, cols, rows }) => terminal.resize(id, cols, rows));
     this.onTerminal(TERMINAL_CHANNELS.ack, parseTerminalAck, ({ id, chars }) => terminal.ack(id, chars));
@@ -1922,10 +2021,12 @@ export class ShellHost {
     this.onTerminal(TERMINAL_CHANNELS.select, parseTerminalRef, (id) => terminal.select(id));
     this.onTerminal(TERMINAL_CHANNELS.split, parseTerminalRef, (id) => terminal.split(id));
     this.onTerminal(TERMINAL_CHANNELS.unsplit, parseTerminalRef, (id) => terminal.unsplit(id));
+    this.onTerminal(TERMINAL_CHANNELS.move, parseTerminalMove, (move) => terminal.move(move));
+    this.onTerminal(TERMINAL_CHANNELS.joinPick, parseTerminalRef, (id) => terminal.joinPick(id));
     this.onTerminal(TERMINAL_CHANNELS.resizePanes, parseTerminalResizePanes, ({ groupId, sizes }) => terminal.resizePanes(groupId, sizes));
     this.onTerminal(TERMINAL_CHANNELS.listWidth, parseTerminalListWidth, (rem) => terminal.setListWidth(rem));
     this.onTerminal(TERMINAL_CHANNELS.paste, parseTerminalPaste, (request) => terminal.paste(request));
-    this.onTerminal(TERMINAL_CHANNELS.inputFocus, parseTerminalInputFocus, (focused) => terminal.setInputFocused(focused));
+    this.onTerminal(TERMINAL_CHANNELS.inputFocus, parseTerminalInputFocus, ({ id }) => terminal.setInputFocused(id));
     this.onTerminal(TERMINAL_CHANNELS.openLink, parseTerminalOpenLink, (request) => terminal.openLink(request));
     this.onTerminal(TERMINAL_CHANNELS.openWebLink, parseTerminalOpenWebLink, (request) => terminal.openWebLink(request));
     this.onTerminal(TERMINAL_CHANNELS.rename, parseTerminalRename, ({ id, name }) => terminal.rename(id, name));

@@ -112,6 +112,7 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
     memoryProfile: (clientId) => endpoint.request('user.memory.profile', { clientId }),
     memoryResolve: (clientId, ids) => endpoint.request('user.memory.resolve', { clientId, ids }),
     memoryApply: (clientId, entries) => endpoint.request('user.memory.apply', { clientId, entries }),
+    memoryList: (clientId, request) => endpoint.request('user.memory.list', { clientId, ...request }),
     heldMemoryChanged: (queues) => endpoint.publish('heldMemory', { queues }),
     mcpCall: (clientId, server, tool, args, signal) => endpoint.request('user.mcp.call', { clientId, server, tool, args }, signal),
     mcpResources: (clientId, server, kind, cursor, signal) => endpoint.request('user.mcp.resources', { clientId, server, kind, ...(cursor !== undefined ? { cursor } : {}) }, signal),

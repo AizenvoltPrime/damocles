@@ -66,7 +66,7 @@ describe('memory database schema skew', () => {
       { level: 'warn', message: expect.stringContaining('memory database') as string, text: { message: 'Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', args: [{ message: 'the memory database' }] }, actions: [] },
     ]);
 
-    expect(service.listNotes().map((n) => n.id)).toContain(seed!.id);
+    expect((await service.listNotes()).map((n) => n.id)).toContain(seed!.id);
     expect((await service.getMemoryDetails([seed!.id])).map((m) => m.id)).toEqual([seed!.id]);
     expect(await service.addNote('must not be written')).toBeNull();
     expect(await service.deleteMemory(seed!.id)).toBe(false);

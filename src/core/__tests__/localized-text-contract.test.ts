@@ -91,6 +91,10 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'ExtensionToWebviewMessage[type="mcpServerStatus"].servers[].editableConfig.description': USER,
   'ExtensionToWebviewMessage[type="mcpServerStatus"].servers[].tools[].description': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="memoriesUpdate"].memories[].title': NAME,
+  'ExtensionToWebviewMessage[type="userMemoriesUpdate"].memories[].title': NAME,
+  'ExtensionToWebviewMessage[type="userMemoryCreated"].memory.title': NAME,
+  'ExtensionToWebviewMessage[type="userMemoryHistory"].entries[].title': NAME,
+  'ExtensionToWebviewMessage[type="userRelatedMemories"].entries[].title': NAME,
   'ExtensionToWebviewMessage[type="memoryAuditState"].state.proposals[].reason': MODEL,
   'ExtensionToWebviewMessage[type="memoryAuditState"].state.proposals[].title': NAME,
   'ExtensionToWebviewMessage[type="memoryCreated"].memory.title': NAME,
@@ -185,6 +189,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'MainRequests.user.memory.search.result[].title': NAME,
   'MainRequests.user.memory.profile.result.pinned[].title': NAME,
   'MainRequests.user.memory.profile.result.preferences[].title': NAME,
+  'MainRequests.user.memory.list.result.rows[].title': NAME,
   // a personal MCP server's own words, relayed for the remote chat's model
   'MainRequests.user.mcp.servers.result[].description': THIRD_PARTY,
   'MainRequests.user.mcp.servers.result[].tools[].description': THIRD_PARTY,

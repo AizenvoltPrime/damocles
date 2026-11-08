@@ -34,6 +34,7 @@ const H = vi.hoisted(() => ({
 const browserOf = (authority: string) => ({
   openNewPageForChat: async (chat: unknown, url?: string) => void H.pages.push([authority, chat, url]),
   restoreChatPages: async (chat: unknown, urls: readonly string[], active?: number) => void H.pages.push([authority, chat, urls, active]),
+  useClientCertificate: async (origin: string, filter: unknown) => void H.pages.push([authority, 'certificate', origin, filter]),
 });
 
 vi.mock('../../../core/browser', async (importOriginal) => ({
@@ -393,17 +394,18 @@ describe('chats.leaseRefusal', () => {
 });
 
 describe('panels.foreignMessage', () => {
-  it('dispatches a voice or user-setting message of an attached remote view, and refuses any other message or an unattached view', async () => {
+  it('dispatches a FOREIGN_VIEW_MESSAGES message of an attached remote view, and refuses any other message or an unattached view', async () => {
     const { main, foreign } = start();
     const proxy = {} as PanelHost;
     foreign.set('remote-view', proxy);
     await main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'startVoiceRecording' } });
     await main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'setPinnedHeaderHidden', hidden: true } });
-    for (const message of [{ type: 'sendMessage', text: 'hi' }, { type: 'setPermissionMode', mode: 'default' }]) {
-      await expect(main.request('panels.foreignMessage', { viewId: 'remote-view', message })).rejects.toThrow('Only voice and user-setting messages reach this computer from a remote chat');
+    await main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'requestSubscriptionUsage' } });
+    for (const message of [{ type: 'sendMessage', text: 'hi' }, { type: 'setPermissionMode', mode: 'default' }, { type: 'requestMemories' }]) {
+      await expect(main.request('panels.foreignMessage', { viewId: 'remote-view', message })).rejects.toThrow('Only voice, user-setting and user-scope messages reach this computer from a remote chat');
     }
     await expect(main.request('panels.foreignMessage', { viewId: 'other-view', message: { type: 'startVoiceRecording' } })).rejects.toThrow('The remote chat view is not attached');
-    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }], [proxy, { type: 'setPinnedHeaderHidden', hidden: true }]]);
+    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }], [proxy, { type: 'setPinnedHeaderHidden', hidden: true }], [proxy, { type: 'requestSubscriptionUsage' }]]);
   });
 });
 
@@ -498,6 +500,13 @@ describe('a chat\'s browser pages', () => {
       ['local', chat.host, ['https://a.test/'], undefined],
       ['ssh-h1', proxy, ['http://localhost:3000/', 'http://localhost:4000/'], 1],
     ]);
+  });
+
+  it('take a client certificate rule into local chats\' context only, as main sent it', async () => {
+    const { main } = start();
+    const filter = { ISSUER: { CN: 'Corp CA' }, SUBJECT: { CN: 'alice', OU: 'Sales' } };
+    await main.request('browser.useClientCertificate', { origin: 'https://intranet.test:443', filter });
+    expect(H.pages).toEqual([['local', 'certificate', 'https://intranet.test:443', filter]]);
   });
 
   it('open nowhere for a view core neither holds nor holds a remote proxy with an authority for', async () => {

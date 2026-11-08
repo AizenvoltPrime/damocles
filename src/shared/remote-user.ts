@@ -2,6 +2,7 @@
 // both import this file.
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types/messages';
 import type { PermissionMode } from './types/settings';
+import type { LocalizedText } from './localized-text';
 import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING, type ToolGroup } from './types/tools';
 
 /** The client id a local core's init names for its one client, main. A daemon names each client by its hello's stable clientId. */
@@ -139,6 +140,12 @@ export interface ClientPolicy {
 /** The daemon's request to a client whose connection is gone (user.credentials to an absent pinned client). */
 export const CREDENTIAL_CLIENT_ABSENT = 'credential-client-absent';
 
+/**
+ * This computer's core's answer to a remote core's read made on an agent's request (user.memory.list, a search that is not an
+ * injection's) while memory is off here; the remote core words it, never shows it.
+ */
+export const CLIENT_MEMORY_OFF = 'client-memory-off';
+
 /** A user-scope service (browser, global memory), which runs on the client, that a chat on a remote host cannot reach in this version. */
 export const USER_SCOPE_UNAVAILABLE = 'user-scope-unavailable';
 
@@ -170,7 +177,7 @@ export const VOICE_VIEW_POSTS: ReadonlySet<string> = new Set([
 
 /**
  * The webview-to-core message types a remote chat's page sends to this computer's core, whose voice service records,
- * transcribes and speaks; main routes them, and REMOTE_CHAT_USER_SETTING_MESSAGES, to that core and never to the chat's
+ * transcribes and speaks; main routes them, with the rest of FOREIGN_VIEW_MESSAGES, to that core and never to the chat's
  * remote core (foreign-view-relay.ts). Voice settings change only on the settings overlay's User tab, this computer's core:
  * a daemon's core treats every voice key as the client's, so its host and Project tabs never list one.
  */
@@ -211,6 +218,99 @@ export type RemoteChatSettingMessage = Extract<WebviewToExtensionMessage['type']
 export const REMOTE_CHAT_USER_SETTING_MESSAGES: ReadonlySet<string> = new Set(Object.keys(REMOTE_CHAT_SETTING_FAILURES));
 
 export const isRemoteChatSettingMessage = (type: string): type is RemoteChatSettingMessage => Object.hasOwn(REMOTE_CHAT_SETTING_FAILURES, type);
+
+export type UserMemoryViewRequest = Extract<WebviewToExtensionMessage['type'],
+  | 'requestUserMemories' | 'getUserMemoryHistory' | 'getUserRelatedMemories' | 'getUserProfile' | 'createUserMemory' | 'deleteUserMemory'
+  | 'pinUserMemory' | 'unpinUserMemory' | 'forgetUserMemory' | 'unforgetUserMemory' | 'setUserProfileSection'>;
+
+/**
+ * A remote chat page's reads and changes of this computer's notes and global memories, each 'panel' when it changes a row and
+ * undefined for a read, whose failure must not settle a pending create. Ids are this computer's own rows.
+ */
+export const USER_MEMORY_VIEW_SOURCES: Readonly<Record<UserMemoryViewRequest, 'panel' | undefined>> = {
+  requestUserMemories: undefined,
+  getUserMemoryHistory: undefined,
+  getUserRelatedMemories: undefined,
+  getUserProfile: undefined,
+  createUserMemory: 'panel',
+  deleteUserMemory: 'panel',
+  pinUserMemory: 'panel',
+  unpinUserMemory: 'panel',
+  forgetUserMemory: 'panel',
+  unforgetUserMemory: 'panel',
+  setUserProfileSection: 'panel',
+};
+
+export type RemoteChatLocalRequest = Extract<WebviewToExtensionMessage['type'], 'requestSubscriptionUsage'> | UserMemoryViewRequest;
+
+/**
+ * A remote chat page's reads and changes of this computer's user scope. This computer's core answers them from its own data,
+ * so main sends them there whether or not the host is attached, and the remote core never receives them.
+ */
+export const REMOTE_CHAT_LOCAL_REQUESTS: ReadonlySet<string> = new Set([
+  'requestSubscriptionUsage',
+  ...Object.keys(USER_MEMORY_VIEW_SOURCES),
+]);
+
+export const isRemoteChatLocalRequest = (type: string): type is RemoteChatLocalRequest => REMOTE_CHAT_LOCAL_REQUESTS.has(type);
+
+/**
+ * The posts that answer REMOTE_CHAT_LOCAL_REQUESTS; main delivers them while the view is live, attached host or not. No core
+ * posts one of these types for its own data, so main refuses every one from a remote core and the page trusts them as this
+ * computer's.
+ */
+export const REMOTE_CHAT_LOCAL_POSTS: ReadonlySet<string> = new Set([
+  'subscriptionUsage',
+  'userMemoriesUpdate',
+  'userProfileData',
+  'userMemoryHistory',
+  'userRelatedMemories',
+  'userMemoryCreated',
+  'userMemoryDeleted',
+  'userMemoryPinned',
+  'userMemoryUnpinned',
+  'userMemoryForgotten',
+  'userMemoryUnforgotten',
+  'userMemoryError',
+  'userProfileSectionError',
+] satisfies ExtensionToWebviewMessage['type'][]);
+
+/** Every webview message a remote chat's page sends to this computer's core instead of its own. */
+export const FOREIGN_VIEW_MESSAGES: ReadonlySet<string> = new Set([...VOICE_VIEW_MESSAGES, ...REMOTE_CHAT_USER_SETTING_MESSAGES, ...REMOTE_CHAT_LOCAL_REQUESTS]);
+
+/** The longest requestId a createUserMemory carries; this computer's core and main's fallback echo none longer. */
+export const MAX_VIEW_REQUEST_ID_CHARS = 128;
+
+/** A view message's requestId when it is a string of 1..MAX_VIEW_REQUEST_ID_CHARS, else undefined. */
+export function viewRequestIdOf(message: unknown): string | undefined {
+  const requestId = (message as { readonly requestId?: unknown } | null)?.requestId;
+  return typeof requestId === 'string' && requestId.length > 0 && requestId.length <= MAX_VIEW_REQUEST_ID_CHARS ? requestId : undefined;
+}
+
+/**
+ * The failure answer of a REMOTE_CHAT_LOCAL_REQUESTS message: this computer's core's when it refuses one, main's when that core
+ * never answered, so the page never waits on it. It echoes only fields it checked: a bounded requestId and a section of static
+ * or dynamic.
+ */
+export function remoteChatLocalFailure(type: RemoteChatLocalRequest, message: unknown, detail: LocalizedText): ExtensionToWebviewMessage {
+  switch (type) {
+    case 'requestSubscriptionUsage': {
+      const failed = { status: 'error' as const, bars: [], error: detail };
+      return { type: 'subscriptionUsage', data: { claude: failed, gpt: { ...failed, bars: [] }, fetchedAt: Date.now() } };
+    }
+    case 'setUserProfileSection': {
+      const section = (message as { readonly section?: unknown } | null)?.section;
+      if (section === 'static' || section === 'dynamic') return { type: 'userProfileSectionError', section, message: detail };
+      return { type: 'userMemoryError', request: type, message: detail };
+    }
+    case 'createUserMemory': {
+      const requestId = viewRequestIdOf(message);
+      return { type: 'userMemoryError', request: type, message: detail, ...(requestId !== undefined ? { requestId } : {}) };
+    }
+    default:
+      return { type: 'userMemoryError', request: type, message: detail };
+  }
+}
 
 /** The key a remote chat page's setting write reports its settingWriteResult under; undefined for a group that has no switch. */
 export function remoteChatSettingKey(type: RemoteChatSettingMessage, group: unknown): string | undefined {
@@ -313,6 +413,63 @@ export type GlobalMemoryResolution =
 
 /** The JSON bytes of the writes one user.memory.apply carries, far below the core channel's message bound; a larger write goes alone. */
 export const MAX_GLOBAL_MEMORY_APPLY_BYTES: number = 16 * 1024 * 1024;
+
+/** The JSON bytes of the rows one user.memory.list page carries, as the apply budget; a larger row goes alone. */
+export const MAX_GLOBAL_MEMORY_LIST_BYTES: number = 16 * 1024 * 1024;
+
+/** A user.memory.list keyset position: the last row of a page, in created_at DESC, id DESC order. */
+export interface GlobalMemoryListCursor {
+  readonly createdAt: number;
+  readonly id: string;
+}
+
+/** A remote core's user.memory.list: the client's latest notes, with any of the tags, below the cursor. */
+export interface GlobalMemoryListRequest {
+  readonly kinds: readonly 'note'[];
+  readonly tags?: readonly string[];
+  readonly cursor?: GlobalMemoryListCursor;
+}
+
+/** A listed global memory: forgotten rows are listed too, as the client's own notes list shows them. */
+export interface ListedGlobalMemory extends RelayedGlobalMemory {
+  readonly forgotten?: true;
+}
+
+/** One user.memory.list page: at most MAX_RELAYED_MEMORIES rows below the cursor asked for; next is the last row's key while more rows remain. */
+export interface GlobalMemoryListPage {
+  readonly rows: readonly ListedGlobalMemory[];
+  readonly next?: GlobalMemoryListCursor;
+}
+
+const utf8 = new TextEncoder();
+
+/** A listed row's size against MAX_GLOBAL_MEMORY_LIST_BYTES: its JSON's UTF-8 bytes, as the client and main both count it. */
+export function listedMemoryBytes(row: ListedGlobalMemory): number {
+  return utf8.encode(JSON.stringify(row)).length;
+}
+
+/**
+ * Whether a row's key comes strictly after the cursor in created_at DESC, id DESC order. Ids compare by their UTF-8 bytes, as
+ * SQLite's BINARY collation orders them, so main checks a page in the order the client's query produced it.
+ */
+export function listedAfter(key: GlobalMemoryListCursor, cursor: GlobalMemoryListCursor): boolean {
+  if (key.createdAt !== cursor.createdAt) return key.createdAt < cursor.createdAt;
+  const a = utf8.encode(key.id), b = utf8.encode(cursor.id);
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i]! < b[i]!;
+  return a.length < b.length;
+}
+
+// SQLite's LIKE, which the notes list's tag rule runs, folds ASCII letters only
+const asciiFold = (tag: string): string => tag.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
+/** Whether a row carries any of the tags asked for, as the notes list's tag rule matches them. */
+export function carriesAnyTag(rowTags: readonly string[] | undefined, asked: readonly string[]): boolean {
+  const wanted = new Set(asked.map(asciiFold));
+  return rowTags?.some((tag) => wanted.has(asciiFold(tag))) === true;
+}
+
+/** The daemon's answer to a pinnedClient request whose client's attach did not list the route's feature. */
+export const CLIENT_FEATURE_MISSING = 'client-feature-missing';
 
 /** How long main waits for this computer's core to answer a user.memory read (search, profile, resolve) of a remote core. */
 export const GLOBAL_MEMORY_READ_TIMEOUT_MS = 10_000;

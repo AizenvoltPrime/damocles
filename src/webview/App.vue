@@ -106,6 +106,7 @@ import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
 import { useStickToBottom } from "./composables/useStickToBottom";
 import { useExpandedTool } from "./composables/useExpandedTool";
 import { hasOpenOverlay } from "./composables/useOverlayEscape";
+import { useUserScopeMemory, type MemoryCreate } from "./composables/useUserScopeMemory";
 import {
   useUIStore,
   useSettingsStore,
@@ -136,7 +137,6 @@ import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
 import { useElicitationStore } from "./stores/useElicitationStore";
 import { useExtensionUiStore } from "./stores/useExtensionUiStore";
 import type { PermissionMode } from "@shared/types/settings";
-import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption, RewindHistoryItem, RestorePoint } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 import type { SteerRequest } from "@/utils/steer-command";
@@ -832,20 +832,10 @@ function handleOpenMemoryPanel() {
   uiStore.openMemoryPanel();
 }
 
-function handleCreateMemory(payload: { tier: Exclude<MemoryTier, 'observation'>; kind: 'fact' | 'preference' | 'episode'; content: string; requestId: string }) {
-  postMessage({ type: "createMemory", tier: payload.tier, kind: payload.kind, content: payload.content, requestId: payload.requestId });
-}
+const userScopeMemory = useUserScopeMemory();
 
-function handleDeleteMemory(id: string) {
-  postMessage({ type: "deleteMemory", id });
-}
-
-function handlePinMemory(id: string) {
-  postMessage({ type: "pinMemory", id });
-}
-
-function handleUnpinMemory(id: string) {
-  postMessage({ type: "unpinMemory", id });
+function handleCreateMemory(payload: MemoryCreate) {
+  postMessage(userScopeMemory.createMessage(payload));
 }
 
 function handleLoadMoreObservations() {
@@ -1411,9 +1401,6 @@ provideSendPrompt(handleSuggestion);
         :loading-observations="loadingObservations"
         @close="uiStore.closeMemoryPanel()"
         @create="handleCreateMemory"
-        @delete="handleDeleteMemory"
-        @pin="handlePinMemory"
-        @unpin="handleUnpinMemory"
         @load-more-observations="handleLoadMoreObservations"
       />
     </Transition>

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
-import type { TerminalCreateResult, TerminalState } from '../../src/desktop/preload/terminal-channels';
+import type { TerminalCreateResult, TerminalProfileOption, TerminalState } from '../../src/desktop/preload/terminal-channels';
 import { expect, test } from './support/fixtures';
 import { readUserSettings, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { openProjectChat } from './support/screenshots';
@@ -25,7 +25,13 @@ const REFUSED_PATH = windows ? '\\\\server\\share\\sh.exe' : '~/sh';
 type Launch = () => Promise<{ app: ElectronApplication; close: () => Promise<void> }>;
 
 const state = (shell: Page): Promise<TerminalState> => shell.evaluate(() => window.damoclesShell!.terminal.getState());
-const profileNames = async (shell: Page): Promise<string[]> => (await state(shell)).profiles.map((profile) => profile.name);
+// The profiles Settings › Terminal lists, which main answers while the settings modal is open.
+async function listed(overlay: Page): Promise<TerminalProfileOption[]> {
+  const answer = await overlay.evaluate(() => window.damoclesOverlay!.getTerminalProfiles());
+  if (!answer.ok) throw new Error('Settings › Terminal is not open');
+  return [...answer.value.profiles];
+}
+const profileNames = async (overlay: Page): Promise<string[]> => (await listed(overlay)).map((profile) => profile.name);
 // The renderer's own create, which takes a profile id only; main resolves it against the profiles it lists.
 const create = (shell: Page, profileId: string): Promise<TerminalCreateResult> => shell.evaluate((id) => window.damoclesShell!.terminal.create({ profileId: id, target: { current: true } }), profileId);
 
@@ -33,20 +39,22 @@ function writeSettings(home: HermeticHome, profiles: unknown): void {
   writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': TEST_PROFILE, 'damocles.desktop.terminal.confirmOnKill': 'never', [PROFILES]: profiles });
 }
 
-async function launchWithTerminal(home: HermeticHome, launch: Launch): Promise<{ app: ElectronApplication; shell: Page }> {
+async function launchWithTerminal(home: HermeticHome, launch: Launch): Promise<{ app: ElectronApplication; shell: Page; settings: Page }> {
   const { app } = await launch();
   await openProjectChat(app, home.project);
-  return { app, shell: await openTerminal(app) };
+  const shell = await openTerminal(app);
+  return { app, shell, settings: await openSettingsModal(app, 'terminal') };
 }
 
 test('a user profile with a path list and args is listed in its icon and color and launches with those args', async ({ home, launch }) => {
   writeSettings(home, { [USER_PROFILE]: { ...LAUNCH, icon: 'rocket', color: 'green' } });
-  const { shell } = await launchWithTerminal(home, launch);
-  const listed = (await state(shell)).profiles.find((profile) => profile.name === USER_PROFILE);
-  expect(listed).toMatchObject({ id: `user:${USER_PROFILE}`, source: 'user', customIcon: 'rocket', color: 'green', args: LAUNCH.args });
-  expect(listed!.path).toEqual(windows ? LAUNCH.path[1] : expect.stringMatching(/\/bash$/));
+  const { shell, settings } = await launchWithTerminal(home, launch);
+  const user = (await listed(settings)).find((profile) => profile.name === USER_PROFILE);
+  expect(user).toMatchObject({ id: `user:${USER_PROFILE}`, source: 'user', customIcon: 'rocket', color: 'green', args: LAUNCH.args });
+  expect(user!.path).toEqual(windows ? LAUNCH.path[1] : expect.stringMatching(/\/bash$/));
+  await closeSettingsModal(settings);
 
-  const created = await create(shell, listed!.id);
+  const created = await create(shell, user!.id);
   expect(created).toMatchObject({ ok: true });
   await expect(activeTerminal(shell)).toHaveAttribute('data-status', 'running');
   await expect.poll(() => terminalText(shell), { timeout: 30_000 }).toContain(MARKER);
@@ -56,14 +64,15 @@ test('a user profile with a path list and args is listed in its icon and color a
 
 test('null hides a detected profile, and the change applies when the user settings file changes', async ({ home, launch }) => {
   writeSettings(home, {});
-  const { shell } = await launchWithTerminal(home, launch);
-  const detected = (await state(shell)).profiles.find((profile) => profile.id !== TEST_PROFILE && profile.source === 'detected');
+  const { shell, settings } = await launchWithTerminal(home, launch);
+  const detected = (await listed(settings)).find((profile) => profile.id !== TEST_PROFILE && profile.source === 'detected');
   test.skip(detected === undefined, 'this machine detects only the test shell');
   writeUserSettings(home, { ...readUserSettings(home), [PROFILES]: { [detected!.name]: null } });
-  await expect.poll(() => profileNames(shell)).not.toContain(detected!.name);
+  await expect.poll(() => profileNames(settings)).not.toContain(detected!.name);
   expect(await create(shell, detected!.id)).toEqual({ ok: false, reason: 'unknownProfile' });
   writeUserSettings(home, { ...readUserSettings(home), [PROFILES]: {} });
-  await expect.poll(() => profileNames(shell)).toContain(detected!.name);
+  await expect.poll(() => profileNames(settings)).toContain(detected!.name);
+  await closeSettingsModal(settings);
 });
 
 test('a profile in the project or local settings file of a trusted project is ignored and never launches', async ({ home, launch }) => {
@@ -72,19 +81,19 @@ test('a profile in the project or local settings file of a trusted project is ig
   fs.mkdirSync(path.join(home.project, '.damocles'), { recursive: true });
   fs.writeFileSync(path.join(home.project, '.damocles', 'settings.json'), JSON.stringify({ [PROFILES]: planted }));
   fs.writeFileSync(path.join(home.project, '.damocles', 'settings.local.json'), JSON.stringify({ [PROFILES]: planted }));
-  const { shell } = await launchWithTerminal(home, launch);
-  const names = await profileNames(shell);
+  const { shell, settings } = await launchWithTerminal(home, launch);
+  const names = await profileNames(settings);
   expect(names).not.toContain('Planted Shell');
   expect(names).toContain(windows ? 'Command Prompt' : 'bash');
+  await closeSettingsModal(settings);
   expect(await create(shell, 'user:Planted Shell')).toEqual({ ok: false, reason: 'unknownProfile' });
 });
 
 test('an invalid profile is listed in Settings › Terminal with its reason and never launches', async ({ home, launch }) => {
   writeSettings(home, { 'Bad Share Shell': { path: REFUSED_PATH }, 'Bad Env Shell': { path: LAUNCH.path, env: { PATH: 'x' } } });
-  const { app, shell } = await launchWithTerminal(home, launch);
-  expect(await profileNames(shell)).not.toContain('Bad Share Shell');
+  const { shell, settings: overlay } = await launchWithTerminal(home, launch);
+  expect(await profileNames(overlay)).not.toContain('Bad Share Shell');
   expect(await create(shell, 'user:Bad Share Shell')).toEqual({ ok: false, reason: 'unknownProfile' });
-  const overlay = await openSettingsModal(app, 'terminal');
   const answer = await overlay.evaluate(() => window.damoclesOverlay!.getTerminalProfiles());
   if (!answer.ok) throw new Error('Settings › Terminal is open, yet main answered closed');
   expect(answer.value.problems).toEqual(expect.arrayContaining([

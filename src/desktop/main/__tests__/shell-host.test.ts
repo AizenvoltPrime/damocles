@@ -311,7 +311,7 @@ describe('ShellHost', () => {
     const call = (raw: unknown): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(SHELL_CHANNELS.hostsShowCard)!(own, raw));
     const anchor = { x: 10, y: 4, width: 80, height: 28 };
     await call({ hostId: 'h1', anchor });
-    for (const raw of [{ hostId: 'h1' }, { hostId: '../x', anchor }, { hostId: 'h1', anchor: { ...anchor, x: -1 } }, { hostId: 'h1', anchor: { ...anchor, width: Number.NaN } }, { hostId: 'h1', anchor: { x: 1, y: 1 } }, { hostId: 'h1', anchor, card: 'rename' }]) {
+    for (const raw of [{ hostId: 'h1' }, { hostId: '../x', anchor }, { hostId: 'h1', anchor: { ...anchor, x: -1 } }, { hostId: 'h1', anchor: { ...anchor, width: Number.NaN } }, { hostId: 'h1', anchor: { x: 1, y: 1 } }, { hostId: 'h1', anchor: { ...anchor, card: 'rename' } }, { hostId: 'h1', anchor, card: 'rename' }]) {
       await expect(call(raw)).rejects.toThrow('Malformed');
     }
     expect(vi.mocked(actions.showHostCard).mock.calls).toEqual([['h1', anchor]]);
@@ -587,12 +587,14 @@ describe('ShellHost', () => {
 });
 
 describe('editor, Files, layout and Quick Open channels', () => {
+  // whether the shell page holds keyboard focus
+  let shellFocused = false;
   const contents = Object.assign(new EventEmitter(), {
     id: 1,
     mainFrame: { url: SHELL_PAGE_URL, parent: null },
     loadURL: vi.fn(async () => undefined),
     getZoomFactor: () => 1,
-    isFocused: () => false,
+    isFocused: (): boolean => shellFocused,
     isDestroyed: () => false,
     isCrashed: () => false,
     send: vi.fn(),
@@ -657,6 +659,24 @@ describe('editor, Files, layout and Quick Open channels', () => {
     for (const channel of [SHELL_CHANNELS.editorOpen, SHELL_CHANNELS.editorSave, SHELL_CHANNELS.filesDelete, SHELL_CHANNELS.filesList, SHELL_CHANNELS.layoutMove, SHELL_CHANNELS.quickOpen]) {
       await expect(call(channel, { projectKey: 'p', relativePath: 'a' }, foreign)).rejects.toThrow('Rejected');
     }
+  });
+
+  it('focuses a tab\'s page only for an exact { tabId } asked while the shell page holds focus, answering whether focus moved', async () => {
+    editor['focusPage'] = vi.fn((tabId: string) => tabId === 'shown');
+    await expect(call(SHELL_CHANNELS.editorFocusPage, { tabId: 'shown' })).resolves.toBe(false);
+    expect(editor['focusPage']).not.toHaveBeenCalled();
+    shellFocused = true;
+    try {
+      await expect(call(SHELL_CHANNELS.editorFocusPage, { tabId: 'shown' })).resolves.toBe(true);
+      await expect(call(SHELL_CHANNELS.editorFocusPage, { tabId: 'hidden' })).resolves.toBe(false);
+      for (const payload of [{ tabId: 3 }, { tabId: 'shown', extra: 1 }, 'shown', { tabId: '' }]) {
+        await expect(call(SHELL_CHANNELS.editorFocusPage, payload)).rejects.toThrow(/Malformed/);
+      }
+      await expect(call(SHELL_CHANNELS.editorFocusPage, { tabId: 'shown' }, foreign)).rejects.toThrow('Rejected');
+    } finally {
+      shellFocused = false;
+    }
+    expect(editor['focusPage']!.mock.calls).toEqual([['shown'], ['hidden']]);
   });
 
   it('bounds lines, versions, text, selections, names, enums and pointers', async () => {
@@ -793,9 +813,10 @@ describe('terminal channels', () => {
     contents.paste.mockClear();
     lines = [];
     terminal = Object.fromEntries([
-      'state', 'create', 'openNew', 'input', 'resize', 'ack', 'kill', 'restart', 'select', 'split', 'unsplit', 'resizePanes', 'setListWidth', 'shellLoaded', 'paste', 'setInputFocused', 'openLink', 'openWebLink', 'rename', 'pickIcon', 'pickColor', 'selectDefaultProfile',
+      'state', 'create', 'openNew', 'input', 'resize', 'ack', 'kill', 'restart', 'select', 'split', 'unsplit', 'move', 'joinPick', 'resizePanes', 'setListWidth', 'shellLoaded', 'paste', 'setInputFocused', 'openLink', 'openWebLink', 'rename', 'pickIcon', 'pickColor', 'selectDefaultProfile',
     ].map((name) => [name, vi.fn(() => ({ ok: true, id: 'term-1' }))]));
     terminal['resolveLinks'] = vi.fn(async () => ['file']);
+    terminal['openNewMenu'] = vi.fn(async () => undefined);
     terminal['has'] = vi.fn((id: string) => id === 'term-1');
     gestures = Object.fromEntries(['pasteKey', 'middleClick', 'contextMenu', 'blurred'].map((name) => [name, vi.fn()]));
     openAppMenu = vi.fn();
@@ -836,6 +857,16 @@ describe('terminal channels', () => {
       [{ profileId: 'wsl:Ubuntu', target: { project: 'c:\\work\\alpha' } }],
       [{ profileId: 'pwsh', target: { home: true } }],
     ]);
+  });
+
+  it('opens the New Terminal menu under an anchor within the shell bounds, and refuses any other payload', async () => {
+    const anchor = { x: 900, y: 40, width: 26, height: 26 };
+    await expect(call(TERMINAL_CHANNELS.newMenu, { anchor })).resolves.toBeUndefined();
+    expect(terminal['openNewMenu']!.mock.calls).toEqual([[anchor]]);
+    for (const payload of [{ anchor: { ...anchor, x: -1 } }, { anchor: { ...anchor, width: Number.NaN } }, { anchor: { x: 1, y: 2 } }, { anchor: { ...anchor, projectKey: 'p' } }, { anchor, projectKey: 'p' }, {}, null]) {
+      await expect(call(TERMINAL_CHANNELS.newMenu, payload)).rejects.toThrow('Malformed New Terminal menu request');
+    }
+    expect(terminal['openNewMenu']).toHaveBeenCalledTimes(1);
   });
 
   it('passes a clicked web link with its terminal id, bounded, and drops a malformed one', () => {
@@ -900,18 +931,24 @@ describe('terminal channels', () => {
     expect(contents.paste).not.toHaveBeenCalled();
   });
 
-  it('takes only a boolean input focus from the window page, and forgets it when the page loads or its renderer goes', () => {
-    send(TERMINAL_CHANNELS.inputFocus, { focused: true }, foreign);
-    send(TERMINAL_CHANNELS.inputFocus, { focused: 'yes' });
-    send(TERMINAL_CHANNELS.inputFocus, { focused: true, id: 'term-1' });
+  it('takes only a bounded terminal id or null as the input focus from the window page, and forgets it when the page loads or its renderer goes', () => {
+    send(TERMINAL_CHANNELS.inputFocus, { id: 'term-1' }, foreign);
+    send(TERMINAL_CHANNELS.inputFocus, { focused: true });
+    send(TERMINAL_CHANNELS.inputFocus, { id: '../term-1' });
+    send(TERMINAL_CHANNELS.inputFocus, { id: `term-${'1'.repeat(16)}` });
+    send(TERMINAL_CHANNELS.inputFocus, { id: 'term-1', focused: true });
+    send(TERMINAL_CHANNELS.inputFocus, {});
     expect(terminal['setInputFocused']).not.toHaveBeenCalled();
-    send(TERMINAL_CHANNELS.inputFocus, { focused: true });
-    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith(true);
+    send(TERMINAL_CHANNELS.inputFocus, { id: 'term-1' });
+    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith('term-1');
+    send(TERMINAL_CHANNELS.inputFocus, { id: null });
+    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith(null);
+    send(TERMINAL_CHANNELS.inputFocus, { id: 'term-2' });
     contents.emit('did-finish-load');
-    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith(false);
-    send(TERMINAL_CHANNELS.inputFocus, { focused: true });
+    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith(null);
+    send(TERMINAL_CHANNELS.inputFocus, { id: 'term-2' });
     contents.emit('render-process-gone', {}, { reason: 'clean-exit' });
-    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith(false);
+    expect(terminal['setInputFocused']).toHaveBeenLastCalledWith(null);
   });
 
   describe('user input main observes in its page', () => {
@@ -1097,6 +1134,43 @@ describe('terminal channels', () => {
     ]) send(TERMINAL_CHANNELS.resizePanes, payload);
     expect(terminal['resizePanes']!.mock.calls).toEqual([['group-1', [0.25, 0.75]], ['group-10', [1]]]);
     expect(lines.filter((line) => line.includes(TERMINAL_CHANNELS.resizePanes))).toHaveLength(1);
+  });
+
+  it('passes a move only as one closed kind with exactly its fields, bounded ids, a known side and a delta of one', () => {
+    const valid = [
+      { kind: 'reorder', id: 'term-1', target: 'term-2', side: 'before' },
+      { kind: 'join', id: 'term-123456789012345', target: 'term-2', side: 'after' },
+      { kind: 'detach', id: 'term-1' },
+      { kind: 'step', id: 'term-1', delta: -1 },
+      { kind: 'step', id: 'term-1', delta: 1 },
+      { kind: 'toEditor', id: 'term-1' },
+    ];
+    for (const payload of valid) send(TERMINAL_CHANNELS.move, payload);
+    for (const payload of [
+      { kind: 'swap', id: 'term-1', target: 'term-2', side: 'before' },
+      { kind: 'reorder', id: 'term-1', target: 'term-2', side: 'left' },
+      { kind: 'reorder', id: 'term-1', target: 'term-2' },
+      { kind: 'join', id: 'term-1', target: '../term-2', side: 'after' },
+      { kind: 'join', id: `term-${'1'.repeat(16)}`, target: 'term-2', side: 'after' },
+      { kind: 'join', id: 'term-1', target: 'term-2', side: 'after', groupId: 'group-1' },
+      { kind: 'detach', id: 'term-1', target: 'term-2' },
+      { kind: 'detach' },
+      { kind: 'toEditor', id: 'term-1', target: 'term-2' },
+      { kind: 'toEditor', id: '../term-1' },
+      { kind: 'step', id: 'term-1', delta: 2 },
+      { kind: 'step', id: 'term-1', delta: 0 },
+      { kind: 'step', id: 'term-1', delta: '1' },
+      { kind: 'step', id: 'term-1', delta: 1, index: 0 },
+      { id: 'term-1' },
+      'term-1',
+      null,
+    ]) send(TERMINAL_CHANNELS.move, payload);
+    expect(terminal['move']!.mock.calls).toEqual(valid.map((move) => [move]));
+    expect(lines.filter((line) => line.includes(TERMINAL_CHANNELS.move))).toHaveLength(1);
+    send(TERMINAL_CHANNELS.joinPick, { id: 'term-2' });
+    send(TERMINAL_CHANNELS.joinPick, { id: 'term-2', ids: ['term-3'] });
+    send(TERMINAL_CHANNELS.joinPick, 'term-2');
+    expect(terminal['joinPick']!.mock.calls).toEqual([['term-2']]);
   });
 
   it('renames with a trimmed, bounded name without control or bidi characters, and opens the pickers by id', () => {

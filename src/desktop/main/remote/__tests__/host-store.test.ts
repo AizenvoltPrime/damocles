@@ -308,6 +308,32 @@ describe('HostStore', () => {
     expect(reread.collapsedGroups()).toEqual([]);
   });
 
+  it('keeps a host\'s default terminal profile across a relaunch, drops one out of bounds, and forgets it with the host', async () => {
+    const store = await HostStore.open(userData, () => undefined);
+    const prod = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    const lab = await store.addWslHost('Ubuntu', 'Ubuntu');
+    if (!prod.ok || !lab.ok) throw new Error('setup');
+    await store.setDefaultTerminalProfile(prod.host.id, 'zsh');
+    await store.setDefaultTerminalProfile(lab.host.id, 'bash');
+    await expect(store.setDefaultTerminalProfile(prod.host.id, 'a\nb')).rejects.toThrow('Not a terminal profile id');
+    await expect(store.setDefaultTerminalProfile(prod.host.id, 'x'.repeat(201))).rejects.toThrow('Not a terminal profile id');
+    expect((await HostStore.open(userData, () => undefined)).host(prod.host.id)?.settings).toEqual({ defaultTerminalProfile: 'zsh' });
+    expect((await HostStore.open(userData, () => undefined)).host(lab.host.id)?.settings).toEqual({ defaultTerminalProfile: 'bash' });
+
+    const file = path.join(userData, HOST_STORE_FILE);
+    const written = JSON.parse(fs.readFileSync(file, 'utf8')) as { hosts: Record<string, { settings: Record<string, unknown> }> };
+    written.hosts[lab.host.id]!.settings = { defaultTerminalProfile: 'x'.repeat(201) };
+    fs.writeFileSync(file, JSON.stringify(written));
+    const log = vi.fn();
+    const reread = await HostStore.open(userData, log);
+    expect(reread.host(lab.host.id)?.settings).toEqual({});
+    expect(log).toHaveBeenCalledWith(`[hosts] dropping the default terminal profile of ${lab.host.id}: not a profile id`);
+
+    await reread.forgetHost(prod.host.id);
+    expect((await HostStore.open(userData, () => undefined)).host(prod.host.id)).toBeUndefined();
+    expect(fs.readFileSync(file, 'utf8')).not.toContain('zsh');
+  });
+
   it('stores groupOrder and keeps it across writes', async () => {
     fs.writeFileSync(path.join(userData, HOST_STORE_FILE), JSON.stringify({ version: 1, authorities: {}, order: [], hosts: {}, groupOrder: ['abc', 'local', 'abc', 3] }));
     const store = await HostStore.open(userData, () => undefined);

@@ -10,6 +10,7 @@ import { activeTabTopRow, openInEditor, toggleTerminal } from './support/editor'
 import { initRepo } from './support/git';
 import { openScmProject, scmSection } from './support/scm';
 import { sectionAction } from './support/shell-ui';
+import { dragAndDrop } from './support/html-drag';
 import { DEFAULT_GRID_LAYOUT, MIN_SECTION_SIZE, type GridPane, type GridSlot } from '../../src/desktop/preload/shell-channels';
 
 async function slots(app: ElectronApplication): Promise<Record<GridSlot, GridPane>> {
@@ -209,31 +210,7 @@ async function dragSection(app: ElectronApplication, shell: Page, from: string, 
   await settled(shell);
   const header = (await shell.locator(`section[data-section="${from}"] [data-testid="sidebar-section-header"]`).boundingBox())!;
   const target = (await shell.locator(`section[data-section="${to}"]`).boundingBox())!;
-  const cdp = await app.context().newCDPSession(shell);
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    await cdp.send('Input.setInterceptDrags', { enabled: true });
-    const intercepted = new Promise<{ items: Array<{ mimeType: string; data: string }>; dragOperationsMask: number }>((resolve) => cdp.once('Input.dragIntercepted', (event) => resolve(event.data)));
-    const mouse = (type: 'mouseMoved' | 'mousePressed' | 'mouseReleased', x: number, atY: number) =>
-      cdp.send('Input.dispatchMouseEvent', { type, x, y: atY, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
-    const start = { x: header.x + 30, y: header.y + header.height / 2 };
-    await mouse('mouseMoved', start.x, start.y);
-    await mouse('mousePressed', start.x, start.y);
-    for (let step = 1; step <= 5; step++) await mouse('mouseMoved', start.x, start.y - step * 10);
-    const data = await Promise.race([intercepted, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`no drag started from the ${from} header`)), 5000);
-    })]);
-    const drop = { x: target.x + 40, y: target.y + y };
-    for (const type of ['dragEnter', 'dragOver', 'drop'] as const) await cdp.send('Input.dispatchDragEvent', { type, ...drop, data });
-    await mouse('mouseReleased', drop.x, drop.y);
-  } finally {
-    clearTimeout(timer);
-    try {
-      await cdp.send('Input.setInterceptDrags', { enabled: false });
-    } finally {
-      await cdp.detach();
-    }
-  }
+  await dragAndDrop(app, shell, { x: header.x + 30, y: header.y + header.height / 2 }, { x: target.x + 40, y: target.y + y });
 }
 test('a sidebar section dragged by its header lands on the half it is dropped on, keeps its place after a restart, and its header menu moves and resets it', async ({ foreground: _foreground, launch }) => {
   const header = (shell: Page, name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"]`);

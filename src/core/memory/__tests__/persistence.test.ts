@@ -182,7 +182,7 @@ describe('migration v6', () => {
       .all() as Array<{ detail: string }>).map(r => r.detail).join('\n');
     expect(plan).toContain('idx_candidates_claimable');
     expect(plan).not.toContain('TEMP B-TREE');
-    expect((v5.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(9);
+    expect((v5.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(10);
     v5.close();
   });
 });
@@ -202,7 +202,7 @@ describe('migration v7', () => {
     expect(plan).toContain('idx_candidates_set_aside');
     expect(plan).not.toMatch(/SCAN memory_candidates(?! USING)/);
     expect((v6.prepare('SELECT COUNT(*) AS n FROM memory_candidates WHERE set_aside_at IS NOT NULL').get() as { n: number }).n).toBe(1);
-    expect((v6.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(9);
+    expect((v6.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(10);
     v6.close();
   });
 });

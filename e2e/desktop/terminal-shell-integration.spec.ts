@@ -41,10 +41,6 @@ async function active(shell: Page): Promise<TerminalInfo> {
   return found;
 }
 
-async function profileDetected(shell: Page, id: string): Promise<boolean> {
-  return (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).profiles.some((profile) => profile.id === id);
-}
-
 async function resolve(shell: Page, candidate: string): Promise<string | null> {
   const { id } = await active(shell);
   const [kind] = await shell.evaluate(([terminal, paths]) => window.damoclesShell!.terminal.resolveLinks({ id: terminal, paths }), [id, [candidate]] as const);
@@ -174,8 +170,10 @@ test('cmd.exe gets no integration, keeps its profile name and never asks before 
 test('Git Bash reports its commands and its working directory too', async ({ home, launch }) => {
   test.skip(!windows, 'Git Bash is Windows only');
   const { shell } = await launchWith(home, launch, 'cmd');
-  test.skip(!(await profileDetected(shell, 'git-bash')), 'Git Bash is not installed');
-  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', target: { current: true } }));
+  // main refuses a profile it did not detect
+  const created = await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', target: { current: true } }));
+  if (!created.ok && created.reason !== 'unknownProfile') throw new Error(`main refused a Git Bash terminal: ${created.reason}`);
+  test.skip(!created.ok, 'Git Bash is not installed');
   await expect.poll(async () => (await active(shell)).profileId).toBe('git-bash');
   await expect.poll(async () => (await active(shell)).integrated, { timeout: 30_000 }).toBe(true);
   await runInTerminal(shell, 'cd src && sleep 3');

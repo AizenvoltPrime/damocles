@@ -1,21 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from 'vue';
+import { computed, inject, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize } from '@vueuse/core';
+import { Ban } from 'lucide-vue-next';
 import { remPx } from '@/composables/useRemPx';
 import { authorityKeyOfProject } from '@shared/project-location';
 import type { DamoclesShellApi, ShellHost, ShellPlatform } from '../../preload/shell-channels';
-import { MIN_TERMINAL_PANE_FRACTION, type TerminalGroupInfo, type TerminalState } from '../../preload/terminal-channels';
+import { MAX_TERMINAL_GROUP_PANES, MIN_TERMINAL_PANE_FRACTION, type TerminalDropSide, type TerminalGroupInfo, type TerminalInfo, type TerminalState } from '../../preload/terminal-channels';
 import Sash from '../layout/Sash.vue';
+import { draggedTerminal, endTerminalDrag, paneDropSide, terminalDragOf, terminalDropOf } from './terminal-drag';
+import { moveLanded, TERMINAL_STORE } from './terminal-store';
 import { equalSizes, moveSash, paneMinPx, paneOffsets, RESIZE_PANE_CELLS, resizePaneWidths, TERMINAL_PANE_MIN_REM, toFractions } from './terminal-split';
 import TerminalView from './TerminalView.vue';
 
 // Every terminal's view, each in its group's pane box; only the active group's panes show, side by side, with a sash
-// between each two. A view never moves to another parent, so a split or unsplit keeps its xterm.
+// between each two. A view never remounts, so a split, unsplit or move keeps its xterm: an editor terminal's view is
+// teleported into its editor tab's host, the same element moving as VS Code's attachToElement moves it.
 // hosts: the saved SSH hosts, whose reconnect phase a remote terminal's label and dim wait on
 const props = defineProps<{ api: DamoclesShellApi; terminal: TerminalState; platform: ShellPlatform; splitShortcut: string; hosts: readonly ShellHost[] }>();
 const hostOf = (projectKey: string | null): ShellHost | undefined => (projectKey === null ? undefined : props.hosts.find((host) => host.authorityKey === authorityKeyOfProject(projectKey)));
 const { t } = useI18n();
+const store = inject(TERMINAL_STORE)!;
 
 const root = ref<HTMLElement | null>(null);
 const { width } = useElementSize(root);
@@ -57,7 +62,14 @@ const boxes = computed(() => {
   return out;
 });
 
+// The teleport target is the host element itself, never a selector: Teleport resolves a selector once, at mount, and a
+// panel terminal mounts before its editor host exists. Null keeps the view in its pane box.
+function editorHost(terminal: TerminalInfo): HTMLElement | null {
+  return terminal.placement === 'editor' ? store.editorHosts.value.get(terminal.id) ?? null : null;
+}
+
 const shown = (id: string): boolean => activeGroup.value?.paneIds.includes(id) === true;
+const viewShown = (terminal: TerminalInfo): boolean => (terminal.placement === 'editor' ? editorHost(terminal) !== null && store.editorShown.value === terminal.id : shown(terminal.id));
 
 function boxStyle(id: string): Record<string, string> {
   const box = boxes.value.get(id);
@@ -151,6 +163,50 @@ function entered(id: string): void {
 function faded(key: string): void {
   ghosts.value = ghosts.value.filter((ghost) => ghost.key !== key);
 }
+
+// A terminal dragged over a shown pane joins that pane's group on the half under the pointer (VS Code's
+// TerminalInstanceDragAndDropController). A worktree Setup task on either side, or a full group the terminal is not in,
+// refuses it, as main's join does; its own pane and the half beside its own place take nothing.
+type JoinRefusal = 'task' | 'full';
+const paneDrop = shallowRef<{ readonly paneId: string; readonly side: TerminalDropSide; readonly refused: JoinRefusal | null } | null>(null);
+watch(draggedTerminal, (id) => {
+  if (id === null) paneDrop.value = null;
+});
+
+function refusesJoin(id: string, paneId: string): JoinRefusal | null {
+  if ([id, paneId].some((candidate) => props.terminal.terminals.find((terminal) => terminal.id === candidate)?.task === true)) return 'task';
+  const group = props.terminal.groups.find((candidate) => candidate.paneIds.includes(paneId));
+  return group !== undefined && group.paneIds.length >= MAX_TERMINAL_GROUP_PANES && !group.paneIds.includes(id) ? 'full' : null;
+}
+
+function onPaneDragOver(event: DragEvent, paneId: string): void {
+  const id = terminalDragOf(event);
+  if (id === null || id === paneId) return;
+  const side = paneDropSide((event.currentTarget as HTMLElement).getBoundingClientRect(), event.clientX);
+  const refused = refusesJoin(id, paneId);
+  if (refused === null && moveLanded(props.terminal, { kind: 'join', id, target: paneId, side })) {
+    if (paneDrop.value?.paneId === paneId) paneDrop.value = null;
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer!.dropEffect = refused ? 'none' : 'move';
+  const current = paneDrop.value;
+  if (current?.paneId !== paneId || current.side !== side || current.refused !== refused) paneDrop.value = { paneId, side, refused };
+}
+
+function onPaneDragLeave(event: DragEvent, paneId: string): void {
+  if (paneDrop.value?.paneId === paneId && !(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) paneDrop.value = null;
+}
+
+function onPaneDrop(event: DragEvent, paneId: string): void {
+  paneDrop.value = null;
+  const id = terminalDropOf(event);
+  if (id === null) return;
+  event.preventDefault();
+  endTerminalDrag();
+  if (id === paneId || refusesJoin(id, paneId) !== null) return;
+  store.move({ kind: 'join', id, target: paneId, side: paneDropSide((event.currentTarget as HTMLElement).getBoundingClientRect(), event.clientX) });
+}
 </script>
 
 <template>
@@ -172,19 +228,50 @@ function faded(key: string): void {
       @pointerdown.capture="choose(item.id)"
       @focusin="choose(item.id)"
       @animationend.self="entered(item.id)"
+      @dragenter="onPaneDragOver($event, item.id)"
+      @dragover="onPaneDragOver($event, item.id)"
+      @dragleave="onPaneDragLeave($event, item.id)"
+      @drop="onPaneDrop($event, item.id)"
     >
-      <TerminalView
-        :api="api"
-        :terminal="item"
-        :shown="shown(item.id)"
-        :settings="terminal.settings"
-        :pass-keys="terminal.passKeys"
-        :platform="platform"
-        :split-shortcut="splitShortcut"
-        :remote-host="hostOf(item.projectKey)"
-        :screen-reader="terminal.screenReader"
-        @resize-pane="(direction: 'left' | 'right', cellPx: number) => resizePane(item.id, direction, cellPx)"
-      />
+      <Teleport
+        defer
+        :to="editorHost(item)"
+        :disabled="editorHost(item) === null"
+      >
+        <TerminalView
+          :api="api"
+          :terminal="item"
+          :shown="viewShown(item)"
+          :settings="terminal.settings"
+          :pass-keys="terminal.passKeys"
+          :platform="platform"
+          :split-shortcut="splitShortcut"
+          :remote-host="hostOf(item.projectKey)"
+          :screen-reader="terminal.screenReader"
+          @resize-pane="(direction: 'left' | 'right', cellPx: number) => resizePane(item.id, direction, cellPx)"
+        />
+      </Teleport>
+      <!-- After the view, so it paints above the xterm by DOM order. -->
+      <Transition name="terminal-drop">
+        <div
+          v-if="paneDrop?.paneId === item.id"
+          aria-hidden="true"
+          data-testid="terminal-drop-overlay"
+          :data-side="paneDrop.refused ? undefined : paneDrop.side"
+          :data-refused="paneDrop.refused ? 'true' : undefined"
+          class="terminal-drop-overlay"
+        >
+          <span
+            v-if="paneDrop.refused"
+            class="flex items-center gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-3 py-1 text-12 text-(--d-muted) shadow-(--d-shadow)"
+          >
+            <Ban
+              aria-hidden="true"
+              class="size-3.5 text-(--d-danger-text)"
+            />{{ paneDrop.refused === 'task' ? t('terminal.arrange.task') : t('terminal.arrange.full', { max: MAX_TERMINAL_GROUP_PANES }) }}
+          </span>
+        </div>
+      </Transition>
     </div>
     <div
       v-for="ghost in ghosts"

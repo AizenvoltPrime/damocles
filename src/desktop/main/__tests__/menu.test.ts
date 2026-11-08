@@ -28,9 +28,9 @@ const actions = new Proxy({} as MenuActions, {
   get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args.map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : arg))].join(':')),
 });
 
-const CHAT: MenuState = { chat: true, liveChat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
-const NONE: MenuState = { chat: false, liveChat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
-const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
+const CHAT: MenuState = { chat: true, liveChat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalEditor: false, terminalTask: false, terminalSplit: false, terminalJoin: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorDocument: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false, clientCertificateSite: false };
+const NONE: MenuState = { chat: false, liveChat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalEditor: false, terminalTask: false, terminalSplit: false, terminalJoin: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorDocument: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false, clientCertificateSite: false };
+const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor', editorKind: 'code', editorDocument: { writable: true, formattable: true } };
 
 function build(platform: NodeJS.Platform, state: MenuState, language: 'en' | 'el' = 'en'): MenuItemConstructorOptions[] {
   installApplicationMenu([], actions, createDesktopLocalizationService(process.cwd(), language, () => undefined), state, platform);
@@ -100,7 +100,7 @@ describe('application menu', () => {
     const editorItems = [MENU_IDS.save, MENU_IDS.saveAs, MENU_IDS.formatDocument, MENU_IDS.closeEditor];
     for (const id of editorItems) {
       for (const focus of ['editor', 'chat', 'sidebar', 'terminal', undefined] as const) expect(byId(build('win32', { ...EDITOR, focus }), id).enabled, `${id} ${focus}`).toBe(true);
-      expect(byId(build('win32', { ...EDITOR, editor: false }), id).enabled).toBe(false);
+      expect(byId(build('win32', { ...EDITOR, editor: false, editorKind: undefined, editorDocument: undefined }), id).enabled).toBe(false);
     }
     const press = (state: MenuState, id: string) => (byId(build('win32', state), id).click as (...args: unknown[]) => void)(undefined, undefined, { triggeredByAccelerator: true });
     for (const id of editorItems) press({ ...EDITOR, focus: 'chat' }, id);
@@ -110,6 +110,22 @@ describe('application menu', () => {
     expect(calls).toEqual(['saveEditor', 'saveEditorAs', 'formatDocument', 'closeEditor', 'saveEditor', 'saveEditorAs', 'formatDocument', 'closeEditor']);
     expect(byId(build('win32', EDITOR), MENU_IDS.nextEditor).enabled).toBe(true);
     expect(byId(build('win32', CHAT), MENU_IDS.nextEditor).enabled).toBe(false);
+  });
+
+  it("follows the active tab's document as the active tab changes: none for a preview, page or terminal, Save As only for a read-only one", () => {
+    const enabled = new Map<string, boolean>();
+    electron.menu = { getMenuItemById: (id) => ({ set enabled(value: boolean) { enabled.set(id, value); }, get enabled() { return enabled.get(id) ?? true; } }) };
+    const ids = [MENU_IDS.save, MENU_IDS.saveAs, MENU_IDS.formatDocument, MENU_IDS.closeEditor];
+    const shown = (): Array<boolean | undefined> => ids.map((id) => enabled.get(id));
+    build('win32', EDITOR);
+    for (const kind of ['terminal', 'browser', 'designPreview', 'markdownPreview', 'htmlPreview'] as const) {
+      updateMenuState({ ...EDITOR, editorKind: kind, editorDocument: undefined });
+      expect(shown(), kind).toEqual([false, false, false, true]);
+      updateMenuState(EDITOR);
+      expect(shown(), kind).toEqual([true, true, true, true]);
+    }
+    updateMenuState({ ...EDITOR, editorKind: 'code', editorDocument: { writable: false, formattable: false } });
+    expect(shown()).toEqual([false, true, false, true]);
   });
 
   it('never runs an item from a key it only shows, which macOS registers as a key equivalent anyway', () => {
@@ -356,8 +372,10 @@ describe('application menu', () => {
 
   it('publishes the skip list\'s accelerators for xterm to leave unhandled, without New Terminal', () => {
     build('win32', CHAT);
-    expect(installedTerminalPassKeys(false).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
-    expect(installedTerminalPassKeys(true).sort()).toEqual(['Alt+Left', 'Alt+Right', 'CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys({ split: false, editor: false }).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys({ split: true, editor: false }).sort()).toEqual(['Alt+Left', 'Alt+Right', 'CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    // an editor terminal's target: Split Terminal cannot run, so its key reaches the pty
+    expect(installedTerminalPassKeys({ split: false, editor: true }).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
   });
 
   it('decides each key in the state focus moved to, and leaves the installed items enabled by their preconditions', () => {
@@ -402,6 +420,40 @@ describe('application menu', () => {
       expect(calls, platform).toEqual(['focusTerminalPane:-1', 'focusTerminalPane:1']);
     }
     expect(byId(build('win32', { ...CHAT, terminal: undefined }), MENU_IDS.splitTerminal).enabled).toBe(false);
+  });
+
+  it('lists Move Terminal into Editor Area and into Panel after Join Terminals..., enabled by the command target\'s place', () => {
+    for (const platform of ['win32', 'darwin'] as const) {
+      calls.length = 0;
+      const items = build(platform, { ...TERMINAL, focus: 'chat' }, 'el');
+      const [toEditor, toPanel] = [byId(items, MENU_IDS.moveTerminalToEditor), byId(items, MENU_IDS.moveTerminalToPanel)];
+      expect([toEditor.label, toPanel.label]).toEqual(['Μετακίνηση τερματικού στην περιοχή επεξεργασίας', 'Μετακίνηση τερματικού στο πάνελ']);
+      expect(items.indexOf(toEditor)).toBe(items.indexOf(byId(items, MENU_IDS.joinTerminals)) + 1);
+      expect(items.indexOf(toPanel)).toBe(items.indexOf(toEditor) + 1);
+      expect([toEditor.enabled, toPanel.enabled], platform).toEqual([true, false]);
+      (toEditor.click as () => void)();
+      const editor = build(platform, { ...TERMINAL, focus: 'editor', terminalEditor: true });
+      expect([byId(editor, MENU_IDS.moveTerminalToEditor).enabled, byId(editor, MENU_IDS.moveTerminalToPanel).enabled, byId(editor, MENU_IDS.splitTerminal).enabled, byId(editor, MENU_IDS.killTerminal).enabled], platform).toEqual([false, true, false, true]);
+      (byId(editor, MENU_IDS.moveTerminalToPanel).click as () => void)();
+      expect(calls, platform).toEqual(['moveTerminalToEditor', 'moveTerminalToPanel']);
+      // a worktree Setup task row: no Join, no Move into Editor Area
+      const task = build(platform, { ...TERMINAL, focus: 'chat', terminalTask: true });
+      expect([byId(task, MENU_IDS.joinTerminals).enabled, byId(task, MENU_IDS.moveTerminalToEditor).enabled], platform).toEqual([false, false]);
+    }
+  });
+
+  it('lists Join Terminals... in the Terminal menu after Unsplit, enabled only while the active group can take a terminal', () => {
+    for (const platform of ['win32', 'darwin'] as const) {
+      calls.length = 0;
+      const items = build(platform, { ...TERMINAL, terminalJoin: true, focus: 'chat' }, 'el');
+      const join = byId(items, MENU_IDS.joinTerminals);
+      expect(join.enabled, platform).toBe(true);
+      expect(join.label).toBe('Ένωση τερματικών...');
+      expect(items.indexOf(join)).toBe(items.indexOf(byId(items, MENU_IDS.unsplitTerminal)) + 1);
+      (join.click as () => void)();
+      expect(calls, platform).toEqual(['joinTerminals']);
+      expect(byId(build(platform, TERMINAL), MENU_IDS.joinTerminals).enabled, platform).toBe(false);
+    }
   });
 
   it('runs a Search Editor command from the menu on the active Search Editor wherever focus is, and its key only from the editor', () => {

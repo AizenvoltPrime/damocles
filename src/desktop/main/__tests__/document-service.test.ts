@@ -1746,6 +1746,45 @@ describe('the size limit counts the byte order mark a write adds', () => {
   });
 });
 
+describe('onDidSave', () => {
+  let saved: Array<{ readonly path: string; readonly projectKey?: string; readonly relativePath?: string }>;
+  beforeEach(() => {
+    saved = [];
+    service.onDidSave((location) => saved.push(location));
+  });
+
+  it('reports a Save once its write landed, and no save that wrote nothing', async () => {
+    const file = write('src/a.ts', 'base');
+    const document = await open('src/a.ts');
+    expect(await saveText(document, 'mine')).toEqual({ ok: true });
+    expect(saved).toEqual([expect.objectContaining({ path: file, projectKey: project.key, relativePath: 'src/a.ts' })]);
+    fs.writeFileSync(file, 'theirs');
+    expect(await saveText(document, 'again')).toEqual({ ok: false, reason: 'conflict' });
+    expect(saved).toHaveLength(1);
+  });
+
+  it('reports a Save As at the file it wrote', async () => {
+    const document = service.openMemory('untitled.ts', 'hello', { untitled: true, languageId: 'typescript' });
+    savePath = path.join(projectDir, 'src', 'saved.ts');
+    expect(await service.save(document.id, document.version, 'hello')).toEqual({ ok: true });
+    expect(saved).toEqual([expect.objectContaining({ path: savePath, projectKey: project.key, relativePath: 'src/saved.ts' })]);
+  });
+
+  it('reports an Overwrite the user confirmed, and none they cancelled', async () => {
+    const file = write('src/c.ts', 'base');
+    const document = await open('src/c.ts');
+    service.edit(document.id, { version: document.version, seq: 1, text: 'mine', overReload: false });
+    fs.writeFileSync(file, 'theirs');
+    await saveText(document, 'mine');
+    answer = undefined;
+    await service.overwrite(document.id);
+    expect(saved).toEqual([]);
+    answer = 0;
+    expect(await service.overwrite(document.id)).toEqual({ ok: true });
+    expect(saved).toEqual([expect.objectContaining({ path: file, projectKey: project.key, relativePath: 'src/c.ts' })]);
+  });
+});
+
 describe('Save As and untitled', () => {
   it('saves inside an open project only, and the document moves there', async () => {
     const document = service.openMemory('untitled.ts', 'hello', { untitled: true, languageId: 'typescript' });

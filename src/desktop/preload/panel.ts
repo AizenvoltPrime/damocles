@@ -34,7 +34,8 @@ function parsed(payload: string): { readonly message: unknown } | undefined {
 }
 
 // Main forwards core's messages as JSON text, and one holding binary (a browser page's frame) as a structured clone. Main
-// parses only the page-state types it persists, so text that is not JSON is dropped here; the page's console says so.
+// parses a local core's text only for the page-state types it persists, so text that is not JSON is dropped here; the
+// page's console says so.
 ipcRenderer.on(PANEL_CHANNELS.message, (_event, payload: unknown) => {
   const delivered = typeof payload === 'string' ? parsed(payload) : { message: payload };
   if (delivered === undefined) {

@@ -128,6 +128,11 @@ describe('desktop palette contrast', () => {
       expect(failures(palette, HOVER_TEXT, ['--d-hover'])).toEqual([]);
     });
 
+    // A menu row's hint (ContextMenu.vue) is faint-text on the card at rest; it alone tells same-named projects apart.
+    it('a menu row hint reaches AA on the card', () => {
+      expect(failures(palette, ['--d-faint-text'], ['--d-card'])).toEqual([]);
+    });
+
     // DESIGN_STRIP (design-strip.ts): the design hue at 5% over the chat background, under the design header's labels.
     it('faint text on the design header strip reaches AA', () => {
       const strip = colorMix(opaque(palette, '--d-design'), 0.05, opaque(palette, '--d-bg'));

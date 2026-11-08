@@ -98,6 +98,8 @@ beforeEach(() => {
     reveal: async () => undefined,
     mention: async () => undefined,
     browser: () => undefined,
+    terminals: () => undefined,
+    htmlPreviews: { state: () => ({ status: 'loading', trusted: false }), tabsChanged: () => undefined, focusPage: () => false },
     warn: () => undefined,
     hostName: (authority) => authority,
     searchEditorClosed: (documentId) => host.searchEditorClosed(documentId),

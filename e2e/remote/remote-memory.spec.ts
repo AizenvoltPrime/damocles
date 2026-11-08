@@ -1,11 +1,13 @@
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { activeChat } from '../desktop/support/fixtures';
 import { sendPrompt } from '../desktop/support/loopback-agent';
-import { agentRequests, type OpenAIStub } from '../desktop/support/openai-stub';
-import { awaitTurnEnd } from '../desktop/support/ui';
+import { agentRequests, call, lastToolResult, type OpenAIStub } from '../desktop/support/openai-stub';
+import { shellPage } from '../desktop/support/shell';
+import { awaitTurnEnd, hostMessages, recordHostMessages } from '../desktop/support/ui';
 import { daemonPids, shutdownHostDaemon } from './support/daemon-teardown';
+import { test as flakyTest } from './support/flaky';
 import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { closeRemoteDialog, exited, requestQuit, targetSessions } from './support/remote-runs';
 import { openRemoteHostSettings } from './support/host-settings-ui';
@@ -17,6 +19,11 @@ const LOCAL_GLOBAL = 'The user wants zorblax deploys to run at night.';
 const TARGET_PROJECT = 'Zorblax deploys go through the staging pipeline first.';
 const CLOSED_GLOBAL = 'The user signs zorblax releases with a hardware key.';
 const HELD_GLOBAL = 'The user keeps zorblax release notes in the wiki.';
+const LOCAL_NOTE = 'Zorblax staging credentials rotate every Monday.';
+const LOCAL_FACT = 'The user runs zorblax builds on a Threadripper.';
+const HOST_PROJECT = 'Zorblax serves its API from /srv/app/api.';
+const POPUP_GLOBAL = 'The user reviews zorblax pull requests before lunch.';
+const AWAY_NOTE = 'Zorblax rollbacks need two approvals.';
 
 /** A webview message a chat page posts, as its own components do. */
 const post = (tab: Page, message: Record<string, unknown>): Promise<void> => tab.evaluate((m) => window.damoclesBridge!.postMessage(m), message);
@@ -31,13 +38,27 @@ function localGlobals(damoclesDir: string, content: string): number {
   }
 }
 
+/** This computer's global rows whose content is `content`: how many, and whether any is pinned or forgotten. */
+function localGlobal(damoclesDir: string, content: string): { n: number; pinned: boolean; forgotten: boolean } {
+  const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true });
+  try {
+    const row = db.prepare("SELECT count(*) AS n, coalesce(max(pinned), 0) AS pinned, coalesce(max(forgotten), 0) AS forgotten FROM memories WHERE scope = 'global' AND content = ?").get(content) as { n: number; pinned: number; forgotten: number };
+    return { n: row.n, pinned: row.pinned === 1, forgotten: row.forgotten === 1 };
+  } finally {
+    db.close();
+  }
+}
+
 const outbox = (fixture: Pick<SshdFixture, 'sh'>): Promise<string> =>
   fixture.sh(`d=${TARGET_HOME}/.damocles/outbox; [ -d "$d" ] || exit 0; for f in "$d"/*.jsonl; do [ -e "$f" ] && { echo "== $f $(stat -c %a "$f")"; cat "$f"; }; done; true`, TARGET_USER);
 
-/** Every memory row of the target account's store, read with the installed server's node. */
+/**
+ * Every memory row of the target account's store, read with the installed server's node. Opened read-write: a read-only open of
+ * a WAL database fails while no connection holds its -shm file, as after the daemon's core closed it.
+ */
 async function targetMemories(fixture: Pick<SshdFixture, 'sh'>): Promise<string> {
   const node = (await fixture.sh(`ls -d ${TARGET_HOME}/.damocles/server/*/node/node | head -n 1`, TARGET_USER)).trim();
-  const script = "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.env.HOME + '/.damocles/memory.v3.db', { readOnly: true }); console.log(JSON.stringify(db.prepare('SELECT scope, content FROM memories').all()));";
+  const script = "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.env.HOME + '/.damocles/memory.v3.db'); console.log(JSON.stringify(db.prepare('SELECT scope, content FROM memories').all()));";
   return fixture.sh(`${node} -e "${script.replaceAll('"', '\\"')}"`, TARGET_USER);
 }
 
@@ -145,6 +166,117 @@ test('an outbox the target holds for a device away 30 days shows on the host car
     await expect(block.getByTestId('held-memory-queue')).toHaveCount(0);
     expect(localGlobals(home.damoclesDir, HELD_GLOBAL)).toBe(1);
     await shutdownHostDaemon(first.app, hostId, fixture);
+  } finally {
+    await stub.close();
+  }
+});
+/** Opens the remote chat's memory popup from its header's More menu, where a chat as narrow as the test window folds it. */
+async function openMemoryPopup(tab: Page): Promise<Locator> {
+  await tab.getByTestId('chat-header-more').click();
+  await tab.getByTestId('chat-header-more-menu').locator('[data-action="memory"]').click();
+  const panel = tab.getByTestId('memory-panel');
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+async function closeMemoryPopup(tab: Page, panel: Locator): Promise<void> {
+  await tab.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
+}
+
+const memoryRow = (panel: Locator, content: string): Locator => panel.locator('article[data-memory-id]').filter({ hasText: content });
+
+/** Adds a memory from the popup's footer, in the tier named as the footer's toggle labels it. */
+async function addFromPopup(panel: Locator, tier: 'Global' | 'Note', content: string): Promise<void> {
+  await panel.getByLabel('Where the new memory goes').getByText(tier, { exact: true }).click();
+  await panel.getByTestId('memory-new').fill(content);
+  await panel.getByTestId('memory-new').press('Enter');
+  await expect(panel.getByTestId('memory-new')).toHaveValue('', { timeout: 30_000 });
+}
+
+flakyTest('a remote chat\'s memory popup lists this computer\'s notes and globals beside the host\'s rows and manages them on this computer, also while the host is away; the remote agent\'s ListNotes returns the notes', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, proxied }) => {
+  flakyTest.setTimeout(600_000);
+  const target = await proxied('prod-1');
+  const { fixture } = target;
+  const stub = await startTargetStub(home, fixture);
+  try {
+    const { app } = await launch({ env: remoteEnv(ssh, mirror) });
+    // a note and a global fact saved on this computer, through a local chat's memory panel requests
+    const localTab = await activeChat(app);
+    await post(localTab, { type: 'createMemory', tier: 'note', content: LOCAL_NOTE, requestId: 'local-note' });
+    await post(localTab, { type: 'createMemory', tier: 'global', kind: 'fact', content: LOCAL_FACT, requestId: 'local-fact' });
+    await expect.poll(() => [localGlobal(home.damoclesDir, LOCAL_NOTE).n, localGlobal(home.damoclesDir, LOCAL_FACT).n]).toEqual([1, 1]);
+
+    const { hostId, key } = await connect(app);
+    const tab = await newRemoteChat(app, key);
+    await recordHostMessages(tab);
+    await post(tab, { type: 'createMemory', tier: 'project', kind: 'fact', content: HOST_PROJECT, requestId: 'host-project' });
+    await expect.poll(() => targetMemories(fixture), { timeout: 30_000 }).toContain(HOST_PROJECT);
+
+    // this computer's rows, marked as its own, beside the host's project row
+    let panel = await openMemoryPopup(tab);
+    await expect(memoryRow(panel, LOCAL_FACT)).toBeVisible({ timeout: 60_000 });
+    await expect(memoryRow(panel, LOCAL_FACT).getByTestId('memory-on-this-computer')).toBeVisible();
+    await expect(memoryRow(panel, HOST_PROJECT)).toBeVisible({ timeout: 60_000 });
+    await expect(memoryRow(panel, HOST_PROJECT).getByTestId('memory-on-this-computer')).toHaveCount(0);
+    await panel.locator('[data-tab="note"]').click();
+    await expect(memoryRow(panel, LOCAL_NOTE)).toBeVisible();
+    await panel.locator('[data-tab="all"]').click();
+
+    // managed from the popup: a pin and a create land in this computer's database
+    await memoryRow(panel, LOCAL_FACT).locator('[data-memory-action="pin"]').click();
+    await expect.poll(() => localGlobal(home.damoclesDir, LOCAL_FACT).pinned, { timeout: 30_000 }).toBe(true);
+    await expect(memoryRow(panel, LOCAL_FACT).locator('[data-memory-action="unpin"]')).toBeVisible();
+    await addFromPopup(panel, 'Global', POPUP_GLOBAL);
+    await expect.poll(() => localGlobal(home.damoclesDir, POPUP_GLOBAL).n, { timeout: 30_000 }).toBe(1);
+    await expect(memoryRow(panel, POPUP_GLOBAL)).toBeVisible({ timeout: 30_000 });
+    await closeMemoryPopup(tab, panel);
+
+    // the remote agent lists this computer's notes by relayed ids
+    stub.replies.push(call('ListNotes', {}), { chunks: ['Listed.'] });
+    await sendPrompt(tab, 'list my notes');
+    await expect(tab.getByText('Listed.', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await awaitTurnEnd(tab);
+    const listed = lastToolResult(stub);
+    expect(listed).toContain(LOCAL_NOTE);
+    expect(listed).toMatch(/global:[^:"]+:/);
+
+    // the host away: this computer's list is asked again and answered, and every change still lands here
+    target.proxy.refuse();
+    await expect(tab.getByTestId('chat-connection-banner')).toBeVisible({ timeout: 30_000 });
+    const answered = (await hostMessages(tab, 'userMemoriesUpdate')).length;
+    panel = await openMemoryPopup(tab);
+    await expect.poll(async () => (await hostMessages(tab, 'userMemoriesUpdate')).length, { timeout: 30_000 }).toBeGreaterThan(answered);
+    await expect(memoryRow(panel, LOCAL_FACT)).toBeVisible();
+    await expect(memoryRow(panel, HOST_PROJECT)).toBeVisible();
+    await memoryRow(panel, LOCAL_FACT).locator('[data-memory-action="forget"]').click();
+    await expect.poll(() => localGlobal(home.damoclesDir, LOCAL_FACT).forgotten, { timeout: 30_000 }).toBe(true);
+    await memoryRow(panel, POPUP_GLOBAL).locator('[data-memory-action="pin"]').click();
+    await expect.poll(() => localGlobal(home.damoclesDir, POPUP_GLOBAL).pinned, { timeout: 30_000 }).toBe(true);
+    await panel.locator('[data-tab="note"]').click();
+    await memoryRow(panel, LOCAL_NOTE).locator('[data-memory-action="delete"]').click();
+    await expect.poll(() => localGlobal(home.damoclesDir, LOCAL_NOTE).n, { timeout: 30_000 }).toBe(0);
+    await expect(memoryRow(panel, LOCAL_NOTE)).toHaveCount(0);
+    await panel.locator('[data-tab="all"]').click();
+    await addFromPopup(panel, 'Note', AWAY_NOTE);
+    await expect.poll(() => localGlobal(home.damoclesDir, AWAY_NOTE).n, { timeout: 30_000 }).toBe(1);
+    await panel.locator('[data-tab="note"]').click();
+    await expect(memoryRow(panel, AWAY_NOTE)).toBeVisible({ timeout: 30_000 });
+    await closeMemoryPopup(tab, panel);
+    target.proxy.restore();
+    const shell = await shellPage(app);
+    await expect.poll(async () => (await shell.evaluate(() => window.damoclesShell!.getState())).projects.find((project) => project.key === key)?.connection, { timeout: 120_000 }).toBe('connected');
+
+    // each change landed once, here only: the target's store and outbox never saw these rows
+    expect([LOCAL_FACT, POPUP_GLOBAL, AWAY_NOTE].map((content) => localGlobal(home.damoclesDir, content).n)).toEqual([1, 1, 1]);
+    const targetRows = await targetMemories(fixture);
+    const held = await outbox(fixture);
+    for (const content of [LOCAL_NOTE, LOCAL_FACT, POPUP_GLOBAL, AWAY_NOTE]) {
+      expect(targetRows).not.toContain(content);
+      expect(held).not.toContain(content);
+    }
+    expect(targetRows).toContain(HOST_PROJECT);
+    await shutdownHostDaemon(app, hostId, fixture);
   } finally {
     await stub.close();
   }

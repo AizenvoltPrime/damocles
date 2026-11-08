@@ -52,7 +52,7 @@ async function openValue(answer: unknown): Promise<unknown> {
   return answered.value;
 }
 
-const CONTEXT: MenuState = { chat: true, liveChat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
+const CONTEXT: MenuState = { chat: true, liveChat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, terminalCreate: true, terminal: undefined, terminalEditor: false, terminalTask: false, terminalSplit: false, terminalJoin: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorDocument: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false, clientCertificateSite: false };
 
 let root: string;
 let alpha: Project;

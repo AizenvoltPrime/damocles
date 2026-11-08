@@ -7,12 +7,12 @@ import { NotConnectedError } from '../workspace/workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { ActiveEditorContext } from '../../../platform/editor-service';
-import type { ShellEditorState, ShellEditorTab } from '../../preload/shell-channels';
+import type { FileRef, ShellEditorState, ShellEditorTab } from '../../preload/shell-channels';
 import { rootKey } from '../../preload/folder-root';
 import type { BackupRecord } from '../documents/backups';
 import type { Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
-import { EditorPane, revealPathOf, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
+import { EditorPane, revealPathOf, selectionText, settingLine, type BrowserTabSource, type PersistedEditor, type TerminalTabSource } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
 import { projectKeyOf } from '../../../shared/project-location';
 import { englishText, LocalizedError } from '../../../shared/localized-text';
@@ -39,6 +39,7 @@ let states: ShellEditorState[];
 let flushFormats: string[][];
 let shellFormats: (documentIds: readonly string[]) => void;
 let browser: BrowserTabSource | undefined;
+let terminalTabs: TerminalTabSource | undefined;
 let warnings: string[];
 // what the next Reveal rejects with, as a Reveal check that could not run does
 let revealError: Error | undefined;
@@ -52,6 +53,8 @@ let uploadConflicts: TextDocument[][];
 let whileAsking: (() => Promise<void>) | undefined;
 // the pane's log lines
 let paneLog: string[];
+// what the pane last told HtmlPreviews: its preview tabs and its active tab
+let previewSync: { readonly tabs: ReadonlyArray<{ readonly tabId: string; readonly file: FileRef }>; readonly active: string | null } | undefined;
 
 beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-pane-')));
@@ -71,10 +74,12 @@ beforeEach(() => {
   flushFormats = [];
   shellFormats = () => undefined;
   browser = undefined;
+  terminalTabs = undefined;
   warnings = [];
   revealError = undefined;
   whileAsking = undefined;
   paneLog = [];
+  previewSync = undefined;
   const ask = async (question: MessageQuestion): Promise<number | undefined> => {
     asked.push(question);
     await whileAsking?.();
@@ -146,6 +151,22 @@ beforeEach(() => {
     },
     mention: async (target) => { events.push(`mention:${JSON.stringify(target)}`); },
     browser: () => browser,
+    terminals: () => terminalTabs,
+    // as HtmlPreviews, which knows only the tabs the pane's last publish named
+    htmlPreviews: {
+      state: (tabId) => {
+        if (!previewSync?.tabs.some((tab) => tab.tabId === tabId)) throw new Error('Unknown HTML preview tab');
+        return { status: tabId === previewSync.active ? 'ready' : 'loading', trusted: false };
+      },
+      tabsChanged: (tabs, active) => {
+        previewSync = { tabs: [...tabs], active };
+      },
+      focusPage: (tabId) => {
+        if (tabId !== previewSync?.active) return false;
+        events.push(`focusPage:${tabId}`);
+        return true;
+      },
+    },
     warn: (message) => warnings.push(message),
     hostName: (authority) => authority,
     searchEditorClosed: (documentId) => events.push(`searchEditorClosed:${documentId}`),
@@ -473,6 +494,22 @@ describe('closing dirty tabs and quitting', () => {
     expect(await pane.release()).toBe(true);
     expect(backupsRemoved).toContain(document.backupId);
     expect(pane.state().tabs).toEqual([]);
+  });
+
+  it('without it, Don\'t Save hands the active tab\'s place to a tab that stays when the active one goes with its buffer', async () => {
+    restoreLayout = false;
+    write('a.ts', 'disk');
+    write('b.ts', 'disk');
+    const clean = await pane.openFromUser(project.key, 'a.ts');
+    const edited = await pane.openFromUser(project.key, 'b.ts');
+    if (!clean.ok || !edited.ok) throw new Error('not opened');
+    const document = textOf(edited.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'mine', overReload: false });
+    answers = [1];
+    expect(await pane.release()).toBe(true);
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual([clean.tabId]);
+    expect(pane.activeTabId()).toBe(clean.tabId);
+    expect(persisted?.active).toBe(0);
   });
 
   it('formats before the Save of the close and quit prompts while format on save is on, and saves what the shell formatted', async () => {
@@ -852,11 +889,18 @@ describe('settings and logs', () => {
 });
 
 // The selected chat's pages as browser-tabs.ts lists them; closing one is the page's own close.
-function pages(ids: string[]): BrowserTabSource & { ids: string[]; closed: string[]; active: Array<string | null> } {
+function pages(ids: string[]): BrowserTabSource & { ids: string[]; closed: string[]; active: Array<string | null>; focused: string[] } {
   const source = {
     ids: [...ids],
     closed: [] as string[],
     active: [] as Array<string | null>,
+    // the pages whose view took keyboard focus; a page shows only while its tab is active
+    focused: [] as string[],
+    focusPage: (id: string) => {
+      if (source.active.at(-1) !== id) return false;
+      source.focused.push(id);
+      return true;
+    },
     tabs: (): ShellEditorTab[] => source.ids.map((id) => ({
       id,
       kind: 'browser',
@@ -982,6 +1026,312 @@ describe('page tabs (D14)', () => {
     expect(pane.activeTabId()).toBe(b.tabId);
     await pane.tabAction('close', b.tabId);
     expect(pane.activeTabId()).toBe('p1');
+  });
+});
+
+// The window's editor-hosted terminals as TerminalService lists them; a close kills them all after one question.
+function terminalSource(ids: string[]): TerminalTabSource & { ids: string[]; activated: string[]; closed: string[][] } {
+  const source = {
+    ids: [...ids],
+    activated: [] as string[],
+    closed: [] as string[][],
+    tabs: (): ShellEditorTab[] => source.ids.map((id) => ({ id: `terminal:${id}`, kind: 'terminal', terminal: { id }, title: id, displayPath: id, dirty: false, readOnly: false, conflict: false })),
+    activate: (tabId: string) => {
+      source.activated.push(tabId);
+    },
+    close: async (tabIds: readonly string[]) => {
+      source.closed.push([...tabIds]);
+      source.ids = source.ids.filter((id) => !tabIds.includes(`terminal:${id}`));
+      pane.terminalTabsChanged();
+    },
+  };
+  return source;
+}
+
+describe('terminal tabs', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  it('lists the terminal tabs after the file and page tabs, and republishes them without persisting', async () => {
+    write('a.ts', 'a');
+    browser = pages(['p1']);
+    const source = terminalSource(['term-1', 'term-2']);
+    terminalTabs = source;
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok) throw new Error('not opened');
+    await tick();
+    persisted = undefined;
+    pane.terminalTabsChanged();
+    await tick();
+    expect(states.at(-1)!.tabs.map((tab) => [tab.id, tab.kind])).toEqual([[opened.tabId, 'code'], ['p1', 'browser'], ['terminal:term-1', 'terminal'], ['terminal:term-2', 'terminal']]);
+    expect(states.at(-1)!.tabs[2]).toMatchObject({ terminal: { id: 'term-1' }, title: 'term-1' });
+    expect(persisted).toBeUndefined();
+    expect(pane.hasTabs()).toBe(true);
+  });
+
+  it('activates a terminal tab through its source, which focuses the terminal, and never sends it the editor\'s focus', async () => {
+    write('a.ts', 'a');
+    const source = terminalSource(['term-1']);
+    terminalTabs = source;
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok) throw new Error('not opened');
+    events.length = 0;
+    await pane.tabAction('activate', 'terminal:term-1');
+    expect(pane.activeTabId()).toBe('terminal:term-1');
+    expect(pane.activeKind()).toBe('terminal');
+    expect(source.activated).toEqual(['terminal:term-1']);
+    pane.cycle(1);
+    pane.cycle(1);
+    expect(events.filter((event) => event.startsWith('focus:'))).toEqual([`focus:${opened.tabId}`]);
+    expect(source.activated).toEqual(['terminal:term-1', 'terminal:term-1']);
+    // a terminal moved into the editor shows with focus; a command target shown for a palette action without it
+    pane.showTerminalTab('terminal:term-1', { focus: false });
+    expect(source.activated).toHaveLength(2);
+    await pane.tabAction('activate', opened.tabId);
+    pane.showTerminalTab('terminal:term-1', { focus: true });
+    expect(source.activated).toHaveLength(3);
+    expect(events.filter((event) => event === 'showPane')).toHaveLength(2);
+    pane.showTerminalTab('terminal:term-9', { focus: true });
+    expect(pane.activeTabId()).toBe('terminal:term-1');
+  });
+
+  it('gives way to the file tab activated last when the active terminal tab leaves, and activates one listed into an empty pane', async () => {
+    write('a.ts', 'a');
+    const source = terminalSource(['term-1']);
+    terminalTabs = source;
+    pane.terminalTabsChanged();
+    expect(pane.activeTabId()).toBe('terminal:term-1');
+    expect(source.activated).toEqual([]);
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok) throw new Error('not opened');
+    await pane.tabAction('activate', 'terminal:term-1');
+    source.ids = [];
+    pane.terminalTabsChanged();
+    expect(pane.activeTabId()).toBe(opened.tabId);
+  });
+
+  it('closes a terminal tab through its source, and Close All closes the file and page tabs first, then the terminal tabs at once', async () => {
+    write('a.ts', 'a');
+    const pageSource = pages(['p1']);
+    browser = pageSource;
+    const source = terminalSource(['term-1', 'term-2', 'term-3']);
+    terminalTabs = source;
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok) throw new Error('not opened');
+    await pane.tabAction('close', 'terminal:term-3');
+    expect(source.closed).toEqual([['terminal:term-3']]);
+    await pane.tabAction('copyPath', 'terminal:term-1');
+    expect(events.some((event) => event.startsWith('copy:'))).toBe(false);
+    await pane.tabAction('closeAll', 'terminal:term-1');
+    expect(pageSource.closed).toEqual(['p1']);
+    expect(source.closed).toEqual([['terminal:term-3'], ['terminal:term-1', 'terminal:term-2']]);
+    expect(pane.state().tabs).toEqual([]);
+    expect(pane.hasTabs()).toBe(false);
+  });
+
+  it('keeps every terminal tab when a dirty file\'s question is cancelled during Close Others', async () => {
+    write('a.ts', 'disk');
+    const source = terminalSource(['term-1', 'term-2']);
+    terminalTabs = source;
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok) throw new Error('not opened');
+    const document = textOf(opened.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'mine', overReload: false });
+    answers = [undefined];
+    await pane.tabAction('closeOthers', 'terminal:term-2');
+    expect(source.closed).toEqual([]);
+    answers = [1];
+    await pane.tabAction('closeOthers', 'terminal:term-2');
+    expect(source.closed).toEqual([['terminal:term-1']]);
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual(['terminal:term-2']);
+  });
+});
+
+describe('HTML preview tabs', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+  const preview = (): ShellEditorTab => pane.state().tabs.find((tab) => tab.kind === 'htmlPreview')!;
+
+  it('opens one preview tab per .html or .htm file, with no document, titled Preview <name>, and tells HtmlPreviews', async () => {
+    write('site/index.html', '<p>hi</p>');
+    const opened = await pane.openFromUser(project.key, 'site/index.html', { as: 'preview' });
+    const again = await pane.openFromUser(project.key, 'site/index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    expect(again).toEqual(opened);
+    expect(pane.state().tabs).toEqual([{
+      id: opened.tabId,
+      kind: 'htmlPreview',
+      title: 'Preview index.html',
+      projectKey: project.key,
+      relativePath: 'site/index.html',
+      displayPath: path.join(projectDir, 'site', 'index.html'),
+      revealable: true,
+      dirty: false,
+      readOnly: true,
+      conflict: false,
+      htmlPreview: { status: 'ready', trusted: false },
+    }]);
+    expect(previewSync).toEqual({ tabs: [{ tabId: opened.tabId, file: { projectKey: project.key, relativePath: 'site/index.html' } }], active: opened.tabId });
+    expect(events).toContain(`focus:${opened.tabId}`);
+    expect(documents.all()).toEqual([]);
+    write('old.HTM', '<p>old</p>');
+    expect(await pane.openFromUser(project.key, 'old.HTM', { as: 'preview' })).toMatchObject({ ok: true });
+    expect(pane.state().tabs.map((tab) => tab.title)).toEqual(['Preview index.html', 'Preview old.HTM']);
+    expect(await pane.openFromUser('not-a-project', 'index.html', { as: 'preview' })).toEqual({ ok: false, reason: 'outside' });
+  });
+
+  it("opens the preview from an HTML code tab's Open Preview, and the code tab from the preview's Open Source", async () => {
+    write('index.html', '<p>hi</p>');
+    const code = await pane.openFromUser(project.key, 'index.html');
+    if (!code.ok) throw new Error('not opened');
+    await pane.tabAction('openPreview', code.tabId);
+    const previewId = pane.activeTabId()!;
+    expect(preview().id).toBe(previewId);
+    await pane.tabAction('openPreview', code.tabId);
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'htmlPreview']);
+    await pane.tabAction('activate', previewId);
+    await pane.tabAction('openSource', previewId);
+    expect(pane.activeTabId()).toBe(code.tabId);
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'htmlPreview']);
+    // a TypeScript file has no HTML preview
+    write('a.ts', 'a');
+    const ts = await pane.openFromUser(project.key, 'a.ts');
+    if (!ts.ok) throw new Error('not opened');
+    await pane.tabAction('openPreview', ts.tabId);
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'code', 'htmlPreview']);
+  });
+
+  it("copies the preview's path and relative path, reveals and mentions its file, and closes it", async () => {
+    write('site/index.html', '<p>hi</p>');
+    const opened = await pane.openFromUser(project.key, 'site/index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    await pane.tabAction('copyPath', opened.tabId);
+    await pane.tabAction('copyRelativePath', opened.tabId);
+    await pane.tabAction('revealInExplorer', opened.tabId);
+    await pane.mention(opened.tabId);
+    expect(events).toEqual(expect.arrayContaining([
+      `copy:${path.join(projectDir, 'site', 'index.html')}`,
+      `copy:${path.join('site', 'index.html')}`,
+      `reveal:${path.join(projectDir, 'site', 'index.html')}`,
+      `mention:${JSON.stringify({ projectKey: project.key, relativePath: 'site/index.html' })}`,
+    ]));
+    await pane.tabAction('close', opened.tabId);
+    expect(pane.state().tabs).toEqual([]);
+    expect(previewSync).toEqual({ tabs: [], active: null });
+    expect(asked).toEqual([]);
+  });
+
+  it('persists a preview as its file and restores it, dropping one whose project is gone', async () => {
+    write('index.html', '<p>hi</p>');
+    const opened = await pane.openFromUser(project.key, 'index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    await tick();
+    expect(persisted).toEqual({ tabs: [{ kind: 'htmlPreview', file: { projectKey: project.key, relativePath: 'index.html' } }], active: 0, recent: [] });
+    await pane.tabAction('close', opened.tabId);
+    await pane.restore({ tabs: [{ kind: 'htmlPreview', file: { projectKey: project.key, relativePath: 'index.html' } }, { kind: 'htmlPreview', file: { projectKey: 'gone', relativePath: 'x.html' } }], active: 0, recent: [] }, []);
+    expect(pane.state().tabs.map((tab) => [tab.kind, tab.relativePath])).toEqual([['htmlPreview', 'index.html']]);
+    expect(pane.activeTabId()).toBe(preview().id);
+    expect(paneLog.some((line) => line.includes('dropping a saved htmlPreview tab'))).toBe(true);
+  });
+
+  it('follows a Files rename of its file or folder, and closes with its worktree root', async () => {
+    write('site/index.html', '<p>hi</p>');
+    const opened = await pane.openFromUser(project.key, 'site/index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    await renamed('site', 'web');
+    expect(preview()).toMatchObject({ id: opened.tabId, relativePath: 'web/index.html', title: 'Preview index.html' });
+    expect(previewSync?.tabs).toEqual([{ tabId: opened.tabId, file: { projectKey: project.key, relativePath: 'web/index.html' } }]);
+    expect(pane.closeRoot(project.key, new Map())).toBe(true);
+    expect(pane.state().tabs).toEqual([]);
+  });
+
+  it('answers hasProjectTab for a preview tab added since the last publish, before HtmlPreviews knows it', async () => {
+    write('index.html', '<p>hi</p>');
+    const opened = await pane.openFromUser(project.key, 'index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    // the publish that tells HtmlPreviews waits for the next turn
+    expect(previewSync).toBeUndefined();
+    expect(pane.hasProjectTab((key) => key === project.key)).toBe(true);
+    expect(pane.hasProjectTab((key) => key !== project.key)).toBe(false);
+  });
+
+  it("opens the preview from an HTML code tab whose host is not connected, which holds the offline placeholder", async () => {
+    const remote: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    roots = [remote];
+    loopbackUp = false;
+    await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: remote.key, relativePath: 'site/index.html' } }], active: 0, recent: [] }, []);
+    const code = pane.state().tabs[0]!;
+    expect(documents.content(code.documentId!)).toMatchObject({ kind: 'offline' });
+    await pane.tabAction('openPreview', code.id);
+    expect(pane.state().tabs.map((tab) => [tab.kind, tab.relativePath])).toEqual([['code', 'site/index.html'], ['htmlPreview', 'site/index.html']]);
+    expect(pane.activeTabId()).toBe(preview().id);
+  });
+
+  it('opens no preview of an HTML file the preview would not serve, one in a dot folder among them', async () => {
+    write('docs/.vitepress/dist/index.html', '<p>hi</p>');
+    expect(await pane.openFromUser(project.key, 'docs/.vitepress/dist/index.html', { as: 'preview' })).toEqual({ ok: false, reason: 'outside' });
+    const code = await pane.openFromUser(project.key, 'docs/.vitepress/dist/index.html');
+    if (!code.ok) throw new Error('not opened');
+    await pane.tabAction('openPreview', code.tabId);
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code']);
+    expect(pane.activeTabId()).toBe(code.tabId);
+  });
+
+  it('closes a preview once its root leaves the roots, and opens one again once the project is back', async () => {
+    write('index.html', '<p>hi</p>');
+    write('a.ts', 'a');
+    const code = await pane.openFromUser(project.key, 'a.ts');
+    const opened = await pane.openFromUser(project.key, 'index.html', { as: 'preview' });
+    if (!code.ok || !opened.ok) throw new Error('not opened');
+    pane.rootsChanged();
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual([code.tabId, opened.tabId]);
+    roots = [];
+    pane.rootsChanged();
+    // HtmlPreviews hears of the close before any publish, as a trust recompute follows in the same change
+    expect(previewSync).toEqual({ tabs: [], active: code.tabId });
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual([code.tabId]);
+    expect(pane.activeTabId()).toBe(code.tabId);
+    await tick();
+    expect(persisted?.tabs).toEqual([{ kind: 'code', file: { projectKey: project.key, relativePath: 'a.ts' } }]);
+    roots = [project];
+    pane.rootsChanged();
+    const again = await pane.openFromUser(project.key, 'index.html', { as: 'preview' });
+    if (!again.ok) throw new Error('not opened');
+    expect(pane.state().tabs.map((tab) => [tab.kind, tab.relativePath])).toEqual([['code', 'a.ts'], ['htmlPreview', 'index.html']]);
+  });
+
+  it("focuses the page of the active preview or page tab, and of no other tab", async () => {
+    write('index.html', '<p>hi</p>');
+    write('a.ts', 'a');
+    const source = pages(['p1']);
+    browser = source;
+    const opened = await pane.openFromUser(project.key, 'index.html', { as: 'preview' });
+    const code = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok || !code.ok) throw new Error('not opened');
+    pane.state();
+    expect([pane.focusPage(opened.tabId), pane.focusPage(code.tabId), pane.focusPage('p1'), pane.focusPage('no-such-tab')]).toEqual([false, false, false, false]);
+    await pane.tabAction('activate', opened.tabId);
+    pane.state();
+    expect(pane.focusPage(opened.tabId)).toBe(true);
+    pane.activateBrowserTab('p1');
+    expect(pane.focusPage('p1')).toBe(true);
+    expect(events.filter((event) => event.startsWith('focusPage:'))).toEqual([`focusPage:${opened.tabId}`]);
+    expect(source.focused).toEqual(['p1']);
+  });
+
+  it('leaves terminal tabs as they are beside a preview tab', async () => {
+    write('index.html', '<p>hi</p>');
+    const source = terminalSource(['term-1']);
+    terminalTabs = source;
+    const opened = await pane.openFromUser(project.key, 'index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    pane.terminalTabsChanged();
+    expect(pane.state().tabs.map((tab) => [tab.id, tab.kind])).toEqual([[opened.tabId, 'htmlPreview'], ['terminal:term-1', 'terminal']]);
+    await pane.tabAction('activate', 'terminal:term-1');
+    expect(source.activated).toEqual(['terminal:term-1']);
+    pane.state();
+    expect(previewSync?.active).toBe('terminal:term-1');
+    await pane.tabAction('closeOthers', 'terminal:term-1');
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual(['terminal:term-1']);
+    expect(source.closed).toEqual([]);
   });
 });
 
@@ -1735,5 +2085,74 @@ describe('files outside every project', () => {
       `mention:${JSON.stringify({ path: file, authority: 'loopback' })}`,
       `mention:${JSON.stringify({ path: notes, authority: 'local' })}`,
     ]);
+  });
+});
+
+describe("the active tab's document", () => {
+  const WRITABLE = { writable: true, formattable: true };
+
+  it('is the text a code, untitled, settings, log, Search Editor, diff or merge tab edits: writable unless read-only, formattable when writable source', async () => {
+    const file = write('src/a.ts', 'a');
+    const code = await pane.openFromUser(project.key, 'src/a.ts');
+    if (!code.ok) throw new Error('not opened');
+    expect(pane.activeKind()).toBe('code');
+    expect(pane.activeDocument()).toEqual(WRITABLE);
+    pane.openUntitled('x', 'Untitled-1', 'plaintext', { focus: false });
+    expect(pane.activeDocument()).toEqual(WRITABLE);
+    await pane.openSettingsFile('user');
+    expect(pane.activeKind()).toBe('settings');
+    expect(pane.activeDocument()).toEqual(WRITABLE);
+    pane.openReadOnly('a.ts (HEAD)', 'old', 'a.ts', false);
+    expect(pane.activeDocument()).toEqual({ writable: false, formattable: false });
+    fs.mkdirSync(path.join(root, 'logs'));
+    fs.writeFileSync(path.join(root, 'logs', 'Damocles.log'), 'line\n');
+    await pane.openLog(path.join(root, 'logs', 'Damocles.log'), true);
+    expect(pane.activeDocument()).toEqual({ writable: false, formattable: false });
+    pane.showSearchEditor(documents.openSearchEditor(project.key, { query: 'a', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 1, showIncludesExcludes: false }, '', { dirty: false }), { focus: true });
+    expect(pane.activeDocument()).toEqual({ writable: true, formattable: false });
+    await pane.showDiff((name) => `${name} (At checkpoint ↔ Current)`, file, { name: 'x-a.ts', content: 'before' }, { path: file }, { focus: false });
+    expect(pane.activeKind()).toBe('diff');
+    expect(pane.activeDocument()).toEqual(WRITABLE);
+    await pane.showDiff((name) => `${name} (Current ↔ Proposed)`, file, { name: 'p-a.ts', content: 'disk' }, { name: 'q-a.ts', content: 'proposed' }, { focus: false });
+    expect(pane.activeKind()).toBe('diff');
+    expect(pane.activeDocument()).toBeUndefined();
+    pane.showMerge({ repoId: 'repo', path: 'src/a.ts' }, textOf(code.tabId), 'Merging: a.ts', { focus: false });
+    expect(pane.activeKind()).toBe('merge');
+    expect(pane.activeDocument()).toEqual(WRITABLE);
+  });
+
+  it('is none for a tab that edits no text: a preview, an image, a placeholder, a source control view, a page, a design preview or a terminal', async () => {
+    const none = (kind: string): void => {
+      expect(pane.activeKind()).toBe(kind);
+      expect(pane.activeDocument(), kind).toBeUndefined();
+    };
+    write('README.md', '# hi');
+    await pane.openFromUser(project.key, 'README.md', { as: 'preview' });
+    none('markdownPreview');
+    pane.openMarkdownText('notes.md', '# notes', false, 'local');
+    none('markdownPreview');
+    write('site/index.html', '<p>hi</p>');
+    await pane.openFromUser(project.key, 'site/index.html', { as: 'preview' });
+    none('htmlPreview');
+    fs.writeFileSync(path.join(projectDir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    await pane.openFromUser(project.key, 'logo.png');
+    none('image');
+    pane.openPlaceholder('logo.png (Deleted)', { name: 'logo.png', notDisplayed: 'binary', bytes: 8 });
+    none('notDisplayed');
+    pane.showPatch({ left: { name: 'a.txt', folder: '/srv', path: '/srv/a.txt' }, right: { name: 'b.txt', folder: '/srv', path: '/srv/b.txt' }, content: { kind: 'patch', patch: '' } }, { focus: false });
+    none('changes');
+    pane.showReview({ reviewId: 'r1', title: 'Changes: x', scope: 'chat', entries: [], shellChangesNotListed: true, draftsKey: 's', comments: [], staleComments: [] }, { focus: false });
+    none('review');
+    pane.showTimeline({ repoId: 'repo', path: 'README.md' }, 'README.md (Timeline)', { focus: false });
+    none('timeline');
+    const source = pages(['p1']);
+    browser = { ...source, tabs: () => [...source.tabs(), { id: 'design-1', kind: 'designPreview', title: 'S1', displayPath: '/d/S1.html', dirty: false, readOnly: true, conflict: false }] };
+    pane.activateBrowserTab('p1');
+    none('browser');
+    pane.activateBrowserTab('design-1');
+    none('designPreview');
+    terminalTabs = terminalSource(['term-1']);
+    await pane.tabAction('activate', 'terminal:term-1');
+    none('terminal');
   });
 });

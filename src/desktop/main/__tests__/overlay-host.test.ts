@@ -4,8 +4,8 @@ const H = vi.hoisted(() => ({ webPreferences: [] as unknown[] }));
 
 vi.mock('electron', async () => (await import('./fake-overlay-electron')).fakeOverlayElectron(H.webPreferences));
 
-import { MAX_MESSAGE_ACTIONS, OVERLAY_ACK_TIMEOUT_MS, OVERLAY_CHANNELS, OVERLAY_REQUEST_PUSHES, type OverlayRasterRequest, type OverlayRequest, type RasterArt } from '../../preload/overlay-channels';
-import { OverlayHost, overlayHtml, parseMessageRequest, parseOverlayAnswer, parseOverlayRequest, RASTER_TIMEOUT_MS } from '../overlay';
+import { MAX_MESSAGE_ACTIONS, OVERLAY_ACK_TIMEOUT_MS, OVERLAY_CHANNELS, OVERLAY_REQUEST_PUSHES, type OverlayAnswer, type OverlayRasterRequest, type OverlayRequest, type RasterArt } from '../../preload/overlay-channels';
+import { createQuickPickManyAsker, OverlayHost, overlayHtml, parseMessageRequest, parseOverlayAnswer, parseOverlayRequest, parseQuickPickRequest, RASTER_TIMEOUT_MS, type QuickPickAskerDeps } from '../overlay';
 import { OVERLAY_PAGE_URL, resolveAppRequest } from '../protocol';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
 import { pngFixture } from './png-fixture';
@@ -959,6 +959,45 @@ describe('overlay request validation', () => {
     expect(parseOverlayAnswer({ kind: 'tagPicker', tag: 'x'.repeat(51) }, picker)).toBeUndefined();
   });
 
+  it('asks a multi-select quick pick only with a max of 1 to its selectable items, and takes 1..max distinct offered ids in item order', () => {
+    const items = [{ id: 'term-1', label: 'pwsh' }, { id: 'more', label: '2 more not shown', info: true }, { id: 'term-2', label: 'bash' }, { id: 'term-3', label: 'zsh' }];
+    for (const max of [0, 4, 1.5, Number.NaN]) expect(parseQuickPickRequest('Join', items, { max })).toBeUndefined();
+    const request = parseQuickPickRequest('Join', items, { max: 2 })!;
+    expect(request.pickMany).toEqual({ max: 2 });
+    expect(parseQuickPickRequest('Join', items)!.pickMany).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'quickPickMany', itemIds: ['term-1', 'term-3'] }, request)).toEqual({ kind: 'quickPickMany', itemIds: ['term-1', 'term-3'] });
+    expect(parseOverlayAnswer({ kind: 'quickPickMany', itemIds: ['term-2'] }, request)).toEqual({ kind: 'quickPickMany', itemIds: ['term-2'] });
+    for (const itemIds of [[], ['term-1', 'term-2', 'term-3'], ['term-3', 'term-1'], ['term-1', 'term-1'], ['more'], ['term-9'], [1], 'term-1']) {
+      expect(parseOverlayAnswer({ kind: 'quickPickMany', itemIds }, request), JSON.stringify(itemIds)).toBeUndefined();
+    }
+    expect(parseOverlayAnswer({ kind: 'quickPickMany', itemIds: ['term-1'], query: '' }, request)).toBeUndefined();
+    // a multi-select pick takes no single answer, and a single pick no multi-select one
+    expect(parseOverlayAnswer({ kind: 'quickPick', itemId: 'term-1', query: '' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'quickPickMany', itemIds: ['term-1'] }, parseQuickPickRequest('Join', items)!)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'dismissed' }, request)).toEqual({ kind: 'dismissed' });
+  });
+
+  it('resolves a multi-select pick\'s ids, undefined for Escape, and asks nothing with a max its items cannot meet', async () => {
+    const asked: OverlayRequest[] = [];
+    let answer: OverlayAnswer = { kind: 'quickPickMany', itemIds: ['b'] };
+    const told: string[] = [];
+    const ask = createQuickPickManyAsker({
+      overlay: () => ({ request: async (request: OverlayRequest) => { asked.push(request); return answer; } }) as unknown as ReturnType<QuickPickAskerDeps['overlay']>,
+      focused: () => undefined,
+      unavailable: () => told.push('unavailable'),
+      tooLarge: () => told.push('tooLarge'),
+      log: (line) => told.push(line),
+    });
+    const items = [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }];
+    expect(await ask('Join', items, 2)).toEqual(['b']);
+    expect(asked).toEqual([{ kind: 'quickPick', placeholder: 'Join', items, pickMany: { max: 2 } }]);
+    answer = { kind: 'dismissed' };
+    expect(await ask('Join', items, 1)).toBeUndefined();
+    expect(await ask('Join', items, 3)).toBeUndefined();
+    expect(asked).toHaveLength(2);
+    expect(told).toEqual(['[quick pick] the request is malformed; nothing asked', 'unavailable']);
+  });
+
   it('takes the Graph ref picker with full refnames only, whether a group failed and how many refs it left out, and an answer naming only refs it offered, at most 50', () => {
     const refs = [{ id: 'refs/heads/main', name: 'main' }, { id: 'refs/remotes/origin/main', name: 'origin/main' }, { id: 'refs/tags/v1', name: 'v1' }];
     const request = { kind: 'refPicker', anchor: MENU.anchor, refs, selected: ['refs/heads/main'], failed: true, omitted: 12 };
@@ -992,29 +1031,45 @@ describe('overlay request validation', () => {
     expect(parseOverlayAnswer({ kind: 'refPicker', choice: many.map((ref) => ref.id) }, wide)).toBeUndefined();
   });
 
-  it('takes a new-terminal pick only of a profile and a project the request offered, and opens that request only from main', () => {
+  it('takes a new-terminal pick only of a reachable project the request offered, with a shell id or the default, and opens that request only from main', () => {
     const request: OverlayRequest = {
       kind: 'newTerminal',
-      profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }],
-      projects: [{ key: 'c:\\alpha', name: 'alpha', path: 'C:\\alpha', current: true }],
+      projects: [
+        { key: 'c:\\alpha', name: 'alpha', path: 'C:\\alpha', current: true, authority: { kind: 'local' }, reachable: true },
+        { key: 'ssh+h1|/srv/api', name: 'api', path: '/srv/api', current: false, authority: { kind: 'ssh', name: 'prod', color: 'danger' }, reachable: false },
+      ],
     };
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' }, request)).toEqual({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' });
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'cmd', projectKey: 'c:\\alpha' }, request)).toBeUndefined();
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'C:\\Windows' }, request)).toBeUndefined();
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: 'pwsh' }, request)).toEqual({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: 'pwsh' });
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: null }, request)).toEqual({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: null });
+    // the project's host is not connected, so the pick lists it disabled and main refuses it
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'ssh+h1|/srv/api', profileId: null }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'C:\\Windows', profileId: 'pwsh' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: null, profileId: 'pwsh' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: '' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: 'x'.repeat(201) }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'c:\\alpha' }, request)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'dismissed' }, request)).toEqual({ kind: 'dismissed' });
     expect(parseOverlayRequest(request)).toBeUndefined();
   });
 
-  it('takes the home folder (a null project) for a new-terminal pick only when the request offered no project', () => {
-    const request: OverlayRequest = {
-      kind: 'newTerminal',
-      profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }],
-      projects: [],
-    };
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null }, request)).toEqual({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null });
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' }, request)).toBeUndefined();
-    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh' }, request)).toBeUndefined();
+  it('takes the home folder (a null project) for a new-terminal pick only when the request offered no reachable project', () => {
+    const none: OverlayRequest = { kind: 'newTerminal', projects: [] };
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: null, profileId: 'pwsh' }, none)).toEqual({ kind: 'newTerminal', projectKey: null, profileId: 'pwsh' });
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'c:\\alpha', profileId: 'pwsh' }, none)).toBeUndefined();
+    const offline: OverlayRequest = { kind: 'newTerminal', projects: [{ key: 'ssh+h1|/srv/api', name: 'api', path: '/srv/api', current: true, authority: { kind: 'ssh', name: 'prod' }, reachable: false }] };
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: null, profileId: null }, offline)).toEqual({ kind: 'newTerminal', projectKey: null, profileId: null });
+    expect(parseOverlayAnswer({ kind: 'newTerminal', projectKey: 'ssh+h1|/srv/api', profileId: null }, offline)).toBeUndefined();
+  });
+
+  it('takes a submenu\'s hint as a second line, cut to the label bound, and refuses an empty one', () => {
+    const submenu = (hint: unknown) => ({ kind: 'menu', label: 'New', anchor: MENU.anchor, items: [{ kind: 'submenu', id: 's', label: 'alpha', hint, items: [{ kind: 'item', id: 'a', label: 'bash' }] }] });
+    const parsed = parseOverlayRequest(submenu('prod'));
+    expect(parsed?.kind === 'menu' ? parsed.items[0] : undefined).toEqual({ kind: 'submenu', id: 's', label: 'alpha', hint: 'prod', items: [{ kind: 'item', id: 'a', label: 'bash' }] });
+    const long = parseOverlayRequest(submenu('h'.repeat(500)));
+    const cut = long?.kind === 'menu' ? long.items[0] : undefined;
+    expect(cut?.kind === 'submenu' ? cut.hint?.length : undefined).toBe(200);
+    expect(parseOverlayRequest(submenu(''))).toBeUndefined();
+    expect(parseOverlayRequest(submenu(7))).toBeUndefined();
   });
 });
 

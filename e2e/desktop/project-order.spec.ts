@@ -70,12 +70,12 @@ test('flat view: a dragged project keeps its place after a relaunch, and main wr
   await expect.poll(() => first.app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('damocles.openChatForProject')?.submenu?.items.map((item) => item.label))).toEqual(['gamma', 'alpha', 'beta']);
   const overlay = await readyOverlay(first.app);
   await clickMenu(first.app, 'damocles.terminal.new');
-  await expect(quickPick(overlay)).toBeVisible();
-  await overlay.getByTestId('quick-pick-item').first().click();
+  await expect(quickPick(overlay)).toHaveAttribute('data-step', 'project');
   const items = overlay.getByTestId('quick-pick-item');
   await expect(items).toHaveCount(3);
-  // the current project (alpha) leads the step by design; the others follow the sidebar order
-  await expect(items).toHaveText([/^alphaCurrent/, /^gamma/, /^beta/]);
+  // the sidebar order, the current project (alpha) in its place and the row the step starts on
+  await expect(items).toHaveText([/^gamma/, /^alphaCurrent/, /^beta/]);
+  await expect(overlay.locator('[data-testid="quick-pick-item"][aria-selected="true"]')).toHaveText(/^alpha/);
   await overlay.keyboard.press('Escape');
   await expect(quickPick(overlay)).toHaveCount(0);
 

@@ -17,6 +17,7 @@ import { boundsOf, watchContentBounds } from '../content-bounds';
 import { TOOLBAR_BUTTON } from './design-toolbar';
 import { bandOf, clampWidth, dragDelta, fitWidth, keyWidth, presetsOf, readout, zoomFor } from './design-width';
 import MarkupLayer from './MarkupLayer.vue';
+import PageStandIn from './PageStandIn.vue';
 import MarkupToolbar from './MarkupToolbar.vue';
 import { flattenMarkup, resolveMarkupColors } from './markup-flatten';
 import { dropMarkupSession, markupJson, markupSession, startMarkupSession, undoMarks } from './markup-session';
@@ -461,6 +462,7 @@ const frameStatus = computed(() => {
   if (preview.value.status !== 'ready') return preview.value.status;
   return tooNarrow.value && !markupOn.value ? 'tooNarrow' as const : null;
 });
+const frameStatusText = computed(() => (frameStatus.value ? t(`editor.designPreview.${frameStatus.value}`, { width: width.value }) : ''));
 // A new width can leave the frame's size unchanged (a zoomed frame stays as wide as the pane), so no resize reports it.
 watch(width, () => {
   if (frame.value) report(boundsOf(frame.value));
@@ -769,6 +771,20 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
           @transitionend="onFrameTransitionEnd"
           @transitioncancel="onFrameTransitionEnd"
         >
+          <PageStandIn
+            v-if="!markupOn"
+            :api="api"
+            :tab-id="tab.id"
+            :shows="frameStatus === null"
+          />
+          <!-- One live region for the tab's life, since screen readers skip a region inserted with its text; the state card is hidden from them. -->
+          <p
+            role="status"
+            data-testid="design-preview-announcer"
+            class="sr-only"
+          >
+            {{ frameStatusText }}
+          </p>
           <Transition
             name="t-fade"
             mode="out-in"
@@ -776,9 +792,9 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
             <div
               v-if="frameStatus"
               :key="frameStatus"
+              aria-hidden="true"
               data-testid="design-preview-status"
               :data-status="frameStatus"
-              role="status"
               class="absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-6 text-center"
             >
               <img
@@ -811,7 +827,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                 />
               </span>
               <p class="relative max-w-80 rounded-md bg-(--d-bg)/80 px-2 py-0.5 text-12.5 text-pretty text-(--d-muted)">
-                {{ t(`editor.designPreview.${frameStatus}`, { width }) }}
+                {{ frameStatusText }}
               </p>
             </div>
           </Transition>

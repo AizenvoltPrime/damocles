@@ -60,6 +60,13 @@ export type ReadResult =
   | { readonly ok: true; readonly size: number; readonly chunks: AsyncIterable<Uint8Array> }
   | { readonly ok: false; readonly reason: ConfineFailure | 'notAFile'; readonly code?: string };
 
+// size: the whole file's; chunks: the length bytes from offset, both already clamped to the file; resolvedPath: confineEntry's;
+// folder: the entry that is not a file is a folder
+export type ReadRangeResult =
+  | { readonly ok: true; readonly size: number; readonly offset: number; readonly length: number; readonly resolvedPath: string; readonly chunks: AsyncIterable<Uint8Array> }
+  | { readonly ok: false; readonly reason: 'notAFile'; readonly folder: boolean }
+  | { readonly ok: false; readonly reason: ConfineFailure; readonly code?: string };
+
 export const WALK_PAGE_ENTRIES = 500;
 export const READ_CHUNK_BYTES: number = 64 * 1024;
 export const MAX_LINK_TARGET_CHARS = 4096;
@@ -291,10 +298,10 @@ async function writeAll(handle: fs.FileHandle, bytes: Uint8Array, position: numb
   }
 }
 
-// The handle's first size bytes, fewer when the file ends sooner, so a file still growing yields a consistent prefix; the handle
-// closes at the end, on a failed read and on return, read or not.
-function handleChunks(handle: fs.FileHandle, size: number): AsyncIterable<Uint8Array> {
-  let position = 0;
+// The handle's bytes from start up to end, fewer when the file ends sooner, so a file still growing yields a consistent prefix;
+// the handle closes at the end, on a failed read and on return, read or not.
+function handleChunks(handle: fs.FileHandle, end: number, start = 0): AsyncIterable<Uint8Array> {
+  let position = start;
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) return;
@@ -303,7 +310,7 @@ function handleChunks(handle: fs.FileHandle, size: number): AsyncIterable<Uint8A
   };
   const iterator: AsyncIterator<Uint8Array> = {
     next: async () => {
-      const wanted = Math.min(READ_CHUNK_BYTES, size - position);
+      const wanted = Math.min(READ_CHUNK_BYTES, end - position);
       if (closed || wanted <= 0) {
         await close();
         return { done: true, value: undefined };
@@ -357,6 +364,8 @@ export interface TransferOps {
   // a folder, never a link, and only while it is empty
   removeFolder(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<TransferResult>;
   readFile(project: Project, relativePath: string): Promise<ReadResult>;
+  // at most length bytes from offset, a negative offset counting back from the end; confined as readFile is
+  readFileRange(project: Project, relativePath: string, offset: number, length: number): Promise<ReadRangeResult>;
 }
 
 export function createTransferOps(deps: TransferOpsDeps): TransferOps {
@@ -754,16 +763,31 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
       }
     },
     async readFile(project, relativePath) {
-      const entry = await confineEntry(project, relativePath);
-      if (!entry.ok) return entry;
-      if (!entry.stat.isFile()) return { ok: false, reason: 'notAFile' };
-      try {
-        const { handle, size } = await openSame(entry.path, entry.stat);
-        return { ok: true, size, chunks: handleChunks(handle, size) };
-      } catch (err) {
-        const code = errnoCode(err);
-        return { ok: false, reason: code === 'ENOENT' ? 'missing' : 'failed', ...(code !== undefined ? { code } : {}) };
-      }
+      const opened = await openConfinedFile(project, relativePath);
+      if (!opened.ok) return opened.reason === 'notAFile' ? { ok: false, reason: 'notAFile' } : opened;
+      return { ok: true, size: opened.size, chunks: handleChunks(opened.handle, opened.size) };
+    },
+    async readFileRange(project, relativePath, offset, length) {
+      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || length < 0) return { ok: false, reason: 'failed', code: 'EINVAL' };
+      const opened = await openConfinedFile(project, relativePath);
+      if (!opened.ok) return opened;
+      const { handle, size, resolvedPath } = opened;
+      const start = offset < 0 ? Math.max(0, size + offset) : Math.min(offset, size);
+      const count = Math.min(length, size - start);
+      return { ok: true, size, offset: start, length: count, resolvedPath, chunks: handleChunks(handle, start + count, start) };
     },
   };
+}
+
+// A project's regular file, never a link or a folder, opened for reading as the entry confinement checked.
+async function openConfinedFile(project: Project, relativePath: string): Promise<{ readonly ok: true; readonly handle: fs.FileHandle; readonly size: number; readonly resolvedPath: string } | Exclude<ReadRangeResult, { readonly ok: true }>> {
+  const entry = await confineEntry(project, relativePath);
+  if (!entry.ok) return entry;
+  if (!entry.stat.isFile()) return { ok: false, reason: 'notAFile', folder: entry.stat.isDirectory() };
+  try {
+    return { ok: true, resolvedPath: entry.resolvedPath, ...(await openSame(entry.path, entry.stat)) };
+  } catch (err) {
+    const code = errnoCode(err);
+    return { ok: false, reason: code === 'ENOENT' ? 'missing' : 'failed', ...(code !== undefined ? { code } : {}) };
+  }
 }

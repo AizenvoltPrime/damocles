@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readStringValues } from '../../cli-path-win32';
-import { windowsTerminalEnvironment } from '../windows-terminal-environment';
+import { registryTerminalEnvironment, windowsTerminalEnvironment } from '../windows-terminal-environment';
 
 // The registry read against keys this test makes and deletes under HKCU\Software; the user's and the machine's environment keys
 // are never opened here.
@@ -34,5 +34,9 @@ describe.runIf(process.platform === 'win32')('a new local terminal\'s environmen
     const inherited = { Path: 'C:\\started-with' };
     expect(windowsTerminalEnvironment(inherited, (line) => lines.push(line), () => readStringValues('HKCU', `Software\\Damocles-e2e-missing-${randomBytes(8).toString('hex')}`))).toBe(inherited);
     expect(lines).toEqual([expect.stringMatching(/^\[terminal\] the registry's environment could not be read, so the terminal starts with Damocles' own: RegOpenKeyExW /)]);
+  });
+
+  it('throws, through registryTerminalEnvironment, when the registry cannot be read', () => {
+    expect(() => registryTerminalEnvironment({ Path: 'C:\\started-with' }, () => readStringValues('HKCU', `Software\\Damocles-e2e-missing-${randomBytes(8).toString('hex')}`))).toThrow(/^RegOpenKeyExW /);
   });
 });

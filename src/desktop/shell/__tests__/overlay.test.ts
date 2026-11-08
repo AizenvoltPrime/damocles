@@ -429,6 +429,30 @@ describe('menu submenus', () => {
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'menu', itemId: 'amend' }));
   });
 
+  it('shows a submenu\'s hint under its label, and draws its shells\' glyphs in their colours', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'r1', {
+      kind: 'menu',
+      label: 'New terminal with a shell',
+      anchor: ANCHOR,
+      items: [
+        { kind: 'submenu', id: 'project-0', label: 'api', hint: 'prod', items: [{ kind: 'item', id: 'shell-0', label: 'Dev', glyph: 'wrench', color: 'magenta' }] },
+        { kind: 'item', id: 'info-1', label: 'web', hint: 'lab', disabled: true, disabledReason: 'Not connected' },
+      ],
+    });
+    const row = wrapper.get('[data-item-id="project-0"]');
+    expect(row.get('[data-testid="overlay-menu-hint"]').text()).toBe(', prod');
+    // the host hint alone tells same-named projects apart, so it reads at faint-text's AA shade at rest, not only on hover
+    expect(row.get('[data-testid="overlay-menu-hint"]').classes()).toContain('text-(--d-faint-text)');
+    expect(row.get('[data-testid="overlay-menu-hint"]').classes()).not.toContain('text-(--d-faint)');
+    await pressNow('ArrowRight');
+    const shell = submenu(wrapper).get('[data-item-id="shell-0"] svg');
+    expect(shell.attributes('style')).toContain('var(--terminal-tint-5)');
+    await pressNow('Enter');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'menu', itemId: 'shell-0' }));
+  });
+
   it('marks mutually exclusive choices as radio items', async () => {
     const wrapper = mountOverlay();
     await flushPromises();
@@ -611,6 +635,168 @@ describe('quick picks main asks', () => {
     expect(row(wrapper, 'b1').attributes('aria-label')).toBe('v1, local, branches');
     expect(row(wrapper, 'b2').attributes('aria-label')).toBe('main, abc1234 \u2022 subject');
     expect(row(wrapper, 't1').attributes('aria-label')).toBe('v1, tags');
+  });
+});
+
+describe('a quick pick of many (Join Terminals...)', () => {
+  const JOIN: OverlayRequest = {
+    kind: 'quickPick',
+    placeholder: 'Select the terminals to join',
+    pickMany: { max: 2 },
+    items: [
+      { id: 'term-2', label: 'tests', glyph: 'cmd', description: 'alpha' },
+      { id: 'term-3', label: 'logs', glyph: 'bash', description: 'alpha' },
+      { id: 'term-4', label: 'build', glyph: 'cmd', description: 'beta' },
+      { id: 'more', label: '2 more not shown', info: true },
+    ],
+  };
+  const row = (wrapper: VueWrapper, id: string) => wrapper.get(`[data-testid="quick-pick-item"][data-item-id="${id}"]`);
+  const input = (wrapper: VueWrapper) => wrapper.get('[data-testid="quick-pick-input"]');
+  const list = (wrapper: VueWrapper) => wrapper.get('[data-testid="quick-pick-list"]');
+  const ok = (wrapper: VueWrapper) => wrapper.get('[data-testid="quick-pick-ok"]');
+  const key = (wrapper: VueWrapper, init: KeyboardEventInit) => input(wrapper).trigger('keydown', init);
+  const listKey = (wrapper: VueWrapper, init: KeyboardEventInit) => list(wrapper).trigger('keydown', init);
+  // the row the listbox names as active while it has keyboard focus
+  const activeInList = (wrapper: VueWrapper) => wrapper.findAll('[data-testid="quick-pick-item"]').find((item) => item.attributes('id') === list(wrapper).attributes('aria-activedescendant'))?.attributes('data-item-id');
+
+  it('draws checkbox rows in a multi-select listbox with a count of the checks, and an info row with neither', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    expect(list(wrapper).attributes('aria-multiselectable')).toBe('true');
+    expect(row(wrapper, 'term-2').attributes('aria-checked')).toBe('false');
+    expect(row(wrapper, 'term-2').find('[data-testid="quick-pick-checkbox"]').exists()).toBe(true);
+    expect(row(wrapper, 'more').attributes('aria-checked')).toBeUndefined();
+    expect(row(wrapper, 'more').find('[data-testid="quick-pick-checkbox"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="quick-pick-count"]').text()).toBe('0 of 2 selected');
+    expect(wrapper.get('[data-testid="quick-pick-hint"]').text()).toBe('Down Arrow moves into the list, Space or a click checks a row, Enter or OK accepts');
+  });
+
+  // In a multi-select listbox aria-selected means "in the selection"; the checks are aria-checked, the active row aria-activedescendant.
+  it('marks no option aria-selected, before or after the keyboard enters the list', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    const selected = () => wrapper.findAll('[data-testid="quick-pick-item"]').filter((item) => item.attributes('aria-selected') !== undefined);
+    expect(selected()).toEqual([]);
+    await key(wrapper, { key: 'ArrowDown' });
+    await listKey(wrapper, { key: ' ' });
+    expect(selected()).toEqual([]);
+    expect(input(wrapper).attributes('aria-activedescendant')).toBeUndefined();
+  });
+
+  it('moves into the list on Down Arrow, where Space checks the active row, and answers the checks in the request order on Enter', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    await key(wrapper, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(list(wrapper).element);
+    expect(list(wrapper).attributes('tabindex')).toBe('-1');
+    expect(activeInList(wrapper)).toBe('term-2');
+    await listKey(wrapper, { key: 'ArrowDown' });
+    expect(activeInList(wrapper)).toBe('term-3');
+    await listKey(wrapper, { key: ' ' });
+    expect(row(wrapper, 'term-3').attributes('aria-checked')).toBe('true');
+    expect(row(wrapper, 'term-3').get('[data-testid="quick-pick-checkbox"]').attributes('data-checked')).toBe('true');
+    await row(wrapper, 'term-2').trigger('click');
+    await row(wrapper, 'term-2').trigger('click');
+    await row(wrapper, 'term-2').trigger('click');
+    expect(wrapper.get('[data-testid="quick-pick-count"]').text()).toBe('2 of 2 selected');
+    expect(api.answer).not.toHaveBeenCalled();
+    await listKey(wrapper, { key: 'Enter' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j1', { kind: 'quickPickMany', itemIds: ['term-2', 'term-3'] }));
+  });
+
+  it('checks no more than max, never an info row, and accepts the list\'s active row alone while none is checked', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    await row(wrapper, 'more').trigger('click');
+    expect(row(wrapper, 'more').attributes('aria-checked')).toBeUndefined();
+    await row(wrapper, 'term-2').trigger('click');
+    await row(wrapper, 'term-3').trigger('click');
+    await row(wrapper, 'term-4').trigger('click');
+    expect(row(wrapper, 'term-4').attributes('aria-checked')).toBe('false');
+    expect(row(wrapper, 'term-4').attributes('aria-disabled')).toBe('true');
+    expect(row(wrapper, 'term-4').classes()).toContain('cursor-not-allowed');
+    await row(wrapper, 'term-3').trigger('click');
+    expect(row(wrapper, 'term-4').attributes('aria-disabled')).toBeUndefined();
+    await row(wrapper, 'term-2').trigger('click');
+    // with none checked, Enter in the field has no row to take
+    await key(wrapper, { key: 'Enter' });
+    expect(api.answer).not.toHaveBeenCalled();
+    await key(wrapper, { key: 'ArrowDown' });
+    await listKey(wrapper, { key: 'ArrowDown' });
+    await listKey(wrapper, { key: 'ArrowDown' });
+    await listKey(wrapper, { key: 'Enter' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j1', { kind: 'quickPickMany', itemIds: ['term-4'] }));
+  });
+
+  it('keeps the checks while filtering, where Space types, and returns to the field past the list\'s ends or on a typed key', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    await row(wrapper, 'term-2').trigger('click');
+    await input(wrapper).setValue('build');
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="quick-pick-item"]').map((item) => item.attributes('data-item-id'))).toEqual(['term-4']);
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    input(wrapper).element.dispatchEvent(space);
+    expect(space.defaultPrevented).toBe(false);
+    expect(row(wrapper, 'term-4').attributes('aria-checked')).toBe('false');
+    await key(wrapper, { key: 'ArrowDown' });
+    await listKey(wrapper, { key: ' ' });
+    expect(row(wrapper, 'term-4').attributes('aria-checked')).toBe('true');
+    await listKey(wrapper, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(input(wrapper).element);
+    expect(list(wrapper).attributes('aria-activedescendant')).toBeUndefined();
+    await key(wrapper, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(list(wrapper).element);
+    const typed = new KeyboardEvent('keydown', { key: 'u', bubbles: true, cancelable: true });
+    list(wrapper).element.dispatchEvent(typed);
+    expect(typed.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(input(wrapper).element);
+    await input(wrapper).setValue('');
+    await flushPromises();
+    expect(row(wrapper, 'term-2').attributes('aria-checked')).toBe('true');
+    await key(wrapper, { key: 'Enter' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j1', { kind: 'quickPickMany', itemIds: ['term-2', 'term-4'] }));
+  });
+
+  // VS Code's canSelectMany OK button: a pointer alone completes the pick, and Tab reaches it from the field.
+  it('accepts the checks with OK, enabled while a row is checked, which Tab reaches and leaves', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    expect(ok(wrapper).text()).toBe('OK');
+    expect(ok(wrapper).attributes('disabled')).toBeDefined();
+    expect(ok(wrapper).attributes('aria-describedby')).toBe(wrapper.get('[data-testid="quick-pick-count"]').attributes('id'));
+    await key(wrapper, { key: 'Tab' });
+    expect(document.activeElement).toBe(input(wrapper).element);
+    await row(wrapper, 'term-3').trigger('click');
+    expect(ok(wrapper).attributes('disabled')).toBeUndefined();
+    await key(wrapper, { key: 'Tab' });
+    expect(document.activeElement).toBe(ok(wrapper).element);
+    await ok(wrapper).trigger('keydown', { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(input(wrapper).element);
+    await ok(wrapper).trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j1', { kind: 'quickPickMany', itemIds: ['term-3'] }));
+  });
+
+  it('dismisses on Escape from the field, the list or OK', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'j1', JOIN);
+    await key(wrapper, { key: 'Escape' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j1', { kind: 'dismissed' }));
+    await open(wrapper, 'j2', JOIN);
+    await key(wrapper, { key: 'ArrowDown' });
+    await listKey(wrapper, { key: 'Escape' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j2', { kind: 'dismissed' }));
+    await open(wrapper, 'j3', JOIN);
+    await row(wrapper, 'term-2').trigger('click');
+    await ok(wrapper).trigger('keydown', { key: 'Escape' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('j3', { kind: 'dismissed' }));
   });
 });
 

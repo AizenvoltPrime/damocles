@@ -34,7 +34,7 @@ vi.mock('electron', () => ({
   },
 }));
 vi.mock('../security', () => ({
-  registerDesignContents: (contents: { loaded?: boolean }, origin: string) => registered.push({ contents, origin, loadedAlready: contents.loaded === true }),
+  registerLockedContents: (contents: { loaded?: boolean }, origin: string) => registered.push({ contents, origin, loadedAlready: contents.loaded === true }),
 }));
 vi.mock('../protocol', () => ({ DESIGN_SCHEME: 'damocles-design' }));
 

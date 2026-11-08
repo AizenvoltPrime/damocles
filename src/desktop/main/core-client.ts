@@ -15,6 +15,7 @@ import type { PushedCredential } from '../core-protocol/messages';
 import type { DesignPreviewFile, DesignPreviewInfo } from '../../shared/types/design';
 import type { MarkupJsonInput } from '../../shared/design-markup';
 import type { LocalizedText } from '../../shared/localized-text';
+import type { ClientCertificateFilter } from '../../shared/client-certificate';
 import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
 import { parsedCallText, SCM_CALL_LOCALIZED_TEXT, WORKTREE_CALL_LOCALIZED_TEXT, type MainEndpoint, type ScmCommitOutcome } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
@@ -321,6 +322,11 @@ export class CoreClient implements Disposable {
     return this.request('browser.newPage', { chatViewId, ...(url !== undefined ? { url } : {}) });
   }
 
+  /** Local chats' browser sends the certificate filter names to origin for the rest of this app session; a running browser restarts. */
+  useClientCertificate(origin: string, filter: ClientCertificateFilter): Promise<void> {
+    return this.request('browser.useClientCertificate', { origin, filter });
+  }
+
   // this computer's core: a remote chat's browser tool in its authority's context
   browserTool(params: Params<'user.browser.tool'>, signal: AbortSignal): Promise<Result<'user.browser.tool'>> {
     return this.endpoint.request('user.browser.tool', params, signal);
@@ -526,6 +532,10 @@ export class CoreClient implements Disposable {
 
   memoryApply(writes: Params<'user.memory.apply'>['writes']): Promise<Result<'user.memory.apply'>> {
     return this.request('user.memory.apply', { writes });
+  }
+
+  memoryList(request: Params<'user.memory.list'>): Promise<Result<'user.memory.list'>> {
+    return this.request('user.memory.list', request);
   }
 
   mcpServers(): Promise<Result<'user.mcp.servers'>> {

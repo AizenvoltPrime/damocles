@@ -21,12 +21,14 @@ import { createUsageStatsHandlers } from "./handlers/usage-stats-handlers";
 import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handlers";
 import { createSettingsFileHandlers } from "./handlers/settings-file-handlers";
 import { createRemoteChatSettingHandlers } from "./handlers/remote-chat-setting-handlers";
+import { createUserMemoryViewHandlers } from "./handlers/user-memory-view-handlers";
 import { createDesignHandlers } from "./handlers/design-handlers";
 import { log } from "../../logger";
 
 /**
- * Every message's handler, and the handlers a remote chat's view reaches on this computer's core: its voice messages
- * (VOICE_VIEW_MESSAGES) and its user-setting writes (REMOTE_CHAT_USER_SETTING_MESSAGES).
+ * Every message's handler, and the handlers a remote chat's view reaches on this computer's core (FOREIGN_VIEW_MESSAGES):
+ * its voice messages, its user-setting writes, its usage reads and its reads and changes of this computer's notes and
+ * global memories.
  */
 export function createHandlerRegistry(deps: HandlerDependencies): { readonly handlers: HandlerRegistry; readonly foreignHandlers: ViewHandlerRegistry } {
   const voice = createVoiceHandlers(deps);
@@ -35,6 +37,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
   const settingsFiles = createSettingsFileHandlers(deps);
   const claudeAuth = createClaudeAuthHandlers(deps);
   const providerAccounts = createProviderAccountHandlers(deps);
+  const usage = createUsageHandlers(deps);
   const settingsDeps: HandlerDependencies = {
     ...deps,
     postSettingsFileAvailability: settingsFiles.postAvailability,
@@ -65,11 +68,11 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
     ...createOpenAIHandlers(deps),
     ...claudeAuth.handlers,
     ...providerAccounts.handlers,
-    ...createUsageHandlers(deps),
+    ...usage.handlers,
     ...createUsageStatsHandlers(deps),
     ...createWorkspaceFolderHandlers(deps),
     ...settingsFiles.handlers,
     ...createDesignHandlers(deps),
   };
-  return { handlers, foreignHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers, ...createRemoteChatSettingHandlers(deps) } };
+  return { handlers, foreignHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers, ...createRemoteChatSettingHandlers(deps), ...usage.viewHandlers, ...createUserMemoryViewHandlers(deps) } };
 }

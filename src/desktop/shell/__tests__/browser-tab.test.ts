@@ -9,6 +9,7 @@ import Breadcrumbs from '../editor/Breadcrumbs.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
 import { createEditorStore, EDITOR_STORE, type EditorStore } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
+import { createTerminalStore, TERMINAL_STORE } from '../terminal/terminal-store';
 import { forwardedTarget, isSendableAddress, pageHost, pageTitle } from '../editor/browser-page';
 import { AS_TYPED, HTTP_AT_ONCE, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 import { shellI18n } from '../i18n';
@@ -274,7 +275,7 @@ describe('page tabs in the strip', () => {
     const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: tabs[0]!.id })) });
     const store = createEditorStore(api);
     await store.start();
-    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [], hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(api.scm) } }, attachTo: document.body });
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [], hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(api.scm), [TERMINAL_STORE as symbol]: createTerminalStore(api) } }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
     return { wrapper, api };

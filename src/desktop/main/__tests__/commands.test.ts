@@ -25,9 +25,9 @@ const actions = new Proxy({} as MenuActions, {
 });
 
 const PROJECTS = [{ fsPath: 'C:\\work\\alpha', name: 'alpha' }] as never;
-const CHAT: MenuState = { chat: true, liveChat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
-const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
-const NONE: MenuState = { chat: false, liveChat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
+const CHAT: MenuState = { chat: true, liveChat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalEditor: false, terminalTask: false, terminalSplit: false, terminalJoin: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorDocument: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false, clientCertificateSite: false };
+const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor', editorKind: 'code', editorDocument: { writable: true, formattable: true } };
+const NONE: MenuState = { chat: false, liveChat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalEditor: false, terminalTask: false, terminalSplit: false, terminalJoin: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorDocument: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false, clientCertificateSite: false };
 const PLATFORMS = ['win32', 'linux', 'darwin'] as const;
 
 const en = createDesktopLocalizationService(process.cwd(), 'en', () => undefined);
@@ -63,10 +63,31 @@ describe('command registry', () => {
     }
     expect(enabled(MENU_IDS.formatDocument, EDITOR)).toBe(true);
     expect(enabled(MENU_IDS.formatDocument, CHAT)).toBe(false);
-    expect(enabled(MENU_IDS.formatDocument, { ...EDITOR, editor: false })).toBe(false);
     expect(enabled(MENU_IDS.findInFiles, NONE)).toBe(true);
     expect(enabled(MENU_IDS.toggleBrowserDevTools, { ...CHAT, page: true })).toBe(true);
+    // only a page tab showing an https address has a site to choose a certificate for
+    expect(enabled(MENU_IDS.chooseClientCertificate, { ...CHAT, page: true })).toBe(false);
+    expect(enabled(MENU_IDS.chooseClientCertificate, { ...CHAT, page: true, clientCertificateSite: true })).toBe(true);
     expect(enabled(MENU_IDS.checkForUpdates, NONE)).toBe(false);
+  });
+
+  it("enables Save, Save As and Format Document from the active tab's document, in the menu and the palette, and Close Editor for any tab", () => {
+    const byId = new Map(desktopCommands(PROJECTS, actions, 'win32').map((command) => [command.id, command]));
+    const documentCommands = [MENU_IDS.save, MENU_IDS.saveAs, MENU_IDS.formatDocument, MENU_IDS.closeEditor] as const;
+    const enablement = (context: MenuState): boolean[] => {
+      const menu = documentCommands.map((id) => isEnabled(byId.get(id)!, context));
+      const entries = palette().list(context);
+      expect(documentCommands.map((id) => entries.find((entry) => entry.id === id)!.enabled), context.editorKind).toEqual(menu);
+      return menu;
+    };
+    // [Save, Save As, Format Document, Close Editor]
+    for (const kind of ['markdownPreview', 'image', 'notDisplayed', 'changes', 'review', 'timeline', 'htmlPreview', 'browser', 'designPreview', 'terminal'] as const) {
+      expect(enablement({ ...EDITOR, editorKind: kind, editorDocument: undefined }), kind).toEqual([false, false, false, true]);
+    }
+    expect(enablement({ ...EDITOR, editorKind: 'code', editorDocument: { writable: true, formattable: true } })).toEqual([true, true, true, true]);
+    expect(enablement({ ...EDITOR, editorKind: 'log', editorDocument: { writable: false, formattable: false } })).toEqual([false, true, false, true]);
+    expect(enablement({ ...EDITOR, editorKind: 'searchEditor', editorDocument: { writable: true, formattable: false } })).toEqual([true, true, false, true]);
+    expect(enablement(CHAT)).toEqual([false, false, false, false]);
   });
 
   it("disables the commands that need the chat's core on an offline transcript, and keeps the prompt navigator", () => {
@@ -411,7 +432,7 @@ describe('split terminal commands', () => {
       expect(key(MENU_IDS.focusPreviousTerminalPane, TERMINAL)).toBe(false);
       expect(key(MENU_IDS.focusNextTerminalPane, SPLIT)).toBe(true);
       expect(key(MENU_IDS.focusNextTerminalPane, { ...SPLIT, focus: 'chat' })).toBe(false);
-      expect(key(MENU_IDS.resizeTerminalPaneLeft, { ...SPLIT, focus: 'editor' })).toBe(false);
+      expect(key(MENU_IDS.resizeTerminalPaneLeft, { ...SPLIT, focus: 'editor', terminalInput: false })).toBe(false);
       // the menu and the palette follow VS Code's preconditions alone: a terminal exists
       for (const id of PANE_IDS) {
         expect(isEnabled(command(platform, id), { ...TERMINAL, focus: 'chat' }), `${platform} ${id}`).toBe(true);
@@ -442,6 +463,17 @@ describe('split terminal commands', () => {
     expect(passed('darwin', true)).toEqual(expect.arrayContaining(['Cmd+\\', 'Alt+Cmd+Left', 'Alt+Cmd+Right', 'Cmd+Ctrl+Left']));
   });
 
+  // VS Code skips the shell for Resize Pane in any focused terminal (its when clause is terminalFocus alone)
+  it('lets Split Terminal\'s key reach an editor terminal\'s pty, and still passes Resize Pane and F6 there', () => {
+    const passed = (platform: NodeJS.Platform) => terminalPassKeys(desktopCommands(PROJECTS, actions, platform), { ...CHAT, terminal: 'running', terminalEditor: true });
+    expect(passed('win32')).not.toContain('Ctrl+Shift+5');
+    expect(passed('win32')).toEqual(expect.arrayContaining(['F6', 'Shift+F6']));
+    expect(passed('linux')).not.toContain('Ctrl+Shift+5');
+    expect(passed('linux')).toEqual(expect.arrayContaining(['Ctrl+Shift+Left', 'Ctrl+Shift+Right']));
+    expect(passed('darwin')).not.toContain('Cmd+\\');
+    expect(passed('darwin')).toEqual(expect.arrayContaining(['Cmd+Ctrl+Left', 'Cmd+Ctrl+Right']));
+  });
+
   it('runs each pane action and lists the commands in English and Greek', () => {
     const commands = palette(el);
     for (const id of PANE_IDS) expect(commands.run(id, SPLIT)).toBe(true);
@@ -456,6 +488,59 @@ describe('split terminal commands', () => {
       'Terminal: Unsplit Terminal',
     ]);
     for (const entry of listed) expect(entry.label, entry.id).not.toBe(entry.englishLabel);
+  });
+
+  it('enables Join Terminals... only while the active terminal\'s group can take another terminal, and runs it in English and Greek', () => {
+    const join = command('win32', MENU_IDS.joinTerminals);
+    expect(join.accelerator).toBeUndefined();
+    expect(isEnabled(join, TERMINAL)).toBe(false);
+    expect(isEnabled(join, { ...TERMINAL, terminalJoin: true, focus: 'chat' })).toBe(true);
+    for (const l10n of [en, el]) {
+      const entry = palette(l10n).list({ ...TERMINAL, terminalJoin: true }).find((candidate) => candidate.id === MENU_IDS.joinTerminals)!;
+      expect(entry.englishLabel).toBe('Terminal: Join Terminals...');
+      if (l10n === el) expect(entry.label).toBe('Τερματικό: Ένωση τερματικών...');
+    }
+    expect(palette(el).run(MENU_IDS.joinTerminals, { ...TERMINAL, terminalJoin: true })).toBe(true);
+    expect(palette(el).run(MENU_IDS.joinTerminals, TERMINAL)).toBe(false);
+    expect(calls).toEqual(['joinTerminals']);
+  });
+
+  it('disables the group commands for an editor terminal and keeps the others on the command target', () => {
+    const EDITOR_TERMINAL: MenuState = { ...TERMINAL, focus: 'editor', terminalEditor: true };
+    const GROUP_IDS = [...PANE_IDS, MENU_IDS.focusNextTerminal, MENU_IDS.focusPreviousTerminal, MENU_IDS.moveTerminalToEditor];
+    const TARGET_IDS = [MENU_IDS.killTerminal, MENU_IDS.renameTerminal, MENU_IDS.changeTerminalIcon, MENU_IDS.changeTerminalColor, MENU_IDS.copyLastTerminalCommand, MENU_IDS.copyLastTerminalCommandOutput, MENU_IDS.addTerminalToChat, MENU_IDS.scrollToPreviousTerminalCommand, MENU_IDS.scrollToNextTerminalCommand, MENU_IDS.killAllTerminals, MENU_IDS.moveTerminalToPanel];
+    for (const id of GROUP_IDS) {
+      expect(isEnabled(command('win32', id), EDITOR_TERMINAL), id).toBe(false);
+      expect(isEnabled(command('win32', id), TERMINAL), id).toBe(true);
+    }
+    for (const id of TARGET_IDS) expect(isEnabled(command('win32', id), EDITOR_TERMINAL), id).toBe(true);
+    expect(isEnabled(command('win32', MENU_IDS.moveTerminalToPanel), TERMINAL)).toBe(false);
+    expect(isEnabled(command('win32', MENU_IDS.restartTerminal), { ...EDITOR_TERMINAL, terminal: 'exited' })).toBe(true);
+    // an editor terminal's xterm is the terminal focus, so only the skip list's keys fire from it
+    expect(keyFires(command('win32', MENU_IDS.findInFiles), EDITOR_TERMINAL)).toBe(false);
+    expect(keyFires(command('win32', MENU_IDS.findInFiles), { ...EDITOR_TERMINAL, terminalInput: false })).toBe(true);
+    expect(keyFires(command('win32', MENU_IDS.splitTerminal), EDITOR_TERMINAL)).toBe(false);
+  });
+
+  it('disables Join Terminals... and Move Terminal into Editor Area for a task terminal, which stays in the panel', () => {
+    const TASK: MenuState = { ...TERMINAL, terminalTask: true };
+    expect(isEnabled(command('win32', MENU_IDS.moveTerminalToEditor), TASK)).toBe(false);
+    // main computes terminalJoin false for a task target (TerminalService.joinRoom)
+    expect(isEnabled(command('win32', MENU_IDS.joinTerminals), { ...TASK, terminalJoin: false })).toBe(false);
+    expect(isEnabled(command('win32', MENU_IDS.killTerminal), TASK)).toBe(true);
+  });
+
+  it('runs Move Terminal into Editor Area and into Panel from the palette, named in English and Greek', () => {
+    const commands = palette(el);
+    expect(commands.run(MENU_IDS.moveTerminalToEditor, TERMINAL)).toBe(true);
+    expect(commands.run(MENU_IDS.moveTerminalToPanel, TERMINAL)).toBe(false);
+    expect(commands.run(MENU_IDS.moveTerminalToPanel, { ...TERMINAL, terminalEditor: true })).toBe(true);
+    expect(calls).toEqual(['moveTerminalToEditor', 'moveTerminalToPanel']);
+    const listed = commands.list({ ...TERMINAL, terminalEditor: true });
+    const entry = (id: string) => listed.find((candidate) => candidate.id === id)!;
+    expect([entry(MENU_IDS.moveTerminalToEditor).englishLabel, entry(MENU_IDS.moveTerminalToPanel).englishLabel]).toEqual(['Terminal: Move Terminal into Editor Area', 'Terminal: Move Terminal into Panel']);
+    expect(entry(MENU_IDS.moveTerminalToPanel).label).toBe('Τερματικό: Μετακίνηση τερματικού στο πάνελ');
+    expect([entry(MENU_IDS.moveTerminalToEditor).enabled, entry(MENU_IDS.moveTerminalToPanel).enabled]).toEqual([false, true]);
   });
 
   it('names Focus Next and Previous Terminal by the groups they walk, as VS Code does', () => {

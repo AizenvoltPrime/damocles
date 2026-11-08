@@ -5,6 +5,7 @@ import { auditResultText } from "@/components/memory-audit/audit-result-text";
 import { englishText } from "@shared/localized-text";
 import { renderText } from "@/composables/useLocalizedText";
 import { memorySavedToastKey } from "@/composables/useMemoryScopeLabel";
+import { fromThisComputer } from "@/stores/useMemoryStore";
 
 export function createMemoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -12,16 +13,35 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       ctx.stores.memoryStore.setMemories(msg.memories, msg.hasMoreObservations, msg.observationCursor);
     },
 
+    userMemoriesUpdate: (msg, ctx) => {
+      ctx.stores.memoryStore.setUserMemories(msg.memories, msg.available);
+    },
+
     moreObservationsLoaded: (msg, ctx) => {
       ctx.stores.memoryStore.appendObservations(msg.observations, msg.hasMore, msg.nextCursor);
     },
 
     memoryCreated: (msg, ctx) => {
-      ctx.stores.memoryStore.addMemory(msg.memory);
+      const store = ctx.stores.memoryStore;
+      // In a remote chat a note or global row shows only from this computer's list, under this computer's id; the remote core's
+      // copy carries a relayed id no action may name, so the open panel fetches that list again (a closed one asks on open).
+      if (store.separate && fromThisComputer(msg.memory)) {
+        if (ctx.stores.uiStore.showMemoryPanel) ctx.bridge.postMessage({ type: "requestUserMemories" });
+      } else {
+        store.addMemory(msg.memory);
+      }
       // Only a panel-originated create (carries requestId) settles the panel's pending-create token;
       // a chat /remember has no requestId and must not clear the panel's in-progress add input.
-      if (msg.requestId) ctx.stores.memoryStore.settleCreate(msg.requestId, true);
+      if (msg.requestId) store.settleCreate(msg.requestId, true);
       toast.success(i18n.global.t(memorySavedToastKey(msg.memory.tier, ctx.stores.settingsStore.hostCapabilities)));
+    },
+
+    userMemoryCreated: (msg, ctx) => {
+      const store = ctx.stores.memoryStore;
+      store.addUserMemory(msg.memory);
+      if (msg.requestId) store.settleCreate(msg.requestId, true);
+      // saved on this computer, never on the host's server
+      toast.success(i18n.global.t(`memory.toast.saved.${msg.memory.tier}`));
     },
 
     memoryUpdated: (msg, ctx) => {
@@ -36,7 +56,11 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
     },
 
     memoryDeleted: (msg, ctx) => {
-      ctx.stores.memoryStore.removeMemory(msg.id);
+      ctx.stores.memoryStore.removeMemory(msg.id, "chat");
+    },
+
+    userMemoryDeleted: (msg, ctx) => {
+      ctx.stores.memoryStore.removeMemory(msg.id, "user");
     },
 
     searchResults: (msg, ctx) => {
@@ -48,44 +72,84 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
     },
 
     memoryPinned: (msg, ctx) => {
-      ctx.stores.memoryStore.setPinned(msg.id, true);
+      ctx.stores.memoryStore.setPinned(msg.id, true, "chat");
       ctx.stores.contextInjectionStore.setPinned(msg.id, true);
       toast.success(i18n.global.t("memory.toast.pinned"));
     },
 
+    userMemoryPinned: (msg, ctx) => {
+      ctx.stores.memoryStore.setPinned(msg.id, true, "user");
+      toast.success(i18n.global.t("memory.toast.pinned"));
+    },
+
     memoryUnpinned: (msg, ctx) => {
-      ctx.stores.memoryStore.setPinned(msg.id, false);
+      ctx.stores.memoryStore.setPinned(msg.id, false, "chat");
       ctx.stores.contextInjectionStore.setPinned(msg.id, false);
       toast.success(i18n.global.t("memory.toast.unpinned"));
     },
 
+    userMemoryUnpinned: (msg, ctx) => {
+      ctx.stores.memoryStore.setPinned(msg.id, false, "user");
+      toast.success(i18n.global.t("memory.toast.unpinned"));
+    },
+
     memoryForgotten: (msg, ctx) => {
-      ctx.stores.memoryStore.setForgotten(msg.id, true);
+      ctx.stores.memoryStore.setForgotten(msg.id, true, "chat");
       ctx.stores.contextInjectionStore.setForgotten(msg.id, true);
       toast.success(i18n.global.t("memory.toast.forgotten", { count: msg.count }, msg.count));
     },
 
+    userMemoryForgotten: (msg, ctx) => {
+      ctx.stores.memoryStore.setForgotten(msg.id, true, "user");
+      toast.success(i18n.global.t("memory.toast.forgotten", { count: msg.count }, msg.count));
+    },
+
     memoryUnforgotten: (msg, ctx) => {
-      ctx.stores.memoryStore.setForgotten(msg.id, false);
+      ctx.stores.memoryStore.setForgotten(msg.id, false, "chat");
       ctx.stores.contextInjectionStore.setForgotten(msg.id, false);
       toast.success(i18n.global.t("memory.toast.restored", { count: msg.count }, msg.count));
     },
 
+    userMemoryUnforgotten: (msg, ctx) => {
+      ctx.stores.memoryStore.setForgotten(msg.id, false, "user");
+      toast.success(i18n.global.t("memory.toast.restored", { count: msg.count }, msg.count));
+    },
+
     memoryHistory: (msg, ctx) => {
-      ctx.stores.memoryStore.setVersionHistory(msg.id, msg.entries);
+      ctx.stores.memoryStore.setVersionHistory(msg.id, msg.entries, "chat");
+    },
+
+    userMemoryHistory: (msg, ctx) => {
+      ctx.stores.memoryStore.setVersionHistory(msg.id, msg.entries, "user");
     },
 
     relatedMemories: (msg, ctx) => {
-      ctx.stores.memoryStore.setRelatedMemories(msg.id, msg.entries);
+      ctx.stores.memoryStore.setRelatedMemories(msg.id, msg.entries, "chat");
+    },
+
+    userRelatedMemories: (msg, ctx) => {
+      ctx.stores.memoryStore.setRelatedMemories(msg.id, msg.entries, "user");
     },
 
     profileData: (msg, ctx) => {
       ctx.stores.memoryStore.setProfile(msg.project, msg.global, msg.savedSection);
     },
 
+    userProfileData: (msg, ctx) => {
+      ctx.stores.memoryStore.setUserProfile(msg.global, msg.available, msg.savedSection);
+    },
+
     profileSectionError: (msg, ctx) => {
+      const store = ctx.stores.memoryStore;
+      // in a remote chat the global profile is this computer's, which only userProfileSectionError reports on
+      if (store.separate && msg.scope === "global") return;
       // Signal the failed section so the panel clears its pending flag (keeping the draft).
-      ctx.stores.memoryStore.setProfileSectionError(msg.scope, msg.section);
+      store.setProfileSectionError(msg.scope, msg.section);
+      toast.error(renderText(msg.message));
+    },
+
+    userProfileSectionError: (msg, ctx) => {
+      ctx.stores.memoryStore.setProfileSectionError("global", msg.section);
       toast.error(renderText(msg.message));
     },
 
@@ -136,6 +200,14 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       // optimistic stepper spins forever and "Run now" stays disabled. abortRun() settles the phase
       // machine to idle, re-enabling "Run now".
       if (msg.source === "consolidation") ctx.stores.consolidationStore.abortRun();
+      toast.error(renderText(msg.message));
+    },
+
+    // The chat core's search and observation paging are not this computer's, so their pending state stays.
+    userMemoryError: (msg, ctx) => {
+      const store = ctx.stores.memoryStore;
+      if (msg.request === "requestUserMemories") store.setUserMemoriesFailed();
+      if (msg.requestId) store.settleCreate(msg.requestId, false);
       toast.error(renderText(msg.message));
     },
   };

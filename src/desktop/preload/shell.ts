@@ -139,6 +139,7 @@ const terminal: DamoclesTerminalApi = {
   openNew: () => {
     ipcRenderer.send(TERMINAL_CHANNELS.new);
   },
+  openNewMenu: (anchor) => ipcRenderer.invoke(TERMINAL_CHANNELS.newMenu, { anchor: { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height } }) as Promise<void>,
   input: (input) => {
     ipcRenderer.send(TERMINAL_CHANNELS.input, { id: input.id, data: input.data });
   },
@@ -166,6 +167,24 @@ const terminal: DamoclesTerminalApi = {
   unsplit: (id) => {
     ipcRenderer.send(TERMINAL_CHANNELS.unsplit, { id });
   },
+  move: (move) => {
+    switch (move.kind) {
+      case 'reorder':
+      case 'join':
+        ipcRenderer.send(TERMINAL_CHANNELS.move, { kind: move.kind, id: move.id, target: move.target, side: move.side });
+        return;
+      case 'detach':
+      case 'toEditor':
+        ipcRenderer.send(TERMINAL_CHANNELS.move, { kind: move.kind, id: move.id });
+        return;
+      case 'step':
+        ipcRenderer.send(TERMINAL_CHANNELS.move, { kind: move.kind, id: move.id, delta: move.delta });
+        return;
+    }
+  },
+  joinPick: (id) => {
+    ipcRenderer.send(TERMINAL_CHANNELS.joinPick, { id });
+  },
   resizePanes: (request) => {
     ipcRenderer.send(TERMINAL_CHANNELS.resizePanes, { groupId: request.groupId, sizes: [...request.sizes] });
   },
@@ -175,8 +194,8 @@ const terminal: DamoclesTerminalApi = {
   paste: (request) => {
     ipcRenderer.send(TERMINAL_CHANNELS.paste, { id: request.id, bracketedPasteMode: request.bracketedPasteMode, source: request.source });
   },
-  reportInputFocus: (focused) => {
-    ipcRenderer.send(TERMINAL_CHANNELS.inputFocus, { focused });
+  reportInputFocus: (id) => {
+    ipcRenderer.send(TERMINAL_CHANNELS.inputFocus, { id });
   },
   resolveLinks: (request) => ipcRenderer.invoke(TERMINAL_CHANNELS.resolveLinks, { id: request.id, paths: [...request.paths] }) as Promise<Array<TerminalLinkKind | null>>,
   openLink: (request) => {
@@ -371,6 +390,7 @@ const api: DamoclesShellApi = {
   uploadMergeInputs: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.editorMergeInputs, { tabId }) as Promise<ScmMergeInputsResult>,
   completeUploadMerge: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.editorCompleteMerge, { tabId }) as Promise<void>,
   setFocusOverlay: (open) => ipcRenderer.invoke(SHELL_CHANNELS.editorFocusOverlay, { open }) as Promise<void>,
+  focusPage: (request) => ipcRenderer.invoke(SHELL_CHANNELS.editorFocusPage, { tabId: request.tabId }) as Promise<boolean>,
   onEditorCommand: (listener) => subscribe<EditorCommand>(SHELL_CHANNELS.editorCommand, listener),
   onEditorFlush: (listener) => subscribe<EditorFlushRequest>(SHELL_CHANNELS.editorFlush, (message) => listener({ requestId: message.requestId, format: [...message.format] })),
   editorFlushed: (requestId) => {
@@ -393,6 +413,10 @@ const api: DamoclesShellApi = {
   designPreviewAction: (request) => ipcRenderer.invoke(SHELL_CHANNELS.designAction, { tabId: request.tabId, action: request.action }) as Promise<void>,
   reportDesignPreviewBounds: (area) => {
     ipcRenderer.send(SHELL_CHANNELS.designBounds, area ? { tabId: area.tabId, x: area.x, y: area.y, width: area.width, height: area.height, radius: area.radius, zoom: area.zoom } : null);
+  },
+  htmlPreviewAction: (request) => ipcRenderer.invoke(SHELL_CHANNELS.htmlPreviewAction, { tabId: request.tabId, action: request.action }) as Promise<void>,
+  reportHtmlPreviewBounds: (area) => {
+    ipcRenderer.send(SHELL_CHANNELS.htmlPreviewBounds, area ? { tabId: area.tabId, x: area.x, y: area.y, width: area.width, height: area.height, radius: area.radius } : null);
   },
   onDesignReplay: (listener) => subscribe<DesignReplayProgress>(SHELL_CHANNELS.designReplay, listener),
   designFreeze: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designFreeze, tabId) as Promise<DesignFreeze>,

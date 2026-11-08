@@ -11,7 +11,7 @@ type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
 
 type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
-const CURRENT_VERSION = 9;
+const CURRENT_VERSION = 10;
 
 // Shared so the integrity worker's FTS repair can DROP + recreate the table with identical DDL.
 export const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
@@ -216,6 +216,11 @@ const MIGRATION_V9 = `
 ALTER TABLE memory_candidates ADD COLUMN client_id TEXT;
 `;
 
+// user.memory.list pages a kind of global row in created_at DESC, id DESC order; without this each page sorts them all.
+const MIGRATION_V10 = `
+CREATE INDEX IF NOT EXISTS idx_memories_global_listing ON memories(kind, created_at DESC, id DESC) WHERE scope = 'global' AND is_latest = 1;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
@@ -226,6 +231,7 @@ const MIGRATIONS: Record<number, string> = {
   7: MIGRATION_V7,
   8: MIGRATION_V8,
   9: MIGRATION_V9,
+  10: MIGRATION_V10,
 };
 
 /** Whether a relayed global memory write with this uuid was applied; read inside the transaction that would apply it. */

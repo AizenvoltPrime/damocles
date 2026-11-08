@@ -54,6 +54,11 @@ body {
   display: none;
 }
 
+/* The certificate picker's check springs in on the row it moves to. */
+.client-certificate-check {
+  animation: d-pop 0.22s var(--ease-spring) both;
+}
+
 /* D41 dialogs: the panel zooms in over a fading scrim, and both play their exit before the answer reaches main. */
 .overlay-dialog {
   animation: d-fade 0.2s var(--ease-out) both;
@@ -626,6 +631,66 @@ body {
 .quick-pick-list {
   scrollbar-width: thin;
   scrollbar-color: var(--d-border2) transparent;
+}
+
+/*
+ * A pickMany row's checkbox fills with the accent as its check draws itself and springs to size; unchecking reverses it. The
+ * check's dash length must cover lucide's Check path (about 22.6 units in its 24-unit box).
+ */
+.quick-pick-checkbox {
+  border-color: var(--d-border2);
+  background-color: var(--d-input);
+  color: var(--d-on-accent);
+  transition: background-color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
+}
+
+.quick-pick-checkbox[data-checked] {
+  border-color: var(--d-accent);
+  background-color: var(--d-accent);
+}
+
+.quick-pick-check {
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 0.12s var(--ease-out), transform 0.24s var(--ease-spring);
+}
+
+.quick-pick-check path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 0.2s var(--ease-out) 0.04s;
+}
+
+.quick-pick-checkbox[data-checked] .quick-pick-check {
+  opacity: 1;
+  transform: none;
+}
+
+.quick-pick-checkbox[data-checked] .quick-pick-check path {
+  stroke-dashoffset: 0;
+}
+
+.quick-pick-count {
+  transition: background-color 0.15s var(--ease-out), color 0.15s var(--ease-out);
+}
+
+/* A pickMany field gives up its accent frame while the list or OK has the keyboard. */
+.quick-pick-input {
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quick-pick-checkbox,
+  .quick-pick-check,
+  .quick-pick-check path,
+  .quick-pick-count,
+  .quick-pick-input {
+    transition: none;
+  }
+}
+
+[data-reduced-motion] :is(.quick-pick-checkbox, .quick-pick-check, .quick-pick-check path, .quick-pick-count, .quick-pick-input) {
+  transition: none;
 }
 
 /*

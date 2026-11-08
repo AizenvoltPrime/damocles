@@ -72,6 +72,8 @@ import type { CoreClient } from './core-client';
 import { BrowserTabs } from './browser-tabs';
 import { createDesignSession, serveDesignRequest, type DesignViewTarget } from './design/design-session';
 import { DesignPreviews, markupPngForModel, type DesignSupport } from './design/design-previews';
+import { HtmlPreviews } from './html-preview/html-previews';
+import { createPreviewSession } from './html-preview/preview-session';
 import { DesignRunner } from './design/design-runner';
 import { DesignRendererHost } from './design/design-renderer-host';
 import { startDesignRenderer } from './design/design-renderer-start';
@@ -134,10 +136,25 @@ import { LAST_DOWNLOAD_FOLDER_KEY, TransferGestures } from './files/transfer-ges
 import { filesFailureMessage, settleFilesAction, type FilesAction, type FilesFailed } from './files/files-failure';
 import { QuickOpenIndex, QuickOpenPicker } from './quick-open';
 import { CommandPalette, desktopCommands } from './commands';
-import { pickDefaultProfile, pickNewTerminal, pickTerminalColor, pickTerminalIcon } from './terminal-pick';
+import {
+  buildNewTerminalMenu,
+  joinTerminalItems,
+  openNewTerminalMenu,
+  pickDefaultProfile,
+  pickNewTerminal,
+  pickTerminalColor,
+  pickTerminalIcon,
+  serveTerminalPick,
+  startPickedTerminal,
+  TerminalPickSession,
+  type DefaultProfileHost,
+  type HostShells,
+  type TerminalPick,
+  type TerminalPickHost,
+} from './terminal-pick';
 import { windowsBuildNumber } from '../workspace/terminal/profiles';
 import { detectedProfile, profileFileKind, TerminalProfileCatalog, type LaunchProfile } from './terminal/user-profiles';
-import { TerminalService, terminalSettings } from './terminal/terminal-service';
+import { TerminalService, terminalSettings, terminalTabId } from './terminal/terminal-service';
 import { killQuestion } from './terminal/kill-confirmation';
 import { folderLinkAction, TerminalLinks, type LinkBase } from './terminal/terminal-links';
 import { pasteText, TerminalPasteGate } from './terminal/terminal-paste';
@@ -168,7 +185,7 @@ import { createAskpassBridge, type AskCredential } from './askpass-bridge';
 import { createCheckedMessageAsker, createMessageAsker, type AskCheckedMessage, type AskMessage } from './message-dialog';
 import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps, type StickyNotice } from './notification-center';
 import { NotifierHost } from './notifier';
-import { closeRemoteResult, createInputAsker, createQuickPickAsker, devcontainerTrustAccepted, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest, parseRect } from './overlay';
+import { closeRemoteResult, createInputAsker, createQuickPickAsker, createQuickPickManyAsker, devcontainerTrustAccepted, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest, parseRect } from './overlay';
 import { hostAwayOf, hostCoreFacts, lookupOnUpCore, OverlaySettings, settingsPageChat, writeDesktopSetting, type SettingsAttachTarget, type SettingsScope, type SettingsScopes } from './overlay-settings';
 import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
@@ -189,6 +206,8 @@ import { ProjectList } from './projects';
 import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
 import { appResourceUri, handleAppProtocol, registerAppScheme } from './protocol';
 import { restrictPermissions, hardenWebContents } from './security';
+import { chooseClientCertificate, openProbeContents, probeClientCertificates, refuseClientCertificates } from './client-certificates';
+import { clientCertificateOriginOf } from '../../shared/client-certificate';
 import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell';
 import { mergeLoginShellEnv, probeGit, type GitProbe } from '../local-services/shell-env';
 import { NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host';
@@ -490,6 +509,8 @@ interface HostTerminals {
   profiles: readonly LaunchProfile[];
   windowsBuild: number | null;
   detected: Promise<void>;
+  // detected has settled
+  ready: boolean;
 }
 
 // A core a chat runs on: the local one, or a remote authority's attached over its daemon.
@@ -818,6 +839,8 @@ class DesktopApp {
   private browserTabs: BrowserTabs | undefined;
   // the window's design preview tabs, and the editor's page tabs: its browser pages, then its design previews
   private designPreviews: DesignPreviews | undefined;
+  // the editor pane's HTML preview tabs' views; outlives a window, whose close drops the views and keeps the tabs
+  private htmlPreviews: HtmlPreviews | undefined;
   private pageTabs: BrowserTabSource | undefined;
   // main's Open in browser server and the design-preview session, one each per run
   private designServer: DesignServer | undefined;
@@ -878,6 +901,8 @@ class DesktopApp {
   private profilesDetected: Promise<void> = Promise.resolve();
   // profilesDetected has settled, so an empty profile list means no shell was found
   private profilesReady = false;
+  // the New Terminal pick on screen, whose step 2 terminalPickProfiles serves
+  private terminalPick: TerminalPickSession | undefined;
   // settles once the window restored the window layout's terminals
   private terminalsRestored: Promise<void> = Promise.resolve();
   // damocles.desktop.language as read at launch; a change applies after a restart (D23)
@@ -993,8 +1018,8 @@ class DesktopApp {
   private retentionScheduled = false;
   private readonly chatFoldersChanged = new Emitter<[]>('chat-folders', (line) => log(line));
   private shellFocusedPart: ShellFocusPart | null = null;
-  // Whether focus in the terminal pane is an xterm's own input, as the shell reports; it only routes the user's Edit › Paste.
-  private terminalInputFocused = false;
+  // The terminal whose xterm input has keyboard focus, panel or editor, as the shell reports; it routes Edit › Paste and the keys.
+  private terminalInputFocused: string | null = null;
   // A context-menu click or key in the shell page, which a shell menu with clipboard items takes.
   private readonly shellMenuGrant = new GestureGrant<true>();
   // a host's watcher that ran out of inotify watches for a project: its notification and its card's notice
@@ -1024,8 +1049,8 @@ class DesktopApp {
   private readonly watchLimitConnections = new Map<string, { readonly connection: RemoteConnection; readonly subscription: Disposable }>();
 
   private readonly terminalPaste = new TerminalPasteGate({
-    activeTerminal: () => this.terminals?.activeTerminal() ?? null,
-    terminalFocused: () => this.focusedPart() === 'terminal',
+    commandTarget: () => this.terminals?.commandTarget() ?? null,
+    terminalFocused: () => this.focusedPart() === (this.terminals?.target()?.placement === 'editor' ? 'editor' : 'terminal'),
     read: (source) => {
       const board = source === 'selection' ? clipboard.selection : clipboard;
       if (!board) throw new Error('This platform has no selection clipboard');
@@ -1089,9 +1114,9 @@ class DesktopApp {
     // a first launch's own request, from dist/cli.js; its wait marker is claimed now and the request handled once the window is ready
     this.takeCommandLine(process.argv);
     app.on('web-contents-created', (_event, contents) => {
-      // a remote chat page's links go through the link checks, as a click in a remote terminal does
+      // a remote chat page's links, and a remote project's HTML preview's, go through the link checks, as a click in a remote terminal does
       hardenWebContents(contents, (url) => {
-        const authority = this.views?.remoteChatAuthority(contents);
+        const authority = this.views?.remoteChatAuthority(contents) ?? this.htmlPreviews?.remoteAuthority(contents);
         return authority === undefined ? this.requirePlatform().shell.openExternal(url) : this.requireOpenUrl().userClick(authority, url);
       }, bootLog);
       // Menu items enable by the focused part, and only main sees focus move between views.
@@ -1367,6 +1392,8 @@ class DesktopApp {
       this.hostStore.onDidChange(() => {
         this.publishHostNames();
         this.forgetUnlistedProjects();
+        // a remote project's trust is its host record's
+        this.htmlPreviews?.trustChanged();
         this.devcontainerConfigs.sync(this.devcontainerProjectKeys());
         // a removed remote project hands the selection back to the selected chat's project
         if (this.remoteSelected() && !this.remoteProject(this.selectedProjectKey!)) {
@@ -1393,6 +1420,7 @@ class DesktopApp {
       }),
       this.trust.onDidGrant(() => {
         this.shownFolders.refresh();
+        this.htmlPreviews?.trustChanged();
         this.shellStateChanged();
       }),
       this.platform.settings.onDidChange('damocles', (change) => {
@@ -1477,7 +1505,7 @@ class DesktopApp {
         ...hostFileAuthorities,
       ],
       hostFileAuthorities,
-      terminalAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.terminals(key).length > 0),
+      terminalAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.terminals(key).length > 0 || remoteState.pendingKills(key).length > 0),
       chatAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.chats(key).length > 0),
       selectedProjectKey: launchSelection?.projectKey,
       isSavedHost: (authority) => this.savedHostRecord(authority) !== undefined,
@@ -1486,10 +1514,6 @@ class DesktopApp {
     await Promise.all(launchAuthorities.filter((key) => this.savedHostIdOf(key) === undefined).map((key) => authorities.connect(key).catch(this.report(`Connecting to ${key}`))));
     // Saved tabs come back with "Reopen where I left off"; a backup comes back either way, since it holds text the user never discarded.
     await this.requireEditorPane().restore(savedEditor, backups);
-    // a remote terminal whose host is not connected yet keeps its tab, reconnecting, until the host reattaches it
-    for (const key of new Set(this.remoteProjects().map((project) => project.authorityKey))) {
-      if (!authorities.connection(key)) this.requireTerminals().showReconnecting(remoteState.terminals(key));
-    }
     // before any chat shows, since a selection writes both files from memory
     this.lastChats.seed([
       ...this.states.lastChats().filter((entry) => this.projectListed(entry.projectKey)),
@@ -1656,6 +1680,16 @@ class DesktopApp {
       profilesReady: () => this.profilesReady,
       projects: () => this.roots.all(),
       pickerProjects: () => this.pickerRoots(),
+      groupOrder: (groups) => this.hostStore?.groups(groups) ?? groups,
+      hostOf: (authorityKey) => {
+        const { kind, name, color } = this.shellAuthority(authorityKey);
+        return { kind, name, ...(color !== undefined ? { color } : {}) };
+      },
+      reachable: (projectKey) => this.authorities?.connectedWorkspace(authorityKeyOfProject(projectKey)) !== undefined,
+      hostDefaultProfile: (authorityKey) => {
+        const hostId = this.savedHostIdOf(authorityKey);
+        return hostId === undefined ? undefined : this.hostStore?.host(hostId)?.settings.defaultTerminalProfile;
+      },
       currentProjectKey: () => this.currentProjectKey(),
       rootEnv: (key) => {
         const record = this.roots.resolve(key)?.worktree;
@@ -1665,7 +1699,8 @@ class DesktopApp {
       env: (projectKey) => workspaces.forProject(projectKey).terminals.environment(app.getLocale()),
       osOf: (projectKey) => this.filesTarget(projectKey).os,
       persistRemote: (terminals) => this.persistRemoteTerminals(terminals),
-      passKeys: (splitActive) => installedTerminalPassKeys(splitActive),
+      killOnReattach: (authorityKey, id) => this.remoteState?.killOnReattach(authorityKey, id).catch(this.report('Keeping a terminal kill for its host')),
+      passKeys: (target) => installedTerminalPassKeys(target),
       screenReader: () => app.isAccessibilitySupportEnabled(),
       windowsBuild: (projectKey) => {
         const host = this.hostTerminalsOf(projectKey);
@@ -1674,6 +1709,9 @@ class DesktopApp {
       persisted: () => this.windowLayout.terminals(),
       persist: (terminals) => this.windowLayout.setTerminals(terminals),
       onDidChange: () => this.refreshMenuState(),
+      editorTabsChanged: () => this.editorPane?.terminalTabsChanged(),
+      showEditorTab: (id) => this.editorPane?.showTerminalTab(terminalTabId(id), { focus: true }),
+      showPanel: () => this.showTerminalPane(),
       spawnFailed: (message) => localization.t('The shell could not start: {0}', message),
       launchFailed: ({ reason, file, cwd }) => {
         if (reason === 'invalidDirectory') return localization.t('The shell could not start in {0}: the folder does not exist.', cwd);
@@ -1943,6 +1981,7 @@ class DesktopApp {
       if (!open) throw new Error('No New menu is open');
       return this.worktreeOptions(open.projectKey);
     });
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.terminalPickProfiles, () => overlay.isOpen('newTerminal'), (raw) => serveTerminalPick(this.terminalPick, raw, this.terminalPickHost()));
     overlay.handleWhileOpen(OVERLAY_CHANNELS.continueWorktrees, () => overlay.isOpen('newChatMenu'), () => {
       const open = overlay.openRequestOf('newChatMenu');
       if (!open) throw new Error('No New menu is open');
@@ -1980,8 +2019,10 @@ class DesktopApp {
       openExternalFailed: () => void this.notifications.error(this.requireLocalization().t('Damocles could not open the page in the system browser.')),
       copy: (text) => this.requirePlatform().clipboard.writeText(text),
       focusAway: () => this.focusAwayFromPage(),
+      focusPart: (step) => this.focusPart(step),
     });
     const designPreviews = this.createDesignPreviews(window, () => views.retainingStates, () => overlay.restack());
+    this.htmlPreviews?.attach(window, () => overlay.restack());
     const pageTabs: BrowserTabSource = {
       tabs: () => [...browserTabs.tabs(), ...designPreviews.tabs()],
       close: (tabId) => (designPreviews.holds(tabId) ? designPreviews.close(tabId) : browserTabs.close(tabId)),
@@ -1991,6 +2032,7 @@ class DesktopApp {
       },
       copyPath: (tabId) => (designPreviews.holds(tabId) ? designPreviews.copyPath(tabId) : Promise.resolve()),
       mention: (tabId) => (designPreviews.holds(tabId) ? designPreviews.mention(tabId) : Promise.resolve()),
+      focusPage: (tabId) => (designPreviews.holds(tabId) ? designPreviews.focusPage(tabId) : browserTabs.focusPage(tabId)),
     };
     const views: PanelViews = new PanelViews(
       {
@@ -2072,7 +2114,9 @@ class DesktopApp {
     // Toggle Terminal awaits it, so it always resolves.
     this.terminalsRestored = Promise.all([this.profilesDetected, firstLoad]).then(() => {
       if (this.shell !== shell) return;
-      terminals.restore();
+      // every saved host's kept terminals: each holds its slot, reconnecting, until its host reattaches it
+      const remoteState = this.remoteState;
+      terminals.restore(remoteState ? [...new Set(this.remoteProjects().map((project) => project.authorityKey))].flatMap((key) => remoteState.terminals(key)) : []);
       for (const authorityKey of this.authorities?.connectedKeys() ?? []) this.reattachRemoteTerminals(authorityKey);
     }).catch((err: unknown) => log(`[terminal] restoring the window layout's terminals failed: ${errorText(err)}`));
     const savePlacement = (): void => this.saveWindowPlacement(window, tracker);
@@ -2123,6 +2167,7 @@ class DesktopApp {
         this.browserTabs = undefined;
         this.designPreviews?.dispose();
         this.designPreviews = undefined;
+        this.htmlPreviews?.detach();
         this.pageTabs = undefined;
         this.shell = undefined;
         this.overlay = undefined;
@@ -3274,6 +3319,25 @@ class DesktopApp {
     }));
   }
 
+  private chooseClientCertificate(): Promise<void> {
+    const localization = this.requireLocalization();
+    return chooseClientCertificate({
+      page: () => {
+        const page = this.browserTabs?.activePage();
+        return page?.page && { url: page.page.url, local: page.authority === 'local' };
+      },
+      probe: async (url) => probeClientCertificates(await openProbeContents(), url),
+      ask: (request) => {
+        const overlay = this.overlay;
+        if (!overlay) throw new Error('The window has no overlay to ask in');
+        return overlay.request(request, webContents.getFocusedWebContents() ?? undefined);
+      },
+      use: (origin, filter) => this.core.run('Choose Client Certificate', (core) => core.client.useClientCertificate(origin, filter)),
+      tell: (severity, message) => void (severity === 'info' ? this.notifications.info(message) : this.notifications.error(message)),
+      t: (message, ...args) => localization.t(message, ...args),
+    });
+  }
+
   private shellFailure(action: string, message: string): (err: unknown) => void {
     return (err) => {
       log(`[shell] ${action} failed: ${errorText(err)}`);
@@ -3636,6 +3700,7 @@ class DesktopApp {
         uploadMergeInputs: (tabId) => this.requireEditorPane().uploadMergeInputs(tabId),
         completeUploadMerge: (tabId) => this.requireEditorPane().completeUploadMerge(tabId),
         setFocusOverlay: (open) => views.setFocusOverlay(open),
+        focusPage: (tabId) => this.requireEditorPane().focusPage(tabId),
         flushed: (requestId) => this.requireEditorPane().flushed(requestId),
       },
       browser: {
@@ -3656,6 +3721,10 @@ class DesktopApp {
         tweakKeep: (request) => this.designTweakKeep(request),
         lastFrame: (tabId) => this.requireDesignPreviews().lastFrame(tabId),
         shellLoaded: () => this.designPreviews?.shellLoaded(),
+      },
+      htmlPreview: {
+        action: (request) => this.requireHtmlPreviews().action(request),
+        setBounds: (frame) => this.htmlPreviews?.setBounds(frame),
       },
       files: {
         list: (projectKey, relativeDir, report) => (report
@@ -3697,6 +3766,7 @@ class DesktopApp {
         has: (id) => this.requireTerminals().has(id),
         create: (request) => this.requireTerminals().create(request, false),
         openNew: () => { this.newTerminal().catch(this.report('New Terminal')); },
+        openNewMenu: (anchor) => this.openNewTerminalMenu(anchor).catch(this.report('New Terminal')),
         input: (id, data) => this.requireTerminals().input(id, data),
         resize: (id, cols, rows) => this.requireTerminals().resize(id, cols, rows),
         ack: (id, chars) => this.requireTerminals().ack(id, chars),
@@ -3706,12 +3776,15 @@ class DesktopApp {
         select: (id) => this.requireTerminals().select(id),
         split: (id) => { this.requireTerminals().split(id).catch(this.report('Split Terminal')); },
         unsplit: (id) => this.requireTerminals().unsplit(id),
+        move: (move) => this.requireTerminals().move(move),
+        joinPick: (id) => { this.joinTerminals(id).catch(this.report('Join Terminals')); },
         resizePanes: (groupId, sizes) => this.requireTerminals().resizePanes(groupId, sizes),
         setListWidth: (rem) => this.requireTerminals().setListWidth(rem),
         shellLoaded: () => this.requireTerminals().shellLoaded(),
         paste: (request) => { this.terminalPaste.paste(request).catch(this.report('Paste')); },
-        setInputFocused: (focused) => {
-          this.terminalInputFocused = focused;
+        setInputFocused: (id) => {
+          this.terminalInputFocused = id;
+          if (id !== null) this.requireTerminals().inputFocused(id);
           this.refreshMenuState();
         },
         resolveLinks: (request) => {
@@ -3743,8 +3816,10 @@ class DesktopApp {
     };
   }
 
+  // The xterm the shell reported is still the command target, and the part holding focus is the one that terminal is in.
   private terminalInputHasFocus(): boolean {
-    return this.terminalInputFocused && this.focusedPart() === 'terminal';
+    const target = this.terminals?.target();
+    return target !== undefined && target.id === this.terminalInputFocused && this.focusedPart() === (target.placement === 'editor' ? 'editor' : 'terminal');
   }
 
   // The bell's center marks every entry seen once the overlay shows it; choosing a row closes it, and main then runs the row's action.
@@ -3830,8 +3905,26 @@ class DesktopApp {
       homedir: (authority) => (authority === 'local' ? os.homedir() : this.authorities?.connection(authority)?.facts.homedir),
       hostName: (authority) => this.hostName(authority),
     });
+    const htmlPreviews = new HtmlPreviews({
+      projects,
+      files: (rootKey) => workspaces.forProject(rootKey).files,
+      authorityOs: (authority) => this.authorityOs(authority),
+      isTrusted: (project) => this.isProjectTrusted(project),
+      requestTrust: (project) => this.requestProjectTrust(project).catch(this.report('Trust Project')),
+      onDidSave: (listener) => documents.onDidSave(listener),
+      hostName: (authority) => this.hostName(authority),
+      openExternal: (url) => platform.shell.openExternal(url),
+      openInBrowserFailed: () => void this.notifications.error(t('Damocles could not open the preview in the browser.')),
+      changed: () => this.editorPane?.htmlPreviewsChanged(),
+      createSession: (deps) => createPreviewSession(deps).ready,
+      refusalText: () => t('Open this preview from Damocles.'),
+      focusAway: () => this.focusAwayFromPage(),
+      focusPart: (step) => this.focusPart(step),
+      log: report,
+    });
     const editorPane = new EditorPane({
       documents,
+      htmlPreviews,
       authorityOs: (authority) => this.authorityOs(authority),
       wslDistro: (authority) => {
         const host = this.hostAuthority(authority);
@@ -3874,6 +3967,7 @@ class DesktopApp {
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
       mention: (target) => this.mentionInSelectedChat(target),
       browser: () => this.pageTabs,
+      terminals: () => this.terminals?.tabSource,
       warn: (message) => void this.notifications.warn(message),
       hostName: (authority) => this.hostName(authority),
       searchEditorClosed: (documentId) => this.search?.searchEditorClosed(documentId),
@@ -4030,7 +4124,8 @@ class DesktopApp {
     this.disposables.push(fileTree.onDidChangeStructure((projectKey) => {
       quickOpenIndex.invalidate(projectKey);
       this.devcontainerConfigs.refresh([projectKey]);
-    }), quickOpenIndex, fileTree, editorPane, documents, search, workspaces, formatLog);
+    }), quickOpenIndex, fileTree, editorPane, htmlPreviews, documents, search, workspaces, formatLog);
+    this.htmlPreviews = htmlPreviews;
     this.formatter = formatter;
     this.search = search;
     this.fileTree = fileTree;
@@ -4284,6 +4379,11 @@ class DesktopApp {
     }
   }
 
+  private requireHtmlPreviews(): HtmlPreviews {
+    if (!this.htmlPreviews) throw new Error('HTML previews used before startup finished');
+    return this.htmlPreviews;
+  }
+
   private requireDesignPreviews(): DesignPreviews {
     if (!this.designPreviews) throw new Error('Design previews used with no window open');
     return this.designPreviews;
@@ -4312,6 +4412,7 @@ class DesktopApp {
       mention: (chat, filePath) => this.mentionDesignFile(chat, filePath),
       openInBrowserFailed: () => void this.notifications.error(this.requireLocalization().t('Damocles could not open the design in the browser.')),
       focusAway: () => this.focusAwayFromPage(),
+      focusPart: (step) => this.focusPart(step),
       log: (line) => log(line),
       sessionReady,
       replayProgress: (progress) => this.shell?.designReplayProgress(progress),
@@ -4949,6 +5050,7 @@ class DesktopApp {
         memoryProfile: () => this.core.run('Global memory for a remote chat', (core) => core.client.memoryProfile()),
         memoryResolve: (ids) => this.core.run('Global memory for a remote chat', (core) => core.client.memoryResolve(ids)),
         memoryApply: (writes) => this.core.run('Global memory for a remote chat', (core) => core.client.memoryApply(writes)),
+        memoryList: (request) => this.core.run('Global memory for a remote chat', (core) => core.client.memoryList(request)),
         mcpServers: () => this.core.run('Personal MCP servers for remote chats', (core) => core.client.mcpServers()),
         mcpCall: (server, tool, args, signal) => this.core.run('A personal MCP server for a remote chat', (core) => core.client.mcpCall(server, tool, args, signal)),
         mcpResources: (server, kind, cursor, signal) => this.core.run('A personal MCP server for a remote chat', (core) => core.client.mcpResources(server, kind, cursor, signal)),
@@ -5055,8 +5157,8 @@ class DesktopApp {
     await this.requireEditorPane().openHostSettingsFile(authority, t('{0}: {1}', this.hostName(authority), 'settings.json'), key);
   }
 
-  // A chat page's message main takes: a file of another authority is refused, a remote chat's voice and user-setting writes
-  // go to this computer, and a remote chat's own file goes to its core as a mention.
+  // A chat page's message main takes: a file of another authority is refused, a remote chat's FOREIGN_VIEW_MESSAGES go to
+  // this computer's core, and a remote chat's own file goes to its core as a mention.
   private divertViewMessage(view: RelayView, message: unknown): boolean {
     const panel = this.views?.panel(view.panelId);
     if (!panel || panel !== view || panel.kind !== 'chat') return false;
@@ -5137,6 +5239,7 @@ class DesktopApp {
         memoryProfile: () => this.requireUserRelays().memoryProfile(),
         memoryResolve: (ids) => this.requireUserRelays().memoryResolve(ids),
         memoryApply: ({ entries }) => this.requireUserRelays().memoryApply(authority, entries),
+        memoryList: ({ kinds, tags, cursor }) => this.requireUserRelays().memoryList(authority, { kinds, ...(tags !== undefined ? { tags } : {}), ...(cursor !== undefined ? { cursor } : {}) }),
         mcpCall: ({ server, tool, args }, signal) => this.requireUserRelays().mcpCall(authority, server, tool, args, signal),
         mcpResources: ({ server, kind, cursor }, signal) => this.requireUserRelays().mcpResources(authority, server, kind, cursor, signal),
         mcpReadResource: ({ server, uri }, signal) => this.requireUserRelays().mcpReadResource(authority, server, uri, signal),
@@ -6391,6 +6494,7 @@ class DesktopApp {
     }
     this.fileTree?.connectionsChanged();
     this.documents?.connectionsChanged();
+    this.htmlPreviews?.connectionsChanged();
     this.devcontainerConfigs.refresh(this.remoteProjects().filter((project) => project.authorityKey === authorityKey).map((project) => project.key));
     this.refreshScmRoots();
     this.reconnector?.stateChanged(authorityKey);
@@ -6530,7 +6634,8 @@ class DesktopApp {
     Promise.all([this.terminalsRestored, this.hostTerminalsDetected(authorityKey)]).then(async () => {
       if (this.shell !== shell || this.reattachedAuthorities.has(authorityKey) || this.authorities?.connectedWorkspace(authorityKey) !== workspace) return;
       this.reattachedAuthorities.add(authorityKey);
-      await terminals.reattach(workspace.terminals, remoteState.terminals(authorityKey));
+      const killed = await terminals.reattach(workspace.terminals, authorityKey, remoteState.terminals(authorityKey), remoteState.pendingKills(authorityKey));
+      if (killed.length > 0) await remoteState.killsDone(authorityKey, killed);
     }).catch(this.report('Reattaching the remote terminals'));
   }
 
@@ -6558,20 +6663,22 @@ class DesktopApp {
     const workspace = this.authorities?.connectedWorkspace(authorityKey);
     const kept = this.hostTerminals.get(authorityKey);
     if (!workspace || kept?.workspace === workspace) return;
-    const host: HostTerminals = { workspace, profiles: kept?.profiles ?? [], windowsBuild: kept?.windowsBuild ?? null, detected: Promise.resolve() };
+    const host: HostTerminals = { workspace, profiles: kept?.profiles ?? [], windowsBuild: kept?.windowsBuild ?? null, detected: Promise.resolve(), ready: false };
     host.detected = Promise.all([workspace.terminals.detectProfiles(), workspace.terminals.windowsBuild()]).then(([profiles, windowsBuild]) => {
       host.profiles = profiles.map(detectedProfile);
       host.windowsBuild = windowsBuild;
       log(`[terminal] ${authorityKey}'s shells: ${profiles.map((profile) => profile.id).join(', ') || 'none'}`);
       this.terminals?.publish();
-    }, (err: unknown) => log(`[terminal] detecting ${authorityKey}'s shells failed: ${errorText(err)}`));
+    }, (err: unknown) => log(`[terminal] detecting ${authorityKey}'s shells failed: ${errorText(err)}`)).finally(() => {
+      host.ready = true;
+    });
     this.hostTerminals.set(authorityKey, host);
   }
 
   // A remote root key's host terminals; undefined for this computer's.
   private hostTerminalsOf(projectKey: string | null): HostTerminals | undefined {
     const authority = projectKey === null ? 'local' : authorityKeyOfProject(projectKey);
-    return authority === 'local' ? undefined : (this.hostTerminals.get(authority) ?? { workspace: undefined, profiles: [], windowsBuild: null, detected: Promise.resolve() });
+    return authority === 'local' ? undefined : (this.hostTerminals.get(authority) ?? { workspace: undefined, profiles: [], windowsBuild: null, detected: Promise.resolve(), ready: true });
   }
 
   // Settles once an authority's shells and Windows build are known; at once for this computer's.
@@ -7219,6 +7326,9 @@ class DesktopApp {
       for (const authorityKey of this.authorities?.connectedKeys() ?? []) this.authorities?.connectedWorkspace(authorityKey)?.format.retain(roots);
       this.terminals?.projectsChanged(roots);
       this.fileTree?.projectsChanged();
+      this.editorPane?.rootsChanged();
+      // a preview's root made before its project registered took no trust
+      this.htmlPreviews?.trustChanged();
       for (const key of changed.removed) this.quickOpenIndex?.invalidate(key);
     }
     this.shownFolders.refresh();
@@ -7397,19 +7507,89 @@ class DesktopApp {
     if (id !== undefined) terminals.focus(id);
   }
 
-  // New Terminal: the overlay's quick pick of the current project's host's shells, then the terminal in the shown pane, focused.
+  // Settles once the shells a terminal of this target starts with are known: this computer's, or its remote host's.
+  private terminalTargetDetected(projectKey: string | null): Promise<void> {
+    const authority = projectKey === null ? 'local' : authorityKeyOfProject(projectKey);
+    return authority === 'local' ? this.profilesDetected : this.hostTerminalsDetected(authority);
+  }
+
+  // New Terminal: the overlay's pick of a project, then of its host's shells, then the terminal in the shown pane, focused.
   private async newTerminal(): Promise<void> {
-    const asked = this.currentProjectKey();
-    await Promise.all([this.profilesDetected, this.hostTerminalsDetected(asked === undefined ? 'local' : authorityKeyOfProject(asked))]);
     const overlay = this.overlay;
-    const terminals = this.requireTerminals();
     if (!overlay) return;
-    const pick = await pickNewTerminal(overlay, terminals.profileOptions(this.currentProjectKey() ?? null), terminals.projectOptions(), webContents.getFocusedWebContents() ?? undefined);
-    if (!pick) return;
-    if ('project' in pick.target) await this.hostTerminalsDetected(authorityKeyOfProject(pick.target.project));
-    if (!this.windowLayout.sidebar().grid.visible.terminal) this.toggleGridPane('terminal');
-    const created = terminals.create(pick, true);
-    if (!created.ok) log(`[terminal] New Terminal refused: ${created.reason}`);
+    const session = new TerminalPickSession(this.requireTerminals().projectOptions());
+    this.terminalPick = session;
+    let pick: TerminalPick | undefined;
+    try {
+      pick = await pickNewTerminal(overlay, session, webContents.getFocusedWebContents() ?? undefined);
+    } finally {
+      if (this.terminalPick === session) this.terminalPick = undefined;
+    }
+    if (pick) await this.startPickedTerminal(pick);
+  }
+
+  // A New Terminal target's host as main knows it now: its detection, whether it is connected and its listed shells.
+  private terminalPickHost(): TerminalPickHost {
+    return {
+      detected: (projectKey) => this.terminalTargetDetected(projectKey),
+      connected: (projectKey) => {
+        const authority = projectKey === null ? 'local' : authorityKeyOfProject(projectKey);
+        return authority === 'local' || this.authorities?.connectedWorkspace(authority) !== undefined;
+      },
+      profiles: (projectKey) => this.requireTerminals().profileOptions(projectKey),
+    };
+  }
+
+  // The toast for a host with no shell to list or start.
+  private noShellsText(authority: string): string {
+    const { t } = this.requireLocalization();
+    return authority === 'local' ? t('No shells were found on this computer.') : t('No shells were found on {0}.', this.hostName(authority));
+  }
+
+  private async startPickedTerminal(pick: TerminalPick): Promise<void> {
+    const { t } = this.requireLocalization();
+    const started = await startPickedTerminal(pick, {
+      host: this.terminalPickHost(),
+      create: (request) => {
+        this.showTerminalPane();
+        return this.requireTerminals().create(request, true);
+      },
+      tell: (message) => void this.notifications.warn(message),
+      notConnected: (projectKey) => t('{0} is not connected, so the terminal did not start.', this.hostName(authorityKeyOfProject(projectKey))),
+      noShells: (projectKey) => this.noShellsText(projectKey === null ? 'local' : authorityKeyOfProject(projectKey)),
+    });
+    if (!started.ok) log(`[terminal] New Terminal refused: ${started.reason}`);
+  }
+
+  // The New Terminal arrow's menu, built from main's shell lists; resolves once it closed.
+  private async openNewTerminalMenu(anchor: OverlayRect): Promise<void> {
+    const overlay = this.overlay;
+    if (!overlay) return;
+    const terminals = this.requireTerminals();
+    const { t } = this.requireLocalization();
+    const menu = buildNewTerminalMenu(terminals.projectOptions(), (projectKey) => this.hostShellsOf(projectKey), {
+      local: t('This computer'),
+      home: t('Home folder'),
+      detecting: t('Detecting shells…'),
+      none: t('No shells found'),
+      notConnected: t('Not connected'),
+      selectDefault: t('Select Default Profile...'),
+    });
+    await openNewTerminalMenu(
+      overlay,
+      menu,
+      { label: t('New terminal with a shell'), anchor },
+      webContents.getFocusedWebContents() ?? undefined,
+      (action) => (action.kind === 'selectDefault' ? this.selectDefaultTerminalProfile() : this.startPickedTerminal({ profileId: action.profileId, target: action.target })),
+      (action) => this.report(action.kind === 'selectDefault' ? 'Select Default Profile' : 'New Terminal'),
+    );
+  }
+
+  // A target's host's shells as main knows them now: still detecting, or its listed profiles.
+  private hostShellsOf(projectKey: string | null): HostShells {
+    const host = this.hostTerminalsOf(projectKey);
+    const ready = host ? host.ready : this.profilesReady;
+    return ready ? { kind: 'detected', profiles: this.requireTerminals().profileOptions(projectKey) } : { kind: 'detecting' };
   }
 
   // A terminal's links resolve through its project's workspace: this computer's, or a remote authority's while it is usable.
@@ -7451,6 +7631,32 @@ class DesktopApp {
       ...(request.column !== null ? { column: request.column } : {}),
     });
     if (!opened.ok) log(`[terminal] a link did not open: ${opened.reason}`);
+  }
+
+  // Join Terminals... is enabled for the command target while its group has room and another panel terminal is outside it.
+  private terminalJoinable(): boolean {
+    const terminals = this.terminals;
+    const id = terminals?.commandTarget();
+    return !!terminals && !!id && terminals.joinRoom(id) > 0 && terminals.joinCandidates(id).length > 0;
+  }
+
+  // Join Terminals... (VS Code's joinInstances) anchored on id: the terminals picked join its group, at most its free slots.
+  private async joinTerminals(anchorId: string): Promise<void> {
+    const terminals = this.requireTerminals();
+    const candidates = new Set(terminals.joinCandidates(anchorId));
+    const max = Math.min(terminals.joinRoom(anchorId), candidates.size);
+    if (max === 0) return;
+    const { t } = this.requireLocalization();
+    const ask = createQuickPickManyAsker({
+      overlay: () => this.overlay,
+      focused: () => webContents.getFocusedWebContents() ?? undefined,
+      unavailable: () => void this.notifications.error(t('The list could not be shown, so nothing was changed. Try again.')),
+      tooLarge: () => void this.notifications.error(t('The list has too many entries to show, so nothing was changed.')),
+      log: (line) => log(line),
+    });
+    const items = joinTerminalItems(terminals.state().terminals.filter((terminal) => candidates.has(terminal.id)));
+    const picked = await ask(t('Select the terminals to join'), items, max);
+    if (picked) terminals.join(anchorId, picked);
   }
 
   private async pickTerminalIcon(id: string): Promise<void> {
@@ -7508,13 +7714,44 @@ class DesktopApp {
     if (picked) this.requireTerminals().setColor(id, picked.color);
   }
 
-  // The choice comes from main's own list of detected profiles; core's settings store writes it at user scope.
+  // Each host keeps its own default: this computer's in its user setting, a remote host's in its host record. The hosts are
+  // this computer and those of the open projects, in the sidebar's group order; the choice comes from main's own shell list.
   private async selectDefaultTerminalProfile(): Promise<void> {
     const overlay = this.overlay;
     if (!overlay) return;
     const platform = this.requirePlatform();
-    const profileId = await pickDefaultProfile(overlay, this.requireTerminals().profileOptions(), platform.localization.t('Select your default terminal profile'), webContents.getFocusedWebContents() ?? undefined);
-    if (profileId !== undefined) await writeDesktopSetting(platform.settings, TERMINAL_DEFAULT_PROFILE_SETTING, profileId);
+    const { t } = platform.localization;
+    const projects = this.requireTerminals().projectOptions();
+    const reachableOn = (authority: string): string | undefined => projects.find((project) => project.reachable && authorityKeyOfProject(project.key) === authority)?.key;
+    const listed = [...new Set(['local', ...projects.map((project) => authorityKeyOfProject(project.key))])];
+    const hosts = (this.hostStore?.groups(listed) ?? listed).map((authority): DefaultProfileHost => ({
+      authority,
+      name: authority === 'local' ? t('This computer') : this.hostName(authority),
+      reachable: authority === 'local' || reachableOn(authority) !== undefined,
+      saved: authority === 'local' || this.savedHostRecord(authority) !== undefined,
+    }));
+    const picked = await pickDefaultProfile(overlay, hosts, {
+      shellsOf: (authority) => {
+        const key = authority === 'local' ? null : reachableOn(authority);
+        return key === undefined ? { kind: 'detected', profiles: [] } : this.hostShellsOf(key);
+      },
+      detected: (authority) => (authority === 'local' ? this.profilesDetected : this.hostTerminalsDetected(authority)),
+      tell: (message) => void this.notifications.warn(message),
+    }, {
+      hostPlaceholder: t('Select the host whose default terminal profile to set'),
+      notConnected: t('Not connected'),
+      detecting: t('Detecting shells…'),
+      profilePlaceholder: (host) => (host.authority === 'local' ? t('Select your default terminal profile') : t('Select the default terminal profile for {0}', host.name)),
+      noShells: (host) => this.noShellsText(host.authority),
+      unsaved: (host) => t('{0} is not a saved host, so its default terminal profile cannot be kept.', host.name),
+    }, webContents.getFocusedWebContents() ?? undefined);
+    if (!picked) return;
+    if (picked.authority === 'local') {
+      await writeDesktopSetting(platform.settings, TERMINAL_DEFAULT_PROFILE_SETTING, picked.profileId);
+      return;
+    }
+    const hostId = this.savedHostIdOf(picked.authority);
+    if (hostId !== undefined) await this.requireHostStore().setDefaultTerminalProfile(hostId, picked.profileId);
   }
 
   private showTerminalPane(): void {
@@ -7537,21 +7774,26 @@ class DesktopApp {
     terminals.focus(id);
   }
 
-  // The palette's Rename...: the shell renames the active terminal in place.
+  // The palette's Rename...: the shell renames the command target in place.
   private renameActiveTerminal(): void {
-    const id = this.requireTerminals().activeTerminal();
-    if (id === null) return;
-    if (!this.windowLayout.sidebar().grid.visible.terminal) this.toggleGridPane('terminal');
-    this.shell?.startTerminalRename(id);
+    const id = this.revealTerminalTarget();
+    if (id !== undefined) this.shell?.startTerminalRename(id);
   }
 
   // The palette's Copy Last Command, Copy Last Command Output, Add to Chat and Scroll to Previous or Next Command: the shell
-  // carries them out on the active terminal's buffer, which takes keyboard focus (a user action).
+  // carries them out on the command target's buffer, which takes keyboard focus (a user action).
   private runTerminalAction(action: TerminalAction): void {
-    const id = this.requireTerminals().activeTerminal();
-    if (id === null) return;
-    if (!this.windowLayout.sidebar().grid.visible.terminal) this.toggleGridPane('terminal');
-    this.shell?.runTerminalAction(id, action);
+    const id = this.revealTerminalTarget();
+    if (id !== undefined) this.shell?.runTerminalAction(id, action);
+  }
+
+  // The command target shows where it is: the terminal pane, or its editor tab, active, with the editor pane shown.
+  private revealTerminalTarget(): string | undefined {
+    const target = this.requireTerminals().target();
+    if (!target) return undefined;
+    if (target.placement === 'panel') this.showTerminalPane();
+    else this.editorPane?.showTerminalTab(terminalTabId(target.id), { focus: false });
+    return target.id;
   }
 
   // G25: the shell's selection or a command's output becomes a pending attachment of the current chat, labelled from main's own
@@ -7611,7 +7853,7 @@ class DesktopApp {
   // Edit › Paste and Cmd+V: a terminal whose xterm has keyboard focus pastes through main; anything else (a terminal's Find box
   // or rename field included) gets what the paste roles do, which on macOS also reaches native dialogs' text fields.
   private paste(matchStyle: boolean): void {
-    const id = this.terminals?.activeTerminal() ?? null;
+    const id = this.terminals?.commandTarget() ?? null;
     if (id !== null && this.terminalInputHasFocus()) {
       this.terminalPaste.allow('clipboard');
       this.shell?.requestTerminalPaste(id);
@@ -8007,7 +8249,7 @@ class DesktopApp {
     const views = this.views;
     if (!views) return undefined;
     if (this.notifier.focused) return 'toasts';
-    if (this.browserTabs?.focused() || this.designPreviews?.focused()) return 'editor';
+    if (this.browserTabs?.focused() || this.designPreviews?.focused() || this.htmlPreviews?.focused()) return 'editor';
     if (views.chatFocused()) return 'chat';
     return this.shell?.focused ? (this.shellFocusedPart ?? undefined) : undefined;
   }
@@ -8020,15 +8262,20 @@ class DesktopApp {
       editor: this.editorPane?.hasTabs() === true,
       browser: this.browserEnabled(),
       page: this.browserTabs?.activePage() !== undefined,
+      clientCertificateSite: clientCertificateOriginOf(this.browserTabs?.activePage()?.page?.url ?? '') !== undefined,
       focus: this.focusedPart(),
       updateCheck: this.updates !== undefined && canCheck(this.updates.snapshot().state),
       terminalCreate: this.terminals?.canCreate() === true,
-      terminal: this.terminals?.activeStatus(),
+      terminal: this.terminals?.target()?.status,
+      terminalEditor: this.terminals?.target()?.placement === 'editor',
+      terminalTask: this.terminals?.target()?.task === true,
       terminalSplit: this.terminals?.splitActive() === true,
+      terminalJoin: this.terminalJoinable(),
       terminalInput: this.terminalInputHasFocus(),
       search: this.searchMenuState(),
       scm: this.scm?.menuState() ?? NO_SCM_MENU_STATE,
       editorKind: this.editorPane?.activeKind(),
+      editorDocument: this.editorPane?.activeDocument(),
       editorGit: this.editorPane?.activeGit() ?? null,
       selectedChatHasChanges: this.chatReviews.hasChanges(this.selectedChatKey()),
       ...this.selectedWorktreeMenuState(),
@@ -8222,11 +8469,11 @@ class DesktopApp {
       toggleTerminal: (byKeyboard) => this.toggleTerminal(byKeyboard),
       newTerminal: () => { this.newTerminal().catch(report('New Terminal')); },
       killTerminal: () => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         if (id) this.terminals?.requestKill([id]).catch(report('Kill Terminal'));
       },
       restartTerminal: () => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         if (id) this.terminals?.restart(id).catch(report('Restart Terminal'));
       },
       killAllTerminals: () => {
@@ -8236,33 +8483,46 @@ class DesktopApp {
       runTerminalAction: (action) => this.runTerminalAction(action),
       focusRelativeTerminal: (delta) => this.focusRelativeTerminal(delta),
       splitTerminal: () => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         if (!id) return;
         this.showTerminalPane();
         this.terminals?.split(id).catch(report('Split Terminal'));
       },
       unsplitTerminal: () => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         if (id) this.terminals?.unsplit(id);
       },
+      joinTerminals: () => {
+        const id = this.terminals?.commandTarget();
+        if (id) this.joinTerminals(id).catch(report('Join Terminals'));
+      },
       focusTerminalPane: (delta) => {
-        if (!this.terminals?.activeTerminal()) return;
+        if (this.terminals?.target()?.placement !== 'panel') return;
         this.showTerminalPane();
         this.terminals.focusPane(delta);
       },
       resizeTerminalPane: (direction) => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         // VS Code's resizePane does nothing for a group of one pane
         if (id && this.terminals?.splitActive()) this.shell?.runTerminalAction(id, direction === 'left' ? 'resizePaneLeft' : 'resizePaneRight');
       },
       renameTerminal: () => this.renameActiveTerminal(),
       changeTerminalIcon: () => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         if (id) this.pickTerminalIcon(id).catch(report('Change Icon'));
       },
       changeTerminalColor: () => {
-        const id = this.terminals?.activeTerminal();
+        const id = this.terminals?.commandTarget();
         if (id) this.pickTerminalColor(id).catch(report('Change Color'));
+      },
+      moveTerminalToEditor: () => {
+        const id = this.terminals?.commandTarget();
+        if (id) this.terminals?.move({ kind: 'toEditor', id });
+      },
+      // an editor terminal's detach is Move Terminal into Panel
+      moveTerminalToPanel: () => {
+        const target = this.terminals?.target();
+        if (target?.placement === 'editor') this.terminals?.move({ kind: 'detach', id: target.id });
       },
       selectDefaultTerminalProfile: () => { this.selectDefaultTerminalProfile().catch(report('Select Default Profile')); },
       paste: (matchStyle) => this.paste(matchStyle),
@@ -8275,6 +8535,7 @@ class DesktopApp {
       },
       newBrowserPage: () => { this.browserTabs?.newPage().catch(report('New Browser Page')); },
       toggleBrowserDevTools: () => this.browserTabs?.activePage()?.deliver({ type: 'openDevTools' }),
+      chooseClientCertificate: () => { this.chooseClientCertificate().catch(this.shellFailure('Choose Client Certificate', 'Damocles could not choose a client certificate: {0}')); },
       showLog: () => showLog(),
       // the selected project's host
       restartEngine: () => this.restartEngine(authorityKeyOfProject(this.selectedProjectKey ?? '')),
@@ -8578,6 +8839,8 @@ app.on('session-created', (created) => {
   created.setSpellCheckerEnabled(false);
   created.setSpellCheckerLanguages([]);
 });
+// in the design renderer process too, which runs this file
+refuseClientCertificates(app);
 
 const cliPathAction = parseCliPathAction(process.argv);
 if (isDesignRendererLaunch(process.argv)) {

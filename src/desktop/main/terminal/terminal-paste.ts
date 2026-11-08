@@ -125,7 +125,8 @@ export async function pasteText(text: string, bracketedPasteMode: boolean, deps:
 }
 
 export interface TerminalPasteGateDeps {
-  readonly activeTerminal: () => string | null;
+  // TerminalService.commandTarget, which a grant is bound to
+  readonly commandTarget: () => string | null;
   // the terminal part has keyboard focus
   readonly terminalFocused: () => boolean;
   readonly read: (source: TerminalPaste['source']) => Promise<string>;
@@ -146,9 +147,9 @@ export class TerminalPasteGate {
     this.deps = deps;
   }
 
-  /** Allows one paste from `source` into the active terminal. */
+  /** Allows one paste from `source` into the command target. */
   allow(source: TerminalPaste['source']): void {
-    const id = this.deps.activeTerminal();
+    const id = this.deps.commandTarget();
     if (id !== null) this.grant.grant({ id, source });
   }
 
@@ -162,7 +163,7 @@ export class TerminalPasteGate {
       this.deps.log('[terminal] refusing a paste: no paste key, middle click or menu pick of the user allowed it');
       return;
     }
-    if (request.id !== this.deps.activeTerminal() || !this.deps.terminalFocused()) {
+    if (request.id !== this.deps.commandTarget() || !this.deps.terminalFocused()) {
       this.deps.log('[terminal] refusing a paste: that terminal does not have keyboard focus');
       return;
     }

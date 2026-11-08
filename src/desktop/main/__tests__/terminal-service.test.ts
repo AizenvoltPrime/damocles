@@ -1,4 +1,7 @@
-import type { RemoteTerminalRecord } from '../remote/remote-state';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { RemoteState, type RemoteTerminalRecord } from '../remote/remote-state';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_HOST_ENV_CHARS, MAX_HOST_ENV_ENTRIES, parseHostRequest, TERMINAL_BATCH_CHARS, TERMINAL_BATCH_MS, type HostMessage, type HostRequest } from '../../pty-host/protocol';
 import { CONPTY_SPACING_MS, CONPTY_THROTTLE_MS, createPtySessions, EXIT_FLUSH_MS, PROCESS_NAME_THROTTLE_MS, type Pty, type PtySpawnOptions } from '../../pty-host/sessions';
@@ -15,7 +18,7 @@ import {
   type TerminalState,
 } from '../../preload/terminal-channels';
 import type { OverlayAnswer } from '../../preload/overlay-channels';
-import { pickNewTerminal } from '../terminal-pick';
+import { pickNewTerminal, TerminalPickSession } from '../terminal-pick';
 import type { TerminalProfile } from '../../workspace/terminal/profiles';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
@@ -34,7 +37,7 @@ import {
   isTerminalCustomIcon,
   parseTerminalName,
   TerminalService,
-  type PersistedTerminal,
+  type PersistedPane,
   type PersistedTerminals,
   type TerminalProject,
   type KillListEntry,
@@ -106,7 +109,16 @@ const SETTINGS: TerminalServiceSettings = {
   shellIntegration: false,
   confirmOnKill: 'running',
 };
-const stored = (profileId: string, projectKey: string | null): PersistedTerminal => ({ profileId, projectKey, name: null, customIcon: null, color: null });
+const stored = (profileId: string, projectKey: string | null): Extract<PersistedPane, { kind: 'local' }> => ({ kind: 'local', profileId, projectKey, name: null, customIcon: null, color: null });
+const panesOf = (layout: PersistedTerminals): PersistedPane[] => layout.groups.flatMap((group) => [...group.panes]);
+// a layout of unsplit terminals, each its own group
+const singles = (panes: readonly PersistedPane[], active: number | null, listWidthRem = 12): PersistedTerminals => ({
+  version: 2,
+  listWidthRem,
+  groups: panes.map((pane) => ({ panes: [pane], activePane: 0, sizes: [1] })),
+  active,
+  editor: [],
+});
 
 interface Harness {
   readonly service: TerminalService;
@@ -118,8 +130,15 @@ interface Harness {
   readonly screens: TerminalScreen[];
   readonly focused: string[];
   readonly persisted: PersistedTerminals[];
+  // calls of onDidChange, editorTabsChanged and showPanel, and the terminals showEditorTab named
+  changes: number;
+  editorTabs: number;
+  panelShown: number;
+  readonly shownTabs: string[];
   // each list of remote terminals main gave remote-state.json
   readonly remote: RemoteTerminalRecord[][];
+  // each [authority, id] main asked remote-state.json to kill at the next reattach
+  readonly kills: Array<[string, string]>;
   readonly hosts: { count: number; killed: number };
   readonly posted: unknown[];
   readonly asked: KillListEntry[][];
@@ -134,6 +153,12 @@ interface Harness {
   readonly directories: Set<string>;
   projects: TerminalProject[];
   current: string | undefined;
+  // the sidebar's host group order; hosts it lacks follow in the order given
+  groupOrder: string[];
+  // remote authorities that are connected
+  connected: Set<string>;
+  // each remote host record's default profile id, by authority key
+  hostDefaults: Record<string, string>;
   readonly logs: string[];
   // the environment main reads at each spawn
   env: Record<string, string>;
@@ -160,7 +185,12 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     screens: [],
     focused: [],
     persisted: [],
+    changes: 0,
+    editorTabs: 0,
+    panelShown: 0,
+    shownTabs: [],
     remote: [],
+    kills: [],
     hosts: { count: 0, killed: 0 },
     posted,
     asked: [],
@@ -173,6 +203,9 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     directories: new Set([ALPHA.fsPath, BETA.fsPath]),
     projects: [ALPHA, BETA],
     current: ALPHA.key,
+    groupOrder: [],
+    connected: new Set(['loopback']),
+    hostDefaults: {},
     logs: [],
     env: { PATH: 'C:\\bin', TERM_TEST: '1' },
     screenReader: false,
@@ -243,21 +276,30 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     profilesReady: () => h.profilesReady,
     projects: () => h.projects,
     pickerProjects: () => h.projects,
+    groupOrder: (groups) => [...h.groupOrder.filter((group) => groups.includes(group)), ...groups.filter((group) => !h.groupOrder.includes(group))],
+    hostOf: (authority) => (authority === 'loopback' ? { kind: 'loopback', name: 'Local daemon' } : { kind: 'ssh', name: authority.slice('ssh+'.length), color: 'danger' }),
+    reachable: (key) => h.connected.has(key.slice(0, key.indexOf('|'))),
+    hostDefaultProfile: (authority) => h.hostDefaults[authority],
     currentProjectKey: () => h.current,
     rootEnv: (key) => h.rootEnv[key] ?? {},
     settings: () => ({ ...SETTINGS, defaultProfile: options.defaultProfile ?? '', ...h.settings }),
     env: async () => h.env,
     osOf: () => 'linux',
     persistRemote: (terminals) => h.remote.push([...terminals]),
+    killOnReattach: (authority, id) => h.kills.push([authority, id]),
     screenReader: () => h.screenReader,
     windowsBuild: (projectKey) => (projectKey?.startsWith('loopback|') ? null : 19045),
-    passKeys: (splitActive) => (splitActive ? ['CmdOrCtrl+P', 'Alt+Left', 'Alt+Right'] : ['CmdOrCtrl+P']),
+    // Split Terminal's key passes only for a panel target, the pane keys only for a split one
+    passKeys: ({ split, editor }) => ['CmdOrCtrl+P', ...(editor ? [] : ['Ctrl+Shift+5']), ...(split ? ['Alt+Left', 'Alt+Right'] : [])],
     persisted: () => saved,
     persist: (terminals) => {
       saved = terminals;
       h.persisted.push(terminals);
     },
-    onDidChange: () => undefined,
+    onDidChange: () => { h.changes++; },
+    editorTabsChanged: () => { h.editorTabs++; },
+    showEditorTab: (id) => { h.shownTabs.push(id); },
+    showPanel: () => { h.panelShown++; },
     spawnFailed: (message) => `The shell could not start: ${message}`,
     launchFailed: (failure) => `The shell could not start: ${JSON.stringify(failure)}`,
     log: (line) => h.logs.push(line),
@@ -325,7 +367,7 @@ describe('create validation', () => {
     await settle();
     expect(h.ptys.map((pty) => pty.options.cwd)).toEqual(['C:\\Users\\me']);
     expect(lastState(h)).toMatchObject({ canCreate: true, terminals: [{ id: 'term-1', projectKey: null, projectName: '', status: 'running' }] });
-    expect(h.persisted.at(-1)!.terminals).toEqual([stored('pwsh', null)]);
+    expect(panesOf(h.persisted.at(-1)!)).toEqual([stored('pwsh', null)]);
     expect(h.service.linkBase('term-1')).toBeUndefined();
     expect(h.service.authorityOf('term-1')).toBe('local');
     expect(h.service.authorityOf('term-9')).toBeUndefined();
@@ -358,13 +400,13 @@ describe('create validation', () => {
     h.current = undefined;
     let answer!: (value: OverlayAnswer) => void;
     const overlay = { request: () => new Promise<OverlayAnswer>((resolve) => (answer = resolve)) };
-    const picked = pickNewTerminal(overlay, h.service.profileOptions(), h.service.projectOptions(), undefined);
+    const picked = pickNewTerminal(overlay, new TerminalPickSession(h.service.projectOptions()), undefined);
     h.projects = [ALPHA];
     h.current = ALPHA.key;
     h.service.projectsChanged([ALPHA.key]);
-    answer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null });
+    answer({ kind: 'newTerminal', projectKey: null, profileId: null });
     const pick = (await picked)!;
-    expect(pick.target).toEqual({ home: true });
+    expect(pick).toEqual({ profileId: null, target: { home: true } });
     expect(h.service.create(pick, true)).toEqual({ ok: true, id: 'term-1' });
     await settle();
     expect(h.ptys.map((pty) => pty.options.cwd)).toEqual(['C:\\Users\\me']);
@@ -372,9 +414,8 @@ describe('create validation', () => {
   });
 
   it('restores a saved home folder terminal in the home folder while projects are open', async () => {
-    const saved: PersistedTerminals = { terminals: [stored('pwsh', null), stored('git-bash', ALPHA.key)], active: 0, listWidthRem: 12, groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }] };
-    const h = harness({ saved });
-    h.service.restore();
+    const h = harness({ saved: singles([stored('pwsh', null), stored('git-bash', ALPHA.key)], 0) });
+    h.service.restore([]);
     await settle();
     expect(h.ptys.map((pty) => [pty.file, pty.options.cwd])).toEqual([[PWSH.file, 'C:\\Users\\me'], [BASH.file, ALPHA.fsPath]]);
     expect(lastState(h).terminals.map((terminal) => terminal.projectKey)).toEqual([null, ALPHA.key]);
@@ -390,13 +431,47 @@ describe('create validation', () => {
     expect(lastState(other).terminals[0]!.profileId).toBe('pwsh');
   });
 
-  it('lists the current project first for the quick pick', () => {
+  it('lists the projects in the sidebar\'s order for the quick pick, the current one marked where it stands', () => {
     const h = harness();
     h.current = BETA.key;
     expect(h.service.projectOptions()).toEqual([
-      { key: BETA.key, name: 'beta', path: BETA.fsPath, current: true },
-      { key: ALPHA.key, name: 'alpha', path: ALPHA.fsPath, current: false },
+      { key: ALPHA.key, name: 'alpha', path: ALPHA.fsPath, current: false, authority: { kind: 'local' }, reachable: true },
+      { key: BETA.key, name: 'beta', path: BETA.fsPath, current: true, authority: { kind: 'local' }, reachable: true },
     ]);
+  });
+
+  it('lists every host\'s projects grouped in the sidebar\'s host order, each marked reachable while its host is connected', () => {
+    const h = harness();
+    const prod: TerminalProject = { key: 'ssh+prod|/srv/api', name: 'api', fsPath: '/srv/api' };
+    const daemon: TerminalProject = { key: 'loopback|/srv/app', name: 'app', fsPath: '/srv/app' };
+    const web: TerminalProject = { key: 'ssh+prod|/srv/web', name: 'web', fsPath: '/srv/web' };
+    h.projects = [prod, ALPHA, daemon, web, BETA];
+    h.groupOrder = ['ssh+prod', 'local'];
+    h.current = daemon.key;
+    expect(h.service.projectOptions().map((option) => [option.name, option.authority, option.reachable, option.current])).toEqual([
+      ['api', { kind: 'ssh', name: 'prod', color: 'danger' }, false, false],
+      ['web', { kind: 'ssh', name: 'prod', color: 'danger' }, false, false],
+      ['alpha', { kind: 'local' }, true, false],
+      ['beta', { kind: 'local' }, true, false],
+      ['app', { kind: 'loopback', name: 'Local daemon' }, true, true],
+    ]);
+    h.connected.add('ssh+prod');
+    expect(h.service.projectOptions().filter((option) => option.reachable).map((option) => option.name)).toEqual(['api', 'web', 'alpha', 'beta', 'app']);
+  });
+
+  it('starts each host\'s own default shell: this computer\'s setting, a remote host\'s record, else the host\'s first shell', () => {
+    const daemon: TerminalProject = { key: 'loopback|/srv/app', name: 'app', fsPath: '/srv/app' };
+    const h = harness({ defaultProfile: 'git-bash' });
+    h.projects = [ALPHA, daemon];
+    h.hostProfiles = [PWSH, BASH];
+    expect(h.service.profileOptions(daemon.key).map((option) => [option.id, option.isDefault])).toEqual([['pwsh', true], ['git-bash', false]]);
+    h.hostDefaults = { loopback: 'git-bash' };
+    expect(h.service.profileOptions(daemon.key).map((option) => [option.id, option.isDefault])).toEqual([['pwsh', false], ['git-bash', true]]);
+    h.settings = { defaultProfile: 'pwsh' };
+    expect(h.service.profileOptions(ALPHA.key).map((option) => [option.id, option.isDefault])).toEqual([['pwsh', true], ['git-bash', false]]);
+    expect(h.service.profileOptions(daemon.key).find((option) => option.isDefault)?.id).toBe('git-bash');
+    h.hostDefaults = { loopback: 'fish' };
+    expect(h.service.profileOptions(daemon.key).find((option) => option.isDefault)?.id).toBe('pwsh');
   });
 
   it('focuses a terminal only when a user action in main created it', () => {
@@ -567,12 +642,22 @@ describe('exit, kill and restart', () => {
     const again = h.service.runTask(task);
     await settle();
     expect(lastState(h).terminals.filter((terminal) => terminal.title === 'Setup').map((terminal) => terminal.id)).toEqual([again]);
-    expect(h.persisted.at(-1)?.terminals).toEqual([]);
+    expect(panesOf(h.persisted.at(-1)!)).toEqual([]);
     // a terminal opened in the worktree gets the same two variables
     h.service.create({ profileId: 'pwsh', target: { project: worktree.key } }, false);
     await settle();
     expect(h.ptys.at(-1)!.options.env).toMatchObject({ DAMOCLES_PROJECT_FOLDER: ALPHA.fsPath, DAMOCLES_WORKTREE_INDEX: '1' });
     expect(h.ptys.at(-1)!.options.env).not.toHaveProperty('EXTRA');
+  });
+
+  it('makes a task tab it runs the command target, over the terminal typed in last', () => {
+    const h = harness();
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.inputFocused('term-1');
+    const id = h.service.runTask({ key: 'setup', name: 'Setup', file: PWSH.file, args: [], projectKey: ALPHA.key, cwd: ALPHA.fsPath, env: {}, onExit: () => undefined, onRestart: () => undefined });
+    expect(lastState(h).activeId).toBe(id);
+    expect(h.service.commandTarget()).toBe(id);
+    expect(h.service.target()).toEqual({ id, status: 'starting', placement: 'panel', task: true });
   });
 
   it('restarts only an exited terminal', async () => {
@@ -611,7 +696,7 @@ describe('exit, kill and restart', () => {
     await settle();
     expect(h.ptys.map((pty) => pty.killed)).toEqual([true, false]);
     expect(lastState(h).terminals.map((terminal) => terminal.projectKey)).toEqual([BETA.key]);
-    expect(h.persisted.at(-1)).toEqual({ terminals: [{ profileId: 'pwsh', projectKey: BETA.key, name: null, customIcon: null, color: null }], active: 0, listWidthRem: DEFAULT_PERSISTED_TERMINALS.listWidthRem, groups: [{ panes: 1, activePane: 0, sizes: [1] }] });
+    expect(h.persisted.at(-1)).toEqual(singles([stored('pwsh', BETA.key)], 0, DEFAULT_PERSISTED_TERMINALS.listWidthRem));
   });
 
   it('publishes the state again when the projects change, though no terminal was killed', () => {
@@ -867,7 +952,7 @@ describe('exit, kill and restart', () => {
 describe('remote terminals', () => {
   const REMOTE: TerminalProject = { key: 'loopback|c:\\work\\remote', name: 'remote', fsPath: 'C:\\work\\remote' };
 
-  it('keeps a remote terminal in remote-state.json only, with a daemon-unique id, and leaves it out of the quit question', async () => {
+  it('keeps a remote terminal\'s record in remote-state.json, names it by id alone in the layout, and leaves it out of the quit question', async () => {
     const h = harness();
     h.projects = [ALPHA, REMOTE];
     h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
@@ -875,10 +960,12 @@ describe('remote terminals', () => {
     await settle();
     if (!remote.ok) throw new Error('no remote terminal');
     expect(remote.id).toMatch(/^term-[1-9]\d{14}$/);
-    expect(h.persisted.at(-1)!.terminals).toEqual([stored('pwsh', ALPHA.key)]);
-    expect(h.persisted.at(-1)!.groups).toHaveLength(1);
+    expect(h.persisted.at(-1)).toEqual(singles([stored('pwsh', ALPHA.key), { kind: 'remote', id: remote.id }], 1, DEFAULT_PERSISTED_TERMINALS.listWidthRem));
     expect(h.remote.at(-1)).toEqual([expect.objectContaining({ id: remote.id, projectKey: REMOTE.key, startCwd: REMOTE.fsPath, profile: expect.objectContaining({ id: 'pwsh' }) })]);
-    expect(h.remote.at(-1)![0]!.nonce).not.toBe('');
+    const { nonce } = h.remote.at(-1)![0]!;
+    expect(nonce).not.toBe('');
+    // the shell-integration nonce stays host-scoped
+    expect(JSON.stringify(h.persisted.at(-1))).not.toContain(nonce);
     expect(h.service.quitIds()).toEqual(['term-1']);
   });
 
@@ -911,7 +998,7 @@ describe('remote terminals', () => {
     };
     h.service.closeWindow();
     h.service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
-    await h.service.reattach(backend, [...kept, gone]);
+    await h.service.reattach(backend, 'loopback', [...kept, gone], []);
     expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status, terminal.restoring])).toEqual([[created.id, 'running', true]]);
     // the daemon's screen keeps enough scrollback for this client's view once it attached
     expect(toDaemon).toEqual([{ type: 'clearAck', id: created.id }, { type: 'serialize', id: created.id }, { type: 'scrollback', id: created.id, scrollback: SETTINGS.scrollback }]);
@@ -935,7 +1022,7 @@ describe('remote terminals', () => {
     expect(() => h.service.detach(local.id)).toThrow();
   });
 
-  it('shows a launch\'s kept terminals as reconnecting until the host reattaches them, and one the daemon lost as exited', async () => {
+  it('restores the kept terminals as reconnecting until the host reattaches them, and drops one the daemon lost with its record', async () => {
     const h = harness();
     h.projects = [REMOTE];
     const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
@@ -945,21 +1032,86 @@ describe('remote terminals', () => {
     const gone = { ...kept[0]!, id: 'term-123456789012345' };
     h.service.closeWindow();
     h.service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
-    h.service.showReconnecting([...kept, gone]);
+    h.posted.length = 0;
+    h.service.restore([...kept, gone]);
     await settle();
-    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'reconnecting'], [gone.id, 'reconnecting']]);
-    // nothing reaches a host while it is away, and the kept list is not rewritten from the placeholders
-    const remoteWrites = h.remote.length;
-    h.service.kill(gone.id);
-    expect(h.remote.length).toBe(remoteWrites + 1);
-    h.service.showReconnecting([gone]);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status, terminal.title])).toEqual([[created.id, 'reconnecting', 'build'], [gone.id, 'reconnecting', 'build']]);
+    // nothing reaches a host while it is away
+    expect(h.posted).toEqual([]);
     const backend: TerminalBackend = {
       ...h.backend,
       startHost: () => ({ postMessage: () => undefined, onMessage: () => undefined, onExit: () => undefined, kill: () => undefined }),
       list: async () => [{ id: created.id, pid: 1, cols: 90, rows: 20 }],
     };
-    await h.service.reattach(backend, [...kept, gone]);
-    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'running'], [gone.id, 'exited']]);
+    await h.service.reattach(backend, 'loopback', [...kept, gone], []);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'running']]);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([created.id]);
+    expect(h.persisted.at(-1)!.groups.map((group) => group.panes)).toEqual([[{ kind: 'remote', id: created.id }]]);
+  });
+
+  it('drops a remote terminal\'s record and layout pane when its process exits, and keeps its exited tab with the exit code for the run', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const first = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!first.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: first.id, pid: 5 });
+    await h.service.split(first.id);
+    await settle();
+    const pane = lastState(h).activeId!;
+    connection.daemon({ type: 'ready', id: pane, pid: 6 });
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([first.id, pane]);
+    connection.daemon({ type: 'exit', id: pane, exitCode: 3 });
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status, terminal.exitCode])).toEqual([[first.id, 'running', null], [pane, 'exited', 3]]);
+    expect(lastState(h).groups.map((group) => group.paneIds)).toEqual([[first.id, pane]]);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([first.id]);
+    expect(h.persisted.at(-1)!.groups).toEqual([{ panes: [{ kind: 'remote', id: first.id }], activePane: 0, sizes: [1] }]);
+    // a later change keeps it out
+    h.service.rename(first.id, 'build');
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([first.id]);
+  });
+
+  it('keeps the record and layout pane of a remote terminal its host is away from: reconnecting after a drop, exited after the connection closed', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    const [kept] = h.remote.at(-1)!;
+    h.service.connectionLost('loopback');
+    h.service.rename(created.id, 'build');
+    expect(lastState(h).terminals.map((terminal) => terminal.status)).toEqual(['reconnecting']);
+    expect(h.remote.at(-1)).toEqual([{ ...kept!, name: 'build' }]);
+    h.service.connectionResumed('loopback');
+    // a connection that closed without a drop exits the tab, though the terminal still runs on its host
+    connection.close('Disconnect Host');
+    h.service.rename(created.id, 'server');
+    expect(lastState(h).terminals.map((terminal) => terminal.status)).toEqual(['exited']);
+    expect(h.remote.at(-1)).toEqual([{ ...kept!, name: 'server' }]);
+    expect(h.persisted.at(-1)!.groups.map((group) => group.panes)).toEqual([[{ kind: 'remote', id: created.id }]]);
+  });
+
+  it('writes a fresh record, with the new process\'s nonce, when an exited remote terminal restarts', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    const before = h.remote.at(-1)![0]!;
+    connection.daemon({ type: 'exit', id: created.id, exitCode: 0 });
+    expect(h.remote.at(-1)).toEqual([]);
+    expect(h.persisted.at(-1)!.groups).toEqual([]);
+    await h.service.restart(created.id);
+    await settle();
+    const after = h.remote.at(-1)!;
+    expect(after).toEqual([{ ...before, nonce: expect.any(String) }]);
+    expect(after[0]!.nonce).not.toBe(before.nonce);
+    expect(h.persisted.at(-1)!.groups.map((group) => group.panes)).toEqual([[{ kind: 'remote', id: created.id }]]);
   });
 });
 
@@ -1020,6 +1172,7 @@ function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: false,
     transfers: false,
+    rangedReads: false,
     outside: false,
     listing: false,
     openStream: () => { throw new Error('no transfer streams in this suite'); },
@@ -1088,13 +1241,9 @@ describe('remote terminals across connections', () => {
     h.hostProfiles = [{ id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }];
     h.current = REMOTE.key;
     h.service.publish();
-    expect(lastState(h).profiles.map((profile) => [profile.id, profile.isDefault])).toEqual([['bash', true]]);
-    expect(h.service.profileOptions(REMOTE.key).map((profile) => profile.id)).toEqual(['bash']);
-    expect(h.service.projectOptions().map((option) => option.key)).toEqual([REMOTE.key]);
-    h.current = ALPHA.key;
-    h.service.publish();
-    expect(lastState(h).profiles.map((profile) => profile.id)).toEqual(['pwsh', 'git-bash']);
-    expect(h.service.projectOptions().map((option) => option.key)).toEqual([ALPHA.key]);
+    expect(h.service.profileOptions(REMOTE.key).map((profile) => [profile.id, profile.isDefault])).toEqual([['bash', true]]);
+    expect(h.service.profileOptions(ALPHA.key).map((profile) => profile.id)).toEqual(['pwsh', 'git-bash']);
+    expect(h.service.projectOptions().map((option) => option.key)).toEqual([ALPHA.key, REMOTE.key]);
   });
 
   it('starts, splits and restarts a remote terminal with its host\'s own shells, while a local project\'s pick lists this computer\'s', async () => {
@@ -1114,7 +1263,7 @@ describe('remote terminals across connections', () => {
     h.hostProfiles = [];
     await h.service.restart(created.id);
     expect(h.logs).toContain(`[terminal] not restarting ${created.id}: its profile bash is no longer listed`);
-    expect(lastState(h).profiles.map((profile) => profile.id)).toEqual(['pwsh', 'git-bash']);
+    expect(h.service.profileOptions(ALPHA.key).map((profile) => profile.id)).toEqual(['pwsh', 'git-bash']);
   });
 
   it('puts each terminal a reconnect reattaches back in its exited tab\'s place, its split and its name kept', async () => {
@@ -1138,7 +1287,7 @@ describe('remote terminals across connections', () => {
     connection.close('network');
     expect(lastState(h).terminals.map((terminal) => terminal.status)).toEqual(['exited', 'exited', 'exited']);
     connection = fakeConnection([first.id, pane, last.id].map((id) => ({ id, pid: 5, cols: 80, rows: 24 })));
-    await h.service.reattach(connection.workspace.terminals, kept);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', kept, []);
     const after = lastState(h);
     expect(after.groups).toEqual(before);
     expect(after.terminals.map((terminal) => [terminal.id, terminal.status, terminal.name])).toEqual([[first.id, 'running', null], [pane, 'running', 'server'], [last.id, 'running', null]]);
@@ -1167,7 +1316,7 @@ describe('remote terminals across connections', () => {
     connection.close('the daemon no longer holds this connection');
     expect(statusOf(h, created.id)).toBe('reconnecting');
     connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24 }]);
-    await h.service.reattach(connection.workspace.terminals, kept);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', kept, []);
     expect(statusOf(h, created.id)).toBe('running');
     expect(connection.posts.filter((request) => request.type === 'serialize').map((request) => request.id)).toEqual([created.id]);
   });
@@ -1209,10 +1358,14 @@ describe('remote terminals across connections', () => {
     h.service.input(ended.id, 'pwd');
     connection.close('the daemon no longer holds this connection');
     connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24 }]);
-    await h.service.reattach(connection.workspace.terminals, kept);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', kept, []);
     expect(connection.posts.filter((request) => 'id' in request && request.id === created.id).map((request) => request.type)).toEqual(['clearAck', 'serialize', 'scrollback', 'input']);
     expect(connection.posts.some((request) => 'id' in request && request.id === ended.id)).toBe(false);
     expect(h.logs).toContain(`[terminal] ${ended.id} ended while its host was away; 1 inputs typed meanwhile were not sent`);
+    // the tab this run showed stays, exited, and no longer comes back on a relaunch
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'running'], [ended.id, 'exited']]);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([created.id]);
+    expect(h.persisted.at(-1)!.groups.map((group) => group.panes)).toEqual([[{ kind: 'remote', id: created.id }]]);
   });
 
   it('counts the shell\'s sequences on from a reattached screen, so the next reload\'s marks land on their commands', async () => {
@@ -1227,7 +1380,7 @@ describe('remote terminals across connections', () => {
     h.service.closeWindow();
     h.service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
     connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24 }]);
-    await h.service.reattach(connection.workspace.terminals, kept);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', kept, []);
     // the daemon's screen holds five sequences the shell printed before this client attached
     connection.daemon({ type: 'screen', id: created.id, data: '$ ', cols: 80, rows: 24, marks: [], sequences: 5 });
     connection.daemon({ type: 'data', id: created.id, data: `\r\n\x1b]633;A;${kept[0]!.nonce}\x07$ ` });
@@ -1297,6 +1450,191 @@ describe('remote terminals across connections', () => {
     connection.daemon({ type: 'exit', id, exitCode: 1 });
     expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[id, 'exited']]);
   });
+
+  const keptRecord = (id: string): RemoteTerminalRecord => ({ id, projectKey: REMOTE.key, profile: { id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }, startCwd: '/srv/app', nonce: 'ab'.repeat(16), name: null, customIcon: null, color: null });
+  const liveOf = (...ids: string[]): LiveTerminal[] => ids.map((id) => ({ id, pid: 5, cols: 80, rows: 24 }));
+  const kills = (connection: FakeConnection): string[] => connection.posts.flatMap((request) => (request.type === 'kill' ? [request.id] : []));
+
+  it('writes the records of an authority\'s first reattach even when it kept none, so a terminal started before it is kept', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: null, target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    const written = h.remote.length;
+    await h.service.reattach(connection.workspace.terminals, 'loopback', [], []);
+    expect(h.remote).toHaveLength(written + 1);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([created.id]);
+  });
+
+  it('ends a remote terminal whose spawn the daemon refused: its record and layout pane go, its tab stays exited', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: null, target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([created.id]);
+    connection.daemon({ type: 'error', id: created.id, message: 'posix_spawnp failed.' });
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'exited']]);
+    expect(h.remote.at(-1)).toEqual([]);
+    expect(h.persisted.at(-1)!.groups).toEqual([]);
+  });
+
+  it('ends a reattached terminal whose screen the daemon answers is not running', async () => {
+    const id = 'term-111111111111111';
+    const connection = fakeConnection(liveOf(id));
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(id)], []);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([id]);
+    connection.daemon({ type: 'error', id, message: `terminal ${id} is not running` });
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[id, 'exited']]);
+    expect(h.remote.at(-1)).toEqual([]);
+    expect(h.persisted.at(-1)!.groups).toEqual([]);
+  });
+
+  it('takes a placeholder its daemon no longer lists out of its split group: the sizes shared again, the active pane handed to the pane at its index', async () => {
+    const id = 'term-111111111111111';
+    const saved: PersistedTerminals = {
+      version: 2,
+      listWidthRem: 12,
+      groups: [{ panes: [stored('pwsh', ALPHA.key), { kind: 'remote', id }, stored('git-bash', ALPHA.key)], activePane: 1, sizes: [0.2, 0.5, 0.3] }],
+      active: 0,
+      editor: [],
+    };
+    const connection = fakeConnection();
+    const h = harness({ saved, remote: () => connection.workspace });
+    h.projects = [ALPHA, REMOTE];
+    h.service.restore([keptRecord(id)]);
+    expect(groupsOf(h)).toEqual([[['term-1', id, 'term-2'], id, [0.2, 0.5, 0.3]]]);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(id)], []);
+    expect(groupsOf(h)).toEqual([[['term-1', 'term-2'], 'term-2', [0.5, 0.5]]]);
+    expect(lastState(h).activeId).toBe('term-2');
+    expect(h.logs).toContain(`[terminal] not restoring ${id}: it ended while its host was away`);
+    expect(h.persisted.at(-1)!.groups).toEqual([{ panes: [stored('pwsh', ALPHA.key), stored('git-bash', ALPHA.key)], activePane: 1, sizes: [0.5, 0.5] }]);
+  });
+
+  it('closes the editor tab of a placeholder its daemon no longer lists', async () => {
+    const id = 'term-111111111111111';
+    const connection = fakeConnection();
+    const h = harness({ saved: { ...DEFAULT_PERSISTED_TERMINALS, editor: [{ kind: 'remote', id }] }, remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    h.service.restore([keptRecord(id)]);
+    expect(h.service.tabSource.tabs().map((tab) => tab.id)).toEqual([`terminal:${id}`]);
+    const announced = h.editorTabs;
+    await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(id)], []);
+    expect(h.service.tabSource.tabs()).toEqual([]);
+    expect(h.editorTabs).toBe(announced + 1);
+    expect(lastState(h).terminals).toEqual([]);
+    expect(h.persisted.at(-1)!.editor).toEqual([]);
+  });
+
+  it('kills on the daemon a placeholder a Kill closed, once its host reattaches in the same run, and never gives it a tab', async () => {
+    const [killed, kept] = ['term-111111111111111', 'term-222222222222222'];
+    const connection = fakeConnection(liveOf(killed, kept));
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    h.service.restore([keptRecord(killed), keptRecord(kept)]);
+    h.service.kill(killed);
+    expect(h.kills).toEqual([['loopback', killed]]);
+    expect(lastState(h).terminals.map((terminal) => terminal.id)).toEqual([kept]);
+    // remote-state.json may still hold its record when the reattach reads it
+    expect(await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(killed), keptRecord(kept)], [])).toEqual([killed]);
+    expect(kills(connection)).toEqual([killed]);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[kept, 'running']]);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([kept]);
+    // the kill no longer waits
+    expect(await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(kept)], [])).toEqual([]);
+    expect(kills(connection)).toEqual([killed]);
+  });
+
+  it('kills a placeholder a Kill closed when its host reattaches after a relaunch, from what remote-state.json kept', async () => {
+    vi.useRealTimers();
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-terminal-kill-'));
+    try {
+      const [killed, kept] = ['term-111111111111111', 'term-222222222222222'];
+      const state = await RemoteState.open(userData, () => undefined);
+      await state.setTerminals('loopback', [keptRecord(killed), keptRecord(kept)]);
+      const before = harness({ remote: () => fakeConnection().workspace });
+      before.projects = [REMOTE];
+      before.service.restore(state.terminals('loopback'));
+      before.service.kill(killed);
+      for (const [authority, id] of before.kills) await state.killOnReattach(authority, id);
+
+      const relaunched = await RemoteState.open(userData, () => undefined);
+      expect(relaunched.terminals('loopback')).toEqual([keptRecord(kept)]);
+      expect(relaunched.pendingKills('loopback')).toEqual([killed]);
+      const connection = fakeConnection(liveOf(killed, kept));
+      const h = harness({ remote: () => connection.workspace });
+      h.projects = [REMOTE];
+      h.service.restore(relaunched.terminals('loopback'));
+      expect(lastState(h).terminals.map((terminal) => terminal.id)).toEqual([kept]);
+      const done = await h.service.reattach(connection.workspace.terminals, 'loopback', relaunched.terminals('loopback'), relaunched.pendingKills('loopback'));
+      expect(kills(connection)).toEqual([killed]);
+      expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[kept, 'running']]);
+      await relaunched.killsDone('loopback', done);
+      expect((await RemoteState.open(userData, () => undefined)).pendingKills('loopback')).toEqual([]);
+    } finally {
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
+  it('kills on the next connection a terminal killed while its connection was away, reconnecting or exited by the close, and never gives it a tab', async () => {
+    const first = fakeConnection();
+    let connection = first;
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const ids = [0, 1, 2].map(() => {
+      const created = h.service.create({ profileId: null, target: { project: REMOTE.key } }, false);
+      if (!created.ok) throw new Error('no remote terminal');
+      return created.id;
+    });
+    const [held, kept, closed] = ids as [string, string, string];
+    await settle();
+    for (const id of ids) first.daemon({ type: 'ready', id, pid: 5 });
+    const records = h.remote.at(-1)!;
+    h.service.connectionLost('loopback');
+    // posted on the held connection, which may never resume
+    h.service.kill(held);
+    expect(kills(first)).toEqual([held]);
+    h.service.connectionResumed('loopback');
+    first.close('network');
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[kept, 'exited'], [closed, 'exited']]);
+    // its shell still runs on the host, which no host of this run can be told now
+    h.service.kill(closed);
+    expect(h.kills).toEqual([['loopback', held], ['loopback', closed]]);
+    connection = fakeConnection(liveOf(...ids));
+    expect(await h.service.reattach(connection.workspace.terminals, 'loopback', records, [])).toEqual([held, closed]);
+    expect(kills(connection)).toEqual([held, closed]);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[kept, 'running']]);
+  });
+
+  it('leaves the terminals of a project that closed while its host was away running there', () => {
+    const id = 'term-111111111111111';
+    const h = harness({ remote: () => fakeConnection().workspace });
+    h.projects = [REMOTE];
+    h.service.restore([keptRecord(id)]);
+    h.projects = [];
+    h.service.projectsChanged([]);
+    expect(lastState(h).terminals).toEqual([]);
+    expect(h.kills).toEqual([]);
+  });
+
+  it('names a placeholder\'s refusals for what they are: a tab it has already, and an editor terminal as a join anchor', async () => {
+    const id = 'term-111111111111111';
+    const live: LiveTerminal = { id, pid: 5, cols: 80, rows: 24, view: { root: '/srv/app', profile: keptRecord(id).profile, startCwd: '/srv/app', nonce: 'ab'.repeat(16) } };
+    const connection = fakeConnection([live]);
+    const h = harness({ saved: { ...DEFAULT_PERSISTED_TERMINALS, groups: [{ panes: [{ kind: 'remote', id }], activePane: 0, sizes: [1] }], active: 0 }, remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    await h.service.open(connection.workspace.terminals, 'loopback', id);
+    h.service.restore([keptRecord(id)]);
+    expect(h.logs).toContain(`[terminal] not restoring ${id}: it has a tab already`);
+    h.service.move({ kind: 'toEditor', id });
+    h.service.join(id, []);
+    expect(h.logs).toContain(`[terminal] not joining terminals to ${id}: it is in the editor`);
+  });
 });
 
 describe('a reload of the shell page with several terminals', () => {
@@ -1344,24 +1682,14 @@ describe('window layout', () => {
     h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     h.service.select('term-1');
     h.service.setListWidth(1000);
-    expect(h.persisted.at(-1)).toEqual({
-      terminals: [{ profileId: 'pwsh', projectKey: ALPHA.key, name: null, customIcon: null, color: null }, { profileId: 'git-bash', projectKey: BETA.key, name: null, customIcon: null, color: null }],
-      active: 0,
-      listWidthRem: TERMINAL_LIST_MAX_REM,
-      groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }],
-    });
-    expect(lastState(h)).toMatchObject({ activeId: 'term-1', listWidthRem: TERMINAL_LIST_MAX_REM, canCreate: true, passKeys: ['CmdOrCtrl+P'] });
+    expect(h.persisted.at(-1)).toEqual(singles([stored('pwsh', ALPHA.key), stored('git-bash', BETA.key)], 0, TERMINAL_LIST_MAX_REM));
+    expect(lastState(h)).toMatchObject({ activeId: 'term-1', listWidthRem: TERMINAL_LIST_MAX_REM, canCreate: true, passKeys: ['CmdOrCtrl+P', 'Ctrl+Shift+5'] });
   });
 
   it('restores the saved terminals without focus, skipping a missing profile or project', async () => {
-    const saved: PersistedTerminals = {
-      terminals: [stored('fish', ALPHA.key), { ...stored('git-bash', BETA.key), name: 'build', color: 'green' }, stored('pwsh', 'c:\\gone'), { ...stored('pwsh', ALPHA.key), customIcon: 'rocket' }],
-      active: 1,
-      listWidthRem: 12,
-      groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }],
-    };
+    const saved = singles([stored('fish', ALPHA.key), { ...stored('git-bash', BETA.key), name: 'build', color: 'green' }, stored('pwsh', 'c:\\gone'), { ...stored('pwsh', ALPHA.key), customIcon: 'rocket' }], 1);
     const h = harness({ saved });
-    h.service.restore();
+    h.service.restore([]);
     await settle();
     expect(h.focused).toEqual([]);
     expect(lastState(h)).toMatchObject({ activeId: 'term-1', listWidthRem: 12 });
@@ -1373,15 +1701,14 @@ describe('window layout', () => {
       ['build', 'build', null, 'green'],
       ['PowerShell', null, 'rocket', null],
     ]);
-    expect(h.persisted.at(-1)).toEqual({ terminals: [{ ...stored('git-bash', BETA.key), name: 'build', color: 'green' }, { ...stored('pwsh', ALPHA.key), customIcon: 'rocket' }], active: 0, listWidthRem: 12, groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }] });
+    expect(h.persisted.at(-1)).toEqual(singles([{ ...stored('git-bash', BETA.key), name: 'build', color: 'green' }, { ...stored('pwsh', ALPHA.key), customIcon: 'rocket' }], 0));
   });
 
   // Toggle Terminal can start one before the window page finishes loading, and so before the restore runs.
   it('restores the terminals saved as the window opened ahead of one started before the restore, which stays active', async () => {
-    const saved: PersistedTerminals = { terminals: [stored('pwsh', ALPHA.key), stored('git-bash', BETA.key)], active: 1, listWidthRem: 12, groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }] };
-    const h = harness({ saved });
+    const h = harness({ saved: singles([stored('pwsh', ALPHA.key), stored('git-bash', BETA.key)], 1) });
     expect(h.service.ensureTerminal()).toBe('term-1');
-    h.service.restore();
+    h.service.restore([]);
     await settle();
     expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.profileId, terminal.projectKey])).toEqual([
       ['term-2', 'pwsh', ALPHA.key],
@@ -1389,7 +1716,7 @@ describe('window layout', () => {
       ['term-1', 'pwsh', ALPHA.key],
     ]);
     expect(lastState(h).activeId).toBe('term-1');
-    expect(h.persisted.at(-1)).toEqual({ terminals: [stored('pwsh', ALPHA.key), stored('git-bash', BETA.key), stored('pwsh', ALPHA.key)], active: 2, listWidthRem: 12, groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }] });
+    expect(h.persisted.at(-1)).toEqual(singles([stored('pwsh', ALPHA.key), stored('git-bash', BETA.key), stored('pwsh', ALPHA.key)], 2));
     expect(h.ptys).toHaveLength(3);
   });
 
@@ -1438,13 +1765,13 @@ describe('rename, icon and color', () => {
     h.service.setCustomIcon('term-1', 'server');
     h.service.setColor('term-1', 'cyan');
     expect(lastState(h).terminals[0]).toMatchObject({ title: 'server', name: 'server', icon: 'powershell', customIcon: 'server', color: 'cyan' });
-    expect(h.persisted.at(-1)!.terminals).toEqual([{ ...stored('pwsh', ALPHA.key), name: 'server', customIcon: 'server', color: 'cyan' }]);
+    expect(panesOf(h.persisted.at(-1)!)).toEqual([{ ...stored('pwsh', ALPHA.key), name: 'server', customIcon: 'server', color: 'cyan' }]);
     expect(h.service.appearance('term-1')).toEqual({ icon: 'powershell', customIcon: 'server', color: 'cyan' });
     h.service.rename('term-1', null);
     h.service.setCustomIcon('term-1', null);
     h.service.setColor('term-1', null);
     expect(lastState(h).terminals[0]).toMatchObject({ title: 'PowerShell', name: null, customIcon: null, color: null });
-    expect(h.persisted.at(-1)!.terminals).toEqual([stored('pwsh', ALPHA.key)]);
+    expect(panesOf(h.persisted.at(-1)!)).toEqual([stored('pwsh', ALPHA.key)]);
     const count = h.persisted.length;
     h.service.rename('term-9', 'nope');
     h.service.setColor('term-9', 'red');
@@ -1468,11 +1795,11 @@ describe('palette actions and state', () => {
     expect(lastState(h)).toMatchObject({ terminals: [], activeId: null });
   });
 
-  it('publishes the detected profiles and every terminal setting the shell applies, and keeps main-only ones out', () => {
+  it('publishes every terminal setting the shell applies, and keeps main-only ones out', () => {
     const h = harness({ defaultProfile: 'git-bash' });
     h.service.create({ profileId: null, target: { current: true } }, false);
     const state = lastState(h);
-    expect(state.profiles.map((profile) => [profile.id, profile.isDefault])).toEqual([['pwsh', false], ['git-bash', true]]);
+    expect(state).not.toHaveProperty('profiles');
     expect(state.settings).toEqual({ fontSize: 13, scrollback: 1000, cursorStyle: 'block', fontFamily: 'Cascadia Code', lineHeight: 1.2, cursorBlinking: false, macOptionIsMeta: false, decorationsEnabled: true });
   });
 
@@ -1976,42 +2303,44 @@ describe('split groups', () => {
   it('publishes the pane keys only while the active group has more than one pane', async () => {
     const h = harness();
     h.service.create({ profileId: null, target: { current: true } }, false);
-    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P', 'Ctrl+Shift+5']);
     expect(h.service.splitActive()).toBe(false);
     await h.service.split('term-1');
-    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P', 'Alt+Left', 'Alt+Right']);
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P', 'Ctrl+Shift+5', 'Alt+Left', 'Alt+Right']);
     expect(h.service.splitActive()).toBe(true);
     h.service.create({ profileId: null, target: { current: true } }, false);
-    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P', 'Ctrl+Shift+5']);
   });
 });
 
 describe('split groups in the window layout', () => {
-  it('saves each group\'s pane count, active pane and sizes with the list', async () => {
+  it('saves each group\'s panes, active pane and sizes, and the active group', async () => {
     const h = harness();
     h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
     h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     h.service.resizePanes('group-1', [0.7, 0.3]);
     expect(h.persisted.at(-1)).toEqual({
-      terminals: [stored('pwsh', ALPHA.key), stored('pwsh', ALPHA.key), stored('git-bash', BETA.key)],
-      active: 2,
+      version: 2,
       listWidthRem: DEFAULT_PERSISTED_TERMINALS.listWidthRem,
-      groups: [{ panes: 2, activePane: 1, sizes: [0.7, 0.3] }, { panes: 1, activePane: 0, sizes: [1] }],
+      groups: [{ panes: [stored('pwsh', ALPHA.key), stored('pwsh', ALPHA.key)], activePane: 1, sizes: [0.7, 0.3] }, { panes: [stored('git-bash', BETA.key)], activePane: 0, sizes: [1] }],
+      active: 1,
+      editor: [],
     });
     h.service.select('term-1');
-    expect(h.persisted.at(-1)).toMatchObject({ active: 0, groups: [{ panes: 2, activePane: 0 }, { panes: 1, activePane: 0 }] });
+    expect(h.persisted.at(-1)).toMatchObject({ active: 0, groups: [{ activePane: 0 }, { activePane: 0 }] });
   });
 
   it('restores the groups, their sizes and active panes without focus', async () => {
     const saved: PersistedTerminals = {
-      terminals: [stored('pwsh', ALPHA.key), stored('git-bash', ALPHA.key), stored('pwsh', BETA.key)],
-      active: 2,
+      version: 2,
       listWidthRem: 12,
-      groups: [{ panes: 2, activePane: 1, sizes: [0.7, 0.3] }, { panes: 1, activePane: 0, sizes: [1] }],
+      groups: [{ panes: [stored('pwsh', ALPHA.key), stored('git-bash', ALPHA.key)], activePane: 1, sizes: [0.7, 0.3] }, { panes: [stored('pwsh', BETA.key)], activePane: 0, sizes: [1] }],
+      active: 1,
+      editor: [],
     };
     const h = harness({ saved });
-    h.service.restore();
+    h.service.restore([]);
     await settle();
     expect(h.focused).toEqual([]);
     expect(groupsOf(h)).toEqual([[['term-1', 'term-2'], 'term-2', [0.7, 0.3]], [['term-3'], 'term-3', [1]]]);
@@ -2020,45 +2349,410 @@ describe('split groups in the window layout', () => {
 
   it('restores a group without a pane whose profile or project is gone, sharing the sizes again', async () => {
     const saved: PersistedTerminals = {
-      terminals: [stored('pwsh', ALPHA.key), stored('fish', ALPHA.key), stored('git-bash', ALPHA.key), stored('pwsh', 'c:\\gone')],
-      active: 1,
+      version: 2,
       listWidthRem: 12,
-      groups: [{ panes: 3, activePane: 1, sizes: [0.4, 0.4, 0.2] }, { panes: 1, activePane: 0, sizes: [1] }],
+      groups: [{ panes: [stored('pwsh', ALPHA.key), stored('fish', ALPHA.key), stored('git-bash', ALPHA.key)], activePane: 1, sizes: [0.4, 0.4, 0.2] }, { panes: [stored('pwsh', 'c:\\gone')], activePane: 0, sizes: [1] }],
+      active: 0,
+      editor: [],
     };
     const h = harness({ saved });
-    h.service.restore();
+    h.service.restore([]);
     await settle();
     expect(groupsOf(h)).toEqual([[['term-1', 'term-2'], 'term-2', [0.5, 0.5]]]);
     expect(lastState(h).activeId).toBe('term-2');
+    expect(h.logs).toContain('[terminal] not restoring a fish terminal: unknownProfile');
   });
 
   it('keeps a restored group\'s active pane on its terminal when a pane before it is gone', async () => {
     const saved: PersistedTerminals = {
-      terminals: [stored('fish', ALPHA.key), stored('pwsh', ALPHA.key), stored('git-bash', ALPHA.key), stored('pwsh', BETA.key)],
-      active: 3,
+      version: 2,
       listWidthRem: 12,
-      groups: [{ panes: 3, activePane: 1, sizes: [0.4, 0.3, 0.3] }, { panes: 1, activePane: 0, sizes: [1] }],
+      groups: [{ panes: [stored('fish', ALPHA.key), stored('pwsh', ALPHA.key), stored('git-bash', ALPHA.key)], activePane: 1, sizes: [0.4, 0.3, 0.3] }, { panes: [stored('pwsh', BETA.key)], activePane: 0, sizes: [1] }],
+      active: 1,
+      editor: [],
     };
     const h = harness({ saved });
-    h.service.restore();
+    h.service.restore([]);
     await settle();
     expect(groupsOf(h)).toEqual([[['term-1', 'term-2'], 'term-1', [0.5, 0.5]], [['term-3'], 'term-3', [1]]]);
   });
 
   it('restores saved groups ahead of a group started before the restore, which stays active', async () => {
-    const saved: PersistedTerminals = {
-      terminals: [stored('pwsh', ALPHA.key), stored('pwsh', ALPHA.key)],
-      active: 0,
-      listWidthRem: 12,
-      groups: [{ panes: 2, activePane: 0, sizes: [0.5, 0.5] }],
-    };
+    const saved: PersistedTerminals = { version: 2, listWidthRem: 12, groups: [{ panes: [stored('pwsh', ALPHA.key), stored('pwsh', ALPHA.key)], activePane: 0, sizes: [0.5, 0.5] }], active: 0, editor: [] };
     const h = harness({ saved });
     h.service.ensureTerminal();
-    h.service.restore();
+    h.service.restore([]);
     await settle();
     expect(groupsOf(h)).toEqual([[['term-2', 'term-3'], 'term-2', [0.5, 0.5]], [['term-1'], 'term-1', [1]]]);
     expect(lastState(h).activeId).toBe('term-1');
     expect(h.focused).toEqual([]);
+  });
+});
+
+describe('moves', () => {
+  const REMOTE: TerminalProject = { key: 'loopback|c:\\work\\remote', name: 'remote', fsPath: 'C:\\work\\remote' };
+  const paneIds = (h: Harness): string[][] => lastState(h).groups.map((group) => [...group.paneIds]);
+  // count terminals, each in its own group: term-1..term-<count>, the last one active
+  const singlesOf = (count: number): Harness => {
+    const h = harness();
+    for (let index = 0; index < count; index++) h.service.create({ profileId: null, target: { current: true } }, false);
+    return h;
+  };
+  // a group of panes split off term-1 (term-1..term-<panes>, in order), then others more terminals in their own groups
+  const grouped = async (panes: number, others: number): Promise<Harness> => {
+    const h = harness();
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    for (let pane = 1; pane < panes; pane++) await h.service.split(`term-${pane}`);
+    for (let other = 0; other < others; other++) h.service.create({ profileId: null, target: { current: true } }, false);
+    return h;
+  };
+
+  it('reorders a pane inside its group before or after the target (moveInstance), sharing the sizes again', async () => {
+    const h = await grouped(3, 0);
+    h.service.resizePanes('group-1', [0.5, 0.3, 0.2]);
+    h.service.move({ kind: 'reorder', id: 'term-3', target: 'term-1', side: 'before' });
+    expect(groupsOf(h)).toEqual([[['term-3', 'term-1', 'term-2'], 'term-3', [1 / 3, 1 / 3, 1 / 3]]]);
+    expect(idsOf(h)).toEqual(['term-3', 'term-1', 'term-2']);
+    h.service.move({ kind: 'reorder', id: 'term-3', target: 'term-2', side: 'after' });
+    expect(paneIds(h)).toEqual([['term-1', 'term-2', 'term-3']]);
+    expect(lastState(h).activeId).toBe('term-3');
+  });
+
+  it('moves a pane\'s whole group before or after the target\'s group (moveGroup)', async () => {
+    const h = await grouped(2, 2);
+    h.service.move({ kind: 'reorder', id: 'term-4', target: 'term-2', side: 'before' });
+    expect(paneIds(h)).toEqual([['term-4'], ['term-1', 'term-2'], ['term-3']]);
+    expect(idsOf(h)).toEqual(['term-4', 'term-1', 'term-2', 'term-3']);
+    h.service.move({ kind: 'reorder', id: 'term-1', target: 'term-3', side: 'after' });
+    expect(paneIds(h)).toEqual([['term-4'], ['term-3'], ['term-1', 'term-2']]);
+    expect(lastState(h).activeId).toBe('term-4');
+  });
+
+  it('joins a pane to the target\'s group on either side of the target, and the group it left goes with its last pane', () => {
+    const h = singlesOf(3);
+    h.service.move({ kind: 'join', id: 'term-3', target: 'term-1', side: 'before' });
+    expect(groupsOf(h)).toEqual([[['term-3', 'term-1'], 'term-3', [0.5, 0.5]], [['term-2'], 'term-2', [1]]]);
+    h.service.move({ kind: 'join', id: 'term-2', target: 'term-1', side: 'after' });
+    expect(groupsOf(h)).toEqual([[['term-3', 'term-1', 'term-2'], 'term-3', [1 / 3, 1 / 3, 1 / 3]]]);
+    expect(lastState(h).activeId).toBe('term-3');
+  });
+
+  it('refuses a join onto itself, into a full group or of an unknown terminal, logging it and publishing nothing', async () => {
+    const h = await grouped(MAX_TERMINAL_GROUP_PANES, 1);
+    const other = `term-${MAX_TERMINAL_GROUP_PANES + 1}`;
+    const published = h.states.length;
+    h.service.move({ kind: 'join', id: other, target: 'term-1', side: 'after' });
+    h.service.move({ kind: 'join', id: other, target: other, side: 'after' });
+    h.service.move({ kind: 'join', id: 'term-99', target: 'term-1', side: 'after' });
+    h.service.move({ kind: 'reorder', id: other, target: 'term-99', side: 'after' });
+    expect(h.states).toHaveLength(published);
+    expect(h.logs).toEqual(expect.arrayContaining([
+      `[terminal] not joining ${other} to term-1: its group has ${MAX_TERMINAL_GROUP_PANES} panes`,
+      `[terminal] not joining ${other} to ${other}: it is the target`,
+      '[terminal] not moving term-99: no such terminal',
+      `[terminal] not moving ${other} next to term-99: no such panel terminal`,
+    ]));
+    // inside the full group a join is a reorder
+    h.service.move({ kind: 'join', id: 'term-1', target: 'term-2', side: 'after' });
+    expect(paneIds(h)[0]!.slice(0, 2)).toEqual(['term-2', 'term-1']);
+  });
+
+  it('detaches a pane into a group of its own at the end, and moves a group of one to the end', async () => {
+    const h = await grouped(2, 2);
+    h.service.move({ kind: 'detach', id: 'term-1' });
+    expect(paneIds(h)).toEqual([['term-2'], ['term-3'], ['term-4'], ['term-1']]);
+    h.service.move({ kind: 'detach', id: 'term-3' });
+    expect(paneIds(h)).toEqual([['term-2'], ['term-4'], ['term-1'], ['term-3']]);
+    const published = h.states.length;
+    h.service.move({ kind: 'detach', id: 'term-3' });
+    expect(h.states).toHaveLength(published);
+    expect(lastState(h).activeId).toBe('term-4');
+  });
+
+  it('steps a pane past its neighbour inside the group, and the whole group past the next group at its edge', async () => {
+    const h = await grouped(2, 1);
+    h.service.move({ kind: 'step', id: 'term-2', delta: 1 });
+    expect(paneIds(h)).toEqual([['term-3'], ['term-1', 'term-2']]);
+    h.service.move({ kind: 'step', id: 'term-1', delta: 1 });
+    expect(paneIds(h)).toEqual([['term-3'], ['term-2', 'term-1']]);
+    h.service.move({ kind: 'step', id: 'term-2', delta: -1 });
+    expect(paneIds(h)).toEqual([['term-2', 'term-1'], ['term-3']]);
+    const published = h.states.length;
+    h.service.move({ kind: 'step', id: 'term-2', delta: -1 });
+    h.service.move({ kind: 'step', id: 'term-3', delta: 1 });
+    expect(h.states).toHaveLength(published);
+  });
+
+  it('keeps the moved terminal active, handing its old group\'s active pane over', async () => {
+    const h = await grouped(2, 1);
+    h.service.select('term-1');
+    h.service.move({ kind: 'join', id: 'term-1', target: 'term-3', side: 'before' });
+    expect(groupsOf(h)).toEqual([[['term-2'], 'term-2', [1]], [['term-1', 'term-3'], 'term-1', [0.5, 0.5]]]);
+    expect(lastState(h).activeId).toBe('term-1');
+    // a terminal that is not active joins without taking its new group's active pane
+    h.service.move({ kind: 'join', id: 'term-2', target: 'term-3', side: 'after' });
+    expect(groupsOf(h)).toEqual([[['term-1', 'term-3', 'term-2'], 'term-1', [1 / 3, 1 / 3, 1 / 3]]]);
+  });
+
+  it('joins picked terminals after the anchor group\'s last pane in pick order, up to the cap, activating the first joined (joinInstances)', () => {
+    const h = singlesOf(4);
+    expect(h.service.joinCandidates('term-1')).toEqual(['term-2', 'term-3', 'term-4']);
+    expect(h.service.joinRoom('term-1')).toBe(MAX_TERMINAL_GROUP_PANES - 1);
+    h.service.join('term-1', ['term-3', 'term-2', 'term-1']);
+    expect(groupsOf(h)).toEqual([[['term-1', 'term-3', 'term-2'], 'term-3', [1 / 3, 1 / 3, 1 / 3]], [['term-4'], 'term-4', [1]]]);
+    expect(lastState(h).activeId).toBe('term-3');
+    expect(h.logs).toContain('[terminal] not joining term-1 to term-1: it is in the group already');
+    expect(h.service.joinCandidates('term-2')).toEqual(['term-4']);
+  });
+
+  it('stops a join at the group\'s cap and logs the rest', async () => {
+    const h = await grouped(MAX_TERMINAL_GROUP_PANES - 1, 2);
+    const [first, second] = [`term-${MAX_TERMINAL_GROUP_PANES}`, `term-${MAX_TERMINAL_GROUP_PANES + 1}`];
+    expect(h.service.joinRoom('term-1')).toBe(1);
+    h.service.join('term-1', [first, second]);
+    expect(paneIds(h)).toEqual([[...Array.from({ length: MAX_TERMINAL_GROUP_PANES - 1 }, (_, index) => `term-${index + 1}`), first], [second]]);
+    expect(h.logs).toContain(`[terminal] not joining ${second} to term-1: the group has ${MAX_TERMINAL_GROUP_PANES} panes`);
+    expect(h.service.joinRoom('term-1')).toBe(0);
+  });
+
+  it('never joins a task tab, which runs alone', () => {
+    const h = singlesOf(1);
+    h.service.runTask({ key: 'setup', name: 'Setup', file: PWSH.file, args: [], projectKey: ALPHA.key, cwd: ALPHA.fsPath, env: {}, onExit: () => undefined, onRestart: () => undefined });
+    expect(h.service.joinCandidates('term-1')).toEqual([]);
+    expect(h.service.joinRoom('term-2')).toBe(0);
+    h.service.move({ kind: 'join', id: 'term-2', target: 'term-1', side: 'after' });
+    h.service.join('term-1', ['term-2']);
+    expect(paneIds(h)).toEqual([['term-1'], ['term-2']]);
+  });
+
+  it('saves a remote terminal joined into a local group as a remote pane in its slot', async () => {
+    const h = harness();
+    h.projects = [ALPHA, REMOTE];
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    const remote = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    await settle();
+    if (!remote.ok) throw new Error('no remote terminal');
+    h.service.move({ kind: 'join', id: remote.id, target: 'term-1', side: 'before' });
+    expect(h.persisted.at(-1)).toEqual({
+      version: 2,
+      listWidthRem: DEFAULT_PERSISTED_TERMINALS.listWidthRem,
+      groups: [{ panes: [{ kind: 'remote', id: remote.id }, stored('pwsh', ALPHA.key)], activePane: 0, sizes: [0.5, 0.5] }],
+      active: 0,
+      editor: [],
+    });
+  });
+});
+
+describe('terminals in the editor', () => {
+  const singlesOf = (count: number): Harness => {
+    const h = harness();
+    for (let index = 0; index < count; index++) h.service.create({ profileId: null, target: { current: true } }, false);
+    return h;
+  };
+  const placements = (h: Harness): Array<[string, string]> => lastState(h).terminals.map((terminal) => [terminal.id, terminal.placement]);
+  const tabIds = (h: Harness): string[] => h.service.tabSource.tabs().map((tab) => tab.id);
+
+  it('moves a terminal out of its group into the last editor tab, which the editor shows, listing it after the panel\'s', async () => {
+    const h = singlesOf(3);
+    await h.service.split('term-1');
+    h.service.select('term-2');
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    h.service.move({ kind: 'toEditor', id: 'term-3' });
+    expect(groupsOf(h)).toEqual([[['term-4'], 'term-4', [1]], [['term-2'], 'term-2', [1]]]);
+    expect(placements(h)).toEqual([['term-4', 'panel'], ['term-2', 'panel'], ['term-1', 'editor'], ['term-3', 'editor']]);
+    expect(h.shownTabs).toEqual(['term-1', 'term-3']);
+    expect(h.service.tabSource.tabs()).toEqual([
+      { id: 'terminal:term-1', kind: 'terminal', terminal: { id: 'term-1' }, title: 'PowerShell', displayPath: 'PowerShell', dirty: false, readOnly: false, conflict: false },
+      { id: 'terminal:term-3', kind: 'terminal', terminal: { id: 'term-3' }, title: 'PowerShell', displayPath: 'PowerShell', dirty: false, readOnly: false, conflict: false },
+    ]);
+    expect(h.service.commandTarget()).toBe('term-3');
+    expect(h.service.target()).toEqual({ id: 'term-3', status: 'starting', placement: 'editor', task: false });
+    await settle();
+    // a title change reaches the editor's tabs; output that changes no title does not
+    const announced = h.editorTabs;
+    h.service.rename('term-1', 'server');
+    expect(h.editorTabs).toBe(announced + 1);
+    expect(h.service.tabSource.tabs()[0]!.title).toBe('server');
+    h.service.select('term-2');
+    expect(h.editorTabs).toBe(announced + 1);
+  });
+
+  it('hands the panel\'s active terminal over as a kill does, and leaves none active with only editor terminals', async () => {
+    const h = singlesOf(3);
+    h.service.select('term-2');
+    h.service.move({ kind: 'toEditor', id: 'term-2' });
+    expect(lastState(h).activeId).toBe('term-3');
+    h.service.move({ kind: 'toEditor', id: 'term-3' });
+    expect(lastState(h).activeId).toBe('term-1');
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    expect(lastState(h).activeId).toBeNull();
+    expect(lastState(h).groups).toEqual([]);
+    expect(h.service.hasTerminals()).toBe(false);
+    expect(h.service.commandTarget()).toBe('term-1');
+  });
+
+  it('refuses a task terminal and one already in the editor, logging it and publishing nothing', () => {
+    const h = singlesOf(1);
+    h.service.runTask({ key: 'setup', name: 'Setup', file: PWSH.file, args: [], projectKey: ALPHA.key, cwd: ALPHA.fsPath, env: {}, onExit: () => undefined, onRestart: () => undefined });
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    const published = h.states.length;
+    h.service.move({ kind: 'toEditor', id: 'term-2' });
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    expect(h.states).toHaveLength(published);
+    expect(h.logs).toEqual(expect.arrayContaining([
+      '[terminal] not moving term-2 into the editor: a task stays in the panel',
+      '[terminal] not moving term-1 into the editor: it is in the editor already',
+    ]));
+    expect(lastState(h).terminals.find((terminal) => terminal.id === 'term-2')).toMatchObject({ task: true, placement: 'panel' });
+    expect(lastState(h).terminals.find((terminal) => terminal.id === 'term-1')).not.toHaveProperty('task');
+  });
+
+  it('brings an editor terminal back: detach appends a group, reorder places one next to the target\'s group, join joins it', () => {
+    const h = singlesOf(3);
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    h.service.move({ kind: 'toEditor', id: 'term-2' });
+    h.service.move({ kind: 'toEditor', id: 'term-3' });
+    h.service.move({ kind: 'detach', id: 'term-2' });
+    expect(groupsOf(h)).toEqual([[['term-2'], 'term-2', [1]]]);
+    expect([lastState(h).activeId, h.service.commandTarget(), h.panelShown, h.focused.at(-1)]).toEqual(['term-2', 'term-2', 1, 'term-2']);
+    h.service.move({ kind: 'reorder', id: 'term-3', target: 'term-2', side: 'before' });
+    expect(groupsOf(h)).toEqual([[['term-3'], 'term-3', [1]], [['term-2'], 'term-2', [1]]]);
+    h.service.move({ kind: 'join', id: 'term-1', target: 'term-2', side: 'before' });
+    expect(groupsOf(h)).toEqual([[['term-3'], 'term-3', [1]], [['term-1', 'term-2'], 'term-1', [0.5, 0.5]]]);
+    expect(placements(h)).toEqual([['term-3', 'panel'], ['term-1', 'panel'], ['term-2', 'panel']]);
+    expect(lastState(h).activeId).toBe('term-1');
+    expect(tabIds(h)).toEqual([]);
+  });
+
+  it('refuses a step of an editor terminal, an editor target, and a join into a full group', async () => {
+    const h = singlesOf(2);
+    for (let pane = 1; pane < MAX_TERMINAL_GROUP_PANES; pane++) await h.service.split('term-1');
+    h.service.move({ kind: 'toEditor', id: 'term-2' });
+    const editorId = `term-${MAX_TERMINAL_GROUP_PANES + 2}`;
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.move({ kind: 'toEditor', id: editorId });
+    const published = h.states.length;
+    h.service.move({ kind: 'step', id: 'term-2', delta: 1 });
+    h.service.move({ kind: 'reorder', id: 'term-2', target: editorId, side: 'after' });
+    h.service.move({ kind: 'join', id: 'term-1', target: editorId, side: 'after' });
+    h.service.move({ kind: 'join', id: 'term-2', target: 'term-1', side: 'after' });
+    expect(h.states).toHaveLength(published);
+    expect(h.logs).toEqual(expect.arrayContaining([
+      '[terminal] not stepping term-2: it is in the editor',
+      `[terminal] not moving term-2 next to ${editorId}: no such panel terminal`,
+      `[terminal] not joining term-1 to ${editorId}: no such panel terminal`,
+      `[terminal] not joining term-2 to term-1: its group has ${MAX_TERMINAL_GROUP_PANES} panes`,
+    ]));
+    expect(tabIds(h)).toEqual(['terminal:term-2', `terminal:${editorId}`]);
+  });
+
+  it('keeps editor terminals out of the group commands: split, unsplit, Join Terminals and its candidates', async () => {
+    const h = singlesOf(3);
+    h.service.move({ kind: 'toEditor', id: 'term-3' });
+    expect(h.service.joinCandidates('term-1')).toEqual(['term-2']);
+    expect(h.service.joinRoom('term-3')).toBe(0);
+    await h.service.split('term-3');
+    h.service.unsplit('term-3');
+    h.service.join('term-1', ['term-3']);
+    expect(groupsOf(h).map(([panes]) => panes)).toEqual([['term-1'], ['term-2']]);
+    expect(h.logs).toContain('[terminal] not joining term-3 to term-1: no such panel terminal');
+    expect(tabIds(h)).toEqual(['terminal:term-3']);
+  });
+
+  it('targets the last terminal focused, selected or activated as a tab, falling back to the panel\'s active one once it is gone', async () => {
+    const h = singlesOf(2);
+    await h.service.split('term-2');
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    h.service.select('term-3');
+    expect(h.service.splitActive()).toBe(true);
+    const changes = h.changes;
+    h.service.inputFocused('term-1');
+    expect(h.service.commandTarget()).toBe('term-1');
+    expect(h.changes).toBe(changes + 1);
+    // the pass keys follow the target's group
+    expect(h.service.splitActive()).toBe(false);
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
+    expect(lastState(h).activeId).toBe('term-3');
+    h.service.inputFocused('term-99');
+    expect(h.service.commandTarget()).toBe('term-1');
+    h.service.select('term-2');
+    expect(h.service.commandTarget()).toBe('term-2');
+    h.service.tabSource.activate('terminal:term-1');
+    expect(h.service.commandTarget()).toBe('term-1');
+    expect(h.focused.at(-1)).toBe('term-1');
+    h.service.tabSource.activate('terminal:term-2');
+    expect(h.service.commandTarget()).toBe('term-1');
+    h.service.kill('term-1');
+    expect(h.service.commandTarget()).toBe('term-2');
+    expect(tabIds(h)).toEqual([]);
+  });
+
+  it('publishes a selection once, though its new target changes the pass keys too', async () => {
+    const h = harness();
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await h.service.split('term-1');
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    const [published, changes] = [h.states.length, h.changes];
+    h.service.select('term-1');
+    expect(h.states).toHaveLength(published + 1);
+    expect(h.changes).toBe(changes + 1);
+    expect(lastState(h)).toMatchObject({ activeId: 'term-1', passKeys: ['CmdOrCtrl+P', 'Ctrl+Shift+5', 'Alt+Left', 'Alt+Right'] });
+  });
+
+  // Split Terminal cannot run for an editor terminal, so its key must reach that terminal's pty
+  it('publishes the pass keys again when the target moves between the panel and the editor, its group unchanged', () => {
+    const h = singlesOf(2);
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
+    h.service.select('term-2');
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P', 'Ctrl+Shift+5']);
+    h.service.inputFocused('term-1');
+    expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
+  });
+
+  it('closes terminal tabs as Kill does: one question for them all, nothing killed on Cancel', async () => {
+    const h = singlesOf(3);
+    h.settings = { confirmOnKill: 'always' };
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    h.service.move({ kind: 'toEditor', id: 'term-2' });
+    await settle();
+    h.answer = false;
+    await h.service.tabSource.close(['terminal:term-1', 'terminal:term-2', 'terminal:term-3', 'term-1']);
+    expect(h.asked).toEqual([[{ name: 'PowerShell', command: null }, { name: 'PowerShell', command: null }]]);
+    expect(tabIds(h)).toEqual(['terminal:term-1', 'terminal:term-2']);
+    h.answer = true;
+    await h.service.tabSource.close(['terminal:term-1', 'terminal:term-2']);
+    expect(tabIds(h)).toEqual([]);
+    expect(idsOf(h)).toEqual(['term-3']);
+    expect(h.posted.filter((message) => (message as { type: string }).type === 'kill')).toEqual([{ type: 'kill', id: 'term-1' }, { type: 'kill', id: 'term-2' }]);
+  });
+
+  it('saves the editor\'s terminals in tab order, a remote one by id, and restores them as editor tabs without focus', async () => {
+    const REMOTE: TerminalProject = { key: 'loopback|c:\\work\\remote', name: 'remote', fsPath: 'C:\\work\\remote' };
+    const h = harness();
+    h.projects = [ALPHA, BETA, REMOTE];
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    const remote = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
+    await settle();
+    if (!remote.ok) throw new Error('no remote terminal');
+    h.service.move({ kind: 'toEditor', id: remote.id });
+    h.service.move({ kind: 'toEditor', id: 'term-1' });
+    h.service.setColor('term-1', 'red');
+    const layout = h.persisted.at(-1)!;
+    expect(layout).toMatchObject({ groups: [{ panes: [stored('git-bash', BETA.key)] }], active: 0 });
+    expect(layout.editor).toEqual([{ kind: 'remote', id: remote.id }, { ...stored('pwsh', ALPHA.key), color: 'red' }]);
+
+    const relaunch = harness({ saved: { ...layout, editor: [{ ...stored('pwsh', ALPHA.key), color: 'red' }, stored('git-bash', BETA.key)] } });
+    relaunch.service.restore([]);
+    await settle();
+    expect(placements(relaunch)).toEqual([['term-1', 'panel'], ['term-2', 'editor'], ['term-3', 'editor']]);
+    expect(lastState(relaunch).terminals.find((terminal) => terminal.id === 'term-2')!.color).toBe('red');
+    expect(relaunch.focused).toEqual([]);
+    expect(relaunch.shownTabs).toEqual([]);
+    expect(relaunch.editorTabs).toBeGreaterThan(0);
+    expect(lastState(relaunch).activeId).toBe('term-1');
+    expect(relaunch.persisted.at(-1)!.editor).toEqual([{ ...stored('pwsh', ALPHA.key), color: 'red' }, stored('git-bash', BETA.key)]);
   });
 });
 

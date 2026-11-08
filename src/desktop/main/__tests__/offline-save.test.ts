@@ -167,6 +167,22 @@ describe('offline saves', () => {
     });
   }
 
+  it('reports a file saved offline as saved only once its upload landed on the host', async () => {
+    onHost('src/a.ts', 'base\n');
+    const h = host();
+    const saved: Array<{ readonly projectKey?: string; readonly relativePath?: string }> = [];
+    h.documents.onDidSave((location) => saved.push(location));
+    const document = await h.open('src/a.ts');
+    h.drop();
+    await save(h.documents, document, 'offline\n');
+    expect(saved).toEqual([]);
+    h.reconnect('resume');
+    await vi.waitFor(() => expect(document.pendingUpload).toBeUndefined());
+    expect(onHost('src/a.ts')).toBe('offline\n');
+    expect(saved).toEqual([expect.objectContaining({ projectKey: document.location!.projectKey, relativePath: 'src/a.ts' })]);
+    h.end();
+  });
+
   it('uploads the text saved offline, not edits made after it, which stay unsaved', async () => {
     onHost('src/a.ts', 'base\n');
     const h = host();

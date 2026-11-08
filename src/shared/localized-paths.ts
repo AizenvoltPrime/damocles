@@ -74,6 +74,8 @@ export const WEBVIEW_LOCALIZED_TEXT: Readonly<Record<string, readonly string[]>>
   toolMetadata: ['.metadata.refusal', '.metadata.widthChecks.skipped'],
   transcriptionError: ['.message'],
   usageStats: ['.error'],
+  userMemoryError: ['.message'],
+  userProfileSectionError: ['.message'],
   voiceModelDownloadProgress: ['.message'],
   voiceRuntimeStatus: ['.status[kind="failed"].message', '.status[kind="needs-install"].message', '.status[kind="unsupported"].message'],
   voiceSidecarStatus: ['.message'],

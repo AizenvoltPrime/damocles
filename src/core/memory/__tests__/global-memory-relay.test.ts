@@ -32,9 +32,9 @@ import { installPlatform } from '../../platform-host';
 import { emptyLiveInjections, type LiveInjections } from '../injection/details';
 import { globalMemoryId, parseGlobalMemoryId } from '../global-memory-relay';
 import { createTestDbPath } from './test-helpers';
-import { CREDENTIAL_CLIENT_ABSENT, type RelayedGlobalMemory } from '../../../shared/remote-user';
-import { englishText } from '../../../shared/localized-text';
-import { globalMemoryClosedReason } from '../../user-scope';
+import { CLIENT_FEATURE_MISSING, CLIENT_MEMORY_OFF, CREDENTIAL_CLIENT_ABSENT, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, type ListedGlobalMemory, type RelayedGlobalMemory } from '../../../shared/remote-user';
+import { englishText, LocalizedError } from '../../../shared/localized-text';
+import { globalMemoryClosedReason, globalMemoryListOutdatedReason, globalMemoryOffReason } from '../../user-scope';
 
 const WORKSPACE = '/srv/app';
 let service: MemoryService;
@@ -214,6 +214,14 @@ describe('global memory search on a daemon\'s core', () => {
     await expect(service.searchMemories({ query: 'mango', workspace: WORKSPACE, tiers: ['global'] })).rejects.toThrow(englishText(globalMemoryClosedReason()));
   });
 
+  it('answers a mixed search with this host\'s rows while memory is off on the client, and a global-only one with the memory-off reason', async () => {
+    await service.saveMemory({ content: 'mango deploys run nightly', kind: 'fact', scope: 'project', workspace: WORKSPACE });
+    vi.mocked(fake.remote.memorySearch).mockRejectedValue(new Error(CLIENT_MEMORY_OFF));
+    const mixed = await service.searchMemories({ query: 'mango', workspace: WORKSPACE });
+    expect(mixed.map((result) => result.tier)).toEqual(['project']);
+    await expect(service.searchMemories({ query: 'mango', workspace: WORKSPACE, tiers: ['note'] })).rejects.toThrow(englishText(globalMemoryOffReason()));
+  });
+
   it('names a saved global by the client\'s row that holds it, an earlier duplicate there included', async () => {
     vi.mocked(fake.remote.memoryApply).mockResolvedValueOnce({ through: 0, ids: ['existing-row'] });
     const saved = await service.saveMemory({ content: 'The user is on call on Fridays.', kind: 'fact', scope: 'global' });
@@ -289,5 +297,56 @@ describe('a daemon core\'s search filters on its client\'s global rows', () => {
     const results = await service.searchMemories({ tiers: ['global'], since: 1_000, until: 2_000, includeForgotten: true });
     expect(fake.remote.memorySearch).toHaveBeenCalledWith('client-a', '', 20, ['global'], false, { since: 1_000, until: 2_000, includeForgotten: true });
     expect(results.map((result) => result.id)).toEqual([globalMemoryId('client-a', 'g1')]);
+  });
+});
+describe("a daemon core's notes list on its client", () => {
+  const noteOf = (id: string, createdAt: number): ListedGlobalMemory => ({ id, kind: 'note', content: `note ${id}`, contentHash: `hash-${id}`, createdAt, updatedAt: createdAt });
+
+  it('pages through the acting client with each next as the cursor, ids qualified', async () => {
+    vi.mocked(fake.remote.memoryList)
+      .mockResolvedValueOnce({ rows: [noteOf('b', 5), noteOf('a', 5)], next: { createdAt: 5, id: 'a' } })
+      .mockResolvedValueOnce({ rows: [noteOf('c', 3)] });
+    expect((await service.listNotes(['work', 'work'])).map((note) => note.id)).toEqual(['global:client-a:b', 'global:client-a:a', 'global:client-a:c']);
+    expect(vi.mocked(fake.remote.memoryList).mock.calls).toEqual([
+      ['client-a', { kinds: ['note'], tags: ['work'] }],
+      ['client-a', { kinds: ['note'], tags: ['work'], cursor: { createdAt: 5, id: 'a' } }],
+    ]);
+  });
+
+  it('stops at a next that does not advance past the cursor, never asking for the same page again', async () => {
+    vi.mocked(fake.remote.memoryList)
+      .mockResolvedValueOnce({ rows: [noteOf('b', 5)], next: { createdAt: 5, id: 'b' } })
+      .mockResolvedValueOnce({ rows: [noteOf('b', 5)], next: { createdAt: 5, id: 'b' } });
+    await expect(service.listNotes()).rejects.toThrow('does not advance');
+    expect(fake.remote.memoryList).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers the closed reason with no client attached, and when the client leaves part way', async () => {
+    fake.set('clientAuth', 'client-a', undefined);
+    await expect(service.listNotes()).rejects.toThrow(englishText(globalMemoryClosedReason()));
+    expect(fake.remote.memoryList).not.toHaveBeenCalled();
+    fake.set('clientAuth', 'client-a', { providers: {} });
+    vi.mocked(fake.remote.memoryList)
+      .mockResolvedValueOnce({ rows: [noteOf('b', 5)], next: { createdAt: 5, id: 'b' } })
+      .mockRejectedValueOnce(new Error(CREDENTIAL_CLIENT_ABSENT));
+    await expect(service.listNotes()).rejects.toThrow(englishText(globalMemoryClosedReason()));
+  });
+
+  it("answers the outdated reason when the client's attach did not list user.memory.list", async () => {
+    vi.mocked(fake.remote.memoryList).mockRejectedValueOnce(new Error(CLIENT_FEATURE_MISSING));
+    await expect(service.listNotes()).rejects.toThrow(englishText(globalMemoryListOutdatedReason()));
+  });
+
+  it('answers the memory-off reason, never an empty list, while memory is off on the client', async () => {
+    vi.mocked(fake.remote.memoryList).mockRejectedValueOnce(new Error(CLIENT_MEMORY_OFF));
+    const listed = service.listNotes();
+    await expect(listed).rejects.toBeInstanceOf(LocalizedError);
+    await expect(listed).rejects.toThrow(englishText(globalMemoryOffReason()));
+  });
+
+  it('refuses a tag list the wire cannot carry before asking the client', async () => {
+    await expect(service.listNotes(Array.from({ length: MAX_GLOBAL_MEMORY_TAGS + 1 }, (_, index) => `tag-${index}`))).rejects.toThrow('at most');
+    await expect(service.listNotes(['x'.repeat(MAX_GLOBAL_MEMORY_LABEL_CHARS + 1)])).rejects.toThrow('at most');
+    expect(fake.remote.memoryList).not.toHaveBeenCalled();
   });
 });

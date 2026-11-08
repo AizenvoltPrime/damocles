@@ -33,7 +33,7 @@ export type HostPlatform = Pick<Platform, 'appInfo' | 'secrets' | 'notifications
   readonly editor: DesktopEditorService;
 };
 
-/** A view main relays a panel's traffic to: a core message arrives as JSON text, which the view forwards unparsed. */
+/** A view main relays a panel's traffic to: a core message arrives as JSON text, which the view forwards to its page. */
 export interface RelayView extends PanelHost {
   readonly panelId: string;
   postJson(type: string, json: string): void;
@@ -83,6 +83,7 @@ export interface HostUser {
   memoryProfile(): Promise<CoreRequests['user.memory.profile']['result']>;
   memoryResolve(ids: readonly string[]): Promise<CoreRequests['user.memory.resolve']['result']>;
   memoryApply(request: CoreRequests['user.memory.apply']['params']): Promise<CoreRequests['user.memory.apply']['result']>;
+  memoryList(request: CoreRequests['user.memory.list']['params']): Promise<CoreRequests['user.memory.list']['result']>;
   mcpCall(request: CoreRequests['user.mcp.call']['params'], signal: AbortSignal): Promise<unknown>;
   mcpResources(request: CoreRequests['user.mcp.resources']['params'], signal: AbortSignal): Promise<unknown>;
   mcpReadResource(request: CoreRequests['user.mcp.readResource']['params'], signal: AbortSignal): Promise<unknown>;
@@ -99,6 +100,7 @@ export const NO_USER_RELAYS: HostUser = {
   memoryProfile: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
   memoryResolve: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
   memoryApply: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
+  memoryList: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
   mcpCall: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
   mcpResources: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
   mcpReadResource: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
@@ -287,6 +289,25 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     return true;
   };
 
+  // The page dispatches on the message's own type, so a core with refused posts gets a post through only when that type is a
+  // string outside refusedPosts and, for JSON text, the type its envelope declares.
+  const dropped = (message: unknown, declared?: string): boolean => {
+    const type = typeof message === 'object' && message !== null && !Array.isArray(message) ? (message as { readonly type?: unknown }).type : undefined;
+    if (typeof type === 'string' && (declared === undefined || type === declared)) return refused(type);
+    log(`[core-services] dropped a post whose own type is not a string${declared === undefined ? '' : ` equal to its declared ${declared.slice(0, 64)}`}`);
+    return true;
+  };
+  const droppedJson = (declared: string, json: string): boolean => {
+    if (deps.refusedPosts.size === 0) return false;
+    let message: unknown;
+    try {
+      message = JSON.parse(json);
+    } catch {
+      message = undefined;
+    }
+    return dropped(message, declared);
+  };
+
   const serve = (): void => {
     const { secrets, dialogs, editor, shell } = platform;
     endpoint.serve('secrets.get', ({ key }) => secrets.get(key));
@@ -351,6 +372,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('user.memory.profile', () => deps.user.memoryProfile());
     endpoint.serve('user.memory.resolve', ({ ids }) => deps.user.memoryResolve(ids));
     endpoint.serve('user.memory.apply', (params) => deps.user.memoryApply(params));
+    endpoint.serve('user.memory.list', (params) => deps.user.memoryList(params));
     endpoint.serve('user.mcp.call', (params, signal) => deps.user.mcpCall(params, signal));
     endpoint.serve('user.mcp.resources', (params, signal) => deps.user.mcpResources(params, signal));
     endpoint.serve('user.mcp.readResource', (params, signal) => deps.user.mcpReadResource(params, signal));
@@ -391,11 +413,11 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
           view.showPage(envelope.payload.page);
           return;
         case 'post':
-          if (refused(envelope.payload.type)) return;
+          if (droppedJson(envelope.payload.type, envelope.payload.json)) return;
           view.postJson(envelope.payload.type, envelope.payload.json);
           return;
         case 'postBinary':
-          if (refused((envelope.payload.message as { readonly type?: unknown } | null)?.type)) return;
+          if (deps.refusedPosts.size > 0 && dropped(envelope.payload.message)) return;
           void view.postMessage(envelope.payload.message);
           return;
         case 'setIcon':

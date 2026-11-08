@@ -70,45 +70,64 @@ export function restrictPermissions(session: Session): void {
   session.setDevicePermissionHandler(() => false);
 }
 
-// The WebContents of design preview views, by the origin (damocles-design://<viewToken>) each may navigate within.
-const designContents = new WeakMap<WebContents, string>();
+// The WebContents locked to one origin: design preview views (D81) and HTML preview views. opensLink: an HTML preview's
+// check that a click or activation key main observed in the view is spent on this popup, or bound to this main-frame
+// navigation; a design view, which has none, opens nothing outside.
+export type OpensLink = (url: string, kind: 'navigate' | 'popup') => boolean;
+interface LockedContents {
+  readonly origin: string;
+  readonly opensLink?: OpensLink;
+}
+const lockedContents = new WeakMap<WebContents, LockedContents>();
 
 // Called right after the view is constructed, before its first load; hardenWebContents reads it at each event.
-export function registerDesignContents(contents: WebContents, origin: string): void {
-  designContents.set(contents, origin);
+export function registerLockedContents(contents: WebContents, origin: string, opensLink?: OpensLink): void {
+  lockedContents.set(contents, opensLink ? { origin, opensLink } : { origin });
 }
 
-// A design page's script can try to navigate away in a loop, so each design view logs only its first blocked navigation.
-const designNavigationLogged = new WeakSet<WebContents>();
+// A page's script can try to navigate away in a loop, so each locked view logs only its first blocked navigation.
+const lockedNavigationLogged = new WeakSet<WebContents>();
 
 // Node's URL reports origin 'null' for a scheme it does not know, so the origin is spelled from the scheme and host.
-export function designOriginOf(url: string): string | undefined {
+function originOf(url: string): string | undefined {
   if (!URL.canParse(url)) return undefined;
   const parsed = new URL(url);
   return parsed.host === '' ? undefined : `${parsed.protocol}//${parsed.host}`.toLowerCase();
 }
 
 // Applied to every WebContents the app creates: no popups, no <webview>, no navigation or redirect away from the page main
-// loaded; web links open in the OS browser. A design view (PD-7) opens nothing outside and navigates only within its origin.
+// loaded; web links open in the OS browser. A locked view navigates only within its origin: a design view (PD-7) opens
+// nothing outside, an HTML preview opens a main-frame http(s) navigation or popup outside only when the user clicked it.
 export function hardenWebContents(contents: WebContents, openExternal: (url: string) => Promise<boolean>, log: (line: string) => void): void {
   const openOutside = (url: string): void => {
     openExternal(url).catch((err: unknown) => log(`[security] could not open ${loggableUrl(url)}: ${err instanceof Error ? err.message : String(err)}`));
   };
   contents.setWindowOpenHandler(({ url }) => {
-    if (designContents.has(contents)) log(`[security] denied a design's window.open to ${loggableUrl(url)}`);
-    else if (isHttpUrl(url)) openOutside(url);
+    const locked = lockedContents.get(contents);
+    if (locked) {
+      if (locked.opensLink && isHttpUrl(url) && locked.opensLink(url, 'popup')) openOutside(url);
+      else log(`[security] denied a locked view's window.open to ${loggableUrl(url)}`);
+    } else if (isHttpUrl(url)) openOutside(url);
     else log(`[security] denied window.open to ${loggableUrl(url)}`);
     return { action: 'deny' };
   });
-  const lockNavigation = (event: { readonly url: string; preventDefault(): void }): void => {
+  // navigate: will-navigate, which Electron fires for the main frame only; will-redirect fires for subframes too, and a
+  // redirect never opens anything outside
+  const lockNavigation = (event: { readonly url: string; preventDefault(): void }, mainFrame: boolean, navigate: boolean): void => {
     const { url } = event;
-    const design = designContents.get(contents);
-    if (design !== undefined) {
-      if (designOriginOf(url) === design) return;
+    const locked = lockedContents.get(contents);
+    if (locked !== undefined) {
+      // an HTML preview's iframes load the web; its partition refuses every other scheme and another root's token
+      if (!mainFrame && locked.opensLink) return;
+      if (originOf(url) === locked.origin) return;
       event.preventDefault();
-      if (designNavigationLogged.has(contents)) return;
-      designNavigationLogged.add(contents);
-      log(`[security] blocked a design's navigation to ${loggableUrl(url)}; this view's further ones are not logged`);
+      if (navigate && locked.opensLink && isHttpUrl(url) && locked.opensLink(url, 'navigate')) {
+        openOutside(url);
+        return;
+      }
+      if (lockedNavigationLogged.has(contents)) return;
+      lockedNavigationLogged.add(contents);
+      log(`[security] blocked a locked view's navigation to ${loggableUrl(url)}; this view's further ones are not logged`);
       return;
     }
     // contents.getURL() already reports the pending URL here, so it cannot be the reference.
@@ -117,7 +136,7 @@ export function hardenWebContents(contents: WebContents, openExternal: (url: str
     if (isHttpUrl(url)) openOutside(url);
     else log(`[security] blocked navigation to ${loggableUrl(url)}`);
   };
-  contents.on('will-navigate', lockNavigation);
-  contents.on('will-redirect', lockNavigation);
+  contents.on('will-navigate', (event) => lockNavigation(event, true, true));
+  contents.on('will-redirect', (event) => lockNavigation(event, event.isMainFrame, false));
   contents.on('will-attach-webview', (event) => event.preventDefault());
 }

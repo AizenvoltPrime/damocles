@@ -1,21 +1,28 @@
 import * as crypto from 'node:crypto';
 import type { Disposable } from '../../platform/disposable';
 import type { RemoteHost } from '../../platform/remote-host';
-import { LocalizedError } from '../../shared/localized-text';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import {
+  CLIENT_FEATURE_MISSING,
+  CLIENT_MEMORY_OFF,
   CREDENTIAL_CLIENT_ABSENT,
   GLOBAL_MEMORY_HOLD_MS,
   globalMemoryWriteFits,
+  listedAfter,
   MAX_GLOBAL_MEMORY_APPLY_BYTES,
   MAX_GLOBAL_MEMORY_ID_CHARS,
+  MAX_GLOBAL_MEMORY_LABEL_CHARS,
   MAX_GLOBAL_MEMORY_TAGS,
   MAX_HELD_MEMORY_QUEUES,
   MAX_RELAYED_MEMORIES,
   type ClientGlobalProfile,
+  type GlobalMemoryListCursor,
+  type GlobalMemoryListPage,
   type GlobalMemoryResolution,
   type GlobalMemorySearchFilters,
   type GlobalMemoryWrite,
   type HeldMemoryQueue,
+  type ListedGlobalMemory,
   type RelayedGlobalMemory,
   type SearchedGlobalMemory,
 } from '../../shared/remote-user';
@@ -23,7 +30,7 @@ import type { UserProfile } from '../../shared/types/memory';
 import { currentPin } from '../client-snapshots';
 import { l } from '../l10n';
 import { log } from '../logger';
-import { globalMemoryClosedReason } from '../user-scope';
+import { globalMemoryClosedReason, globalMemoryListOutdatedReason, globalMemoryOffReason } from '../user-scope';
 import type { MemoryOutbox, OutboxEntry } from './memory-outbox';
 
 // A global memory a daemon's core holds names the client it came from: `global:<clientId>:<the client's own id>`.
@@ -50,6 +57,8 @@ export function parseGlobalMemoryId(id: string): { readonly clientId: string; re
 const qualified = <M extends RelayedGlobalMemory>(clientId: string, memory: M): M => ({ ...memory, id: globalMemoryId(clientId, memory.id) });
 
 const isAbsent = (err: unknown): boolean => err instanceof Error && err.message === CREDENTIAL_CLIENT_ABSENT;
+const isOutdated = (err: unknown): boolean => err instanceof Error && err.message === CLIENT_FEATURE_MISSING;
+const isMemoryOff = (err: unknown): boolean => err instanceof Error && err.message === CLIENT_MEMORY_OFF;
 
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -73,6 +82,9 @@ function applyBatch(entries: readonly OutboxEntry[]): OutboxEntry[] {
   }
   return batch;
 }
+
+/** A search of the acting client's global rows: its rows, or why it has none to give. */
+export type GlobalSearchOutcome = { readonly rows: RelayedGlobalMemory[] } | { readonly unreachable: LocalizedText };
 
 /** A global memory write as a daemon's core makes it, before it has a uuid. */
 export type GlobalMemoryFields = Omit<GlobalMemoryWrite, 'uuid'>;
@@ -168,23 +180,25 @@ export class GlobalMemoryRelay implements Disposable {
 
   /**
    * The acting client's own ranked search of its global rows, filtered as its own search filters them, ids qualified by that
-   * client; undefined while none is attached, a client that left during the search included.
+   * client; the reason it has none while none is attached (a client that left during the search included) or memory is off
+   * on it.
    */
-  async search(query: string, k: number, tiers: readonly ('global' | 'note')[], filters: GlobalMemorySearchFilters = {}): Promise<RelayedGlobalMemory[] | undefined> {
+  async search(query: string, k: number, tiers: readonly ('global' | 'note')[], filters: GlobalMemorySearchFilters = {}): Promise<GlobalSearchOutcome> {
     const clientId = this.actingClient();
-    if (clientId === undefined) return undefined;
+    if (clientId === undefined) return { unreachable: globalMemoryClosedReason() };
     const count = searchCount(k);
     const asked = [...new Set(tiers)];
-    if (count === 0 || asked.length === 0) return [];
+    if (count === 0 || asked.length === 0) return { rows: [] };
     const sent: GlobalMemorySearchFilters = {
       ...(filters.since !== undefined ? { since: filters.since } : {}),
       ...(filters.until !== undefined ? { until: filters.until } : {}),
       ...(filters.includeForgotten === true ? { includeForgotten: true } : {}),
     };
     try {
-      return (await this.remote.memorySearch(clientId, query, count, asked, false, sent)).map((memory) => qualified(clientId, memory));
+      return { rows: (await this.remote.memorySearch(clientId, query, count, asked, false, sent)).map((memory) => qualified(clientId, memory)) };
     } catch (err) {
-      if (isAbsent(err)) return undefined;
+      if (isAbsent(err)) return { unreachable: globalMemoryClosedReason() };
+      if (isMemoryOff(err)) return { unreachable: globalMemoryOffReason() };
       throw err;
     }
   }
@@ -203,6 +217,38 @@ export class GlobalMemoryRelay implements Disposable {
       // a client that left during the search is away for this prompt, as one that left before it
       if (isAbsent(err)) return [];
       throw err;
+    }
+  }
+
+  /**
+   * Every latest note with any of the tags on the acting client, forgotten ones included, newest first,
+   * ids qualified, read page by page. Refused with the closed reason while no client is attached or when it leaves part way,
+   * with the outdated reason when its Damocles cannot list, with the memory-off reason while memory is off on it, and when a
+   * page's next does not advance.
+   */
+  async listNotes(tags: readonly string[] = []): Promise<ListedGlobalMemory[]> {
+    const asked = [...new Set(tags)];
+    if (asked.length > MAX_GLOBAL_MEMORY_TAGS || asked.some((tag) => tag.length > MAX_GLOBAL_MEMORY_LABEL_CHARS)) {
+      throw new LocalizedError(l('In a chat on a remote host, list notes by at most {0} tags of at most {1} characters each.', MAX_GLOBAL_MEMORY_TAGS, MAX_GLOBAL_MEMORY_LABEL_CHARS));
+    }
+    const clientId = this.actingClient();
+    if (clientId === undefined) throw new LocalizedError(globalMemoryClosedReason());
+    const rows: ListedGlobalMemory[] = [];
+    let cursor: GlobalMemoryListCursor | undefined;
+    for (;;) {
+      let page: GlobalMemoryListPage;
+      try {
+        page = await this.remote.memoryList(clientId, { kinds: ['note'], ...(asked.length > 0 ? { tags: asked } : {}), ...(cursor !== undefined ? { cursor } : {}) });
+      } catch (err) {
+        if (isAbsent(err)) throw new LocalizedError(globalMemoryClosedReason());
+        if (isOutdated(err)) throw new LocalizedError(globalMemoryListOutdatedReason());
+        if (isMemoryOff(err)) throw new LocalizedError(globalMemoryOffReason());
+        throw err;
+      }
+      rows.push(...page.rows.map((row) => qualified(clientId, row)));
+      if (page.next === undefined) return rows;
+      if (cursor !== undefined && !listedAfter(page.next, cursor)) throw new Error(`Client ${clientId} answered a page of its global memories whose next does not advance`);
+      cursor = page.next;
     }
   }
 

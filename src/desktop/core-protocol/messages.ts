@@ -18,7 +18,7 @@ import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
-import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
+import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { UserProfile } from '../../shared/types/memory';
 import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type JourneyStep } from '../../shared/types/design';
 import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_OUTLINE_CHARS, MAX_JOURNEY_STEPS, parseJourneySteps } from '../../shared/design-journey';
@@ -31,6 +31,7 @@ import { EDITOR_HARD_MAX_DOCUMENT_BYTES, WORKTREE_PHASES, type ChatPlace, type C
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
 import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
 import type { LocalizedText } from '../../shared/localized-text';
+import { MAX_CERTIFICATE_FIELD_CHARS, type ClientCertificateFilter } from '../../shared/client-certificate';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../shared/types/content';
 
 export const MAX_ID_CHARS = 128;
@@ -46,7 +47,7 @@ export const MAX_DATA_CHARS: number = 64 * 1024 * 1024;
 export const MAX_ITEMS = 100_000;
 export const MAX_ACTIONS = 64;
 
-// The browser page messages main parses out of a core post to persist the page's state (views.ts); the rest it forwards unparsed.
+// The browser page messages main parses out of a core post to persist the page's state (views.ts).
 export const PAGE_STATE_TYPES: ReadonlySet<string> = new Set(['urlChanged', 'navigationState', 'pickingStateChanged']);
 
 // Stands in for the file name in a diff title template; main puts the file's current name in its place.
@@ -195,6 +196,9 @@ export interface CoreRequests {
   'user.memory.profile': Call<{ readonly clientId: string }, ClientGlobalProfile>;
   'user.memory.resolve': Call<{ readonly clientId: string; readonly ids: readonly string[] }, readonly GlobalMemoryResolution[]>;
   'user.memory.apply': Call<{ readonly clientId: string; readonly entries: readonly { readonly end: number; readonly write: GlobalMemoryWrite }[] }, { readonly through: number; readonly ids?: readonly string[] }>;
+  // a daemon's core: one page of exactly that client's latest global rows of the kinds and any of the tags asked for, below
+  // the cursor in created_at DESC, id DESC order; routed only to a client whose attach listed user.memory.list
+  'user.memory.list': Call<{ readonly clientId: string } & GlobalMemoryListRequest, GlobalMemoryListPage>;
   // a daemon's core: a personal MCP server of exactly the client clientId names, which runs it after checking the server is
   // one it marked available on remote hosts and, for a call, that the tool is one that server lists; the answer is the MCP result
   'user.mcp.call': Call<{ readonly clientId: string; readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
@@ -301,6 +305,9 @@ export interface MainRequests {
   'folders.setDefault': Call<{ readonly key: string }, void>;
   // url: an address of a forwarded port, which main checked; absent opens a blank page
   'browser.newPage': Call<{ readonly chatViewId: string; readonly url?: string }, void>;
+  // local chats' browser profile only: Chrome sends the certificate filter names to origin (https://host:port) without asking,
+  // for the rest of this app session
+  'browser.useClientCertificate': Call<{ readonly origin: string; readonly filter: ClientCertificateFilter }, void>;
   'worktree.retrySetup': Call<{ readonly worktreeId: string }, void>;
   // the hold's id, or undefined when a chat working there is busy (D33)
   'worktree.beginFinish': Call<{ readonly worktreeId: string; readonly action: WorktreeFinishAction }, string | undefined>;
@@ -388,6 +395,7 @@ export interface MainRequests {
   'user.memory.profile': Call<object, ClientGlobalProfile>;
   'user.memory.resolve': Call<{ readonly ids: readonly string[] }, readonly GlobalMemoryResolution[]>;
   'user.memory.apply': Call<{ readonly writes: readonly GlobalMemoryWrite[] }, { readonly applied: number; readonly ids?: readonly string[] }>;
+  'user.memory.list': Call<GlobalMemoryListRequest, GlobalMemoryListPage>;
   // this computer's core: the personal MCP servers marked available on remote hosts, and their calls, refused for any other
   // a daemon's core: Deliver here takes a held outbox for the asking client (the request's actor), Discard deletes it; false:
   // the queue is no longer held
@@ -397,7 +405,7 @@ export interface MainRequests {
   'user.mcp.call': Call<{ readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
   'user.mcp.resources': Call<{ readonly server: string; readonly kind: 'resources' | 'templates'; readonly cursor?: string }, unknown>;
   'user.mcp.readResource': Call<{ readonly server: string; readonly uri: string }, unknown>;
-  // this computer's core: a proxy for a remote chat's view, which only VOICE_VIEW_MESSAGES and REMOTE_CHAT_USER_SETTING_MESSAGES reach
+  // this computer's core: a proxy for a remote chat's view, which only FOREIGN_VIEW_MESSAGES reach
   'panels.attachForeign': Call<{ readonly authority: string; readonly viewId: string }, void>;
   'panels.detachForeign': Call<{ readonly viewId: string }, void>;
   'panels.foreignMessage': Call<{ readonly viewId: string; readonly message: unknown }, void>;
@@ -549,8 +557,9 @@ export interface CorePanelOps {
   create: PanelCreate;
   // main builds the page itself; core never sends HTML
   showPage: { readonly page: PageSpec };
-  // a webview message as JSON text, which main forwards unparsed; type is the message's own. viewKey: the daemon's key of the
-  // one view it goes to; without it every view of the panel gets it but those except names (a daemon's views only)
+  // a webview message as JSON text; type is the message's own, which main checks against the JSON for a core with refused
+  // posts (host-services.ts). viewKey: the daemon's key of the one view it goes to; without it every view of the panel gets
+  // it but those except names (a daemon's views only)
   post: { readonly type: string; readonly json: string; readonly viewKey?: string; readonly except?: readonly string[] };
   // a webview message holding binary (a browser page's frame), structured-cloned; viewKey and except as post's
   postBinary: { readonly message: unknown; readonly viewKey?: string; readonly except?: readonly string[] };
@@ -673,6 +682,8 @@ const localizedLabel = localized(MAX_LABEL_CHARS);
 const localizedMessage = localized(MAX_MESSAGE_CHARS);
 const value = data(MAX_DATA_CHARS);
 const done = none;
+const certificateField = opt(nonEmpty(MAX_CERTIFICATE_FIELD_CHARS));
+const certificatePrincipal = obj({ CN: certificateField, L: certificateField, O: certificateField, OU: certificateField });
 const section = oneOf(SETTINGS_SECTION_IDS);
 const account = oneOf(SETTINGS_ACCOUNT_IDS);
 const stateScope = oneOf(['global', 'workspace'] as const);
@@ -704,6 +715,11 @@ const globalMemoryResolution: Parser<GlobalMemoryResolution> = either(
 );
 const globalMemoryWrite: Parser<GlobalMemoryWrite> = obj({ uuid: memoryId, kind: globalMemoryKind, content: memoryContent, title: opt(memoryLabel), tags: memoryTags });
 const searchedMemories = arr(searchedGlobalMemory, MAX_RELAYED_MEMORIES);
+// a client lists only its notes; its other global rows reach a remote core only through a search
+const memoryKinds = arr(oneOf(['note'] as const), 1, 1);
+const memoryListCursor = opt(obj({ createdAt: memoryTime, id: memoryId }));
+const listedGlobalMemory: Parser<ListedGlobalMemory> = obj({ ...relayedMemoryShape, forgotten: opt((raw): true | typeof INVALID => (raw === true ? true : INVALID)) });
+const globalMemoryListPage: Parser<GlobalMemoryListPage> = obj({ rows: arr(listedGlobalMemory, MAX_RELAYED_MEMORIES), next: memoryListCursor });
 const relayedIds = arr(memoryId, MAX_RELAYED_MEMORIES);
 const searchCount = int(1, MAX_RELAYED_MEMORIES);
 const userProfile: Parser<UserProfile> = obj({ static: text, dynamic: text });
@@ -1101,6 +1117,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.memory.profile': method(obj({ clientId: id }), clientGlobalProfile),
   'user.memory.resolve': method(obj({ clientId: id, ids: relayedIds }), arr(globalMemoryResolution, MAX_RELAYED_MEMORIES)),
   'user.memory.apply': method(obj({ clientId: id, entries: arr(obj({ end: int(0, Number.MAX_SAFE_INTEGER), write: globalMemoryWrite }), MAX_ITEMS) }), obj({ through: int(0, Number.MAX_SAFE_INTEGER), ids: opt(arr(memoryId, MAX_ITEMS)) })),
+  'user.memory.list': method(obj({ clientId: id, kinds: memoryKinds, tags: memoryTags, cursor: memoryListCursor }), globalMemoryListPage),
   'user.mcp.call': method(obj({ clientId: id, server: label, tool: label, args: mcpArgs }), value),
   'user.mcp.resources': method(obj({ clientId: id, server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
   'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
@@ -1170,6 +1187,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'sessionFiles.write': method(obj({ path: filePath, bytes: bytes(EDITOR_HARD_MAX_DOCUMENT_BYTES), expectedSha256: either(sha256Hex, nul) }), sessionFileWrite),
   'folders.setDefault': method(obj({ key: filePath }), done),
   'browser.newPage': method(obj({ chatViewId: id, url: opt(message) }), done),
+  'browser.useClientCertificate': method(obj({ origin: key, filter: obj({ ISSUER: certificatePrincipal, SUBJECT: certificatePrincipal }) }), done),
   'worktree.retrySetup': method(obj({ worktreeId: id }), done),
   'worktree.beginFinish': method(obj({ worktreeId: id, action: oneOf(['apply', 'merge', 'update', 'delete'] as const) }), maybe(id)),
   'worktree.endFinish': method(obj({ hold: id }), done),
@@ -1217,6 +1235,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'user.memory.profile': method(nothing, clientGlobalProfile),
   'user.memory.resolve': method(obj({ ids: relayedIds }), arr(globalMemoryResolution, MAX_RELAYED_MEMORIES)),
   'user.memory.apply': method(obj({ writes: arr(globalMemoryWrite, MAX_ITEMS) }), obj({ applied: int(0, MAX_ITEMS), ids: opt(arr(memoryId, MAX_ITEMS)) })),
+  'user.memory.list': method(obj({ kinds: memoryKinds, tags: memoryTags, cursor: memoryListCursor }), globalMemoryListPage),
   'memory.deliverHeld': method(obj({ queueId: memoryId }), bool),
   'memory.discardHeld': method(obj({ queueId: memoryId }), bool),
   'user.mcp.servers': method(nothing, arr(relayedMcpServer, MAX_ITEMS)),

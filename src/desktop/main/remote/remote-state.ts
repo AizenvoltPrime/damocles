@@ -41,6 +41,8 @@ export interface AwayChat {
 
 interface AuthorityState {
   readonly terminals: readonly RemoteTerminalRecord[];
+  // terminals a Kill ended while this app was away from their host, recordless: the authority's next reattach kills them there
+  readonly pendingKills: readonly string[];
   readonly chats: readonly RemoteChatRecord[];
   readonly away: readonly AwayChat[];
   // the core epoch the away chats ran under: another one at the next attach means their core ended, which stopped them
@@ -80,9 +82,9 @@ interface StateFile {
   readonly offlineQueue: ReadonlyMap<string, QueuedPanel>;
 }
 
-const EMPTY_AUTHORITY: AuthorityState = { terminals: [], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] };
+const EMPTY_AUTHORITY: AuthorityState = { terminals: [], pendingKills: [], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] };
 const isEmptyAuthority = (state: AuthorityState): boolean =>
-  state.terminals.length === 0 && state.chats.length === 0 && state.away.length === 0 && state.awayEpoch === null && state.coreEpoch === null && state.lastChats.length === 0;
+  state.terminals.length === 0 && state.pendingKills.length === 0 && state.chats.length === 0 && state.away.length === 0 && state.awayEpoch === null && state.coreEpoch === null && state.lastChats.length === 0;
 // a chat title as the run registry clamps it (MAX_RUN_TITLE_CHARS)
 const MAX_AWAY_TITLE = 1024;
 
@@ -205,6 +207,7 @@ function parseStateFile(text: string): StateFile {
   for (const [key, value] of Object.entries(parsed.authorities)) {
     const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
     const terminals = record ? own(record, 'terminals') : undefined;
+    const pendingKills = record ? own(record, 'pendingKills') : undefined;
     const chats = record ? own(record, 'chats') : undefined;
     const away = record ? own(record, 'away') : undefined;
     const coreEpoch = record ? own(record, 'coreEpoch') : undefined;
@@ -212,6 +215,7 @@ function parseStateFile(text: string): StateFile {
     if (!isText(key) || record === undefined) continue;
     authorities.set(key, {
       terminals: Array.isArray(terminals) ? terminals.flatMap((entry) => parseTerminal(entry) ?? []) : [],
+      pendingKills: Array.isArray(pendingKills) ? [...new Set(pendingKills.filter(isTerminalId))] : [],
       chats: Array.isArray(chats) ? chats.flatMap((entry) => parseChat(entry, key) ?? []) : [],
       away: Array.isArray(away) ? away.flatMap((entry) => parseAway(entry) ?? []) : [],
       awayEpoch: typeof awayEpoch === 'string' && CORE_EPOCH.test(awayEpoch) ? awayEpoch : null,
@@ -350,6 +354,24 @@ export class RemoteState {
     return this.change(authorityKey, { terminals: [...terminals] });
   }
 
+  /** The ids of the authority's terminals a Kill ended while it was away, which its next reattach kills on the host. */
+  pendingKills(authorityKey: string): readonly string[] {
+    return this.file.authorities.get(authorityKey)?.pendingKills ?? [];
+  }
+
+  /** A Kill while this app is away from the terminal's host: its record goes in the same write as its id joins the pending kills. */
+  killOnReattach(authorityKey: string, id: string): Promise<void> {
+    return this.change(authorityKey, (state) => ({
+      terminals: state.terminals.filter((terminal) => terminal.id !== id),
+      pendingKills: state.pendingKills.includes(id) ? state.pendingKills : [...state.pendingKills, id],
+    }));
+  }
+
+  /** A reattach killed these on the host, or found them ended: they no longer wait. */
+  killsDone(authorityKey: string, ids: readonly string[]): Promise<void> {
+    return this.change(authorityKey, (state) => ({ pendingKills: state.pendingKills.filter((id) => !ids.includes(id)) }));
+  }
+
   /** Replaces the authority's open chats and the core epoch they are open under. */
   setChats(authorityKey: string, chats: readonly RemoteChatRecord[], coreEpoch: string | null): Promise<void> {
     return this.change(authorityKey, { chats: [...chats], coreEpoch });
@@ -366,11 +388,13 @@ export class RemoteState {
     });
   }
 
-  // An authority holding nothing has no entry, so a write after Forget host leaves none behind.
-  private change(authorityKey: string, patch: Partial<AuthorityState>): Promise<void> {
+  // An authority holding nothing has no entry, so a write after Forget host leaves none behind. A function patch reads the
+  // authority as the write finds it.
+  private change(authorityKey: string, patch: Partial<AuthorityState> | ((state: AuthorityState) => Partial<AuthorityState>)): Promise<void> {
     return this.write((file) => {
       const authorities = new Map(file.authorities);
-      const next = { ...(file.authorities.get(authorityKey) ?? EMPTY_AUTHORITY), ...patch };
+      const current = file.authorities.get(authorityKey) ?? EMPTY_AUTHORITY;
+      const next = { ...current, ...(typeof patch === 'function' ? patch(current) : patch) };
       if (isEmptyAuthority(next)) authorities.delete(authorityKey);
       else authorities.set(authorityKey, next);
       return { ...file, authorities };

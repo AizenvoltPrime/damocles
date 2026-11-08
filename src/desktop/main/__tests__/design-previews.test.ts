@@ -77,6 +77,7 @@ function setUp(infoOf: (relPath: string) => DesignPreviewInfo | undefined = (rel
     mention: vi.fn(async () => undefined),
     openInBrowserFailed: vi.fn(),
     focusAway: vi.fn(),
+    focusPart: vi.fn(),
     log: (line) => harness.logged.push(line),
     sessionReady: Promise.resolve(),
     replayProgress: (progress) => harness.progress.push(progress),
@@ -163,6 +164,26 @@ describe('design preview views (PD-7)', () => {
     // a report for a tab that is not the active one shows nothing
     h.previews.setBounds(frame('another-tab'));
     expect(view.getVisible()).toBe(false);
+  });
+
+  it('focuses a design only while its view shows, and F6 and Shift+F6 there move focus a part on or back, unseen by the page', async () => {
+    h.previews.open(chat, 'contacts-1a2b3c4d', 'screens/S1.html');
+    await flush();
+    const tabId = h.active!;
+    h.previews.setBounds(frame(tabId));
+    await flush();
+    const view = views(h)[0]!;
+    expect(h.previews.focusPage(tabId)).toBe(false);
+    view.webContents.emit('did-finish-load');
+    expect([h.previews.focusPage('another-tab'), h.previews.focusPage(tabId)]).toEqual([false, true]);
+    expect(view.webContents.focus).toHaveBeenCalledOnce();
+    const press = (shift: boolean): boolean => {
+      const event = { preventDefault: vi.fn() };
+      view.webContents.emit('before-input-event', event, { type: 'keyDown', key: 'F6', shift, control: false, alt: false, meta: false });
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    expect([press(false), press(true)]).toEqual([true, true]);
+    expect(vi.mocked(h.deps.focusPart).mock.calls).toEqual([[1], [-1]]);
   });
 
   it('keeps at most four live views and rebuilds the least recently shown one when it shows again (PD-31)', async () => {

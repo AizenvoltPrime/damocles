@@ -23,9 +23,9 @@ function setup() {
   const deps = {
     postMessage: vi.fn((_host: unknown, msg: ExtensionToWebviewMessage) => { posted.push(msg); }),
   } as unknown as HandlerDependencies;
-  const ctx = { host: {} } as unknown as HandlerContext;
-  const handler = createUsageHandlers(deps).requestSubscriptionUsage!;
-  return { handler, ctx, posted };
+  const ctx = { host: { id: "chat" }, reply: { id: "asking-view" } } as unknown as HandlerContext;
+  const handler = createUsageHandlers(deps).handlers.requestSubscriptionUsage!;
+  return { handler, ctx, posted, deps };
 }
 
 const OK_DATA = {
@@ -64,6 +64,17 @@ describe("createUsageHandlers", () => {
     expect(msg.data.gpt).toEqual({ status: "error", bars: [], error });
     expect(typeof msg.data.fetchedAt).toBe("number");
     expect(JSON.stringify(posted)).not.toContain("boom");
+  });
+
+  it("replies to the asking view, and a remote chat page's request to the foreign host it came through", async () => {
+    H.fetchSubscriptionUsage.mockResolvedValue(OK_DATA);
+    const { handler, ctx, deps } = setup();
+    await handler({ type: "requestSubscriptionUsage" } as never, ctx);
+    expect(deps.postMessage).toHaveBeenLastCalledWith(ctx.reply, { type: "subscriptionUsage", data: OK_DATA });
+    const foreignHost = { id: "foreign" } as unknown as HandlerContext["host"];
+    await createUsageHandlers(deps).viewHandlers.requestSubscriptionUsage!({ type: "requestSubscriptionUsage" }, { host: foreignHost });
+    expect(deps.postMessage).toHaveBeenLastCalledWith(foreignHost, { type: "subscriptionUsage", data: OK_DATA });
+    expect(H.fetchSubscriptionUsage).toHaveBeenCalledTimes(2);
   });
 
   it("answers a non-Error throw with the same constant message without hanging", async () => {

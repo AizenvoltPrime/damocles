@@ -8,7 +8,7 @@ import { parseSettingsText, type SettingsObject } from '../../../core/config/set
 import { PREFER_API_KEY_SETTINGS } from '../../../core/pi-session/provider-auth';
 import type { Disposable } from '../../../platform/disposable';
 import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
-import { GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, MAX_BROKER_EXPIRES_IN_MS, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
+import { carriesAnyTag, GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, listedAfter, listedMemoryBytes, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
 
 // an access token or API key; pi's JWTs are a few KB
 export const MAX_SECRET_CHARS: number = 64 * 1024;
@@ -154,6 +154,7 @@ export interface LocalUserScope {
   readonly memoryProfile: () => Promise<ClientGlobalProfile>;
   readonly memoryResolve: (ids: readonly string[]) => Promise<readonly GlobalMemoryResolution[]>;
   readonly memoryApply: (writes: readonly GlobalMemoryWrite[]) => Promise<{ readonly applied: number; readonly ids?: readonly string[] }>;
+  readonly memoryList: (request: GlobalMemoryListRequest) => Promise<GlobalMemoryListPage>;
   readonly mcpServers: () => Promise<readonly RelayedMcpServer[]>;
   readonly mcpCall: (server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
   readonly mcpResources: (server: string, kind: 'resources' | 'templates', cursor: string | undefined, signal: AbortSignal) => Promise<unknown>;
@@ -180,6 +181,28 @@ export function relayedServersOf(raw: readonly RelayedMcpServer[]): RelayedMcpSe
     resources: server.resources,
     ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
   }));
+}
+
+/**
+ * Refuses a user.memory.list page that is not what was asked: more rows than the bound, a row that is not a note or lacks every
+ * tag asked for, more bytes than the budget unless it is one row, a row not strictly after the cursor and the row before it, or a
+ * next that is not the last row's key, so the remote core's paging always advances.
+ */
+export function checkListPage(request: GlobalMemoryListRequest, page: GlobalMemoryListPage): void {
+  const { rows, next } = page;
+  if (rows.length > MAX_RELAYED_MEMORIES) throw new Error(`The global memory list answered ${rows.length} rows, over its bound`);
+  let bytes = 0;
+  let previous = request.cursor;
+  for (const row of rows) {
+    if (row.kind !== 'note') throw new Error('The global memory list answered a row that is not a note');
+    if (request.tags !== undefined && request.tags.length > 0 && !carriesAnyTag(row.tags, request.tags)) throw new Error('The global memory list answered a row without a tag it was asked for');
+    if (previous !== undefined && !listedAfter(row, previous)) throw new Error('The global memory list answered a row out of order');
+    bytes += listedMemoryBytes(row);
+    previous = row;
+  }
+  if (rows.length > 1 && bytes > MAX_GLOBAL_MEMORY_LIST_BYTES) throw new Error(`The global memory list answered ${bytes} bytes, over its budget`);
+  const last = rows.at(-1);
+  if (next !== undefined && (last === undefined || next.createdAt !== last.createdAt || next.id !== last.id)) throw new Error("The global memory list's next is not its last row");
 }
 
 /** What `answer` settles to, or a rejection once ms pass first; the remote core treats that as a failure of its call. */
@@ -341,6 +364,14 @@ export class UserRelays implements Disposable {
     if (ids !== undefined && ids.length !== applied) throw new Error(`The global memory apply answered ${ids.length} rows for ${applied} writes`);
     this.deps.log(`[remote] user.memory.apply for ${authority}: ${applied} of ${entries.length} writes`);
     return { through: applied === 0 ? 0 : entries[applied - 1]!.end, ...(ids !== undefined ? { ids } : {}) };
+  }
+
+  /** One page of this computer's latest global rows a remote core lists, checked before it leaves (checkListPage). */
+  async memoryList(authority: string, request: GlobalMemoryListRequest): Promise<GlobalMemoryListPage> {
+    const page = await withinTimeout('user.memory.list', GLOBAL_MEMORY_READ_TIMEOUT_MS, this.deps.local.memoryList(request));
+    checkListPage(request, page);
+    this.deps.log(`[remote] user.memory.list for ${authority}: ${page.rows.length} rows${page.next !== undefined ? ', more to come' : ''}`);
+    return page;
   }
 
   /** A server published now; a request that arrives before the first read waits for it, as a credential ask waits for its snapshot. */

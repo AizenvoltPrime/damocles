@@ -90,10 +90,12 @@ describe('useMemoryScopeLabel', () => {
   // A string naming the global memory scope with no server variant would still say plain "global" on a server.
   it('gives every webview string that says "global" a server variant, but for the non-memory ones', () => {
     const NOT_MEMORY_SCOPE = new Set(['permission.destination.global']);
+    // shown only in a desktop remote chat, about this computer's global memories, where globalMemoryOnServer is never set
+    const THIS_COMPUTER_SCOPE = new Set(['memoryPanel.userMemoryOffDetail', 'memoryPanel.userTiersOff']);
     const strings = flatten(en as Tree);
     const variants = new Set(GLOBAL_SERVER_VARIANTS.values());
     const saysGlobal = [...strings]
-      .filter(([key, value]) => /\bglobal\b/i.test(value) && !variants.has(key) && !NOT_MEMORY_SCOPE.has(key))
+      .filter(([key, value]) => /\bglobal\b/i.test(value) && !variants.has(key) && !NOT_MEMORY_SCOPE.has(key) && !THIS_COMPUTER_SCOPE.has(key))
       .map(([key]) => key)
       .sort();
     expect(saysGlobal).toEqual([...GLOBAL_SERVER_VARIANTS.keys()].sort());

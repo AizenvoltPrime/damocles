@@ -90,7 +90,7 @@ test('Shift+F10 and the context menu key open the terminal menu from the keyboar
   await row.focus();
   await shell.keyboard.press('Shift+F10');
   await expect(overlayMenu(overlay)).toBeVisible();
-  expect(await menuIds(overlay)).toEqual(['split', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
+  expect(await menuIds(overlay)).toEqual(['split', 'joinTerminals', '-', 'moveUp', 'moveDown', 'moveToEditor', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
   await overlay.keyboard.press('Escape');
   await expect(overlayMenu(overlay)).toHaveCount(0);
   await expect(row).toBeFocused();
@@ -107,7 +107,7 @@ test('list rows rename inline with F2, take an icon and a colour from the picker
 
     // The row menu has no clipboard group.
     await first.click({ button: 'right' });
-    expect(await menuIds(overlay)).toEqual(['split', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
+    expect(await menuIds(overlay)).toEqual(['split', 'joinTerminals', '-', 'moveUp', 'moveDown', 'moveToEditor', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
     await overlay.keyboard.press('Escape');
 
     // F2 opens the field over the title with its text selected; Escape keeps the old title, Enter commits.
@@ -168,11 +168,12 @@ test('list rows rename inline with F2, take an icon and a colour from the picker
   await expect(terminalPane(shell).getByTestId('terminal-tab')).not.toHaveAttribute('data-terminal-id', ids[0]!);
 });
 
-test('the single tab has the row menu, and the palette\'s Rename starts the inline rename there', async ({ foreground: _foreground, home, launch }) => {
+test('the single tab has the row menu without its list moves, and the palette\'s Rename starts the inline rename there', async ({ foreground: _foreground, home, launch }) => {
   const { app, shell, overlay } = await launchWithTerminal(home, launch);
   const tab = terminalPane(shell).getByTestId('terminal-tab');
   await tab.click({ button: 'right' });
-  expect(await menuIds(overlay)).toEqual(['split', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
+  // the panel's only terminal has no row to move past and no terminal to join
+  expect(await menuIds(overlay)).toEqual(['split', '-', 'moveToEditor', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
   const project = tab.getByTestId('terminal-tab-project');
   const [tabBefore, projectBefore] = [(await tab.boundingBox())!, (await project.boundingBox())!];
   await menuItem(overlay, 'rename').click();

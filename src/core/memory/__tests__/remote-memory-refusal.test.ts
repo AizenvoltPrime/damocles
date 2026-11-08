@@ -171,8 +171,25 @@ describe('global memory on a daemon\'s core', () => {
       edges.close();
     });
 
-    it('refuses to list notes', () => {
-      expect(() => service.listNotes()).toThrow(USER_SCOPE_UNAVAILABLE);
+    it("lists the acting client's notes through its relay and none of the target's own global rows", async () => {
+      vi.mocked(fake.remote.memoryList).mockResolvedValueOnce({ rows: [{ id: 'n1', kind: 'note', content: 'their note', contentHash: 'h', tags: ['work'], createdAt: 2, updatedAt: 3, forgotten: true }] });
+      const notes = await service.listNotes(['work']);
+      expect(notes).toEqual([expect.objectContaining({ id: 'global:client-a:n1', tier: 'note', scope: 'global', content: 'their note', tags: ['work'], forgotten: true })]);
+      expect(fake.remote.memoryList).toHaveBeenCalledWith('client-a', { kinds: ['note'], tags: ['work'] });
+      expect(notes.map((note) => note.id)).not.toContain(noteId);
+    });
+
+    it('answers the notes list with the closed reason while no client is attached', async () => {
+      fake.set('clientAuth', 'client-a', undefined);
+      await expect(service.listNotes()).rejects.toThrow(englishText(globalMemoryClosedReason()));
+      expect(fake.remote.memoryList).not.toHaveBeenCalled();
+    });
+
+    it("refuses this computer's user-scope reads, which a remote chat's page makes only of this computer's core", () => {
+      expect(() => service.userScopeMemories()).toThrow(USER_SCOPE_UNAVAILABLE);
+      expect(() => service.isUserScopeRow(globalId)).toThrow(USER_SCOPE_UNAVAILABLE);
+      expect(() => service.userScopeHistory(globalId)).toThrow(USER_SCOPE_UNAVAILABLE);
+      expect(() => service.userScopeRelated(globalId)).toThrow(USER_SCOPE_UNAVAILABLE);
     });
 
     it('refuses the history and the neighbours of a global row, and leaves global neighbours out of a project row\'s', () => {

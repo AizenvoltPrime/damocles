@@ -49,7 +49,7 @@ function gate(options: { active?: string | null; focused?: boolean } = {}) {
   const paste = vi.fn(async () => {});
   const lines: string[] = [];
   const state = { active: options.active === undefined ? 'term-1' : options.active, focused: options.focused ?? true };
-  const value = new TerminalPasteGate({ activeTerminal: () => state.active, terminalFocused: () => state.focused, read, paste, log: (line) => lines.push(line) });
+  const value = new TerminalPasteGate({ commandTarget: () => state.active, terminalFocused: () => state.focused, read, paste, log: (line) => lines.push(line) });
   return { gate: value, read, paste, lines, state };
 }
 
@@ -104,7 +104,7 @@ describe('terminal paste gate', () => {
     expect(lines.at(-1)).toBe('[terminal] refusing a paste: that terminal does not have keyboard focus');
   });
 
-  it('issues no grant without an active terminal', async () => {
+  it('issues no grant without a command target', async () => {
     const { gate: subject, read, state } = gate({ active: null });
     subject.allow('clipboard');
     state.active = 'term-1';

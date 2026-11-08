@@ -47,6 +47,7 @@ function onKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
+  <!-- Pointer and drag events stay in the field, so a gesture on its text never acts on the terminal. -->
   <Input
     ref="field"
     v-model="draft"
@@ -61,7 +62,9 @@ function onKeydown(event: KeyboardEvent): void {
     @blur="finish(true)"
     @click.stop
     @mousedown.stop
+    @auxclick.stop
     @dblclick.stop
     @contextmenu.stop
+    @dragstart.stop
   />
 </template>

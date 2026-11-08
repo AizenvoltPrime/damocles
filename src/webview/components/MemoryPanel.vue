@@ -2,7 +2,7 @@
 import { ref, shallowRef, computed, watch, reactive, onMounted, onUnmounted, nextTick, type Component, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { toast } from 'vue-sonner';
-import type { MemoryTier, MemoryEntry, MemoryKind, SearchResult } from '@shared/types/memory';
+import type { MemoryEntry, MemoryKind, SearchResult } from '@shared/types/memory';
 import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
 import { useMemoryStore, type KindFilter, type ScopeFilter } from '@/stores/useMemoryStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -11,10 +11,12 @@ import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
 import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
+import { useUserScopeMemory, type MemoryCreate, type MemoryRowAction, type MemoryRowSource } from '@/composables/useUserScopeMemory';
+import { useConnectionStore } from '@/stores/useConnectionStore';
 import { formatMemoryForCopy } from '@/lib/format-memory-copy';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ArrowRight, Brain, Check, ChevronRight, Copy, EyeOff, History, LoaderCircle, Network, Pin, PinOff, Plus, RotateCcw, Save, Search, ShieldCheck, Trash2, UserRound } from 'lucide-vue-next';
+import { ArrowRight, Brain, Check, ChevronRight, Copy, EyeOff, History, Laptop, LoaderCircle, MonitorOff, Network, Pin, PinOff, Plus, RotateCcw, Save, Search, ShieldCheck, Trash2, UserRound } from 'lucide-vue-next';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -24,9 +26,8 @@ import SlidingIndicator from './SlidingIndicator.vue';
 import { isStaleMemory } from '@shared/memory-staleness';
 
 type TabId = 'all' | 'note' | 'observations' | 'search';
-/** Observations are written by the agent, never created from this panel, so the create path excludes that tier. */
-type MemoryCreateTier = Exclude<MemoryTier, 'observation'>;
-type MemoryCreateKind = 'fact' | 'preference' | 'episode';
+type MemoryCreateTier = MemoryCreate['tier'];
+type MemoryCreateKind = MemoryCreate['kind'];
 
 const props = defineProps<{
   notes: MemoryEntry[];
@@ -38,16 +39,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'create', payload: { tier: MemoryCreateTier; kind: MemoryCreateKind; content: string; requestId: string }): void;
-  (e: 'delete', id: string): void;
-  (e: 'pin', id: string): void;
-  (e: 'unpin', id: string): void;
+  (e: 'create', payload: MemoryCreate): void;
   (e: 'loadMoreObservations'): void;
 }>();
 
 /** A nested dialog is above this panel, so it answers first and the panel stays open behind it. */
 function requestClose(): void {
-  if (historyDialogId.value !== null || relatedDialogId.value !== null) return;
+  if (historyDialog.value !== null || relatedDialog.value !== null) return;
   emit('close');
 }
 
@@ -75,6 +73,10 @@ const store = useMemoryStore();
 const settingsStore = useSettingsStore();
 const auditStore = useMemoryAuditStore();
 const { postMessage } = usePlatformBridge();
+const { separate, rowMessage, profileSaveMessage } = useUserScopeMemory();
+const userMemoryOff = computed(() => separate.value && store.userMemoryOff);
+// Global and Note rows and the global profile live on this computer in a remote chat, so they wait for its memory
+const userTierOff = (tier: MemoryCreateTier): boolean => userMemoryOff.value && (tier === 'global' || tier === 'note');
 
 onMounted(() => auditStore.requestSummary());
 
@@ -93,8 +95,9 @@ const searchedQuery = ref('');
 const searchPending = ref(false);
 const scrollContainerRef = ref<HTMLElement | null>(null);
 
-const historyDialogId = ref<string | null>(null);
-const relatedDialogId = ref<string | null>(null);
+interface RowDialog { id: string; source: MemoryRowSource }
+const historyDialog = ref<RowDialog | null>(null);
+const relatedDialog = ref<RowDialog | null>(null);
 const profileExpanded = ref(false);
 
 const kindOptions = computed<SegmentedOption<KindFilter>[]>(() => [
@@ -114,9 +117,10 @@ const scopeOptions = computed<SegmentedOption<ScopeFilter>[]>(() => [
 const tierOptions = computed<SegmentedOption<MemoryCreateTier>[]>(() => [
   { value: 'session', label: scopeLabel('session') },
   { value: 'project', label: scopeLabel('project') },
-  { value: 'global', label: scopeLabel('global') },
-  { value: 'note', label: kindLabel('note') },
+  { value: 'global', label: scopeLabel('global'), disabled: userTierOff('global') },
+  { value: 'note', label: kindLabel('note'), disabled: userTierOff('note') },
 ]);
+const createUnavailable = computed(() => userTierOff(newMemoryTier.value));
 
 const createKindOptions = computed<SegmentedOption<MemoryCreateKind>[]>(() => [
   { value: 'fact', label: kindLabel('fact') },
@@ -124,13 +128,15 @@ const createKindOptions = computed<SegmentedOption<MemoryCreateKind>[]>(() => [
   { value: 'episode', label: kindLabel('episode') },
 ]);
 
-const historyEntries = computed<MemoryEntry[]>(() =>
-  historyDialogId.value ? store.versionHistory[historyDialogId.value] ?? [] : []
-);
+const historyEntries = computed<MemoryEntry[]>(() => {
+  const dialog = historyDialog.value;
+  return dialog ? store.versionHistory[dialog.source][dialog.id] ?? [] : [];
+});
 
-const relatedEntries = computed<MemoryEntry[]>(() =>
-  relatedDialogId.value ? store.relatedMemories[relatedDialogId.value] ?? [] : []
-);
+const relatedEntries = computed<MemoryEntry[]>(() => {
+  const dialog = relatedDialog.value;
+  return dialog ? store.relatedMemories[dialog.source][dialog.id] ?? [] : [];
+});
 
 const profileStaticProject = ref('');
 const profileDynamicProject = ref('');
@@ -153,13 +159,14 @@ interface ProfileSection {
   label: string;
   placeholder: string;
   model: Ref<string>;
+  unavailable: boolean;
 }
 
 const profileSections = computed<ProfileSection[]>(() => [
-  { key: 'projectStatic', scope: 'project', section: 'static', label: `${scopeLabel('project')} · ${t('memoryPanel.profileStatic')}`, placeholder: t('memoryPanel.projectStaticPlaceholder'), model: profileStaticProject },
-  { key: 'projectDynamic', scope: 'project', section: 'dynamic', label: `${scopeLabel('project')} · ${t('memoryPanel.profileDynamic')}`, placeholder: t('memoryPanel.dynamicPlaceholder'), model: profileDynamicProject },
-  { key: 'globalStatic', scope: 'global', section: 'static', label: `${scopeLabel('global')} · ${t('memoryPanel.profileStatic')}`, placeholder: t('memoryPanel.globalStaticPlaceholder'), model: profileStaticGlobal },
-  { key: 'globalDynamic', scope: 'global', section: 'dynamic', label: `${scopeLabel('global')} · ${t('memoryPanel.profileDynamic')}`, placeholder: t('memoryPanel.dynamicPlaceholder'), model: profileDynamicGlobal },
+  { key: 'projectStatic', scope: 'project', section: 'static', label: `${scopeLabel('project')} · ${t('memoryPanel.profileStatic')}`, placeholder: t('memoryPanel.projectStaticPlaceholder'), model: profileStaticProject, unavailable: false },
+  { key: 'projectDynamic', scope: 'project', section: 'dynamic', label: `${scopeLabel('project')} · ${t('memoryPanel.profileDynamic')}`, placeholder: t('memoryPanel.dynamicPlaceholder'), model: profileDynamicProject, unavailable: false },
+  { key: 'globalStatic', scope: 'global', section: 'static', label: `${scopeLabel('global')} · ${t('memoryPanel.profileStatic')}`, placeholder: t('memoryPanel.globalStaticPlaceholder'), model: profileStaticGlobal, unavailable: userMemoryOff.value },
+  { key: 'globalDynamic', scope: 'global', section: 'dynamic', label: `${scopeLabel('global')} · ${t('memoryPanel.profileDynamic')}`, placeholder: t('memoryPanel.dynamicPlaceholder'), model: profileDynamicGlobal, unavailable: userMemoryOff.value },
 ]);
 
 function onProfileInput(section: ProfileSection, value: string): void {
@@ -256,7 +263,7 @@ watch(() => store.createSettlement, (settlement) => {
 });
 
 function handleAdd() {
-  if (!newMemoryContent.value.trim() || pendingCreate.value) return;
+  if (!newMemoryContent.value.trim() || pendingCreate.value || createUnavailable.value) return;
   const requestId = `create-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   pendingCreate.value = true;
   pendingCreateRequestId.value = requestId;
@@ -316,28 +323,55 @@ function handleShowForgotten(value: boolean) {
   store.setShowForgotten(value);
 }
 
-function handleForget(id: string) {
-  postMessage({ type: 'forgetMemory', id, scope: 'chain' });
-}
-
-function handleUnforget(id: string) {
-  postMessage({ type: 'unforgetMemory', id, scope: 'chain' });
+/** Posts a row's action to the core whose list holds the row; a row no longer shown has nothing to act on. */
+function postRowAction(action: MemoryRowAction, id: string): MemoryRowSource | undefined {
+  const source = store.rowSource(id);
+  if (source) postMessage(rowMessage(source, action, id));
+  return source;
 }
 
 function openHistory(id: string) {
-  postMessage({ type: 'getMemoryHistory', id });
-  historyDialogId.value = id;
+  const source = postRowAction('history', id);
+  if (source) historyDialog.value = { id, source };
 }
 
 function openRelated(id: string) {
-  postMessage({ type: 'getRelatedMemories', id });
-  relatedDialogId.value = id;
+  const source = postRowAction('related', id);
+  if (source) relatedDialog.value = { id, source };
 }
+
+/** This computer's list and global profile, which a remote chat's own core never holds. */
+function requestUserLists(): void {
+  if (!separate.value) return;
+  postMessage({ type: 'requestUserMemories' });
+  postMessage({ type: 'getUserProfile' });
+}
+
+function requestLists(): void {
+  postMessage({ type: 'requestMemories' });
+  requestUserLists();
+}
+
+// main names a remote chat's host only once it answers the page's init, possibly after the panel opened
+watch(separate, (now) => {
+  if (now) requestUserLists();
+});
+
+// a request made while the host was away reached no core, and its memories may have changed meanwhile
+const connection = useConnectionStore();
+watch(() => connection.away, (away, wasAway) => {
+  if (wasAway && !away) postMessage({ type: 'requestMemories' });
+});
+// a remote view's join after the grace posts hostCapabilities first, and 'connected' may precede the join, losing the request above
+watch(() => settingsStore.hostCapabilities, () => {
+  if (separate.value) postMessage({ type: 'requestMemories' });
+});
 
 function toggleProfile() {
   profileExpanded.value = !profileExpanded.value;
   if (profileExpanded.value) {
     postMessage({ type: 'getProfile' });
+    if (separate.value) postMessage({ type: 'getUserProfile' });
   } else {
     profileDirty.projectStatic = false;
     profileDirty.projectDynamic = false;
@@ -363,7 +397,7 @@ watch(() => settingsStore.panelWorkspaceFolderKey, () => {
 });
 
 function saveProfileSection(scope: 'project' | 'global', section: 'static' | 'dynamic', content: string) {
-  postMessage({ type: 'setProfileSection', scope, section, content });
+  postMessage(profileSaveMessage(scope, section, content));
   const key = `${scope}${section === 'static' ? 'Static' : 'Dynamic'}` as keyof typeof profileDirty;
   // Keep the section dirty until the save confirms; a failed save posts no profileData, so the draft
   // is preserved instead of being optimistically discarded.
@@ -416,19 +450,19 @@ function memoryActions(memory: MemoryEntry, full = true): MemoryAction[] {
   const actions: MemoryAction[] = [
     { id: 'copy', label: copied ? t('memoryPanel.copiedAria') : t('memoryPanel.copyAria'), icon: copied ? Check : Copy, class: copied ? 'text-(--d-success)' : 'text-(--d-muted) hover:text-(--d-text)', run: () => void handleCopy(memory) },
     memory.pinned
-      ? { id: 'unpin', label: t('memoryPanel.unpin'), icon: PinOff, class: 'text-(--d-warning)', run: () => emit('unpin', memory.id) }
-      : { id: 'pin', label: t('memoryPanel.pin'), icon: Pin, class: 'text-(--d-muted) hover:text-(--d-text)', run: () => emit('pin', memory.id) },
+      ? { id: 'unpin', label: t('memoryPanel.unpin'), icon: PinOff, class: 'text-(--d-warning)', run: () => void postRowAction('unpin', memory.id) }
+      : { id: 'pin', label: t('memoryPanel.pin'), icon: Pin, class: 'text-(--d-muted) hover:text-(--d-text)', run: () => void postRowAction('pin', memory.id) },
   ];
   if (full) {
     actions.push(
       { id: 'history', label: t('memoryPanel.versionHistory'), icon: History, class: 'text-(--d-muted) hover:text-(--d-text)', run: () => openHistory(memory.id) },
       { id: 'related', label: t('memoryPanel.relatedMemories'), icon: Network, class: 'text-(--d-muted) hover:text-(--d-text)', run: () => openRelated(memory.id) },
       memory.forgotten
-        ? { id: 'restore', label: t('memoryPanel.restore'), icon: RotateCcw, class: 'text-(--d-success)', run: () => handleUnforget(memory.id) }
-        : { id: 'forget', label: t('memoryPanel.forget'), icon: EyeOff, class: 'text-(--d-muted) hover:text-(--d-text)', run: () => handleForget(memory.id) },
+        ? { id: 'restore', label: t('memoryPanel.restore'), icon: RotateCcw, class: 'text-(--d-success)', run: () => void postRowAction('unforget', memory.id) }
+        : { id: 'forget', label: t('memoryPanel.forget'), icon: EyeOff, class: 'text-(--d-muted) hover:text-(--d-text)', run: () => void postRowAction('forget', memory.id) },
     );
   }
-  actions.push({ id: 'delete', label: t('common.delete'), icon: Trash2, class: 'text-(--d-muted) hover:text-(--d-danger)', run: () => emit('delete', memory.id) });
+  actions.push({ id: 'delete', label: t('common.delete'), icon: Trash2, class: 'text-(--d-muted) hover:text-(--d-danger)', run: () => void postRowAction('delete', memory.id) });
   return actions;
 }
 
@@ -482,18 +516,28 @@ async function revealFocused(id: string): Promise<void> {
   row?.focus({ preventScroll: true });
 }
 
-/** `loaded` is false until a memory list arrives after the focus request; until then a miss only waits. */
-function applyFocus(loaded: boolean): void {
+// A remote core names this computer's global row `global:<clientId>:<id>`; this computer's list holds it as `<id>`.
+const RELAYED_GLOBAL_ID = /^global:[^:]+:(.+)$/;
+
+/** The list that decides whether a focused row exists, and the id that row has there. */
+function focusTarget(id: string): { id: string; source: MemoryRowSource } {
+  const own = separate.value ? RELAYED_GLOBAL_ID.exec(id)?.[1] : undefined;
+  return own === undefined ? { id, source: 'chat' } : { id: own, source: 'user' };
+}
+
+/** `answered` names the list that arrived since the focus request; only the list that holds the row decides a miss. */
+function applyFocus(answered: MemoryRowSource | undefined): void {
   const focus = uiStore.memoryPanelFocus;
   if (!focus) return;
-  const target = store.memories.find((m) => m.id === focus.id);
+  const { id, source } = focusTarget(focus.id);
+  const target = store.memories.find((m) => m.id === id);
   if (target?.forgotten && activeTab.value === 'all') store.setShowForgotten(true);
-  if (rowsOf(activeTab.value).some((m) => m.id === focus.id)) {
-    void revealFocused(focus.id);
+  if (rowsOf(activeTab.value).some((m) => m.id === id)) {
+    void revealFocused(id);
     return;
   }
-  if (!loaded) return;
-  if (focus.kind === 'observation' && props.hasMoreObservations && focusPagesRequested < MAX_FOCUS_PAGES) {
+  if (answered !== source) return;
+  if (source === 'chat' && focus.kind === 'observation' && props.hasMoreObservations && focusPagesRequested < MAX_FOCUS_PAGES) {
     focusPagesRequested++;
     emit('loadMoreObservations');
     return;
@@ -502,21 +546,22 @@ function applyFocus(loaded: boolean): void {
   toast.info(t('contextInjection.action.notInPanel'));
 }
 
-watch(() => store.memories, () => applyFocus(true));
+watch(() => store.chatMemories, () => applyFocus('chat'));
+watch([() => store.userMemories, () => store.userMemoryFailures], () => applyFocus('user'));
 
-// The panel owns its list request, sent only once the watcher above can see the reply.
+// The panel owns its list requests, sent only once the watcher above can see the reply.
 watch(() => uiStore.memoryPanelFocus, (focus) => {
   if (!focus) return;
   store.setKindFilter('all');
   store.setScopeFilter('all');
   activeTab.value = tabForKind(focus.kind);
   focusPagesRequested = 0;
-  applyFocus(false);
-  if (uiStore.memoryPanelFocus) postMessage({ type: 'requestMemories' });
+  applyFocus(undefined);
+  if (uiStore.memoryPanelFocus) requestLists();
 }, { immediate: true });
 
 onMounted(() => {
-  if (!uiStore.memoryPanelFocus) postMessage({ type: 'requestMemories' });
+  if (!uiStore.memoryPanelFocus) requestLists();
 });
 
 onUnmounted(() => {
@@ -579,6 +624,33 @@ onUnmounted(() => {
         >
           {{ t('memoryAudit.banner.dismiss') }}
         </button>
+      </div>
+
+      <!-- a live region stays mounted so the notice arriving is announced; empty, it leaves the flow and the gap -->
+      <div
+        role="status"
+        class="flex flex-col empty:absolute"
+        data-testid="memory-user-status"
+      >
+        <Transition name="t-tuck">
+          <div
+            v-if="userMemoryOff"
+            id="memory-user-off"
+            class="flex items-center gap-2.5 rounded-10 border border-(--d-border) bg-(--d-card) py-2 pr-3 pl-2"
+            data-testid="memory-user-off"
+          >
+            <span class="d-state-icon flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-hover) text-(--d-muted)">
+              <MonitorOff
+                class="size-3.5"
+                aria-hidden="true"
+              />
+            </span>
+            <span class="flex min-w-0 flex-col gap-px">
+              <span class="text-12.5 font-semibold text-(--d-text)">{{ t('memoryPanel.userMemoryOff') }}</span>
+              <span class="text-11.5 text-(--d-muted)">{{ t('memoryPanel.userMemoryOffDetail') }}</span>
+            </span>
+          </div>
+        </Transition>
       </div>
 
       <div class="flex flex-col gap-2.5">
@@ -731,13 +803,24 @@ onUnmounted(() => {
                       :id="`memory-profile-${section.key}`"
                       :value="section.model.value"
                       rows="3"
-                      class="resize-y rounded-lg border border-(--d-border) bg-(--d-input) px-2.5 py-2 text-xs text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent)"
+                      class="resize-y rounded-lg border border-(--d-border) bg-(--d-input) px-2.5 py-2 text-xs text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent) disabled:cursor-not-allowed disabled:opacity-(--d-opacity-disabled)"
                       :placeholder="section.placeholder"
+                      :disabled="section.unavailable"
+                      :aria-describedby="section.unavailable ? `memory-profile-${section.key}-off` : undefined"
                       @input="onProfileInput(section, ($event.target as HTMLTextAreaElement).value)"
                     />
+                    <p
+                      v-if="section.unavailable"
+                      :id="`memory-profile-${section.key}-off`"
+                      class="text-11 text-(--d-muted)"
+                      data-testid="memory-profile-off"
+                    >
+                      {{ t('memoryPanel.userMemoryOffControl') }}
+                    </p>
                     <button
                       type="button"
-                      class="d-press flex h-6.5 items-center gap-1 self-end rounded-md border border-(--d-border2) px-2 text-11.5 transition-colors hover:bg-(--d-hover)"
+                      class="d-press flex h-6.5 items-center gap-1 self-end rounded-md border border-(--d-border2) px-2 text-11.5 transition-colors enabled:hover:bg-(--d-hover) disabled:opacity-(--d-opacity-disabled)"
+                      :disabled="section.unavailable"
                       @click="saveProfileSection(section.scope, section.section, section.model.value)"
                     >
                       <Save
@@ -777,6 +860,15 @@ onUnmounted(() => {
                   v-if="memory.scope"
                   class="rounded-5 bg-(--d-hover) px-1.5 leading-4.25 text-(--d-muted)"
                 >{{ scopeLabel(memory.scope) }}</span>
+                <span
+                  v-if="store.userIds.has(memory.id)"
+                  class="flex items-center gap-0.75 rounded-5 bg-(--d-hover) px-1.5 leading-4.25 text-(--d-muted)"
+                  :title="t('memoryPanel.onThisComputerTitle')"
+                  data-testid="memory-on-this-computer"
+                ><Laptop
+                  class="size-2.5"
+                  aria-hidden="true"
+                />{{ t('memoryPanel.onThisComputer') }}<span class="sr-only">. {{ t('memoryPanel.onThisComputerTitle') }}</span></span>
                 <span
                   v-if="memory.pinned"
                   class="flex items-center gap-0.75 text-(--d-warning-text)"
@@ -852,7 +944,24 @@ onUnmounted(() => {
 
         <template v-if="activeTab === 'note'">
           <p
-            v-if="notes.length === 0"
+            v-if="separate && store.userMemoryFailures > 0 && store.userMemories === null"
+            class="p-6 text-center text-(--d-faint)"
+            data-testid="memory-notes-unavailable"
+          >
+            {{ t('memoryPanel.userNotesUnavailable') }}
+          </p>
+          <p
+            v-else-if="separate && store.userMemories === null"
+            class="flex items-center justify-center gap-1.5 p-6 text-(--d-faint)"
+            data-testid="memory-notes-loading"
+          >
+            <LoaderCircle
+              class="size-3 d-spinning"
+              aria-hidden="true"
+            />{{ t('memoryPanel.userNotesLoading') }}
+          </p>
+          <p
+            v-else-if="notes.length === 0 && !userMemoryOff"
             class="p-6 text-center text-(--d-faint)"
           >
             {{ t('memoryPanel.noNotesBefore') }} <code class="rounded-5 bg-(--d-hover) px-1.5 font-mono text-xs text-(--d-accent-text)">/note text</code> {{ t('memoryPanel.noNotesAfter') }}
@@ -869,6 +978,15 @@ onUnmounted(() => {
             <div class="min-w-0 flex-1">
               <div class="mb-1 flex flex-wrap items-center gap-1.5 text-10.5">
                 <span class="rounded-5 bg-(--d-accent-soft) px-1.5 leading-4.25 font-semibold text-(--d-accent-text)">{{ kindLabel('note') }}</span>
+                <span
+                  v-if="store.userIds.has(memory.id)"
+                  class="flex items-center gap-0.75 rounded-5 bg-(--d-hover) px-1.5 leading-4.25 text-(--d-muted)"
+                  :title="t('memoryPanel.onThisComputerTitle')"
+                  data-testid="memory-on-this-computer"
+                ><Laptop
+                  class="size-2.5"
+                  aria-hidden="true"
+                />{{ t('memoryPanel.onThisComputer') }}<span class="sr-only">. {{ t('memoryPanel.onThisComputerTitle') }}</span></span>
                 <span
                   v-if="memory.pinned"
                   class="flex items-center gap-0.75 text-(--d-warning-text)"
@@ -1080,8 +1198,8 @@ onUnmounted(() => {
         </template>
       </div>
       <Dialog
-        :open="historyDialogId !== null"
-        @update:open="(v: boolean) => { if (!v) historyDialogId = null; }"
+        :open="historyDialog !== null"
+        @update:open="(v: boolean) => { if (!v) historyDialog = null; }"
       >
         <DialogContent class="max-h-[80vh] max-w-lg overflow-y-auto">
           <DialogHeader>
@@ -1124,8 +1242,8 @@ onUnmounted(() => {
       </Dialog>
 
       <Dialog
-        :open="relatedDialogId !== null"
-        @update:open="(v: boolean) => { if (!v) relatedDialogId = null; }"
+        :open="relatedDialog !== null"
+        @update:open="(v: boolean) => { if (!v) relatedDialog = null; }"
       >
         <DialogContent class="max-h-[80vh] max-w-lg overflow-y-auto">
           <DialogHeader>
@@ -1192,7 +1310,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="d-press flex h-6.5 flex-none items-center gap-1 rounded-md bg-(--d-accent) px-2.5 text-xs font-semibold text-(--d-on-accent) transition-[filter] enabled:hover:brightness-110 disabled:opacity-40"
-            :disabled="!newMemoryContent.trim() || pendingCreate"
+            :disabled="!newMemoryContent.trim() || pendingCreate || createUnavailable"
             data-testid="memory-add"
             @click="handleAdd"
           >
@@ -1211,6 +1329,7 @@ onUnmounted(() => {
             class="bg-(--d-hover)"
             indicator-class="text-(--d-card)"
             :aria-label="t('memoryPanel.newTier')"
+            :aria-describedby="userMemoryOff ? 'memory-tier-off' : undefined"
           />
           <SegmentedToggle
             v-if="newMemoryTier !== 'note'"
@@ -1220,6 +1339,14 @@ onUnmounted(() => {
             indicator-class="text-(--d-card)"
             :aria-label="t('memoryPanel.newKind')"
           />
+          <p
+            v-if="userMemoryOff"
+            id="memory-tier-off"
+            class="text-11 text-(--d-muted)"
+            data-testid="memory-tier-off"
+          >
+            {{ t('memoryPanel.userTiersOff') }}
+          </p>
         </div>
       </div>
     </template>

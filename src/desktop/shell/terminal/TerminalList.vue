@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, shallowRef, watch } from 'vue';
+import { computed, inject, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize } from '@vueuse/core';
 import { Columns2, LoaderCircle, Trash2 } from 'lucide-vue-next';
@@ -8,12 +8,14 @@ import SlidingIndicator from '@/components/SlidingIndicator.vue';
 import { remPx } from '@/composables/useRemPx';
 import { useSlidingIndicator, type IndicatorBox } from '@/composables/useSlidingIndicator';
 import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
-import { MAX_TERMINAL_GROUP_PANES, TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_REM, TERMINAL_LIST_MIN_REM, type TerminalGroupInfo, type TerminalInfo } from '../../preload/terminal-channels';
+import { MAX_TERMINAL_GROUP_PANES, TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_REM, TERMINAL_LIST_MIN_REM, type TerminalDropSide, type TerminalGroupInfo, type TerminalInfo } from '../../preload/terminal-channels';
 import Sash from '../layout/Sash.vue';
+import { prefersReducedMotion } from '@/utils/reducedMotion';
+import { draggedTerminal, endTerminalDrag, leavePanelEnd, panelEndDrop, rowDropSide, startTerminalDrag, terminalDragOf, terminalDropOf } from './terminal-drag';
 import { terminalGlyph } from './terminal-icons';
 import { isShiftF10 } from './terminal-keys';
 import { openTabMenu, terminalProjectLabel, terminalStatusLabel } from './terminal-menu';
-import { TERMINAL_STORE } from './terminal-store';
+import { moveLanded, TERMINAL_STORE } from './terminal-store';
 import TerminalRename from './TerminalRename.vue';
 
 // The vertical list of two or more terminals beside the active group (VS Code's terminal tabs list, terminalTabsList.ts),
@@ -101,6 +103,30 @@ function openMenu(terminal: TerminalInfo, anchor: { x: number; y: number; width:
   void openTabMenu({ api: props.api, store, t, platform: props.platform }, terminal, { panes: places.value.get(terminal.id)?.count ?? 0, shortcut: props.splitShortcut }, anchor);
 }
 
+// By layout offsets rather than scrollIntoView, which would measure a moved row where its slide's transform still holds it.
+function revealRow(row: HTMLElement): void {
+  const scroller = list.value;
+  if (!scroller) return;
+  const top = row.offsetTop;
+  const bottom = top + row.offsetHeight;
+  const next = top < scroller.scrollTop ? top : bottom > scroller.scrollTop + scroller.clientHeight ? bottom - scroller.clientHeight : null;
+  if (next !== null) scroller.scrollTo({ top: next, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
+}
+
+// A move reorders the rows in the DOM, which takes focus from a moved row; the row the keyboard stood on gets it back.
+watch(() => props.terminals.map((terminal) => terminal.id).join('\n'), () => {
+  const focused = document.activeElement;
+  const id = focused instanceof HTMLElement && focused.matches('[data-terminal-row]') && list.value?.contains(focused) ? focused.dataset.terminalId : undefined;
+  if (id !== undefined) {
+    void nextTick(() => {
+      const element = rowElement(id);
+      if (!element) return;
+      if (document.activeElement !== element) element.focus({ preventScroll: true });
+      revealRow(element);
+    });
+  }
+}, { flush: 'pre' });
+
 function onContextMenu(event: MouseEvent, terminal: TerminalInfo): void {
   event.preventDefault();
   openMenu(terminal, { x: event.clientX, y: event.clientY, width: 0, height: 0 });
@@ -110,6 +136,14 @@ function onContextMenu(event: MouseEvent, terminal: TerminalInfo): void {
 // it and Shift+F10 opens its menu under the row. The menu key reaches onContextMenu as the browser's contextmenu event.
 function onKeydown(event: KeyboardEvent, index: number, terminal: TerminalInfo): void {
   const count = props.terminals.length;
+  // Alt+Up and Alt+Down move the row (VS Code's list has no key for it; the Projects list uses these).
+  if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const delta = event.key === 'ArrowUp' ? -1 : 1;
+    if (index + delta >= 0 && index + delta < count) store.move({ kind: 'step', id: terminal.id, delta });
+    event.preventDefault();
+    return;
+  }
   const target = ({ ArrowUp: index - 1, ArrowDown: index + 1, Home: 0, End: count - 1 } as Record<string, number>)[event.key];
   if (target !== undefined) rowElement(props.terminals[(target + count) % count]?.id)?.focus();
   else if (event.key === 'Enter' || event.key === ' ') emit('select', terminal.id);
@@ -120,6 +154,112 @@ function onKeydown(event: KeyboardEvent, index: number, terminal: TerminalInfo):
     openMenu(terminal, { x: row.left, y: row.top, width: row.width, height: row.height });
   } else return;
   event.preventDefault();
+}
+
+// Native drag and drop (VS Code's TerminalTabsDragAndDrop): a row dropped on another row's upper or lower half moves before or
+// after it, below the last row it leaves its group for one of its own at the end. The line shows where it lands: beside the
+// target row within its own group, else at the edge of the target's group, which the dragged row's whole group moves past.
+type ListDrop = { readonly kind: 'reorder'; readonly target: string; readonly side: TerminalDropSide } | { readonly kind: 'detach' };
+const dropLine = shallowRef<{ readonly y: number; readonly kind: ListDrop['kind'] } | null>(null);
+
+function rowsInOrder(): HTMLElement[] {
+  return [...(list.value?.querySelectorAll<HTMLElement>(ROW) ?? [])];
+}
+
+// The row under clientY, or null below the last row.
+function rowAt(rows: readonly HTMLElement[], clientY: number): HTMLElement | null {
+  const last = rows.at(-1);
+  if (!last || clientY >= last.getBoundingClientRect().bottom) return null;
+  return rows.find((candidate) => clientY < candidate.getBoundingClientRect().bottom) ?? rows[0]!;
+}
+
+const endY = (rows: readonly HTMLElement[]): number => {
+  const last = rows.at(-1);
+  return last ? last.offsetTop + last.offsetHeight : 0;
+};
+
+// null where a drop changes nothing: the dragged row's own row, the halves beside its own place, and below the rows for a
+// terminal already alone at the end
+function dropAt(id: string, clientY: number): { readonly drop: ListDrop; readonly y: number } | null {
+  const rows = rowsInOrder();
+  if (rows.length === 0) return null;
+  const row = rowAt(rows, clientY);
+  if (!row) return moveLanded(store.state.value, { kind: 'detach', id }) ? null : { drop: { kind: 'detach' }, y: endY(rows) };
+  const target = row.dataset.terminalId!;
+  const side = rowDropSide(row.getBoundingClientRect(), clientY);
+  if (moveLanded(store.state.value, { kind: 'reorder', id, target, side })) return null;
+  const targetGroup = places.value.get(target)?.groupId;
+  const landing = targetGroup === places.value.get(id)?.groupId ? [target] : props.groups.find((group) => group.id === targetGroup)?.paneIds ?? [target];
+  const edgeRow = rowElement(side === 'before' ? landing[0] : landing.at(-1)) ?? row;
+  return { drop: { kind: 'reorder', target, side }, y: edgeRow.offsetTop + (side === 'before' ? 0 : edgeRow.offsetHeight) };
+}
+
+// Over the header strip the line marks the end of the list, where the terminal lands.
+const shownLine = computed(() => dropLine.value ?? (panelEndDrop.value === 'header' ? { y: endY(rowsInOrder()), kind: 'detach' as const } : null));
+
+// Hovering a row during a drag shows its terminal after a moment, so a pane of another group can take the drop (VS Code's 500 ms).
+const REVEAL_MS = 500;
+let revealTimer: ReturnType<typeof setTimeout> | undefined;
+let revealTarget: string | undefined;
+
+function stopReveal(): void {
+  clearTimeout(revealTimer);
+  revealTimer = undefined;
+  revealTarget = undefined;
+}
+onBeforeUnmount(stopReveal);
+
+function onDragStart(event: DragEvent, terminal: TerminalInfo): void {
+  startTerminalDrag(event, terminal.id);
+}
+
+function onDragEnd(): void {
+  endTerminalDrag();
+  dropLine.value = null;
+  stopReveal();
+}
+
+// The area below the rows is a part of the panel's end target; a drop that changes nothing is not taken.
+function onListDragOver(event: DragEvent): void {
+  const id = terminalDragOf(event);
+  if (id === null) return;
+  const at = dropAt(id, event.clientY);
+  dropLine.value = at ? { y: at.y, kind: at.drop.kind } : null;
+  if (at) {
+    event.preventDefault();
+    event.dataTransfer!.dropEffect = 'move';
+  }
+  if (at?.drop.kind === 'detach') panelEndDrop.value = 'list';
+  else leavePanelEnd('list');
+  const under = rowAt(rowsInOrder(), event.clientY)?.dataset.terminalId;
+  const hovered = under === id ? undefined : under;
+  if (hovered === revealTarget) return;
+  stopReveal();
+  if (hovered === undefined || hovered === props.activeId) return;
+  revealTarget = hovered;
+  revealTimer = setTimeout(() => {
+    revealTimer = undefined;
+    props.api.terminal.select(hovered);
+  }, REVEAL_MS);
+}
+
+function onListDragLeave(event: DragEvent): void {
+  if (list.value?.contains(event.relatedTarget as Node | null)) return;
+  dropLine.value = null;
+  leavePanelEnd('list');
+  stopReveal();
+}
+
+function onListDrop(event: DragEvent): void {
+  dropLine.value = null;
+  stopReveal();
+  const id = terminalDropOf(event);
+  if (id === null) return;
+  event.preventDefault();
+  endTerminalDrag();
+  const drop = dropAt(id, event.clientY)?.drop;
+  if (drop?.kind === 'detach') store.move({ kind: 'detach', id });
+  else if (drop) store.move({ kind: 'reorder', id, target: drop.target, side: drop.side });
 }
 
 // Main's computed title, the working directory's folder when it is not the project's, and the project.
@@ -159,7 +299,12 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
       role="tablist"
       aria-orientation="vertical"
       :aria-label="t('terminal.listLabel')"
+      :data-drop="panelEndDrop ? 'true' : undefined"
       class="terminal-list relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1"
+      @dragenter="onListDragOver"
+      @dragover="onListDragOver"
+      @dragleave="onListDragLeave"
+      @drop="onListDrop"
     >
       <SlidingIndicator
         class="text-(--d-hover)"
@@ -189,14 +334,18 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
           :aria-selected="terminal.id === activeId"
           :aria-controls="`terminal-panel-${terminal.id}`"
           :aria-label="tabLabel(terminal)"
-          aria-keyshortcuts="Delete F2 Shift+F10"
+          aria-keyshortcuts="Delete F2 Shift+F10 Alt+ArrowUp Alt+ArrowDown"
           :tabindex="terminal.id === activeId || (activeIndex < 0 && index === 0) ? 0 : -1"
           :title="rowTitle(terminal)"
+          :draggable="store.renaming.value?.id !== terminal.id"
+          :data-dragging="draggedTerminal === terminal.id ? 'true' : undefined"
           class="terminal-row group/row relative flex h-6.5 items-center gap-1.75 rounded-md pr-1 pl-3 outline-none select-none"
           :class="terminal.id === activeId ? 'text-(--d-text)' : 'text-(--d-muted) hover:bg-[color-mix(in_srgb,var(--d-hover)_55%,transparent)] hover:text-(--d-text)'"
           @click="emit('select', terminal.id)"
           @keydown="onKeydown($event, index, terminal)"
           @contextmenu="onContextMenu($event, terminal)"
+          @dragstart="onDragStart($event, terminal)"
+          @dragend="onDragEnd"
         >
           <span
             v-if="treeOf(terminal.id)"
@@ -291,6 +440,16 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
           </Button>
         </div>
       </TransitionGroup>
+      <Transition name="t-fade">
+        <div
+          v-if="shownLine"
+          aria-hidden="true"
+          data-testid="terminal-list-drop-line"
+          :data-drop="shownLine.kind"
+          class="terminal-drop-line pointer-events-none absolute inset-x-1 top-0 h-0.5 rounded-full bg-(--d-accent)"
+          :style="{ transform: `translateY(${shownLine.y - 1}px)` }"
+        />
+      </Transition>
     </div>
   </div>
 </template>

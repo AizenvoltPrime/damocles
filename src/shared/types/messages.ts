@@ -59,6 +59,7 @@ import type { SettingsAccountId, SettingsSectionId } from '../settings-sections'
 import type { LocalizedText } from '../localized-text';
 import type { DesignApprovalChoice, DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignPreviewImage, DesignReferenceNote, DesignResultDecision, DesignResultView, DesignVersionChoice, PlanApprovalDesignLink } from './design';
 import type { DesignMarkupNote } from '../design-markup';
+import type { UserMemoryViewRequest } from '../remote-user';
 
 // A pi provider id as a credential ask or a run's token note names it; main's user relays and the overlay refuse any other form.
 export const PROVIDER_ID_PATTERN: RegExp = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -275,6 +276,20 @@ export type WebviewToExtensionMessage =
   | { type: "getRelatedMemories"; id: string }
   | { type: "getProfile" }
   | { type: "setProfileSection"; scope: "project" | "global"; section: "static" | "dynamic"; content: string }
+  // A remote chat page's reads and changes of this computer's notes and global memories (REMOTE_CHAT_LOCAL_REQUESTS): main
+  // sends them to this computer's core, never the chat's, and ids are that core's own row ids.
+  | { type: "requestUserMemories" }
+  | { type: "getUserMemoryHistory"; id: string }
+  | { type: "getUserRelatedMemories"; id: string }
+  | { type: "getUserProfile" }
+  | { type: "createUserMemory"; tier: "global"; kind?: "fact" | "preference" | "episode"; content: string; tags?: string[]; requestId?: string }
+  | { type: "createUserMemory"; tier: "note"; content: string; tags?: string[]; requestId?: string }
+  | { type: "deleteUserMemory"; id: string }
+  | { type: "pinUserMemory"; id: string }
+  | { type: "unpinUserMemory"; id: string }
+  | { type: "forgetUserMemory"; id: string; scope?: "version" | "chain" }
+  | { type: "unforgetUserMemory"; id: string; scope?: "version" | "chain" }
+  | { type: "setUserProfileSection"; section: "static" | "dynamic"; content: string }
   | { type: "requestConsolidationPreview" }
   | { type: "triggerConsolidation" }
   | { type: "retrySetAsideTurns" }
@@ -871,6 +886,21 @@ export type ExtensionToWebviewMessage =
   // A failed section save: the panel clears that section's pending flag (keeping the draft) so a later
   // unrelated profileData can't silently overwrite the user's unsaved edit with the old server value.
   | { type: "profileSectionError"; scope: "project" | "global"; section: "static" | "dynamic"; message: LocalizedText }
+  // This computer's notes and global memories for a remote chat's page (REMOTE_CHAT_LOCAL_POSTS): only this computer's core
+  // and main post these types, and main refuses them from a remote core. available is false while memory is off here.
+  | { type: "userMemoriesUpdate"; memories: MemoryEntry[]; available: boolean }
+  | { type: "userProfileData"; global: UserProfile; available: boolean; savedSection?: { scope: "global"; section: "static" | "dynamic" } }
+  | { type: "userMemoryHistory"; id: string; entries: MemoryEntry[] }
+  | { type: "userRelatedMemories"; id: string; entries: MemoryEntry[] }
+  | { type: "userMemoryCreated"; memory: MemoryEntry; requestId?: string }
+  | { type: "userMemoryDeleted"; id: string }
+  | { type: "userMemoryPinned"; id: string }
+  | { type: "userMemoryUnpinned"; id: string }
+  | { type: "userMemoryForgotten"; id: string; count: number }
+  | { type: "userMemoryUnforgotten"; id: string; count: number }
+  // request is the message that failed (USER_MEMORY_VIEW_SOURCES tells a change from a read); requestId echoes a createUserMemory.
+  | { type: "userMemoryError"; message: LocalizedText; request: UserMemoryViewRequest; requestId?: string }
+  | { type: "userProfileSectionError"; section: "static" | "dynamic"; message: LocalizedText }
   | { type: "consolidationPendingCount"; count: number; setAside: number }
   | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
   // `pass` (from 1) and `runSoFar` (the run's result over its ended passes) ride only on `running: true`, sent at every pass start and on overlay-open replay.

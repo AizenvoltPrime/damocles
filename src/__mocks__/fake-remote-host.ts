@@ -66,6 +66,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     memoryProfile: vi.fn(async () => ({ profile: { static: '', dynamic: '' }, pinned: [], preferences: [] })),
     memoryResolve: vi.fn(async () => []),
     memoryApply: vi.fn(async (_clientId: string, entries: readonly { readonly end: number; readonly write: { readonly uuid: string } }[]) => ({ through: entries.at(-1)?.end ?? 0, ids: entries.map((entry) => entry.write.uuid) })),
+    memoryList: vi.fn(async () => ({ rows: [] })),
     heldMemoryChanged: vi.fn(),
     mcpCall: vi.fn(async () => ({ content: [] })),
     mcpResources: vi.fn(async () => ({ resources: [] })),

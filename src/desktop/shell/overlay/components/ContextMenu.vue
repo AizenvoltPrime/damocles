@@ -295,7 +295,20 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
             aria-hidden="true"
             class="size-3.25 shrink-0"
           />
-          <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
+          <span
+            v-if="row.hint"
+            class="flex min-w-0 flex-1 flex-col"
+          >
+            <span class="truncate">{{ row.label }}</span>
+            <span
+              data-testid="overlay-menu-hint"
+              class="truncate text-10.5 text-(--d-faint-text)"
+            ><span class="sr-only">, </span>{{ row.hint }}</span>
+          </span>
+          <span
+            v-else
+            class="min-w-0 flex-1 truncate"
+          >{{ row.label }}</span>
           <ChevronRight
             aria-hidden="true"
             class="size-3 shrink-0 text-(--d-faint)"
@@ -343,7 +356,7 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
             <span class="truncate">{{ row.label }}</span>
             <span
               data-testid="overlay-menu-hint"
-              class="truncate text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
+              class="truncate text-10.5 text-(--d-faint-text)"
             ><span class="sr-only">, </span>{{ row.hint }}</span>
           </span>
           <span
@@ -415,8 +428,16 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
         @mousemove="onSubmenuItemMouseMove"
       >
         <component
+          :is="glyphLook(row.glyph, row.color).icon"
+          v-if="row.glyph"
+          aria-hidden="true"
+          class="size-3.25 shrink-0"
+          :class="dimmed(row)"
+          :style="{ color: glyphLook(row.glyph, row.color).color }"
+        />
+        <component
           :is="OVERLAY_ICON_COMPONENTS[row.icon]"
-          v-if="row.icon"
+          v-else-if="row.icon"
           aria-hidden="true"
           class="size-3.25 shrink-0"
           :class="dimmed(row)"
@@ -434,7 +455,7 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
           <span class="truncate">{{ row.label }}</span>
           <span
             data-testid="overlay-menu-hint"
-            class="truncate text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
+            class="truncate text-10.5 text-(--d-faint-text)"
           ><span class="sr-only">, </span>{{ row.hint }}</span>
         </span>
         <span

@@ -5,10 +5,10 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
 import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.ts';
-import { windowsTerminalEnvironment } from '../../src/desktop/main/workspace/windows-terminal-environment';
 import { coreLog, launchDesktop } from './support/app';
 import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE } from './support/hermetic';
 import { PACKAGED_APP_ENV, packagedAppPath } from './support/packaged-app';
+import { loadRegistryTerminalEnvironment } from './support/registry-environment';
 import { SECOND_PROCESS_BUNDLE } from './support/second-process';
 
 export default async function globalSetup(): Promise<void> {
@@ -110,7 +110,8 @@ async function warmWindowsPowerShellCaches(): Promise<void> {
   const home = path.join(root, 'h');
   for (const dir of [path.join(home, 'AppData', 'Local'), path.join(home, 'AppData', 'Roaming'), path.join(root, 'tmp')]) fs.mkdirSync(dir, { recursive: true });
   const hermetic = hermeticEnv({ root, home });
-  const terminal = windowsTerminalEnvironment(hermetic, (line) => console.log(line));
+  // a registry that cannot be read fails the setup; the app's fallback (windowsTerminalEnvironment) would skip the machine-wide cache
+  const terminal = (await loadRegistryTerminalEnvironment())(hermetic);
   const machineWide = Object.entries(terminal).some(([key, value]) => key.toUpperCase() === 'PSMODULEANALYSISCACHEPATH' && value);
   const [profileCache] = await Promise.all([warmPowerShellCache(hermetic), ...(machineWide ? [warmPowerShellCache(terminal)] : [])]);
   fs.mkdirSync(path.dirname(WINDOWS_POWERSHELL_CACHE), { recursive: true });

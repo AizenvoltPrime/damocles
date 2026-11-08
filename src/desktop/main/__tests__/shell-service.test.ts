@@ -62,6 +62,15 @@ describe('desktop shell service', () => {
     expect(lines.some((line) => line.includes('xdg-open not found'))).toBe(true);
   });
 
+  it('logs only the origin of a link it could not open, never a token in its path or query', async () => {
+    shell.openExternal.mockRejectedValue(new Error('xdg-open not found'));
+    const token = 'Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo';
+    await service().openExternal(`http://127.0.0.1:51234/__damocles_preview/open?t=${token}&p=index.html`);
+    await service().openExternal(`http://127.0.0.1:51235/d/${token}/screens/S1.html`);
+    expect(lines.join('\n')).not.toContain(token);
+    expect(lines).toContain('[shell] could not open a link to "http://127.0.0.1:51234": xdg-open not found');
+  });
+
   it('opens a folder but never launches a file', async () => {
     const script = path.join(dir, 'run.command');
     fs.writeFileSync(script, 'echo hi');

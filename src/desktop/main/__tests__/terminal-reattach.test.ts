@@ -6,7 +6,7 @@ import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters'
 import { createTerminalBackend, type LiveTerminal, type TerminalBackend } from '../../workspace/terminal/terminal-backend';
 import { NONCE_ENV } from '../../workspace/terminal/shell-integration-injection';
 import type { RemoteTerminalRecord } from '../remote/remote-state';
-import { DEFAULT_PERSISTED_TERMINALS, TerminalService, type TerminalProject, type TerminalServiceSettings } from '../terminal/terminal-service';
+import { DEFAULT_PERSISTED_TERMINALS, TerminalService, type PersistedTerminals, type TerminalProject, type TerminalServiceSettings } from '../terminal/terminal-service';
 import { detectedProfile } from '../terminal/user-profiles';
 import { testWorkspaces } from './test-workspaces';
 
@@ -37,18 +37,26 @@ async function harness() {
     profilesReady: () => true,
     projects: () => [],
     pickerProjects: () => [],
+    groupOrder: (groups) => groups,
+    hostOf: () => ({ kind: 'loopback', name: 'Local daemon' }),
+    reachable: () => true,
+    hostDefaultProfile: () => undefined,
     currentProjectKey: () => undefined,
     rootEnv: () => ({}),
     settings: () => SETTINGS,
     env: async () => ({ PATH: 'C:\\bin' }),
     osOf: () => 'linux',
     persistRemote: () => undefined,
+    killOnReattach: () => undefined,
     passKeys: () => [],
     screenReader: () => false,
     windowsBuild: () => 19045,
     persisted: () => DEFAULT_PERSISTED_TERMINALS,
     persist: () => undefined,
     onDidChange: () => undefined,
+    editorTabsChanged: () => undefined,
+    showEditorTab: () => undefined,
+    showPanel: () => undefined,
     spawnFailed: (message) => message,
     launchFailed: (failure) => failure.reason,
     log: () => undefined,
@@ -82,7 +90,7 @@ const BASH = { id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 
 const record = (id: string, nonce: string): RemoteTerminalRecord => ({ id, projectKey: REMOTE.key, profile: BASH, startCwd: '/srv/app', nonce, name: null, customIcon: null, color: null });
 
 // A daemon's terminals after this app relaunched: its backend lists what still runs, and the test answers for its pty host.
-function remoteHarness(live: readonly LiveTerminal[], now?: () => number) {
+function remoteHarness(live: readonly LiveTerminal[], now?: () => number, saved: PersistedTerminals = DEFAULT_PERSISTED_TERMINALS) {
   const posted: HostRequest[] = [];
   const logs: string[] = [];
   let killed = false;
@@ -99,24 +107,34 @@ function remoteHarness(live: readonly LiveTerminal[], now?: () => number) {
   };
   const screens: TerminalScreen[] = [];
   const states: TerminalState[] = [];
+  const layouts: PersistedTerminals[] = [];
+  const remote: RemoteTerminalRecord[][] = [];
   const service = new TerminalService({
     workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, terminals: backend }),
     profiles: () => [detectedProfile(BASH)],
     profilesReady: () => true,
     projects: () => [REMOTE],
     pickerProjects: () => [REMOTE],
+    groupOrder: (groups) => groups,
+    hostOf: () => ({ kind: 'loopback', name: 'Local daemon' }),
+    reachable: () => true,
+    hostDefaultProfile: () => undefined,
     currentProjectKey: () => REMOTE.key,
     rootEnv: () => ({}),
     settings: () => SETTINGS,
     env: async () => ({ PATH: '/bin' }),
     osOf: () => 'linux',
-    persistRemote: () => undefined,
+    persistRemote: (terminals) => remote.push([...terminals]),
+    killOnReattach: () => undefined,
     passKeys: () => [],
     screenReader: () => false,
     windowsBuild: () => null,
-    persisted: () => DEFAULT_PERSISTED_TERMINALS,
-    persist: () => undefined,
+    persisted: () => saved,
+    persist: (layout) => layouts.push(layout),
     onDidChange: () => undefined,
+    editorTabsChanged: () => undefined,
+    showEditorTab: () => undefined,
+    showPanel: () => undefined,
     spawnFailed: (message) => message,
     launchFailed: (failure) => failure.reason,
     log: (line) => logs.push(line),
@@ -127,7 +145,7 @@ function remoteHarness(live: readonly LiveTerminal[], now?: () => number) {
   });
   service.attach({ state: (state) => states.push(state), data: () => undefined, screen: (screen) => screens.push(screen), focus: () => undefined });
   const info = (id: string): TerminalInfo => states.at(-1)!.terminals.find((terminal) => terminal.id === id)!;
-  return { service, backend, posted, screens, info, logs, killed: () => killed, send: (message: HostMessage): void => receive(structuredClone(message)), sendRaw: (message: unknown): void => receive(structuredClone(message)) };
+  return { service, backend, posted, screens, states, layouts, remote, info, logs, killed: () => killed, send: (message: HostMessage): void => receive(structuredClone(message)), sendRaw: (message: unknown): void => receive(structuredClone(message)) };
 }
 
 // What the pty host's screen kept of a bash session: `echo one`, `cd sub`, then `sleep 120` still running, at the host's times.
@@ -240,7 +258,7 @@ describe('a remote terminal reattached after a relaunch', () => {
     const shell = 'term-111111111111111';
     const editor = 'term-222222222222222';
     const h = remoteHarness([{ id: shell, pid: 5, cols: 80, rows: 24 }, { id: editor, pid: 6, cols: 80, rows: 24 }]);
-    await h.service.reattach(h.backend, [record(shell, nonce), record(editor, nonce)]);
+    await h.service.reattach(h.backend, 'loopback', [record(shell, nonce), record(editor, nonce)], []);
     expect(h.posted.filter((request) => request.type === 'serialize').map((request) => request.id)).toEqual([shell, editor]);
 
     // a forged D would finish `sleep 120` and a forged P move the folder
@@ -283,7 +301,7 @@ describe('a remote terminal reattached after a relaunch', () => {
     const id = 'term-111111111111111';
     // this computer's clock reads 10 minutes behind the host's
     const h = remoteHarness([{ id, pid: 5, cols: 80, rows: 24 }], () => 1_000_000);
-    await h.service.reattach(h.backend, [record(id, nonce)]);
+    await h.service.reattach(h.backend, 'loopback', [record(id, nonce)], []);
     const hostNow = 5014 + 600_000;
     const ahead = keptSession(nonce).map((kept) => ({ ...kept, time: kept.time + 600_000 }));
     h.send({ type: 'screen', id, data: '$ sleep 120', cols: 80, rows: 24, marks: keptMarks, sequences: 15, shellSequences: ahead, now: hostNow });
@@ -295,7 +313,7 @@ describe('a remote terminal reattached after a relaunch', () => {
     const nonce = 'ab'.repeat(16);
     const id = 'term-111111111111111';
     const h = remoteHarness([{ id, pid: 5, cols: 80, rows: 24 }], () => 1_000_000);
-    await h.service.reattach(h.backend, [record(id, nonce)]);
+    await h.service.reattach(h.backend, 'loopback', [record(id, nonce)], []);
     // the host's clock stepped back between the C and the serialize
     h.send({ type: 'screen', id, data: '$ sleep 120', cols: 80, rows: 24, marks: keptMarks, sequences: 15, shellSequences: keptSession(nonce), now: 5013 });
     expect(h.screens.at(-1)!.marks.at(-1)!.event).toMatchObject({ kind: 'commandExecuted', time: 1_000_000 });
@@ -305,7 +323,7 @@ describe('a remote terminal reattached after a relaunch', () => {
     const nonce = 'ab'.repeat(16);
     const id = 'term-111111111111111';
     const h = remoteHarness([{ id, pid: 5, cols: 80, rows: 24 }]);
-    await h.service.reattach(h.backend, [record(id, nonce)]);
+    await h.service.reattach(h.backend, 'loopback', [record(id, nonce)], []);
     const withDel: KeptShellSequence = { index: 15, body: `P;Cwd=/srv/a\x7fb;${nonce}`, time: 5015 };
     h.send({ type: 'screen', id, data: '$ ', cols: 80, rows: 24, marks: keptMarks, sequences: 16, shellSequences: [...keptSession(nonce), withDel] });
     expect(h.service.cwdOf(id)).toBe('/srv/app/sub');
@@ -320,11 +338,83 @@ describe('a remote terminal reattached after a relaunch', () => {
     const nonce = 'ab'.repeat(16);
     const id = 'term-111111111111111';
     const h = remoteHarness([{ id, pid: 5, cols: 80, rows: 24 }]);
-    await h.service.reattach(h.backend, [record(id, nonce)]);
+    await h.service.reattach(h.backend, 'loopback', [record(id, nonce)], []);
     h.sendRaw({ type: 'screen', id, data: '$ sleep 120', cols: 80, rows: 24, marks: keptMarks, sequences: 15, shellSequences: [...keptSession(nonce)].reverse(), processName: 'sleep' });
     expect(h.killed()).toBe(false);
     expect(h.screens.at(-1)).toEqual({ id, data: '$ sleep 120', cols: 80, rows: 24, marks: [] });
     expect(h.info(id)).toMatchObject({ status: 'running', integrated: false, title: 'sleep' });
     expect(h.logs).toContain(`[terminal] dropped the shellSequences of ${id}'s screen, which is outside the contract`);
+  });
+});
+
+describe('remote panes in the saved layout', () => {
+  const [A, B, C] = ['term-111111111111111', 'term-222222222222222', 'term-333333333333333'];
+  const home = { kind: 'local', profileId: 'bash', projectKey: null, name: null, customIcon: null, color: null } as const;
+  const saved: PersistedTerminals = {
+    version: 2,
+    listWidthRem: 12,
+    groups: [{ panes: [home, { kind: 'remote', id: A }], activePane: 1, sizes: [0.6, 0.4] }, { panes: [{ kind: 'remote', id: B }], activePane: 0, sizes: [1] }],
+    active: 0,
+    editor: [],
+  };
+  const groups = (h: ReturnType<typeof remoteHarness>): Array<[readonly string[], string, readonly number[]]> => h.states.at(-1)!.groups.map((group) => [group.paneIds, group.activePaneId, group.sizes]);
+  const statuses = (h: ReturnType<typeof remoteHarness>): Array<[string, string]> => h.states.at(-1)!.terminals.map((terminal) => [terminal.id, terminal.status]);
+
+  it('holds each remote pane\'s slot as reconnecting, follows with the records the layout does not name, and drops a pane with no record', () => {
+    const h = remoteHarness([], undefined, { ...saved, groups: [...saved.groups, { panes: [{ kind: 'remote', id: 'term-444444444444444' }], activePane: 0, sizes: [1] }] });
+    h.service.restore([record(C, 'cc'.repeat(16)), { ...record(A, 'aa'.repeat(16)), name: 'build' }, record(B, 'bb'.repeat(16))]);
+    expect(groups(h)).toEqual([[['term-1', A], A, [0.6, 0.4]], [[B], B, [1]], [[C], C, [1]]]);
+    expect(statuses(h)).toEqual([['term-1', 'starting'], [A, 'reconnecting'], [B, 'reconnecting'], [C, 'reconnecting']]);
+    expect(h.info(A).title).toBe('build');
+    expect(h.states.at(-1)!.activeId).toBe(A);
+    expect(h.logs).toContain('[terminal] not restoring term-444444444444444: its host keeps no record of it');
+    expect(h.layouts.at(-1)).toEqual({ version: 2, listWidthRem: 12, groups: [...saved.groups, { panes: [{ kind: 'remote', id: C }], activePane: 0, sizes: [1] }], active: 0, editor: [] });
+  });
+
+  it('adopts each placeholder in place when its host reattaches, so it rejoins its group; one the daemon lost leaves its slot and the saved layout', async () => {
+    const h = remoteHarness([{ id: A, pid: 5, cols: 90, rows: 20 }, { id: C, pid: 6, cols: 80, rows: 24 }], undefined, saved);
+    const records = [record(A, 'aa'.repeat(16)), record(B, 'bb'.repeat(16)), record(C, 'cc'.repeat(16))];
+    h.service.restore(records);
+    h.posted.length = 0;
+    await h.service.reattach(h.backend, 'loopback', records, []);
+    expect(groups(h)).toEqual([[['term-1', A], A, [0.6, 0.4]], [[C], C, [1]]]);
+    expect(statuses(h)).toEqual([['term-1', 'starting'], [A, 'running'], [C, 'running']]);
+    expect(h.posted.filter((request) => request.type === 'serialize').map((request) => request.id)).toEqual([A, C]);
+    expect(h.logs).toContain(`[terminal] not restoring ${B}: it ended while its host was away`);
+    expect(h.layouts.at(-1)!.groups.map((group) => group.panes)).toEqual([[home, { kind: 'remote', id: A }], [{ kind: 'remote', id: C }]]);
+    expect(h.remote.at(-1)!.map((kept) => kept.id)).toEqual([A, C]);
+  });
+
+  it('saves a group without a pane whose process exited, its other panes\' sizes scaled and its active pane handed over, while the exited tab stays for the run', async () => {
+    const three: PersistedTerminals = { ...saved, groups: [{ panes: [home, { kind: 'remote', id: A }, home], activePane: 1, sizes: [0.5, 0.25, 0.25] }], active: 0 };
+    const h = remoteHarness([{ id: A, pid: 5, cols: 90, rows: 20 }], undefined, three);
+    const records = [record(A, 'aa'.repeat(16))];
+    h.service.restore(records);
+    await h.service.reattach(h.backend, 'loopback', records, []);
+    h.send({ type: 'exit', id: A, exitCode: 3 });
+    expect(groups(h)).toEqual([[['term-1', A, 'term-2'], A, [0.5, 0.25, 0.25]]]);
+    expect(h.info(A)).toMatchObject({ status: 'exited', exitCode: 3 });
+    expect(h.layouts.at(-1)).toEqual({ ...three, groups: [{ panes: [home, home], activePane: 1, sizes: [0.5 / 0.75, 0.25 / 0.75] }] });
+    expect(h.remote.at(-1)).toEqual([]);
+  });
+
+  it('leaves out a remote pane whose project is not open', () => {
+    const h = remoteHarness([], undefined, saved);
+    h.service.restore([{ ...record(A, 'aa'.repeat(16)), projectKey: 'loopback|/srv/other' }, record(B, 'bb'.repeat(16))]);
+    expect(groups(h)).toEqual([[['term-1'], 'term-1', [1]], [[B], B, [1]]]);
+    expect(h.logs).toContain(`[terminal] not restoring ${A}: its project is not open`);
+  });
+
+  it('restores a remote editor terminal as a reconnecting editor tab, which its host\'s reattach adopts in place', async () => {
+    const h = remoteHarness([A, B, C].map((id) => ({ id, pid: 6, cols: 80, rows: 24 })), undefined, { ...saved, editor: [{ kind: 'remote', id: C }] });
+    const records = [record(A, 'aa'.repeat(16)), record(B, 'bb'.repeat(16)), record(C, 'cc'.repeat(16))];
+    h.service.restore(records);
+    expect(groups(h)).toEqual([[['term-1', A], A, [0.6, 0.4]], [[B], B, [1]]]);
+    expect([h.info(C).status, h.info(C).placement]).toEqual(['reconnecting', 'editor']);
+    expect(h.service.tabSource.tabs().map((tab) => tab.id)).toEqual([`terminal:${C}`]);
+    await h.service.reattach(h.backend, 'loopback', records, []);
+    expect([h.info(C).status, h.info(C).placement]).toEqual(['running', 'editor']);
+    expect(groups(h)).toEqual([[['term-1', A], A, [0.6, 0.4]], [[B], B, [1]]]);
+    expect(h.layouts.at(-1)!.editor).toEqual([{ kind: 'remote', id: C }]);
   });
 });

@@ -27,8 +27,8 @@ import {
 } from '../window-layout-store';
 import { DEFAULT_GRID_LAYOUT, MAX_GRAPH_CHOICE_REFS, MAX_GRAPH_CHOICES, MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_CHARS, moveGridPane, toggleGridMaximize, toggleGridPane, type GraphRefChoice } from '../../preload/shell-channels';
 import { MAX_SCM_HISTORY_REFS } from '../../preload/scm-channels';
-import { TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_REM, TERMINAL_LIST_MIN_REM } from '../../preload/terminal-channels';
-import { DEFAULT_PERSISTED_TERMINALS } from '../terminal/terminal-service';
+import { MAX_TERMINAL_GROUP_PANES, TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_REM, TERMINAL_LIST_MIN_REM } from '../../preload/terminal-channels';
+import { DEFAULT_PERSISTED_TERMINALS, type PersistedPane, type PersistedTerminalGroup, type PersistedTerminals } from '../terminal/terminal-service';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 let dir: string;
@@ -518,6 +518,19 @@ describe('saved editors', () => {
     }
   });
 
+  it('keeps an HTML preview tab by its project file only, with no backup and nothing outside a project', () => {
+    const preview = { kind: 'htmlPreview', file: { projectKey: 'p', relativePath: 'site/index.html' } };
+    expect(parsePersistedTab(preview)).toEqual(preview);
+    for (const malformed of [
+      { ...preview, backupId: BACKUP },
+      { ...preview, file: { projectKey: 'p', relativePath: '../index.html' } },
+      { kind: 'htmlPreview', path: OUTSIDE_README },
+      { kind: 'htmlPreview' },
+    ]) {
+      expect(parsePersistedTab(malformed), JSON.stringify(malformed)).toBeUndefined();
+    }
+  });
+
   it('keeps a saved Search Editor by its .code-search file or by its header, and drops one out of bounds', () => {
     const config = { query: 'x', isRegex: false, matchCase: true, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 2, showIncludesExcludes: false };
     expect(parsePersistedTab({ kind: 'searchEditor', file: { projectKey: 'p', relativePath: 'q.code-search' }, backupId: BACKUP })).toEqual({ kind: 'searchEditor', file: { projectKey: 'p', relativePath: 'q.code-search' }, backupId: BACKUP });
@@ -548,15 +561,20 @@ describe('saved editors', () => {
   });
 });
 
+// The older form: a flat terminal list cut into groups by pane counts.
 const single = { panes: 1, activePane: 0, sizes: [1] };
 const savedTerminal = (profileId: string): Record<string, unknown> => ({ profileId, projectKey: 'p', name: null, customIcon: null, color: null });
+const local = (profileId: string, projectKey: string | null = 'p'): Extract<PersistedPane, { kind: 'local' }> => ({ kind: 'local', profileId, projectKey, name: null, customIcon: null, color: null });
+const alone = (pane: PersistedPane): PersistedTerminalGroup => ({ panes: [pane], activePane: 0, sizes: [1] });
+const layoutOf = (groups: PersistedTerminalGroup[], active: number | null, listWidthRem = 12, editor: PersistedPane[] = []): PersistedTerminals => ({ version: 2, listWidthRem, groups, active, editor });
 
-describe('saved terminals', () => {
-  it('reads the split groups with their active panes and sizes, and gives each terminal its own group in a list saved without them', () => {
+describe('saved terminals written in the older form', () => {
+  it('reads the split groups as groups of local panes, the active terminal as its group\'s active pane', () => {
     const terminals = [savedTerminal('pwsh'), savedTerminal('cmd'), savedTerminal('bash')];
-    const groups = [{ panes: 2, activePane: 1, sizes: [0.6, 0.4] }, single];
-    expect(parsePersistedTerminals({ terminals, active: 1, listWidthRem: 12, groups }, log).groups).toEqual(groups);
-    expect(parsePersistedTerminals({ terminals, active: 1, listWidthRem: 12 }, log).groups).toEqual([single, single, single]);
+    const groups = [{ panes: 2, activePane: 0, sizes: [0.6, 0.4] }, single];
+    expect(parsePersistedTerminals({ terminals, active: 1, listWidthRem: 12, groups }, log)).toEqual(layoutOf([{ panes: [local('pwsh'), local('cmd')], activePane: 1, sizes: [0.6, 0.4] }, alone(local('bash'))], 0));
+    expect(parsePersistedTerminals({ terminals, active: 2, listWidthRem: 12, groups }, log)).toEqual(layoutOf([{ panes: [local('pwsh'), local('cmd')], activePane: 0, sizes: [0.6, 0.4] }, alone(local('bash'))], 1));
+    expect(parsePersistedTerminals({ terminals, active: 1, listWidthRem: 12 }, log)).toEqual(layoutOf([alone(local('pwsh')), alone(local('cmd')), alone(local('bash'))], 1));
     expect(lines).toEqual([]);
   });
 
@@ -576,7 +594,7 @@ describe('saved terminals', () => {
       ['x', single, single],
     ];
     for (const groups of broken) {
-      expect(parsePersistedTerminals({ terminals, active: 0, listWidthRem: 12, groups }, log).groups).toEqual([single, single, single]);
+      expect(parsePersistedTerminals({ terminals, active: 0, listWidthRem: 12, groups }, log).groups).toEqual([alone(local('pwsh')), alone(local('cmd')), alone(local('bash'))]);
     }
     expect(lines.filter((line) => line === '[layout] the saved terminal groups do not fit the terminal list; giving each terminal its own group')).toHaveLength(broken.length);
     const many = Array.from({ length: 9 }, () => savedTerminal('pwsh'));
@@ -585,24 +603,7 @@ describe('saved terminals', () => {
 
   it('gives each terminal its own group when a malformed terminal was dropped from a split list', () => {
     const parsed = parsePersistedTerminals({ terminals: [savedTerminal('pwsh'), 'x', savedTerminal('bash')], active: 0, listWidthRem: 12, groups: [{ panes: 3, activePane: 0, sizes: [0.4, 0.3, 0.3] }] }, log);
-    expect(parsed.groups).toEqual([single, single]);
-  });
-
-  it('round-trips the terminal list, the active terminal and the list width through the file', async () => {
-    const store = new WindowLayoutStore(dir, log);
-    expect(store.terminals()).toEqual({ terminals: [], active: null, listWidthRem: TERMINAL_LIST_DEFAULT_REM, groups: [] });
-    const terminals = {
-      terminals: [
-        { profileId: 'pwsh', projectKey: 'c:\\work\\alpha', name: 'server', customIcon: 'rocket' as const, color: 'green' as const },
-        { profileId: 'wsl:Ubuntu-24.04', projectKey: 'c:\\work\\beta', name: null, customIcon: null, color: null },
-      ],
-      active: 1,
-      listWidthRem: 15,
-      groups: [{ panes: 2, activePane: 1, sizes: [0.7, 0.3] }],
-    };
-    store.setTerminals(terminals);
-    await store.flush();
-    expect(new WindowLayoutStore(dir, log).terminals()).toEqual(terminals);
+    expect(parsed.groups).toEqual([alone(local('pwsh')), alone(local('bash'))]);
   });
 
   it('drops each malformed terminal, keeps the active one on its terminal, and clamps the list width', () => {
@@ -612,16 +613,15 @@ describe('saved terminals', () => {
       listWidthRem: 100,
     }, log);
     // a path stored beside a terminal is never read back
-    const plain = { name: null, customIcon: null, color: null };
-    expect(parsed).toEqual({ terminals: [{ profileId: 'cmd', projectKey: 'p', ...plain }, { profileId: 'bash', projectKey: 'q', ...plain }], active: 1, listWidthRem: TERMINAL_LIST_MAX_REM, groups: [single, single] });
+    expect(parsed).toEqual(layoutOf([alone(local('cmd')), alone(local('bash', 'q'))], 1, TERMINAL_LIST_MAX_REM));
     expect(lines.filter((line) => line === '[layout] dropping a malformed terminal')).toHaveLength(3);
-    expect(parsePersistedTerminals({ terminals: [], active: 0, listWidthRem: 0 }, log)).toEqual({ terminals: [], active: null, listWidthRem: TERMINAL_LIST_MIN_REM, groups: [] });
+    expect(parsePersistedTerminals({ terminals: [], active: 0, listWidthRem: 0 }, log)).toEqual(layoutOf([], null, TERMINAL_LIST_MIN_REM));
     expect(parsePersistedTerminals('x', log)).toEqual(DEFAULT_PERSISTED_TERMINALS);
   });
 
   it('keeps a home folder terminal, whose project key is null', () => {
     const parsed = parsePersistedTerminals({ terminals: [{ profileId: 'pwsh', projectKey: null }, { profileId: 'cmd', projectKey: 7 }], active: 0, listWidthRem: 12 }, log);
-    expect(parsed.terminals).toEqual([{ profileId: 'pwsh', projectKey: null, name: null, customIcon: null, color: null }]);
+    expect(parsed.groups).toEqual([alone(local('pwsh', null))]);
   });
 
   it('drops a stored name, icon or color main would refuse now, and keeps the terminal', () => {
@@ -635,24 +635,162 @@ describe('saved terminals', () => {
       active: 0,
       listWidthRem: 12,
     }, log);
-    expect(parsed.terminals).toEqual([
-      { profileId: 'pwsh', projectKey: 'p', name: null, customIcon: null, color: null },
-      { profileId: 'cmd', projectKey: 'q', name: null, customIcon: null, color: null },
-      { profileId: 'bash', projectKey: 'r', name: 'ok', customIcon: 'bug', color: 'red' },
-      { profileId: 'zsh', projectKey: 's', name: null, customIcon: null, color: null },
+    expect(parsed.groups.flatMap((group) => group.panes)).toEqual([
+      local('pwsh', 'p'),
+      local('cmd', 'q'),
+      { ...local('bash', 'r'), name: 'ok', customIcon: 'bug', color: 'red' },
+      local('zsh', 's'),
     ]);
     expect(lines.filter((line) => line === '[layout] dropping the malformed name of a terminal')).toHaveLength(2);
     expect(lines.filter((line) => line === '[layout] dropping the unknown icon of a terminal')).toHaveLength(2);
     expect(lines.filter((line) => line === '[layout] dropping the unknown color of a terminal')).toHaveLength(2);
   });
 
+  it('migrates a file\'s older section on read and writes the current form on the next change', async () => {
+    writeFile({ version: 2, sidebar: DEFAULT_SHELL_LAYOUT, terminals: { terminals: [savedTerminal('pwsh'), savedTerminal('cmd')], active: 1, listWidthRem: 14, groups: [{ panes: 2, activePane: 1, sizes: [0.5, 0.5] }] } });
+    const store = new WindowLayoutStore(dir, log);
+    const migrated = layoutOf([{ panes: [local('pwsh'), local('cmd')], activePane: 1, sizes: [0.5, 0.5] }], 0, 14);
+    expect(store.terminals()).toEqual(migrated);
+    store.setTerminals({ ...migrated, listWidthRem: 15 });
+    await store.flush();
+    const written = JSON.parse(fs.readFileSync(path.join(dir, WINDOW_LAYOUT_FILE), 'utf8')) as { terminals: unknown };
+    expect(written.terminals).toEqual({ ...migrated, listWidthRem: 15 });
+  });
+});
+
+describe('saved terminals', () => {
+  const remote = (id: string): PersistedPane => ({ kind: 'remote', id });
+
+  it('round-trips local and remote panes, the groups, the active group and the list width through the file', async () => {
+    const store = new WindowLayoutStore(dir, log);
+    expect(store.terminals()).toEqual({ version: 2, listWidthRem: TERMINAL_LIST_DEFAULT_REM, groups: [], active: null, editor: [] });
+    const terminals = layoutOf([
+      { panes: [{ ...local('pwsh', 'c:\\work\\alpha'), name: 'server', customIcon: 'rocket', color: 'green' }, remote('term-123456789012345')], activePane: 1, sizes: [0.7, 0.3] },
+      alone(local('wsl:Ubuntu-24.04', null)),
+    ], 0, 15, [remote('term-223456789012345'), { ...local('bash', null), color: 'red' }]);
+    store.setTerminals(terminals);
+    await store.flush();
+    expect(new WindowLayoutStore(dir, log).terminals()).toEqual(terminals);
+    expect(lines).toEqual([]);
+  });
+
+  it('reads the editor\'s terminals, none when the list is missing, and ignores keys it does not know', () => {
+    const parsed = parsePersistedTerminals({ ...layoutOf([alone(remote('term-1'))], 0), editor: [remote('term-2'), local('cmd')], future: true }, log);
+    expect(parsed).toEqual(layoutOf([alone(remote('term-1'))], 0, 12, [remote('term-2'), local('cmd')]));
+    expect(parsePersistedTerminals({ version: 2, listWidthRem: 12, groups: [alone(remote('term-1'))], active: 0 }, log).editor).toEqual([]);
+    expect(lines).toEqual([]);
+  });
+
+  it('drops a malformed editor list or entry, a remote terminal a group names already and one past the layout\'s bound', () => {
+    expect(parsePersistedTerminals({ ...layoutOf([], null), editor: 'x' }, log).editor).toEqual([]);
+    const parsed = parsePersistedTerminals({ ...layoutOf([alone(remote('term-1'))], 0), editor: [remote('term-1'), { kind: 'remote', id: '../etc' }, 7, remote('term-2'), remote('term-2'), local('cmd')] }, log);
+    expect(parsed.editor).toEqual([remote('term-2'), local('cmd')]);
+    const full = parsePersistedTerminals(layoutOf(Array.from({ length: 49 }, (_, index) => alone(local(`p${index}`))), 0, 12, [local('a'), local('b')]), log);
+    expect(full.editor).toEqual([local('a')]);
+    expect(lines).toEqual([
+      '[layout] dropping malformed editor terminals',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping editor terminals past the layout\'s bounds: 1',
+    ]);
+  });
+
+  it('drops malformed panes and groups with a log line each, and keeps the rest with their active pane and group', () => {
+    const parsed = parsePersistedTerminals({
+      version: 2,
+      listWidthRem: 12,
+      groups: [
+        'x',
+        { panes: 'x', activePane: 0, sizes: [1] },
+        { panes: [{ kind: 'remote', id: '../etc' }, { kind: 'other', id: 'term-2' }, 7], activePane: 0, sizes: [0.4, 0.3, 0.3] },
+        { panes: [{ kind: 'remote', id: 'term-1', nonce: 'kept elsewhere' }, { profileId: 'pwsh', projectKey: 'p' }, local('cmd'), remote('term-3')], activePane: 2, sizes: [0.25, 0.25, 0.25, 0.25] },
+        { panes: [remote('term-3'), local('bash')], activePane: 1, sizes: [0.5, 0.5] },
+      ],
+      active: 4,
+    }, log);
+    expect(parsed).toEqual(layoutOf([
+      { panes: [remote('term-1'), local('cmd'), remote('term-3')], activePane: 1, sizes: [1 / 3, 1 / 3, 1 / 3] },
+      { panes: [local('bash')], activePane: 0, sizes: [1] },
+    ], 1));
+    expect(lines).toEqual([
+      '[layout] dropping a malformed terminal group',
+      '[layout] dropping a malformed terminal group',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping a malformed terminal',
+      '[layout] dropping a terminal group with no terminal left',
+      '[layout] dropping a malformed terminal',
+      '[layout] sharing a terminal group\'s sizes equally: the saved ones do not fit its terminals',
+      // the remote terminal a group before named already
+      '[layout] dropping a malformed terminal',
+      '[layout] sharing a terminal group\'s sizes equally: the saved ones do not fit its terminals',
+    ]);
+  });
+
+  it('shares sizes that do not fit equally, falls back to the first pane and drops an active group that is gone', () => {
+    const parsed = parsePersistedTerminals(layoutOf([{ panes: [local('a'), local('b')], activePane: 5, sizes: [0.9, 0.2] }], 3), log);
+    expect(parsed).toEqual(layoutOf([{ panes: [local('a'), local('b')], activePane: 0, sizes: [0.5, 0.5] }], null));
+    expect(parsePersistedTerminals({ version: 2, listWidthRem: 12, groups: 'x', active: null }, log)).toEqual(layoutOf([], null));
+    expect(lines).toEqual(['[layout] sharing a terminal group\'s sizes equally: the saved ones do not fit its terminals', '[layout] dropping malformed terminal groups']);
+  });
+
+  it('keeps at most a group\'s pane cap and the layout\'s bound of terminals, with one log line for each tail it drops', () => {
+    const nine = Array.from({ length: 9 }, (_, index) => local(`p${index}`));
+    expect(parsePersistedTerminals(layoutOf([{ panes: nine, activePane: 0, sizes: Array.from({ length: 9 }, () => 1 / 9) }], 0), log).groups[0]!.panes).toEqual(nine.slice(0, 8));
+    const many = Array.from({ length: 60 }, (_, index) => alone(local(`p${index}`)));
+    const parsed = parsePersistedTerminals(layoutOf(many, 59), log);
+    expect(parsed.groups).toEqual(many.slice(0, 50));
+    expect(parsed.active).toBeNull();
+    expect(lines).toEqual([
+      '[layout] dropping a group\'s terminals past the layout\'s bounds: 1',
+      '[layout] sharing a terminal group\'s sizes equally: the saved ones do not fit its terminals',
+      '[layout] dropping terminal groups past the layout\'s bounds: 10',
+    ]);
+  });
+
+  // a hand-edited or corrupt file: the entries past the bound are never parsed, so they cannot flood the log
+  it('reads none of the entries past the bound, malformed ones included', () => {
+    const tail = Array.from({ length: 5000 }, () => 'x');
+    const groups = [{ panes: [local('a'), ...tail], activePane: 0, sizes: [1] }, ...Array.from({ length: 49 }, () => alone(local('b'))), ...tail];
+    const parsed = parsePersistedTerminals({ version: 2, listWidthRem: 12, groups, active: 0, editor: tail }, log);
+    expect(parsed.groups).toHaveLength(50);
+    expect(parsed.editor).toEqual([]);
+    expect(lines.filter((line) => line === '[layout] dropping a malformed terminal')).toHaveLength(MAX_TERMINAL_GROUP_PANES - 1);
+    expect(lines.filter((line) => line.includes('past the layout\'s bounds'))).toEqual([
+      `[layout] dropping a group's terminals past the layout's bounds: ${5001 - MAX_TERMINAL_GROUP_PANES}`,
+      '[layout] dropping terminal groups past the layout\'s bounds: 5000',
+      '[layout] dropping editor terminals past the layout\'s bounds: 5000',
+    ]);
+  });
+
+  it('hands a dropped active pane over to the pane at its index, else the last, as a removal does', () => {
+    const groupOf = (panes: unknown[], activePane: number): PersistedTerminalGroup => parsePersistedTerminals({ version: 2, listWidthRem: 12, groups: [{ panes, activePane, sizes: [] }], active: 0 }, log).groups[0]!;
+    expect(groupOf([local('a'), 'x', local('b'), local('c')], 1).activePane).toBe(1);
+    expect(groupOf([local('a'), local('b'), 'x'], 2).activePane).toBe(1);
+    const past = Array.from({ length: MAX_TERMINAL_GROUP_PANES + 1 }, (_, index) => local(`p${index}`));
+    expect(groupOf(past, MAX_TERMINAL_GROUP_PANES).activePane).toBe(MAX_TERMINAL_GROUP_PANES - 1);
+  });
+
+  it('drops a local pane that names a remote root, whose terminals the layout names by id alone', () => {
+    const parsed = parsePersistedTerminals(layoutOf([alone(local('pwsh', 'ssh+prod|/srv/app')), alone(local('bash', 'c:\\work\\alpha'))], 1, 12, [local('zsh', 'loopback|/srv/app')]), log);
+    expect(parsed).toEqual(layoutOf([alone(local('bash', 'c:\\work\\alpha'))], 0));
+    expect(lines.filter((line) => line === '[layout] dropping a malformed terminal')).toHaveLength(2);
+  });
+
+  it('reads a section of an unknown version as no terminals, and logs it', () => {
+    expect(parsePersistedTerminals({ ...layoutOf([alone(local('pwsh'))], 0), version: 3 }, log)).toEqual(DEFAULT_PERSISTED_TERMINALS);
+    expect(lines).toEqual(['[layout] ignoring the terminal layout: unknown version']);
+  });
+
   it('reads a layout written before terminals with none, and drops them when layouts are not restored', async () => {
     writeFile({ version: 2, sidebar: DEFAULT_SHELL_LAYOUT });
     const store = new WindowLayoutStore(dir, log);
     expect(store.terminals()).toEqual(DEFAULT_PERSISTED_TERMINALS);
-    store.setTerminals({ terminals: [{ profileId: 'cmd', projectKey: 'p', name: null, customIcon: null, color: null }], active: 0, listWidthRem: 10, groups: [single] });
+    store.setTerminals(layoutOf([alone(local('cmd'))], 0, 10));
     store.reset();
-    expect(store.terminals().terminals).toHaveLength(1);
+    expect(store.terminals().groups).toHaveLength(1);
     store.clear();
     expect(store.terminals()).toEqual(DEFAULT_PERSISTED_TERMINALS);
     await store.flush();

@@ -1,16 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mount, type VueWrapper } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { computed, defineComponent, h, inject, nextTick, shallowRef } from 'vue';
 import type { TerminalInfo, TerminalState } from '../../preload/terminal-channels';
 import TerminalPane from '../layout/TerminalPane.vue';
 import TerminalPanel from '../terminal/TerminalPanel.vue';
+import { endTerminalDrag, startTerminalDrag, TERMINAL_DRAG_MIME } from '../terminal/terminal-drag';
 import { TERMINAL_STORE, type TerminalStore } from '../terminal/terminal-store';
 import { shellI18n } from '../i18n';
 import { STATE, TERMINAL_STATE, fakeShellApi } from './fakes';
 
 const info = (id: string, title: string): TerminalInfo => ({
-  id, title, name: null, profileId: 'pwsh', icon: 'powershell', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix',
+  id, title, name: null, profileId: 'pwsh', icon: 'powershell', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix', placement: 'panel',
 });
 
 function fakeStore(state: TerminalState): TerminalStore {
@@ -21,6 +22,8 @@ function fakeStore(state: TerminalState): TerminalStore {
     focusRequest: shallowRef(null),
     renaming: shallowRef(null),
     requestFocus: vi.fn(),
+    move: vi.fn(),
+    moved: shallowRef(null),
     attach: () => () => undefined,
     start: async () => undefined,
   } as unknown as TerminalStore;
@@ -109,25 +112,70 @@ describe('terminal pane header', () => {
     expect(wrapper.get('[data-testid="terminal-new"]').attributes('title')).toContain('Shift+click starts one in your home folder.');
   });
 
-  it('lists a user profile in the New Terminal dropdown with its own icon and colour', async () => {
+  it('heads the panel\'s terminals only: one in the panel beside one in the editor shows as the single tab', () => {
+    const store = fakeStore({ ...TERMINAL_STATE, terminals: [info('term-1', 'PowerShell'), { ...info('term-2', 'logs'), placement: 'editor' }], groups: [{ id: 'group-1', paneIds: ['term-1'], activePaneId: 'term-1', sizes: [1] }], activeId: 'term-1' });
+    wrapper = mount(TerminalPane, {
+      props: { api: fakeShellApi(), state: STATE, maximized: false, hideShortcut: 'Ctrl+`' },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanel: true, PaneGrip: true } },
+    });
+    expect(wrapper.get('[data-testid="terminal-tab-title"]').text()).toBe('PowerShell');
+    expect(wrapper.find('[data-testid="terminal-summary"]').exists()).toBe(false);
+  });
+
+  it('drags the single tab with the terminal id alone, dimmed until the drag ends', async () => {
+    const store = fakeStore({ ...TERMINAL_STATE, terminals: [info('term-1', 'PowerShell')], groups: [{ id: 'group-1', paneIds: ['term-1'], activePaneId: 'term-1', sizes: [1] }], activeId: 'term-1' });
+    wrapper = mount(TerminalPane, {
+      props: { api: fakeShellApi(), state: STATE, maximized: false, hideShortcut: 'Ctrl+`' },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanel: true, PaneGrip: true } },
+    });
+    const tab = wrapper.get('[data-testid="terminal-tab"]');
+    expect(tab.attributes('draggable')).toBe('true');
+    const payload: Record<string, string> = {};
+    const start = new Event('dragstart', { bubbles: true }) as DragEvent;
+    Object.defineProperty(start, 'dataTransfer', { value: { setData: (format: string, value: string) => void (payload[format] = value), effectAllowed: 'none' } });
+    tab.element.dispatchEvent(start);
+    await nextTick();
+    expect(payload).toEqual({ [TERMINAL_DRAG_MIME]: 'term-1' });
+    expect(start.dataTransfer!.effectAllowed).toBe('move');
+    expect(tab.attributes('data-dragging')).toBe('true');
+    await tab.trigger('dragend');
+    expect(tab.attributes('data-dragging')).toBeUndefined();
+  });
+
+  it('opens the project-first pick on a click, main\'s menu under the arrow, and starts the default shell at once on Shift+click', async () => {
     const api = fakeShellApi();
-    const profiles = [
-      { id: 'cmd', name: 'Command Prompt', path: 'C:/cmd.exe', args: [], source: 'detected' as const, icon: 'cmd' as const, customIcon: null, color: null, isDefault: true },
-      { id: 'user:Dev', name: 'Developer PowerShell', path: 'C:/pwsh.exe', args: ['-NoExit'], source: 'user' as const, icon: 'powershell' as const, customIcon: 'wrench' as const, color: 'magenta' as const, isDefault: false },
-    ];
+    let closeMenu!: () => void;
+    vi.mocked(api.terminal.openNewMenu).mockImplementation(() => new Promise<void>((resolve) => (closeMenu = resolve)));
     const terminals = [info('term-1', 'PowerShell')];
-    const store = fakeStore({ ...TERMINAL_STATE, terminals, groups: [{ id: 'group-1', paneIds: ['term-1'], activePaneId: 'term-1', sizes: [1] }], activeId: 'term-1', profiles });
+    const store = fakeStore({ ...TERMINAL_STATE, terminals, groups: [{ id: 'group-1', paneIds: ['term-1'], activePaneId: 'term-1', sizes: [1] }], activeId: 'term-1' });
     wrapper = mount(TerminalPane, {
       props: { api, state: STATE, maximized: false, hideShortcut: 'Ctrl+`' },
       global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanel: true, PaneGrip: true } },
+      attachTo: document.body,
     });
-    await wrapper.get('[data-testid="terminal-new-menu"]').trigger('click');
-    const request = api.overlayRequests.at(-1);
-    const items = request?.kind === 'menu' ? request.items : [];
-    expect(items.slice(0, 2)).toEqual([
-      { kind: 'item', id: 'profile:cmd', label: 'Command Prompt', glyph: 'cmd' },
-      { kind: 'item', id: 'profile:user:Dev', label: 'Developer PowerShell', glyph: 'wrench', color: 'magenta' },
-    ]);
+    await wrapper.get('[data-testid="terminal-new"]').trigger('click');
+    expect(api.terminal.openNew).toHaveBeenCalledTimes(1);
+    expect(api.terminal.create).not.toHaveBeenCalled();
+
+    await wrapper.get('[data-testid="terminal-new"]').trigger('click', { shiftKey: true });
+    await flushPromises();
+    expect(api.terminal.create).toHaveBeenCalledWith({ profileId: null, target: { current: true } });
+    expect(store.requestFocus).toHaveBeenCalledWith('term-1');
+    expect(api.terminal.openNew).toHaveBeenCalledTimes(1);
+
+    const chevron = wrapper.get('[data-testid="terminal-new-menu"]');
+    await chevron.trigger('click');
+    expect(api.terminal.openNewMenu).toHaveBeenCalledTimes(1);
+    const anchor = vi.mocked(api.terminal.openNewMenu).mock.calls[0]![0];
+    expect(Object.keys(anchor).sort()).toEqual(['height', 'width', 'x', 'y']);
+    expect(chevron.attributes('aria-expanded')).toBe('true');
+    // a second click while the menu is open opens no second one
+    await chevron.trigger('click');
+    expect(api.terminal.openNewMenu).toHaveBeenCalledTimes(1);
+    closeMenu();
+    await flushPromises();
+    expect(chevron.attributes('aria-expanded')).toBe('false');
+    expect(api.overlayRequests).toEqual([]);
   });
 
   it('splits the active pane from the header, and not once its group is full', async () => {
@@ -143,6 +191,118 @@ describe('terminal pane header', () => {
     store.state.value = { ...TERMINAL_STATE, terminals: ids.map((id) => info(id, id)), groups: [{ id: 'group-1', paneIds: ids, activePaneId: 'term-2', sizes: ids.map(() => 1 / 8) }], activeId: 'term-2' };
     await wrapper.vm.$nextTick();
     expect(wrapper.get('[data-testid="terminal-split"]').attributes('disabled')).toBeDefined();
+  });
+});
+
+describe('the panel\'s end target', () => {
+  const one = (id: string) => ({ id: `group-${id}`, paneIds: [id], activePaneId: id, sizes: [1] });
+  afterEach(() => endTerminalDrag());
+
+  function dragging(id: string): void {
+    const start = new Event('dragstart') as DragEvent;
+    Object.defineProperty(start, 'dataTransfer', { value: { setData: () => undefined, effectAllowed: 'none' } });
+    startTerminalDrag(start, id);
+  }
+
+  const drag = (type: string, payload = '', relatedTarget: Node | null = null): DragEvent => {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperties(event, {
+      dataTransfer: { value: { types: [TERMINAL_DRAG_MIME], getData: () => (type === 'drop' ? payload : ''), dropEffect: 'none' } },
+      relatedTarget: { value: relatedTarget },
+    });
+    return event;
+  };
+
+  function mountPane(state: TerminalState): TerminalStore {
+    const store = fakeStore(state);
+    wrapper = mount(TerminalPane, {
+      props: { api: fakeShellApi(), state: STATE, maximized: false, hideShortcut: 'Ctrl+`' },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanes: true, TerminalList: true, PaneGrip: true } },
+    });
+    return store;
+  }
+
+  // VS Code's container drop: the header strip, beside the one panel terminal's tab, takes an editor terminal back as its own tab.
+  it('takes an editor terminal dropped on the header strip into the panel as a group of its own at the end, lit while it hovers', async () => {
+    const store = mountPane({ ...TERMINAL_STATE, terminals: [info('term-1', 'PowerShell'), { ...info('term-2', 'logs'), placement: 'editor' }], groups: [one('term-1')], activeId: 'term-1' });
+    const header = wrapper!.get('[data-testid="terminal-header"]');
+    expect(header.attributes('data-drop')).toBeUndefined();
+    dragging('term-2');
+    const over = drag('dragover');
+    header.element.dispatchEvent(over);
+    await nextTick();
+    expect(over.defaultPrevented).toBe(true);
+    expect(over.dataTransfer!.dropEffect).toBe('move');
+    expect(header.attributes('data-drop')).toBe('true');
+    // moving onto the tab inside the strip keeps it lit
+    header.element.dispatchEvent(drag('dragleave', '', wrapper!.get('[data-testid="terminal-tab"]').element));
+    await nextTick();
+    expect(header.attributes('data-drop')).toBe('true');
+    header.element.dispatchEvent(drag('dragleave'));
+    await nextTick();
+    expect(header.attributes('data-drop')).toBeUndefined();
+    header.element.dispatchEvent(drag('dragover'));
+    const drop = drag('drop', 'term-2');
+    header.element.dispatchEvent(drop);
+    await nextTick();
+    expect(drop.defaultPrevented).toBe(true);
+    expect(store.move).toHaveBeenCalledWith({ kind: 'detach', id: 'term-2' });
+    expect(header.attributes('data-drop')).toBeUndefined();
+  });
+
+  it('lights the empty panel with the header strip, as one target', async () => {
+    mountPane({ ...TERMINAL_STATE, canCreate: true, terminals: [{ ...info('term-2', 'logs'), placement: 'editor' }] });
+    dragging('term-2');
+    wrapper!.get('[data-testid="terminal-header"]').element.dispatchEvent(drag('dragover'));
+    await nextTick();
+    expect(wrapper!.get('[data-testid="terminal-empty"]').attributes('data-drop')).toBe('true');
+    expect(wrapper!.get('[data-testid="terminal-empty-drop"]').text()).toBe('Drop to move logs into the panel');
+  });
+
+  it('takes no panel terminal already alone at the end, and no drag that carries no terminal', async () => {
+    mountPane({ ...TERMINAL_STATE, terminals: [info('term-1', 'PowerShell'), info('term-2', 'logs')], groups: [{ id: 'group-1', paneIds: ['term-1', 'term-2'], activePaneId: 'term-1', sizes: [0.5, 0.5] }, one('term-3')], activeId: 'term-1' });
+    const header = wrapper!.get('[data-testid="terminal-header"]');
+    dragging('term-3');
+    const alone = drag('dragover');
+    header.element.dispatchEvent(alone);
+    await nextTick();
+    expect(alone.defaultPrevented).toBe(false);
+    expect(header.attributes('data-drop')).toBeUndefined();
+    // a pane of a split leaves it for a group of its own
+    dragging('term-2');
+    const pane = drag('dragover');
+    header.element.dispatchEvent(pane);
+    await nextTick();
+    expect(pane.defaultPrevented).toBe(true);
+    endTerminalDrag();
+    const files = new Event('dragover', { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperty(files, 'dataTransfer', { value: { types: ['Files'], getData: () => '', dropEffect: 'none' } });
+    header.element.dispatchEvent(files);
+    expect(files.defaultPrevented).toBe(false);
+  });
+});
+
+describe('the move announcement', () => {
+  it('announces a move politely once main\'s state shows it, with the pane\'s place in a split, whether or not the list shows', async () => {
+    const one = (id: string) => ({ id: `group-${id}`, paneIds: [id], activePaneId: id, sizes: [1] });
+    const terminals = [info('term-1', 'dev server'), info('term-4', 'shell')];
+    const store = fakeStore({ ...TERMINAL_STATE, terminals, groups: [one('term-1'), one('term-4')], activeId: 'term-1' });
+    wrapper = mount(TerminalPanel, {
+      props: { api: fakeShellApi(), state: STATE },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanes: true, TerminalList: true } },
+    });
+    const announcement = wrapper.get('[data-testid="terminal-move-announcement"]');
+    expect(announcement.attributes('aria-live')).toBe('polite');
+    store.state.value = { ...TERMINAL_STATE, terminals: [terminals[1]!, terminals[0]!], groups: [one('term-4'), one('term-1')], activeId: 'term-1' };
+    store.moved.value = { id: 'term-4', seq: 1 };
+    await vi.waitFor(() => expect(announcement.text()).toBe('shell moved to position 1 of 2'));
+    store.state.value = { ...TERMINAL_STATE, terminals, groups: [{ id: 'group-1', paneIds: ['term-1', 'term-4'], activePaneId: 'term-1', sizes: [0.5, 0.5] }], activeId: 'term-1' };
+    store.moved.value = { id: 'term-4', seq: 2 };
+    await vi.waitFor(() => expect(announcement.text()).toBe('shell moved to position 2 of 2, split 2 of 2'));
+    // an editor terminal back as the panel's only terminal, with no list beside it
+    store.state.value = { ...TERMINAL_STATE, terminals: [info('term-9', 'logs')], groups: [one('term-9')], activeId: 'term-9' };
+    store.moved.value = { id: 'term-9', seq: 3 };
+    await vi.waitFor(() => expect(announcement.text()).toBe('logs moved to position 1 of 1'));
   });
 });
 
@@ -172,5 +332,53 @@ describe('the terminal empty state', () => {
     const found = mountPanel({ ...TERMINAL_STATE, canCreate: true, profilesReady: true });
     expect(found.find('[data-testid="terminal-empty-new"]').exists()).toBe(true);
     expect(found.find('[data-testid="terminal-detecting"]').exists()).toBe(false);
+  });
+
+  it('shows itself with New Terminal, and no list, while every terminal is in the editor', () => {
+    const editor = (id: string, title: string): TerminalInfo => ({ ...info(id, title), placement: 'editor' });
+    const panel = mountPanel({ ...TERMINAL_STATE, canCreate: true, terminals: [editor('e1', 'one'), editor('e2', 'two')] });
+    expect(panel.find('[data-testid="terminal-empty"]').exists()).toBe(true);
+    expect(panel.find('[data-testid="terminal-empty-new"]').exists()).toBe(true);
+    expect(panel.findComponent({ name: 'TerminalList' }).exists()).toBe(false);
+  });
+
+  it('takes an editor terminal\'s tab dropped on it back into the panel, saying so while it hovers', async () => {
+    const state = { ...TERMINAL_STATE, canCreate: true, terminals: [{ ...info('e1', 'dev server'), placement: 'editor' as const }] };
+    const store = fakeStore(state);
+    wrapper = mount(TerminalPanel, {
+      props: { api: fakeShellApi(), state: STATE },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanes: true, TerminalList: true } },
+    });
+    const start = new Event('dragstart') as DragEvent;
+    Object.defineProperty(start, 'dataTransfer', { value: { setData: () => undefined, effectAllowed: 'none' } });
+    startTerminalDrag(start, 'e1');
+    const drag = (type: string, payload: string): DragEvent => {
+      const event = new Event(type, { bubbles: true, cancelable: true }) as DragEvent;
+      Object.defineProperty(event, 'dataTransfer', { value: { types: [TERMINAL_DRAG_MIME], getData: () => (type === 'drop' ? payload : ''), dropEffect: 'none' } });
+      return event;
+    };
+    const empty = wrapper.get('[data-testid="terminal-empty"]');
+    const over = drag('dragover', '');
+    empty.element.dispatchEvent(over);
+    await nextTick();
+    expect(over.defaultPrevented).toBe(true);
+    expect(empty.attributes('data-drop')).toBe('true');
+    expect(wrapper.get('[data-testid="terminal-empty-drop"]').text()).toBe('Drop to move dev server into the panel');
+    empty.element.dispatchEvent(drag('drop', 'e1'));
+    await nextTick();
+    expect(store.move).toHaveBeenCalledWith({ kind: 'detach', id: 'e1' });
+    expect(empty.attributes('data-drop')).toBeUndefined();
+    endTerminalDrag();
+  });
+
+  it('opens the project-first pick from the empty state\'s New Terminal button', async () => {
+    const api = fakeShellApi();
+    wrapper = mount(TerminalPanel, {
+      props: { api, state: STATE },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: fakeStore({ ...TERMINAL_STATE, canCreate: true }) }, stubs: { transition: true, TerminalPanes: true, TerminalList: true } },
+    });
+    await wrapper.get('[data-testid="terminal-empty-new"]').trigger('click');
+    expect(api.terminal.openNew).toHaveBeenCalledTimes(1);
+    expect(api.terminal.create).not.toHaveBeenCalled();
   });
 });

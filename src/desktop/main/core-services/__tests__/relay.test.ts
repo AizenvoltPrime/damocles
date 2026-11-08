@@ -5,7 +5,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createFakePlatform, type FakePanelHost } from '../../../../__mocks__/fake-platform';
 import type { Disposable } from '../../../../platform/disposable';
 import { createCorePlatform } from '../../../core-host/platform';
-import { createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
+import { createCoreEndpoint, createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
+import { REMOTE_CHAT_LOCAL_POSTS } from '../../../../shared/remote-user';
+import { REMOTE_CORE_REFUSED_POSTS } from '../../remote/remote-services';
 import { createDesktopKeyValueState } from '../../../local-services/key-value-state';
 import { createHostServices, type RelayView } from '../host-services';
 import { hostExtras } from './host-deps';
@@ -132,6 +134,82 @@ it('drops a post type this core may not send, and relays the rest', () => {
   void chat.postMessage({ type: 'voiceFirstRunRequired', reason: 'first-time' });
   void chat.postMessage({ type: 'streamStart' });
   expect(forwarded).toEqual(['streamStart']);
+});
+
+// A core's raw panel envelopes to main, which declare the post's type beside its JSON text as any core may.
+function crafting(refusedPosts: ReadonlySet<string>) {
+  const main = createFakePlatform({ chatBrowserPane: true });
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-relay-'));
+  dirs.push(userData);
+  const loopback = createLoopback();
+  const endpoint = createMainEndpoint(loopback.main, () => undefined);
+  const forwarded: unknown[] = [];
+  const host = createHostServices({
+    endpoint,
+    platform: main,
+    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    state: createDesktopKeyValueState(userData, () => undefined),
+    terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
+    resolveProxy: async () => 'DIRECT',
+    createView: (panelId, create) => Object.assign(main.window.createPanel(create) as FakePanelHost, {
+      panelId,
+      postJson: (_type: string, json: string) => forwarded.push(JSON.parse(json)),
+      postMessage: async (message: unknown) => {
+        forwarded.push(message);
+        return true;
+      },
+      showPage: () => undefined,
+      closeReason: 'user' as const,
+    }) satisfies RelayView,
+    git: { available: true },
+    e2eHooks: false,
+    ...hostExtras(),
+    refusedPosts,
+    log: () => undefined,
+  });
+  const core = createCoreEndpoint(loopback.core, () => undefined);
+  cleanups.push({ dispose: () => core.close('closed') }, { dispose: () => endpoint.close('closed') }, host);
+  core.postPanel('chat-1', 'create', { kind: 'chat', title: 'Damocles', localResourceRoots: [] });
+  const post = (type: string, json: string): void => core.postPanel('chat-1', 'post', { type, json });
+  const postBinary = (message: unknown): void => core.postPanel('chat-1', 'postBinary', { message });
+  return { post, postBinary, forwarded };
+}
+
+it("drops a remote core's post of each of this computer's reply types and voice posts, by the envelope's type or the JSON's own", () => {
+  const { post, forwarded } = crafting(REMOTE_CORE_REFUSED_POSTS);
+  for (const type of REMOTE_CHAT_LOCAL_POSTS) post(type, JSON.stringify({ type, id: 'local-row' }));
+  // the page dispatches on the JSON's type, so an envelope declaring a harmless type carries nothing past main
+  post('streamStart', JSON.stringify({ type: 'userMemoriesUpdate', memories: [{ id: 'local-row', content: 'host text' }], available: true }));
+  post('streamStart', JSON.stringify({ type: 'userProfileData', global: { static: 'host text', dynamic: '' }, available: true }));
+  post('streamStart', JSON.stringify({ type: 'voiceConfigUpdate', config: { mode: 'wake-word' } }));
+  post('streamStart', '{"type":"streamStart","type":"userMemoryDeleted","id":"local-row"}');
+  post('streamStart', 'not json');
+  post('streamStart', JSON.stringify(['streamStart']));
+  post('streamStart', JSON.stringify({ type: 'streamStart' }));
+  post('memoryDeleted', JSON.stringify({ type: 'memoryDeleted', id: 'host-row' }));
+  expect(forwarded).toEqual([{ type: 'streamStart' }, { type: 'memoryDeleted', id: 'host-row' }]);
+});
+
+it("drops a remote core's binary post unless its own type is a string outside the refused posts", () => {
+  const { postBinary, forwarded } = crafting(REMOTE_CORE_REFUSED_POSTS);
+  // a page's registry lookup turns ['userMemoriesUpdate'] into 'userMemoriesUpdate'
+  for (const type of [...REMOTE_CHAT_LOCAL_POSTS, 'voiceConfigUpdate']) {
+    postBinary({ type: [type], memories: [{ id: 'local-row', content: 'host text' }], available: true, frame: new Uint8Array([1]) });
+    postBinary({ type, frame: new Uint8Array([1]) });
+  }
+  postBinary('userMemoriesUpdate');
+  postBinary(['userMemoriesUpdate']);
+  postBinary({ frame: new Uint8Array([1]) });
+  postBinary({ type: 'browserFrame', frame: new Uint8Array([1, 2]) });
+  expect(forwarded).toEqual([{ type: 'browserFrame', frame: new Uint8Array([1, 2]) }]);
+});
+
+it("passes a local core's posts of this computer's reply types, as text or binary", () => {
+  const { post, postBinary, forwarded } = crafting(new Set());
+  for (const type of REMOTE_CHAT_LOCAL_POSTS) post(type, JSON.stringify({ type }));
+  post('voiceConfigUpdate', JSON.stringify({ type: 'voiceConfigUpdate' }));
+  postBinary({ type: 'userMemoriesUpdate', frame: new Uint8Array([1]) });
+  expect(forwarded).toEqual([...[...REMOTE_CHAT_LOCAL_POSTS].map((type) => ({ type })), { type: 'voiceConfigUpdate' }, { type: 'userMemoriesUpdate', frame: new Uint8Array([1]) }]);
 });
 
 // Main's relay of chat views it adopts, with what reached core's side of the channel.

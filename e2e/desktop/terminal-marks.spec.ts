@@ -155,9 +155,10 @@ test('Git Bash commands get marks with their exit codes too', async ({ clipboard
   test.skip(!windows, 'Git Bash is Windows only');
   test.setTimeout(180_000);
   const { app, shell, overlay } = await launchWith(home, launch);
-  const detected = (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).profiles.some((profile) => profile.id === 'git-bash');
-  test.skip(!detected, 'Git Bash is not installed');
-  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', target: { current: true } }));
+  // main refuses a profile it did not detect
+  const created = await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', target: { current: true } }));
+  if (!created.ok && created.reason !== 'unknownProfile') throw new Error(`main refused a Git Bash terminal: ${created.reason}`);
+  test.skip(!created.ok, 'Git Bash is not installed');
   await expect.poll(async () => (await active(shell)).profileId).toBe('git-bash');
   await markScenario(app, shell, overlay, POSIX, clipboard);
 });
@@ -167,9 +168,9 @@ for (const shellName of ['zsh', 'fish']) {
     test.skip(windows, `${shellName} runs on macOS and Linux`);
     test.setTimeout(180_000);
     const { app, shell, overlay } = await launchWith(home, launch);
-    const detected = (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).profiles.some((profile) => profile.id === shellName);
-    test.skip(!detected, `${shellName} is not installed`);
-    await shell.evaluate((profileId) => window.damoclesShell!.terminal.create({ profileId, target: { current: true } }), shellName);
+    const created = await shell.evaluate((profileId) => window.damoclesShell!.terminal.create({ profileId, target: { current: true } }), shellName);
+    if (!created.ok && created.reason !== 'unknownProfile') throw new Error(`main refused a ${shellName} terminal: ${created.reason}`);
+    test.skip(!created.ok, `${shellName} is not installed`);
     await expect.poll(async () => (await active(shell)).profileId).toBe(shellName);
     await markScenario(app, shell, overlay, POSIX, clipboard);
   });

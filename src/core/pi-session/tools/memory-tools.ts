@@ -348,7 +348,7 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         await memoryService.ensureInitialized();
         if (!memoryService.isAvailable) return textResult(UNAVAILABLE);
-        const notes = memoryService.listNotes(input.tags);
+        const notes = await memoryService.listNotes(input.tags);
         if (notes.length === 0) return textResult('No notes found.');
         return untrustedResult(JSON.stringify(notes));
       },

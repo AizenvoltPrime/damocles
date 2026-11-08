@@ -51,7 +51,7 @@ function buildFull(service: Record<string, unknown>): Map<string, CapturedTool> 
     addObservation: async () => ({ id: 'o1', title: 'T' }),
     saveMemory: async () => ({ id: 'm1', kind: 'fact', scope: 'project' }),
     addNote: async () => ({ id: 'nt1' }),
-    listNotes: () => [],
+    listNotes: async () => [],
     resetObservationStaleness: async () => true,
     forgetMemory: async () => ({ forgotten: 1, target: null }),
     getMemoryHistory: () => [],
@@ -285,7 +285,7 @@ describe('untrusted-content framing of stored payloads', () => {
   const CASES: Array<{ name: string; stored: unknown; service: Record<string, unknown>; input: Record<string, unknown> }> = [
     { name: 'SearchMemories', stored: [{ id: 'm1', snippet: 's' }], service: { searchMemories: async () => [{ id: 'm1', snippet: 's' }] }, input: { query: 'x' } },
     { name: 'GetMemoryDetails', stored: [{ id: 'm1', content: 'c' }], service: { getMemoryDetails: async () => [{ id: 'm1', content: 'c' }] }, input: { ids: ['m1'] } },
-    { name: 'ListNotes', stored: [{ id: 'nt1', content: 'c' }], service: { listNotes: () => [{ id: 'nt1', content: 'c' }] }, input: {} },
+    { name: 'ListNotes', stored: [{ id: 'nt1', content: 'c' }], service: { listNotes: async () => [{ id: 'nt1', content: 'c' }] }, input: {} },
     { name: 'GetMemoryHistory', stored: [{ id: 'm1', version: 1 }], service: { getMemoryHistory: () => [{ id: 'm1', version: 1 }] }, input: { id: 'm1' } },
     { name: 'GetRelatedMemories', stored: [{ id: 'm2', edge: 'updates' }], service: { getRelatedMemories: () => [{ id: 'm2', edge: 'updates' }] }, input: { id: 'm1' } },
   ];
@@ -303,7 +303,7 @@ describe('untrusted-content framing of stored payloads', () => {
   }
 
   it('uses a fresh fence nonce per call so a payload cannot forge the closing tag', async () => {
-    const tool = buildFull({ listNotes: () => [{ id: 'n', content: 'c' }] }).get('ListNotes')!;
+    const tool = buildFull({ listNotes: async () => [{ id: 'n', content: 'c' }] }).get('ListNotes')!;
     const a = parseFence(text(await tool.execute('id', {})));
     const b = parseFence(text(await tool.execute('id', {})));
     expect(a!.nonce).not.toBe(b!.nonce);

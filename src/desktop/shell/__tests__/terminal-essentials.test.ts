@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest';
 import type { IBufferCell } from '@xterm/xterm';
-import { MAX_TERMINAL_LINK_PATH_LENGTH, MAX_TERMINAL_LINK_PATHS, MAX_TERMINAL_NAME_LENGTH, type TerminalSettings } from '../../preload/terminal-channels';
+import { MAX_TERMINAL_GROUP_PANES, MAX_TERMINAL_LINK_PATH_LENGTH, MAX_TERMINAL_LINK_PATHS, MAX_TERMINAL_NAME_LENGTH, type TerminalSettings, type TerminalState } from '../../preload/terminal-channels';
 import type { OverlayQuickPickItem } from '../../preload/overlay-channels';
 import { confirmedLinks, lineCandidates, MAX_LINKS_PER_LINE, MAX_LINK_LINE_LENGTH, rangeOf, readWrappedLine, requestPaths, type LinkLines } from '../terminal/terminal-links';
-import { renameRequestName, runTerminalAction, terminalMenuAction, terminalMenuItems } from '../terminal/terminal-menu';
+import { renameRequestName, runTerminalAction, runTerminalTabAction, terminalArrangement, terminalMenuAction, terminalMenuItems, terminalTabMenuItems } from '../terminal/terminal-menu';
 import { isFontList, liveOptions } from '../terminal/terminal-options';
 import { isMenuKey, isShiftF10, isXtermInput, terminalKeyAction } from '../terminal/terminal-keys';
 import { colorTint, glyphLook, terminalGlyph, TERMINAL_ICON } from '../terminal/terminal-icons';
@@ -269,10 +269,78 @@ describe('Edit menu paste in the terminal pane', () => {
   });
 });
 
+describe('terminal arrangement in the tab menu', () => {
+  const group = (id: string, paneIds: string[]) => ({ id, paneIds, activePaneId: paneIds[0]!, sizes: paneIds.map(() => 1 / paneIds.length) });
+  const terminals = (count: number, extra: Record<string, unknown> = {}) => Array.from({ length: count }, (_, index) => ({ id: `term-${index + 1}`, placement: 'panel', ...extra })) as unknown as TerminalState['terminals'];
+  const inEditor = (id: string) => ({ id, placement: 'editor' }) as unknown as TerminalState['terminals'][number];
+
+  it('opens Join Terminals... while the group has a free slot and some terminal is outside it', () => {
+    const full = Array.from({ length: MAX_TERMINAL_GROUP_PANES }, (_, index) => `term-${index + 1}`);
+    expect(terminalArrangement({ terminals: terminals(9), groups: [group('g1', full), group('g2', ['term-9'])] }, 'term-1')).toEqual({ up: false, down: true, join: false, toEditor: true });
+    expect(terminalArrangement({ terminals: terminals(9), groups: [group('g1', full), group('g2', ['term-9'])] }, 'term-9')).toEqual({ up: true, down: false, join: true, toEditor: true });
+    expect(terminalArrangement({ terminals: terminals(2), groups: [group('g1', ['term-1', 'term-2'])] }, 'term-2')).toEqual({ up: true, down: false, join: false, toEditor: true });
+    expect(terminalArrangement(null, 'term-1')).toEqual({ up: false, down: false, join: false, toEditor: false });
+  });
+
+  it('counts only the panel\'s terminals: the last panel row moves no further down, and an editor terminal is no one to join', () => {
+    const state = { terminals: [...terminals(1), inEditor('term-9')], groups: [group('g1', ['term-1'])] };
+    expect(terminalArrangement(state, 'term-1')).toEqual({ up: false, down: false, join: false, toEditor: true });
+  });
+
+  it('keeps a worktree Setup task in the panel and out of every join', () => {
+    const state = { terminals: [...terminals(1, { task: true }), ...terminals(2).slice(1)], groups: [group('g1', ['term-1']), group('g2', ['term-2'])] };
+    expect(terminalArrangement(state, 'term-1')).toEqual({ up: false, down: true, join: false, toEditor: false });
+    const items = terminalMenuItems({ target: 'tab', hasSelection: false, platform: 'win32', group: single, arrangement: terminalArrangement(state, 'term-1') }, t);
+    expect(items.find((item) => item.kind === 'item' && item.id === 'joinTerminals')).toMatchObject({ disabled: true });
+    expect(items.find((item) => item.kind === 'item' && item.id === 'moveToEditor')).toMatchObject({ disabled: true });
+    // a task is no one to join either: main's pick would offer nothing
+    expect(terminalArrangement(state, 'term-2').join).toBe(false);
+  });
+
+  it('adds Join Terminals... beside Unsplit, and Move Up, Move Down and Move Terminal into Editor Area after them', () => {
+    const items = terminalMenuItems({ target: 'tab', hasSelection: false, platform: 'darwin', group: { panes: 2, shortcut: '' }, arrangement: { up: true, down: false, join: true, toEditor: true } }, t);
+    expect(ids(items)).toEqual(['split', 'unsplit', 'joinTerminals', '-', 'moveUp', 'moveDown', 'moveToEditor', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
+    expect(items.find((item) => item.kind === 'item' && item.id === 'moveUp')).toMatchObject({ shortcut: '⌥↑', disabled: false });
+    expect(items.find((item) => item.kind === 'item' && item.id === 'moveDown')).toMatchObject({ shortcut: '⌥↓', disabled: true });
+    expect(items.find((item) => item.kind === 'item' && item.id === 'moveToEditor')).toMatchObject({ label: 'terminal.menu.moveToEditor', icon: 'arrow-up-from-line', disabled: false });
+    // the xterm's own menu has no arrangement entries, as VS Code's terminal menu has none
+    expect(ids(terminalMenuItems({ target: 'terminal', hasSelection: false, platform: 'win32', group: single, arrangement: { up: true, down: true, join: true, toEditor: true } }, t))).not.toContain('moveUp');
+  });
+
+  it('leaves Join Terminals..., Move Up and Move Down out of the single tab\'s menu, where the panel holds no other terminal', () => {
+    const state = { terminals: [...terminals(1), inEditor('term-9')], groups: [group('g1', ['term-1'])] };
+    const items = terminalMenuItems({ target: 'tab', hasSelection: false, platform: 'win32', group: single, arrangement: terminalArrangement(state, 'term-1') }, t);
+    expect(ids(items)).toEqual(['split', '-', 'moveToEditor', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
+  });
+
+  it('offers an editor terminal\'s xterm no Split or Unsplit, since only the panel splits', () => {
+    expect(ids(terminalMenuItems({ target: 'terminal', hasSelection: false, platform: 'win32', group: null }, t))).not.toContain('split');
+  });
+});
+
+describe('a terminal editor tab\'s menu', () => {
+  it('offers Move Terminal into Panel, Rename..., Change Icon..., Change Color... and Kill, and runs each on its terminal', () => {
+    expect(ids(terminalTabMenuItems(t))).toEqual(['moveToPanel', '-', 'rename', 'changeIcon', 'changeColor', '-', 'kill']);
+    const api = { pickIcon: vi.fn(), pickColor: vi.fn(), kill: vi.fn(), split: vi.fn(), unsplit: vi.fn() };
+    const store = { startRename: vi.fn(), move: vi.fn() };
+    expect(runTerminalTabAction('moveToPanel', 'term-1', { api, store })).toBe(true);
+    // into the panel as a group of its own at the end
+    expect(store.move).toHaveBeenCalledWith({ kind: 'detach', id: 'term-1' });
+    runTerminalTabAction('rename', 'term-1', { api, store });
+    expect(store.startRename).toHaveBeenCalledWith('term-1', 'tab');
+    runTerminalTabAction('changeIcon', 'term-1', { api, store });
+    runTerminalTabAction('changeColor', 'term-1', { api, store });
+    runTerminalTabAction('kill', 'term-1', { api, store });
+    expect([api.pickIcon, api.pickColor, api.kill].map((fn) => fn.mock.calls)).toEqual([[['term-1']], [['term-1']], [['term-1']]]);
+    // the editor's own entries are not the terminal's
+    expect(runTerminalTabAction('close', 'term-1', { api, store })).toBe(false);
+  });
+});
+
 describe('terminal store', () => {
   it('starts the palette\'s rename, routes main\'s paste request, and ends a rename whose terminal left', async () => {
     const api = fakeShellApi();
-    const info = { id: 'term-1', title: 'cmd', name: null, profileId: 'cmd', icon: 'cmd' as const, customIcon: null, color: null, projectKey: 'a', projectName: 'a', status: 'running' as const, exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix' as const };
+    const info = { id: 'term-1', title: 'cmd', name: null, profileId: 'cmd', icon: 'cmd' as const, customIcon: null, color: null, projectKey: 'a', projectName: 'a', status: 'running' as const, exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix' as const, placement: 'panel' as const };
     api.terminal.getState = async () => ({ ...TERMINAL_STATE, terminals: [info], activeId: 'term-1' });
     const store = createTerminalStore(api);
     await store.start();
@@ -300,5 +368,76 @@ describe('terminal store', () => {
     api.terminal.runAction({ id: 'term-1', action: 'copyLastCommandOutput' });
     expect(store.actionRequest.value).toMatchObject({ id: 'term-1', action: 'copyLastCommandOutput' });
     store.stop();
+  });
+
+  it('sends a move to main and reports it moved only once main publishes a changed arrangement', async () => {
+    const api = fakeShellApi();
+    const group = (id: string, paneIds: string[]) => ({ id, paneIds, activePaneId: paneIds[0]!, sizes: paneIds.map(() => 1 / paneIds.length) });
+    const before = { ...TERMINAL_STATE, terminals: [{ id: 'term-1' }, { id: 'term-2' }] as unknown as TerminalState['terminals'], groups: [group('group-1', ['term-1']), group('group-2', ['term-2'])], activeId: 'term-1' };
+    api.terminal.getState = async () => before;
+    const store = createTerminalStore(api);
+    await store.start();
+    store.move({ kind: 'step', id: 'term-2', delta: -1 });
+    expect(api.terminal.move).toHaveBeenCalledWith({ kind: 'step', id: 'term-2', delta: -1 });
+    // a title change publishes the same arrangement
+    api.terminal.pushState({ ...before });
+    expect(store.moved.value).toBeNull();
+    api.terminal.pushState({ ...before, terminals: [...before.terminals].reverse(), groups: [group('group-2', ['term-2']), group('group-1', ['term-1'])] });
+    expect(store.moved.value).toMatchObject({ id: 'term-2' });
+    const seq = store.moved.value!.seq;
+    api.terminal.pushState({ ...before });
+    expect(store.moved.value!.seq).toBe(seq);
+    store.stop();
+  });
+
+  describe('with groups [a], [b], [c]', () => {
+    const group = (id: string, paneIds: string[]) => ({ id, paneIds, activePaneId: paneIds[0]!, sizes: paneIds.map(() => 1 / paneIds.length) });
+    const three: TerminalState = { ...TERMINAL_STATE, terminals: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as unknown as TerminalState['terminals'], groups: [group('g1', ['a']), group('g2', ['b']), group('g3', ['c'])], activeId: 'a' };
+    // a is killed: b moves up a row without any move of its own
+    const aKilled: TerminalState = { ...three, terminals: three.terminals.slice(1), groups: three.groups.slice(1), activeId: 'b' };
+
+    async function started(): Promise<{ api: ReturnType<typeof fakeShellApi>; store: ReturnType<typeof createTerminalStore> }> {
+      const api = fakeShellApi();
+      api.terminal.getState = async () => three;
+      const store = createTerminalStore(api);
+      await store.start();
+      return { api, store };
+    }
+
+    it('sends no move that lands where the terminal already is, so a later kill above it announces nothing', async () => {
+      const { api, store } = await started();
+      store.move({ kind: 'reorder', id: 'b', target: 'a', side: 'after' });
+      store.move({ kind: 'reorder', id: 'b', target: 'c', side: 'before' });
+      store.move({ kind: 'join', id: 'b', target: 'b', side: 'after' });
+      store.move({ kind: 'detach', id: 'c' });
+      expect(api.terminal.move).not.toHaveBeenCalled();
+      api.terminal.pushState(aKilled);
+      expect(store.moved.value).toBeNull();
+      store.stop();
+    });
+
+    it('settles a move main refused at the next arrangement change, announcing it only if that state shows it landed', async () => {
+      const { api, store } = await started();
+      store.move({ kind: 'reorder', id: 'b', target: 'a', side: 'before' });
+      expect(api.terminal.move).toHaveBeenCalledTimes(1);
+      api.terminal.pushState(aKilled);
+      expect(store.moved.value).toBeNull();
+      // settled: the move's later landing is no announcement of it
+      api.terminal.pushState({ ...three, terminals: [{ id: 'b' }, { id: 'a' }, { id: 'c' }] as unknown as TerminalState['terminals'], groups: [group('g2', ['b']), group('g1', ['a']), group('g3', ['c'])] });
+      expect(store.moved.value).toBeNull();
+      store.stop();
+    });
+
+    it('announces a join and a detach once main publishes them', async () => {
+      const { api, store } = await started();
+      store.move({ kind: 'join', id: 'c', target: 'a', side: 'after' });
+      api.terminal.pushState({ ...three, terminals: [{ id: 'a' }, { id: 'c' }, { id: 'b' }] as unknown as TerminalState['terminals'], groups: [group('g1', ['a', 'c']), group('g2', ['b'])] });
+      expect(store.moved.value).toMatchObject({ id: 'c' });
+      store.move({ kind: 'detach', id: 'a' });
+      api.terminal.pushState({ ...three, terminals: [{ id: 'c' }, { id: 'b' }, { id: 'a' }] as unknown as TerminalState['terminals'], groups: [group('g1', ['c']), group('g2', ['b']), group('g4', ['a'])] });
+      expect(store.moved.value).toMatchObject({ id: 'a', seq: expect.any(Number) });
+      expect(api.terminal.move).toHaveBeenCalledTimes(2);
+      store.stop();
+    });
   });
 });

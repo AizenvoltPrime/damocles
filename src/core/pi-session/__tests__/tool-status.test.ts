@@ -11,6 +11,8 @@ import { TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE, MCP_RESOURCE_TOOL_NAMES } from '
 import { fullActiveToolNames, activeToolNamesWithDeferral, buildToolStatus, type ToolStatusDeps } from '../tool-status';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
 import { DESIGN_PI_TOOL_NAMES, designRuleSet } from '../../design/rule-set';
+import { readContributedConfiguration } from '../../config/read-contributed-configuration';
+import { TOOL_GROUP_SETTINGS, type SwitchableToolGroup } from '../../../shared/types/tools';
 
 /** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
 function nth(names: readonly string[], i: number): string {
@@ -302,16 +304,24 @@ describe('buildToolStatus: switches the host\'s own settings file holds', () => 
     inspect: <T>(key: string) => (Object.hasOwn(held, key) ? { machineValue: held[key] as T } : {}),
   });
 
+  // the settings store reports no machineValue for a client-only key, so these two switches never show set on host
+  it('the manifest makes the image and design switches client-only', () => {
+    const { clientOnlyKeys } = readContributedConfiguration(process.cwd());
+    expect(clientOnlyKeys).toContain('damocles.design.enabled');
+    expect(clientOnlyKeys).toContain('damocles.imageGeneration.enabled');
+  });
+
+  it.each(Object.keys(TOOL_GROUP_SETTINGS) as SwitchableToolGroup[])('marks %s setOnHost exactly when its key reports a machineValue', (name) => {
+    const held = buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({ [TOOL_GROUP_SETTINGS[name]]: true }) }));
+    expect(group(held, name).setOnHost).toBe(true);
+    expect(group(buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({}) })), name)).not.toHaveProperty('setOnHost');
+  });
+
   it('marks a group setOnHost and the tool list toolsSetOnHost only for a key whose machineValue is set', () => {
     const snap = buildToolStatus(deps({ hostSettings: hostFile({ 'damocles.browser.enabled': true, 'damocles.tools.disabled': [] }) }));
     expect(group(snap, 'browser').setOnHost).toBe(true);
     for (const name of ['memory', 'compass', 'web', 'image', 'team', 'subagents', 'core']) expect(group(snap, name), name).not.toHaveProperty('setOnHost');
     expect(snap.toolsSetOnHost).toBe(true);
-  });
-
-  it('marks the design group setOnHost only while the host file holds its key', () => {
-    expect(group(buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({ 'damocles.design.enabled': true }) })), 'design').setOnHost).toBe(true);
-    expect(group(buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({}) })), 'design')).not.toHaveProperty('setOnHost');
   });
 
   it('leaves both absent without host settings (this computer\'s core) or when the host file holds neither', () => {

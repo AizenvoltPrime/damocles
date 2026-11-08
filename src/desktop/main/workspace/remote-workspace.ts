@@ -3,7 +3,7 @@ import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/project-location';
 import type { Endpoint } from '../../core-protocol/endpoint';
 import type { StreamChannel } from '../../../remote/mux';
-import { streamBytes, writeBytes } from '../../../remote/tunnel-pipe';
+import { abandonStream, streamBytes, writeBytes } from '../../../remote/tunnel-pipe';
 import type { Project } from '../../local-services/confine';
 import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
 import type { ClientToWorkspace, WireFileBytes, WireIdentity, WireTransferEntry, WorkspaceToClient } from '../../workspace/messages';
@@ -33,6 +33,21 @@ export class TransfersUnsupportedError extends Error {
 
   constructor(authorityKey: string) {
     super(`The Damocles server on ${authorityKey} does not carry file transfers`);
+    this.authorityKey = authorityKey;
+  }
+}
+
+// files.readFileRange with its answer's resolvedPath and folder, which a preview's deny list needs; a daemon listing only
+// files.readFileRange reads no range for this app
+export const RANGED_READS_FEATURE = 'files.readFileRange.resolvedPath';
+
+/** files.readFileRange on a host whose daemon does not list RANGED_READS_FEATURE; nothing was sent. */
+export class RangedReadsUnsupportedError extends Error {
+  override readonly name = 'RangedReadsUnsupportedError';
+  readonly authorityKey: string;
+
+  constructor(authorityKey: string) {
+    super(`The Damocles server on ${authorityKey} does not read byte ranges`);
     this.authorityKey = authorityKey;
   }
 }
@@ -91,6 +106,8 @@ export interface RemoteWorkspaceDeps {
   readonly watchReady: boolean;
   // the daemon lists TRANSFER_FEATURES; without it every transfer method throws TransfersUnsupportedError before sending
   readonly transfers: boolean;
+  // the daemon lists RANGED_READS_FEATURE; without it readFileRange throws RangedReadsUnsupportedError before sending
+  readonly rangedReads: boolean;
   // the daemon lists OUTSIDE_FILES_FEATURES; without them every outside method throws OutsideFilesUnsupportedError before sending
   readonly outside: boolean;
   // the daemon lists OUTSIDE_LISTING_FEATURE; without it listOutside throws ListingUnsupportedError before sending
@@ -98,6 +115,12 @@ export interface RemoteWorkspaceDeps {
   // a stream for a transfer's bytes, held until its reader subscribes
   readonly openStream: () => StreamChannel;
   readonly log: (line: string) => void;
+}
+
+// Whether a ranged read's answer is exactly the span asked for, clamped to the file as the host clamps it.
+function answersRange(offset: number, length: number, read: { readonly size: number; readonly offset: number; readonly length: number }): boolean {
+  const start = offset < 0 ? Math.max(0, read.size + offset) : Math.min(offset, read.size);
+  return read.offset === start && read.length === Math.min(length, read.size - start);
 }
 
 const asBuffer = (bytes: Uint8Array): Buffer => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -283,6 +306,25 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
           return read;
         }
         return { ok: true, size: read.size, chunks: streamBytes(stream) };
+      },
+      readFileRange: async (project, relativePath, offset, length) => {
+        if (closed) throw deps.notConnected();
+        if (!deps.rangedReads) throw new RangedReadsUnsupportedError(authorityKey);
+        const stream = transferStream();
+        const read = await call('files.readFileRange', { project: toWire(project), relativePath, stream: stream.id, offset, length }).catch((err: unknown) => {
+          stream.end();
+          throw err;
+        });
+        if (!read.ok) {
+          stream.end();
+          return read.reason === 'notAFile' ? { ok: false, reason: 'notAFile', folder: read.folder === true } : { ok: false, reason: read.reason, ...(read.code !== undefined ? { code: read.code } : {}) };
+        }
+        if (!answersRange(offset, length, read) || read.resolvedPath === undefined) {
+          abandonStream(stream);
+          deps.log(`[remote] ${authorityKey} answered a read of ${length} bytes from ${offset} with ${read.length} bytes from ${read.offset} of ${read.size}${read.resolvedPath === undefined ? ' and no resolved path' : ''}`);
+          return { ok: false, reason: 'failed' };
+        }
+        return { ok: true, size: read.size, offset: read.offset, length: read.length, resolvedPath: read.resolvedPath, chunks: streamBytes(stream) };
       },
       // a signal that aborts sends the request's cancel, which stops the host's copy and removes its part
       copy: async (from, relativePath, to, toDir, name, replace, signal) => {

@@ -164,7 +164,14 @@
   "chat.toolMetadataText",
   "question.multiSelectPreviews",
   "chats.designSuperseded",
-  "chat.designApproval"
+  "chat.designApproval",
+  "user.memory.list",
+  "view.userMemory",
+  "files.readFileRange",
+  "files.readFileRange.resolvedPath",
+  "browser.useClientCertificate",
+  "user.memory.listNotesOnly",
+  "user.memory.offReason"
  ],
  "contracts": {
   "CoreRequests": {
@@ -2626,6 +2633,127 @@
       }
      }
     },
+    "user.memory.list": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "cursor": {
+           "optional": true,
+           "type": {
+            "object": {
+             "createdAt": {
+              "optional": false,
+              "type": "number"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "kinds": {
+           "optional": false,
+           "type": {
+            "array": "\"note\""
+           }
+          },
+          "tags": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "next": {
+           "optional": true,
+           "type": {
+            "object": {
+             "createdAt": {
+              "optional": false,
+              "type": "number"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "rows": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "contentHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "createdAt": {
+               "optional": false,
+               "type": "number"
+              },
+              "forgotten": {
+               "optional": true,
+               "type": "true"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "updatedAt": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "user.memory.profile": {
      "optional": false,
      "type": {
@@ -3310,6 +3438,81 @@
           },
           "url": {
            "optional": true,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "browser.useClientCertificate": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "filter": {
+           "optional": false,
+           "type": {
+            "object": {
+             "ISSUER": {
+              "optional": false,
+              "type": {
+               "object": {
+                "CN": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "L": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "O": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "OU": {
+                 "optional": true,
+                 "type": "string"
+                }
+               }
+              }
+             },
+             "SUBJECT": {
+              "optional": false,
+              "type": {
+               "object": {
+                "CN": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "L": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "O": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "OU": {
+                 "optional": true,
+                 "type": "string"
+                }
+               }
+              }
+             }
+            }
+           }
+          },
+          "origin": {
+           "optional": false,
            "type": "string"
           }
          }
@@ -6485,6 +6688,123 @@
            "optional": true,
            "type": {
             "array": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.list": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "cursor": {
+           "optional": true,
+           "type": {
+            "object": {
+             "createdAt": {
+              "optional": false,
+              "type": "number"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "kinds": {
+           "optional": false,
+           "type": {
+            "array": "\"note\""
+           }
+          },
+          "tags": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "next": {
+           "optional": true,
+           "type": {
+            "object": {
+             "createdAt": {
+              "optional": false,
+              "type": "number"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "rows": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "contentHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "createdAt": {
+               "optional": false,
+               "type": "number"
+              },
+              "forgotten": {
+               "optional": true,
+               "type": "true"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "updatedAt": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
            }
           }
          }
@@ -11508,6 +11828,113 @@
             "ok": {
              "optional": false,
              "type": "true"
+            },
+            "size": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.readFileRange": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "length": {
+           "optional": false,
+           "type": "number"
+          },
+          "offset": {
+           "optional": false,
+           "type": "number"
+          },
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "folder": {
+             "optional": true,
+             "type": "boolean"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"outside\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "length": {
+             "optional": false,
+             "type": "number"
+            },
+            "offset": {
+             "optional": false,
+             "type": "number"
+            },
+            "ok": {
+             "optional": false,
+             "type": "true"
+            },
+            "resolvedPath": {
+             "optional": true,
+             "type": "string"
             },
             "size": {
              "optional": false,
@@ -36508,6 +36935,819 @@
       }
      }
     },
+    "\"userMemoriesUpdate\"": {
+     "object": {
+      "available": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "memories": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "accessCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "content": {
+           "optional": false,
+           "type": "string"
+          },
+          "createdAt": {
+           "optional": false,
+           "type": "number"
+          },
+          "facts": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "fileChangeCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "filesModified": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "filesRead": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "forgetAfter": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "number"
+            ]
+           }
+          },
+          "forgetReason": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "forgotten": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "id": {
+           "optional": false,
+           "type": "string"
+          },
+          "isInference": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "isLatest": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "isStatic": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "kind": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"episode\"",
+             "\"fact\"",
+             "\"note\"",
+             "\"observation\"",
+             "\"preference\""
+            ]
+           }
+          },
+          "observationTags": {
+           "optional": true,
+           "type": {
+            "array": {
+             "union": [
+              "\"approach\"",
+              "\"caveat\"",
+              "\"dependency\"",
+              "\"impact\"",
+              "\"mechanism\"",
+              "\"performance\"",
+              "\"rationale\""
+             ]
+            }
+           }
+          },
+          "observationType": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"architecture\"",
+             "\"environment\"",
+             "\"fix\"",
+             "\"implementation\"",
+             "\"insight\"",
+             "\"refactor\""
+            ]
+           }
+          },
+          "parentId": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "pinned": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "rootId": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "scope": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"global\"",
+             "\"project\"",
+             "\"session\""
+            ]
+           }
+          },
+          "searchTerms": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "sessionId": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "sourceCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "summary": {
+           "optional": true,
+           "type": "string"
+          },
+          "tags": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "tier": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"global\"",
+             "\"note\"",
+             "\"observation\"",
+             "\"project\"",
+             "\"session\""
+            ]
+           }
+          },
+          "title": {
+           "optional": true,
+           "type": "string"
+          },
+          "updatedAt": {
+           "optional": false,
+           "type": "number"
+          },
+          "version": {
+           "optional": true,
+           "type": "number"
+          },
+          "workspace": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          }
+         }
+        }
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoriesUpdate\""
+      }
+     }
+    },
+    "\"userMemoryCreated\"": {
+     "object": {
+      "memory": {
+       "optional": false,
+       "type": {
+        "object": {
+         "accessCount": {
+          "optional": true,
+          "type": "number"
+         },
+         "content": {
+          "optional": false,
+          "type": "string"
+         },
+         "createdAt": {
+          "optional": false,
+          "type": "number"
+         },
+         "facts": {
+          "optional": true,
+          "type": {
+           "array": "string"
+          }
+         },
+         "fileChangeCount": {
+          "optional": true,
+          "type": "number"
+         },
+         "filesModified": {
+          "optional": true,
+          "type": {
+           "array": "string"
+          }
+         },
+         "filesRead": {
+          "optional": true,
+          "type": {
+           "array": "string"
+          }
+         },
+         "forgetAfter": {
+          "optional": true,
+          "type": {
+           "union": [
+            "null",
+            "number"
+           ]
+          }
+         },
+         "forgetReason": {
+          "optional": true,
+          "type": {
+           "union": [
+            "null",
+            "string"
+           ]
+          }
+         },
+         "forgotten": {
+          "optional": true,
+          "type": "boolean"
+         },
+         "id": {
+          "optional": false,
+          "type": "string"
+         },
+         "isInference": {
+          "optional": true,
+          "type": "boolean"
+         },
+         "isLatest": {
+          "optional": true,
+          "type": "boolean"
+         },
+         "isStatic": {
+          "optional": true,
+          "type": "boolean"
+         },
+         "kind": {
+          "optional": true,
+          "type": {
+           "union": [
+            "\"episode\"",
+            "\"fact\"",
+            "\"note\"",
+            "\"observation\"",
+            "\"preference\""
+           ]
+          }
+         },
+         "observationTags": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "\"approach\"",
+             "\"caveat\"",
+             "\"dependency\"",
+             "\"impact\"",
+             "\"mechanism\"",
+             "\"performance\"",
+             "\"rationale\""
+            ]
+           }
+          }
+         },
+         "observationType": {
+          "optional": true,
+          "type": {
+           "union": [
+            "\"architecture\"",
+            "\"environment\"",
+            "\"fix\"",
+            "\"implementation\"",
+            "\"insight\"",
+            "\"refactor\""
+           ]
+          }
+         },
+         "parentId": {
+          "optional": true,
+          "type": {
+           "union": [
+            "null",
+            "string"
+           ]
+          }
+         },
+         "pinned": {
+          "optional": true,
+          "type": "boolean"
+         },
+         "rootId": {
+          "optional": true,
+          "type": {
+           "union": [
+            "null",
+            "string"
+           ]
+          }
+         },
+         "scope": {
+          "optional": true,
+          "type": {
+           "union": [
+            "\"global\"",
+            "\"project\"",
+            "\"session\""
+           ]
+          }
+         },
+         "searchTerms": {
+          "optional": true,
+          "type": {
+           "array": "string"
+          }
+         },
+         "sessionId": {
+          "optional": false,
+          "type": {
+           "union": [
+            "null",
+            "string"
+           ]
+          }
+         },
+         "sourceCount": {
+          "optional": true,
+          "type": "number"
+         },
+         "summary": {
+          "optional": true,
+          "type": "string"
+         },
+         "tags": {
+          "optional": false,
+          "type": {
+           "array": "string"
+          }
+         },
+         "tier": {
+          "optional": false,
+          "type": {
+           "union": [
+            "\"global\"",
+            "\"note\"",
+            "\"observation\"",
+            "\"project\"",
+            "\"session\""
+           ]
+          }
+         },
+         "title": {
+          "optional": true,
+          "type": "string"
+         },
+         "updatedAt": {
+          "optional": false,
+          "type": "number"
+         },
+         "version": {
+          "optional": true,
+          "type": "number"
+         },
+         "workspace": {
+          "optional": false,
+          "type": {
+           "union": [
+            "null",
+            "string"
+           ]
+          }
+         }
+        }
+       }
+      },
+      "requestId": {
+       "optional": true,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryCreated\""
+      }
+     }
+    },
+    "\"userMemoryDeleted\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryDeleted\""
+      }
+     }
+    },
+    "\"userMemoryError\"": {
+     "object": {
+      "message": {
+       "optional": false,
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
+      },
+      "request": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"createUserMemory\"",
+         "\"deleteUserMemory\"",
+         "\"forgetUserMemory\"",
+         "\"getUserMemoryHistory\"",
+         "\"getUserProfile\"",
+         "\"getUserRelatedMemories\"",
+         "\"pinUserMemory\"",
+         "\"requestUserMemories\"",
+         "\"setUserProfileSection\"",
+         "\"unforgetUserMemory\"",
+         "\"unpinUserMemory\""
+        ]
+       }
+      },
+      "requestId": {
+       "optional": true,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryError\""
+      }
+     }
+    },
+    "\"userMemoryForgotten\"": {
+     "object": {
+      "count": {
+       "optional": false,
+       "type": "number"
+      },
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryForgotten\""
+      }
+     }
+    },
+    "\"userMemoryHistory\"": {
+     "object": {
+      "entries": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "accessCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "content": {
+           "optional": false,
+           "type": "string"
+          },
+          "createdAt": {
+           "optional": false,
+           "type": "number"
+          },
+          "facts": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "fileChangeCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "filesModified": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "filesRead": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "forgetAfter": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "number"
+            ]
+           }
+          },
+          "forgetReason": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "forgotten": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "id": {
+           "optional": false,
+           "type": "string"
+          },
+          "isInference": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "isLatest": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "isStatic": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "kind": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"episode\"",
+             "\"fact\"",
+             "\"note\"",
+             "\"observation\"",
+             "\"preference\""
+            ]
+           }
+          },
+          "observationTags": {
+           "optional": true,
+           "type": {
+            "array": {
+             "union": [
+              "\"approach\"",
+              "\"caveat\"",
+              "\"dependency\"",
+              "\"impact\"",
+              "\"mechanism\"",
+              "\"performance\"",
+              "\"rationale\""
+             ]
+            }
+           }
+          },
+          "observationType": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"architecture\"",
+             "\"environment\"",
+             "\"fix\"",
+             "\"implementation\"",
+             "\"insight\"",
+             "\"refactor\""
+            ]
+           }
+          },
+          "parentId": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "pinned": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "rootId": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "scope": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"global\"",
+             "\"project\"",
+             "\"session\""
+            ]
+           }
+          },
+          "searchTerms": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "sessionId": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "sourceCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "summary": {
+           "optional": true,
+           "type": "string"
+          },
+          "tags": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "tier": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"global\"",
+             "\"note\"",
+             "\"observation\"",
+             "\"project\"",
+             "\"session\""
+            ]
+           }
+          },
+          "title": {
+           "optional": true,
+           "type": "string"
+          },
+          "updatedAt": {
+           "optional": false,
+           "type": "number"
+          },
+          "version": {
+           "optional": true,
+           "type": "number"
+          },
+          "workspace": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          }
+         }
+        }
+       }
+      },
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryHistory\""
+      }
+     }
+    },
+    "\"userMemoryPinned\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryPinned\""
+      }
+     }
+    },
+    "\"userMemoryUnforgotten\"": {
+     "object": {
+      "count": {
+       "optional": false,
+       "type": "number"
+      },
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryUnforgotten\""
+      }
+     }
+    },
+    "\"userMemoryUnpinned\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userMemoryUnpinned\""
+      }
+     }
+    },
     "\"userMessage\"": {
      "object": {
       "content": {
@@ -36864,6 +38104,331 @@
       "type": {
        "optional": false,
        "type": "\"userMessageIdAssigned\""
+      }
+     }
+    },
+    "\"userProfileData\"": {
+     "object": {
+      "available": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "global": {
+       "optional": false,
+       "type": {
+        "object": {
+         "dynamic": {
+          "optional": false,
+          "type": "string"
+         },
+         "static": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
+      },
+      "savedSection": {
+       "optional": true,
+       "type": {
+        "object": {
+         "scope": {
+          "optional": false,
+          "type": "\"global\""
+         },
+         "section": {
+          "optional": false,
+          "type": {
+           "union": [
+            "\"dynamic\"",
+            "\"static\""
+           ]
+          }
+         }
+        }
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userProfileData\""
+      }
+     }
+    },
+    "\"userProfileSectionError\"": {
+     "object": {
+      "message": {
+       "optional": false,
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
+      },
+      "section": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"dynamic\"",
+         "\"static\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userProfileSectionError\""
+      }
+     }
+    },
+    "\"userRelatedMemories\"": {
+     "object": {
+      "entries": {
+       "optional": false,
+       "type": {
+        "array": {
+         "object": {
+          "accessCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "content": {
+           "optional": false,
+           "type": "string"
+          },
+          "createdAt": {
+           "optional": false,
+           "type": "number"
+          },
+          "facts": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "fileChangeCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "filesModified": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "filesRead": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "forgetAfter": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "number"
+            ]
+           }
+          },
+          "forgetReason": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "forgotten": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "id": {
+           "optional": false,
+           "type": "string"
+          },
+          "isInference": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "isLatest": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "isStatic": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "kind": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"episode\"",
+             "\"fact\"",
+             "\"note\"",
+             "\"observation\"",
+             "\"preference\""
+            ]
+           }
+          },
+          "observationTags": {
+           "optional": true,
+           "type": {
+            "array": {
+             "union": [
+              "\"approach\"",
+              "\"caveat\"",
+              "\"dependency\"",
+              "\"impact\"",
+              "\"mechanism\"",
+              "\"performance\"",
+              "\"rationale\""
+             ]
+            }
+           }
+          },
+          "observationType": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"architecture\"",
+             "\"environment\"",
+             "\"fix\"",
+             "\"implementation\"",
+             "\"insight\"",
+             "\"refactor\""
+            ]
+           }
+          },
+          "parentId": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "pinned": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "rootId": {
+           "optional": true,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "scope": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"global\"",
+             "\"project\"",
+             "\"session\""
+            ]
+           }
+          },
+          "searchTerms": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "sessionId": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "sourceCount": {
+           "optional": true,
+           "type": "number"
+          },
+          "summary": {
+           "optional": true,
+           "type": "string"
+          },
+          "tags": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "tier": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"global\"",
+             "\"note\"",
+             "\"observation\"",
+             "\"project\"",
+             "\"session\""
+            ]
+           }
+          },
+          "title": {
+           "optional": true,
+           "type": "string"
+          },
+          "updatedAt": {
+           "optional": false,
+           "type": "number"
+          },
+          "version": {
+           "optional": true,
+           "type": "number"
+          },
+          "workspace": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          }
+         }
+        }
+       }
+      },
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"userRelatedMemories\""
       }
      }
     },
@@ -39019,6 +40584,72 @@
       }
      }
     },
+    "\"createUserMemory\"": {
+     "union": [
+      {
+       "object": {
+        "content": {
+         "optional": false,
+         "type": "string"
+        },
+        "kind": {
+         "optional": true,
+         "type": {
+          "union": [
+           "\"episode\"",
+           "\"fact\"",
+           "\"preference\""
+          ]
+         }
+        },
+        "requestId": {
+         "optional": true,
+         "type": "string"
+        },
+        "tags": {
+         "optional": true,
+         "type": {
+          "array": "string"
+         }
+        },
+        "tier": {
+         "optional": false,
+         "type": "\"global\""
+        },
+        "type": {
+         "optional": false,
+         "type": "\"createUserMemory\""
+        }
+       }
+      },
+      {
+       "object": {
+        "content": {
+         "optional": false,
+         "type": "string"
+        },
+        "requestId": {
+         "optional": true,
+         "type": "string"
+        },
+        "tags": {
+         "optional": true,
+         "type": {
+          "array": "string"
+         }
+        },
+        "tier": {
+         "optional": false,
+         "type": "\"note\""
+        },
+        "type": {
+         "optional": false,
+         "type": "\"createUserMemory\""
+        }
+       }
+      }
+     ]
+    },
     "\"deleteMemory\"": {
      "object": {
       "id": {
@@ -39040,6 +40671,18 @@
       "type": {
        "optional": false,
        "type": "\"deleteSession\""
+      }
+     }
+    },
+    "\"deleteUserMemory\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"deleteUserMemory\""
       }
      }
     },
@@ -39104,6 +40747,27 @@
       }
      }
     },
+    "\"forgetUserMemory\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "scope": {
+       "optional": true,
+       "type": {
+        "union": [
+         "\"chain\"",
+         "\"version\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"forgetUserMemory\""
+      }
+     }
+    },
     "\"getMemoryHistory\"": {
      "object": {
       "id": {
@@ -39141,6 +40805,38 @@
       "type": {
        "optional": false,
        "type": "\"getRelatedMemories\""
+      }
+     }
+    },
+    "\"getUserMemoryHistory\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"getUserMemoryHistory\""
+      }
+     }
+    },
+    "\"getUserProfile\"": {
+     "object": {
+      "type": {
+       "optional": false,
+       "type": "\"getUserProfile\""
+      }
+     }
+    },
+    "\"getUserRelatedMemories\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"getUserRelatedMemories\""
       }
      }
     },
@@ -40167,6 +41863,18 @@
       }
      }
     },
+    "\"pinUserMemory\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"pinUserMemory\""
+      }
+     }
+    },
     "\"providerSignIn\"": {
      "object": {
       "provider": {
@@ -41014,6 +42722,14 @@
       "type": {
        "optional": false,
        "type": "\"requestUsageStats\""
+      }
+     }
+    },
+    "\"requestUserMemories\"": {
+     "object": {
+      "type": {
+       "optional": false,
+       "type": "\"requestUserMemories\""
       }
      }
     },
@@ -42139,6 +43855,27 @@
       }
      }
     },
+    "\"setUserProfileSection\"": {
+     "object": {
+      "content": {
+       "optional": false,
+       "type": "string"
+      },
+      "section": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"dynamic\"",
+         "\"static\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setUserProfileSection\""
+      }
+     }
+    },
     "\"setVoiceApiKey\"": {
      "object": {
       "apiKey": {
@@ -42593,6 +44330,27 @@
       }
      }
     },
+    "\"unforgetUserMemory\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "scope": {
+       "optional": true,
+       "type": {
+        "union": [
+         "\"chain\"",
+         "\"version\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"unforgetUserMemory\""
+      }
+     }
+    },
     "\"unpinMemory\"": {
      "object": {
       "id": {
@@ -42602,6 +44360,18 @@
       "type": {
        "optional": false,
        "type": "\"unpinMemory\""
+      }
+     }
+    },
+    "\"unpinUserMemory\"": {
+     "object": {
+      "id": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"unpinUserMemory\""
       }
      }
     },

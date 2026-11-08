@@ -21,7 +21,10 @@ import {
   type TerminalData,
   type TerminalGroupInfo,
   type TerminalInfo,
+  type TerminalDropSide,
+  type TerminalMove,
   type TerminalProfileOption,
+  type TerminalProjectAuthority,
   type TerminalProjectOption,
   type TerminalScreen,
   type TerminalSettings,
@@ -63,6 +66,7 @@ import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/projec
 import type { RemoteTerminalRecord } from '../remote/remote-state';
 import type { TerminalAppearance } from '../terminal-pick';
 import type { LaunchProfile } from './user-profiles';
+import type { TerminalTabSource } from '../editor-pane';
 
 export interface TerminalProject {
   readonly key: string;
@@ -70,15 +74,19 @@ export interface TerminalProject {
   readonly fsPath: string;
 }
 
-// A terminal as the window layout keeps it; restored at launch when its profile and project still exist.
-export interface PersistedTerminal {
-  readonly profileId: string;
-  // null: the home folder
-  readonly projectKey: string | null;
-  readonly name: string | null;
-  readonly customIcon: TerminalCustomIcon | null;
-  readonly color: TerminalColor | null;
-}
+// A pane as the window layout keeps it. A local one is started again at launch when its profile and project still exist; a
+// remote one names its terminal, whose reattach record (profile, folder, nonce) stays host-scoped in remote-state.json.
+export type PersistedPane =
+  | {
+      readonly kind: 'local';
+      readonly profileId: string;
+      // null: the home folder
+      readonly projectKey: string | null;
+      readonly name: string | null;
+      readonly customIcon: TerminalCustomIcon | null;
+      readonly color: TerminalColor | null;
+    }
+  | { readonly kind: 'remote'; readonly id: string };
 
 // Control, separator, format (bidi, zero-width, tags) and lone surrogate characters, which would hide, reorder or corrupt a
 // name's text; ZWNJ and ZWJ stay for scripts and emoji that need them.
@@ -100,25 +108,35 @@ export function isTerminalColor(value: unknown): value is TerminalColor {
   return (TERMINAL_COLORS as readonly unknown[]).includes(value);
 }
 
-// A split group as the window layout keeps it: the next `panes` terminals of the list, in order.
+// A split group as the window layout keeps it, its panes in order.
 export interface PersistedTerminalGroup {
-  readonly panes: number;
-  // index into the group's panes
+  readonly panes: readonly PersistedPane[];
+  // index into panes
   readonly activePane: number;
   // index-aligned with the panes, as TerminalGroupInfo.sizes
   readonly sizes: readonly number[];
 }
 
+// The window layout's `terminals` section; window-layout-store.ts reads a section without `version` as the older form.
 export interface PersistedTerminals {
-  readonly terminals: readonly PersistedTerminal[];
-  // index into terminals
-  readonly active: number | null;
+  readonly version: 2;
   readonly listWidthRem: number;
-  // in list order; their panes add up to terminals.length
+  // in list order
   readonly groups: readonly PersistedTerminalGroup[];
+  // index into groups; that group's activePane is the active terminal
+  readonly active: number | null;
+  // the editor-hosted terminals, in editor tab order
+  readonly editor: readonly PersistedPane[];
 }
 
-export const DEFAULT_PERSISTED_TERMINALS: PersistedTerminals = { terminals: [], active: null, listWidthRem: TERMINAL_LIST_DEFAULT_REM, groups: [] };
+export const DEFAULT_PERSISTED_TERMINALS: PersistedTerminals = { version: 2, listWidthRem: TERMINAL_LIST_DEFAULT_REM, groups: [], active: null, editor: [] };
+
+// An editor-hosted terminal's tab id is this prefix and the terminal's id.
+const TERMINAL_TAB_PREFIX = 'terminal:';
+
+export function terminalTabId(id: string): string {
+  return `${TERMINAL_TAB_PREFIX}${id}`;
+}
 
 /** Equal shares for count panes, as VS Code's Sizing.Distribute leaves them after a split or a removal. */
 export function equalPaneSizes(count: number): number[] {
@@ -154,13 +172,22 @@ export interface TerminalServiceDeps {
   readonly profilesReady: () => boolean;
   // every folder a terminal may start in, by root key (folder-root.ts): the open projects and their chat worktrees
   readonly projects: () => readonly TerminalProject[];
-  // the New Terminal picker's folders: the open projects, with the current root in place of its project's folder
+  // the New Terminal picker's folders in the sidebar's order: the open projects, with the current root in place of its
+  // project's folder
   readonly pickerProjects: () => readonly TerminalProject[];
+  // the sidebar's order of these host groups (authority keys, 'local' for this computer)
+  readonly groupOrder: (authorityKeys: readonly string[]) => readonly string[];
+  // a remote host as the sidebar heads its group
+  readonly hostOf: (authorityKey: string) => TerminalProjectAuthority;
+  // a remote root key's host is connected, so a terminal can start there
+  readonly reachable: (projectKey: string) => boolean;
+  // the profile id a remote host's record names as its default; undefined for none
+  readonly hostDefaultProfile: (authorityKey: string) => string | undefined;
   // the selected project's shown folder (D31), where a new terminal starts
   readonly currentProjectKey: () => string | undefined;
   // variables a terminal of this root key adds to env(): a chat worktree's DAMOCLES_PROJECT_FOLDER and DAMOCLES_WORKTREE_INDEX
   readonly rootEnv: (projectKey: string) => Readonly<Record<string, string>>;
-  // defaultProfile: a profile id, '' for the first detected
+  // defaultProfile: this computer's default profile id, '' for the first detected
   readonly settings: () => TerminalServiceSettings;
   // a terminal's environment from its project's backend (null: the home folder), read at each spawn
   readonly env: (projectKey: string | null) => Promise<Record<string, string>>;
@@ -168,16 +195,25 @@ export interface TerminalServiceDeps {
   readonly osOf: (projectKey: string) => NodeJS.Platform;
   // the terminals on remote hosts, kept in remote-state.json; called on every change of the list
   readonly persistRemote: (terminals: readonly RemoteTerminalRecord[]) => void;
-  // the skip list's accelerators (TerminalState.passKeys); splitActive: the active group has more than one pane
-  readonly passKeys: (splitActive: boolean) => readonly string[];
+  // a Kill of a remote terminal while this app is away from its host: remote-state.json drops its record and keeps its id,
+  // which the authority's next reattach kills on the host, in this run or after a relaunch
+  readonly killOnReattach: (authorityKey: string, id: string) => void;
+  // the skip list's accelerators (TerminalState.passKeys) for the command target's placement and its group's pane count
+  readonly passKeys: (target: TerminalPassKeyTarget) => readonly string[];
   // Chromium's accessibility support (TerminalState.screenReader), read at each publish
   readonly screenReader: () => boolean;
   // TerminalInfo.windowsBuild: the conpty build of the host a terminal of this root key runs on; null off Windows
   readonly windowsBuild: (projectKey: string | null) => number | null;
   readonly persisted: () => PersistedTerminals;
   readonly persist: (terminals: PersistedTerminals) => void;
-  // the list or the active terminal's status changed (menu enablement)
+  // the list, the active terminal's status or the command target changed (menu enablement)
   readonly onDidChange: () => void;
+  // the editor-hosted terminals or their titles changed (TerminalTabSource)
+  readonly editorTabsChanged: () => void;
+  // a terminal moved into the editor: the editor activates its tab, showing the pane, and the terminal takes focus
+  readonly showEditorTab: (id: string) => void;
+  // a terminal moved into the panel: the terminal pane shows
+  readonly showPanel: () => void;
   // a localized line the terminal shows when its shell could not start
   readonly spawnFailed: (message: string) => string;
   // the same for a Windows shell whose exit code is a CreateProcess error
@@ -273,6 +309,9 @@ interface Terminal {
   nextCommandId: number;
   status: TerminalStatus;
   exitCode: number | null;
+  // its host reported the process ended, failed to start or not running, or no longer lists it; a host exit or a closed
+  // connection leaves it false, since a daemon's terminal outlives both. A remote one is then no longer kept for a relaunch.
+  ended: boolean;
   cols: number;
   rows: number;
   name: string | null;
@@ -287,6 +326,13 @@ interface Terminal {
   restoring: number;
   // a task tab main runs (the worktree Setup, D32): never persisted, split or restarted by itself
   task?: TerminalTask;
+}
+
+// What the skip list's when clauses read of the command target: its group has more than one pane (VS Code's
+// splitTerminalActive), and it is an editor terminal.
+export interface TerminalPassKeyTarget {
+  readonly split: boolean;
+  readonly editor: boolean;
 }
 
 // A command list main runs in its own tab; key names the task, so starting it again reruns it in the same tab.
@@ -328,12 +374,28 @@ function isRemoteKey(projectKey: string | null): boolean {
   return projectKey !== null && authorityKeyOfProject(projectKey) !== 'local';
 }
 
-// A tab of side-by-side panes (VS Code's TerminalGroup); every terminal is in exactly one.
+// A tab of side-by-side panes (VS Code's TerminalGroup); every panel terminal is in exactly one.
 interface Group {
   readonly id: string;
   paneIds: string[];
   activePaneId: string;
   sizes: number[];
+}
+
+// A task tab is never restored, and a remote terminal whose process ended is no longer a session its host keeps.
+function keptForRelaunch(terminal: Terminal): boolean {
+  return !terminal.task && !(terminal.ended && isRemoteKey(terminal.projectKey));
+}
+
+// The group's kept panes as the window layout saves them: the active pane hands over as a removal's does, and the kept sizes
+// are scaled to sum to 1, as VS Code's TerminalGroup.getLayoutInfo saves only the panes that persist.
+function persistedGroup(group: Group, kept: (id: string) => boolean, pane: (id: string) => PersistedPane): PersistedTerminalGroup {
+  const paneIds = group.paneIds.filter(kept);
+  const before = group.paneIds.slice(0, group.paneIds.indexOf(group.activePaneId)).filter(kept).length;
+  if (paneIds.length === group.paneIds.length) return { panes: paneIds.map(pane), activePane: before, sizes: [...group.sizes] };
+  const sizes = group.sizes.filter((_, index) => kept(group.paneIds[index]!));
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  return { panes: paneIds.map(pane), activePane: Math.min(before, paneIds.length - 1), sizes: sizes.map((size) => size / total) };
 }
 
 function readSetting<T>(settings: SettingsStore, key: string): T {
@@ -385,10 +447,22 @@ export function clampListWidth(rem: number): number {
  */
 export class TerminalService {
   private readonly deps: TerminalServiceDeps;
-  // in list order: group by group, pane by pane (order() keeps it so)
+  // in list order: group by group, pane by pane, then the editor's in tab order (order() keeps it so)
   private terminals: Terminal[] = [];
   private groups: Group[] = [];
+  // the editor-hosted terminals in tab order, in no group; never a task
+  private editor: string[] = [];
+  // the panel's active group's active pane; never an editor terminal
   private activeId: string | null = null;
+  // the command target (VS Code's activeInstance): the last terminal focused, selected, created, run as a task, split, joined
+  // by Join Terminals, moved into or out of the editor, or activated as an editor tab; commandTarget() falls back to activeId
+  // once it is gone
+  private focused: string | null = null;
+  // remote terminals a Kill ended while this app was away from their host, by id, with their authority: its next reattach
+  // kills them
+  private readonly awayKills = new Map<string, string>();
+  // the editor tabs as last announced through editorTabsChanged
+  private announcedTabs = '[]';
   private nextGroupId = 1;
   private listWidthRem: number;
   // one pty host per backend, started on its first spawn
@@ -428,6 +502,8 @@ export class TerminalService {
         restoring: terminal.restoring > 0,
         windowsBuild: this.deps.windowsBuild(terminal.projectKey),
         pathFlavor: this.osOf(terminal) === 'win32' ? 'win32' : 'posix',
+        placement: this.placementOf(terminal.id),
+        ...(terminal.task ? { task: true as const } : {}),
       })),
       groups: this.groups.map((group): TerminalGroupInfo => ({ id: group.id, paneIds: [...group.paneIds], activePaneId: group.activePaneId, sizes: [...group.sizes] })),
       activeId: this.activeId,
@@ -444,9 +520,7 @@ export class TerminalService {
       },
       canCreate: this.canCreate(),
       profilesReady: this.deps.profilesReady(),
-      passKeys: [...this.deps.passKeys(this.splitActive())],
-      // the New Terminal dropdown's, which start in the current project
-      profiles: this.profileOptions(this.deps.currentProjectKey() ?? null),
+      passKeys: [...this.deps.passKeys(this.passKeyTarget())],
       screenReader: this.deps.screenReader(),
     };
   }
@@ -474,32 +548,89 @@ export class TerminalService {
   }
 
   /**
-   * The open projects for the quick pick, the current one first; none while no project is open (the home folder). Only the
-   * current project's host's, since the pick's profiles are that host's shells.
+   * Every host's open projects for New Terminal, grouped as the sidebar's grouped view lays them out: the hosts in the sidebar's
+   * group order, each host's projects in the sidebar's order. None while no project is open (the home folder).
    */
   projectOptions(): TerminalProjectOption[] {
     const current = this.deps.currentProjectKey();
-    const host = current === undefined ? 'local' : authorityKeyOfProject(current);
-    const options = this.deps.pickerProjects()
-      .filter((project) => authorityKeyOfProject(project.key) === host)
-      .map((project) => ({ key: project.key, name: project.name, path: project.fsPath, current: project.key === current }));
-    return [...options.filter((option) => option.current), ...options.filter((option) => !option.current)];
+    const projects = this.deps.pickerProjects();
+    const hosts = this.deps.groupOrder([...new Set(projects.map((project) => authorityKeyOfProject(project.key)))]);
+    return hosts.flatMap((host) => {
+      const authority: TerminalProjectAuthority = host === 'local' ? { kind: 'local' } : this.deps.hostOf(host);
+      return projects.filter((project) => authorityKeyOfProject(project.key) === host).map((project) => ({
+        key: project.key,
+        name: project.name,
+        path: project.fsPath,
+        current: project.key === current,
+        authority,
+        reachable: host === 'local' || this.deps.reachable(project.key),
+      }));
+    });
   }
 
   has(id: string): boolean {
     return this.find(id) !== undefined;
   }
 
+  /** The panel holds a terminal. */
   hasTerminals(): boolean {
-    return this.terminals.length > 0;
+    return this.groups.length > 0;
   }
 
-  activeTerminal(): string | null {
-    return this.activeId;
+  /** What the terminal commands act on (VS Code's activeInstance): the last terminal made the target, else the panel's active one. */
+  commandTarget(): string | null {
+    return this.focused !== null && this.find(this.focused) ? this.focused : this.activeId;
   }
 
-  activeStatus(): TerminalStatus | undefined {
-    return this.terminals.find((terminal) => terminal.id === this.activeId)?.status;
+  /** The command target's status, placement and whether it runs a task; undefined without a target. */
+  target(): { readonly id: string; readonly status: TerminalStatus; readonly placement: 'panel' | 'editor'; readonly task: boolean } | undefined {
+    const id = this.commandTarget();
+    const terminal = id === null ? undefined : this.find(id);
+    return terminal && { id: terminal.id, status: terminal.status, placement: this.placementOf(terminal.id), task: terminal.task !== undefined };
+  }
+
+  /** The terminal's xterm input took keyboard focus: it becomes the command target. */
+  inputFocused(id: string): void {
+    if (this.find(id)) this.setTarget(id);
+  }
+
+  /** The window's terminal tabs (EditorPane's deps.terminals), in editor order. */
+  readonly tabSource: TerminalTabSource = {
+    tabs: () => this.editor.map((id) => {
+      const title = this.title(this.find(id)!);
+      return { id: terminalTabId(id), kind: 'terminal', terminal: { id }, title, displayPath: title, dirty: false, readOnly: false, conflict: false };
+    }),
+    activate: (tabId) => {
+      const id = this.editorTerminalOf(tabId);
+      if (id === undefined) return;
+      this.setTarget(id);
+      this.shell?.focus(id);
+    },
+    close: (tabIds) => this.requestKill(tabIds.flatMap((tabId) => this.editorTerminalOf(tabId) ?? [])),
+  };
+
+  private editorTerminalOf(tabId: string): string | undefined {
+    const id = tabId.startsWith(TERMINAL_TAB_PREFIX) ? tabId.slice(TERMINAL_TAB_PREFIX.length) : undefined;
+    return id !== undefined && this.editor.includes(id) ? id : undefined;
+  }
+
+  private placementOf(id: string): 'panel' | 'editor' {
+    return this.editor.includes(id) ? 'editor' : 'panel';
+  }
+
+  // The pass keys follow the target's group and placement, so a new target may publish them again.
+  private setTarget(id: string): void {
+    if (this.focused === id) return;
+    const before = this.passKeyTarget();
+    this.focused = id;
+    const after = this.passKeyTarget();
+    if (after.split !== before.split || after.editor !== before.editor) this.publish();
+    this.deps.onDidChange();
+  }
+
+  private passKeyTarget(): TerminalPassKeyTarget {
+    const id = this.commandTarget();
+    return { split: this.splitActive(), editor: id !== null && this.editor.includes(id) };
   }
 
   /** The window's shell page, or undefined once the window closed. */
@@ -519,14 +650,16 @@ export class TerminalService {
     if (!started.ok) return started;
     this.groups.push(this.newGroup([started.id]));
     this.activeId = started.id;
+    this.focused = started.id;
     this.changed(true);
     if (focus) this.shell?.focus(started.id);
     return started;
   }
 
   /**
-   * Runs a task in its own tab, which becomes active without taking focus; a task already running under the same key is
-   * killed and its tab reruns. The tab shows the exit code when the process ends.
+   * Runs a task in its own tab, which becomes active and the command target without taking focus, as VS Code's task system
+   * makes the revealed task terminal the active instance; a task already running under the same key is killed and its tab
+   * reruns. The tab shows the exit code when the process ends.
    */
   runTask(request: TerminalTaskRequest): string {
     const task: TerminalTask = { key: request.key, args: request.args, env: request.env, onExit: request.onExit, onRestart: request.onRestart, ...(request.onCommandStart ? { onCommandStart: request.onCommandStart } : {}) };
@@ -536,6 +669,7 @@ export class TerminalService {
     terminal.name = request.name;
     this.groups.push(this.newGroup([terminal.id]));
     this.activeId = terminal.id;
+    this.focused = terminal.id;
     this.changed(true);
     return terminal.id;
   }
@@ -579,6 +713,7 @@ export class TerminalService {
       nextCommandId: 1,
       status: 'starting',
       exitCode: null,
+      ended: false,
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       name: null,
@@ -592,43 +727,39 @@ export class TerminalService {
   }
 
   /**
-   * Recreates the window layout's terminals and groups as the window opened, ahead of any started since, skipping those whose
-   * profile or project is gone (their group's sizes are shared again); none takes focus, and a terminal started since stays
+   * Recreates the window layout's groups as the window opened, ahead of any started since. A local pane starts again; a remote
+   * pane becomes a reconnecting placeholder in its slot, which reattach adopts in place; the editor's panes come back as editor
+   * tabs the same way, and the remote records the layout does not name follow as groups of one. A pane whose profile, project
+   * or record is gone is skipped (its group's sizes are shared again). None takes focus, and a terminal started since stays
    * active.
    */
-  restore(): void {
+  restore(remote: readonly RemoteTerminalRecord[]): void {
     const saved = this.toRestore;
     this.toRestore = undefined;
     if (!saved) return;
     const startedGroups = this.groups;
     this.groups = [];
+    const records = new Map(remote.map((record) => [record.id, record]));
     let active: string | null = null;
-    let index = 0;
-    for (const savedGroup of saved.groups) {
+    saved.groups.forEach((savedGroup, groupIndex) => {
       const paneIds: string[] = [];
-      const sizes: number[] = [];
       let activePaneId: string | undefined;
-      for (let pane = 0; pane < savedGroup.panes; pane++, index++) {
-        const entry = saved.terminals[index]!;
-        const created = this.start(entry.profileId, entry.projectKey);
-        if (!created.ok) {
-          this.deps.log(`[terminal] not restoring a ${entry.profileId} terminal: ${created.reason}`);
-          continue;
-        }
-        const terminal = this.find(created.id)!;
-        terminal.name = entry.name;
-        terminal.customIcon = entry.customIcon;
-        terminal.color = entry.color;
-        paneIds.push(created.id);
-        sizes.push(savedGroup.sizes[pane]!);
-        if (pane === savedGroup.activePane) activePaneId = created.id;
-        if (index === saved.active) active = created.id;
-      }
-      if (paneIds.length === 0) continue;
+      savedGroup.panes.forEach((pane, index) => {
+        const id = this.restorePane(pane, records);
+        if (id === undefined) return;
+        paneIds.push(id);
+        if (index === savedGroup.activePane) activePaneId = id;
+      });
+      if (paneIds.length === 0) return;
       const group = this.newGroup(paneIds);
       group.activePaneId = activePaneId ?? paneIds[Math.min(savedGroup.activePane, paneIds.length - 1)]!;
-      if (paneIds.length === savedGroup.panes) group.sizes = sizes;
+      if (paneIds.length === savedGroup.panes.length) group.sizes = [...savedGroup.sizes];
       this.groups.push(group);
+      if (groupIndex === saved.active) active = group.activePaneId;
+    });
+    this.editor = [...saved.editor.flatMap((pane) => this.restorePane(pane, records) ?? []), ...this.editor];
+    for (const record of records.values()) {
+      if (this.placeholder(record)) this.groups.push(this.newGroup([record.id]));
     }
     const restoredLast = this.groups.at(-1)?.activePaneId;
     this.groups.push(...startedGroups);
@@ -636,6 +767,59 @@ export class TerminalService {
     this.activeId ??= active ?? restoredLast ?? null;
     if (this.activeId !== null) this.groupOf(this.activeId)!.activePaneId = this.activeId;
     this.changed(true);
+  }
+
+  // A saved pane's terminal, in no group yet; undefined when it cannot come back. A remote pane takes its record out of records.
+  private restorePane(pane: PersistedPane, records: Map<string, RemoteTerminalRecord>): string | undefined {
+    if (pane.kind === 'remote') {
+      const record = records.get(pane.id);
+      records.delete(pane.id);
+      if (!record) {
+        this.deps.log(`[terminal] not restoring ${pane.id}: its host keeps no record of it`);
+        return undefined;
+      }
+      if (this.placeholder(record)) return record.id;
+      this.deps.log(`[terminal] not restoring ${pane.id}: ${this.find(pane.id) ? 'it has a tab already' : 'its project is not open'}`);
+      return undefined;
+    }
+    const created = this.start(pane.profileId, pane.projectKey);
+    if (!created.ok) {
+      this.deps.log(`[terminal] not restoring a ${pane.profileId} terminal: ${created.reason}`);
+      return undefined;
+    }
+    const terminal = this.find(created.id)!;
+    terminal.name = pane.name;
+    terminal.customIcon = pane.customIcon;
+    terminal.color = pane.color;
+    return created.id;
+  }
+
+  // A remote terminal whose host has not reattached it yet: its tab shows reconnecting, with its name, icon and color, until
+  // the host reattaches it in place (reattach) or reports it gone. False, adding nothing, while its project is not open or
+  // it already has a tab.
+  private placeholder(record: RemoteTerminalRecord): boolean {
+    if (this.find(record.id) || !this.deps.projects().some((project) => project.key === record.projectKey)) return false;
+    this.terminals.push({
+      id: record.id,
+      backend: undefined,
+      profile: { ...record.profile, source: 'detected', customIcon: null, color: null },
+      projectKey: record.projectKey,
+      startCwd: record.startCwd,
+      launchCwd: record.startCwd,
+      shell: { ...newShellSession(record.startCwd), nonce: record.nonce, spawned: true },
+      commands: new Map(),
+      nextCommandId: 1,
+      status: 'reconnecting',
+      exitCode: null,
+      ended: false,
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      name: record.name,
+      customIcon: record.customIcon,
+      color: record.color,
+      restoring: 0,
+    });
+    return true;
   }
 
   /** The active terminal, starting one with the default profile in the current project (else the home folder) when there is none. */
@@ -770,9 +954,10 @@ export class TerminalService {
     return this.groups[(index + delta + this.groups.length) % this.groups.length]!.activePaneId;
   }
 
-  /** The active group has more than one pane (VS Code's splitTerminalActive). */
+  /** The command target's group has more than one pane (VS Code's splitTerminalActive); false for an editor terminal. */
   splitActive(): boolean {
-    return this.activeId !== null && this.groupOf(this.activeId)!.paneIds.length > 1;
+    const id = this.commandTarget();
+    return id !== null && (this.groupOf(id)?.paneIds.length ?? 0) > 1;
   }
 
   /**
@@ -781,11 +966,12 @@ export class TerminalService {
    */
   async split(id: string): Promise<void> {
     const found = this.find(id);
-    if (!found || found.task || this.splitRefused(id)) return;
+    // an editor terminal has no group to split (one editor group, no editor splits)
+    if (!found || found.task || !this.groupOf(id) || this.splitRefused(id)) return;
     const cwd = await this.splitCwd(found);
-    // the source, its group, its profile or its project may have changed while the folder was checked
+    // the source, its group, its placement, its profile or its project may have changed while the folder was checked
     const source = this.find(id);
-    if (!source || this.splitRefused(id)) return;
+    if (!source || !this.groupOf(id) || this.splitRefused(id)) return;
     const group = this.groupOf(id)!;
     const profile = this.listedProfile(source.profile.id, source.projectKey);
     const open = this.folderOf(source.projectKey) !== undefined;
@@ -798,6 +984,7 @@ export class TerminalService {
     group.sizes = equalPaneSizes(group.paneIds.length);
     group.activePaneId = pane.id;
     this.activeId = pane.id;
+    this.focused = pane.id;
     this.order();
     this.changed(true);
     this.shell?.focus(pane.id);
@@ -813,11 +1000,258 @@ export class TerminalService {
     this.changed(true);
   }
 
-  /** Focus Previous or Next Pane: the pane delta places from the active one in the active group, wrapping, takes focus. */
+  /**
+   * A drag's drop, Alt+Up/Down or Move Up / Move Down, after VS Code's terminalGroupService moves; a move this order refuses
+   * is logged and changes nothing. The active terminal stays active, and each group a pane left or joined shares its sizes
+   * again.
+   */
+  move(move: TerminalMove): void {
+    const terminal = this.find(move.id);
+    if (!terminal) {
+      this.deps.log(`[terminal] not moving ${move.id}: no such terminal`);
+      return;
+    }
+    if (move.kind === 'toEditor') {
+      this.toEditor(terminal);
+      return;
+    }
+    const group = this.groupOf(move.id);
+    if (!group) {
+      this.fromEditor(move);
+      return;
+    }
+    switch (move.kind) {
+      case 'reorder':
+        this.reorder(move.id, group, move.target, move.side);
+        return;
+      case 'join':
+        this.joinAt(move.id, group, move.target, move.side);
+        return;
+      case 'detach':
+        this.toEnd(move.id, group);
+        return;
+      case 'step':
+        this.step(move.id, group, move.delta);
+        return;
+    }
+  }
+
+  // Move Terminal into Editor Area (VS Code's moveToEditor): the terminal leaves its group, the panel's active passing on as a
+  // kill's does, for the last editor tab, which the editor activates and focuses.
+  private toEditor(terminal: Terminal): void {
+    const group = this.groupOf(terminal.id);
+    if (!group || terminal.task) {
+      this.deps.log(`[terminal] not moving ${terminal.id} into the editor: ${group ? 'a task stays in the panel' : 'it is in the editor already'}`);
+      return;
+    }
+    this.leavePanel(terminal.id, group);
+    this.editor.push(terminal.id);
+    this.focused = terminal.id;
+    this.moved();
+    this.deps.showEditorTab(terminal.id);
+  }
+
+  // An editor terminal back into the panel (VS Code's moveToTerminalView): detach appends a group of one, reorder places one
+  // next to target's group, join joins target's group at side; step is refused. It becomes the panel's active and takes focus.
+  private fromEditor(move: Exclude<TerminalMove, { readonly kind: 'toEditor' }>): void {
+    const { id } = move;
+    let group: Group;
+    switch (move.kind) {
+      case 'step':
+        this.deps.log(`[terminal] not stepping ${id}: it is in the editor`);
+        return;
+      case 'detach':
+        group = this.newGroup([id]);
+        this.groups.push(group);
+        break;
+      case 'reorder': {
+        const targetGroup = this.groupOf(move.target);
+        if (!targetGroup) {
+          this.deps.log(`[terminal] not moving ${id} next to ${move.target}: no such panel terminal`);
+          return;
+        }
+        group = this.newGroup([id]);
+        this.groups.splice(this.groups.indexOf(targetGroup) + (move.side === 'after' ? 1 : 0), 0, group);
+        break;
+      }
+      case 'join': {
+        const targetGroup = this.groupOf(move.target);
+        const refused = !targetGroup ? 'no such panel terminal'
+          : this.find(move.target)!.task ? 'a task runs alone'
+          : targetGroup.paneIds.length >= MAX_TERMINAL_GROUP_PANES ? `its group has ${MAX_TERMINAL_GROUP_PANES} panes`
+          : undefined;
+        if (refused !== undefined || !targetGroup) {
+          this.deps.log(`[terminal] not joining ${id} to ${move.target}: ${refused}`);
+          return;
+        }
+        targetGroup.paneIds.splice(targetGroup.paneIds.indexOf(move.target) + (move.side === 'after' ? 1 : 0), 0, id);
+        targetGroup.sizes = equalPaneSizes(targetGroup.paneIds.length);
+        group = targetGroup;
+        break;
+      }
+    }
+    this.editor.splice(this.editor.indexOf(id), 1);
+    group.activePaneId = id;
+    this.activeId = id;
+    this.focused = id;
+    this.moved();
+    this.deps.showPanel();
+    this.shell?.focus(id);
+  }
+
+  // VS Code's moveInstance within the target's group, else its moveGroup.
+  private reorder(id: string, group: Group, target: string, side: TerminalDropSide): void {
+    const targetGroup = this.groupOf(target);
+    if (!targetGroup || target === id) {
+      this.deps.log(`[terminal] not moving ${id} next to ${target}: ${targetGroup ? 'it is the target' : 'no such panel terminal'}`);
+      return;
+    }
+    if (targetGroup === group) this.placePane(id, group, target, side);
+    else this.placeGroup(group, targetGroup, side);
+  }
+
+  // A pane-half drop (VS Code's moveInstance across groups): id joins target's group on that side of target.
+  private joinAt(id: string, group: Group, target: string, side: TerminalDropSide): void {
+    const targetGroup = this.groupOf(target);
+    const refused = !targetGroup ? 'no such panel terminal'
+      : target === id ? 'it is the target'
+      : this.find(id)!.task || this.find(target)!.task ? 'a task runs alone'
+      : targetGroup !== group && targetGroup.paneIds.length >= MAX_TERMINAL_GROUP_PANES ? `its group has ${MAX_TERMINAL_GROUP_PANES} panes`
+      : undefined;
+    if (refused !== undefined || !targetGroup) {
+      this.deps.log(`[terminal] not joining ${id} to ${target}: ${refused}`);
+      return;
+    }
+    if (targetGroup === group) {
+      this.placePane(id, group, target, side);
+      return;
+    }
+    this.leave(id, group);
+    targetGroup.paneIds.splice(targetGroup.paneIds.indexOf(target) + (side === 'after' ? 1 : 0), 0, id);
+    this.joined(id, targetGroup);
+  }
+
+  // Detach (VS Code's unsplitInstance, else moveGroupToEnd): a new group of one at the end, or a group of one moves there.
+  private toEnd(id: string, group: Group): void {
+    if (group.paneIds.length > 1) {
+      this.leave(id, group);
+      this.groups.push(this.newGroup([id]));
+    } else {
+      if (this.groups.at(-1) === group) return;
+      this.groups.splice(this.groups.indexOf(group), 1);
+      this.groups.push(group);
+    }
+    this.moved();
+  }
+
+  // One place up or down: past the neighbouring pane inside the group, else the whole group past the neighbouring group.
+  private step(id: string, group: Group, delta: -1 | 1): void {
+    const index = group.paneIds.indexOf(id);
+    const neighbour = group.paneIds[index + delta];
+    if (neighbour !== undefined) {
+      this.placePane(id, group, neighbour, delta < 0 ? 'before' : 'after');
+      return;
+    }
+    const groupIndex = this.groups.indexOf(group);
+    const next = this.groups[groupIndex + delta];
+    // the first pane of the first group up, or the last of the last group down, has nowhere to go
+    if (!next) return;
+    this.placeGroup(group, next, delta < 0 ? 'before' : 'after');
+  }
+
+  /**
+   * Join Terminals (VS Code's joinInstances): each of ids joins the anchor's group after its last pane, in order, while the
+   * group has room; the first joined becomes active, as VS Code activates the picked terminal. Ids already in the group,
+   * unknown or running a task are skipped and logged.
+   */
+  join(anchorId: string, ids: readonly string[]): void {
+    const group = this.groupOf(anchorId);
+    if (!group || this.find(anchorId)!.task) {
+      this.deps.log(`[terminal] not joining terminals to ${anchorId}: ${group ? 'a task runs alone' : this.find(anchorId) ? 'it is in the editor' : 'no such terminal'}`);
+      return;
+    }
+    let first: string | undefined;
+    for (const id of ids) {
+      const from = this.groupOf(id);
+      const refused = !from ? 'no such panel terminal'
+        : from === group ? 'it is in the group already'
+        : this.find(id)!.task ? 'a task runs alone'
+        : group.paneIds.length >= MAX_TERMINAL_GROUP_PANES ? `the group has ${MAX_TERMINAL_GROUP_PANES} panes`
+        : undefined;
+      if (refused !== undefined || !from) {
+        this.deps.log(`[terminal] not joining ${id} to ${anchorId}: ${refused}`);
+        continue;
+      }
+      this.leave(id, from);
+      group.paneIds.push(id);
+      first ??= id;
+    }
+    if (first === undefined) return;
+    group.sizes = equalPaneSizes(group.paneIds.length);
+    group.activePaneId = first;
+    this.activeId = first;
+    this.focused = first;
+    this.moved();
+  }
+
+  /** Join Terminals' candidates for the anchor: every other panel terminal outside its group, in list order; none for a task. */
+  joinCandidates(anchorId: string): string[] {
+    const group = this.groupOf(anchorId);
+    if (!group || this.find(anchorId)!.task) return [];
+    return this.groups.filter((other) => other !== group).flatMap((other) => other.paneIds).filter((id) => !this.find(id)!.task);
+  }
+
+  /** The panes the anchor's group can still take; 0 for an unknown or editor terminal or a task. */
+  joinRoom(anchorId: string): number {
+    const group = this.groupOf(anchorId);
+    return !group || this.find(anchorId)!.task ? 0 : MAX_TERMINAL_GROUP_PANES - group.paneIds.length;
+  }
+
+  // VS Code's terminalGroup.moveInstance: id moves to that side of target in their group, whose remove and split each share
+  // the sizes again.
+  private placePane(id: string, group: Group, target: string, side: TerminalDropSide): void {
+    const without = group.paneIds.filter((pane) => pane !== id);
+    without.splice(without.indexOf(target) + (side === 'after' ? 1 : 0), 0, id);
+    if (without.every((pane, index) => pane === group.paneIds[index])) return;
+    group.paneIds = without;
+    group.sizes = equalPaneSizes(group.paneIds.length);
+    this.moved();
+  }
+
+  // VS Code's moveGroup: group moves to that side of target.
+  private placeGroup(group: Group, target: Group, side: TerminalDropSide): void {
+    const without = this.groups.filter((candidate) => candidate !== group);
+    without.splice(without.indexOf(target) + (side === 'after' ? 1 : 0), 0, group);
+    if (without.every((candidate, index) => candidate === this.groups[index])) return;
+    this.groups = without;
+    this.moved();
+  }
+
+  // id leaves group, which goes with its last pane; an active pane hands over inside the group (removePane).
+  private leave(id: string, group: Group): void {
+    this.removePane(group, id);
+    if (group.paneIds.length === 0) this.groups.splice(this.groups.indexOf(group), 1);
+  }
+
+  // id joined group: the sizes are shared again, and an active terminal stays active as its new group's active pane.
+  private joined(id: string, group: Group): void {
+    group.sizes = equalPaneSizes(group.paneIds.length);
+    if (this.activeId === id) group.activePaneId = id;
+    this.moved();
+  }
+
+  private moved(): void {
+    this.order();
+    this.changed(true);
+  }
+
+  /** Focus Previous or Next Pane: the pane delta places from the command target in its group, wrapping, takes focus. */
   focusPane(delta: 1 | -1): void {
-    if (this.activeId === null) return;
-    const { paneIds, activePaneId } = this.groupOf(this.activeId)!;
-    const target = paneIds[(paneIds.indexOf(activePaneId) + delta + paneIds.length) % paneIds.length]!;
+    const id = this.commandTarget();
+    const group = id === null ? undefined : this.groupOf(id);
+    if (id === null || !group) return;
+    const { paneIds } = group;
+    const target = paneIds[(paneIds.indexOf(id) + delta + paneIds.length) % paneIds.length]!;
     this.select(target);
     this.shell?.focus(target);
   }
@@ -855,9 +1289,17 @@ export class TerminalService {
 
   /**
    * Ends the terminal and takes it out of its group, which goes with its last pane; an active terminal hands over to its
-   * group's next active pane, else to the next group's, else the previous group's.
+   * group's next active pane, else to the next group's, else the previous group's. A remote terminal still running on a host
+   * this app is away from (reconnecting, or exited by a closed connection) may never get the kill posted now, so its
+   * authority's next reattach kills it too.
    */
   kill(id: string): void {
+    const terminal = this.find(id);
+    if (terminal && isRemoteKey(terminal.projectKey) && !terminal.ended && (terminal.status === 'reconnecting' || terminal.status === 'exited')) {
+      const authorityKey = authorityKeyOfProject(terminal.projectKey!);
+      this.awayKills.set(id, authorityKey);
+      this.deps.killOnReattach(authorityKey, id);
+    }
     this.removeTerminal(id, true);
   }
 
@@ -869,16 +1311,30 @@ export class TerminalService {
   }
 
   private removeTerminal(id: string, end: boolean): void {
-    const index = this.terminals.findIndex((terminal) => terminal.id === id);
-    if (index < 0) return;
-    const [terminal] = this.terminals.splice(index, 1);
-    if (end && terminal!.status !== 'exited') {
-      this.post(terminal!, { type: 'kill', id });
-      terminal!.task?.onExit(null);
+    const terminal = this.find(id);
+    if (!terminal) return;
+    if (end && terminal.status !== 'exited') {
+      this.post(terminal, { type: 'kill', id });
+      terminal.task?.onExit(null);
     }
     // the daemon stops sending this client the terminal its other clients may still view
-    if (!end) this.post(terminal!, { type: 'detach', id });
-    const group = this.groupOf(id)!;
+    if (!end) this.post(terminal, { type: 'detach', id });
+    this.closeTab(id);
+    this.changed(true);
+  }
+
+  // The terminal's tab goes, and its slot in its group or the editor; nothing reaches its host, and the caller publishes.
+  private closeTab(id: string): void {
+    this.terminals.splice(this.terminals.findIndex((terminal) => terminal.id === id), 1);
+    const group = this.groupOf(id);
+    if (group) this.leavePanel(id, group);
+    else this.editor.splice(this.editor.indexOf(id), 1);
+    if (this.focused === id) this.focused = null;
+  }
+
+  // id leaves its group, which goes with its last pane; an active terminal hands over to its group's next active pane, else
+  // to the next group's, else the previous group's.
+  private leavePanel(id: string, group: Group): void {
     const groupIndex = this.groups.indexOf(group);
     this.removePane(group, id);
     if (group.paneIds.length === 0) this.groups.splice(groupIndex, 1);
@@ -886,7 +1342,6 @@ export class TerminalService {
       const next = group.paneIds.length > 0 ? group : (this.groups[groupIndex] ?? this.groups[groupIndex - 1]);
       this.activeId = next?.activePaneId ?? null;
     }
-    this.changed(true);
   }
 
   /**
@@ -908,11 +1363,13 @@ export class TerminalService {
     terminal.profile = profile;
     terminal.status = 'starting';
     terminal.exitCode = null;
+    terminal.ended = false;
     const shell = newShellSession(terminal.launchCwd);
     terminal.shell = shell;
     const held: string[] = [];
     terminal.held = held;
-    this.changed(false);
+    // a remote terminal is kept again, with the new process's nonce
+    this.changed(isRemoteKey(terminal.projectKey));
     const cwd = await this.restartCwd(terminal);
     if (terminal.held === held) terminal.held = undefined;
     // a kill, a host exit or another restart while the folder was checked
@@ -927,12 +1384,20 @@ export class TerminalService {
     return this.terminals.find((terminal) => terminal.task?.key === key)?.id;
   }
 
-  /** The terminal becomes active, as its group's active pane, and its group the active group. */
+  /**
+   * The terminal becomes the command target and, in the panel, active, as its group's active pane, and its group the active
+   * group.
+   */
   select(id: string): void {
+    if (!this.find(id)) return;
     const group = this.groupOf(id);
-    if (!group || this.activeId === id) return;
+    if (!group || this.activeId === id) {
+      this.setTarget(id);
+      return;
+    }
     group.activePaneId = id;
     this.activeId = id;
+    this.focused = id;
     this.changed(true);
   }
 
@@ -960,12 +1425,23 @@ export class TerminalService {
 
   /**
    * The terminals a daemon kept while this window or app was away (remote-state.json): each one its backend still lists gets
-   * its tab back, in a group of its own, and its screen through serialize, which attaches this client to it again (wezterm's
-   * list then attach); one present only as exited takes its place back, in its group and with its name, icon and color, and one
-   * already live is left alone.
+   * its screen through serialize, which attaches this client to it again (wezterm's list then attach). A reconnecting
+   * placeholder or an exited tab is replaced in place, in its group and with its name, icon and color; one without a tab gets
+   * a group of its own; one already live is left alone. One the backend no longer lists is no longer kept (endedAway).
+   * kills: the ids remote-state.json keeps for a Kill asked while the host was away; each one, and each such Kill of this run,
+   * is killed on the host and never gets a tab. Resolves to those ids, which no longer wait.
    */
-  async reattach(backend: TerminalBackend, records: readonly RemoteTerminalRecord[]): Promise<void> {
-    this.adopt(backend, records, await backend.list());
+  async reattach(backend: TerminalBackend, authorityKey: string, records: readonly RemoteTerminalRecord[], kills: readonly string[]): Promise<string[]> {
+    const listed = await backend.list();
+    const killed = new Set([...kills, ...[...this.awayKills].flatMap(([id, authority]) => (authority === authorityKey ? [id] : []))]);
+    for (const id of killed) {
+      this.awayKills.delete(id);
+      if (!listed.some((terminal) => terminal.id === id)) continue;
+      this.deps.log(`[terminal] killing ${id} on its host: a Kill asked for it while the host was away`);
+      this.ensureHost(backend, true).process.postMessage({ type: 'kill', id });
+    }
+    this.adopt(backend, records.filter((record) => !killed.has(record.id)), listed);
+    return [...killed];
   }
 
   /**
@@ -1012,15 +1488,12 @@ export class TerminalService {
     for (const record of records) {
       const found = live.get(record.id);
       const existing = this.find(record.id);
-      // a reconnecting tab whose terminal the daemon no longer has ended while its host was away
-      if (!found && existing?.status === 'reconnecting') {
-        if (existing.held?.length) this.deps.log(`[terminal] ${existing.id} ended while its host was away; ${existing.held.length} inputs typed meanwhile were not sent`);
-        existing.held = undefined;
-        existing.status = 'exited';
+      const replaceable = !existing || existing.status === 'exited' || existing.status === 'reconnecting';
+      if (!found && existing && replaceable) {
+        this.endedAway(existing);
         added = true;
         continue;
       }
-      const replaceable = !existing || existing.status === 'exited' || existing.status === 'reconnecting';
       if (!found || !replaceable || !this.deps.projects().some((project) => project.key === record.projectKey)) continue;
       const shell = { ...newShellSession(record.startCwd), nonce: record.nonce, spawned: true };
       const terminal: Terminal = {
@@ -1035,6 +1508,7 @@ export class TerminalService {
         nextCommandId: 1,
         status: 'running',
         exitCode: null,
+        ended: false,
         cols: found.cols,
         rows: found.rows,
         name: existing ? existing.name : record.name,
@@ -1042,7 +1516,7 @@ export class TerminalService {
         color: existing ? existing.color : record.color,
         restoring: 1,
       };
-      this.ensureHost(backend, record.projectKey);
+      this.ensureHost(backend, true);
       if (existing) {
         this.terminals[this.terminals.indexOf(existing)] = terminal;
       } else {
@@ -1058,46 +1532,25 @@ export class TerminalService {
     }
     if (added) {
       this.order();
-      this.activeId ??= this.terminals.at(-1)?.id ?? null;
+      this.activeId ??= this.groups.at(-1)?.activePaneId ?? null;
     }
-    // the kept list drops the terminals that ended while away
-    if (records.length > 0) this.changed(true);
+    // even with no record: the authority's first reattach writes the records of terminals started before it
+    this.changed(true);
   }
 
-  /**
-   * A launch's remote terminals whose host is not connected yet: each gets its tab back as reconnecting, with its name, icon
-   * and color, until the host reattaches it (reattach) or reports it gone.
-   */
-  showReconnecting(records: readonly RemoteTerminalRecord[]): void {
-    let added = false;
-    for (const record of records) {
-      if (this.find(record.id) || !this.deps.projects().some((project) => project.key === record.projectKey)) continue;
-      this.terminals.push({
-        id: record.id,
-        backend: undefined,
-        profile: { ...record.profile, source: 'detected', customIcon: null, color: null },
-        projectKey: record.projectKey,
-        startCwd: record.startCwd,
-        launchCwd: record.startCwd,
-        shell: { ...newShellSession(record.startCwd), nonce: record.nonce, spawned: true },
-        commands: new Map(),
-        nextCommandId: 1,
-        status: 'reconnecting',
-        exitCode: null,
-        cols: 80,
-        rows: 24,
-        name: record.name,
-        customIcon: record.customIcon,
-        color: record.color,
-        restoring: 0,
-      });
-      this.groups.push(this.newGroup([record.id]));
-      added = true;
+  // A kept terminal its daemon no longer lists ended while this app was away from it. A launch's placeholder, which never had a
+  // screen, leaves its slot, as VS Code's ptyService leaves a lost pty out of the layout; a tab this run showed stays, exited.
+  private endedAway(terminal: Terminal): void {
+    terminal.ended = true;
+    if (terminal.backend === undefined) {
+      this.deps.log(`[terminal] not restoring ${terminal.id}: it ended while its host was away`);
+      this.closeTab(terminal.id);
+      return;
     }
-    if (!added) return;
-    this.order();
-    this.activeId ??= this.terminals.at(-1)?.id ?? null;
-    this.changed(false);
+    if (terminal.held?.length) this.deps.log(`[terminal] ${terminal.id} ended while its host was away; ${terminal.held.length} inputs typed meanwhile were not sent`);
+    terminal.held = undefined;
+    terminal.status = 'exited';
+    terminal.restoring = 0;
   }
 
   /**
@@ -1136,7 +1589,8 @@ export class TerminalService {
   projectsChanged(projectKeys: readonly string[]): void {
     const keep = new Set(projectKeys);
     const gone = this.terminals.filter((terminal) => terminal.projectKey !== null && !keep.has(terminal.projectKey));
-    for (const terminal of gone) this.kill(terminal.id);
+    // not kill(): a host that is away keeps the terminals of a project that left, so no reattach kills them
+    for (const terminal of gone) this.removeTerminal(terminal.id, true);
     this.publish();
   }
 
@@ -1158,8 +1612,11 @@ export class TerminalService {
     for (const terminal of this.terminals) terminal.pending = undefined;
     this.terminals = [];
     this.groups = [];
+    this.editor = [];
     this.activeId = null;
+    this.focused = null;
     this.shell = undefined;
+    this.editorChanged();
     this.deps.onDidChange();
   }
 
@@ -1200,9 +1657,12 @@ export class TerminalService {
     }));
   }
 
+  // The host's own default: this computer's setting, or the remote host's record; a profile the host does not list falls back
+  // to its first shell.
   private defaultProfile(projectKey: string | null): LaunchProfile | undefined {
     const profiles = this.deps.profiles(projectKey);
-    const configured = this.deps.settings().defaultProfile;
+    const host = projectKey === null ? 'local' : authorityKeyOfProject(projectKey);
+    const configured = host === 'local' ? this.deps.settings().defaultProfile : this.deps.hostDefaultProfile(host);
     return profiles.find((profile) => profile.id === configured) ?? profiles[0];
   }
 
@@ -1232,10 +1692,10 @@ export class TerminalService {
     if (group.activePaneId === id) group.activePaneId = group.paneIds[Math.min(index, group.paneIds.length - 1)]!;
   }
 
-  // The terminal array in list order: group by group, pane by pane.
+  // The terminal array in list order: group by group, pane by pane, then the editor's.
   private order(): void {
     const byId = new Map(this.terminals.map((terminal) => [terminal.id, terminal]));
-    this.terminals = this.groups.flatMap((group) => group.paneIds.map((id) => byId.get(id)!));
+    this.terminals = [...this.groups.flatMap((group) => group.paneIds), ...this.editor].map((id) => byId.get(id)!);
   }
 
   private splitRefused(id: string): boolean {
@@ -1304,7 +1764,7 @@ export class TerminalService {
       if (!current()) return;
       terminal.pending = undefined;
       terminal.backend = backend;
-      this.ensureHost(backend, terminal.projectKey);
+      this.ensureHost(backend, isRemoteKey(terminal.projectKey));
       this.post(terminal, request);
       for (const message of pending) this.post(terminal, message);
     }, (err: unknown) => {
@@ -1506,12 +1966,12 @@ export class TerminalService {
     else if (terminal.backend) this.hosts.get(terminal.backend)?.process.postMessage(message);
   }
 
-  private ensureHost(backend: TerminalBackend, projectKey: string | null): Host {
+  private ensureHost(backend: TerminalBackend, persistent: boolean): Host {
     const running = this.hosts.get(backend);
     if (running) return running;
     const process: PtyHostProcess = backend.startHost();
     let ended: () => void = () => undefined;
-    const host: Host = { process, exited: new Promise((resolve) => { ended = resolve; }), persistent: isRemoteKey(projectKey) };
+    const host: Host = { process, exited: new Promise((resolve) => { ended = resolve; }), persistent };
     this.hosts.set(backend, host);
     process.onMessage((raw) => {
       if (this.hosts.get(backend) === host) this.receive(host, backend, raw);
@@ -1578,6 +2038,7 @@ export class TerminalService {
           : undefined;
         terminal.status = 'exited';
         terminal.exitCode = message.exitCode;
+        terminal.ended = true;
         terminal.restoring = 0;
         terminal.task?.onExit(message.exitCode);
         if (reason !== undefined) {
@@ -1585,17 +2046,18 @@ export class TerminalService {
           this.deps.log(`[terminal] ${terminal.profile.file} could not start in ${cwd}: Windows error ${message.exitCode}`);
           this.shell?.data({ id: terminal.id, data: `${this.deps.launchFailed({ reason, file: terminal.profile.file, cwd })}\r\n` });
         }
-        this.changed(false);
+        this.changed(isRemoteKey(terminal.projectKey));
         return;
       }
       case 'error':
         this.deps.log(`[terminal] ${terminal.profile.file} could not start: ${message.message}`);
         terminal.status = 'exited';
         terminal.exitCode = null;
+        terminal.ended = true;
         terminal.restoring = 0;
         terminal.task?.onExit(null);
         this.shell?.data({ id: terminal.id, data: `${this.deps.spawnFailed(message.message)}\r\n` });
-        this.changed(false);
+        this.changed(isRemoteKey(terminal.projectKey));
         return;
     }
   }
@@ -1603,12 +2065,9 @@ export class TerminalService {
   // persist: the list, its groups, the active terminal or the list width changed, which the window layout keeps.
   private changed(persist: boolean): void {
     if (persist) {
-      // a task tab is always alone in its group and never restored; a remote terminal is kept in remote-state.json, never in
-      // window-layout.json, and reattached in a new window with its group of one
-      const isKept = (terminal: Terminal | undefined): boolean => terminal !== undefined && !terminal.task && !isRemoteKey(terminal.projectKey);
-      const groups = this.groups.filter((group) => group.paneIds.every((id) => isKept(this.find(id))));
-      const kept = groups.flatMap((group) => group.paneIds.map((id) => this.find(id)!));
-      this.deps.persistRemote(this.terminals.filter((terminal) => !terminal.task && isRemoteKey(terminal.projectKey)).map((terminal) => ({
+      // a remote terminal's record, its nonce included, is kept in remote-state.json, and the layout names only its id
+      const kept = (id: string): boolean => keptForRelaunch(this.find(id)!);
+      this.deps.persistRemote(this.terminals.filter((terminal) => isRemoteKey(terminal.projectKey) && keptForRelaunch(terminal)).map((terminal) => ({
         id: terminal.id,
         projectKey: terminal.projectKey!,
         profile: { id: terminal.profile.id, name: terminal.profile.name, file: terminal.profile.file, args: [...terminal.profile.args], icon: terminal.profile.icon },
@@ -1618,21 +2077,29 @@ export class TerminalService {
         customIcon: terminal.customIcon,
         color: terminal.color,
       })));
-      const active = kept.findIndex((terminal) => terminal.id === this.activeId);
+      const pane = (terminal: Terminal): PersistedPane => isRemoteKey(terminal.projectKey)
+        ? { kind: 'remote', id: terminal.id }
+        : { kind: 'local', profileId: terminal.profile.id, projectKey: terminal.projectKey, name: terminal.name, customIcon: terminal.customIcon, color: terminal.color };
+      const groups = this.groups.filter((group) => group.paneIds.some(kept));
+      const active = groups.findIndex((group) => group.paneIds.includes(this.activeId ?? ''));
       this.deps.persist({
-        terminals: kept.map((terminal) => ({
-          profileId: terminal.profile.id,
-          projectKey: terminal.projectKey,
-          name: terminal.name,
-          customIcon: terminal.customIcon,
-          color: terminal.color,
-        })),
-        active: active < 0 ? null : active,
+        version: 2,
         listWidthRem: this.listWidthRem,
-        groups: groups.map((group) => ({ panes: group.paneIds.length, activePane: group.paneIds.indexOf(group.activePaneId), sizes: [...group.sizes] })),
+        groups: groups.map((group) => persistedGroup(group, kept, (id) => pane(this.find(id)!))),
+        active: active < 0 ? null : active,
+        editor: this.editor.filter(kept).map((id) => pane(this.find(id)!)),
       });
     }
     this.publish();
+    this.editorChanged();
     this.deps.onDidChange();
+  }
+
+  // After the terminal state, so the shell knows an editor terminal before the editor lists its tab.
+  private editorChanged(): void {
+    const tabs = JSON.stringify(this.tabSource.tabs().map((tab) => [tab.id, tab.title]));
+    if (tabs === this.announcedTabs) return;
+    this.announcedTabs = tabs;
+    this.deps.editorTabsChanged();
   }
 }

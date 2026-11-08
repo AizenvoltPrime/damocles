@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
 import type { ShellPlatform } from '../../preload/shell-channels';
-import { HOST_SWITCH_KEYS, MAX_HOST_NAME_LENGTH, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
+import { HOST_SWITCH_KEYS, MAX_HOST_NAME_LENGTH, MAX_OVERLAY_ID_LENGTH, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
 import { HOST_ID } from '../../daemon/control-messages';
 import { authorityKeyOfProject, pathFor } from '../../../shared/project-location';
 import { canonicalHostColor, isHostTone, type HostColor } from '../../../shared/host-colors';
@@ -47,6 +47,8 @@ export interface SshHostSettings {
   readonly rememberPassword?: boolean;
   readonly browserLocalNetwork?: boolean;
   readonly openLinksWithoutAsking?: boolean;
+  // the profile id a new terminal on the host starts with when it names one of the host's detected shells
+  readonly defaultTerminalProfile?: string;
 }
 
 // A saved SSH host; its projects and trusted folders live under its authority key `ssh+<id>`.
@@ -433,16 +435,22 @@ function parseDestination(value: unknown): SshHostDestination | undefined {
   return { kind, host, ...(user !== undefined ? { user } : {}), ...(port !== undefined ? { port } : {}), options: parsed };
 }
 
+// A terminal profile id as a host lists it: one line of visible text, bounded as a quick pick item's id.
+const isTerminalProfileId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_OVERLAY_ID_LENGTH && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
+
 function parseSettings(id: string, value: unknown, log: (line: string) => void): SshHostSettings {
   if (!isRecordValue(value)) return {};
   const installFolder = own(value, 'installFolder');
   const mode = own(value, 'defaultPermissionMode');
+  const profile = own(value, 'defaultTerminalProfile');
   if (mode !== undefined && !PERMISSION_MODES.includes(mode as PermissionMode)) log(`[hosts] dropping the default permission mode of ${id}: not a mode`);
+  if (profile !== undefined && !isTerminalProfileId(profile)) log(`[hosts] dropping the default terminal profile of ${id}: not a profile id`);
   const switches = HOST_SWITCH_KEYS.filter((key) => own(value, key) === true);
   return {
     ...(isText(installFolder) ? { installFolder } : {}),
     ...(PERMISSION_MODES.includes(mode as PermissionMode) ? { defaultPermissionMode: mode as PermissionMode } : {}),
     ...Object.fromEntries(switches.map((key) => [key, true])),
+    ...(isTerminalProfileId(profile) ? { defaultTerminalProfile: profile } : {}),
   };
 }
 
@@ -1022,6 +1030,12 @@ export class HostStore {
         }
       }
     });
+  }
+
+  /** Select Default Profile... for the host. */
+  async setDefaultTerminalProfile(hostId: string, profileId: string): Promise<void> {
+    if (!isTerminalProfileId(profileId)) throw new Error('Not a terminal profile id');
+    await this.updateHost(hostId, (record) => (record.settings.defaultTerminalProfile === profileId ? record : { ...record, settings: { ...record.settings, defaultTerminalProfile: profileId } }));
   }
 
   /** Set up passwordless login appended Damocles' key line on the host, whether or not its check passes afterwards. */

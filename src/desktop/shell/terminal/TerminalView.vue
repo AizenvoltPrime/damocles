@@ -16,7 +16,7 @@ import type { DamoclesShellApi, ShellHost, ShellPlatform } from '../../preload/s
 import { MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, TERMINAL_ACK_CHARS, type TerminalAction, type TerminalInfo, type TerminalPaste, type TerminalScreen, type TerminalSettings } from '../../preload/terminal-channels';
 import { capTerminalText } from '../../preload/terminal-attachment-cap';
 import { groupPanes, TERMINAL_STORE } from './terminal-store';
-import { inputChunks, isShiftF10, parseAccelerator, terminalKeyAction, type KeyChord } from './terminal-keys';
+import { inputChunks, isShiftF10, isXtermInput, parseAccelerator, terminalKeyAction, type KeyChord } from './terminal-keys';
 import { confirmedLinks, lineCandidates, rangeOf, readWrappedLine, requestPaths } from './terminal-links';
 import { commandMenuItems, runTerminalAction, terminalMenuAction, terminalMenuItems, type CommandMenuAction, type CommandMenuContext } from './terminal-menu';
 import { commandStatus } from './terminal-commands';
@@ -62,6 +62,8 @@ const atEnd = ref(true);
 const revealed = ref(!props.terminal.restoring && !store.screenWaits(props.terminal.id));
 let screenReceived = false;
 const exited = computed(() => props.terminal.status === 'exited');
+// In the editor area #editor-panel is the tabpanel, named by the terminal's editor tab, so the view is no second one inside it.
+const inPanel = computed(() => props.terminal.placement === 'panel');
 // A terminal whose host is away takes no input until main reattaches it; its process keeps running there.
 const inputOff = computed(() => exited.value || props.terminal.status === 'reconnecting');
 // The label and dim wait for the host's grace like its dot and banner, so a short drop shows nothing; input stops at once.
@@ -123,6 +125,16 @@ function readEnd(xterm: Terminal): void {
 
 function focus(): void {
   term.value?.focus();
+}
+
+// Main targets the terminal commands at the terminal whose xterm input had focus last, in the panel or the editor; the skip
+// list and Edit › Paste apply only while an xterm input has it, not a row, a tab or a field (Find, the inline rename).
+function onFocusIn(event: FocusEvent): void {
+  if (isXtermInput(event.target)) props.api.terminal.reportInputFocus(props.terminal.id);
+}
+
+function onFocusOut(event: FocusEvent): void {
+  if (isXtermInput(event.target)) props.api.terminal.reportInputFocus(null);
 }
 
 // A restore resized the xterm to the screen's size, so a view already shown fits its box again too.
@@ -437,7 +449,7 @@ async function openMenu(anchor: OverlayRect): Promise<void> {
     kind: 'menu',
     label: t('terminal.menu.label', { title: props.terminal.title }),
     anchor: { x: Math.max(0, anchor.x), y: Math.max(0, anchor.y), width: anchor.width, height: anchor.height },
-    items: terminalMenuItems({ target: 'terminal', hasSelection: xterm.hasSelection(), platform: props.platform, group: { panes: groupPanes(store.state.value, props.terminal.id), shortcut: props.splitShortcut }, lastCommand: commandContext(last), navigated: commandContext(navigated) }, t),
+    items: terminalMenuItems({ target: 'terminal', hasSelection: xterm.hasSelection(), platform: props.platform, group: props.terminal.placement === 'editor' ? null : { panes: groupPanes(store.state.value, props.terminal.id), shortcut: props.splitShortcut }, lastCommand: commandContext(last), navigated: commandContext(navigated) }, t),
   });
   const action = answer.kind === 'menu' ? terminalMenuAction(answer.itemId) : undefined;
   if (action === undefined) return;
@@ -735,10 +747,12 @@ defineExpose({ focus, openFind });
     :data-cols="sent?.cols"
     :data-rows="sent?.rows"
     :data-links-provided-for="linksProvidedFor ?? undefined"
-    role="tabpanel"
-    :aria-labelledby="`terminal-row-${terminal.id} terminal-tab-${terminal.id}`"
-    :aria-label="terminal.title"
+    :role="inPanel ? 'tabpanel' : undefined"
+    :aria-labelledby="inPanel ? `terminal-row-${terminal.id} terminal-tab-${terminal.id}` : undefined"
+    :aria-label="inPanel ? terminal.title : undefined"
     class="terminal-view absolute inset-0 flex flex-col bg-(--d-bg)"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
   >
     <div class="relative min-h-0 flex-1">
       <div

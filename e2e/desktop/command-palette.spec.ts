@@ -71,7 +71,7 @@ test('a command whose precondition fails is dimmed and does not run', async ({ f
   await readyShell(app);
   await activeChat(app);
   const before = await shellState(app);
-  // Save needs an open editor tab; the shell has none.
+  // Save needs a writable document in the active editor tab; the shell has no tab.
   const overlay = await openPalette(app);
   const input = overlay.getByTestId('quick-pick-input');
   await input.fill('>file: save');

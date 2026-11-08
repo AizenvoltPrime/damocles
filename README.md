@@ -19,7 +19,7 @@ Damocles is also a VS Code extension. The extension runs the same agent, chat an
 
 ## Features
 
-- **Desktop app**: projects and chats in a sidebar, plus an editor, terminals, search and source control. See [Desktop app](docs/desktop-app.md).
+- **Desktop app**: projects and chats in a sidebar, plus an editor with HTML preview, terminals, search and source control. See [Desktop app](docs/desktop-app.md).
 - **Remote development**: SSH hosts, WSL distros and dev containers from the desktop app. See [Remote development](docs/remote-development.md).
 - **Chat**: sidebar or editor panels with diff approval, live shell output, tool overlays, a prompt navigator and session history. See [Chat interface](docs/chat.md).
 - **Context and cost**: a context ring, `/context`, `/usage` for subscription limits and `/stats` for spend across projects. See [Context stats](docs/chat.md#context-stats).

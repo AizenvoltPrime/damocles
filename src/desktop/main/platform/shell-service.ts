@@ -40,8 +40,10 @@ export function createDesktopShellService(
         await shell.openExternal(href);
         return true;
       } catch (err) {
-        // No handler for the scheme, such as Linux without xdg-open.
-        log(`[shell] could not open ${loggableUrl(href)}: ${errorText(err)}`);
+        // No handler for the scheme, such as Linux without xdg-open. Only the origin is logged: a path or query can hold a
+        // one-time token (Open in Browser).
+        const parsed = new URL(href);
+        log(`[shell] could not open a link to ${loggableUrl(parsed.origin === 'null' ? parsed.protocol : parsed.origin)}: ${errorText(err)}`);
         return false;
       }
     },

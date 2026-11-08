@@ -21,6 +21,8 @@ let openFailures: number;
 let copied: string[];
 let newPages: DesktopPanel[];
 let focusAway: number;
+// each Focus Next (1) or Previous (-1) Part a page's key asked for
+let partSteps: number[];
 // the typed addresses a remote chat's page asked main to move to their forward, and what main answers
 let remoteAddresses: string[];
 let remoteAddressAnswer: (url: string) => string | undefined | Promise<string | undefined>;
@@ -83,6 +85,9 @@ function setup(width = 1200) {
     focusAway: () => {
       focusAway++;
     },
+    focusPart: (step) => {
+      partSteps.push(step);
+    },
     remoteAddress: async (_chat, url) => {
       remoteAddresses.push(url);
       return remoteAddressAnswer(url);
@@ -140,6 +145,7 @@ beforeEach(() => {
   copied = [];
   newPages = [];
   focusAway = 0;
+  partSteps = [];
   remoteAddresses = [];
   remoteAddressAnswer = (url) => url;
 });
@@ -373,6 +379,28 @@ describe('focus', () => {
     select(b);
     select(a);
     expect(contentsOf(shown).focus).not.toHaveBeenCalled();
+  });
+
+  it('focuses a page only while its view shows, and F6 and Shift+F6 there move focus a part on or back, unseen by the page', () => {
+    const { tabs, editor, chat, page } = setup();
+    const a = chat();
+    const first = page(a, 'https://1.example/');
+    const second = page(a, 'https://2.example/');
+    // no page area reported yet
+    expect(tabs.focusPage(second.panelId)).toBe(false);
+    tabs.setBounds(AREA);
+    expect([tabs.focusPage(first.panelId), tabs.focusPage('no-such-page')]).toEqual([false, false]);
+    expect(tabs.focusPage(second.panelId)).toBe(true);
+    expect(contentsOf(second).focus).toHaveBeenCalledOnce();
+    expect(contentsOf(first).focus).not.toHaveBeenCalled();
+    editor.set(first.panelId);
+    const press = (target: DesktopPanel, shift: boolean): boolean => {
+      const event = { preventDefault: vi.fn() };
+      contentsOf(target).emit('before-input-event', event, { type: 'keyDown', key: 'F6', shift, control: false, alt: false, meta: false });
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    expect([press(first, false), press(second, true)]).toEqual([true, true]);
+    expect(partSteps).toEqual([1, -1]);
   });
 
   it('moves focus away from a page view that closes or hides while it holds focus', () => {

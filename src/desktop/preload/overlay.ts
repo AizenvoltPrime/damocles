@@ -44,7 +44,7 @@ import type { ChimeTone, NotificationCenterState } from './notifications';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
-import type { TerminalProfileReport } from './terminal-channels';
+import type { TerminalPickShells, TerminalProfileReport } from './terminal-channels';
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const handler = (_event: IpcRendererEvent, value: T): void => listener(value);
@@ -139,6 +139,7 @@ const api: DamoclesOverlayApi = {
   listCommands: () => ipcRenderer.invoke(OVERLAY_CHANNELS.commandsList, {}) as Promise<PopupAnswer<PaletteCommand[]>>,
   getTerminalProfiles: () => ipcRenderer.invoke(OVERLAY_CHANNELS.terminalProfiles, {}) as Promise<PopupAnswer<TerminalProfileReport>>,
   onTerminalProfiles: (listener) => subscribe<TerminalProfileReport>(OVERLAY_CHANNELS.terminalProfilesChanged, listener),
+  terminalPickProfiles: (request) => ipcRenderer.invoke(OVERLAY_CHANNELS.terminalPickProfiles, { projectKey: request.projectKey }) as Promise<PopupAnswer<TerminalPickShells>>,
   onDropZonesPointer: (listener) => subscribe<DropZonesPointer>(OVERLAY_CHANNELS.dropZonesPointer, listener),
   browseInput: (value) => ipcRenderer.invoke(OVERLAY_CHANNELS.inputBrowse, { value }) as Promise<PopupAnswer<InputBrowseResult | null>>,
   worktreeOptions: () => ipcRenderer.invoke(OVERLAY_CHANNELS.worktreeOptions, {}) as Promise<PopupAnswer<ChatsWorktreeOptions>>,

@@ -86,6 +86,11 @@ export interface WalkPage {
 
 export type WireReadResult = { readonly ok: true; readonly size: number } | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' | 'notAFile'; readonly code?: string };
 
+// resolvedPath and folder (feature files.readFileRange.resolvedPath): ReadRangeResult's
+export type WireReadRangeResult =
+  | { readonly ok: true; readonly size: number; readonly offset: number; readonly length: number; readonly resolvedPath?: string }
+  | (Exclude<WireReadResult, { readonly ok: true }> & { readonly folder?: boolean });
+
 export interface WorkspaceRequests {
   'files.confineExisting': Call<{ readonly project: Project; readonly relativePath: string }, Confined>;
   'files.confineMissing': Call<{ readonly project: Project; readonly relativePath: string }, Confined>;
@@ -129,6 +134,8 @@ export interface WorkspaceRequests {
   'files.receiveFile': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly stream: number; readonly mode: number; readonly mtimeMs: number; readonly replace: boolean; readonly size: number }, TransferResult>;
   // answered before the bytes, which follow on stream, a stream the client opened; the client ending its side stops them
   'files.readFile': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number }, WireReadResult>;
+  // (feature files.readFileRange) as files.readFile, for at most length bytes from offset, a negative offset counting from the end
+  'files.readFileRange': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number; readonly offset: number; readonly length: number }, WireReadRangeResult>;
   'files.copy': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean }, TransferResult>;
   'files.move': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean }, MoveResult>;
   // mode (feature files.folderMode): the source folder's, which a POSIX host creates it with under its umask
@@ -302,7 +309,9 @@ const transferEntry: Parser<WireTransferEntry> = obj({
 const walkPage: Parser<WalkPage> = obj({ entries: arr(transferEntry, WALK_PAGE_ENTRIES), done: bool });
 const clash: Parser<Clash | null> = either(obj({ name: nonEmpty(MAX_PATH_CHARS), kind: transferKind }), nul);
 const clashesResult: Parser<ClashesResult> = either(obj({ ok: okTrue, clashes: arr(clash, MAX_ITEMS) }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notFolder'] as const), code: opt(errno), message: opt(message) }));
-const readResult: Parser<WireReadResult> = either(obj({ ok: okTrue, size }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno) }));
+const readFailed = obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno) });
+const readResult: Parser<WireReadResult> = either(obj({ ok: okTrue, size }), readFailed);
+const readRangeResult: Parser<WireReadRangeResult> = either(obj({ ok: okTrue, size, offset: size, length: size, resolvedPath: opt(relative) }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno), folder: opt(bool) }));
 
 export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
   requests: {
@@ -340,6 +349,7 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.clashes': method(obj({ project, relativeDir: relative, names: arr(fileName, MAX_ITEMS) }), clashesResult),
     'files.receiveFile': method(obj({ project, relativeDir: relative, name: fileName, stream: streamId, mode: int(0, 0o7777), mtimeMs: finite, replace: bool, size }), transferResult),
     'files.readFile': method(obj({ project, relativePath: relative, stream: streamId }), readResult),
+    'files.readFileRange': method(obj({ project, relativePath: relative, stream: streamId, offset: int(-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), length: size }), readRangeResult),
     'files.copy': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool }), transferResult),
     'files.move': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool }), moveResult),
     'files.makeFolder': method(obj({ project, relativeDir: relative, name: fileName, mode: opt(int(0, 0o7777)) }), transferResult),

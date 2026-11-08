@@ -2,17 +2,22 @@
 // Main issues every terminal id and resolves every cwd from a project key; the renderer never sends a path.
 
 import type { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TerminalCursorStyle } from '../local-services/desktop-configuration';
+import type { HostColor } from '../../shared/host-colors';
+import type { AuthorityKind } from '../../shared/project-location';
+import type { OverlayRect } from './overlay-channels';
 import type { FileRef } from './shell-channels';
 
 export const TERMINAL_CHANNELS = {
   // renderer → main, invoke
   // → TerminalState
   getState: 'damocles:terminal:get-state',
-  // TerminalCreateRequest → TerminalCreateResult; the empty state's button, a user action the shell follows with its own focus
+  // TerminalCreateRequest → TerminalCreateResult; Shift+click on the + button, a user action the shell follows with its own focus
   create: 'damocles:terminal:create',
   // renderer → main, send
   // no payload: the new-terminal quick pick in the overlay
   new: 'damocles:terminal:new',
+  // { anchor: OverlayRect } → void once the menu closed: the New Terminal arrow's menu, which main builds from its shell lists
+  newMenu: 'damocles:terminal:new-menu',
   // TerminalInput
   input: 'damocles:terminal:input',
   // TerminalResize
@@ -31,6 +36,10 @@ export const TERMINAL_CHANNELS = {
   split: 'damocles:terminal:split',
   // TerminalRef: a pane of a multi-pane group becomes its own group at the end of the list
   unsplit: 'damocles:terminal:unsplit',
+  // TerminalMove: a drag's drop, Alt+Up/Down or Move Up / Move Down; main validates it against its own order
+  move: 'damocles:terminal:move',
+  // TerminalRef: Join Terminals... from that terminal's row menu, main's multi-select quick pick of the other panel terminals
+  joinPick: 'damocles:terminal:join-pick',
   // TerminalResizePanes: a sash drag's end or a keyboard step; main refuses sizes outside the bounds below
   resizePanes: 'damocles:terminal:resize-panes',
   // { rem }: the vertical list's width, clamped by main to TERMINAL_LIST_MIN_REM..TERMINAL_LIST_MAX_REM and persisted
@@ -172,6 +181,10 @@ export interface TerminalInfo {
   readonly windowsBuild: number | null;
   // the path rules of the host the shell runs on, which the paths it prints follow
   readonly pathFlavor: 'win32' | 'posix';
+  // editor: hosted in an editor tab (`terminal:<id>`), outside every group
+  readonly placement: 'panel' | 'editor';
+  // a worktree Setup task terminal; stays in the panel (no Join, no Move into Editor Area)
+  readonly task?: true;
 }
 
 export interface TerminalSettings {
@@ -203,11 +216,11 @@ export interface TerminalGroupInfo {
 }
 
 export interface TerminalState {
-  // in list order: group by group, pane by pane
+  // panel terminals in list order (group by group, pane by pane), then editor terminals in editor tab order
   readonly terminals: readonly TerminalInfo[];
-  // in list order; every terminal is in exactly one
+  // in list order; every panel terminal is in exactly one
   readonly groups: readonly TerminalGroupInfo[];
-  // the active group's active pane
+  // the panel's active group's active pane; null when the panel holds no terminal, even if editor terminals exist
   readonly activeId: string | null;
   readonly listWidthRem: number;
   readonly settings: TerminalSettings;
@@ -216,14 +229,32 @@ export interface TerminalState {
   // shell detection has settled, so canCreate false means no shell was found rather than none detected yet
   readonly profilesReady: boolean;
   // Electron accelerators of the commands that fire while a terminal has focus (the skip list, from the command registry);
-  // xterm leaves exactly these keys unhandled so they reach the application menu. Focus Previous and Next Pane are in it
-  // only while the active group has more than one pane.
+  // xterm leaves exactly these keys unhandled so they reach the application menu. They follow the command target: Focus
+  // Previous and Next Pane are in it only while its group has more than one pane, and Split Terminal only while it is in
+  // the panel.
   readonly passKeys: readonly string[];
-  // the visible detected shells and the valid user profiles, the default marked, for the New Terminal dropdown
-  readonly profiles: readonly TerminalProfileOption[];
   // Chromium's accessibility support is on (a screen reader is running), which xterm's screenReaderMode follows
   readonly screenReader: boolean;
 }
+
+// Which side of the target a move lands on: above or below its row, or the left or right half of its pane.
+export const TERMINAL_DROP_SIDES = ['before', 'after'] as const;
+export type TerminalDropSide = (typeof TERMINAL_DROP_SIDES)[number];
+
+// reorder: within target's group the pane moves next to target, else id's whole group moves next to target's group; an
+// editor terminal comes back as a group of one next to target's group. join: id leaves its group (or the editor) for
+// target's group, refused onto itself, into a full group or with a task terminal on either side. detach: id becomes a
+// group of one at the end; for an editor terminal that is Move Terminal into Panel, made the panel's active and focused.
+// step: one place up or down, past the neighbouring group at its own group's edge; refused for an editor terminal.
+// toEditor: id leaves its group (the panel's active passes on as Kill does) for the last editor tab, which the editor
+// activates and focuses; refused for a task terminal and one already in the editor. target is always a panel terminal;
+// main ignores every refused move.
+export type TerminalMove =
+  | { readonly kind: 'reorder'; readonly id: string; readonly target: string; readonly side: TerminalDropSide }
+  | { readonly kind: 'join'; readonly id: string; readonly target: string; readonly side: TerminalDropSide }
+  | { readonly kind: 'detach'; readonly id: string }
+  | { readonly kind: 'step'; readonly id: string; readonly delta: -1 | 1 }
+  | { readonly kind: 'toEditor'; readonly id: string };
 
 export interface TerminalResizePanes {
   readonly groupId: string;
@@ -249,8 +280,9 @@ export interface TerminalRef {
   readonly id: string;
 }
 
+// id: the terminal whose xterm gained focus; null: terminal input lost focus
 export interface TerminalInputFocus {
-  readonly focused: boolean;
+  readonly id: string | null;
 }
 
 /**
@@ -444,13 +476,26 @@ export interface TerminalProfileReport {
   readonly problems: readonly TerminalProfileProblem[];
 }
 
+// The host a project is on, as the Projects sidebar heads its group; name and color are absent for this computer.
+export interface TerminalProjectAuthority {
+  readonly kind: AuthorityKind;
+  readonly name?: string;
+  readonly color?: HostColor;
+}
+
 export interface TerminalProjectOption {
   readonly key: string;
   readonly name: string;
   readonly path: string;
-  // the selected project, listed first
+  // the selected project, which the picker starts on
   readonly current: boolean;
+  readonly authority: TerminalProjectAuthority;
+  // its host is this computer or connected; the picker lists an unreachable one disabled and main refuses it
+  readonly reachable: boolean;
 }
+
+// The New Terminal pick's step 2 for its chosen target: its host's shells, its default first, or a host gone since step 1.
+export type TerminalPickShells = { readonly kind: 'shells'; readonly profiles: readonly TerminalProfileOption[] } | { readonly kind: 'notConnected' };
 
 export interface DamoclesTerminalApi {
   getState(): Promise<TerminalState>;
@@ -465,6 +510,8 @@ export interface DamoclesTerminalApi {
   onRunAction(listener: (request: TerminalRunAction) => void): () => void;
   create(request: TerminalCreateRequest): Promise<TerminalCreateResult>;
   openNew(): void;
+  // resolves once the menu closed
+  openNewMenu(anchor: OverlayRect): Promise<void>;
   input(input: TerminalInput): void;
   resize(resize: TerminalResize): void;
   ack(ack: TerminalAck): void;
@@ -474,10 +521,12 @@ export interface DamoclesTerminalApi {
   select(id: string): void;
   split(id: string): void;
   unsplit(id: string): void;
+  move(move: TerminalMove): void;
+  joinPick(id: string): void;
   resizePanes(request: TerminalResizePanes): void;
   setListWidth(rem: number): void;
   paste(request: TerminalPaste): void;
-  reportInputFocus(focused: boolean): void;
+  reportInputFocus(id: string | null): void;
   resolveLinks(request: TerminalResolveLinks): Promise<Array<TerminalLinkKind | null>>;
   openLink(request: TerminalOpenLink): void;
   openWebLink(request: TerminalOpenWebLink): void;

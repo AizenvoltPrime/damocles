@@ -48,7 +48,7 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
   const runProviders = vi.fn();
   const remote: RemoteHost = {
     hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders, browserTool: vi.fn(), browserRelease: vi.fn(), browserDiscard: vi.fn(), shellOutput: () => ({ write: () => undefined, end: () => undefined }),
-    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(),
+    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), memoryList: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(),
   };
   return {
     remote,

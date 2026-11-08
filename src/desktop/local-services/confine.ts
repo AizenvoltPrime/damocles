@@ -105,9 +105,9 @@ export async function confineOrCreateFolder(project: Project, relativeDir: strin
 /**
  * The entry itself, never followed: its parent's realpath must lie under the project's, no link on the way to that parent may
  * lead to a UNC or device path, and the result is that parent plus the last segment, so a rename, trash or reveal of a link
- * acts on the link and never on what it points to.
+ * acts on the link and never on what it points to. resolvedPath is that result relative to the project's realpath, '/' separated.
  */
-export async function confineEntry(project: Project, relativePath: string): Promise<{ readonly ok: true; readonly path: string; readonly stat: BigIntStats } | { readonly ok: false; readonly reason: ConfineFailure }> {
+export async function confineEntry(project: Project, relativePath: string): Promise<{ readonly ok: true; readonly path: string; readonly resolvedPath: string; readonly stat: BigIntStats } | { readonly ok: false; readonly reason: ConfineFailure }> {
   if (!isRelativeFilePath(relativePath)) return { ok: false, reason: 'outside' };
   const lexical = lexicalJoin(project.fsPath, relativePath);
   if (lexical === undefined) return { ok: false, reason: 'outside' };
@@ -117,7 +117,7 @@ export async function confineEntry(project: Project, relativePath: string): Prom
     if (!isInsideRealRoot(realRoot, realParent)) return { ok: false, reason: 'outside' };
     const entry = path.join(realParent, path.basename(lexical));
     const stat = await fs.lstat(entry, { bigint: true });
-    return { ok: true, path: entry, stat };
+    return { ok: true, path: entry, resolvedPath: path.relative(realRoot, entry).split(path.sep).join('/'), stat };
   } catch (err) {
     return { ok: false, reason: isMissing(err) ? 'missing' : 'failed' };
   }

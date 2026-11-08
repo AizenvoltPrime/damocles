@@ -417,6 +417,82 @@ describe('readFile', () => {
   });
 });
 
+describe('readFileRange', () => {
+  async function text(read: Awaited<ReturnType<TransferOps['readFileRange']>>): Promise<{ size: number; offset: number; length: number; text: string }> {
+    if (!read.ok) throw new Error(read.reason);
+    const parts: Buffer[] = [];
+    for await (const chunk of read.chunks) parts.push(Buffer.from(chunk));
+    return { size: read.size, offset: read.offset, length: read.length, text: Buffer.concat(parts).toString('utf8') };
+  }
+
+  it.each([
+    [0, 3, 0, 'old'],
+    [4, 100, 4, 'text'],
+    [-4, 4, 4, 'text'],
+    [-4, 2, 4, 'te'],
+    [-100, 100, 0, 'old text'],
+    [8, 10, 8, ''],
+    [50, 10, 8, ''],
+    [2, 0, 2, ''],
+  ])('reads offset %i, length %i from %i as %j, clamped to the file', async (offset, length, from, expected) => {
+    expect(await text(await ops.readFileRange(project, 'src/a.ts', offset, length))).toEqual({ size: 8, offset: from, length: expected.length, text: expected });
+  });
+
+  it('refuses as readFile does: a link, a folder, a missing file, a path out of the project', async () => {
+    fs.symlinkSync(path.join(root, 'outside.txt'), at('src/out.txt'), 'file');
+    expect(await ops.readFileRange(project, 'src/out.txt', 0, 1)).toEqual({ ok: false, reason: 'notAFile', folder: false });
+    expect(await ops.readFileRange(project, 'src', 0, 1)).toEqual({ ok: false, reason: 'notAFile', folder: true });
+    expect(await ops.readFileRange(project, 'src/gone.ts', 0, 1)).toEqual({ ok: false, reason: 'missing' });
+    expect(await ops.readFileRange(project, '../outside.txt', 0, 1)).toMatchObject({ ok: false });
+  });
+
+  it("answers the file's path relative to the project's real root, through folder links (a dot folder's, pnpm's store)", async () => {
+    fs.mkdirSync(at('.git'));
+    fs.writeFileSync(at('.git/config'), 'secret');
+    fs.mkdirSync(at('node_modules/.pnpm/lib@1.0.0/node_modules/lib'), { recursive: true });
+    fs.writeFileSync(at('node_modules/.pnpm/lib@1.0.0/node_modules/lib/index.js'), 'lib');
+    fs.symlinkSync(at('.git'), at('src/x'), 'junction');
+    fs.symlinkSync(at('node_modules/.pnpm/lib@1.0.0/node_modules/lib'), at('node_modules/lib'), 'junction');
+    const resolved = async (relativePath: string): Promise<string | undefined> => {
+      const read = await ops.readFileRange(project, relativePath, 0, 0);
+      if (!read.ok) throw new Error(read.reason);
+      await read.chunks[Symbol.asyncIterator]().return?.();
+      return read.resolvedPath;
+    };
+    expect(await resolved('src/a.ts')).toBe('src/a.ts');
+    expect(await resolved('src/x/config')).toBe('.git/config');
+    expect(await resolved('node_modules/lib/index.js')).toBe('node_modules/.pnpm/lib@1.0.0/node_modules/lib/index.js');
+  });
+
+  it('refuses a length below zero or a position that is no safe integer', async () => {
+    for (const [offset, length] of [[0, -1], [0.5, 1], [0, Number.POSITIVE_INFINITY], [Number.NaN, 1]] as const) {
+      expect(await ops.readFileRange(project, 'src/a.ts', offset, length)).toEqual({ ok: false, reason: 'failed', code: 'EINVAL' });
+    }
+  });
+
+  it('yields only the range it answered while the file grows', async () => {
+    const read = await ops.readFileRange(project, 'src/a.ts', 4, 100);
+    fs.appendFileSync(at('src/a.ts'), ' and more');
+    expect(await text(read)).toEqual({ size: 8, offset: 4, length: 4, text: 'text' });
+  });
+
+  it('closes its handle when returned unread', async () => {
+    // FileHandle is not exported, so its prototype comes from a handle; the read's handle is the one it stats as it opens, and
+    // a closed handle's fd is -1
+    const probe = await fs.promises.open(at('src/a.ts'), 'r');
+    const prototype = Object.getPrototypeOf(probe) as fs.promises.FileHandle;
+    await probe.close();
+    const stat = vi.spyOn(prototype, 'stat');
+    const unread = await ops.readFileRange(project, 'src/a.ts', 0, 4);
+    if (!unread.ok) throw new Error(unread.reason);
+    const opened = stat.mock.contexts as fs.promises.FileHandle[];
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.fd).toBeGreaterThanOrEqual(0);
+    await unread.chunks[Symbol.asyncIterator]().return?.();
+    expect(opened[0]!.fd).toBe(-1);
+  });
+});
+
 // a source that records whether it was returned, and stalls after its chunks
 function tracked(...parts: string[]): { readonly source: AsyncIterable<Uint8Array>; readonly returned: () => boolean } {
   let returned = false;

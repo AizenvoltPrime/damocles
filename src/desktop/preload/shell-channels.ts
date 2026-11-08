@@ -148,6 +148,9 @@ export const SHELL_CHANNELS = {
   editorCompleteMerge: 'damocles:shell:editor:complete-merge',
   // { open: boolean }: main hides the chat view while the focus overlay is open
   editorFocusOverlay: 'damocles:shell:editor:focus-overlay',
+  // EditorFocusPageRequest → boolean: keyboard focus into the active tab's page view (HTML preview, design preview, browser
+  // page), asked while the shell holds focus; false, focus unchanged, while that view is not shown or the shell lost focus
+  editorFocusPage: 'damocles:shell:editor:focus-page',
   // Editor pane, renderer → main, send
   // EditorEditReport, leading- and trailing-throttled by the shell (<= EDITOR_EDIT_THROTTLE_MS) and flushed before save,
   // conflict and flushed
@@ -216,6 +219,13 @@ export const SHELL_CHANNELS = {
   designReplay: 'damocles:shell:design:replay',
   // DesignPreviewClosed: a design tab closed for good (its close, its chat's close, the window's), never a chat switch
   designClosed: 'damocles:shell:design:closed',
+
+  // HTML preview tabs: a project's .html file in a view of its own, renderer → main, invoke
+  // HtmlPreviewActionRequest: a user's click on the toolbar, the banner or the tab menu
+  htmlPreviewAction: 'damocles:shell:html-preview:action',
+  // HTML preview tabs, renderer → main, send
+  // HtmlPreviewArea | null: the active HTML preview tab's page card, which main covers with the tab's view
+  htmlPreviewBounds: 'damocles:shell:html-preview:bounds',
 
   // Files, renderer → main, invoke
   // FilesListRequest → FilesListResult
@@ -763,7 +773,7 @@ export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
 export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal'];
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
-export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge' | 'designPreview';
+export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge' | 'designPreview' | 'terminal' | 'htmlPreview';
 export type EditorReadOnlyReason = 'encoding' | 'log' | 'snapshot' | 'tooLarge';
 
 // A browser page of the selected chat (D14), as main observed it from the host messages core posts to the page.
@@ -852,6 +862,10 @@ export interface ShellEditorTab {
   readonly browser?: ShellBrowserPage;
   // designPreview tabs only, titled "S1 · Contacts" (the screen's data-ds-screen and <title>, else its file name)
   readonly designPreview?: ShellDesignPreview;
+  // terminal tabs only
+  readonly terminal?: { readonly id: string };
+  // htmlPreview tabs only, titled "Preview <name>"; they carry projectKey and relativePath, and no documentId
+  readonly htmlPreview?: ShellHtmlPreview;
   // a browser tab's is the page's own title, which the shell shows without bidi controls
   readonly title: string;
   // absent for files outside every project, untitled and core-generated documents; the root key (folder-root.ts)
@@ -1096,6 +1110,10 @@ export interface EditorTabRequest {
   readonly tabId: string;
 }
 
+export interface EditorFocusPageRequest {
+  readonly tabId: string;
+}
+
 // text: the whole buffer; version: the ShellDocumentContent version the buffer started from
 export interface EditorTextRequest {
   readonly documentId: string;
@@ -1280,6 +1298,31 @@ export const DESIGN_PREVIEW_ACTIONS = ['openInBrowser', 'screenshot'] as const;
 export interface DesignPreviewActionRequest {
   readonly tabId: string;
   readonly action: (typeof DESIGN_PREVIEW_ACTIONS)[number];
+}
+
+// loading: the page has not finished its first load; offline: the project's host dropped; failed: the file could not be
+// served (missing, refused, a read error), the main frame failed to load, or the page crashed
+export type HtmlPreviewStatus = 'loading' | 'ready' | 'offline' | 'failed';
+
+// An HTML preview tab's state; main shows its view over the page card only while status is ready.
+export interface ShellHtmlPreview {
+  readonly status: HtmlPreviewStatus;
+  // false: scripts are off and the shell shows the trust banner
+  readonly trusted: boolean;
+  // the project's remote host as this computer names it; absent for this computer (the offline text "{host} is not connected.")
+  readonly hostName?: string;
+}
+
+// trustFolder: the project's trust question; the tab rebuilds with scripts on once it is trusted
+export const HTML_PREVIEW_ACTIONS = ['reload', 'openInBrowser', 'trustFolder'] as const;
+export interface HtmlPreviewActionRequest {
+  readonly tabId: string;
+  readonly action: (typeof HTML_PREVIEW_ACTIONS)[number];
+}
+
+// The active HTML preview tab's page card; main covers it with the tab's view.
+export interface HtmlPreviewArea extends BrowserPageArea {
+  readonly tabId: string;
 }
 
 // A preview's capture for markup (PD-12, PD-41). png is the live view's viewport, imageWidth × imageHeight px, rendered at
@@ -1889,6 +1932,8 @@ export interface DamoclesShellApi {
   uploadMergeInputs(tabId: string): Promise<ScmMergeInputsResult>;
   completeUploadMerge(tabId: string): Promise<void>;
   setFocusOverlay(open: boolean): Promise<void>;
+  // true: the page took keyboard focus; false: keep focus where it is
+  focusPage(request: EditorFocusPageRequest): Promise<boolean>;
   onEditorCommand(listener: (command: EditorCommand) => void): () => void;
   // answer each with editorFlushed(requestId) after formatting the named documents and sending every pending edit
   onEditorFlush(listener: (request: EditorFlushRequest) => void): () => void;
@@ -1907,6 +1952,10 @@ export interface DamoclesShellApi {
   designPreviewAction(request: DesignPreviewActionRequest): Promise<void>;
   // the active design tab's frame, null while no design tab shows one; sent per frame, never debounced
   reportDesignPreviewBounds(area: DesignPreviewArea | null): void;
+  // HTML preview tabs; a failure main reports is a toast
+  htmlPreviewAction(request: HtmlPreviewActionRequest): Promise<void>;
+  // the active HTML preview tab's page card, null while none shows one ready (hidden, inactive, unmounted, not ready)
+  reportHtmlPreviewBounds(area: HtmlPreviewArea | null): void;
   onDesignReplay(listener: (progress: DesignReplayProgress) => void): () => void;
   // Markup (PD-12): while it is on for a tab, main keeps the tab's view hidden; a failed send rejects after main's toast
   designFreeze(tabId: string): Promise<DesignFreeze>;

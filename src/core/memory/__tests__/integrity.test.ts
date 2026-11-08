@@ -252,7 +252,7 @@ describe('memory integrity check on a worker', () => {
     await vi.waitFor(() => expect(first.fake.notifications.calls).toEqual([damagedNotice]));
     expect(existsSync(repairMarkerPath(dbPath))).toBe(true);
     expect(await first.service.addNote('refused again')).toBeNull();
-    expect(first.service.listNotes()).toEqual([]);
+    expect(await first.service.listNotes()).toEqual([]);
     expect((first.service.database!.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(40);
     await first.service.dispose();
 

@@ -25,6 +25,8 @@ import {
 } from './support/terminal';
 
 const windows = process.platform === 'win32';
+// TEST_PROFILE's detected name
+const TEST_PROFILE_NAME = windows ? 'Command Prompt' : 'bash';
 
 async function launchWithTerminal(home: Parameters<typeof useTestProfile>[0], launch: (options?: object) => Promise<{ app: ElectronApplication; close: () => Promise<void> }>): Promise<{ app: ElectronApplication; shell: Page; close: () => Promise<void> }> {
   useTestProfile(home);
@@ -287,8 +289,9 @@ test('an exited terminal shows its exit code, and Restart starts a new shell in 
 test('the new-terminal quick pick lists the profiles with the default marked, and Escape creates nothing', async ({ home, launch }) => {
   const { app, shell } = await launchWithTerminal(home, launch);
   const overlay = await overlayPage(app);
+  // one project open: the pick skips its project step
   await shell.getByTestId('terminal-new').click();
-  await expect(quickPick(overlay)).toBeVisible();
+  await expect(quickPick(overlay)).toHaveAttribute('data-step', 'profile');
   const defaultRow = overlay.locator('[data-testid="quick-pick-item"]', { has: overlay.getByTestId('quick-pick-badge') });
   await expect(defaultRow).toHaveCount(1);
   await expect(defaultRow).toHaveAttribute('data-item-id', windows ? 'cmd' : 'bash');
@@ -301,6 +304,59 @@ test('the new-terminal quick pick lists the profiles with the default marked, an
   await expect(quickPick(overlay)).toBeVisible();
   await defaultRow.click();
   await expect(terminalRows(shell)).toHaveCount(2);
+});
+
+test('every way to add a terminal asks for the project first, starting on the current one; Shift+Enter starts its default shell', async ({ home, launch }) => {
+  const { app, shell } = await launchWithTerminal(home, launch);
+  const second = path.join(path.dirname(home.project), 'beta');
+  fs.mkdirSync(second, { recursive: true });
+  await openProjectChat(app, second);
+  const overlay = await readyOverlay(app);
+  const projectStep = async (): Promise<void> => {
+    await expect(quickPick(overlay)).toHaveAttribute('data-step', 'project');
+    await expect(overlay.getByTestId('quick-pick-item')).toHaveText([/^alpha/, /^betaCurrent/]);
+    // the current project keeps its place and is the row Enter takes
+    await expect(overlay.locator('[data-testid="quick-pick-item"][aria-selected="true"]')).toHaveText(/^beta/);
+    await expect(overlay.getByTestId('quick-pick-group')).toHaveCount(0);
+  };
+
+  // the + button, the menu (Ctrl+Shift+`) and the palette's New Terminal With Profile all open the same pick
+  await shell.getByTestId('terminal-new').click();
+  await projectStep();
+  await overlay.keyboard.press('Escape');
+  await expect(quickPick(overlay)).toHaveCount(0);
+  await clickMenu(app, 'damocles.terminal.newWithProfile');
+  await projectStep();
+  await overlay.keyboard.press('Escape');
+  await expect(quickPick(overlay)).toHaveCount(0);
+  await clickMenu(app, 'damocles.terminal.new');
+  await projectStep();
+
+  // Enter takes the current project to its host's shells, the default first; Escape at the shell step creates nothing
+  await overlay.keyboard.press('Enter');
+  await expect(quickPick(overlay)).toHaveAttribute('data-step', 'profile');
+  await expect(overlay.getByTestId('quick-pick-item').first()).toHaveAttribute('data-item-id', TEST_PROFILE);
+  await overlay.keyboard.press('Escape');
+  await expect(quickPick(overlay)).toHaveCount(0);
+  await expect(shell.locator('[data-testid="terminal-view"]')).toHaveCount(1);
+
+  // Shift+Enter on a project starts its host's default shell there, with no shell step
+  await shell.getByTestId('terminal-new').click();
+  await projectStep();
+  await overlay.keyboard.press('Shift+Enter');
+  await expect(quickPick(overlay)).toHaveCount(0);
+  await expect(terminalRows(shell)).toHaveCount(2);
+  await expect(terminalRows(shell).getByTestId('terminal-row-project')).toHaveText(['alpha', 'beta']);
+  await expect(activeTerminal(shell)).toHaveAttribute('data-status', 'running');
+
+  // the empty panel's button opens the pick too
+  await clickMenu(app, 'damocles.terminal.killAll');
+  await expect(shell.getByTestId('terminal-empty')).toBeVisible();
+  await shell.getByTestId('terminal-empty-new').click();
+  await projectStep();
+  await overlay.locator('[data-testid="quick-pick-item"]').first().click({ modifiers: ['Shift'] });
+  await expect(shell.locator('[data-testid="terminal-view"]')).toHaveCount(1);
+  await expect(shell.getByTestId('terminal-tab-project')).toHaveText('alpha');
 });
 
 test('with no project open a terminal starts in the home folder and stays there once a project opens, where the next one starts', async ({ home, launch }) => {
@@ -535,15 +591,31 @@ test('the New Terminal dropdown lists the detected shells and Select Default Pro
   await chevron.click();
   await expect(overlayMenu(overlay)).toBeVisible();
   await expect(chevron).toHaveAttribute('aria-expanded', 'true');
-  await expect(menuItem(overlay, `profile:${TEST_PROFILE}`)).toBeVisible();
+  // one project: its host's shells are listed flat
+  const testShell = overlayMenu(overlay).getByRole('menuitem', { name: TEST_PROFILE_NAME, exact: true });
+  await expect(testShell).toBeVisible();
+  await expect(overlay.getByTestId('overlay-submenu')).toHaveCount(0);
   await expect(menuItem(overlay, 'selectDefaultProfile')).toHaveText('Select Default Profile...');
-  await menuItem(overlay, `profile:${TEST_PROFILE}`).click();
+  await testShell.click();
   await expect(terminalRows(shell)).toHaveCount(2);
   await expect(chevron).toHaveAttribute('aria-expanded', 'false');
+
+  // with a second project, each project gets a submenu of its host's shells
+  const second = path.join(path.dirname(home.project), 'beta');
+  fs.mkdirSync(second, { recursive: true });
+  await openProjectChat(app, second);
+  await chevron.click();
+  await expect(overlayMenu(overlay).locator('[data-menu-item][aria-haspopup="menu"]')).toHaveText(['alpha', 'beta']);
+  await overlayMenu(overlay).locator('[data-menu-item][aria-haspopup="menu"]', { hasText: 'beta' }).click();
+  await overlay.getByTestId('overlay-submenu').getByRole('menuitem', { name: TEST_PROFILE_NAME, exact: true }).click();
+  await expect(terminalRows(shell)).toHaveCount(3);
+  await expect(terminalRows(shell).getByTestId('terminal-row-project')).toHaveText(['alpha', 'alpha', 'beta']);
 
   await chevron.click();
   await menuItem(overlay, 'selectDefaultProfile').click();
   await expect(quickPick(overlay)).toHaveAttribute('data-pick', 'list');
+  // the menu has closed, so the chevron is no longer open while Select Default Profile... shows
+  await expect(chevron).toHaveAttribute('aria-expanded', 'false');
   await expect(overlay.locator(`[data-testid="quick-pick-item"][data-item-id="${TEST_PROFILE}"]`)).toHaveAttribute('aria-checked', 'true');
   await overlay.keyboard.press('Escape');
   await expect(quickPick(overlay)).toHaveCount(0);

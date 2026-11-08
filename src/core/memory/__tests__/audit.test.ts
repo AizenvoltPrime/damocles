@@ -188,7 +188,7 @@ describe('memory quality audit', () => {
       expect(tables).toEqual(['memory_audit_proposals', 'memory_audit_runs']);
       const idx = (v4.prepare("PRAGMA index_info('idx_audit_proposals_run_status')").all() as Array<{ name: string }>).map(c => c.name);
       expect(idx).toEqual(['run_id', 'status']);
-      expect((v4.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(9);
+      expect((v4.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(10);
       v4.close();
     });
   });

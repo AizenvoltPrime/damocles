@@ -23,9 +23,10 @@ import {
   type ShellEditorTab,
 } from '../../preload/shell-channels';
 import type { BrowserTabsEditor } from '../browser-tabs';
+import { leavePageOnPartKeys, type PartStep } from '../page-focus';
 import type { PersistedDesignTab } from '../panel-state-store';
 import { DESIGN_SCHEME } from '../protocol';
-import { mainFrameLoadFailed, registerDesignContents } from '../security';
+import { mainFrameLoadFailed, registerLockedContents } from '../security';
 import { JOURNEY_HIGHLIGHT_ATTRIBUTE, runJourney, untilAborted } from './design-journey';
 import { DESIGN_PARTITION, type DesignViewTarget } from './design-session';
 
@@ -70,6 +71,8 @@ export interface DesignPreviewsDeps {
   readonly openInBrowserFailed: () => void;
   // a design view that held keyboard focus closed or hid; a hidden view keeps focus, so the owner moves it
   readonly focusAway: () => void;
+  // Focus Next or Previous Part, from the editor part a focused design view belongs to
+  readonly focusPart: (step: PartStep) => void;
   readonly log: (line: string) => void;
   // the design session's proxy is set; a view loads only after it, and none loads when it failed (PD-7)
   readonly sessionReady: Promise<void>;
@@ -457,6 +460,14 @@ export class DesignPreviews {
 
   focused(): boolean {
     return this.activeTab()?.live?.view.webContents.isFocused() ?? false;
+  }
+
+  /** Keyboard focus into the tab's design; false while its view is not shown (inactive, not ready, markup on, no frame reported). */
+  focusPage(tabId: string): boolean {
+    const view = this.visibleTab(tabId)?.live?.view;
+    if (!view?.getVisible()) return false;
+    view.webContents.focus();
+    return true;
   }
 
   /**
@@ -1075,7 +1086,7 @@ export class DesignPreviews {
     });
     const token = randomBytes(16).toString('hex');
     // Before the first load, so the navigation lock applies to it.
-    registerDesignContents(view.webContents, `${DESIGN_SCHEME}://${token}`);
+    registerLockedContents(view.webContents, `${DESIGN_SCHEME}://${token}`);
     // WebRTC's sockets bypass webRequest and CSP; with UDP only through the session's refusing proxy, ICE reaches no host.
     view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     view.setBackgroundColor('#ffffff');
@@ -1083,6 +1094,7 @@ export class DesignPreviews {
     const live: LiveView = { view, token, loaded: false, loadFailed: false, documentReady: false, sheetStates: undefined, tweakKeys: new Map(), tweakQueue: Promise.resolve() };
     this.tokens.set(token, tab);
     const contents = view.webContents;
+    leavePageOnPartKeys(contents, this.deps.focusPart);
     contents.on('dom-ready', () => {
       if (tab.live !== live) return;
       // insertCSS lasts one document, so each load adds the sheets again, the tweaks included.

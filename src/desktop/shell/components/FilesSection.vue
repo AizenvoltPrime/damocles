@@ -14,6 +14,7 @@ import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { ScmDecoration, ScmLetter, ScmResource, ScmTone } from '../../preload/scm-channels';
 import { parseRootKey } from '../../preload/folder-root';
 import { fileNameProblem } from '../../preload/file-names';
+import { isServablePreviewPath } from '../../main/html-preview/serve-policy';
 import { ancestorsOf, autoRevealExcluded, childPath, flattenTree, nameOf, parentOf, type Listing, type TreeEdit, type TreeRow } from '../files-tree';
 import FileIcon from './FileIcon.vue';
 import { tidyMenu } from '../../preload/overlay-channels';
@@ -315,6 +316,8 @@ function onKeydown(event: KeyboardEvent): void {
 
 const fileRef = (relativePath: string): FileRef | undefined => (props.projectKey === undefined ? undefined : { projectKey: props.projectKey, relativePath });
 const isMarkdown = (path: string): boolean => /\.md$/i.test(path);
+// Only a file the preview's serve policy would serve: a dot folder's page would only fail to load.
+const previewsAsHtml = (path: string): boolean => /\.html?$/i.test(path) && isServablePreviewPath(path);
 
 async function open(path: string, as?: 'preview' | 'source', preserveFocus = false): Promise<boolean> {
   const file = fileRef(path);
@@ -477,7 +480,10 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
     : [
         ...(markdown
           ? [item('openPreview', t('files.menu.openPreview'), 'eye', t('files.menu.click')), item('openSource', t('files.menu.openSource'), 'code')]
-          : [item('open', t('files.menu.open'), 'file', t('files.menu.click'))]),
+          : [
+              item('open', t('files.menu.open'), 'file', t('files.menu.click')),
+              ...(previewsAsHtml(row.path) ? [item('openPreview', t('files.menu.openPreview'), 'eye')] : []),
+            ]),
         item('focusOverlay', t('files.menu.focusOverlay'), 'maximize-2'),
         item('mention', t('files.menu.mention'), 'at-sign', t('files.menu.drag')),
         ...(resource ? [item('openTimeline', t('files.menu.openTimeline'), 'history')] : []),

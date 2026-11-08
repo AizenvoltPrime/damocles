@@ -1016,7 +1016,7 @@
       "damocles.desktop.terminal.defaultProfile": {
         "type": "string",
         "default": "",
-        "description": "The id of the shell a new terminal starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected."
+        "description": "The id of the shell a new terminal on this computer starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected. A remote host keeps its own default, which Select Default Profile... sets."
       },
       "damocles.desktop.terminal.fontSize": {
         "type": "integer",
@@ -1162,7 +1162,7 @@
           "Never ask."
         ],
         "default": "running",
-        "description": "Whether to ask before killing desktop terminals: Kill, Kill All, closing the window, removing a project and quitting."
+        "description": "Whether to ask before killing desktop terminals: Kill, Kill All, closing a terminal's editor tab (Close, Close others, Close to the right, Close all), closing the window, removing a project and quitting."
       },
       "damocles.desktop.terminal.profiles": {
         "type": "object",
@@ -2573,7 +2573,7 @@
         "not": {},
         "errorMessage": "damocles.desktop.terminal.defaultProfile applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.desktop.terminal.defaultProfile applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe id of the shell a new terminal starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected."
+        "description": "damocles.desktop.terminal.defaultProfile applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe id of the shell a new terminal on this computer starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected. A remote host keeps its own default, which Select Default Profile... sets."
       },
       "damocles.desktop.terminal.fontSize": {
         "not": {},
@@ -2675,7 +2675,7 @@
         "not": {},
         "errorMessage": "damocles.desktop.terminal.confirmOnKill applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.desktop.terminal.confirmOnKill applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhether to ask before killing desktop terminals: Kill, Kill All, closing the window, removing a project and quitting."
+        "description": "damocles.desktop.terminal.confirmOnKill applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhether to ask before killing desktop terminals: Kill, Kill All, closing a terminal's editor tab (Close, Close others, Close to the right, Close all), closing the window, removing a project and quitting."
       },
       "damocles.desktop.terminal.profiles": {
         "not": {},

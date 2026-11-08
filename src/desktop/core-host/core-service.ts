@@ -26,7 +26,7 @@ import { settingsFolderOf, type FolderTarget } from '../../core/workspace-folder
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost } from '../../platform/window-service';
 import { holdsWorktreeSetup, isActiveActivity } from '../../shared/chat-retention';
-import { FOREIGN_VIEW_NOT_ATTACHED, REMOTE_CHAT_USER_SETTING_MESSAGES, VOICE_VIEW_MESSAGES } from '../../shared/remote-user';
+import { FOREIGN_VIEW_MESSAGES, FOREIGN_VIEW_NOT_ATTACHED } from '../../shared/remote-user';
 import type { WebviewToExtensionMessage, WorktreePhase } from '../../shared/types/messages';
 import type { ChatEntry, FolderTargetEntry } from '../core-protocol';
 import { currentActor } from '../core-protocol/actor';
@@ -405,6 +405,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     if (!owner) throw new Error('The chat is not loaded');
     return owner.browser.openNewPageForChat(owner.host, url);
   });
+  endpoint.serve('browser.useClientCertificate', ({ origin, filter }) => provider.getBrowserService().useClientCertificate(origin, filter));
   // only a design a chat of this core holds, so main never names an arbitrary folder
   const heldDesign = (designId: string): string | undefined => (isSafeAgentPathId(designId) ? SessionDesign.heldFolderOf(designId) : undefined);
   endpoint.serve('design.read', async ({ designId, relPath }) => {
@@ -445,6 +446,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('user.memory.profile', () => memory.relayProfile());
   endpoint.serve('user.memory.resolve', ({ ids }) => memory.relayResolve(ids));
   endpoint.serve('user.memory.apply', ({ writes }) => memory.applyRelayedWrites(writes));
+  endpoint.serve('user.memory.list', ({ kinds, tags, cursor }) => memory.relayList({ kinds, ...(tags !== undefined ? { tags } : {}), ...(cursor !== undefined ? { cursor } : {}) }));
   endpoint.serve('user.mcp.servers', () => provider.relayedMcpServers());
   endpoint.serve('user.mcp.call', ({ server, tool, args }, signal) => provider.runRelayedMcp({ kind: 'call', server, tool, args }, signal));
   endpoint.serve('user.mcp.resources', ({ server, kind, cursor }, signal) => provider.runRelayedMcp({ kind, server, ...(cursor !== undefined ? { cursor } : {}) }, signal));
@@ -454,13 +456,13 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     panels.attachForeign(authority, viewId);
   });
   endpoint.serve('panels.detachForeign', ({ viewId }) => panels.detachForeign(viewId));
-  // main sends only VOICE_VIEW_MESSAGES and REMOTE_CHAT_USER_SETTING_MESSAGES of a view it attached; checked again here
+  // main sends only FOREIGN_VIEW_MESSAGES of a view it attached; checked again here
   endpoint.serve('panels.foreignMessage', async ({ viewId, message }) => {
     const host = panels.foreign(viewId);
     if (!host) throw new Error(FOREIGN_VIEW_NOT_ATTACHED);
     const type = (message as { type?: unknown } | null)?.type;
-    if (typeof type !== 'string' || !(VOICE_VIEW_MESSAGES.has(type) || REMOTE_CHAT_USER_SETTING_MESSAGES.has(type))) {
-      throw new Error('Only voice and user-setting messages reach this computer from a remote chat');
+    if (typeof type !== 'string' || !FOREIGN_VIEW_MESSAGES.has(type)) {
+      throw new Error('Only voice, user-setting and user-scope messages reach this computer from a remote chat');
     }
     await provider.dispatchForeign(host, message as WebviewToExtensionMessage);
   });

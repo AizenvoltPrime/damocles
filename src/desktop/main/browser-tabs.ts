@@ -3,6 +3,7 @@ import { isNavigableUrl } from '../../core/browser/net-guard';
 import { MAX_BROWSER_URL_LENGTH, typedAddress } from '../../shared/typed-address';
 import type { BrowserAction, ShellBrowserPage, ShellEditorTab } from '../preload/shell-channels';
 import type { PersistedPages } from './panel-state-store';
+import { leavePageOnPartKeys, type PartStep } from './page-focus';
 import { isHttpUrl } from './security';
 import type { DesktopPanel, PagesHost } from './views';
 
@@ -49,6 +50,8 @@ export interface BrowserTabsDeps {
   readonly copy: (text: string) => Promise<void>;
   // a page view that held keyboard focus closed or hid; a hidden view keeps focus, so the owner moves it
   readonly focusAway: () => void;
+  // Focus Next or Previous Part, from the editor part a focused page view belongs to
+  readonly focusPart: (step: PartStep) => void;
   // a remote chat's typed address in its local form, forwarded and checked by the client-network guard; undefined when the
   // guard refused it, which the user was told
   readonly remoteAddress: (chat: DesktopPanel, url: string) => Promise<string | undefined>;
@@ -126,6 +129,14 @@ export class BrowserTabs implements PagesHost {
 
   focused(): boolean {
     return this.activePage()?.webContents.isFocused() ?? false;
+  }
+
+  /** Keyboard focus into the tab's page; false while its view is not shown (another tab active, no page area reported). */
+  focusPage(tabId: string): boolean {
+    const page = this.visiblePage(tabId);
+    if (!page?.view.getVisible()) return false;
+    page.webContents.focus();
+    return true;
   }
 
   // A chat holding pages, or with saved pages on their way back, stays loaded.
@@ -230,6 +241,7 @@ export class BrowserTabs implements PagesHost {
   }
 
   pageAdded(page: DesktopPanel): void {
+    leavePageOnPartKeys(page.webContents, this.deps.focusPart);
     const chat = page.chat!;
     const entry = this.entryOf(chat);
     entry.pages.push(page);

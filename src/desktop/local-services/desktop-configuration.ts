@@ -344,7 +344,7 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     type: 'string',
     default: '',
     scope: 'application',
-    description: 'The id of the shell a new terminal starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected.',
+    description: 'The id of the shell a new terminal on this computer starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected. A remote host keeps its own default, which Select Default Profile... sets.',
   },
   [TERMINAL_FONT_SIZE_SETTING]: {
     type: 'integer',
@@ -479,7 +479,7 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     ],
     default: 'running',
     scope: 'application',
-    description: 'Whether to ask before killing desktop terminals: Kill, Kill All, closing the window, removing a project and quitting.',
+    description: 'Whether to ask before killing desktop terminals: Kill, Kill All, closing a terminal\'s editor tab (Close, Close others, Close to the right, Close all), closing the window, removing a project and quitting.',
   },
   // Validated by terminal/user-profiles.ts, never by isDesktopSettingValue, so prefs:set cannot write it.
   [TERMINAL_PROFILES_SETTING]: {

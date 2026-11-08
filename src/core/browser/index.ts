@@ -25,6 +25,8 @@ import { isNavigableUrl } from './net-guard';
 import { httpFallbackUrl } from './https-fallback';
 import { typedAddress } from '../../shared/typed-address';
 import { DownloadManager } from './downloads';
+import { writeClientCertificateRules } from './client-certificate-rules';
+import { isClientCertificateOrigin, namesCertificate, type ClientCertificateFilter } from '../../shared/client-certificate';
 import { InterceptManager } from './intercept';
 import { ScreencastController, MAX_DEVICE_SCALE } from './screencast';
 import { BrowserAgentScope, type ScopeTabInfo } from './agent-scope';
@@ -451,6 +453,8 @@ export class BrowserService {
   private readonly downloadManager: DownloadManager;
   // Active network-interception rules (BrowserIntercept), cleared on cleanup() (close + dispose).
   private readonly interceptManager = new InterceptManager(() => this.context);
+  // The certificate Chrome sends each origin without asking, chosen by the user in this app session; never persisted.
+  private readonly clientCertificateRules = new Map<string, ClientCertificateFilter>();
 
   isConnected(): boolean {
     return this.state === 'connected';
@@ -1047,6 +1051,42 @@ export class BrowserService {
     await this.teardown(true);
   }
 
+  /**
+   * Chrome sends the certificate `filter` names to `origin` without asking for the rest of this app session. Chrome reads
+   * the rule only at launch, so a running browser closes and every chat's pages reopen.
+   */
+  async useClientCertificate(origin: string, filter: ClientCertificateFilter): Promise<void> {
+    if (!isClientCertificateOrigin(origin)) throw new Error('Not an https origin');
+    if (!namesCertificate(filter)) throw new Error('The certificate filter names no field');
+    this.clientCertificateRules.set(origin, filter);
+    const run = this.openChain.then(async () => {
+      const reopen = this.chatPages();
+      if (this.context) await this.teardown(true);
+      // a profile prepared for a launch that failed is not prepared again
+      else if (this.userDataDir) await writeClientCertificateRules(this.userDataDir, this.clientCertificateRules);
+      return reopen;
+    });
+    this.openChain = run.then(() => {}, () => {});
+    for (const { chat, urls, active } of await run) await this.restoreChatPages(chat, urls, active);
+  }
+
+  // Each chat's pages in tab order with the one its human scope shows, as restoreChatPages takes them.
+  private chatPages(): Array<{ readonly chat: PanelHost; readonly urls: string[]; active: number | undefined }> {
+    const byChat = new Map<PanelHost, { readonly chat: PanelHost; readonly urls: string[]; active: number | undefined }>();
+    for (const entry of this.pages.values()) {
+      if (!entry.chat || entry.closing) continue;
+      let pages = byChat.get(entry.chat);
+      if (!pages) {
+        pages = { chat: entry.chat, urls: [], active: undefined };
+        byChat.set(entry.chat, pages);
+      }
+      const scopeId = this.chatScopeIds.get(entry.chat);
+      if (scopeId !== undefined && this.scopes.get(scopeId)?.currentPage === entry.page) pages.active = pages.urls.length;
+      pages.urls.push(shownUrl(entry) ?? 'about:blank');
+    }
+    return [...byChat.values()];
+  }
+
   /** Pick on the page the human is watching ({@link BrowserService.watchedEntry}). */
   async pickElement(chat?: PanelHost): Promise<ElementAttachment> {
     const active = this.watchedEntry(chat);
@@ -1073,6 +1113,8 @@ export class BrowserService {
     if (this.userDataDir) return;
     const dir = this.profileDir ?? localProfileDir();
     await fsp.mkdir(dir, { recursive: true });
+    // before every launch, the first of an app session included, so a rule another session wrote never applies
+    await writeClientCertificateRules(dir, this.clientCertificateRules);
     this.userDataDir = dir;
     const iconDir = join(dir, 'tab-icons');
     await fsp.mkdir(iconDir, { recursive: true });

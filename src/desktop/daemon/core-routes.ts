@@ -12,7 +12,7 @@ import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreTransport
 import { MAX_ITEMS } from '../core-protocol/messages';
 import { confineExisting, projectOfPath } from '../local-services/confine';
 import { readFileBytes } from '../local-services/file-bytes';
-import { CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
+import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
 import { DESIGN_RENDER_CLIENT_ABSENT } from '../../shared/design-render';
 import { CodecError } from '../../remote/codec';
 import type { ChatEntry, ClientAuth, ClientPolicy, ClientUser, CoreEvents, CoreMirrorTopics, CorePanelOps, CoreRequests, EditorMirror, MainEvents, MainPanelOps, MainRequests, MirrorTopics, Params, Result } from '../core-protocol/messages';
@@ -33,12 +33,13 @@ export interface NoClientContext {
  * first; pinnedClient: exactly the client params.clientId names, refused with CREDENTIAL_CLIENT_ABSENT while it is gone or
  * inside its grace, never another. needs: a name of FEATURES; on every route kind that has it, only a client whose attach
  * listed it is asked (one that predates the request would close its connection on the name), and for client the actor
- * first, else another attached client that lists it.
+ * first, else another attached client that lists it; a pinnedClient route refuses a client without it with
+ * CLIENT_FEATURE_MISSING.
  */
 export type CoreRequestRoute<M extends keyof CoreRequests> =
   | { readonly to: 'client' | 'issuingClient' | 'viewClient' | 'chatClient'; readonly noClient: (params: Params<CoreRequests, M>, context: NoClientContext) => Result<CoreRequests, M> | Promise<Result<CoreRequests, M>>; readonly needs?: string }
   | { readonly to: 'daemon' }
-  | { readonly to: 'pinnedClient' }
+  | { readonly to: 'pinnedClient'; readonly needs?: string }
   | { readonly to: 'refused' };
 
 const nothing = (): undefined => undefined;
@@ -124,6 +125,7 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'user.memory.profile': { to: 'pinnedClient' },
   'user.memory.resolve': { to: 'pinnedClient' },
   'user.memory.apply': { to: 'pinnedClient' },
+  'user.memory.list': { to: 'pinnedClient', needs: 'user.memory.list' },
   'user.mcp.call': { to: 'pinnedClient' },
   'user.mcp.resources': { to: 'pinnedClient' },
   'user.mcp.readResource': { to: 'pinnedClient' },
@@ -235,6 +237,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'sessionFiles.write': 'core',
   'folders.setDefault': 'core',
   'browser.newPage': 'refused',
+  'browser.useClientCertificate': 'refused',
   'worktree.retrySetup': 'core',
   'worktree.beginFinish': 'core',
   'worktree.endFinish': 'core',
@@ -285,6 +288,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'user.memory.profile': 'refused',
   'user.memory.resolve': 'refused',
   'user.memory.apply': 'refused',
+  'user.memory.list': 'refused',
   // the request's actor is the device that takes a held queue
   'memory.deliverHeld': 'core',
   'memory.discardHeld': 'core',
@@ -689,6 +693,10 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         if (!present(session)) {
           log(`[core-host] ${what}: client ${params.clientId} is not attached`);
           throw new Error(CREDENTIAL_CLIENT_ABSENT);
+        }
+        if (!capable(session, route.needs)) {
+          log(`[core-host] ${what}: client ${params.clientId} attached without ${route.needs}`);
+          throw new Error(CLIENT_FEATURE_MISSING);
         }
         log(`[core-host] ${what} from client ${params.clientId} (${session.client.id})`);
         // a client lost while it answers is absent at once: its answer would arrive only on its resume

@@ -31,6 +31,7 @@ import {
   type ShellDiffSide,
   type ShellEditorTab,
   type ShellFileGit,
+  type ShellHtmlPreview,
   type ShellPatchSide,
   type ShellPatchTab,
   type ShellTimelineTab,
@@ -63,6 +64,7 @@ import { languageIdForName } from './platform/editor-document';
 import type { BrowserTabsEditor } from './browser-tabs';
 import type { AskMessage } from './message-dialog';
 import type { AuthorityMentionTarget } from './mention-authority';
+import { isServablePreviewPath } from './html-preview/serve-policy';
 
 // A path a remote project's file has names the target's file, never one this computer's git or file manager may act on.
 function isLocalLocation(location: { readonly projectKey?: string; readonly host?: string }): boolean {
@@ -91,7 +93,7 @@ export const FLUSH_TIMEOUT_MS = 2000;
 // (formatter-hosts.ts) plus the round trips.
 export const FORMAT_FLUSH_MS_PER_DOCUMENT: number = 2 * EDITOR_FORMAT_TIMEOUT_MS + 1000;
 
-type FileTabKind = Exclude<EditorTabKind, 'browser' | 'designPreview'>;
+type FileTabKind = Exclude<EditorTabKind, 'browser' | 'designPreview' | 'terminal'>;
 
 // Tabs that are no file, whatever document they hold.
 const NO_PATH_TAB_KINDS: ReadonlySet<EditorTabKind> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
@@ -173,10 +175,40 @@ interface Tab {
   merge?: ({ readonly repoId: string; readonly path: string } | { readonly upload: true; readonly path: string }) & { readonly title: string };
   // the authority whose text the tab shows when no project file is its source (a remote core's markdown)
   textAuthority?: string;
+  // an htmlPreview tab's file, which it shows through its HtmlPreviews view and no document
+  htmlPreview?: FileRef;
 }
 
 // What the active tab is to source control (MenuState.editorGit).
 export type ActiveEditorGit = 'file' | 'workingTreeDiff' | 'indexDiff' | null;
+
+// The text document the active tab edits (MenuState.editorDocument): writable unless read-only, formattable when writable source.
+export interface ActiveEditorDocument {
+  readonly writable: boolean;
+  readonly formattable: boolean;
+}
+
+// Whether a tab of the kind edits its document's text in a Monaco editor, the shell's only Save and Format path; a new kind
+// must say so here.
+const EDITS_TEXT: Readonly<Record<EditorTabKind, boolean>> = {
+  code: true,
+  untitled: true,
+  settings: true,
+  log: true,
+  searchEditor: true,
+  diff: true,
+  merge: true,
+  markdownPreview: false,
+  image: false,
+  notDisplayed: false,
+  changes: false,
+  review: false,
+  timeline: false,
+  htmlPreview: false,
+  browser: false,
+  designPreview: false,
+  terminal: false,
+};
 
 // A persisted tab names its file; ids are issued again on restore.
 export type PersistedTab =
@@ -186,6 +218,7 @@ export type PersistedTab =
   // a host's file outside every project, by its realpath there, reopened the same way once the host connects
   | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly authority: string; readonly path: string }
   | { readonly kind: 'settings'; readonly scope: SettingsFileScope; readonly backupId?: string }
+  | { readonly kind: 'htmlPreview'; readonly file: FileRef }
   // a file of the logs directory, by name
   | { readonly kind: 'log'; readonly name: string }
   | { readonly kind: 'untitled'; readonly backupId: string }
@@ -212,6 +245,27 @@ export interface BrowserTabSource {
   // a design preview's file: its absolute path copied, or mentioned in its design chat; nothing for a browser page
   copyPath(tabId: string): Promise<void>;
   mention(tabId: string): Promise<void>;
+  // keyboard focus into the tab's page view; false while that view is not shown
+  focusPage(tabId: string): boolean;
+}
+
+// The window's editor-hosted terminals, which the pane shows as tabs after its file and page tabs; TerminalService owns them,
+// their order and their persistence, and announces each change through EditorPane.terminalTabsChanged.
+export interface TerminalTabSource {
+  tabs(): readonly ShellEditorTab[];
+  // a user's activation: the terminal becomes the command target and takes keyboard focus
+  activate(tabId: string): void;
+  // Kill: one confirmOnKill question for all of them, then each terminal still present is killed
+  close(tabIds: readonly string[]): Promise<void>;
+}
+
+// The HTML previews' views, by their tab: the pane owns the tabs, their order and their persistence; HtmlPreviews the views.
+export interface HtmlPreviewSource {
+  state(tabId: string): ShellHtmlPreview;
+  // the pane's htmlPreview tabs and its active tab, after every change of either; a tab gone from the list is closed
+  tabsChanged(tabs: ReadonlyArray<{ readonly tabId: string; readonly file: FileRef }>, activeTabId: string | null): void;
+  // keyboard focus into the tab's view; false while that view is not shown
+  focusPage(tabId: string): boolean;
 }
 
 export interface EditorPaneDeps {
@@ -258,6 +312,9 @@ export interface EditorPaneDeps {
   readonly mention: (file: AuthorityMentionTarget) => Promise<void>;
   // the window's browser tabs; undefined while no window is open
   readonly browser: () => BrowserTabSource | undefined;
+  // the window's terminal tabs; undefined while no window is open
+  readonly terminals: () => TerminalTabSource | undefined;
+  readonly htmlPreviews: HtmlPreviewSource;
   // a warning toast
   readonly warn: (message: string) => void;
   // a remote authority's host as this computer names it
@@ -323,6 +380,11 @@ function fileRefOf(document: Document): FileRef | undefined {
   return location?.projectKey !== undefined && location.relativePath !== undefined ? { projectKey: location.projectKey, relativePath: location.relativePath } : undefined;
 }
 
+// A Search Editor's project is its search's; any other document's is its file's.
+function projectKeyOfDocument(document: Document | undefined): string | undefined {
+  return document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : document?.location?.projectKey;
+}
+
 
 // The one place a tab's title reaches the shell, which shows it in the strip, the menus and as the tab's accessible name.
 // displayPath stays raw because the shell splits it on separators, and escapes it where it shows it; a page's title is the
@@ -358,6 +420,10 @@ function diffSide(document: Document | undefined, modified: boolean): ShellDiffS
 
 function isMarkdown(document: Document): boolean {
   return document.kind === 'text' && document.languageId === 'markdown';
+}
+
+function isHtmlPath(relativePath: string): boolean {
+  return /\.html?$/i.test(relativePath);
 }
 
 /** The editor pane's tab list, recent files and active editor; the shell renders what it publishes. */
@@ -411,9 +477,15 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     ];
   }
 
+  private previewTabsChanged(): void {
+    this.deps.htmlPreviews.tabsChanged(this.tabs.flatMap((tab) => (tab.htmlPreview ? [{ tabId: tab.id, file: tab.htmlPreview }] : [])), this.activeId);
+  }
+
+  // Every publish goes through here, so HtmlPreviews knows each preview tab before its state is read.
   state(): ShellEditorState {
+    this.previewTabsChanged();
     return {
-      tabs: [...this.tabs.map((tab) => shownTitle(this.revealableTab(tab))), ...this.browserTabs()],
+      tabs: [...this.tabs.map((tab) => shownTitle(this.revealableTab(tab))), ...this.browserTabs(), ...this.terminalTabs()],
       activeTabId: this.activeId,
       settings: editorSettings(this.deps.settings),
       documents: this.shellDocuments(),
@@ -438,8 +510,33 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     this.stateChanged(false);
   }
 
+  /** An HTML preview's state changed (HtmlPreviewSource.state); nothing the layout file keeps. */
+  htmlPreviewsChanged(): void {
+    this.stateChanged(false);
+  }
+
+  /** The terminal tabs changed; TerminalService persists them. A gone active tab, or none, gives way as a closed tab's does. */
+  terminalTabsChanged(): void {
+    if (this.activeId === null || !this.visibleIds().includes(this.activeId)) this.activateFallback();
+    this.stateChanged(false);
+  }
+
+  /** The terminal's tab activates and the pane shows; focus: its terminal takes keyboard focus, as a user's activation does. */
+  showTerminalTab(tabId: string, opts: { readonly focus: boolean }): void {
+    if (!this.isTerminalTab(tabId)) return;
+    if (opts.focus) this.activate(tabId);
+    else this.setActive(tabId);
+    this.deps.showPane();
+  }
+
   focusTab(tabId: string): void {
     this.deps.focusTab(tabId);
+  }
+
+  /** Keyboard focus into the page a page or HTML preview tab shows; false, moving nothing, while no live view of it shows. */
+  focusPage(tabId: string): boolean {
+    if (this.tabs.some((tab) => tab.id === tabId && tab.htmlPreview)) return this.deps.htmlPreviews.focusPage(tabId);
+    return this.browserTabs().some((tab) => tab.id === tabId) && this.deps.browser()?.focusPage(tabId) === true;
   }
 
   recentFiles(): readonly FileRef[] {
@@ -464,6 +561,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     relativePath: string,
     opts: { readonly line?: number; readonly column?: number; readonly as?: 'preview' | 'source'; readonly preserveFocus?: boolean; readonly toSide?: boolean } = {},
   ): Promise<EditorOpenResult> {
+    if (opts.as === 'preview' && isHtmlPath(relativePath)) {
+      if (this.liveProjectKey(projectKey) === undefined || !isServablePreviewPath(relativePath)) return { ok: false, reason: 'outside' };
+      const preview = this.showHtmlPreview({ projectKey, relativePath });
+      if (opts.toSide === true) this.deps.showPaneBeside();
+      this.afterOpen(preview, { focus: opts.preserveFocus !== true });
+      return { ok: true, tabId: preview.id };
+    }
     const opened = await this.deps.documents.openProjectFile(projectKey, relativePath);
     if (!opened.ok) return opened;
     const tab = this.showDocument(opened.document, opts.as === 'preview' && isMarkdown(opened.document) ? 'markdownPreview' : undefined);
@@ -733,7 +837,20 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (this.activeId === null) return undefined;
     const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
     if (tab) return tab.kind;
-    return this.browserTabs().find((candidate) => candidate.id === this.activeId)?.kind;
+    return [...this.browserTabs(), ...this.terminalTabs()].find((candidate) => candidate.id === this.activeId)?.kind;
+  }
+
+  /** The text document the active tab edits, which Save, Save As and Format Document act on; undefined while it edits none. */
+  activeDocument(): ActiveEditorDocument | undefined {
+    const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
+    if (!tab || !EDITS_TEXT[tab.kind]) return undefined;
+    const documentId = tab.diff ? tab.diff.modifiedId : tab.documentId;
+    const document = documentId === undefined ? undefined : this.deps.documents.get(documentId);
+    if (document?.kind !== 'text') return undefined;
+    const writable = document.readOnlyReason === undefined;
+    // a diff edits only a writable modified side
+    if (tab.diff && !writable) return undefined;
+    return { writable, formattable: writable && !document.searchEditor };
   }
 
   /** The active tab to source control: a code tab of a file in an open repository, or a diff of a working tree or index change. */
@@ -946,7 +1063,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const documents = this.rootDocuments(rootKey);
     if (documents.some((document) => document.kind === 'text' && isDocumentDirty(document) && answers.get(document.id) !== document.text)) return false;
     const ids = new Set(documents.map((document) => document.id));
-    const targets = this.tabs.filter((tab) => [tab.documentId, tab.diff?.modifiedId, tab.diff?.originalId].some((id) => id !== undefined && ids.has(id)));
+    const targets = this.tabs.filter((tab) => tab.htmlPreview?.projectKey === rootKey || [tab.documentId, tab.diff?.modifiedId, tab.diff?.originalId].some((id) => id !== undefined && ids.has(id)));
     if (targets.length === 0) return true;
     this.tabs = this.tabs.filter((tab) => !targets.includes(tab));
     this.tabsRemoved();
@@ -960,6 +1077,18 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (targets.some((tab) => tab.id === this.activeId)) this.activateFallback();
     this.stateChanged();
     return true;
+  }
+
+  /** The roots changed: an HTML preview of a root no longer listed closes, since nothing serves its files without the root. */
+  rootsChanged(): void {
+    const gone = this.tabs.filter((tab) => tab.htmlPreview !== undefined && this.liveProjectKey(tab.htmlPreview.projectKey) === undefined);
+    if (gone.length === 0) return;
+    this.tabs = this.tabs.filter((tab) => !gone.includes(tab));
+    this.tabsRemoved();
+    if (gone.some((tab) => tab.id === this.activeId)) this.activateFallback();
+    // before the publish, so a trust recompute in the same change rebuilds no closed preview's view
+    this.previewTabsChanged();
+    this.stateChanged();
   }
 
   // The documents the root's tabs show: each one's file, or a Search Editor's search, lies in the root.
@@ -1056,6 +1185,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       await this.browserTabAction(action, tabId);
       return;
     }
+    if (this.isTerminalTab(tabId)) {
+      await this.terminalTabAction(action, tabId);
+      return;
+    }
     const tab = this.tab(tabId);
     const document = this.actionDocument(tab);
     switch (action) {
@@ -1071,10 +1204,21 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         await this.closeAround(action, tab.id);
         return;
       case 'openPreview':
-      case 'openSource':
+      case 'openSource': {
+        if (tab.htmlPreview) {
+          if (action === 'openSource') await this.openHtmlSource(tab.htmlPreview);
+          return;
+        }
+        // an offline placeholder's file previews too; the preview shows its host's state itself
+        const file = document ? fileRefOf(document) : undefined;
+        if (action === 'openPreview' && file && isHtmlPath(file.relativePath)) {
+          if (isServablePreviewPath(file.relativePath)) this.afterOpen(this.showHtmlPreview(file), { focus: true });
+          return;
+        }
         if (!document || !isMarkdown(document)) return;
         this.afterOpen(this.showDocument(document, action === 'openPreview' ? 'markdownPreview' : 'code'), { focus: true });
         return;
+      }
       case 'openFile':
         if (!document) return;
         this.afterOpen(this.showDocument(document, document.kind === 'text' ? 'code' : undefined), { focus: true });
@@ -1093,15 +1237,16 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         return;
       case 'copyPath':
       case 'copyRelativePath': {
-        const location = document?.location;
+        const location = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : document?.location;
         if (!location) return;
         const relative = action === 'copyRelativePath' && location.relativePath !== undefined;
         await this.deps.copy(relative ? location.relativePath!.split('/').join(this.flavorOf(location).sep) : location.path);
         return;
       }
       case 'revealInExplorer': {
-        if (!document?.location) return;
-        const shown = revealPathOf(document.location, this.deps.wslDistro);
+        const location = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : document?.location;
+        if (!location) return;
+        const shown = revealPathOf(location, this.deps.wslDistro);
         if (shown === undefined) {
           this.deps.warn(this.deps.t('The file is not on this computer.'));
           return;
@@ -1160,6 +1305,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   private filesMoved(projectKey: string, from: string, to: string): void {
     for (const tab of this.tabs) {
+      const moved = tab.htmlPreview?.projectKey === projectKey ? movedPath(tab.htmlPreview.relativePath, from, to) : undefined;
+      if (moved !== undefined) tab.htmlPreview = { projectKey, relativePath: moved };
       const place = tab.diff && 'place' in tab.diff.subject ? tab.diff.subject.place : undefined;
       const relativePath = place?.projectKey === projectKey && place.relativePath !== undefined ? movedPath(place.relativePath, from, to) : undefined;
       if (tab.diff && relativePath !== undefined) tab.diff.subject = { place: this.placeOfFile({ projectKey, relativePath }) };
@@ -1184,6 +1331,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return;
     }
     const tab = this.tab(tabId);
+    if (tab.htmlPreview) {
+      await this.deps.mention(tab.htmlPreview);
+      return;
+    }
     const documentId = tab.documentId ?? tab.diff?.modifiedId;
     const document = documentId === undefined ? undefined : this.deps.documents.get(documentId);
     if (!document?.location) return;
@@ -1202,7 +1353,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const index = ids.indexOf(this.activeId ?? '');
     const next = ids[(index + delta + ids.length) % ids.length]!;
     this.activate(next);
-    this.deps.focusTab(next);
+    if (!this.isTerminalTab(next)) this.deps.focusTab(next);
   }
 
   /** An open editable text document of a project file, which format on save and Format Document may format. */
@@ -1222,7 +1373,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   /** Whether a file tab belongs to a project match accepts, without building the shell's whole state. */
   hasProjectTab(match: (projectKey: string) => boolean): boolean {
     return this.tabs.some((tab) => {
-      const { projectKey } = this.shellTab(tab);
+      const projectKey = this.projectKeyOf(tab);
       return projectKey !== undefined && match(projectKey);
     });
   }
@@ -1308,6 +1459,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       for (const document of dirty) this.deps.documents.release(document.id, true);
       this.tabs = this.tabs.filter((tab) => !dirty.some((document) => tab.documentId === document.id || tab.diff?.modifiedId === document.id));
       this.tabsRemoved();
+      if (this.activeId !== null && !this.visibleIds().includes(this.activeId)) this.activateFallback();
     }
     this.persist();
     this.released = true;
@@ -1349,7 +1501,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     }
     const active = saved.active === null ? undefined : restored[saved.active];
     this.recent = [...saved.recent];
-    this.setActive(active?.id ?? this.tabs.at(-1)?.id ?? null);
+    if (active) this.setActive(active.id);
+    else this.activateFallback();
     this.stateChanged();
   }
 
@@ -1363,6 +1516,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   // A saved tab that names no backup: the file as it is on disk, up to the hard maximum when the tab showed it as text.
   private async restoreTab(persisted: PersistedTab): Promise<Tab | undefined> {
     if (persisted.kind === 'untitled') return undefined;
+    if (persisted.kind === 'htmlPreview') {
+      if (this.liveProjectKey(persisted.file.projectKey) === undefined) throw new Error('its project is no longer open');
+      return this.tabs.find((tab) => this.previews(tab, persisted.file)) ?? this.addTab({ id: randomUUID(), kind: 'htmlPreview', htmlPreview: persisted.file }, false);
+    }
     if (persisted.kind === 'searchEditor' && !('file' in persisted)) {
       const projectKey = this.liveProjectKey(persisted.projectKey);
       const message: SearchEditorMessage | undefined = persisted.config.query !== '' ? { kind: 'stale' } : undefined;
@@ -1585,6 +1742,21 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return existing ?? this.addTab({ id: randomUUID(), kind, documentId: document.id });
   }
 
+  // The file's one preview tab, else a new one after the active tab.
+  private showHtmlPreview(file: FileRef): Tab {
+    return this.tabs.find((tab) => this.previews(tab, file)) ?? this.addTab({ id: randomUUID(), kind: 'htmlPreview', htmlPreview: { projectKey: file.projectKey, relativePath: file.relativePath } });
+  }
+
+  private previews(tab: Tab, file: FileRef): boolean {
+    return tab.htmlPreview?.projectKey === file.projectKey && tab.htmlPreview.relativePath === file.relativePath;
+  }
+
+  // A preview's Open Source: its file's code tab, focused; a file that cannot be opened is a warning.
+  private async openHtmlSource(file: FileRef): Promise<void> {
+    const opened = await this.openFromUser(file.projectKey, file.relativePath, { as: 'source' });
+    if (!opened.ok) this.deps.warn(this.deps.t('{0} could not be opened.', visibleText(path.posix.basename(file.relativePath))));
+  }
+
   private addTab(tab: Tab, afterActive = true): Tab {
     const index = afterActive ? this.tabs.findIndex((candidate) => candidate.id === this.activeId) : -1;
     if (index < 0) this.tabs.push(tab);
@@ -1603,8 +1775,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     else this.deps.revealLine(tab.id, opts.line, { startLine: opts.line, startColumn: opts.column, endLine: opts.line, endColumn: opts.column });
   }
 
+  // A terminal tab's activation focuses its terminal, which a file tab's leaves to the caller.
   private activate(tabId: string): void {
     this.setActive(tabId);
+    if (this.isTerminalTab(tabId)) this.deps.terminals()?.activate(tabId);
   }
 
   private setActive(tabId: string | null): void {
@@ -1617,19 +1791,27 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     this.deps.browser()?.activeChanged(tabId);
   }
 
-  // The last file tab activated, else the last file tab, else the first page tab.
+  // The last file tab activated, else the last file tab, else the first page tab, else the first terminal tab; no focus moves.
   private activateFallback(): void {
     const fallback = this.tabs.find((tab) => tab.id === this.lastFileTabId) ?? this.tabs.at(-1);
-    this.setActive(fallback?.id ?? this.browserTabs()[0]?.id ?? null);
+    this.setActive(fallback?.id ?? this.browserTabs()[0]?.id ?? this.terminalTabs()[0]?.id ?? null);
   }
 
   private browserTabs(): readonly ShellEditorTab[] {
     return this.deps.browser()?.tabs() ?? [];
   }
 
-  // File tabs, then the selected chat's page tabs, as the shell shows them.
+  private terminalTabs(): readonly ShellEditorTab[] {
+    return this.deps.terminals()?.tabs() ?? [];
+  }
+
+  private isTerminalTab(tabId: string): boolean {
+    return this.terminalTabs().some((tab) => tab.id === tabId);
+  }
+
+  // File tabs, then the selected chat's page tabs, then the terminal tabs, as the shell shows them.
   private visibleIds(): string[] {
-    return [...this.tabs.map((tab) => tab.id), ...this.browserTabs().map((tab) => tab.id)];
+    return [...this.tabs.map((tab) => tab.id), ...this.browserTabs().map((tab) => tab.id), ...this.terminalTabs().map((tab) => tab.id)];
   }
 
   private async closeAround(action: 'closeOthers' | 'closeRight' | 'closeAll', tabId: string): Promise<void> {
@@ -1646,13 +1828,23 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     else if (action === 'closeOthers' || action === 'closeRight' || action === 'closeAll') await this.closeAround(action, tabId);
   }
 
+  // A terminal has no file: its tab activates, closes (a kill) and closes others; the file actions do nothing there.
+  private async terminalTabAction(action: EditorTabAction, tabId: string): Promise<void> {
+    if (action === 'activate') this.activate(tabId);
+    else if (action === 'close') await this.closeTabs([tabId], { ask: true });
+    else if (action === 'closeOthers' || action === 'closeRight' || action === 'closeAll') await this.closeAround(action, tabId);
+  }
+
   // Closing the last tab of a dirty document asks Save, Don't Save or Cancel; Cancel keeps that tab and every later one.
   // cancellable: the question offers Cancel beside Save and Don't Save, for a close that is part of a larger action
+  // Terminal tabs close last, after one Kill question for all of them.
   private async closeTabs(tabIds: readonly string[], opts: { readonly ask: boolean; readonly cancellable?: boolean }): Promise<void> {
+    const terminalTabs: string[] = [];
     for (const tabId of tabIds) {
       const tab = this.tabs.find((candidate) => candidate.id === tabId);
       if (!tab) {
         if (this.browserTabs().some((candidate) => candidate.id === tabId)) this.deps.browser()?.close(tabId);
+        else if (this.isTerminalTab(tabId)) terminalTabs.push(tabId);
         continue;
       }
       const patchId = tab.patch?.content.kind === 'patch' ? tab.patch.content.documentId : undefined;
@@ -1671,6 +1863,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       if (this.activeId === tab.id) this.activateFallback();
       this.stateChanged();
     }
+    if (terminalTabs.length > 0) await this.deps.terminals()?.close(terminalTabs);
   }
 
   // cancel: the user cancelled, or the save failed and its tab says why
@@ -1772,14 +1965,35 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : tab.diff ? this.deps.documents.get(tab.diff.modifiedId) : undefined;
   }
 
+  // The project key shellTab names the tab with, read without building it: shellTab asks HtmlPreviews, which knows a
+  // preview tab only once a publish told it.
+  private projectKeyOf(tab: Tab): string | undefined {
+    if (tab.htmlPreview) return tab.htmlPreview.projectKey;
+    if (tab.changes || tab.patch || tab.review || tab.timeline) return undefined;
+    if (tab.diff) return 'place' in tab.diff.subject ? tab.diff.subject.place.projectKey : projectKeyOfDocument(this.deps.documents.get(tab.diff.subject.documentId));
+    return projectKeyOfDocument(tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined);
+  }
+
   private revealableTab(tab: Tab): ShellEditorTab {
     const shell = this.shellTab(tab);
     if (NO_PATH_TAB_KINDS.has(shell.kind)) return shell;
-    const location = this.actionDocument(tab)?.location;
+    const location = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : this.actionDocument(tab)?.location;
     return location && revealPathOf(location, this.deps.wslDistro) !== undefined ? { ...shell, revealable: true } : shell;
   }
 
   private shellTab(tab: Tab): ShellEditorTab {
+    if (tab.htmlPreview) {
+      return {
+        id: tab.id,
+        kind: 'htmlPreview',
+        title: this.deps.t('Preview {0}', path.posix.basename(tab.htmlPreview.relativePath)),
+        ...this.withBranch(placeFields(this.placeOfFile(tab.htmlPreview))),
+        dirty: false,
+        readOnly: true,
+        conflict: false,
+        htmlPreview: this.deps.htmlPreviews.state(tab.id),
+      };
+    }
     if (tab.changes) {
       return { id: tab.id, kind: 'changes', title: tab.changes.title, displayPath: tab.changes.title, dirty: false, readOnly: true, conflict: false, changes: tab.changes.changes };
     }
@@ -1885,7 +2099,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   private placeOf(document: Document | undefined): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath' | 'host'> {
     const location = document?.location;
-    const projectKey = document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : location?.projectKey;
+    const projectKey = projectKeyOfDocument(document);
     const branch = projectKey !== undefined ? this.deps.worktreeBranch(projectKey) : undefined;
     return {
       ...(projectKey !== undefined ? { projectKey } : {}),
@@ -1915,6 +2129,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   // Diff tabs are not kept: a dirty side's buffer comes back from its backup as its own tab.
   private persistedTab(tab: Tab): PersistedTab | undefined {
+    if (tab.kind === 'htmlPreview') return { kind: 'htmlPreview', file: tab.htmlPreview! };
     if (tab.diff || tab.documentId === undefined) return undefined;
     const document = this.deps.documents.get(tab.documentId);
     if (!document) return undefined;

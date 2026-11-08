@@ -23,6 +23,8 @@ import { CHAT_FEATURE_IDS, commandTitle, desktopCommands, EDITOR_GIT_MENU_GROUPS
 import type { DesktopLocalizationService } from '../local-services/localization-service';
 import type { ScmCommitVariant } from '../preload/scm-channels';
 import type { ScmActiveFileOp, ScmMenuState, ScmPaletteRequest } from './scm/scm-host';
+import type { ActiveEditorDocument } from './editor-pane';
+import type { TerminalPassKeyTarget } from './terminal/terminal-service';
 
 export {
   CLOSE_EDITOR_ACCELERATOR,
@@ -79,17 +81,26 @@ export interface MenuState {
   readonly updateCheck: boolean;
   // a terminal can start (TerminalService.canCreate)
   readonly terminalCreate: boolean;
-  // the active terminal's status; undefined without a terminal
+  // the command target's status (TerminalService.commandTarget, VS Code's activeInstance); undefined without a terminal
   readonly terminal: TerminalStatus | undefined;
-  // the active terminal group has more than one pane (VS Code's splitTerminalActive)
+  // the command target is in the editor, where the panel's group commands do not apply
+  readonly terminalEditor: boolean;
+  // the command target is a task terminal, which stays in the panel and alone in its group
+  readonly terminalTask: boolean;
+  // the command target's group has more than one pane (VS Code's splitTerminalActive)
   readonly terminalSplit: boolean;
-  // an xterm's own input has keyboard focus (VS Code's terminalFocus); focus 'terminal' is anywhere in the terminal pane
+  // the command target's group has room and another panel terminal is outside it (Join Terminals...)
+  readonly terminalJoin: boolean;
+  // an xterm's own input has keyboard focus (VS Code's terminalFocus), in the terminal pane or an editor tab; focus is that part
   readonly terminalInput: boolean;
   readonly search: SearchMenuState;
   // source control for the selected project: its open repositories and the selected one's operation in progress (scm-host.ts)
   readonly scm: ScmMenuState;
   // the active editor tab's kind; undefined without one
   readonly editorKind: EditorTabKind | undefined;
+  // the text document the active editor tab edits (EditorPane.activeDocument); undefined for a tab that edits none, such as a
+  // preview, a page or a terminal
+  readonly editorDocument: ActiveEditorDocument | undefined;
   // the active tab as source control sees it: a code tab of a file in an open repository, or a diff tab of a working tree or
   // index change (ShellEditorTab.git, diff.git); null otherwise
   readonly editorGit: 'file' | 'workingTreeDiff' | 'indexDiff' | null;
@@ -105,6 +116,8 @@ export interface MenuState {
   readonly remoteHostConnected: boolean;
   // at least one SSH host is saved
   readonly remoteHostSaved: boolean;
+  // the active editor tab is a browser page showing an https address
+  readonly clientCertificateSite: boolean;
 }
 
 // Search's part of the context: what main's search service and editor pane hold, never what a renderer reports.
@@ -164,26 +177,32 @@ export interface MenuActions {
   toggleTerminal(byKeyboard: boolean): void;
   // the new-terminal quick pick
   newTerminal(): void;
-  // the active terminal
+  // the command target (MenuState.terminal)
   killTerminal(): void;
   restartTerminal(): void;
   killAllTerminals(): void;
   // 1 focuses the active pane of the group after the active one in the list, -1 the one before, wrapping
   focusRelativeTerminal(delta: 1 | -1): void;
-  // the active terminal: a new pane right of it, which takes focus; or it leaves its split group for a group of its own
+  // the command target: a new pane right of it, which takes focus; or it leaves its split group for a group of its own
   splitTerminal(): void;
   unsplitTerminal(): void;
-  // 1 focuses the next pane of the active group, -1 the previous one, wrapping
+  // the multi-select pick of the terminals that join the command target's group
+  joinTerminals(): void;
+  // 1 focuses the next pane of the command target's group, -1 the previous one, wrapping
   focusTerminalPane(delta: 1 | -1): void;
-  // the active pane's edge moves by VS Code's step, which the shell measures
+  // the command target's pane edge moves by VS Code's step, which the shell measures
   resizeTerminalPane(direction: 'left' | 'right'): void;
-  // the active terminal: its inline rename in the shell, or the icon or color quick pick
+  // the command target: its inline rename in the shell, or the icon or color quick pick
   renameTerminal(): void;
   changeTerminalIcon(): void;
   changeTerminalColor(): void;
-  // the default profile quick pick, written to damocles.desktop.terminal.defaultProfile
+  // the command target leaves the panel for an editor tab, or its editor tab for a new group at the end of the panel
+  moveTerminalToEditor(): void;
+  moveTerminalToPanel(): void;
+  // the default profile quick pick: this computer's written to damocles.desktop.terminal.defaultProfile, a remote host's to its
+  // host record
   selectDefaultTerminalProfile(): void;
-  // a buffer command the shell carries out on the active terminal, which takes keyboard focus
+  // a buffer command the shell carries out on the command target, which takes keyboard focus
   runTerminalAction(action: TerminalAction): void;
   // Edit › Paste (matchStyle: macOS Paste and Match Style): through main into a terminal with keyboard focus, else native
   paste(matchStyle: boolean): void;
@@ -201,6 +220,8 @@ export interface MenuActions {
   // a blank page in the selected chat, as an editor tab whose address field takes focus
   newBrowserPage(): void;
   toggleBrowserDevTools(): void;
+  // the certificate local chats' Chrome sends the active page's site, for the rest of the app session
+  chooseClientCertificate(): void;
   showLog(): void;
   // a new engine replaces the running or halted one, its crash count cleared
   restartEngine(): void;
@@ -382,6 +403,9 @@ export function installApplicationMenu(
           { type: 'separator' },
           item(MENU_IDS.splitTerminal),
           item(MENU_IDS.unsplitTerminal),
+          item(MENU_IDS.joinTerminals),
+          item(MENU_IDS.moveTerminalToEditor),
+          item(MENU_IDS.moveTerminalToPanel),
           item(MENU_IDS.focusPreviousTerminalPane),
           item(MENU_IDS.focusNextTerminalPane),
           item(MENU_IDS.resizeTerminalPaneLeft),
@@ -415,6 +439,7 @@ export function installApplicationMenu(
       { type: 'separator' },
       item(MENU_IDS.newBrowserPage),
       item(MENU_IDS.toggleBrowserDevTools),
+      item(MENU_IDS.chooseClientCertificate),
     ],
   };
   const t = (label: string): string => l10n.t(label);
@@ -491,8 +516,8 @@ export function installApplicationMenu(
 }
 
 /** The installed skip list's accelerators, which TerminalState.passKeys carries to the shell. */
-export function installedTerminalPassKeys(splitActive: boolean): string[] {
-  return currentState ? terminalPassKeys(installedCommands, { ...currentState, terminalSplit: splitActive }) : [];
+export function installedTerminalPassKeys(target: TerminalPassKeyTarget): string[] {
+  return currentState ? terminalPassKeys(installedCommands, { ...currentState, terminalSplit: target.split, terminalEditor: target.editor }) : [];
 }
 
 /** Pops the application menu up at a point of the window (DIP), for the title bar logo where the menu bar is hidden. */

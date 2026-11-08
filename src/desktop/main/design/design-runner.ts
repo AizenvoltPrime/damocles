@@ -25,7 +25,7 @@ import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
 import { MAX_JOURNEY_OUTLINE_CHARS, parseJourneySteps } from '../../../shared/design-journey';
 import type { DesignCapture, DesignJourneyRun, DesignOverflowingElement, DesignProbeElement, DesignProbeResult, DesignProbeWidth, JourneyStep } from '../../../shared/types/design';
 import { DESIGN_SCHEME } from '../protocol';
-import { registerDesignContents } from '../security';
+import { registerLockedContents } from '../security';
 import { runJourney, untilAborted, type JourneyCdpMethod } from './design-journey';
 import { DESIGN_PARTITION, type DesignViewTarget } from './design-session';
 
@@ -471,7 +471,7 @@ export function openOffscreenPage(origin: string, width: number, events: RunnerP
   });
   const contents = window.webContents;
   // Before the first load, so the navigation lock applies to it.
-  registerDesignContents(contents, origin);
+  registerLockedContents(contents, origin);
   // WebRTC's sockets bypass webRequest and CSP; with UDP only through the session's refusing proxy, ICE reaches no host.
   contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   contents.on('will-prevent-unload', (event) => event.preventDefault());

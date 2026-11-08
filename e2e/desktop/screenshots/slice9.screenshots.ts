@@ -54,14 +54,15 @@ test('slice 9 captures', async ({ foreground: _foreground, home, launch }) => {
   await expect.poll(() => terminalText(shell)).toContain('2 passed');
   await captureThemes(app, OUT, 'one-terminal-colored-output');
 
-  // The new-terminal quick pick: the profiles with the default marked, then the project step.
+  // The new-terminal quick pick: the project step on the current project, then the other project's shells, the default marked.
   await shell.getByTestId('terminal-new').click();
-  await expect(quickPick(overlay)).toBeVisible();
-  await captureThemes(app, OUT, 'new-terminal-quick-pick');
-  await overlay.keyboard.press('Enter');
   await expect(quickPick(overlay)).toHaveAttribute('data-step', 'project');
   await captureThemes(app, OUT, 'new-terminal-quick-pick-project');
   await overlay.keyboard.press('ArrowDown');
+  await overlay.keyboard.press('Enter');
+  await expect(quickPick(overlay)).toHaveAttribute('data-step', 'profile');
+  await expect(overlay.getByTestId('quick-pick-badge')).toHaveCount(1);
+  await captureThemes(app, OUT, 'new-terminal-quick-pick');
   await overlay.keyboard.press('Enter');
   await expect(terminalRows(shell)).toHaveCount(2);
 

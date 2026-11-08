@@ -8,6 +8,7 @@ import DesignPreviewTab from '../editor/DesignPreviewTab.vue';
 import EditorPane from '../editor/EditorPane.vue';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
+import { createTerminalStore, TERMINAL_STORE } from '../terminal/terminal-store';
 import { shellI18n } from '../i18n';
 import { EDITOR_STATE, FakeResizeObserver, fakeShellApi, STATE, type FakeShellApi } from './fakes';
 
@@ -333,6 +334,24 @@ describe('the design preview tab', () => {
     expect(mountTab().wrapper.find('[data-testid="design-preview-status"]').exists()).toBe(false);
   });
 
+  it('announces each status through one live region that stays for the tab\'s life, the state card hidden from screen readers', async () => {
+    const { wrapper } = mountTab(designTab({ status: 'loading' }));
+    const announcer = wrapper.get('[data-testid="design-preview-announcer"]');
+    const regions = () => wrapper.get('[data-testid="design-preview-frame"]').findAll('[role="status"]');
+    expect(announcer.attributes('role')).toBe('status');
+    expect(announcer.text()).toBe('Loading preview…');
+    expect(wrapper.get('[data-testid="design-preview-status"]').attributes('aria-hidden')).toBe('true');
+    expect(regions()).toHaveLength(1);
+
+    for (const [status, text] of [['reconnecting', 'Reconnecting…'], ['failed', 'The preview could not load.'], ['ready', '']] as const) {
+      await wrapper.setProps({ tab: designTab({ status }) });
+      await flushPromises();
+      expect(wrapper.get('[data-testid="design-preview-announcer"]').element).toBe(announcer.element);
+      expect(announcer.text()).toBe(text);
+      expect(regions()).toHaveLength(1);
+    }
+  });
+
   it('follows main\'s width, and says the readout in Greek units unchanged', async () => {
     const { wrapper } = mountTab();
     await sizeStage(wrapper, { width: 780, height: 600 });
@@ -354,7 +373,7 @@ describe('the editor pane holding a design preview', () => {
     await store.start();
     const scm = createScmStore(api.scm);
     await scm.start();
-    const wrapper = mount(EditorPane, { props: { api, state: STATE }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm }, stubs: { PaneGrip: true } }, attachTo: document.body });
+    const wrapper = mount(EditorPane, { props: { api, state: STATE }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm, [TERMINAL_STORE as symbol]: createTerminalStore(api) }, stubs: { PaneGrip: true } }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
 
@@ -374,7 +393,7 @@ describe('the editor pane holding a design preview', () => {
     await store.start();
     const scm = createScmStore(api.scm);
     await scm.start();
-    const wrapper = mount(EditorPane, { props: { api, state: STATE }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm }, stubs: { PaneGrip: true } }, attachTo: document.body });
+    const wrapper = mount(EditorPane, { props: { api, state: STATE }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm, [TERMINAL_STORE as symbol]: createTerminalStore(api) }, stubs: { PaneGrip: true } }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
 

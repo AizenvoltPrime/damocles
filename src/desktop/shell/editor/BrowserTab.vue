@@ -11,6 +11,7 @@ import { isNotSecurePage, MAX_BROWSER_URL_LENGTH } from '@shared/typed-address';
 import type { BrowserAction, DamoclesShellApi, ShellEditorTab } from '../../preload/shell-channels';
 import { watchContentBounds } from '../content-bounds';
 import { EDITOR_STORE } from './editor-store';
+import PageStandIn from './PageStandIn.vue';
 import { forwardedTarget, isBlankPage, isSecurePage, isSendableAddress, isWebUrl, pageText, pageTitle } from './browser-page';
 
 const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> } }>();
@@ -370,8 +371,13 @@ const BUTTON = 'd-press size-6.5 shrink-0 rounded-md text-(--d-muted) hover:bg-(
         <div
           ref="stage"
           data-testid="browser-stage"
-          class="absolute inset-0"
+          class="absolute inset-0 rounded-[inherit]"
         >
+          <PageStandIn
+            :api="api"
+            :tab-id="tab.id"
+            shows
+          />
           <div
             :key="tab.id"
             class="pane-empty d-fade-in absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-6 text-center"

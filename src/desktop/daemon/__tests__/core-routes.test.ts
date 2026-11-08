@@ -23,6 +23,7 @@ import type { DaemonState } from '../daemon-state';
 import { createRunRegistry, type RunRegistry } from '../run-registry';
 import { CodecError, decode, encode } from '../../../remote/codec';
 import { FEATURES } from '../../../remote/protocol-version';
+import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../../shared/remote-user';
 
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -256,6 +257,35 @@ describe('core routes', () => {
     for (const name of needs) expect(FEATURES).toContain(name);
   });
 
+  it('ask user.memory.list only of the client it names, refusing an absent one and one whose attach did not list it', async () => {
+    const h = setUp();
+    const request = { clientId: 'device-a', kinds: ['note'] as const, tags: ['work'] };
+    await expect(h.core.request('user.memory.list', request)).rejects.toThrow(CREDENTIAL_CLIENT_ABSENT);
+    const older = h.client('connection-1', { clientId: 'device-a' });
+    const asked: unknown[] = [];
+    older.main.serve('user.memory.list', (params) => {
+      asked.push(params);
+      return { rows: [] };
+    });
+    await expect(h.core.request('user.memory.list', request)).rejects.toThrow(CLIENT_FEATURE_MISSING);
+    older.detach();
+    const current = h.client('connection-2', { clientId: 'device-a', features: ['user.memory.list'] });
+    current.main.serve('user.memory.list', (params) => {
+      asked.push(params);
+      return { rows: [] };
+    });
+    // another device listing the feature is never asked in its place
+    h.client('connection-3', { clientId: 'device-b', features: ['user.memory.list'] }).main.serve('user.memory.list', () => {
+      asked.push('device-b');
+      return { rows: [] };
+    });
+    expect(await h.core.request('user.memory.list', request)).toEqual({ rows: [] });
+    expect(asked).toEqual([{ clientId: 'device-a', kinds: ['note'], tags: ['work'] }]);
+    expect(older.close).not.toHaveBeenCalled();
+    expect(CORE_REQUEST_ROUTES['user.memory.list']).toEqual({ to: 'pinnedClient', needs: 'user.memory.list' });
+    expect(MAIN_REQUEST_ROUTES['user.memory.list']).toBe('refused');
+  });
+
   it('pass design.markup from a client to its core, which writes the markup into its own design folder', async () => {
     const h = setUp();
     const client = h.client('c1');
@@ -418,6 +448,8 @@ describe('core routes', () => {
     await expect(client.main.request('core.shutdown', {})).rejects.toThrow('not available');
     await expect(client.main.request('chats.restorePages', { viewId: 'v', urls: [] })).rejects.toThrow('not available');
     await expect(client.main.request('browser.newPage', { chatViewId: 'v' })).rejects.toThrow('not available');
+    h.core.serve('browser.useClientCertificate', served);
+    await expect(client.main.request('browser.useClientCertificate', { origin: 'https://a.test:443', filter: { ISSUER: {}, SUBJECT: { CN: 'a' } } })).rejects.toThrow('not available');
     await expect(client.main.request('e2e.routedRequests', {})).rejects.toThrow('only with e2e hooks');
     const power = vi.fn();
     h.core.onEvent('power.suspend', power);

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ForeignViewRelay, type ForeignCore, type RemoteChatView } from '../foreign-view-relay';
 import { CoreNotRunningError } from '../../core-host';
-import { FOREIGN_VIEW_NOT_ATTACHED } from '../../../../shared/remote-user';
+import { FOREIGN_VIEW_NOT_ATTACHED, MAX_VIEW_REQUEST_ID_CHARS } from '../../../../shared/remote-user';
 import { createRemoteChatSettingHandlers } from '../../../../core/chat-panel/message-router/handlers/remote-chat-setting-handlers';
 import type { HandlerDependencies } from '../../../../core/chat-panel/message-router/types';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
@@ -381,5 +381,173 @@ describe('a remote chat view\'s user-setting writes (main side)', () => {
     views.delete('other-view');
     relay.foreignPost('other-view', result);
     expect(posted).toHaveLength(2);
+  });
+});
+
+describe('a remote chat view\'s reads of this computer\'s user scope (main side)', () => {
+  const usage = { type: 'subscriptionUsage', data: { claude: { status: 'ok', bars: [] }, gpt: { status: 'not-connected', bars: [] }, fetchedAt: 1 } };
+
+  it.each(['remote-view', 'other-view', 'transcript-view'])('send requestSubscriptionUsage from %s to this computer\'s core and deliver its answer, attached host or not', async (viewId) => {
+    const { relay, local, calls, posted } = fake();
+    local.foreignMessage = async (...args) => {
+      calls.push(['message', ...args]);
+      relay.foreignPost(args[0], usage);
+    };
+    expect(relay.fromView(viewId, { type: 'requestSubscriptionUsage' })).toBe(true);
+    await settle();
+    expect(calls.map(([kind]) => kind)).toEqual(['attach', 'message']);
+    expect(calls[1]).toEqual(['message', viewId, { type: 'requestSubscriptionUsage' }]);
+    expect(posted).toEqual([[viewId, JSON.stringify(usage)]]);
+  });
+
+  it("send a read beside the view's queue, so a slow usage fetch holds back no voice message, setting write or change, and detach the proxy only after it", async () => {
+    const { relay, local, calls } = fake();
+    const pending: Array<() => void> = [];
+    local.foreignMessage = async (...args) => {
+      calls.push(['message', ...args]);
+      const type = (args[1] as { type: string }).type;
+      if (type === 'requestSubscriptionUsage' || type === 'requestUserMemories') await new Promise<void>((resolve) => pending.push(resolve));
+    };
+    relay.fromView('remote-view', { type: 'requestSubscriptionUsage' });
+    relay.fromView('remote-view', { type: 'requestUserMemories' });
+    relay.fromView('remote-view', { type: 'startVoiceRecording' });
+    relay.fromView('remote-view', { type: 'setPinnedHeaderHidden', hidden: true });
+    relay.fromView('remote-view', { type: 'pinUserMemory', id: 'm1' });
+    await settle();
+    expect(calls.map((call) => (call[2] as { type?: string } | undefined)?.type ?? call[0])).toEqual([
+      'attach', 'requestSubscriptionUsage', 'requestUserMemories', 'startVoiceRecording', 'setPinnedHeaderHidden', 'pinUserMemory',
+    ]);
+    relay.viewClosed('remote-view');
+    await settle();
+    expect(calls.map(([kind]) => kind)).not.toContain('detach');
+    for (const resolve of pending) resolve();
+    await settle();
+    expect(calls.at(-1)).toEqual(['detach', 'remote-view']);
+  });
+
+  it('leave a local chat\'s request to its own core', () => {
+    const { relay } = fake();
+    expect(relay.fromView('local-view', { type: 'requestSubscriptionUsage' })).toBe(false);
+  });
+
+  it('answer with both providers in error when the local core is not running, and the generic text on any other failure', async () => {
+    const { relay, local, posted } = fake();
+    let failure: Error = new CoreNotRunningError();
+    local.foreignMessage = async () => {
+      throw failure;
+    };
+    relay.fromView('other-view', { type: 'requestSubscriptionUsage' });
+    await settle();
+    failure = new Error('boom');
+    relay.fromView('other-view', { type: 'requestSubscriptionUsage' });
+    await settle();
+    const answers = posted.map(([, json]) => JSON.parse(json) as { type: string; data: { claude: unknown; gpt: unknown } });
+    expect(answers.map(({ type }) => type)).toEqual(['subscriptionUsage', 'subscriptionUsage']);
+    const notRunning = { status: 'error', bars: [], error: { message: "This computer's Damocles engine is not running." } };
+    expect(answers[0]!.data.claude).toEqual(notRunning);
+    expect(answers[0]!.data.gpt).toEqual(notRunning);
+    expect(answers[1]!.data.claude).toEqual({ status: 'error', bars: [], error: { message: 'An unexpected error occurred. The log has the details.' } });
+    expect(JSON.stringify(posted)).not.toContain('boom');
+  });
+
+  it('deliver a usage answer to a live view while its host is away, never to a closed or local view', async () => {
+    const { relay, posted, views } = fake();
+    relay.fromView('other-view', { type: 'requestSubscriptionUsage' });
+    await settle();
+    relay.foreignPost('other-view', usage);
+    relay.foreignPost('local-view', usage);
+    views.delete('other-view');
+    relay.foreignPost('other-view', usage);
+    expect(posted).toEqual([['other-view', JSON.stringify(usage)]]);
+  });
+});
+
+describe("a remote chat view's notes and global memories (main side)", () => {
+  const requests: Array<Record<string, unknown>> = [
+    { type: 'requestUserMemories' },
+    { type: 'getUserMemoryHistory', id: 'm1' },
+    { type: 'getUserRelatedMemories', id: 'm1' },
+    { type: 'getUserProfile' },
+    { type: 'createUserMemory', tier: 'note', content: 'c', requestId: 'r1' },
+    { type: 'deleteUserMemory', id: 'm1' },
+    { type: 'pinUserMemory', id: 'm1' },
+    { type: 'unpinUserMemory', id: 'm1' },
+    { type: 'forgetUserMemory', id: 'm1', scope: 'chain' },
+    { type: 'unforgetUserMemory', id: 'm1' },
+    { type: 'setUserProfileSection', section: 'static', content: 'c' },
+  ];
+
+  it.each(requests)("send $type to this computer's core in the view's order, attached host or not, transcripts included", async (message) => {
+    for (const viewId of ['remote-view', 'other-view', 'transcript-view']) {
+      const { relay, calls } = fake();
+      expect(relay.fromView(viewId, message)).toBe(true);
+      await settle();
+      expect(calls).toEqual([['attach', viewId === 'remote-view' ? 'loopback' : 'ssh+other', viewId], ['message', viewId, message]]);
+    }
+    expect(fake().relay.fromView('local-view', message)).toBe(false);
+  });
+
+  it("deliver this computer's answers to a live view while its host is away, never to a closed or local view", async () => {
+    const { relay, posted, views } = fake();
+    relay.fromView('other-view', { type: 'requestUserMemories' });
+    await settle();
+    const answers = [
+      { type: 'userMemoriesUpdate', memories: [], available: true },
+      { type: 'userProfileData', global: { static: '', dynamic: '' }, available: true },
+      { type: 'userMemoryHistory', id: 'm1', entries: [] },
+      { type: 'userRelatedMemories', id: 'm1', entries: [] },
+      { type: 'userMemoryCreated', memory: { id: 'm2' }, requestId: 'r1' },
+      { type: 'userMemoryDeleted', id: 'm1' },
+      { type: 'userMemoryPinned', id: 'm1' },
+      { type: 'userMemoryUnpinned', id: 'm1' },
+      { type: 'userMemoryForgotten', id: 'm1', count: 1 },
+      { type: 'userMemoryUnforgotten', id: 'm1', count: 1 },
+      { type: 'userMemoryError', request: 'pinUserMemory', message: { message: 'x' } },
+      { type: 'userProfileSectionError', section: 'static', message: { message: 'x' } },
+    ];
+    for (const answer of answers) relay.foreignPost('other-view', answer);
+    relay.foreignPost('local-view', answers[0]);
+    relay.foreignPost('other-view', { type: 'memoriesUpdate', memories: [], observationCursor: null });
+    relay.foreignPost('other-view', { type: 'memoryDeleted', id: 'm1' });
+    views.delete('other-view');
+    relay.foreignPost('other-view', answers[0]);
+    expect(posted).toEqual(answers.map((answer) => ['other-view', JSON.stringify(answer)]));
+  });
+
+  const failureOf = async (message: Record<string, unknown>): Promise<unknown> => {
+    const { relay, local, posted } = fake();
+    local.foreignMessage = async () => {
+      throw new CoreNotRunningError();
+    };
+    relay.fromView('other-view', message);
+    await settle();
+    expect(posted).toHaveLength(1);
+    return JSON.parse(posted[0]![1]);
+  };
+  const notRunning = { message: "This computer's Damocles engine is not running." };
+
+  it("answer a read or change this computer's core never answered with userMemoryError naming the request", async () => {
+    for (const type of ['requestUserMemories', 'getUserProfile']) expect(await failureOf({ type })).toEqual({ type: 'userMemoryError', request: type, message: notRunning });
+    expect(await failureOf({ type: 'getUserMemoryHistory', id: 'm1' })).toEqual({ type: 'userMemoryError', request: 'getUserMemoryHistory', message: notRunning });
+    for (const type of ['deleteUserMemory', 'pinUserMemory', 'unpinUserMemory', 'forgetUserMemory', 'unforgetUserMemory']) {
+      expect(await failureOf({ type, id: 'm1', extra: 'not echoed' })).toEqual({ type: 'userMemoryError', request: type, message: notRunning });
+    }
+  });
+
+  it('echo a create\'s requestId only when it is a bounded string', async () => {
+    expect(await failureOf({ type: 'createUserMemory', tier: 'note', content: 'c', requestId: 'r1' })).toEqual({ type: 'userMemoryError', request: 'createUserMemory', message: notRunning, requestId: 'r1' });
+    for (const requestId of [undefined, '', 'r'.repeat(MAX_VIEW_REQUEST_ID_CHARS + 1), 7, { toString: 'r1' }]) {
+      expect(await failureOf({ type: 'createUserMemory', tier: 'note', content: 'c', requestId })).toEqual({ type: 'userMemoryError', request: 'createUserMemory', message: notRunning });
+    }
+    expect(await failureOf({ type: 'createUserMemory', tier: 'note', content: 'c', requestId: 'r'.repeat(MAX_VIEW_REQUEST_ID_CHARS) })).toMatchObject({ requestId: 'r'.repeat(MAX_VIEW_REQUEST_ID_CHARS) });
+  });
+
+  it('answer a profile save with its section only when the section is static or dynamic', async () => {
+    for (const section of ['static', 'dynamic']) {
+      expect(await failureOf({ type: 'setUserProfileSection', section, content: 'c' })).toEqual({ type: 'userProfileSectionError', section, message: notRunning });
+    }
+    for (const section of [undefined, 'project', '<b>', 3]) {
+      expect(await failureOf({ type: 'setUserProfileSection', section, content: 'c' })).toEqual({ type: 'userMemoryError', request: 'setUserProfileSection', message: notRunning });
+    }
   });
 });

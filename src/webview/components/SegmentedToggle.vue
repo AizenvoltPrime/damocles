@@ -8,6 +8,8 @@ export interface SegmentedOption<V extends string> {
   value: V;
   label: string;
   icon?: Component;
+  /** Shown but not choosable; the arrow keys skip it. */
+  disabled?: boolean;
   /** Extra attributes for the option's button, such as a `data-*` hook. */
   attrs?: Record<string, string>;
 }
@@ -68,9 +70,10 @@ function onUpdate(value: AcceptableValue): void {
       v-for="option in options"
       :key="option.value"
       :value="option.value"
+      :disabled="option.disabled === true"
       v-bind="option.attrs"
       data-segment
-      class="relative z-1 flex items-center gap-1 whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent)"
+      class="relative z-1 flex items-center gap-1 whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent) disabled:cursor-not-allowed disabled:opacity-(--d-opacity-disabled)"
       :class="[sized.item, option.value === modelValue ? selectedClass : [sized.unselected, 'enabled:hover:text-(--d-text)']]"
     >
       <component
