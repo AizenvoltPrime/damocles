@@ -7,6 +7,7 @@ import { MAX_RENDER_IMAGE_SIDE, MAX_RENDER_SCALE, pngSize, renderScale } from '.
 import { DESIGN_NAME, isDesignId, SCREEN_FILE } from '../../../shared/design-paths';
 import { JOURNEY_STEP_TIMEOUT_MS } from '../../../shared/design-journey';
 import { visibleText } from '../../../shared/visible-text';
+import { historyStepOf } from '../../../shared/history-keys';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
 import type { DesignPreviewImage, DesignPreviewInfo, JourneyStep, JourneyStepResult, TweaksDeclaration } from '../../../shared/types/design';
 import { isTweakColor, MAX_TWEAK_LABEL_CHARS, MAX_TWEAK_VALUE_CHARS, TWEAK_ID, TWEAK_TOKEN_NAME, tweakCss } from '../../../shared/design-tweaks';
@@ -26,9 +27,9 @@ import type { BrowserTabsEditor } from '../browser-tabs';
 import { leavePageOnPartKeys, type PartStep } from '../page-focus';
 import type { PersistedDesignTab } from '../panel-state-store';
 import { DESIGN_SCHEME } from '../protocol';
-import { mainFrameLoadFailed, registerLockedContents } from '../security';
+import { mainFrameLoadFailed, originOf, registerLockedContents } from '../security';
 import { JOURNEY_HIGHLIGHT_ATTRIBUTE, runJourney, untilAborted } from './design-journey';
-import { DESIGN_PARTITION, type DesignViewTarget } from './design-session';
+import { DESIGN_PARTITION, designRequestPath, type DesignViewTarget } from './design-session';
 
 // PD-31: beyond this many live views in a window the least recently shown one is destroyed, and rebuilt when shown again.
 export const MAX_LIVE_DESIGN_VIEWS = 4;
@@ -91,8 +92,16 @@ interface LiveView {
   loaded: boolean;
   // the last main-frame load failed; Electron emits did-finish-load after did-fail-load too, which must not show the error page
   loadFailed: boolean;
-  // from dom-ready until the next document starts loading: a sheet inserted now lands in the document dom-ready styled
+  // from dom-ready until the next document commits: a sheet inserted now lands in the document dom-ready styled
   documentReady: boolean;
+  // the committed document is no page of the design (a path it does not serve, an error status); the tab stays on its page
+  pageMissing: boolean;
+  // a navigation's next page and its facts, asked for when it starts so they are usually in by its commit
+  next: { readonly relPath: string; readonly info: Promise<DesignPreviewInfo | undefined> } | undefined;
+  // the page the view committed while its facts are still coming; the tab moves to it when they arrive
+  following: string | undefined;
+  // each committed document's number, so the facts of a page the view already left never move the tab
+  followRun: number;
   // the states the current document's sheets name; a user sheet cannot be removed, so one is added only for new states
   sheetStates: string | undefined;
   // the insertCSS key of each tweak in the current document, by property; a new document starts with none
@@ -101,15 +110,29 @@ interface LiveView {
   tweakQueue: Promise<void>;
 }
 
+// A view's history kept while the tab has no view: each entry's path, search and hash, since the next view has another origin.
+interface SavedHistory {
+  readonly entries: readonly { readonly url: string; readonly title: string }[];
+  readonly index: number;
+}
+
 interface DesignTab {
   readonly id: string;
   readonly chat: DesignChat;
   readonly designId: string;
-  readonly relPath: string;
+  // the document the view shows: a link the page follows moves the tab to it, as an address bar follows its page
+  relPath: string;
+  // the live view's own history; false while the tab has no view
+  canGoBack: boolean;
+  canGoForward: boolean;
+  // the history of a view destroyed while its tab stayed open (PD-31's eviction, a crash), restored when the view is rebuilt
+  history: SavedHistory | undefined;
   width: number;
   // the width is the user's or core's, not the primary's
   widthChosen: boolean;
   state: string;
+  // the state last chosen for each screen the tab showed this session, as an editor keeps a document's view state
+  readonly screenStates: Map<string, string>;
   provenance: boolean;
   status: DesignPreviewStatus;
   info: DesignPreviewInfo | undefined;
@@ -125,6 +148,19 @@ interface DesignTab {
   freezing: boolean;
   // the tweaks applied to the tab (PD-13), property → stop token, each a control and stop of info.tweaks; re-applied on every document
   readonly tweaks: Map<string, string>;
+}
+
+// A journey replay of a tab's view (D93), held from its request so no other replay or step starts; once started, where it
+// began, so the tab, its saved entry and its history end there.
+interface Replay {
+  started: boolean;
+  startEntry: number;
+  startRelPath: string;
+  startInfo: DesignPreviewInfo | undefined;
+  // the journey's state, shown on its start screen's page only; null when it shows the tab's own
+  state: string | null;
+  // a step committed another document or history entry
+  navigated: boolean;
 }
 
 interface ChatTabs {
@@ -393,8 +429,35 @@ export function markupPngForModel(dataUrl: string): string {
   return fitForModel(image).data;
 }
 
+// A URL of the view whose origin is `origin`, a lower-case design scheme and token.
+function designUrlIn(url: string, origin: string): URL | undefined {
+  return originOf(url) === origin ? new URL(url) : undefined;
+}
+
+// The design file a URL of the view whose origin is `origin` names; undefined for another origin or no design file path.
+function designPathIn(url: string, origin: string): string | undefined {
+  const parsed = designUrlIn(url, origin);
+  return parsed && designRequestPath(parsed);
+}
+
+// Only entries of the view's own origin, by path; undefined when the view had no history worth keeping.
+export function savedHistory(entries: readonly { readonly url: string; readonly title: string }[], active: number, origin: string): SavedHistory | undefined {
+  const kept = entries.flatMap((entry, index) => {
+    const parsed = designUrlIn(entry.url, origin);
+    return parsed ? [{ entry: { url: `${parsed.pathname}${parsed.search}${parsed.hash}`, title: entry.title }, index }] : [];
+  });
+  const index = kept.findIndex((item) => item.index === active);
+  return kept.length > 1 && index !== -1 ? { entries: kept.map((item) => item.entry), index } : undefined;
+}
+
+// A saved history in a new view's origin: a view's token is its origin, so each entry's path moves to the new one.
+export function restoredHistory(saved: SavedHistory | undefined, origin: string): { entries: { url: string; title: string }[]; index: number } | undefined {
+  return saved && { entries: saved.entries.map((entry) => ({ url: origin + entry.url, title: entry.title })), index: saved.index };
+}
+
 const clampWidth = (width: number): number => Math.min(MAX_DESIGN_WIDTH, Math.max(MIN_DESIGN_WIDTH, Math.round(width)));
-const fileName = (relPath: string): string => relPath.slice(relPath.lastIndexOf('/') + 1);
+// a page's link chooses the path, so its name is shown as a design's title is (checkedInfo)
+const fileName = (relPath: string): string => visibleText(relPath.slice(relPath.lastIndexOf('/') + 1).slice(0, 200));
 
 export class DesignPreviews {
   private readonly deps: DesignPreviewsDeps;
@@ -408,7 +471,7 @@ export class DesignPreviews {
   // the tab layout last showed, so lastShown counts each time a tab is shown, not each layout
   private lastShownId: string | undefined;
   // the tabs whose live view a journey replay drives
-  private readonly replaying = new Set<DesignTab>();
+  private readonly replaying = new Map<DesignTab, Replay>();
 
   constructor(deps: DesignPreviewsDeps) {
     this.deps = deps;
@@ -425,7 +488,8 @@ export class DesignPreviews {
     const entry = this.selected ? this.chats.get(this.selected) : undefined;
     return (entry?.tabs ?? []).map((tab) => {
       const hostName = tab.chat.authority === 'local' ? undefined : this.deps.hostName(tab.chat.authority);
-      const path = tab.info?.path ?? tab.relPath;
+      // a page's link chooses the path, so it shows as visible text; relPath names the screen to the shell and stays as it is
+      const path = visibleText(tab.info?.path ?? tab.relPath);
       const preview: ShellDesignPreview = {
         designId: tab.designId,
         relPath: tab.relPath,
@@ -438,6 +502,8 @@ export class DesignPreviews {
         provenance: tab.provenance,
         ...(tab.status === 'reconnecting' && tab.lastFrame !== undefined ? { lastFrameId: tab.lastFrame.id } : {}),
         ...(tab.tweaks.size > 0 ? { tweaks: Object.fromEntries(tab.tweaks) } : {}),
+        canGoBack: tab.canGoBack,
+        canGoForward: tab.canGoForward,
       };
       return { id: tab.id, kind: 'designPreview', title: this.titleOf(tab), displayPath: path, dirty: false, readOnly: true, conflict: false, designPreview: preview };
     });
@@ -501,7 +567,7 @@ export class DesignPreviews {
     const entry = this.entryOf(chat);
     for (const tab of saved) {
       if (entry.tabs.length >= MAX_DESIGN_TABS) break;
-      if (entry.tabs.some((candidate) => candidate.designId === tab.designId && candidate.relPath === tab.relPath)) continue;
+      // two tabs may show one screen, since a page's link moves a tab
       const restored = this.newTab(chat, tab.designId, tab.relPath, tab);
       if (restored) entry.tabs.push(restored);
     }
@@ -521,9 +587,13 @@ export class DesignPreviews {
       chat,
       designId,
       relPath,
+      canGoBack: false,
+      canGoForward: false,
+      history: undefined,
       width: saved.width ?? DEFAULT_WIDTH,
       widthChosen: saved.width !== undefined,
       state: saved.state ?? DEFAULT_STATE,
+      screenStates: new Map(saved.state !== undefined ? [[relPath, saved.state]] : []),
       provenance: saved.provenance ?? false,
       status: 'loading',
       info: undefined,
@@ -541,12 +611,13 @@ export class DesignPreviews {
 
   // design.info, unless the authority's daemon lacks it (updateServer) or is away (reconnecting, until connectionChanged).
   private loadInfo(tab: DesignTab): void {
+    // before the support check, so an answer asked for before the host went away never lands after it
+    const run = ++tab.infoRun;
     const support = this.deps.support(tab.chat.authority);
     if (support !== 'yes') {
       this.setStatus(tab, support === 'updateServer' ? 'updateServer' : 'reconnecting');
       return;
     }
-    const run = ++tab.infoRun;
     this.deps.info({ authority: tab.chat.authority, designId: tab.designId }, tab.relPath).then((info) => {
       if (run !== tab.infoRun || !this.tabExists(tab)) return;
       if (!info) {
@@ -554,24 +625,40 @@ export class DesignPreviews {
         this.setStatus(tab, 'failed');
         return;
       }
-      tab.info = checkedInfo(info);
-      info = tab.info;
-      if (!tab.widthChosen) tab.width = clampWidth(info.primary);
-      if (info.states.length === 0) tab.state = DEFAULT_STATE;
-      else if (!info.states.includes(tab.state)) tab.state = info.states[0]!;
-      // a tweak no longer declared, or locked at another value, leaves the page; one a decision locked at its value stays
-      for (const [property, token] of tab.tweaks) if (!tweakOffered(info, property, token) && !tweakLockedAt(info, property, token)) this.removeTweak(tab, property);
-      if (tab.live?.loaded) {
-        this.insertSheets(tab, tab.live);
-        void this.applyPage(tab, tab.live);
-      }
-      if (tab.status !== 'ready') tab.status = tab.live?.loaded ? 'ready' : 'loading';
+      this.takeInfo(tab, info);
       this.changed(tab);
       this.layout();
     }, (err: unknown) => {
       if (run !== tab.infoRun || !this.tabExists(tab)) return;
       this.deps.log(`[design] design.info of ${tab.designId} failed: ${err instanceof Error ? err.message : String(err)}`);
       this.setStatus(tab, this.deps.support(tab.chat.authority) === 'offline' ? 'reconnecting' : 'failed');
+    });
+  }
+
+  // The facts of the page the tab shows arrived: its width, state and tweaks follow them, and its document gets their sheets.
+  private takeInfo(tab: DesignTab, info: DesignPreviewInfo): void {
+    const checked = checkedInfo(info);
+    tab.info = checked;
+    if (!tab.widthChosen) tab.width = clampWidth(checked.primary);
+    if (checked.states.length === 0) tab.state = DEFAULT_STATE;
+    else if (!checked.states.includes(tab.state)) tab.state = checked.states[0]!;
+    tab.screenStates.set(tab.relPath, tab.state);
+    // a tweak no longer declared, or locked at another value, leaves the page; one a decision locked at its value stays
+    for (const [property, token] of tab.tweaks) if (!tweakOffered(checked, property, token) && !tweakLockedAt(checked, property, token)) this.removeTweak(tab, property);
+    const live = tab.live;
+    // a document whose page the tab has not moved to yet takes the sheets of its own facts, when they arrive
+    if (live?.documentReady && live.following === undefined && !live.pageMissing) {
+      this.insertSheets(tab, live);
+      void this.applyPage(tab, live);
+    }
+    if (tab.status !== 'ready') tab.status = live?.loaded ? 'ready' : 'loading';
+  }
+
+  // The facts of `relPath`, or undefined when the design has no readable page there or its core did not answer.
+  private infoOf(tab: DesignTab, relPath: string): Promise<DesignPreviewInfo | undefined> {
+    return this.deps.info({ authority: tab.chat.authority, designId: tab.designId }, relPath).catch((err: unknown) => {
+      this.deps.log(`[design] design.info of ${tab.designId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
     });
   }
 
@@ -611,6 +698,7 @@ export class DesignPreviews {
     }
     if (change.state !== undefined && change.state !== tab.state) {
       tab.state = change.state;
+      tab.screenStates.set(tab.relPath, change.state);
       if (tab.live?.loaded) void this.applyPage(tab, tab.live);
     }
     if (change.provenance !== undefined && change.provenance !== tab.provenance) {
@@ -618,6 +706,21 @@ export class DesignPreviews {
       if (tab.live?.loaded) void this.applyPage(tab, tab.live);
     }
     this.changed(tab);
+  }
+
+  /** Back or Forward, a user's click or key: the tab's view moves through its own history, and the tab follows the page. */
+  navigate(tabId: string, step: 'back' | 'forward'): void {
+    this.step(this.tabOf(tabId), step);
+  }
+
+  private step(tab: DesignTab, step: 'back' | 'forward'): void {
+    const live = tab.live;
+    if (!live || tab.markup || tab.freezing || this.replaying.has(tab)) return;
+    // an away core serves no page, so a step would move the tab under a frame it cannot replace
+    if (tab.status === 'reconnecting' || tab.status === 'updateServer') return;
+    const history = live.view.webContents.navigationHistory;
+    if (step === 'back' && history.canGoBack()) history.goBack();
+    else if (step === 'forward' && history.canGoForward()) history.goForward();
   }
 
   /** The toolbar's or tab menu's Open in browser, a user's click: main's own server serves the default state. */
@@ -776,19 +879,24 @@ export class DesignPreviews {
   /**
    * A journey replayed in the live view of `relPath`'s tab in design chat `chat`, opened or shown first, at the tab's width
    * (D93): the view's debugger is attached for the replay only and detached in `finally`, each target is outlined from the
-   * journey's isolated world and a user sheet, never the page's script, and the view reloads after, which restores the page.
-   * The journey's state shows on the page only, so the tab's own state and panels.json never change.
+   * journey's isolated world and a user sheet, never the page's script, and after it the view is back on the history entry it
+   * started on, the entries the replay added gone, and loaded again, so nothing it typed stays.
+   * The journey's state shows on its start screen's page only; the tab follows the pages the replay shows, while its saved
+   * entry keeps the start screen, so panels.json never changes for the replay.
    */
   async replayJourney(chat: DesignChat, designId: string, relPath: string, state: string | null, steps: readonly JourneyStep[], reducedMotion: boolean, signal: AbortSignal): Promise<void> {
     this.open(chat, designId, relPath);
     const tab = this.chats.get(chat)?.tabs.find((candidate) => candidate.designId === designId && candidate.relPath === relPath);
     if (!tab) throw new Error('The design chat holds too many preview tabs');
     if (this.replaying.has(tab)) throw new Error('A journey is already replaying in this preview');
-    this.replaying.add(tab);
+    const replay: Replay = { started: false, startEntry: 0, startRelPath: relPath, startInfo: undefined, state: null, navigated: false };
+    this.replaying.set(tab, replay);
     try {
       const live = await this.whenShowing(tab, signal);
       const contents = live.view.webContents;
       if (contents.debugger.isAttached()) throw new Error('Another debugger holds the preview');
+      const shownState = state !== null && state !== tab.state && (tab.info?.states ?? []).includes(state) ? state : null;
+      Object.assign(replay, { started: true, startEntry: contents.navigationHistory.getActiveIndex(), startRelPath: tab.relPath, startInfo: tab.info, state: shownState });
       const pauseMs = reducedMotion ? 0 : this.deps.replayPauseMs ?? REPLAY_PAUSE_MS;
       const deadlineMs = steps.length * (JOURNEY_STEP_TIMEOUT_MS + pauseMs) + REPLAY_SLACK_MS;
       const stop = new AbortController();
@@ -808,7 +916,7 @@ export class DesignPreviews {
       try {
         post(null, false);
         await answered(contents.insertCSS(REPLAY_CSS, { cssOrigin: 'user' }));
-        if (state !== null && state !== tab.state && (tab.info?.states ?? []).includes(state)) await answered(this.applyPage(tab, live, state));
+        if (shownState !== null) await answered(this.applyPage(tab, live, shownState));
         await runJourney({ send: (method, params) => answered(contents.debugger.sendCommand(method, params)) }, steps, {
           width: tab.width,
           signal: abort,
@@ -828,9 +936,17 @@ export class DesignPreviews {
             this.deps.log(`[design] the page of design ${tab.designId} stopped answering during a replay; its view is built again`);
             this.destroyView(tab);
             this.setStatus(tab, 'loading');
+            if (!tab.info) this.loadInfo(tab);
           } else {
-            live.loaded = false;
-            contents.reload();
+            // what ends the replay is the user's view again, so its navigations are no replay's
+            this.replaying.delete(tab);
+            if (replay.navigated) {
+              this.backToReplayStart(tab, live, replay);
+              this.endReplayAt(tab, live, replay.startEntry);
+            } else {
+              live.loaded = false;
+              contents.reload();
+            }
           }
         }
       }
@@ -1052,13 +1168,19 @@ export class DesignPreviews {
   private persist(chat: DesignChat): void {
     const entry = this.chats.get(chat);
     if (!entry || this.deps.retainingStates()) return;
-    const tabs: PersistedDesignTab[] = entry.tabs.map((tab) => ({
-      designId: tab.designId,
-      relPath: tab.relPath,
-      ...(tab.widthChosen ? { width: tab.width } : {}),
-      ...(tab.state !== DEFAULT_STATE ? { state: tab.state } : {}),
-      ...(tab.provenance ? { provenance: true } : {}),
-    }));
+    const tabs: PersistedDesignTab[] = entry.tabs.map((tab) => {
+      // a replay's pages are never the saved screen (D93)
+      const replay = this.replaying.get(tab);
+      const relPath = replay?.started ? replay.startRelPath : tab.relPath;
+      const state = (relPath === tab.relPath ? tab.state : tab.screenStates.get(relPath)) ?? DEFAULT_STATE;
+      return {
+        designId: tab.designId,
+        relPath,
+        ...(tab.widthChosen ? { width: tab.width } : {}),
+        ...(state !== DEFAULT_STATE ? { state } : {}),
+        ...(tab.provenance ? { provenance: true } : {}),
+      };
+    });
     const persisted = JSON.stringify(tabs);
     if (persisted === entry.persisted) return;
     entry.persisted = persisted;
@@ -1085,34 +1207,61 @@ export class DesignPreviews {
       },
     });
     const token = randomBytes(16).toString('hex');
+    const origin = `${DESIGN_SCHEME}://${token}`;
     // Before the first load, so the navigation lock applies to it.
-    registerLockedContents(view.webContents, `${DESIGN_SCHEME}://${token}`);
+    registerLockedContents(view.webContents, origin);
     // WebRTC's sockets bypass webRequest and CSP; with UDP only through the session's refusing proxy, ICE reaches no host.
     view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     view.setBackgroundColor('#ffffff');
     view.setVisible(false);
-    const live: LiveView = { view, token, loaded: false, loadFailed: false, documentReady: false, sheetStates: undefined, tweakKeys: new Map(), tweakQueue: Promise.resolve() };
+    const live: LiveView = { view, token, loaded: false, loadFailed: false, documentReady: false, pageMissing: false, next: undefined, following: undefined, followRun: 0, sheetStates: undefined, tweakKeys: new Map(), tweakQueue: Promise.resolve() };
     this.tokens.set(token, tab);
     const contents = view.webContents;
     leavePageOnPartKeys(contents, this.deps.focusPart);
+    // the browser's Back and Forward keys, which the page never sees, as a browser keeps them from its pages
+    contents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const step = historyStepOf(input, process.platform === 'darwin');
+      if (step === undefined || tab.live !== live) return;
+      event.preventDefault();
+      this.step(tab, step);
+    });
     contents.on('dom-ready', () => {
       if (tab.live !== live) return;
       // insertCSS lasts one document, so each load adds the sheets again, the tweaks included.
       live.documentReady = true;
       live.sheetStates = undefined;
-      this.insertSheets(tab, live);
-      void this.applyPage(tab, live);
+      const replay = this.replaying.get(tab);
+      if (replay?.navigated) contents.insertCSS(REPLAY_CSS, { cssOrigin: 'user' }).then(() => undefined, (err: unknown) => this.cssFailed(tab, err));
+      // a page whose facts are still coming takes its sheets when they arrive (moveTo)
+      if (live.following === undefined && !live.pageMissing) {
+        this.insertSheets(tab, live);
+        void this.applyPage(tab, live, replay !== undefined && replay.state !== null && tab.relPath === replay.startRelPath ? replay.state : tab.state);
+      }
       this.queueTweak(tab, live, async () => live.tweakKeys.clear());
       for (const [property, tweakToken] of tab.tweaks) this.insertTweak(tab, live, property, tweakToken);
     });
-    // a tweak applied while the next document loads waits for its dom-ready, which applies every tweak of the tab
+    // Electron emits it before will-navigate, so a navigation the lock cancels starts one too: only the next page's facts are
+    // asked for here, and the current document stays ready until another commits.
     contents.on('did-start-navigation', (details) => {
       if (tab.live !== live || !details.isMainFrame || details.isSameDocument) return;
-      live.documentReady = false;
-      live.loadFailed = false;
+      const relPath = designPathIn(details.url, origin);
+      live.next = relPath !== undefined && relPath !== tab.relPath && this.deps.support(tab.chat.authority) === 'yes' ? { relPath, info: this.infoOf(tab, relPath) } : undefined;
+    });
+    contents.on('did-navigate', (_event, url, httpResponseCode) => {
+      if (tab.live !== live) return;
+      this.committed(tab, live, url, httpResponseCode);
+      // a page the tab is moving to takes its history with its facts (moveTo)
+      if (live.following === undefined && this.readHistory(tab, live)) this.changed(tab);
+    });
+    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+      if (tab.live !== live || !isMainFrame) return;
+      const replay = this.replaying.get(tab);
+      if (replay?.started) replay.navigated = true;
+      if (this.readHistory(tab, live)) this.changed(tab);
     });
     contents.on('did-finish-load', () => {
-      if (tab.live !== live || live.loadFailed || tab.status === 'reconnecting' || tab.status === 'updateServer') return;
+      if (tab.live !== live || live.loadFailed || live.pageMissing || tab.status === 'reconnecting' || tab.status === 'updateServer') return;
       live.loaded = true;
       if (tab.info) this.setStatus(tab, 'ready');
     });
@@ -1121,6 +1270,11 @@ export class DesignPreviews {
       this.deps.log(`[design] design ${tab.designId} failed to load: ${errorDescription}`);
       live.loaded = false;
       live.loadFailed = true;
+      live.followRun++;
+      live.following = undefined;
+      live.next = undefined;
+      // the error page is an entry of its own, which Back leaves
+      this.readHistory(tab, live);
       this.setStatus(tab, 'failed');
     });
     // A page's cancelling beforeunload would hold main's reload after a designer edit or a reconnect.
@@ -1133,10 +1287,13 @@ export class DesignPreviews {
     });
     this.deps.window.contentView.addChildView(view);
     this.deps.onRestack();
-    const url = `${DESIGN_SCHEME}://${token}/${tab.relPath.split('/').map(encodeURIComponent).join('/')}`;
+    const url = `${origin}/${tab.relPath.split('/').map(encodeURIComponent).join('/')}`;
     this.deps.sessionReady.then(() => {
       if (tab.live !== live) return;
-      contents.loadURL(url).catch((err: unknown) => {
+      // taken only now, so a view destroyed before its first load leaves the saved history for the next one
+      const restored = restoredHistory(tab.history, origin);
+      tab.history = undefined;
+      (restored ? contents.navigationHistory.restore(restored) : contents.loadURL(url)).catch((err: unknown) => {
         // a reload or a navigation that replaced this load rejects it too; did-fail-load reports a real failure
         this.deps.log(`[design] loading design ${tab.designId}: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -1152,10 +1309,143 @@ export class DesignPreviews {
     if (!live) return;
     tab.live = undefined;
     this.tokens.delete(live.token);
-    const hadFocus = !live.view.webContents.isDestroyed() && live.view.webContents.isFocused();
+    const contents = live.view.webContents;
+    if (!contents.isDestroyed()) this.keepHistory(tab, live);
+    tab.canGoBack = false;
+    tab.canGoForward = false;
+    const hadFocus = !contents.isDestroyed() && contents.isFocused();
     if (!this.deps.window.isDestroyed()) this.deps.window.contentView.removeChildView(live.view);
-    if (!live.view.webContents.isDestroyed()) live.view.webContents.close();
+    if (!contents.isDestroyed()) contents.close();
     if (hadFocus) this.deps.focusAway();
+  }
+
+  // The history of a view about to go, for the view built again; one that never committed keeps what it was to restore. A
+  // replay's pages leave with it: the next view starts on the entry the replay started on, and the tab on that screen.
+  private keepHistory(tab: DesignTab, live: LiveView): void {
+    const history = live.view.webContents.navigationHistory;
+    const entries = history.getAllEntries();
+    const origin = `${DESIGN_SCHEME}://${live.token}`;
+    const replay = this.replaying.get(tab);
+    if (replay?.started && replay.navigated) {
+      tab.history = savedHistory(entries.slice(0, replay.startEntry + 1), replay.startEntry, origin);
+      if (this.tabExists(tab)) this.backToReplayStart(tab, live, replay);
+      return;
+    }
+    if (entries.length > 0) tab.history = savedHistory(entries, history.getActiveIndex(), origin);
+  }
+
+  // The tab back on the screen a replay started on, with its facts and state, and no move to a replay page still coming.
+  private backToReplayStart(tab: DesignTab, live: LiveView, replay: Replay): void {
+    live.followRun++;
+    live.following = undefined;
+    live.next = undefined;
+    if (tab.relPath === replay.startRelPath) return;
+    tab.relPath = replay.startRelPath;
+    tab.infoRun++;
+    tab.info = replay.startInfo;
+    tab.state = tab.screenStates.get(tab.relPath) ?? DEFAULT_STATE;
+  }
+
+  /**
+   * The view committed a document. A page of the design moves the tab to it once its facts are in, as an address bar follows
+   * its page, so the toolbar changes once; any other document (a path the design does not serve, an error status) leaves the
+   * tab on its page, which Back returns to.
+   */
+  private committed(tab: DesignTab, live: LiveView, url: string, httpResponseCode: number): void {
+    live.documentReady = false;
+    live.loadFailed = false;
+    const replay = this.replaying.get(tab);
+    if (replay?.started) replay.navigated = true;
+    const run = ++live.followRun;
+    const next = live.next;
+    live.next = undefined;
+    live.following = undefined;
+    const relPath = designPathIn(url, `${DESIGN_SCHEME}://${live.token}`);
+    if (relPath === undefined || httpResponseCode >= 400) {
+      this.pageMissing(tab, live);
+      return;
+    }
+    const wasMissing = live.pageMissing;
+    live.pageMissing = false;
+    if (relPath === tab.relPath) {
+      if (wasMissing && tab.info) this.setStatus(tab, 'loading');
+      else if (wasMissing) this.loadInfo(tab);
+      return;
+    }
+    live.following = relPath;
+    void (next?.relPath === relPath ? next.info : this.infoOf(tab, relPath)).then((info) => {
+      if (live.followRun !== run || tab.live !== live || !this.tabExists(tab)) return;
+      live.following = undefined;
+      // an away core answers nothing; its reconnect loads the view again, which commits this page again
+      if (this.deps.support(tab.chat.authority) !== 'yes') return;
+      if (info) this.moveTo(tab, live, relPath, info);
+      else this.pageMissing(tab, live);
+    });
+  }
+
+  private pageMissing(tab: DesignTab, live: LiveView): void {
+    live.pageMissing = true;
+    if (tab.status === 'reconnecting' || tab.status === 'updateServer') return;
+    const historyMoved = this.readHistory(tab, live);
+    if (tab.status === 'notFound' && !historyMoved) return;
+    tab.status = 'notFound';
+    this.changed(tab);
+    this.layout();
+  }
+
+  // The tab moves to the page its view shows, at the state it last had there, its facts, history and title in one publish.
+  private moveTo(tab: DesignTab, live: LiveView, relPath: string, info: DesignPreviewInfo): void {
+    tab.relPath = relPath;
+    // an answer for the page the tab left never lands over this one
+    tab.infoRun++;
+    tab.state = tab.screenStates.get(relPath) ?? DEFAULT_STATE;
+    this.takeInfo(tab, info);
+    this.readHistory(tab, live);
+    this.changed(tab);
+    this.layout();
+  }
+
+  // Whether the view's Back and Forward changed; the caller publishes.
+  private readHistory(tab: DesignTab, live: LiveView): boolean {
+    const history = live.view.webContents.navigationHistory;
+    const back = history.canGoBack();
+    const forward = history.canGoForward();
+    if (back === tab.canGoBack && forward === tab.canGoForward) return false;
+    tab.canGoBack = back;
+    tab.canGoForward = forward;
+    return true;
+  }
+
+  /**
+   * A replay that moved the view ends on the history entry it started on, with the entries it added gone, and loads that page
+   * again so nothing it typed stays (D93). Going back to a same-document entry makes no new document, so the reload waits for
+   * the arrival rather than for a load.
+   */
+  private endReplayAt(tab: DesignTab, live: LiveView, startEntry: number): void {
+    const contents = live.view.webContents;
+    const history = contents.navigationHistory;
+    live.loaded = false;
+    const reloadAtStart = (): void => {
+      for (let index = history.length() - 1; index > startEntry; index--) history.removeEntryAtIndex(index);
+      if (this.readHistory(tab, live)) this.changed(tab);
+      contents.reload();
+    };
+    if (startEntry >= history.length() || history.getActiveIndex() === startEntry) {
+      reloadAtStart();
+      return;
+    }
+    const arrived = (): void => {
+      if (tab.live !== live || contents.isDestroyed() || history.getActiveIndex() !== startEntry) return;
+      contents.off('did-navigate', arrived);
+      contents.off('did-navigate-in-page', arrivedInPage);
+      reloadAtStart();
+    };
+    const arrivedInPage = (_event: unknown, _url: string, isMainFrame: boolean): void => {
+      if (isMainFrame) arrived();
+    };
+    contents.on('did-navigate', arrived);
+    contents.on('did-navigate-in-page', arrivedInPage);
+    history.goToIndex(startEntry);
   }
 
   // The provenance sheet once per document, and a states sheet only when the declared states changed: removeInsertedCSS
@@ -1197,7 +1487,8 @@ export class DesignPreviews {
   // Only the active design tab's view shows, only while its screen is ready, and only over the frame the shell reports.
   private layout(): void {
     const active = this.activeTab();
-    if (active && !active.live && active.info && (active.status === 'loading' || active.status === 'ready')) this.goLive(active);
+    // a tab left on a missing page gets a view again too, whose restored history lands there with Back
+    if (active && !active.live && active.info && (active.status === 'loading' || active.status === 'ready' || active.status === 'notFound')) this.goLive(active);
     if (active?.live && active.id !== this.lastShownId) active.lastShown = ++this.shownCount;
     this.lastShownId = active?.id;
     const area = active && this.frame?.tabId === active.id ? this.area() : undefined;

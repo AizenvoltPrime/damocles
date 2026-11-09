@@ -80,7 +80,7 @@ A rewind in the main chat carries the design's link to the new chat.
 
 ## Desktop preview tab
 
-The desktop app opens a screen's preview as an editor tab of the design chat at the designer's first write of it, and from Open preview on a card. The page runs sandboxed with the network off, and scripts run only in an interactive design. A designer edit reloads it.
+The desktop app opens a screen's preview as an editor tab of the design chat at the designer's first write of it, from Open preview on a card or in the design chat's header, and from Open preview in the menu of a screen's own editor tab, which shows the design chat first. The page runs sandboxed with the network off, and scripts run only in an interactive design. A designer edit reloads it. A link to another screen moves the tab to that screen once its facts arrive, at the state last chosen there in this tab, and Back and Forward in the toolbar (Alt+Left and Alt+Right, or Cmd+[ and Cmd+] on macOS) walk the pages it showed. A link to a page the design does not have leaves the tab on its screen and shows that no page is there; Back returns. Markup marks belong to the screen they were drawn on: each screen of a tab keeps its own until it is sent.
 
 - **Width**: presets for 390 px and each breakpoint, the primary width from `design.md` (1280 px when absent), Fit, a typed width from 320 to 2560 px, and a drag handle (arrow keys move 1 px, Shift+arrow 10 px).
 - **State** shows each state the screen declares, and **Provenance** outlines each element and shows where it comes from on hover.

@@ -79,13 +79,15 @@ import { DesignRendererHost } from './design/design-renderer-host';
 import { startDesignRenderer } from './design/design-renderer-start';
 import { isDesignRendererLaunch, runDesignRenderer } from './design/design-renderer';
 import { DesignServer } from './design/design-server';
+import { authorityOfLocation, designScreenAuthority } from './design/design-screen-path';
 import type { BrowserTabSource } from './editor-pane';
-import { isDesignId, SCREEN_FILE } from '../../shared/design-paths';
+import { isDesignId, isDesignScreenFile } from '../../shared/design-paths';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 import type { DesignPreviewFile, JourneyStep } from '../../shared/types/design';
 import { parseJourneySteps } from '../../shared/design-journey';
 import { ChatUnloads, chatsToUnload, ChatWorkQueue } from './chat-pool';
 import { chatProjectKey } from './chat-project';
+import { showHeldChat } from './held-chat';
 import { isActiveActivity } from '../../shared/chat-retention';
 import { chatTitle, panelTitle, storedTitle } from './chat-title';
 import { chatActions, refusesMirrored } from './chat-actions';
@@ -118,7 +120,7 @@ import {
 import { BackupStore } from './documents/backups';
 import { followsLocalLinksOnly, type Project } from '../local-services/confine';
 import type { OpenFolder } from '../../platform/workspace-folders';
-import { DocumentService, RefusedPathError, type TextDocument } from './documents/document-service';
+import { DocumentService, RefusedPathError, type Location, type TextDocument } from './documents/document-service';
 import { sessionFileEngines } from './documents/session-files';
 import { EditorPane, editorSettings, type RemoteDiffTarget } from './editor-pane';
 import { FormatService } from './formatting/format-service';
@@ -453,7 +455,7 @@ function designTargetOf(authority: string, designId: string, relPath: string, ki
   const file = isDesignId(designId) && isRelativeFilePath(relPath) && !hasUnsafeWindowsSegment(relPath);
   if (kind === 'file' && !file) throw new Error('Not a design file');
   if (kind === 'page' && !(file && relPath.toLowerCase().endsWith('.html'))) throw new Error('Not a design screen');
-  if (kind === 'screen' && !(file && SCREEN_FILE.test(relPath))) throw new Error('Not a design screen');
+  if (kind === 'screen' && !(file && isDesignScreenFile(relPath))) throw new Error('Not a design screen');
   return { authority, designId };
 }
 
@@ -1278,6 +1280,7 @@ class DesktopApp {
         onDidChange: (listener) => this.requirePorts().onClientNetwork(listener),
       },
       divert: (view, message) => this.divertViewMessage(view, message),
+      showSession: (sessionId) => this.showSessionOf('local', sessionId),
       openDesignPreview: (corePanelId, designId, relPath) => this.openDesignPreview('local', corePanelId, designId, relPath),
       designRender: this.designRenderFor('local'),
       git: git.available ? { available: true, path: git.path, version: git.version } : { available: false, reason: git.reason },
@@ -2924,6 +2927,37 @@ class DesktopApp {
     return this.selectedProjectKey === undefined ? 'local' : authorityKeyOfProject(this.selectedProjectKey);
   }
 
+  // chats.showSession: the core revealed a chat as this device's work, so it shows here, joining the panel another device
+  // shows; rejects when it did not open, which the daemon answers core as not shown
+  private async showSessionOf(authority: string, sessionId: string): Promise<void> {
+    const shown = await this.chatHost(authority).run('Show Chat', (core) => (core.rejoin ? this.showHeldChatIn(core, core.rejoin, sessionId) : this.selectChatIn(core, sessionId).then((result) => result.ok)));
+    if (!shown) throw new Error(`Chat ${sessionId} of ${authority} did not open on this device`);
+  }
+
+  private showHeldChatIn(core: ChatCore, rejoin: NonNullable<ChatCore['rejoin']>, sessionId: string): Promise<boolean> {
+    const views = this.requireViews();
+    return this.chatWork.run(sessionId, () => showHeldChat<DesktopPanel>({
+      loaded: () => {
+        const loaded = this.loadedChat(sessionId);
+        return loaded?.authority === core.authority ? loaded : undefined;
+      },
+      create: () => {
+        const host = views.create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { sessionId } }, authority: core.authority });
+        // the joined chat's own folder (its chats mirror entry) names its project once it joined
+        const selected = this.selectedProjectKey;
+        this.trackChat(host, selected !== undefined && authorityKeyOfProject(selected) === core.authority ? selected : this.defaultProjectKey(core));
+        return host;
+      },
+      join: (host) => {
+        const joined = rejoin(host, undefined, sessionId);
+        this.chatRestores.set(host, joined.then(() => undefined, () => undefined));
+        return joined;
+      },
+      show: (host) => this.showChat(host, { focus: true }),
+      dispose: (host) => host.close(),
+    }));
+  }
+
   private async selectChatIn(core: ChatCore, chatId: string): Promise<SelectChatResult> {
     const loaded = this.loadedChat(chatId);
     if (loaded) {
@@ -3710,7 +3744,11 @@ class DesktopApp {
       },
       design: {
         set: ({ tabId, ...change }) => this.requireDesignPreviews().set(tabId, change),
-        action: ({ tabId, action }) => (action === 'screenshot' ? this.designScreenshot(tabId) : this.requireDesignPreviews().openInBrowser(tabId)),
+        action: async ({ tabId, action }) => {
+          if (action === 'screenshot') return this.designScreenshot(tabId);
+          if (action === 'openInBrowser') return this.requireDesignPreviews().openInBrowser(tabId);
+          this.requireDesignPreviews().navigate(tabId, action);
+        },
         setBounds: (frame) => this.designPreviews?.setBounds(frame),
         freeze: (tabId) => this.requireDesignPreviews().freeze(tabId),
         markupEnter: (tabId) => this.requireDesignPreviews().markupEnter(tabId),
@@ -3974,6 +4012,10 @@ class DesktopApp {
       reviewClosed: (reviewId) => this.chatReviews.reviewClosed(reviewId),
       gitOf: (location) => this.scm?.gitOf(location),
       openChanges: (location) => this.requireScm().openChangesOf(location),
+      designScreens: {
+        is: (location) => this.designScreenAuthority(location) !== undefined,
+        preview: (location) => this.previewDesignScreen(location),
+      },
     });
     // D29's errors and timeouts; Show Output opens it as a log tab (D36).
     const formatLog = this.logSinks.create('Format');
@@ -4543,6 +4585,37 @@ class DesktopApp {
   // Every design byte main serves, in the preview or the browser, comes from the chat's own core.
   private designRead(target: DesignViewTarget, relPath: string): Promise<DesignPreviewFile | 'tooLarge' | undefined> {
     return this.requireDesignClient(target.authority).designRead(target.designId, relPath);
+  }
+
+  private designScreenAuthority(location: Location): string | undefined {
+    return designScreenAuthority(location, {
+      features: (authority) => this.authorities?.connection(authority)?.features,
+      osOf: (authority) => this.knownAuthorityOs(authority),
+    });
+  }
+
+  // An editor tab's Open preview on a design's screen, a user's click: the screen's own core opens it in its design chat.
+  private async previewDesignScreen(location: Location): Promise<void> {
+    const localization = this.requireLocalization();
+    const authority = authorityOfLocation(location);
+    const client = this.designScreenAuthority(location) === undefined ? undefined : this.clientFor(authority);
+    if (!client) {
+      void this.notifications.warn(authority === 'local'
+        ? localization.t("Opening a design preview needs this computer's Damocles engine, which is not running. Restart the engine, then try again.")
+        : this.authorities?.connection(authority)
+          ? localization.t("Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again.", visibleText(this.hostName(authority)))
+          : localization.t('{0} is not connected.', visibleText(this.hostName(authority))));
+      return;
+    }
+    const name = visibleText(pathFor({ os: this.knownAuthorityOs(authority) ?? process.platform }).basename(location.path));
+    try {
+      const outcome = await client.designPreviewScreen(location.path);
+      // a remote core's text reaches the toast through main, which shows no control or direction character of it
+      if ('refused' in outcome) void this.notifications.warn(visibleText(localization.render(outcome.refused)));
+    } catch (err) {
+      log(`[design] previewing ${location.path} failed: ${err instanceof Error ? err.message : String(err)}`);
+      void this.notifications.warn(localization.t('Could not preview {0}: {1}', name, visibleText(err instanceof Error ? err.message : String(err))));
+    }
   }
 
   // design.openPreview from a core: the tab of its design chat, never a browser (PD-35); the chat must be one of that core's.
@@ -5255,6 +5328,7 @@ class DesktopApp {
         logs: deps.logs,
         language: deps.language,
         log: deps.log,
+        showSession: (sessionId) => this.showSessionOf(authority, sessionId),
         openDesignPreview: (corePanelId, designId, relPath) => this.openDesignPreview(authority, corePanelId, designId, relPath),
         designRender: this.designRenderFor(authority),
       },

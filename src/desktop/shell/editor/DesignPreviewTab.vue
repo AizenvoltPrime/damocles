@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Ban, Camera, CircleAlert, CircleCheck, CircleX, CloudOff, ExternalLink, LoaderCircle, MoveHorizontal, PencilLine, SlidersHorizontal } from 'lucide-vue-next';
+import { ArrowLeft, ArrowRight, Ban, Camera, CircleAlert, CircleCheck, CircleX, CloudOff, ExternalLink, LoaderCircle, MoveHorizontal, PencilLine, SlidersHorizontal } from 'lucide-vue-next';
 import type { AcceptableValue } from 'reka-ui';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,8 @@ import { remPx } from '@/composables/useRemPx';
 import { cn } from '@/lib/utils';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import { MAX_DESIGN_WIDTH, MAX_DESIGN_ZOOM, MIN_DESIGN_WIDTH, MIN_DESIGN_ZOOM, type DamoclesShellApi, type DesignReplayProgress, type ShellDesignPreview, type ShellEditorTab, type ShellPlatform } from '../../preload/shell-channels';
+import { historyStepOf } from '@shared/history-keys';
+import { visibleText } from '@shared/visible-text';
 import { boundsOf, watchContentBounds } from '../content-bounds';
 import { TOOLBAR_BUTTON } from './design-toolbar';
 import { bandOf, clampWidth, dragDelta, fitWidth, keyWidth, presetsOf, readout, zoomFor } from './design-width';
@@ -20,12 +22,12 @@ import MarkupLayer from './MarkupLayer.vue';
 import PageStandIn from './PageStandIn.vue';
 import MarkupToolbar from './MarkupToolbar.vue';
 import { flattenMarkup, resolveMarkupColors } from './markup-flatten';
-import { dropMarkupSession, markupJson, markupSession, startMarkupSession, undoMarks } from './markup-session';
+import { dropMarkupSession, markupJson, markupSession, startMarkupSession, tabMarkupSessions, undoMarks } from './markup-session';
 import TweaksPanel from './TweaksPanel.vue';
 import { ensureTweaksSession, tweaksSession } from './tweaks-session';
 
 const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab & { designPreview: ShellDesignPreview }; platform: ShellPlatform }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const preview = computed(() => props.tab.designPreview);
 const breakpoints = computed(() => preview.value.info?.breakpoints ?? []);
@@ -222,10 +224,22 @@ async function screenshot(): Promise<void> {
   }
 }
 
-// Markup (PD-12): main captures the live view and hides it while markup is on; the marks stay in shell memory per tab.
-const session = computed(() => markupSession(props.tab.id));
+// Markup (PD-12): main captures the live view and hides it while markup is on; the marks stay in shell memory per tab and screen.
+const tabSessions = computed(() => tabMarkupSessions(props.tab.id));
+// Markup that is on stays with the screen it froze, whatever screen the tab publishes meanwhile.
+const session = computed(() => tabSessions.value.find((kept) => kept.active) ?? markupSession(props.tab.id, preview.value.relPath));
 const markupOn = computed(() => session.value?.active === true);
 const marksWaiting = computed(() => (markupOn.value ? 0 : session.value?.marks.length ?? 0));
+const screensWaiting = computed(() => (markupOn.value ? [] : tabSessions.value
+  .filter((kept) => kept !== session.value && kept.marks.length > 0)
+  .map((kept) => visibleText(kept.freeze.file.slice(kept.freeze.file.lastIndexOf('/') + 1)))));
+const markupTitle = computed(() => {
+  const title = t(tweaksApplied.value > 0 ? 'editor.designPreview.markup.tweaksApplied' : 'editor.designPreview.markup.buttonTitle');
+  const others = screensWaiting.value;
+  if (others.length === 0) return title;
+  const screens = new Intl.ListFormat(locale.value, { type: 'conjunction' }).format(others);
+  return `${title}\n${t('editor.designPreview.markup.alsoWaiting', { screens })}`;
+});
 const freezing = ref(false);
 const sending = ref(false);
 const freezeFailed = ref(false);
@@ -284,7 +298,7 @@ function glideEnded(): Promise<boolean> {
   });
 }
 
-// Reopening a tab that holds marks reuses its capture and first returns the preview to the frozen width.
+// Reopening a screen that holds marks reuses its capture and first returns the preview to the frozen width.
 async function openMarkup(): Promise<void> {
   if (markupBlocked.value || markupOn.value) return;
   freezing.value = true;
@@ -324,7 +338,7 @@ async function exitMarkup(): Promise<void> {
   const current = session.value;
   if (!current) return;
   current.active = false;
-  if (current.marks.length === 0) dropMarkupSession(props.tab.id);
+  if (current.marks.length === 0) dropMarkupSession(props.tab.id, current.freeze.file);
   markupNotice.value = null;
   pendingFocus.value = 'markupButton';
   await props.api.designMarkupExit(props.tab.id).catch(reportRefusal);
@@ -349,7 +363,7 @@ async function sendMarkup(): Promise<void> {
   } finally {
     sending.value = false;
   }
-  dropMarkupSession(props.tab.id);
+  dropMarkupSession(props.tab.id, current.freeze.file);
   flashes.value += 1;
   announce(t('editor.designPreview.markup.sent', { id: sent.feedbackId }));
   pendingFocus.value = 'markupButton';
@@ -365,8 +379,27 @@ function isZ(event: KeyboardEvent): boolean {
   return /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() === 'z' : event.code === 'KeyZ';
 }
 
+// Back and Forward: the view's own history, as a browser's are; markup shows a capture of one page, so it holds them, and
+// main refuses them while a replay drives the view or the host cannot serve it.
+const historyBlocked = computed(() => markupOn.value || freezing.value || (replay.value !== null && !replay.value.done)
+  || preview.value.status === 'reconnecting' || preview.value.status === 'updateServer');
+// aria-keyshortcuts names keys by their US-layout key values (WAI-ARIA), the titles as the platform writes them.
+const historyKeys = computed(() => (props.platform === 'darwin'
+  ? { back: '⌘[', forward: '⌘]', ariaBack: 'Meta+[', ariaForward: 'Meta+]' }
+  : { back: 'Alt+Left', forward: 'Alt+Right', ariaBack: 'Alt+ArrowLeft', ariaForward: 'Alt+ArrowRight' }));
+function goInHistory(step: 'back' | 'forward'): void {
+  if (historyBlocked.value || !(step === 'back' ? preview.value.canGoBack : preview.value.canGoForward)) return;
+  props.api.designPreviewAction({ tabId: props.tab.id, action: step }).catch(reportRefusal);
+}
+
 // Ctrl+Z (Cmd+Z) undoes a mark anywhere in the tab, except in a text field, whose own undo it is.
 async function onTabKeydown(event: KeyboardEvent): Promise<void> {
+  const step = historyStepOf({ code: event.code, alt: event.altKey, control: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey }, props.platform === 'darwin');
+  if (step !== undefined && !markupOn.value) {
+    event.preventDefault();
+    goInHistory(step);
+    return;
+  }
   const current = session.value;
   if (!markupOn.value || !current || sending.value || !isZ(event) || event.shiftKey || event.altKey) return;
   if (!(props.platform === 'darwin' ? event.metaKey : event.ctrlKey)) return;
@@ -515,6 +548,36 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
           data-testid="design-preview-width-toolbar"
           class="flex flex-wrap items-center gap-x-2 gap-y-1.5"
         >
+          <div
+            role="group"
+            :aria-label="t('editor.designPreview.history')"
+            class="flex items-center gap-0.5"
+          >
+            <Button
+              variant="ghost"
+              data-testid="design-preview-back"
+              :class="cn(TOOLBAR_BUTTON, 'w-6.5 px-0')"
+              :aria-label="t('editor.designPreview.back')"
+              :title="t('editor.designPreview.backTitle', { key: historyKeys.back })"
+              :aria-keyshortcuts="historyKeys.ariaBack"
+              :aria-disabled="historyBlocked || !preview.canGoBack || undefined"
+              @click="goInHistory('back')"
+            >
+              <ArrowLeft aria-hidden="true" />
+            </Button>
+            <Button
+              variant="ghost"
+              data-testid="design-preview-forward"
+              :class="cn(TOOLBAR_BUTTON, 'w-6.5 px-0')"
+              :aria-label="t('editor.designPreview.forward')"
+              :title="t('editor.designPreview.forwardTitle', { key: historyKeys.forward })"
+              :aria-keyshortcuts="historyKeys.ariaForward"
+              :aria-disabled="historyBlocked || !preview.canGoForward || undefined"
+              @click="goInHistory('forward')"
+            >
+              <ArrowRight aria-hidden="true" />
+            </Button>
+          </div>
           <ToggleGroup
             v-if="preview.info"
             type="single"
@@ -683,7 +746,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
               variant="ghost"
               data-testid="design-preview-markup"
               :class="TOOLBAR_BUTTON"
-              :title="tweaksApplied > 0 ? t('editor.designPreview.markup.tweaksApplied') : t('editor.designPreview.markup.buttonTitle')"
+              :title="markupTitle"
               :aria-label="marksWaiting > 0 ? t('editor.designPreview.markup.buttonWaiting', { n: marksWaiting }, marksWaiting) : undefined"
               :aria-disabled="markupBlocked || undefined"
               :aria-busy="freezing || undefined"
@@ -742,7 +805,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
               dir="ltr"
               :title="preview.path"
               class="ms-auto min-w-0 truncate font-mono text-11 text-(--d-faint-text) @max-[30rem]:ms-0 @max-[30rem]:basis-full"
-            >{{ preview.relPath }}</span>
+            >{{ visibleText(preview.relPath) }}</span>
           </div>
         </Transition>
       </div>
@@ -817,6 +880,11 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                 />
                 <MoveHorizontal
                   v-else-if="frameStatus === 'tooNarrow'"
+                  aria-hidden="true"
+                  class="size-5"
+                />
+                <CircleAlert
+                  v-else-if="preview.status === 'notFound'"
                   aria-hidden="true"
                   class="size-5"
                 />

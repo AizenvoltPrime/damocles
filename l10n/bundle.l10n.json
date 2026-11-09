@@ -1579,6 +1579,10 @@
   "Could not preview {0}.": "Could not preview {0}.",
   "Open the design chat to preview {0}.": "Open the design chat to preview {0}.",
   "Could not preview {0}: {1}": "Could not preview {0}: {1}",
+  "{0} is not a screen of a design.": "{0} is not a screen of a design.",
+  "Open the design chat of {0} to preview it.": "Open the design chat of {0} to preview it.",
+  "The design chat could not be shown on this device, so {0} did not open.": "The design chat could not be shown on this device, so {0} did not open.",
+  "The chat could not be shown on this device.": "The chat could not be shown on this device.",
   "Damocles could not open the design in the browser.": "Damocles could not open the design in the browser.",
   "{0} is not a screen of this design.": "{0} is not a screen of this design.",
   "No Damocles app is attached to render this design.": "No Damocles app is attached to render this design.",
@@ -1647,5 +1651,8 @@
   "A memory holds at most {0} characters.": "A memory holds at most {0} characters.",
   "Preview {0}": "Preview {0}",
   "Open this preview from Damocles.": "Open this preview from Damocles.",
-  "Damocles could not open the preview in the browser.": "Damocles could not open the preview in the browser."
+  "Damocles could not open the preview in the browser.": "Damocles could not open the preview in the browser.",
+  "This chat shows no design previews.": "This chat shows no design previews.",
+  "Opening a design preview needs this computer's Damocles engine, which is not running. Restart the engine, then try again.": "Opening a design preview needs this computer's Damocles engine, which is not running. Restart the engine, then try again.",
+  "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again.": "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again."
 }

@@ -24,6 +24,7 @@ import { createRunRegistry, type RunRegistry } from '../run-registry';
 import { CodecError, decode, encode } from '../../../remote/codec';
 import { FEATURES } from '../../../remote/protocol-version';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../../shared/remote-user';
+import { DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT } from '../../../shared/design-render';
 
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -198,11 +199,11 @@ describe('core routes', () => {
     expect(seen.filter((entry) => entry !== 'acting:none')).toEqual(['acting:connection-1', 'acting:connection-2']);
   });
 
-  it('send design.openPreview to a client that shows the design chat and lists it, answer nothing otherwise, and pass design.read and design.info through', async () => {
+  it('send design.openPreview to a client that shows the design chat and lists it, refuse it with the exact text otherwise, and pass design.read and design.info through', async () => {
     const h = setUp();
     const open = { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' };
     // no window to open a tab in, and never a browser
-    expect(await h.core.request('design.openPreview', open)).toBeUndefined();
+    await expect(h.core.request('design.openPreview', open)).rejects.toThrow(DESIGN_PREVIEW_CLIENT_ABSENT);
     h.core.serve('chats.restore', () => undefined);
     const client = h.client('c1', { features: DESIGN_FEATURES });
     const opened: unknown[] = [];
@@ -210,7 +211,7 @@ describe('core routes', () => {
       opened.push(params);
     });
     // the chat is not one this client shows
-    expect(await h.core.request('design.openPreview', open)).toBeUndefined();
+    await expect(h.core.request('design.openPreview', open)).rejects.toThrow(DESIGN_PREVIEW_CLIENT_ABSENT);
     await client.main.request('chats.restore', { viewId: 'view-1' });
     h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
     // an app that predates design.openPreview attached last, so it is the acting client, and is never asked
@@ -312,6 +313,20 @@ describe('core routes', () => {
     expect(await client.main.request('design.tweak', request)).toEqual({ kept: true });
     expect(asked).toEqual([request]);
     expect(MAIN_REQUEST_ROUTES['design.tweak']).toBe('core');
+  });
+
+  it("pass design.previewScreen from a client to its core, which opens the screen's preview in its own design chat", async () => {
+    const h = setUp();
+    const client = h.client('c1');
+    const asked: unknown[] = [];
+    h.core.serve('design.previewScreen', (params) => {
+      asked.push(params);
+      return { opened: true as const };
+    });
+    const request = { path: '/home/a/.damocles/designs/d-1234/screens/S1.html' };
+    expect(await client.main.request('design.previewScreen', request)).toEqual({ opened: true });
+    expect(asked).toEqual([request]);
+    expect(MAIN_REQUEST_ROUTES['design.previewScreen']).toBe('core');
   });
 
   it('send design.capture and design.probe to a client that lists them, the acting one or another, refusing with the exact text otherwise', async () => {
@@ -970,6 +985,121 @@ describe('several clients', () => {
     await h.core.request('design.openPreview', open);
     await h.core.request('design.replayJourney', replay);
     expect(asked).toEqual(['open a', 'replay a', 'open b', 'replay b']);
+  });
+
+  it('reveal a panel for a device\'s work on that device alone, which opens the chat by its stored session when it shows no view of it, so the preview core opens next reaches that device', async () => {
+    const h = setUp();
+    const features = ['chats.showSession', ...DESIGN_FEATURES];
+    const { a, b } = await shared(h, undefined, features);
+    const c = h.client('connection-3', { clientId: 'device-c', features });
+    const reveals: Array<[string, string, unknown]> = [];
+    for (const [name, client] of [['a', a], ['b', b], ['c', c]] as const) {
+      client.main.onPanel((viewId, envelope) => {
+        if (envelope.op === 'reveal') reveals.push([name, viewId, envelope.payload]);
+      });
+    }
+    // device b shows the panel: its view alone is revealed, and device a stays where it is
+    expect(await processActor.run('device-b', () => h.core.request('chats.reveal', { viewId: 'view-1', column: 2 }))).toBe(true);
+    expect(reveals).toEqual([['b', 'view-b', { column: 2 }]]);
+
+    // device c shows none: its main opens the chat, joining the panel, before the reveal answers
+    const shown: string[] = [];
+    c.main.serve('chats.showSession', async ({ sessionId }) => {
+      expect(await c.main.request('views.join', { viewId: 'view-c', viewKey: 'token-of-c', sessionId })).toEqual({ panelId: 'panel-1' });
+      shown.push(sessionId);
+    });
+    const opened: string[] = [];
+    for (const [name, client] of [['a', a], ['b', b], ['c', c]] as const) {
+      client.main.serve('design.openPreview', () => {
+        opened.push(name);
+      });
+    }
+    await processActor.run('device-c', async () => {
+      expect(await h.core.request('chats.reveal', { viewId: 'view-1' })).toBe(true);
+      expect(shown).toEqual(['S1']);
+      await h.core.request('design.openPreview', { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' });
+    });
+    expect(opened).toEqual(['c']);
+    expect(reveals).toEqual([['b', 'view-b', { column: 2 }]]);
+
+    // core's own work reveals every view
+    reveals.length = 0;
+    expect(await h.core.request('chats.reveal', { viewId: 'view-1' })).toBe(true);
+    expect(reveals).toEqual([['a', 'view-1', {}], ['b', 'view-b', {}], ['c', 'view-c', {}]]);
+  });
+
+  it('answer a reveal for a device\'s work that cannot show the chat there as not shown, and move no other device\'s view', async () => {
+    const h = setUp();
+    const features = ['chats.showSession', ...DESIGN_FEATURES];
+    const { a, b } = await shared(h, undefined, features);
+    const reveals: string[] = [];
+    for (const [name, client] of [['a', a], ['b', b]] as const) {
+      client.main.onPanel((_viewId, envelope) => {
+        if (envelope.op === 'reveal') reveals.push(name);
+      });
+    }
+    const reveal = (actor: string): Promise<boolean> => processActor.run(actor, () => h.core.request('chats.reveal', { viewId: 'view-1' }));
+    // an app that predates chats.showSession is never asked
+    const older = h.client('connection-3', { clientId: 'device-c', features: DESIGN_FEATURES });
+    const olderAsked = vi.fn();
+    older.main.serve('chats.showSession', olderAsked);
+    expect(await reveal('device-c')).toBe(false);
+    expect(olderAsked).not.toHaveBeenCalled();
+    // an app that could not open the chat, and one that answered without joining its panel
+    const refusing = h.client('connection-4', { clientId: 'device-d', features });
+    refusing.main.serve('chats.showSession', () => {
+      throw new Error('The chat did not open');
+    });
+    expect(await reveal('device-d')).toBe(false);
+    const silent = h.client('connection-5', { clientId: 'device-e', features });
+    silent.main.serve('chats.showSession', () => undefined);
+    expect(await reveal('device-e')).toBe(false);
+    // a device inside its grace, though it shows the panel, and one no longer attached
+    b.lose();
+    expect(await reveal('device-b')).toBe(false);
+    b.resume();
+    expect(await reveal('device-gone')).toBe(false);
+    // a panel with no stored session cannot be joined
+    const { sessionId: _held, ...unsaved } = entry('panel-1', 'view-1');
+    h.core.publish('chats', { panelId: 'panel-1', entry: unsaved });
+    const unasked = vi.fn();
+    const another = h.client('connection-6', { clientId: 'device-f', features });
+    another.main.serve('chats.showSession', unasked);
+    expect(await reveal('device-f')).toBe(false);
+    expect(unasked).not.toHaveBeenCalled();
+    expect(reveals).toEqual([]);
+  });
+
+  it('send design.openPreview and design.replayJourney of a device\'s work to that device alone, refusing while it shows no view of the chat, never to another device', async () => {
+    const h = setUp();
+    const { a, b } = await shared(h, undefined, DESIGN_FEATURES);
+    const c = h.client('connection-3', { clientId: 'device-c', features: DESIGN_FEATURES });
+    const asked: string[] = [];
+    for (const [name, client] of [['a', a], ['b', b], ['c', c]] as const) {
+      client.main.serve('design.openPreview', () => {
+        asked.push(`open ${name}`);
+      });
+      client.main.serve('design.replayJourney', () => {
+        asked.push(`replay ${name}`);
+      });
+    }
+    const open = { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' };
+    const step = { action: 'click' as const, target: { role: 'button', name: 'Add contact' } };
+    const shown = { action: 'assert' as const, target: { role: 'dialog', name: 'New contact' }, expect: { visible: true } };
+    const replay = { ...open, state: null, steps: [step, shown], reducedMotion: true };
+    const asActor = <T>(actor: string, work: () => Promise<T>): Promise<T> => processActor.run(actor, work);
+    await asActor('device-b', () => h.core.request('design.openPreview', open));
+    await asActor('device-b', () => h.core.request('design.replayJourney', replay));
+    expect(asked).toEqual(['open b', 'replay b']);
+    // device c acts but shows no view of the chat: refused, though devices a and b show it
+    await expect(asActor('device-c', () => h.core.request('design.openPreview', open))).rejects.toThrow(DESIGN_PREVIEW_CLIENT_ABSENT);
+    await expect(asActor('device-c', () => h.core.request('design.replayJourney', replay))).rejects.toThrow(DESIGN_RENDER_CLIENT_ABSENT);
+    // device b inside its grace, and a device no longer attached
+    b.lose();
+    await expect(asActor('device-b', () => h.core.request('design.openPreview', open))).rejects.toThrow(DESIGN_PREVIEW_CLIENT_ABSENT);
+    b.resume();
+    await expect(asActor('device-gone', () => h.core.request('design.openPreview', open))).rejects.toThrow(DESIGN_PREVIEW_CLIENT_ABSENT);
+    expect(asked).toEqual(['open b', 'replay b']);
   });
 
   it('name a new panel\'s parent by the view the acting client shows it under, and drop a parent that client does not show', async () => {

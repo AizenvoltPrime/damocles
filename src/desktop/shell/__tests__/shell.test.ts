@@ -18,7 +18,7 @@ import { providerLogoSvg } from '@/components/icons/provider-logos';
 import { DESIGN_STRIP } from '@/components/design/design-strip';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
-import { markupSession, startMarkupSession } from '../editor/markup-session';
+import { markupSession, startMarkupSession, tabMarkupSessions } from '../editor/markup-session';
 import { ensureTweaksSession, tweaksSession } from '../editor/tweaks-session';
 import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakePortsApi, fakeShellApi } from './fakes';
 
@@ -369,19 +369,20 @@ describe("a design chat's header edge", () => {
 });
 
 describe('App and title bar', () => {
-  it("lets go of a design tab's markup and tweaks once main closes the tab for good, and of no other tab's", async () => {
+  it("lets go of a design tab's markup on every screen and its tweaks once main closes the tab for good, and of no other tab's", async () => {
     const api = fakeShellApi();
     mountApp(api);
     await flushPromises();
-    const freeze = { png: 'data:image/png;base64,', imageWidth: 1, imageHeight: 1, width: 1, height: 1, elements: [] } as unknown as DesignFreeze;
+    const freezeOf = (file: string) => ({ png: 'data:image/png;base64,', imageWidth: 1, imageHeight: 1, width: 1, height: 1, file, elements: [] }) as unknown as DesignFreeze;
     for (const tabId of ['design-1', 'design-2']) {
-      startMarkupSession(tabId, freeze);
+      for (const file of ['screens/S1.html', 'screens/S2.html']) startMarkupSession(tabId, freezeOf(file));
       ensureTweaksSession(tabId).open = true;
     }
     api.designClosed('design-1');
-    expect(markupSession('design-1')).toBeUndefined();
+    expect(tabMarkupSessions('design-1')).toEqual([]);
     expect(tweaksSession('design-1')).toBeUndefined();
-    expect(markupSession('design-2')).toBeDefined();
+    expect(tabMarkupSessions('design-2')).toHaveLength(2);
+    expect(markupSession('design-2', 'screens/S2.html')).toBeDefined();
     expect(tweaksSession('design-2')?.open).toBe(true);
     api.designClosed('design-2');
   });

@@ -38,7 +38,7 @@ import { PLAN_MODE_TOOLS, WRITE_TOOLS } from "../../shared/tool-names";
 import { modelLabel } from "../../shared/model-vendor";
 import { ChatReview, type ChatChangeTotals, type ChatReviewSnapshot, type CommentPlace, type DraftComment, type ReviewSubmitOutcome } from "./chat-review";
 import { SessionWorktree } from "./session-worktree";
-import { SessionDesign, DESIGN_ENABLED_SETTING, type ReconcileTrigger } from "../design/session-design";
+import { SessionDesign, DESIGN_ENABLED_SETTING, type DesignPreviewOpening, type ReconcileTrigger } from "../design/session-design";
 import { DESIGN_PI_TOOL_NAMES, type DesignRuleSet } from "../design/rule-set";
 import { questionDecisions } from "../design/decisions";
 import type { DesignCustomMessage } from "../design/delivery";
@@ -6634,8 +6634,8 @@ export class PiSession implements ChatSession {
   }
 
   /** The live mutator's: a parent asked this design chat to open a preview tab of its design. */
-  openDesignPreview(designId: string, relPath: string): Promise<boolean> {
-    return this.design.role()?.designId === designId ? this.design.openPreview(designId, relPath) : Promise.resolve(false);
+  openDesignPreview(designId: string, relPath: string): Promise<DesignPreviewOpening> {
+    return this.design.role()?.designId === designId ? this.design.openPreview(designId, relPath) : Promise.resolve({ refused: l('Could not preview {0}.', relPath) });
   }
 
   /**

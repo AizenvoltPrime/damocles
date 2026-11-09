@@ -75,7 +75,7 @@ async function liveChatOn(file: string, name = 'live'): Promise<LiveSessionMutat
   const pi = (await initPiLoader())!;
   const sm = pi.SessionManager.open(file, path.dirname(file));
   return {
-    openDesignPreview: async () => false,
+    openDesignPreview: async () => ({ opened: true as const }),
     renameActiveSession: async (newName: string) => {
       sm.appendSessionInfo(newName);
       sm.appendCustomEntry(DAMOCLES_USER_RENAMED_ENTRY);

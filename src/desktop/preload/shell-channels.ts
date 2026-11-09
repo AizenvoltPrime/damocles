@@ -806,7 +806,9 @@ export interface ShellDesignInfo {
 
 // loading: the view is not shown yet; reconnecting: the chat's host dropped, lastFrameId names what the view showed;
 // updateServer: the host's daemon lacks design.read or design.info; failed: the screen could not be read
-export type DesignPreviewStatus = 'loading' | 'ready' | 'reconnecting' | 'updateServer' | 'failed';
+// notFound: the view committed a document that is no page of the design (a path it does not serve, an error status); the tab
+// stays on its page and Back returns to it
+export type DesignPreviewStatus = 'loading' | 'ready' | 'reconnecting' | 'updateServer' | 'failed' | 'notFound';
 
 export const MIN_DESIGN_WIDTH = 320;
 export const MAX_DESIGN_WIDTH = 2560;
@@ -838,6 +840,9 @@ export interface ShellDesignPreview {
   readonly lastFrameId?: number;
   // the tweaks main applied to the tab, property → stop token, re-applied on every document; absent when none
   readonly tweaks?: Readonly<Record<string, string>>;
+  // the live view's own history (a link the page followed); relPath is the document it shows now
+  readonly canGoBack: boolean;
+  readonly canGoForward: boolean;
 }
 export const MAX_DESIGN_LAST_FRAME_CHARS: number = 512 * 1024;
 
@@ -881,6 +886,8 @@ export interface ShellEditorTab {
   readonly displayPath: string;
   // this computer's file manager can show the file: this computer's own or a WSL distro's, never another host's
   readonly revealable?: true;
+  // code tabs only: a design's screen, whose Open preview opens its design preview tab in its design chat
+  readonly designScreen?: true;
   readonly dirty: boolean;
   readonly readOnly: boolean;
   readonly readOnlyReason?: EditorReadOnlyReason;
@@ -1293,8 +1300,9 @@ export interface DesignPreviewSet {
   readonly provenance?: boolean;
 }
 
-// screenshot: resolves once the live view's capture reached its design chat's composer, rejects otherwise
-export const DESIGN_PREVIEW_ACTIONS = ['openInBrowser', 'screenshot'] as const;
+// screenshot: resolves once the live view's capture reached its design chat's composer, rejects otherwise; back and forward
+// resolve once main issued the step, not when the page commits; openInBrowser once the browser was asked
+export const DESIGN_PREVIEW_ACTIONS = ['openInBrowser', 'screenshot', 'back', 'forward'] as const;
 export interface DesignPreviewActionRequest {
   readonly tabId: string;
   readonly action: (typeof DESIGN_PREVIEW_ACTIONS)[number];

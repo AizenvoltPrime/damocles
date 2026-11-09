@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignPreviewHost } from '../../../platform/design-preview';
 import { designPreviewInfo, readPreviewFile } from '../design-preview';
-import { designFolderOf } from '../design-paths';
+import { designFolderOf, designStateDirOf } from '../design-paths';
+import { updateDesignLink } from '../design-state';
 import { readManifest } from '../design-files';
 import { TOOL_EDIT } from '../../../shared/tool-names';
 import { SessionDesign } from '../session-design';
@@ -27,14 +28,16 @@ function writeDesign(files: Record<string, string>): string {
 
 const inventory = (values: Record<string, number>): string => JSON.stringify({ schemaVersion: 1, stack: 'Vue', tokens: null, breakpoints: { source: 'tailwind', values }, components: [], screens: [], types: [], stores: [], actions: [] });
 
-function previewHost(): DesignPreviewHost & { opens: unknown[][]; changes: unknown[][] } {
+function previewHost(): DesignPreviewHost & { opens: unknown[][]; changes: unknown[][]; shows: boolean } {
   const opens: unknown[][] = [];
   const changes: unknown[][] = [];
-  return {
+  const host = {
     opens,
     changes,
+    shows: true,
     open: async (...args: unknown[]) => {
       opens.push(args);
+      return host.shows;
     },
     changed: (...args: unknown[]) => {
       changes.push(args);
@@ -44,6 +47,7 @@ function previewHost(): DesignPreviewHost & { opens: unknown[][]; changes: unkno
     journey: () => Promise.reject(new Error('unused')),
     replayJourney: () => Promise.reject(new Error('unused')),
   };
+  return host;
 }
 
 function withPreview(harness: DesignHarness): ReturnType<typeof previewHost> {
@@ -116,6 +120,12 @@ describe('the design a core serves to main is one a chat of it holds', () => {
     reduced.design.publish();
     await vi.waitFor(() => expect(reduced.posted).toContainEqual(expect.objectContaining({ type: 'designState', openPreview: false })));
     reduced.design.dispose();
+    // a design chat recorded where previews are off offers none on a host that has them, since its own rule set refuses
+    const recorded = designHarness({ session: fakeSession('design-1', [role('reduced')]) });
+    withPreview(recorded);
+    recorded.design.publish();
+    await vi.waitFor(() => expect(recorded.posted).toContainEqual(expect.objectContaining({ type: 'designState', openPreview: false })));
+    recorded.design.dispose();
   });
 });
 
@@ -169,16 +179,37 @@ describe('a design chat\'s writes open and refresh its previews (PD-33)', () => 
     const parent = designHarness({ session: fakeSession('parent-1', [link()]) });
     withPreview(parent);
     // no link.json names a design chat yet
-    expect(await parent.design.openPreview(DESIGN, 'screens/S1.html')).toBe(false);
-    expect(await parent.design.openPreview('billing-0c0c0c0c', 'screens/S1.html')).toBe(false);
+    expect(await parent.design.openPreview(DESIGN, 'screens/S1.html')).toEqual({ refused: expect.objectContaining({ message: 'Open the design chat to preview {0}.' }) });
+    expect(await parent.design.openPreview('billing-0c0c0c0c', 'screens/S1.html')).toEqual({ refused: expect.objectContaining({ message: 'Could not preview {0}.' }) });
     expect(parent.panels.showSession).not.toHaveBeenCalled();
     parent.design.dispose();
+  });
+
+  it('refuses a parent\'s Open preview when the design chat could not be shown on the asking device, and opens nothing', async () => {
+    await updateDesignLink(designStateDirOf(DESIGN), () => ({ schemaVersion: 1, designId: DESIGN, folder: designFolderOf(DESIGN), title: 'Contacts', parentSessionId: 'parent-1', designSessionId: 'design-1', superseded: [] }));
+    const parent = designHarness({ session: fakeSession('parent-1', [link()]) });
+    const host = withPreview(parent);
+    parent.panels.showSession.mockResolvedValueOnce('notShown');
+    expect(await parent.design.openPreview(DESIGN, 'screens/S1.html')).toEqual({ refused: { message: 'The design chat could not be shown on this device, so {0} did not open.', args: ['screens/S1.html'] } });
+    expect(parent.panels.showSession).toHaveBeenCalledWith('design-1');
+    expect(host.opens).toEqual([]);
+    parent.design.dispose();
+  });
+
+  it('refuses a design chat\'s own Open preview when no app the work may open it in shows the chat', async () => {
+    const chat = designHarness({ session: fakeSession('design-1', [role()]) });
+    const host = withPreview(chat);
+    host.shows = false;
+    expect(await chat.design.openPreview(DESIGN, 'screens/S1.html')).toEqual({ refused: { message: 'Open the design chat to preview {0}.', args: ['screens/S1.html'] } });
+    host.shows = true;
+    expect(await chat.design.openPreview(DESIGN, 'screens/S1.html')).toEqual({ opened: true });
+    chat.design.dispose();
   });
 
   it('opens nothing on a host without the preview tab', async () => {
     const session = fakeSession('design-1', [role('reduced')]);
     const chat = designHarness({ session });
-    expect(await chat.design.openPreview(DESIGN, 'screens/S1.html')).toBe(false);
+    expect(await chat.design.openPreview(DESIGN, 'screens/S1.html')).toEqual({ refused: expect.objectContaining({ message: 'This chat shows no design previews.' }) });
     chat.design.dispose();
   });
 });

@@ -33,7 +33,7 @@ function render(): DesignPreviewHost & { captures: unknown[][] } {
   const captures: unknown[][] = [];
   return {
     captures,
-    open: async () => undefined,
+    open: async () => true,
     changed: () => undefined,
     probe: () => Promise.reject(new Error('unused')),
     journey: () => Promise.reject(new Error('unused')),

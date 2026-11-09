@@ -136,6 +136,15 @@ describe('a chat another Damocles process holds', () => {
     await h.design.openDesignChat(DESIGN);
     expect(h.platform.notifications.calls.map((c) => c.message)).toEqual(['This conversation is open in another Damocles window.', 'This conversation is open in another Damocles window.']);
   });
+
+  it('tells the user when the main chat or the design chat could not be shown on this device', async () => {
+    await linkTo('design-2');
+    const h = designHarness({ session: fakeSession('design-1', [role]) });
+    h.panels.showSession.mockResolvedValue('notShown');
+    await h.design.openParentChat();
+    await h.design.openDesignChat(DESIGN);
+    expect(h.platform.notifications.calls.map((c) => c.message)).toEqual(['The chat could not be shown on this device.', 'The chat could not be shown on this device.']);
+  });
 });
 
 describe('designState (PD-23)', () => {

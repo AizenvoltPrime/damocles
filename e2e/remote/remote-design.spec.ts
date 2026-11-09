@@ -5,6 +5,7 @@ import type { Page } from '@playwright/test';
 import { designTabs, recordOpenExternal, startDesignChat } from '../desktop/support/design';
 import { selectChatPage } from '../desktop/support/fixtures';
 import { call } from '../desktop/support/openai-stub';
+import { menuItem, readyOverlay } from '../desktop/support/overlay';
 import { shellPage } from '../desktop/support/shell';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { awaitTurnEnd } from '../desktop/support/ui';
@@ -110,6 +111,21 @@ test('a remote design chat\'s screen previews through its core, and Open in brow
     expect(await forwards(shell, hostId)).toEqual(forwardsBefore);
     expect(forwardsBefore.some((row) => row.endsWith(` -> ${new URL(url!).port}`))).toBe(false);
     expect(await fixture.sh(LISTENERS, 'dev')).toBe(listenersBefore);
+
+    // Closed, the preview opens again from the target screen's code tab, from the main chat too, through the remote core.
+    const previewTab = shell.locator('[data-testid="editor-tab"][data-kind="designPreview"]');
+    await previewTab.click({ button: 'right' });
+    await menuItem(await readyOverlay(app), 'close').click();
+    await expect(previewTab).toHaveCount(0);
+    await design.getByTestId('design-header-folder').click();
+    await design.locator('[data-testid="design-file"]', { hasText: 'screens/S1-contacts.html' }).click();
+    const codeTab = shell.locator('[data-testid="editor-tab"][data-kind="code"]', { hasText: 'S1-contacts.html' });
+    await expect(codeTab).toHaveCount(1);
+    await selectChatPage(app, parent);
+    await codeTab.click({ button: 'right' });
+    await menuItem(await readyOverlay(app), 'openPreview').click();
+    await expect(previewTab.getByTestId('editor-tab-title')).toHaveText('S1 · Contacts');
+    await expect.poll(async () => (await designTabs(app))[0]?.designPreview.status, { timeout: 60_000 }).toBe('ready');
 
     // The design lives on the target: this computer's home holds no design.
     const localDesigns = path.join(home.damoclesDir, 'designs');

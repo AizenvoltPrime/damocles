@@ -1,5 +1,6 @@
 import type { HandlerDependencies } from "../types";
-import { announceHeldElsewhere, announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor } from "../../session-ownership";
+import type { HostInstance } from "../../types";
+import { announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor, revealHolder } from "../../session-ownership";
 import { resolvePiSessionFile } from "../../../pi-session/session-store";
 import { log } from "../../../logger";
 import { l } from "../../../l10n";
@@ -15,8 +16,7 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   }
   const openElsewhere = findStoredSessionHolder(deps.getPanels(), { panelId }, sessionId);
   if (openElsewhere) {
-    announceHeldElsewhere(platform.notifications);
-    openElsewhere.host.reveal();
+    await revealHolder(platform.notifications, openElsewhere);
     return;
   }
   // Checked before the switch, which disposes the panel's conversation and may move it to another folder.
@@ -39,12 +39,13 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   }
   // A worktree chat resumes in its working folder, from its latest entry rather than the folder that listed it (AD12).
   const binding = await deps.worktrees().resumeFolder(panelId, sessionId, listed);
+  let heldBy: HostInstance | undefined;
   try {
     await deps.switchPanelFolder(panelId, binding.folder.key, "resume", async (instance) => {
       // Another panel or process can claim the session while this one switches; the claim then refuses.
-      const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId);
+      const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId, { revealsHolder: true });
       if (refusal) {
-        refusal.holder?.host.reveal();
+        heldBy = refusal.holder;
         return;
       }
       // A panel pi holds another conversation in keeps that one on screen until pi has bound this one.
@@ -72,4 +73,6 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   } finally {
     binding.settle(deps.getPanels().get(panelId));
   }
+  // after the switch, whose gate holds this panel's messages while a remote device opens the holder
+  if (heldBy) await revealHolder(platform.notifications, heldBy);
 }

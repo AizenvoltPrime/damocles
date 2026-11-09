@@ -782,6 +782,24 @@ describe('Open in browser', () => {
 
 describe('Open preview', () => {
   const resultCard = (): VueWrapper => track(mount(DesignResultCard, { props: { result: RESULT, entryId: 'e1' }, global: { plugins: [i18n] }, attachTo: document.body }));
+  const designHeader = (): VueWrapper => track(mount(DesignHeader, { props: { design: DESIGN }, global: { plugins: [i18n] }, attachTo: document.body }));
+
+  it("is offered in the design chat's header where the host has the preview tab, so a closed preview opens again", async () => {
+    const wrapper = designHeader();
+    expect(wrapper.find('[data-testid="design-header-open-preview"]').exists()).toBe(false);
+
+    useDesignStore().setOpenPreview(true);
+    await nextTick();
+    expect(wrapper.get('[data-testid="design-header-open-preview"] span').text()).toBe('Open preview');
+
+    await openMenu(wrapper, 'design-header-open-preview');
+    useDesignStore().setFiles(DESIGN.designId, [{ path: 'design.md', bytes: 10 }, { path: 'screens/S2-home.html', bytes: 2048 }], false);
+    await nextTick();
+    const screens = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="design-screen"]')];
+    expect(screens.map((screen) => screen.textContent?.trim())).toEqual(['screens/S2-home.html']);
+    screens[0]!.click();
+    expect(posted.at(-1)).toEqual({ type: 'openDesignPreview', designId: DESIGN.designId, relPath: 'screens/S2-home.html' });
+  });
 
   it('is offered on the card only where the host has the preview tab (FULL), never as Open in browser there', async () => {
     const card = resultCard();

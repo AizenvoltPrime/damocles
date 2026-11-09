@@ -10,6 +10,7 @@ import type { RemoteHost } from '../../../platform/remote-host';
 import type { SettingsStore } from '../../../platform/settings-store';
 import type { TrustService } from '../../../platform/trust-service';
 import type { WorkspaceFolders } from '../../../platform/workspace-folders';
+import { DESIGN_PREVIEW_CLIENT_ABSENT } from '../../../shared/design-render';
 import type { HostCapabilities } from '../../../shared/types/messages';
 import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreInit, type CoreProtocolError, type CoreTransport } from '../../core-protocol';
 import { createClientSnapshots, createRemoteHost } from './clients';
@@ -111,7 +112,10 @@ export function createCorePlatform(
     window,
     lifecycle: createLifecycleProxy(endpoint),
     designPreview: {
-      open: (panelId, designId, relPath) => endpoint.request('design.openPreview', { panelId, designId, relPath }),
+      open: (panelId, designId, relPath) => endpoint.request('design.openPreview', { panelId, designId, relPath }).then(() => true, (err: unknown) => {
+        if (err instanceof Error && err.message === DESIGN_PREVIEW_CLIENT_ABSENT) return false;
+        throw err;
+      }),
       changed: (designId, paths) => endpoint.emit('design.changed', { designId, paths }),
       capture: (designId, relPath, width, state, scale, signal) => endpoint.request('design.capture', { designId, relPath, width, state, scale }, signal),
       probe: (designId, relPath, widths, state, sweepTo, signal) => endpoint.request('design.probe', { designId, relPath, widths, state, ...(sweepTo !== undefined ? { sweepTo } : {}) }, signal),

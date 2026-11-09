@@ -17,7 +17,7 @@ import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
 import { editorTabElement, enterPage } from './editor/page-focus';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
 import { createScmStore, SCM_STORE } from './scm/scm-store';
-import { dropMarkupSession } from './editor/markup-session';
+import { dropTabMarkupSessions } from './editor/markup-session';
 import { dropTweaksSession } from './editor/tweaks-session';
 
 const props = defineProps<{ api: DamoclesShellApi }>();
@@ -91,7 +91,7 @@ onMounted(async () => {
   // Subscribed before the first read, so a change between the two is not lost.
   stops.push(props.api.onState(applyState));
   stops.push(props.api.onFocusPart(focusPart));
-  stops.push(props.api.onDesignPreviewClosed(dropMarkupSession));
+  stops.push(props.api.onDesignPreviewClosed(dropTabMarkupSessions));
   stops.push(props.api.onDesignPreviewClosed(dropTweaksSession));
   // One project's shown folder (D31) between full states; the next state carries it too.
   stops.push(props.api.onShownFolder((shown) => {

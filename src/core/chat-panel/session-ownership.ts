@@ -32,9 +32,17 @@ export function findStoredSessionHolder(
   return undefined;
 }
 
-/** Tell the user why a request to open a stored conversation revealed another panel instead. */
+/** Tell the user why a stored conversation did not open in this panel, when nothing shows them the panel that holds it. */
 export function announceHeldElsewhere(notifications: NotificationService): void {
   void notifications.info(l("This conversation is already open in another panel."));
+}
+
+/**
+ * Shows `holder`, the panel holding a conversation the user asked to open. The reveal itself shows them the conversation, so
+ * only a reveal that could not show it on their device tells them.
+ */
+export async function revealHolder(notifications: NotificationService, holder: HostInstance): Promise<void> {
+  if ((await holder.host.reveal()) === false) void notifications.warn(l("The chat could not be shown on this device."));
 }
 
 /** Why this process cannot take a stored conversation's lease now; `unreadable` when the lease itself failed. */
@@ -201,18 +209,20 @@ export interface ClaimRefusal {
  * Point `requester`'s session at stored session `sessionId`, unless another panel of this process holds it,
  * or its lease cannot be taken (another process holds it, this process is deleting or rewriting it, or the
  * lease failed). Every path that binds a panel to a stored session goes through here, so a conversation has
- * one writer. Returns the refusal, after telling the user. Never throws.
+ * one writer. Returns the refusal, after telling the user; with `revealsHolder` the caller shows the holder instead
+ * (`revealHolder`), which tells the user only when it cannot. Never throws.
  */
 export function claimStoredSession(
   notifications: NotificationService,
   panels: Map<string, HostInstance>,
   requester: { panelId: string; session: ChatSession },
   sessionId: string,
+  options: { readonly revealsHolder?: boolean } = {},
 ): ClaimRefusal | undefined {
   // The check, the lease and the bind must stay in one synchronous step, or two panels could both pass the check.
   const holder = findStoredSessionHolder(panels, requester, sessionId);
   if (holder) {
-    announceHeldElsewhere(notifications);
+    if (options.revealsHolder !== true) announceHeldElsewhere(notifications);
     return { holder };
   }
   const lease = leaseRefusalFor(sessionId) ?? takeLease(sessionId, requester.session);

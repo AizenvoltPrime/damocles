@@ -150,6 +150,9 @@ export interface HostServicesDeps {
   readonly divert: (view: RelayView, message: unknown) => boolean;
   // the post types this core may not send its views: a remote core's voice view state, which only this computer's core feeds
   readonly refusedPosts: ReadonlySet<string>;
+  // chats.showSession: shows the chat holding the stored session, joining the core's panel when no view here shows it; settles
+  // once it shows, rejects when it did not open
+  readonly showSession: (sessionId: string) => Promise<void>;
   // design.openPreview: the preview tab of a design file in design chat corePanelId (PD-33); it never opens a browser
   readonly openDesignPreview: (corePanelId: string, designId: string, relPath: string) => void;
   // design.capture, design.probe and design.journey of this core's design, run in main's design runner (PD-41)
@@ -380,6 +383,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
     // main posts to a page in this process, which queues nothing toward it
     endpoint.serve('views.drained', () => undefined);
+    endpoint.serve('chats.showSession', ({ sessionId }) => deps.showSession(sessionId));
     endpoint.serve('design.openPreview', ({ panelId, designId, relPath }) => deps.openDesignPreview(panelId, designId, relPath));
     endpoint.serve('design.capture', (params, signal) => deps.designRender.capture(params, signal));
     endpoint.serve('design.probe', (params, signal) => deps.designRender.probe(params, signal));

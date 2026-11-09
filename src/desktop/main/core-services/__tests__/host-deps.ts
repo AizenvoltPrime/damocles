@@ -11,7 +11,7 @@ const refuse = (): never => {
 const noRunner = (): Promise<never> => Promise.reject(new Error('No design runner'));
 
 /** What HostServices needs besides main's services that these tests do not exercise: paths, logs, language, power, UI and designs. */
-export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly endedCores?: HostServicesDeps['endedCores'] } = {}): Pick<HostServicesDeps, 'paths' | 'logs' | 'endedCores' | 'worktreeRecords' | 'language' | 'render' | 'power' | 'ui' | 'divert' | 'user' | 'refusedPosts' | 'openDesignPreview' | 'designRender'> {
+export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly endedCores?: HostServicesDeps['endedCores'] } = {}): Pick<HostServicesDeps, 'paths' | 'logs' | 'endedCores' | 'worktreeRecords' | 'language' | 'render' | 'power' | 'ui' | 'divert' | 'user' | 'refusedPosts' | 'showSession' | 'openDesignPreview' | 'designRender'> {
   const dist = (name: string): string => path.resolve('/app/dist', name);
   return {
     render: englishText,
@@ -54,6 +54,7 @@ export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly 
     divert: () => false,
     user: NO_USER_RELAYS,
     refusedPosts: new Set(),
+    showSession: async () => undefined,
     openDesignPreview: () => undefined,
     designRender: { capture: noRunner, probe: noRunner, journey: noRunner, replay: noRunner },
   };

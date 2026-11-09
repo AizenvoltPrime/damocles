@@ -343,6 +343,102 @@ test('expand floats the preview over the window with the view following, and its
   }
 });
 
+test("a closed preview opens again from the design chat's header and from its screen's code tab, from the main chat too", async ({ foreground: _foreground, home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    fs.cpSync(DESIGN_APP, home.project, { recursive: true });
+    const { app } = await launch();
+    const { parent, design } = await designWithScreens(home, stub, app, [['S1', 'Contacts']]);
+    const shell = await shellPage(app);
+    const previewTab = shell.locator('[data-testid="editor-tab"][data-kind="designPreview"]');
+    const closePreview = async (): Promise<void> => {
+      await previewTab.click({ button: 'right' });
+      const overlay = await readyOverlay(app);
+      await menuItem(overlay, 'close').click();
+      await expect(previewTab).toHaveCount(0);
+    };
+    await expect(previewTab).toHaveCount(1);
+    await closePreview();
+
+    // The header's Open preview lists the screens and opens the one picked.
+    await design.getByTestId('design-header-open-preview').click();
+    await design.locator('[data-testid="design-screen"]', { hasText: 'screens/S1-contacts.html' }).click();
+    await expect(previewTab.getByTestId('editor-tab-title')).toHaveText('S1 · Contacts');
+    await viewAt(app, shell, 1280);
+    await closePreview();
+
+    // The screen's code tab, outside every project, offers Open preview, which opens the design preview, not an HTML one.
+    await design.getByTestId('design-header-folder').click();
+    await design.locator('[data-testid="design-file"]', { hasText: 'screens/S1-contacts.html' }).click();
+    const codeTab = shell.locator('[data-testid="editor-tab"][data-kind="code"]', { hasText: 'S1-contacts.html' });
+    await expect(codeTab).toHaveCount(1);
+    // From the main chat, the design chat is shown first.
+    await selectChatPage(app, parent);
+    await codeTab.click({ button: 'right' });
+    const overlay = await readyOverlay(app);
+    await menuItem(overlay, 'openPreview').click();
+    await expect(previewTab.getByTestId('editor-tab-title')).toHaveText('S1 · Contacts');
+    await viewAt(app, shell, 1280);
+    await expect(shell.locator('[data-testid="editor-tab"][data-kind="htmlPreview"]')).toHaveCount(0);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a link to another screen moves the tab there, Back and Forward walk the view's history by click and key, and a link to no page leaves the tab on its screen", async ({ foreground: _foreground, home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    fs.cpSync(DESIGN_APP, home.project, { recursive: true });
+    const { app } = await launch();
+    await designWithScreens(home, stub, app, [['S1', 'Contacts'], ['S2', 'Detail']]);
+    const shell = await shellPage(app);
+    const tabs = shell.locator('[data-testid="editor-tab"][data-kind="designPreview"]');
+    await tabs.filter({ hasText: 'S1 · Contacts' }).click();
+    await viewAt(app, shell, 1280);
+    const back = shell.getByTestId('design-preview-back');
+    const forward = shell.getByTestId('design-preview-forward');
+    await expect(back).toHaveAttribute('aria-disabled', 'true');
+    await expect(forward).toHaveAttribute('aria-disabled', 'true');
+
+    // The page follows a link to the other screen: the active tab, its path and the view all move to it.
+    await inShownDesignView(app, `(() => { const link = document.createElement('a'); link.href = 'S2-detail.html'; document.body.append(link); link.click(); })()`);
+    await expect(shell.locator('[data-testid="editor-tab"][aria-selected="true"] [data-testid="editor-tab-title"]')).toHaveText('S2 · Detail');
+    await expect(shell.getByTestId('design-preview-path')).toHaveText('screens/S2-detail.html');
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Detail');
+    await expect(back).not.toHaveAttribute('aria-disabled');
+
+    await back.click();
+    await expect(shell.getByTestId('design-preview-path')).toHaveText('screens/S1-contacts.html');
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Contacts');
+    await expect(back).toHaveAttribute('aria-disabled', 'true');
+    await expect(forward).not.toHaveAttribute('aria-disabled');
+
+    // Forward from the keyboard while focus is in the page, as a browser takes it.
+    await shell.getByTestId('design-preview-frame').click();
+    await app.evaluate(({ BrowserWindow, WebContentsView }, scheme) => {
+      const view = BrowserWindow.getAllWindows()[0]!.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView;
+      const mac = process.platform === 'darwin';
+      view.webContents.focus();
+      view.webContents.sendInputEvent({ type: 'keyDown', keyCode: mac ? ']' : 'Right', modifiers: [mac ? 'meta' : 'alt'] });
+    }, DESIGN_SCHEME);
+    await expect(shell.getByTestId('design-preview-path')).toHaveText('screens/S2-detail.html');
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Detail');
+
+    // A link to a page the design does not have leaves the tab on its screen and says so; Back shows the screen again.
+    await inShownDesignView(app, `(() => { const link = document.createElement('a'); link.href = '/'; document.body.append(link); link.click(); })()`);
+    await expect(shell.getByTestId('design-preview-status')).toHaveAttribute('data-status', 'notFound');
+    await expect(shell.locator('[data-testid="editor-tab"][aria-selected="true"] [data-testid="editor-tab-title"]')).toHaveText('S2 · Detail');
+    await expect(shell.getByTestId('design-preview-path')).toHaveText('screens/S2-detail.html');
+    await back.click();
+    await expect(shell.getByTestId('design-preview-status')).toHaveCount(0);
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Detail');
+  } finally {
+    await stub.close();
+  }
+});
+
 test('preview tabs persist with their chat across a restart, keep four live views, rebuild a fifth, and close with the chat', async ({ foreground: _foreground, home, launch }) => {
   const stub = await startOpenAIStub();
   try {

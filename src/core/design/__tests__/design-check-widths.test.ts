@@ -41,7 +41,7 @@ function fakeRender(overflowBelow = 0): DesignPreviewHost & { probes: unknown[][
   return {
     probes,
     captures,
-    open: async () => undefined,
+    open: async () => true,
     changed: () => undefined,
     journey: () => Promise.reject(new Error('unused')),
     replayJourney: () => Promise.reject(new Error('unused')),

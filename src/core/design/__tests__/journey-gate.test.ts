@@ -39,7 +39,7 @@ function fakeRender(outcome: (width: number) => { passed: boolean; steps: Journe
   const calls: unknown[][] = [];
   return {
     calls,
-    open: async () => undefined,
+    open: async () => true,
     changed: () => undefined,
     capture: () => Promise.reject(new Error('unused')),
     replayJourney: () => Promise.reject(new Error('unused')),

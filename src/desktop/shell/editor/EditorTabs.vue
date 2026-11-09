@@ -181,9 +181,10 @@ onBeforeUnmount(() => {
   for (const timer of uploadedTimers) clearTimeout(timer);
 });
 const isMarkdown = (tab: ShellEditorTab): boolean => tab.kind === 'markdownPreview' || (tab.kind === 'code' && /\.md$/i.test(tab.title));
-// Only a project's file previews, and only one its serve policy would serve: the preview serves the project's folder.
+// A design's screen previews in its design chat; any other file only as a project's, and only one its serve policy would serve.
 const previewsAsHtml = (tab: ShellEditorTab): boolean =>
-  tab.kind === 'code' && tab.projectKey !== undefined && tab.relativePath !== undefined && /\.html?$/i.test(tab.relativePath) && isServablePreviewPath(tab.relativePath);
+  tab.kind === 'code' && (tab.designScreen === true
+    || (tab.projectKey !== undefined && tab.relativePath !== undefined && /\.html?$/i.test(tab.relativePath) && isServablePreviewPath(tab.relativePath)));
 const fileOf = (tab: ShellEditorTab): FileRef | undefined =>
   (tab.projectKey !== undefined && tab.relativePath !== undefined ? { projectKey: tab.projectKey, relativePath: tab.relativePath } : undefined);
 

@@ -184,7 +184,15 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
       setIcon: (iconPath) => post(panelId, 'setIcon', iconPath !== undefined ? { path: iconPath } : {}),
       setTitle: (title) => post(panelId, 'setTitle', { title }),
       setFolderLabel: (label) => post(panelId, 'setFolderLabel', label !== undefined ? { label } : {}),
-      reveal: (column) => post(panelId, 'reveal', column !== undefined ? { column } : {}),
+      reveal: (column) => {
+        const where = column !== undefined ? { column } : {};
+        // inside a client's work the daemon shows the panel on that client alone (chats.reveal)
+        if (closed || currentActor() === undefined) return post(panelId, 'reveal', where);
+        return endpoint.request('chats.reveal', { viewId: panelId, ...where }).catch((err: unknown) => {
+          log(`[core-host] revealing view ${panelId} failed: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        });
+      },
       close: () => {
         post(panelId, 'close', {});
         dispose(undefined);

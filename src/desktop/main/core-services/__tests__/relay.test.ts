@@ -338,3 +338,68 @@ it('serves design.openPreview with a tab of the chat and never opens a URL', asy
   expect(previews).toEqual([['panel-1', 'contacts-1a2b3c4d', 'screens/S1.html']]);
   expect(main.shell.openedExternal).toEqual([]);
 });
+
+it("serves a daemon's chats.showSession by showing the chat on this device, answering once it shows", async () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-relay-'));
+  dirs.push(userData);
+  const loopback = createLoopback();
+  const endpoint = createMainEndpoint(loopback.main, () => undefined);
+  let show!: () => void;
+  const asked: string[] = [];
+  const host = createHostServices({
+    endpoint,
+    platform: createFakePlatform(),
+    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    state: createDesktopKeyValueState(userData, () => undefined),
+    terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
+    ...hostExtras(),
+    showSession: (sessionId) => {
+      asked.push(sessionId);
+      return new Promise<void>((resolve) => (show = resolve));
+    },
+    resolveProxy: async () => 'DIRECT',
+    createView: () => {
+      throw new Error('no view');
+    },
+    git: { available: true },
+    e2eHooks: false,
+    log: () => undefined,
+  });
+  const core = createCoreEndpoint(loopback.core, () => undefined);
+  cleanups.push(host, { dispose: () => core.close('closed') }, { dispose: () => endpoint.close('closed') });
+  let answered = false;
+  const shown = core.request('chats.showSession', { sessionId: 'S1' }).then(() => (answered = true));
+  await vi.waitFor(() => expect(asked).toEqual(['S1']));
+  expect(answered).toBe(false);
+  show();
+  await shown;
+  expect(answered).toBe(true);
+});
+
+it("fails a daemon's chats.showSession whose chat did not open on this device, so the daemon answers the reveal as not shown", async () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-relay-'));
+  dirs.push(userData);
+  const loopback = createLoopback();
+  const endpoint = createMainEndpoint(loopback.main, () => undefined);
+  const host = createHostServices({
+    endpoint,
+    platform: createFakePlatform(),
+    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    state: createDesktopKeyValueState(userData, () => undefined),
+    terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
+    ...hostExtras(),
+    showSession: async (sessionId) => {
+      throw new Error(`Chat ${sessionId} did not open on this device`);
+    },
+    resolveProxy: async () => 'DIRECT',
+    createView: () => {
+      throw new Error('no view');
+    },
+    git: { available: true },
+    e2eHooks: false,
+    log: () => undefined,
+  });
+  const core = createCoreEndpoint(loopback.core, () => undefined);
+  cleanups.push(host, { dispose: () => core.close('closed') }, { dispose: () => endpoint.close('closed') });
+  await expect(core.request('chats.showSession', { sessionId: 'S1' })).rejects.toThrow('Chat S1 did not open on this device');
+});

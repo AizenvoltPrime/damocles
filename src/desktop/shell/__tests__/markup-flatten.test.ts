@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignFreeze } from '../../preload/shell-channels';
 import { flattenMarkup, type MarkupColors } from '../editor/markup-flatten';
-import { dropMarkupSession, newMarkId, startMarkupSession } from '../editor/markup-session';
+import { dropTabMarkupSessions, newMarkId, startMarkupSession } from '../editor/markup-session';
 
 // A capture of a 1280 px wide viewport at scale 2, shown 640 shell px wide: 4 image px per shell px on screen.
 const FREEZE = {
@@ -53,7 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  dropMarkupSession('flat');
+  dropTabMarkupSessions('flat');
   vi.restoreAllMocks();
 });
 

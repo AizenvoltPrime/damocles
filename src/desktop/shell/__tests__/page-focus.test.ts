@@ -20,7 +20,7 @@ const htmlTab: ShellEditorTab & { htmlPreview: ShellHtmlPreview } = {
 };
 const designTab: ShellEditorTab & { designPreview: ShellDesignPreview } = {
   id: 'd1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', dirty: false, readOnly: false, conflict: false,
-  designPreview: { designId: 'c-1a2b', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', status: 'ready', width: 1280, state: 'default', provenance: false },
+  designPreview: { designId: 'c-1a2b', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', status: 'ready', width: 1280, state: 'default', provenance: false, canGoBack: false, canGoForward: false },
 };
 const page: ShellBrowserPage = { url: 'https://docs.example/a', loading: false, canGoBack: false, canGoForward: false, picking: false };
 const browserTab: ShellEditorTab & { browser: ShellBrowserPage } = { id: 'b1', kind: 'browser', title: 'Docs', displayPath: page.url, dirty: false, readOnly: false, conflict: false, browser: page };

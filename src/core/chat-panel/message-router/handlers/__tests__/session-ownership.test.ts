@@ -23,6 +23,7 @@ vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMu
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
 const MESSAGE = "This conversation is already open in another panel.";
+const NOT_SHOWN = "The chat could not be shown on this device.";
 
 const target = (fsPath: string): FolderTarget => ({ key: fsPath, fsPath, name: fsPath, label: fsPath, projectScope: true });
 const FOLDER_A = target("/a");
@@ -182,7 +183,7 @@ const resume = (sessionId: string) => ({ type: "resumeSession", sessionId }) as 
 const ready = (savedSessionId: string) => ({ type: "ready", savedSessionId }) as WebviewToExtensionMessage;
 
 describe("one panel per stored conversation: history open", () => {
-  it("reveals the panel that holds it, says so, and leaves the requesting panel's conversation alone", async () => {
+  it("reveals the panel that holds it with no notice, as the reveal shows it, and leaves the requesting panel's conversation alone", async () => {
     const mine = makePanel("host-1", "sess-mine");
     const other = makePanel("host-2", "sess-x");
     const h = harness(mine, other);
@@ -190,11 +191,25 @@ describe("one panel per stored conversation: history open", () => {
     await h.chat.resumeSession!(resume("sess-x"), mine.ctx);
 
     expect(other.host.reveal).toHaveBeenCalledTimes(1);
-    expect(infos()).toContain(MESSAGE);
+    expect(platform.notifications.calls).toEqual([]);
     expect(mine.session.setResumeSession).not.toHaveBeenCalled();
     expect(mine.target()).toBe("sess-mine");
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
     // No resumeAccepted, so the webview never clears what it shows.
+    expect(h.sent.get(mine.host)).toEqual([]);
+  });
+
+  it("tells the user when the panel holding it could not be shown to them", async () => {
+    const mine = makePanel("host-1", "sess-mine");
+    const other = makePanel("host-2", "sess-x");
+    other.host.reveal.mockResolvedValueOnce(false);
+    const h = harness(mine, other);
+
+    await h.chat.resumeSession!(resume("sess-x"), mine.ctx);
+
+    expect(other.host.reveal).toHaveBeenCalledTimes(1);
+    expect(platform.notifications.calls.map((c) => [c.level, c.message])).toEqual([["warn", NOT_SHOWN]]);
+    expect(mine.target()).toBe("sess-mine");
     expect(h.sent.get(mine.host)).toEqual([]);
   });
 
@@ -319,8 +334,9 @@ describe("resuming a conversation stored under another folder", () => {
 
     await h.chat.resumeSession!(resume("sess-b"), mine.ctx);
 
+    // the reveal shows the conversation, so no notice
     expect(other.host.reveal).toHaveBeenCalledTimes(1);
-    expect(infos()).toContain(MESSAGE);
+    expect(platform.notifications.calls).toEqual([]);
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
   });
 

@@ -1579,6 +1579,10 @@
   "Could not preview {0}.": "Δεν ήταν δυνατή η προεπισκόπηση του {0}.",
   "Open the design chat to preview {0}.": "Ανοίξτε τη συνομιλία σχεδίασης για προεπισκόπηση του {0}.",
   "Could not preview {0}: {1}": "Δεν ήταν δυνατή η προεπισκόπηση του {0}: {1}",
+  "{0} is not a screen of a design.": "Το {0} δεν είναι οθόνη κάποιου σχεδίου.",
+  "Open the design chat of {0} to preview it.": "Ανοίξτε τη συνομιλία σχεδίασης του {0} για να το δείτε σε προεπισκόπηση.",
+  "The design chat could not be shown on this device, so {0} did not open.": "Δεν ήταν δυνατή η εμφάνιση της συνομιλίας σχεδίασης σε αυτή τη συσκευή, οπότε το {0} δεν άνοιξε.",
+  "The chat could not be shown on this device.": "Δεν ήταν δυνατή η εμφάνιση της συνομιλίας σε αυτή τη συσκευή.",
   "Damocles could not open the design in the browser.": "Το Damocles δεν μπόρεσε να ανοίξει τη σχεδίαση στο πρόγραμμα περιήγησης.",
   "{0} is not a screen of this design.": "Το {0} δεν είναι οθόνη αυτού του σχεδίου.",
   "No Damocles app is attached to render this design.": "Καμία εφαρμογή Damocles δεν είναι συνδεδεμένη για να αποδώσει αυτή τη σχεδίαση.",
@@ -1647,5 +1651,8 @@
   "A memory holds at most {0} characters.": "Μια μνήμη χωράει το πολύ {0} χαρακτήρες.",
   "Preview {0}": "Προεπισκόπηση {0}",
   "Open this preview from Damocles.": "Ανοίξτε αυτή την προεπισκόπηση από το Damocles.",
-  "Damocles could not open the preview in the browser.": "Το Damocles δεν μπόρεσε να ανοίξει την προεπισκόπηση στο πρόγραμμα περιήγησης."
+  "Damocles could not open the preview in the browser.": "Το Damocles δεν μπόρεσε να ανοίξει την προεπισκόπηση στο πρόγραμμα περιήγησης.",
+  "This chat shows no design previews.": "Αυτή η συνομιλία δεν εμφανίζει προεπισκοπήσεις σχεδίων.",
+  "Opening a design preview needs this computer's Damocles engine, which is not running. Restart the engine, then try again.": "Για να ανοίξει η προεπισκόπηση ενός σχεδίου χρειάζεται η μηχανή του Damocles σε αυτόν τον υπολογιστή, η οποία δεν εκτελείται. Επανεκκινήστε τη μηχανή και δοκιμάστε ξανά.",
+  "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again.": "Για να ανοίξει η προεπισκόπηση ενός σχεδίου χρειάζεται η μηχανή Damocles του {0}, η οποία δεν εκτελείται. Επανεκκινήστε τη μηχανή και δοκιμάστε ξανά."
 }

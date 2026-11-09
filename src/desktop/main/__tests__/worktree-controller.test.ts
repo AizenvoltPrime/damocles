@@ -696,6 +696,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       reviewClosed: () => undefined,
       openChanges: async () => undefined,
       gitOf: () => undefined,
+      designScreens: { is: () => false, preview: async () => undefined },
       worktreeBranch: () => undefined,
     });
     try {

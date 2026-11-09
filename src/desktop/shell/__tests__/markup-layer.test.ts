@@ -5,7 +5,7 @@ import { nextTick } from 'vue';
 import type { DesignFreeze, ShellDesignInfo, ShellDesignPreview, ShellEditorTab } from '../../preload/shell-channels';
 import DesignPreviewTab from '../editor/DesignPreviewTab.vue';
 import { PopoverContent } from '@/components/ui/popover';
-import { addMark, dropMarkupSession, markupSession, newMarkId } from '../editor/markup-session';
+import { addMark, dropTabMarkupSessions, markupSession, newMarkId } from '../editor/markup-session';
 import { flattenMarkup } from '../editor/markup-flatten';
 import { shellI18n } from '../i18n';
 import { FakeResizeObserver, fakeShellApi, type FakeShellApi } from './fakes';
@@ -26,6 +26,9 @@ const INFO: ShellDesignInfo = {
   tweaks: null,
 };
 
+const S1 = 'screens/S1-contacts.html';
+const S2 = 'screens/S2-contact.html';
+
 // The fixture's contacts screen frozen at xl 1280, at 1:1; the layer shows it 640 shell px wide, so one shell px is 2 CSS px.
 const FREEZE: DesignFreeze = {
   png: 'data:image/png;base64,iVBORw0KGgo=',
@@ -39,7 +42,7 @@ const FREEZE: DesignFreeze = {
   scale: 1,
   state: 'default',
   screen: 'S1',
-  file: 'screens/S1-contacts.html',
+  file: S1,
   elements: [
     { element: 'main', rect: [0, 0, 1280, 900], facts: [] },
     { element: 'ui/Button', rect: [40, 80, 120, 36], facts: ['decision D1'] },
@@ -51,8 +54,8 @@ const DISPLAYED = { left: 0, top: 0, width: 640, height: 450 };
 
 function designTab(preview: Partial<ShellDesignPreview> = {}): DesignTab {
   const designPreview: ShellDesignPreview = {
-    designId: 'contacts-1a2b3c4d', relPath: 'screens/S1-contacts.html', path: '/d/screens/S1-contacts.html',
-    status: 'ready', info: INFO, width: 1280, state: 'default', provenance: false, ...preview,
+    designId: 'contacts-1a2b3c4d', relPath: S1, path: '/d/screens/S1-contacts.html',
+    status: 'ready', info: INFO, width: 1280, state: 'default', provenance: false, canGoBack: false, canGoForward: false, ...preview,
   };
   return { id: 'd1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: designPreview.path, dirty: false, readOnly: false, conflict: false, designPreview };
 }
@@ -110,7 +113,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount();
-  dropMarkupSession('d1');
+  dropTabMarkupSessions('d1');
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -155,7 +158,7 @@ describe('markup on a frozen preview', () => {
     await note.trigger('mousedown');
     await note.trigger('click');
     expect(pins(wrapper)[0]!.attributes('data-kind')).toBe('note');
-    expect(markupSession('d1')!.marks[0]).toMatchObject({ type: 'pin', kind: 'note', text: 'Make the rows denser', at: [700, 200], anchor: { element: 'ui/Table', facts: ['variant compact'] } });
+    expect(markupSession('d1', S1)!.marks[0]).toMatchObject({ type: 'pin', kind: 'note', text: 'Make the rows denser', at: [700, 200], anchor: { element: 'ui/Table', facts: ['variant compact'] } });
   });
 
   it('anchors a pin on nested elements to the smallest', async () => {
@@ -199,7 +202,7 @@ describe('markup on a frozen preview', () => {
     expect(canvas(wrapper).attributes('data-tool')).toBe('box');
 
     await drag(wrapper, [10, 10], [12, 12]);
-    expect(markupSession('d1')!.marks).toHaveLength(0);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(0);
 
     // (40, 60) to (360, 140) CSS px holds the button whole and only touches the table's top edge.
     await drag(wrapper, [20, 30], [180, 70]);
@@ -212,16 +215,16 @@ describe('markup on a frozen preview', () => {
     await freeze(wrapper);
     await canvas(wrapper).trigger('keydown', { key: 'Enter' });
     await flushPromises();
-    expect(markupSession('d1')!.marks[0]).toMatchObject({ type: 'pin', at: [640, 450] });
+    expect(markupSession('d1', S1)!.marks[0]).toMatchObject({ type: 'pin', at: [640, 450] });
     document.querySelector<HTMLElement>('[data-testid="design-markup-done"]')!.click();
     await flushPromises();
 
     const pin = pins(wrapper)[0]!;
     await pin.trigger('keydown', { key: 'ArrowRight' });
     await pin.trigger('keydown', { key: 'ArrowDown', shiftKey: true });
-    expect(markupSession('d1')!.marks[0]).toMatchObject({ at: [644, 474] });
+    expect(markupSession('d1', S1)!.marks[0]).toMatchObject({ at: [644, 474] });
     // A run of moves is one undo step.
-    expect(markupSession('d1')!.undo).toHaveLength(2);
+    expect(markupSession('d1', S1)!.undo).toHaveLength(2);
 
     await pin.trigger('keydown', { key: 'Delete' });
     await flushPromises();
@@ -235,15 +238,15 @@ describe('markup on a frozen preview', () => {
     await tap(wrapper, 350, 100);
     await chooseTool(wrapper, 'arrow');
     await drag(wrapper, [100, 300], [300, 300]);
-    expect(markupSession('d1')!.marks.map((mark) => mark.type)).toEqual(['pin', 'arrow']);
+    expect(markupSession('d1', S1)!.marks.map((mark) => mark.type)).toEqual(['pin', 'arrow']);
 
     await wrapper.get('[data-testid="design-markup-clear"]').trigger('click');
-    expect(markupSession('d1')!.marks).toHaveLength(0);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(0);
     await wrapper.get('[data-testid="design-markup-undo"]').trigger('click');
-    expect(markupSession('d1')!.marks).toHaveLength(2);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(2);
 
     await canvas(wrapper).trigger('keydown', { key: 'z', ctrlKey: true });
-    expect(markupSession('d1')!.marks.map((mark) => mark.type)).toEqual(['pin']);
+    expect(markupSession('d1', S1)!.marks.map((mark) => mark.type)).toEqual(['pin']);
     await flushPromises();
     expect(wrapper.get('[data-testid="design-markup-announcement"]').text()).toBe('Undone');
   });
@@ -251,21 +254,21 @@ describe('markup on a frozen preview', () => {
   it('reads Ctrl+Z by its letter on a Latin layout and by its place on a Greek one', async () => {
     const { wrapper } = mountTab();
     await freeze(wrapper);
-    for (let index = 0; index < 3; index++) addMark(markupSession('d1')!, { id: newMarkId(), type: 'box', points: [[0, 0], [10, 10]] });
+    for (let index = 0; index < 3; index++) addMark(markupSession('d1', S1)!, { id: newMarkId(), type: 'box', points: [[0, 0], [10, 10]] });
     // Greek: the Z key reads ζ
     await canvas(wrapper).trigger('keydown', { key: 'ζ', code: 'KeyZ', ctrlKey: true });
-    expect(markupSession('d1')!.marks).toHaveLength(2);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(2);
     // AZERTY: Z sits where QWERTY has W, and the key in Z's place reads w
     await canvas(wrapper).trigger('keydown', { key: 'z', code: 'KeyW', ctrlKey: true });
-    expect(markupSession('d1')!.marks).toHaveLength(1);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(1);
     await canvas(wrapper).trigger('keydown', { key: 'w', code: 'KeyZ', ctrlKey: true });
-    expect(markupSession('d1')!.marks).toHaveLength(1);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(1);
   });
 
   it('says the same message again when it repeats', async () => {
     const { wrapper } = mountTab();
     await freeze(wrapper);
-    for (let index = 0; index < 2; index++) addMark(markupSession('d1')!, { id: newMarkId(), type: 'box', points: [[0, 0], [10, 10]] });
+    for (let index = 0; index < 2; index++) addMark(markupSession('d1', S1)!, { id: newMarkId(), type: 'box', points: [[0, 0], [10, 10]] });
     const region = wrapper.get('[data-testid="design-markup-announcement"]').element;
     const said: string[] = [];
     const observer = new MutationObserver(() => said.push(region.textContent ?? ''));
@@ -317,7 +320,7 @@ describe('markup on a frozen preview', () => {
     });
     // main ends markup itself once the send is accepted
     expect(api.designMarkupExit).not.toHaveBeenCalled();
-    expect(markupSession('d1')).toBeUndefined();
+    expect(markupSession('d1', S1)).toBeUndefined();
     expect(wrapper.find('[data-testid="design-markup-canvas"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="design-preview-markup-count"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="design-markup-announcement"]').text()).toBe('Sent to the design chat as F1');
@@ -334,7 +337,7 @@ describe('markup on a frozen preview', () => {
     await flushPromises();
 
     expect(wrapper.get('[data-testid="design-markup-notice"]').text()).toBe("Couldn't send the markup. Your marks are kept.");
-    expect(markupSession('d1')!.marks).toHaveLength(1);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(1);
     expect(api.designMarkupExit).not.toHaveBeenCalled();
     expect(sendButton(wrapper).attributes('aria-disabled')).toBeUndefined();
   });
@@ -378,20 +381,73 @@ describe('markup on a frozen preview', () => {
     await freeze(wrapper);
     await wrapper.get('[data-testid="design-markup-exit"]').trigger('click');
     await flushPromises();
-    expect(markupSession('d1')).toBeUndefined();
+    expect(markupSession('d1', S1)).toBeUndefined();
     await freeze(wrapper);
     expect(api.designFreeze).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps each screen\'s marks with that screen: another screen freezes anew, and Back reopens the first screen\'s marks', async () => {
+    const { wrapper, api } = mountTab();
+    const markupButton = () => wrapper.get('[data-testid="design-preview-markup"]');
+    const closePopover = async (): Promise<void> => {
+      document.querySelector<HTMLElement>('[data-testid="design-markup-done"]')!.click();
+      await flushPromises();
+    };
+    const exit = async (): Promise<void> => {
+      await wrapper.get('[data-testid="design-markup-exit"]').trigger('click');
+      await flushPromises();
+    };
+    await freeze(wrapper);
+    await tap(wrapper, 350, 100);
+    await closePopover();
+    await exit();
+
+    // A link took the tab to S2: its Markup freezes S2, and S1's mark waits only in the title.
+    await wrapper.setProps({ tab: designTab({ relPath: S2 }) });
+    expect(wrapper.find('[data-testid="design-preview-markup-count"]').exists()).toBe(false);
+    expect(markupButton().attributes('title')).toBe('Freeze the preview and mark it up for the designer\nMarks also waiting on S1-contacts.html');
+    vi.mocked(api.designFreeze).mockClear().mockResolvedValue({ ...FREEZE, screen: 'S2', file: S2 });
+    await freeze(wrapper);
+    expect(api.designFreeze).toHaveBeenCalledWith('d1');
+    expect(api.designMarkupEnter).not.toHaveBeenCalled();
+    expect(pins(wrapper)).toHaveLength(0);
+    await exit();
+    // An empty capture goes on Exit, and only S2's.
+    expect(markupSession('d1', S2)).toBeUndefined();
+    expect(markupSession('d1', S1)!.marks).toHaveLength(1);
+
+    await freeze(wrapper);
+    await tap(wrapper, 100, 300);
+    await closePopover();
+    await exit();
+
+    // Back on S1, Markup reopens S1's capture and its mark, and Send leaves S2's marks waiting.
+    await wrapper.setProps({ tab: designTab() });
+    expect(wrapper.get('[data-testid="design-preview-markup-count"]').text()).toBe('1');
+    expect(markupButton().attributes('title')).toBe('Freeze the preview and mark it up for the designer\nMarks also waiting on S2-contact.html');
+    vi.mocked(api.designFreeze).mockClear();
+    await freeze(wrapper);
+    expect(api.designMarkupEnter).toHaveBeenCalledWith('d1');
+    expect(api.designFreeze).not.toHaveBeenCalled();
+    expect(pins(wrapper)).toHaveLength(1);
+    expect(pins(wrapper)[0]!.attributes('data-element')).toBe('ui/Table');
+
+    await sendButton(wrapper).trigger('click');
+    await flushPromises();
+    expect(api.designMarkupSend).toHaveBeenCalledWith(expect.objectContaining({ json: expect.objectContaining({ file: S1 }) }));
+    expect(markupSession('d1', S1)).toBeUndefined();
+    expect(markupSession('d1', S2)!.marks).toHaveLength(1);
   });
 
   it('refuses a mark past the cap and says why', async () => {
     const { wrapper } = mountTab();
     await freeze(wrapper);
-    const session = markupSession('d1')!;
+    const session = markupSession('d1', S1)!;
     for (let index = 0; index < 64; index++) addMark(session, { id: newMarkId(), type: 'box', points: [[0, 0], [10, 10]] });
     await flushPromises();
     await canvas(wrapper).trigger('keydown', { key: 'Enter' });
     await flushPromises();
-    expect(markupSession('d1')!.marks).toHaveLength(64);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(64);
     expect(wrapper.get('[data-testid="design-markup-notice"]').text()).toBe('Markup holds at most 64 marks');
   });
 
@@ -410,7 +466,7 @@ describe('markup on a frozen preview', () => {
     HTMLImageElement.prototype.decode = () => Promise.reject(new Error('EncodingError'));
     await freeze(wrapper);
     expect(api.designMarkupExit).toHaveBeenCalledWith('d1');
-    expect(markupSession('d1')).toBeUndefined();
+    expect(markupSession('d1', S1)).toBeUndefined();
     expect(wrapper.get('[data-testid="design-preview-markup-status"]').text()).toBe("Couldn't freeze the preview");
   });
 
@@ -442,8 +498,8 @@ describe('markup on a frozen preview', () => {
     await pin.trigger('pointerup', { pointerId: 5, clientX: 50, clientY: 100 });
     await pin.trigger('click');
     await flushPromises();
-    expect(markupSession('d1')!.marks[0]).toMatchObject({ at: [100, 200], anchor: { element: 'td' } });
-    expect(markupSession('d1')!.undo).toHaveLength(2);
+    expect(markupSession('d1', S1)!.marks[0]).toMatchObject({ at: [100, 200], anchor: { element: 'td' } });
+    expect(markupSession('d1', S1)!.undo).toHaveLength(2);
     expect(document.querySelector('[data-testid="design-markup-popover"]')).toBeNull();
     // the next click opens it
     await pin.trigger('click');
@@ -467,8 +523,8 @@ describe('markup on a frozen preview', () => {
       expect(pin.classes()).not.toContain('cursor-grabbing');
       // a later release of that pointer moves nothing
       await pin.trigger('pointerup', { pointerId: 6, clientX: 50, clientY: 300 });
-      expect(markupSession('d1')!.marks[0]).toMatchObject({ at: [700, 200], anchor: { element: 'ui/Table' } });
-      expect(markupSession('d1')!.undo).toHaveLength(1);
+      expect(markupSession('d1', S1)!.marks[0]).toMatchObject({ at: [700, 200], anchor: { element: 'ui/Table' } });
+      expect(markupSession('d1', S1)!.undo).toHaveLength(1);
     }
   });
 
@@ -501,7 +557,7 @@ describe('markup on a frozen preview', () => {
     expect(wrapper.get('[data-testid="design-markup-draft"]').attributes('d')).toMatch(/^M20 20 /);
     await canvas(wrapper).trigger('pointerup', { button: 0, pointerId: 3, clientX: 40, clientY: 30 });
     await flushPromises();
-    expect(markupSession('d1')!.marks).toEqual([expect.objectContaining({ type: 'pen', points: [[20, 20], [40, 24], [60, 36], [80, 60]] })]);
+    expect(markupSession('d1', S1)!.marks).toEqual([expect.objectContaining({ type: 'pen', points: [[20, 20], [40, 24], [60, 36], [80, 60]] })]);
     expect(wrapper.find('[data-testid="design-markup-draft"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="design-markup-stroke"]').attributes('data-type')).toBe('pen');
     expect(wrapper.get('[data-testid="design-markup-announcement"]').text()).toBe('Pen stroke added');
@@ -528,8 +584,8 @@ describe('markup on a frozen preview', () => {
     await nextTick();
     expect(wrapper.get('[data-testid="design-markup-undo"]').attributes('title')).toBe('Undo (⌘Z)');
     await canvas(wrapper).trigger('keydown', { key: 'z', ctrlKey: true });
-    expect(markupSession('d1')!.marks).toHaveLength(1);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(1);
     await canvas(wrapper).trigger('keydown', { key: 'z', metaKey: true });
-    expect(markupSession('d1')!.marks).toHaveLength(0);
+    expect(markupSession('d1', S1)!.marks).toHaveLength(0);
   });
 });

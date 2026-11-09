@@ -73,11 +73,11 @@ describe('openDesignInBrowser', () => {
 });
 
 describe('openDesignPreview', () => {
-  function previewSetup(opens: boolean) {
+  function previewSetup(opens: boolean, refused = 'Open the design chat to preview {0}.') {
     const platform = createFakePlatform({ capabilities: { designPreview: true } });
     const posted: ExtensionToWebviewMessage[] = [];
     const handlers = createDesignHandlers({ platform, postMessage: (_to: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies);
-    const openPreview = vi.fn(async () => opens);
+    const openPreview = vi.fn(async () => (opens ? { opened: true } : { refused: { message: refused, args: [] } }));
     const design = { folderOf: (designId: string) => (designId === DESIGN ? FOLDER : undefined), openPreview };
     const ctx = { reply: {}, panelId: 'p1', session: { design } } as unknown as HandlerContext;
     const open = async (designId: string, relPath: string): Promise<void> => {
@@ -95,13 +95,15 @@ describe('openDesignPreview', () => {
   });
 
   it('refuses another chat\'s design and a path that is not a relative file path, and says when no design chat can show it', async () => {
-    const { posted, openPreview, open } = previewSetup(false);
+    const { posted, openPreview, open } = previewSetup(false, 'This design continues in another chat.');
     await open('billing-9f8e7d6c', 'screens/S1.html');
     await open(DESIGN, '../secrets.txt');
     await open('../etc', 'screens/S1.html');
     expect(openPreview).not.toHaveBeenCalled();
     await open(DESIGN, 'screens/S1.html');
     expect(posted.map((message) => message.type === 'notification' && message.notificationType)).toEqual(['error', 'error', 'warning']);
+    // the design chat's own reason, not a guess at it
+    expect(posted.at(-1)).toMatchObject({ message: { message: 'This design continues in another chat.' } });
   });
 
   it('refuses a device name, as the other design file buttons do', async () => {

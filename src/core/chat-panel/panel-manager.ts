@@ -23,6 +23,8 @@ import { sessionLeaseBlocker } from "../pi-session/session-store/session-lease";
 import { resolvePiSessionFile } from "../pi-session/session-store/reading";
 import type { DesignSeed, SessionShown } from "../design/tools/start-design";
 import { designChatName } from "../../shared/types/design";
+import { designScreenOf } from "../design/design-paths";
+import type { DesignPreviewOpening } from "../design/session-design";
 import { isFileBelow } from "../paths";
 import { folderContains } from "../worktrees/records";
 import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
@@ -497,18 +499,38 @@ export class PanelManager {
 
   /**
    * Shows the chat holding stored session `sessionId`: the panel that holds it, else a new panel resumed onto it, as the session
-   * list would. `elsewhere` when another process holds it, which this one cannot show; `missing` when its file is gone from `cwd`.
+   * list would. `elsewhere` when another process holds it, which this one cannot show; `notShown` when its panel could not be
+   * shown on the device that asked; `missing` when its file is gone from `cwd`.
    */
   async showSession(sessionId: string, cwd: string): Promise<SessionShown> {
     const holder = [...this.panels.values()].find((instance) => instance.session.holdsSession(sessionId));
-    if (holder) {
-      holder.host.reveal();
-      return "shown";
-    }
+    if (holder) return (await holder.host.reveal()) === false ? "notShown" : "shown";
     if (sessionLeaseBlocker(sessionId)?.kind === "other-process") return "elsewhere";
     if ((await resolvePiSessionFile(cwd, sessionId)) === null) return "missing";
     await this.openStored(sessionId);
     return "shown";
+  }
+
+  /**
+   * An editor tab's Open preview on `filePath`, a design's screen: its preview tab opens in the design's current design chat,
+   * shown first, when a panel holds it, else through a panel holding the design's main chat (PD-33). A chat a rewind took the
+   * design from (D70) is never the one. The refusal names why it did not open.
+   */
+  async previewDesignScreen(filePath: string): Promise<DesignPreviewOpening> {
+    const screen = designScreenOf(filePath);
+    const name = path.basename(filePath);
+    if (!screen) return { refused: l("{0} is not a screen of a design.", name) };
+    const instances = [...this.panels.values()];
+    const designChat = instances.find(({ session }) => session.design.role()?.designId === screen.designId && session.design.standing().kind === "current");
+    const owner = designChat ?? instances.find(({ session }) => session.design.ownLink()?.designId === screen.designId);
+    if (!owner) return { refused: l("Open the design chat of {0} to preview it.", name) };
+    try {
+      if ((await designChat?.host.reveal()) === false) return { refused: l("The design chat could not be shown on this device, so {0} did not open.", name) };
+      return await owner.session.design.openPreview(screen.designId, screen.relPath);
+    } catch (err) {
+      log("[PanelManager] previewing %s failed: %O", filePath, err);
+      return { refused: l("Could not preview {0}: {1}", name, errorTextOf(err)) };
+    }
   }
 
   /** Opens closed stored session `sessionId` in a new panel, through the session list's resume. */

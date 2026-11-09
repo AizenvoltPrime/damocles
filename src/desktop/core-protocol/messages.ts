@@ -207,6 +207,12 @@ export interface CoreRequests {
   // answers once what core posted to the view before is within the flow window of the host's queue toward the page; with
   // viewKey, of that one view's page only, else of every view's
   'views.drained': Call<{ readonly viewId: string; readonly viewKey?: string }, void>;
+  // a daemon's core, inside a client's work: the daemon shows the view on that client alone, opening it there when it shows
+  // none; answers once it shows, false when it cannot show there
+  'chats.reveal': Call<{ readonly viewId: string; readonly column?: number }, boolean>;
+  // the daemon to a client: select the chat holding stored session sessionId, joining its panel when this client shows no view
+  // of it; answers once it shows, and fails when it did not open
+  'chats.showSession': Call<{ readonly sessionId: string }, void>;
   // the preview tab of a design file in the design chat panelId names, opened or shown; relPath is below the design folder
   'design.openPreview': Call<{ readonly panelId: string; readonly designId: string; readonly relPath: string }, void>;
   // a render of a design file a chat of this core holds, in a fresh offscreen page of the client (PD-41); main reads its
@@ -344,6 +350,8 @@ export interface MainRequests {
   // a tweak the user kept (PD-13) in design chat panelId: core checks it against the chat's latest DeclareTweaks and sends
   // "Keep: <label> → <token>" as its own prompt
   'design.tweak': Call<{ readonly panelId: string; readonly tweakId: string; readonly value: string }, { readonly kept: true } | { readonly refused: LocalizedText }>;
+  // an editor tab's Open preview on path, a screen below this core's designs folder: its design chat, shown, opens the preview tab
+  'design.previewScreen': Call<{ readonly path: string }, { readonly opened: true } | { readonly refused: LocalizedText }>;
   // D24's message over the repository's changes, on the Background model
   'scm.generateMessage': Call<{ readonly repoId: string }, unknown>;
   // a read of an open repository (scm-calls.ts REPOSITORY_CALLS)
@@ -1122,6 +1130,8 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.mcp.resources': method(obj({ clientId: id, server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
   'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
   'views.drained': method(obj({ viewId: id, viewKey }), done),
+  'chats.reveal': method(obj({ viewId: id, column }), bool),
+  'chats.showSession': method(obj({ sessionId: id }), done),
   'design.openPreview': method(obj({ panelId: id, designId, relPath: filePath }), done),
   'design.capture': method(
     obj({ designId, relPath: filePath, width: renderWidth, state: nullable(id), scale: renderScaleOf }),
@@ -1208,6 +1218,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'design.info': method(obj({ designId, relPath: filePath }), maybe(designPreviewInfo)),
   'design.markup': method(obj({ panelId: id, png: str(MAX_IMAGE_BASE64_LENGTH), json: data(MAX_MARKUP_JSON_CHARS) }), either(obj({ feedbackId: id }), obj({ refused: localizedMessage }))),
   'design.tweak': method(obj({ panelId: id, tweakId: id, value: tokenName }), either(obj({ kept: yes }), obj({ refused: localizedMessage }))),
+  'design.previewScreen': method(obj({ path: filePath }), either(obj({ opened: yes }), obj({ refused: localizedMessage }))),
   'scm.generateMessage': method(obj({ repoId: id }), value),
   'scm.repo': method(obj({ repoId: id, method: oneOf(REPOSITORY_CALLS), args: callArgs }), value),
   'worktrees.call': method(obj({ method: oneOf(WORKTREE_CALLS), args: callArgs }), value),

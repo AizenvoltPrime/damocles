@@ -420,6 +420,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   });
   endpoint.serve('design.markup', ({ panelId, png, json }) => requireInstance(panelId).session.sendDesignMarkup(png, json));
   endpoint.serve('design.tweak', ({ panelId, tweakId, value }) => requireInstance(panelId).session.keepDesignTweak(tweakId, value));
+  endpoint.serve('design.previewScreen', ({ path: screenPath }) => panelManager.previewDesignScreen(screenPath));
   endpoint.serve('user.browser.tool', (params, signal) => remoteBrowsers.tool(params, signal));
   endpoint.serve('user.browser.release', ({ authority, agentScope }) => (agentScope ? remoteBrowsers.release(authority, agentScope) : remoteBrowsers.releaseAuthority(authority)));
   // this computer's user scope for remote chats: main asks only this core, and checks every answer before it leaves

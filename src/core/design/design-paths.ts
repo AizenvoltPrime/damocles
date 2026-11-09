@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import { hasUnsafeWindowsSegment, isRelativeFilePath, isUnsafeWindowsName } from '../../shared/relative-path';
 import { isSafeAgentPathId } from '../../shared/agent-path-id';
-import { isDesignId, MAX_DESIGN_ID_CHARS } from '../../shared/design-paths';
+import { isDesignId, isDesignScreenFile, MAX_DESIGN_ID_CHARS } from '../../shared/design-paths';
 import { canonicalPath, spelledPath } from '../canonical-path';
 import { DAMOCLES_DESIGNS_DIR, hasOtherHardLink, planFileStem } from '../paths';
 
@@ -85,6 +85,20 @@ export function isDesignerRelative(relative: string): boolean {
   if (rest.length === 0) return first === DESIGN_DOC_FILE;
   if (first === SCREENS_DIR) return rest.length === 1 && rest[0]!.length > HTML_EXTENSION.length && rest[0]!.endsWith(HTML_EXTENSION);
   return first === VARIANTS_DIR;
+}
+
+/**
+ * The design and screen `filePath` names, `<designs folder>/<designId>/screens/<name>.html`, against the designs folder as
+ * spelled or as it resolves; undefined for any other path. The screen's own reads check it again below its design folder.
+ */
+export function designScreenOf(filePath: string): { readonly designId: string; readonly relPath: string } | undefined {
+  const target = path.resolve(filePath);
+  const relative = relativeWithin(DAMOCLES_DESIGNS_DIR, target) ?? relativeWithin(canonicalPath(DAMOCLES_DESIGNS_DIR), target);
+  const slash = relative?.indexOf('/') ?? -1;
+  if (relative === undefined || slash <= 0) return undefined;
+  const designId = relative.slice(0, slash);
+  const relPath = relative.slice(slash + 1);
+  return isDesignId(designId) && isDesignScreenFile(relPath) ? { designId, relPath } : undefined;
 }
 
 /** Whether `target` is a designer file (`isDesignerRelative`) of design folder `folder`, by its path as written and by the path it resolves to. */

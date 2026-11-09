@@ -52,6 +52,19 @@ describe('PanelStateStore v2', () => {
     expect(next.selected()).toEqual({ projectKey: 'k1', panelId: 'a', sessionId: 's1' });
   });
 
+  it('lands a burst of changes in one write of the latest state, as a page that navigates in a loop makes them', async () => {
+    const store = new PanelStateStore(dir, log);
+    const renames = vi.spyOn(fs.promises, 'rename');
+    try {
+      for (let index = 0; index < 50; index++) store.set({ panelId: 'a', state: { sessionId: `s${index}` } });
+      await store.flush();
+      expect(renames.mock.calls.filter(([, to]) => String(to).endsWith(PANEL_STATE_FILE))).toHaveLength(1);
+      expect(new PanelStateStore(dir, log).get('a')?.state).toEqual({ sessionId: 's49' });
+    } finally {
+      renames.mockRestore();
+    }
+  });
+
   it('flush settles once every write started so far has landed, failed ones included', async () => {
     const store = new PanelStateStore(dir, log);
     store.set({ panelId: 'a', state: { sessionId: 's1' } });

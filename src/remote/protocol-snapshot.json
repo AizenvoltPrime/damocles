@@ -153,6 +153,7 @@
   "design.replayJourney",
   "design.markup",
   "design.tweak",
+  "design.previewScreen",
   "design.tweaks",
   "chat.designReferences",
   "user.browser.parityCapture",
@@ -171,7 +172,9 @@
   "files.readFileRange.resolvedPath",
   "browser.useClientCertificate",
   "user.memory.listNotesOnly",
-  "user.memory.offReason"
+  "user.memory.offReason",
+  "chats.reveal",
+  "chats.showSession"
  ],
  "contracts": {
   "CoreRequests": {
@@ -307,6 +310,54 @@
           }
          }
         }
+       }
+      }
+     }
+    },
+    "chats.reveal": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "column": {
+           "optional": true,
+           "type": "number"
+          },
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "boolean"
+       }
+      }
+     }
+    },
+    "chats.showSession": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "sessionId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
        }
       }
      }
@@ -4801,6 +4852,76 @@
             "feedbackId": {
              "optional": false,
              "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "refused": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "design.previewScreen": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "path": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "opened": {
+             "optional": false,
+             "type": "true"
             }
            }
           },

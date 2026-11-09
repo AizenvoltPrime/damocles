@@ -278,6 +278,8 @@ export class PanelStateStore {
   private sealed = false;
   // the batch under way, which writes once at its end when anything inside it changed
   private batching: { changed: boolean } | undefined;
+  // the queued write not yet rendered: it renders the state as it is when it runs, so changes made meanwhile join it
+  private queuedWrite: object | undefined;
   private readonly log: Log;
 
   constructor(userDataDir: string, log: Log) {
@@ -427,7 +429,22 @@ export class PanelStateStore {
       this.batching.changed = true;
       return;
     }
-    const snapshot = {
+    if (this.queuedWrite) return;
+    const write = {};
+    this.queuedWrite = write;
+    const settle = (): void => {
+      if (this.queuedWrite === write) this.queuedWrite = undefined;
+    };
+    void writeJsonConfig(this.filePath, () => {
+      settle();
+      return `${JSON.stringify(this.snapshot(), null, 2)}\n`;
+    }).catch((err: unknown) => {
+      this.log(`[panels] failed to write ${this.filePath}: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(settle);
+  }
+
+  private snapshot(): unknown {
+    return {
       version: SCHEMA_VERSION,
       ...(this.selection !== undefined ? { selected: this.selection } : {}),
       ...(this.lastChatEntries.length > 0 ? { lastChats: this.lastChatEntries } : {}),
@@ -440,8 +457,5 @@ export class PanelStateStore {
         ...(chat.designTabs ? { designTabs: chat.designTabs } : {}),
       })),
     };
-    void writeJsonConfig(this.filePath, () => `${JSON.stringify(snapshot, null, 2)}\n`).catch((err: unknown) => {
-      this.log(`[panels] failed to write ${this.filePath}: ${err instanceof Error ? err.message : String(err)}`);
-    });
   }
 }

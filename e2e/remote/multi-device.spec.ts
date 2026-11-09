@@ -1,9 +1,12 @@
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
-import { writeUserSettings } from '../desktop/support/hermetic';
+import { approveDesign, DESIGN_SCHEME, designTabs, startDesignChat } from '../desktop/support/design';
+import { chatIdOf, selectChatPage } from '../desktop/support/fixtures';
+import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { cleanUp } from '../desktop/support/loopback';
 import { mergeJson, sendPrompt } from '../desktop/support/loopback-agent';
-import { STUB_MODEL_ID, type OpenAIStub, type RecordedRequest } from '../desktop/support/openai-stub';
+import { call, STUB_MODEL_ID, type OpenAIStub, type RecordedRequest } from '../desktop/support/openai-stub';
+import { menuItem, readyOverlay } from '../desktop/support/overlay';
 import { recordedToasts, recordToasts, shellPage, shellState } from '../desktop/support/shell';
 import { listChats } from '../desktop/support/shell-ui';
 import { activeTerminal, openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
@@ -149,6 +152,199 @@ test('two devices on one target follow the same streaming chat, each send shows 
       await card.page().keyboard.press('Escape');
     }
     // the other device leaves first, so its reconnect loop starts no daemon after the shutdown
+    await secondDesktop.close();
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+    await stub.close();
+  }
+});
+
+test('a conversation another device holds, resumed on this device, shows on this device and leaves the other device where it was', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(600_000);
+  const fixture = await sshd('prod-1');
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID });
+    const first = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    await stubOAuth(first, 'alice', TOKEN_MS);
+    const { hostId, key } = await connect(first);
+    // the first device holds a conversation, then moves on to a new chat
+    const held = await newRemoteChat(first, key);
+    await sendPrompt(held, 'Held on the first device');
+    await expect(held.getByText('Echo: Held on the first device', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await awaitTurnEnd(held);
+    await newRemoteChat(first, key);
+    const firstSelected = (await shellState(first)).selected.chatId;
+    expect(firstSelected).toEqual(expect.any(String));
+
+    const secondDesktop = await other.launch();
+    const second = secondDesktop.app;
+    const { key: secondKey } = await connect(second);
+    const asking = await newRemoteChat(second, secondKey);
+    let heldId = '';
+    await expect.poll(async () => (heldId = (await listChats(second, secondKey)).chats.find((chat) => chat.title === 'Held on the first device')?.id ?? ''), { timeout: 60_000 }).not.toBe('');
+
+    // Resumed from the second device's chat, the conversation the first device holds opens there, joining its panel, with no
+    // notice, since the user sees it open.
+    await recordToasts(second);
+    await postFromWebview(asking, { type: 'resumeSession', sessionId: heldId });
+    await expect.poll(async () => (await shellState(second)).selected.chatId, { timeout: 60_000 }).toBe(heldId);
+    await chatShowing(second, 'Echo: Held on the first device');
+    expect((await recordedToasts(second)).map((toast) => toast.message)).toEqual([]);
+    // the first device stays on the chat it had selected
+    expect((await shellState(first)).selected.chatId).toBe(firstSelected);
+    await secondDesktop.close();
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+    await stub.close();
+  }
+});
+
+const DESIGNS = `${TARGET_HOME}/.damocles/designs`;
+const DESIGN_MD = ['---', 'app: Vue 3', 'viewports:', '  primary: 1280', '  checked: [1280]', '  journey: []', '---', '# Contacts', ''].join('\n');
+const SCREEN = [
+  '<!doctype html>',
+  '<html lang="en" data-ds-screen="S1" data-ds-states="default empty">',
+  '<head><meta charset="utf-8"><title>Contacts</title></head>',
+  '<body><main><h1>Contacts on the target</h1><p id="empty" data-ds-state-only="empty">No contacts yet</p></main></body></html>',
+  '',
+].join('\n');
+const SCREEN_FILE = 'screens/S1-contacts.html';
+
+/** Every live design view of the app, shown or not: a preview opened on that device. */
+const designContents = (app: ElectronApplication): Promise<number> => app.evaluate(({ webContents }, scheme) => webContents.getAllWebContents()
+  .filter((contents) => !contents.isDestroyed() && contents.getURL().startsWith(scheme)).length, DESIGN_SCHEME);
+
+/**
+ * The second device starts a design from a main chat of its own and the designer writes one screen, whose preview tab opens
+ * there; with `finish`, the user approves it as v1 and the main chat gets its result card. The preview tab is closed after,
+ * so no device shows a preview and only the second device shows the design chat.
+ */
+async function designOnSecondDevice(second: ElectronApplication, key: string, stub: OpenAIStub, home: HermeticHome, fixture: Pick<SshdFixture, 'sh'>, finish: boolean): Promise<{ designChatId: string; folder: string }> {
+  const parent = await newRemoteChat(second, key);
+  const { design, folder } = await startDesignChat(second, parent, stub, home, {
+    fidelity: 'Static mockup',
+    script: (designFolder) => [
+      call('write', { path: `${designFolder}/design.md`, content: DESIGN_MD }),
+      call('write', { path: `${designFolder}/${SCREEN_FILE}`, content: SCREEN }),
+      ...(finish ? [call('FinishDesign', { summary: 'The contacts list page.' }), { chunks: ['Read design v1.'] }] : [{ chunks: ['Drafted the screen.'] }]),
+    ],
+    findFolder: async () => {
+      let designId = '';
+      await expect.poll(async () => (designId = (await fixture.sh(`find ${DESIGNS} -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\\n'`, 'dev')).trim()), { timeout: 60_000 }).toMatch(/^[A-Za-z0-9._-]+$/);
+      return `${DESIGNS}/${designId}`;
+    },
+  });
+  if (finish) {
+    await approveDesign(design);
+    await expect(parent.getByText('Read design v1.')).toBeVisible({ timeout: 120_000 });
+    await awaitTurnEnd(parent);
+  } else {
+    await expect(design.getByText('Drafted the screen.')).toBeVisible({ timeout: 120_000 });
+  }
+  await awaitTurnEnd(design);
+  await selectChatPage(second, design);
+  const shell = await shellPage(second);
+  const previewTab = shell.locator('[data-testid="editor-tab"][data-kind="designPreview"]');
+  await expect(previewTab).toHaveCount(1, { timeout: 60_000 });
+  await previewTab.click({ button: 'right' });
+  await menuItem(await readyOverlay(second), 'close').click();
+  await expect(previewTab).toHaveCount(0);
+  await expect.poll(() => designContents(second), { timeout: 30_000 }).toBe(0);
+  return { designChatId: await chatIdOf(second, design), folder };
+}
+
+/** The first device's Open preview showed the design chat there, selected, with the screen's preview tab ready. */
+async function previewOpenedHere(app: ElectronApplication, designChatId: string): Promise<void> {
+  await expect.poll(async () => (await shellState(app)).selected.chatId, { timeout: 60_000 }).toBe(designChatId);
+  await expect.poll(async () => (await designTabs(app)).map((tab) => [tab.designPreview.relPath, tab.designPreview.status]), { timeout: 60_000 }).toEqual([[SCREEN_FILE, 'ready']]);
+}
+
+/** The other device opened no preview and kept its selection, checked for a while after the preview showed on the first. */
+async function nothingOpenedThere(app: ElectronApplication, selected: string | undefined): Promise<void> {
+  const end = Date.now() + 3_000;
+  do {
+    expect(await designContents(app)).toBe(0);
+    expect((await shellState(app)).selected.chatId).toBe(selected);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < end);
+}
+
+test('the main chat\'s result card on one device opens the preview of a design only another device shows on the first device, never on the other', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(900_000);
+  const fixture = await sshd('prod-1');
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID });
+    writeUserSettings(other.home, { 'damocles.model': STUB_MODEL_ID });
+    const first = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    await stubOAuth(first, 'alice', TOKEN_MS);
+    const { hostId, key } = await connect(first);
+    const secondDesktop = await other.launch();
+    const second = secondDesktop.app;
+    await stubOAuth(second, 'bob', TOKEN_MS);
+    const { key: secondKey } = await connect(second);
+    const { designChatId } = await designOnSecondDevice(second, secondKey, stub, other.home, fixture, true);
+    const secondSelected = (await shellState(second)).selected.chatId;
+
+    // The first device opens the main chat, whose card's Open preview shows the design chat here and opens the screen in it.
+    const parent = await openOtherDevicesChat(first, key, 'Design the contacts page', 'Read design v1.');
+    const card = parent.getByTestId('design-result-card');
+    await expect(card).toHaveCount(1);
+    await card.getByTestId('design-result-open-preview').click();
+    await parent.locator('[data-testid="design-screen"]', { hasText: SCREEN_FILE }).click();
+    await previewOpenedHere(first, designChatId);
+    await nothingOpenedThere(second, secondSelected);
+    await secondDesktop.close();
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+    await stub.close();
+  }
+});
+
+test('a screen\'s code tab on one device opens the preview of a design only another device shows on the first device, never on the other', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(900_000);
+  const fixture = await sshd('prod-1');
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID, 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+    writeUserSettings(other.home, { 'damocles.model': STUB_MODEL_ID });
+    const first = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    const { hostId } = await connect(first);
+    const secondDesktop = await other.launch();
+    const second = secondDesktop.app;
+    await stubOAuth(second, 'bob', TOKEN_MS);
+    const { key: secondKey } = await connect(second);
+    const { designChatId, folder } = await designOnSecondDevice(second, secondKey, stub, other.home, fixture, false);
+    const secondSelected = (await shellState(second)).selected.chatId;
+
+    // The first device opens the screen from a terminal of its own, then the code tab's Open preview.
+    const shell = await openTerminal(first);
+    await runInTerminal(shell, `damocles ${folder}/${SCREEN_FILE}`);
+    const codeTab = shell.locator('[data-testid="editor-tab"][data-kind="code"]', { hasText: 'S1-contacts.html' });
+    await expect(codeTab).toHaveCount(1, { timeout: 60_000 });
+    await codeTab.click({ button: 'right' });
+    await menuItem(await readyOverlay(first), 'openPreview').click();
+    await previewOpenedHere(first, designChatId);
+    await nothingOpenedThere(second, secondSelected);
     await secondDesktop.close();
     await shutdownHostDaemon(first, hostId, fixture);
   } catch (error) {

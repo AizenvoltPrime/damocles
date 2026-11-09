@@ -8,7 +8,7 @@ vi.mock('electron', async () => (await import('./fake-views-electron')).fakeView
 
 import { nativeImage } from 'electron';
 import { MAX_DESIGN_TABS } from '../../preload/shell-channels';
-import { DesignPreviews, markupPngForModel, MAX_FREEZE_ELEMENTS, MAX_LIVE_DESIGN_VIEWS, parseFreezeOutput, type DesignChat, type DesignPreviewsDeps, type DesignSupport } from '../design/design-previews';
+import { DesignPreviews, markupPngForModel, MAX_FREEZE_ELEMENTS, MAX_LIVE_DESIGN_VIEWS, parseFreezeOutput, restoredHistory, savedHistory, type DesignChat, type DesignPreviewsDeps, type DesignSupport } from '../design/design-previews';
 import { EMPTY_CAPTURE, fakeWindow, type FakeContents, type FakeView } from './fake-views-electron';
 import { contactsPage, type FakeJourneyPage } from './fake-journey-page';
 import type { JourneyStep } from '../../../shared/types/design';
@@ -354,15 +354,18 @@ describe('design preview views (PD-7)', () => {
 
   it('keeps a failed load failed though Electron finishes it, and reloads the view when the user shows the tab again', async () => {
     const { tabId, view, contents } = await shown(h, 'screens/S1.html');
-    contents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    contents.emit('did-start-navigation', { url: contents.getURL(), isMainFrame: true, isSameDocument: false });
     contents.emit('did-fail-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', 'damocles-design://x/screens/S1.html', true);
     contents.emit('did-finish-load');
     expect(h.previews.tabs()[0]!.designPreview!.status).toBe('failed');
     expect(view.getVisible()).toBe(false);
+    // the retry's load is driven by hand, to see the tab between its start and its finish
+    vi.mocked(contents.reload).mockImplementationOnce(() => undefined);
     h.previews.activeChanged(tabId);
     expect(contents.reload).toHaveBeenCalledOnce();
     expect(h.previews.tabs()[0]!.designPreview!.status).toBe('loading');
-    contents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    contents.emit('did-start-navigation', { url: contents.getURL(), isMainFrame: true, isSameDocument: false });
+    contents.emit('did-navigate', {}, contents.getURL(), 200);
     contents.emit('did-finish-load');
     expect(h.previews.tabs()[0]!.designPreview!.status).toBe('ready');
     expect(view.getVisible()).toBe(true);
@@ -416,6 +419,250 @@ describe('design preview views (PD-7)', () => {
     expect(h.previews.tabs().map((tab) => [tab.designPreview!.width, tab.designPreview!.state, tab.designPreview!.provenance])).toEqual([[900, 'empty', true], [1280, 'default', false]]);
     h.previews.dispose();
     expect(h.revoked).toEqual([{ authority: 'local', designId: 'contacts-1a2b3c4d' }, { authority: 'local', designId: 'other-2b3c4d5e' }]);
+  });
+});
+
+describe('links between screens', () => {
+  const screens = (relPath: string): DesignPreviewInfo | undefined => {
+    if (relPath === 'screens/gone.html') return undefined;
+    return relPath.startsWith('screens/S2') ? info(relPath, { screenId: 'S2', title: 'Detail', states: ['default', 'error'] }) : info(relPath);
+  };
+  const originOf = (contents: FakeContents): string => contents.getURL().slice(0, contents.getURL().indexOf('/screens/'));
+  const published = (harness: Harness) => {
+    const tab = harness.previews.tabs()[0]!;
+    return { title: tab.title, designPreview: tab.designPreview! };
+  };
+  // design.info answers only once let go, as a remote core's answer arrives later than the page
+  const heldInfo = (harness: Harness) => {
+    const asked: string[] = [];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Object.assign(harness.deps, {
+      info: async (_target: unknown, relPath: string) => {
+        asked.push(relPath);
+        await gate;
+        return screens(relPath);
+      },
+    });
+    return { asked, release };
+  };
+
+  beforeEach(() => {
+    h = setUp(screens);
+    h.previews.chatSelected(chat);
+  });
+
+  it("moves the tab to a linked screen in one publish once its facts are in, asking for them when the navigation starts", async () => {
+    const { contents } = await shown(h, 'screens/S1.html');
+    const facts = heldInfo(h);
+    const publish = vi.spyOn(h.deps.editor, 'browserTabsChanged');
+    const scripts = vi.mocked(contents.executeJavaScriptInIsolatedWorld).mock.calls.length;
+    contents.followLink(`${originOf(contents)}/screens/S2-detail.html`);
+    // the new document is up, its facts still coming: the tab still names S1 whole, and S1's state never reaches S2's page
+    expect(published(h)).toMatchObject({ title: 'S1 · Contacts', designPreview: { relPath: 'screens/S1.html', canGoBack: false, info: { states: ['default', 'empty'] } } });
+    expect(vi.mocked(contents.executeJavaScriptInIsolatedWorld).mock.calls.length).toBe(scripts);
+    expect(publish).not.toHaveBeenCalled();
+    facts.release();
+    await flush();
+    expect(facts.asked).toEqual(['screens/S2-detail.html']);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(published(h)).toMatchObject({ title: 'S2 · Detail', designPreview: { relPath: 'screens/S2-detail.html', state: 'default', status: 'ready', canGoBack: true, canGoForward: false, info: { states: ['default', 'error'] } } });
+    expect(vi.mocked(contents.executeJavaScriptInIsolatedWorld).mock.calls.length).toBeGreaterThan(scripts);
+    expect(h.saved.at(-1)).toEqual(['design-chat', [{ designId: 'contacts-1a2b3c4d', relPath: 'screens/S2-detail.html' }]]);
+  });
+
+  it('shows each screen at the state last chosen there, by Back, Forward or a link, and keeps a hash link on its screen', async () => {
+    const { tabId, contents } = await shown(h, 'screens/S1.html');
+    h.previews.set(tabId, { state: 'empty' });
+    contents.followLink(`${originOf(contents)}/screens/S2-detail.html`);
+    await flush();
+    expect(published(h).designPreview.state).toBe('default');
+    h.previews.set(tabId, { state: 'error' });
+
+    h.previews.navigate(tabId, 'back');
+    await flush();
+    expect(published(h)).toMatchObject({ title: 'S1 · Contacts', designPreview: { relPath: 'screens/S1.html', state: 'empty', canGoBack: false, canGoForward: true } });
+    h.previews.navigate(tabId, 'back');
+    expect(contents.navigationHistory.goBack).toHaveBeenCalledTimes(1);
+    contents.followLink(`${originOf(contents)}/screens/S2-detail.html`);
+    await flush();
+    expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S2-detail.html', state: 'error', canGoForward: false });
+
+    // Electron reports a hash link as an in-page navigation only, which moves Back and nothing else
+    contents.followLink(`${originOf(contents)}/screens/S2-detail.html#errors`);
+    contents.followLink(`${originOf(contents)}/screens/S2-detail.html#form`);
+    await flush();
+    h.previews.navigate(tabId, 'back');
+    await flush();
+    expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S2-detail.html', state: 'error', canGoBack: true, canGoForward: true });
+  });
+
+  it('leaves the tab on its screen over a page the design does not have, saving nothing, and Back shows the screen again', async () => {
+    const { tabId, view, contents } = await shown(h, 'screens/S1.html');
+    const saves = h.saved.length;
+    // a logo link to the site root: no design file path, and the scheme answers 404
+    contents.followLink(`${originOf(contents)}/`, 404);
+    await flush();
+    expect(published(h)).toMatchObject({ title: 'S1 · Contacts', designPreview: { relPath: 'screens/S1.html', status: 'notFound', canGoBack: true } });
+    expect(view.getVisible()).toBe(false);
+    await expect(h.previews.freeze(tabId)).rejects.toThrow('The preview is not showing');
+
+    h.previews.navigate(tabId, 'back');
+    await flush();
+    expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S1.html', status: 'ready', canGoForward: true });
+    expect(view.getVisible()).toBe(true);
+
+    // a screen path the design has no file at, by its status and by its facts
+    contents.followLink(`${originOf(contents)}/screens/missing.html`, 404);
+    await flush();
+    expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S1.html', status: 'notFound' });
+    h.previews.navigate(tabId, 'back');
+    contents.followLink(`${originOf(contents)}/screens/gone.html`);
+    await flush();
+    expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S1.html', status: 'notFound' });
+    expect(h.saved.slice(saves).every(([, tabs]) => (tabs as Array<{ relPath: string }>)[0]!.relPath === 'screens/S1.html')).toBe(true);
+  });
+
+  it("takes the browser's Back and Forward keys from the page, and none while markup is on or the host is away", async () => {
+    const { tabId, contents } = await shown(h, 'screens/S1.html');
+    contents.followLink(`${originOf(contents)}/screens/S2.html`);
+    await flush();
+    const press = (input: Record<string, unknown>): boolean => {
+      const event = { preventDefault: vi.fn() };
+      contents.emit('before-input-event', event, { type: 'keyDown', key: '', code: '', control: false, alt: false, meta: false, shift: false, ...input });
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    const mac = process.platform === 'darwin';
+    const back = mac ? { code: 'BracketLeft', meta: true } : { code: 'ArrowLeft', alt: true };
+    const forward = mac ? { code: 'BracketRight', meta: true } : { code: 'ArrowRight', alt: true };
+    expect(press({ code: 'ArrowLeft' })).toBe(false);
+    expect(press(back)).toBe(true);
+    await flush();
+    expect(published(h).designPreview.relPath).toBe('screens/S1.html');
+    h.previews.markupEnter(tabId);
+    expect(press(forward)).toBe(true);
+    expect(published(h).designPreview.relPath).toBe('screens/S1.html');
+    h.previews.markupExit(tabId);
+    // an away core serves no page
+    h.previews.connectionChanged('local', false);
+    h.previews.navigate(tabId, 'forward');
+    expect(contents.navigationHistory.goForward).not.toHaveBeenCalled();
+    h.previews.connectionChanged('local', true);
+    await flush();
+    expect(press(forward)).toBe(true);
+    await flush();
+    expect(published(h).designPreview.relPath).toBe('screens/S2.html');
+  });
+
+  it("keeps the history of a view it builds again, moved to the new view's origin, also when that view went before its first load", async () => {
+    const { tabId, contents } = await shown(h, 'screens/S1.html');
+    const before = originOf(contents);
+    contents.followLink(`${before}/screens/S2.html?step=2`);
+    await flush();
+    contents.emit('render-process-gone', {}, { reason: 'crashed' });
+    expect(views(h)).toHaveLength(0);
+    expect(published(h).designPreview).toMatchObject({ status: 'failed', canGoBack: false });
+
+    // built again, then gone before the session let it load: nothing it held replaces the saved history
+    h.previews.activeChanged(tabId);
+    views(h)[0]!.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    h.previews.activeChanged(tabId);
+    await flush();
+    const rebuilt = views(h)[0]!.webContents;
+    const after = originOf(rebuilt);
+    expect(after).not.toBe(before);
+    expect(rebuilt.navigationHistory.restore).toHaveBeenCalledWith({ entries: [{ url: `${after}/screens/S1.html`, title: '' }, { url: `${after}/screens/S2.html?step=2`, title: '' }], index: 1 });
+    expect(rebuilt.loadURL).not.toHaveBeenCalled();
+    expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S2.html', canGoBack: true });
+  });
+
+  it('keeps only entries of the view\'s own origin by path, and no history of a single page', () => {
+    const origin = 'damocles-design://aa11';
+    const entries = [
+      { url: `${origin}/screens/S1.html`, title: 'S1' },
+      { url: 'damocles-design://bb22/screens/S9.html', title: 'other view' },
+      { url: `${origin}/screens/S2.html?x=1#top`, title: 'S2' },
+    ];
+    expect(savedHistory(entries, 2, origin)).toEqual({ entries: [{ url: '/screens/S1.html', title: 'S1' }, { url: '/screens/S2.html?x=1#top', title: 'S2' }], index: 1 });
+    expect(savedHistory(entries, 1, origin)).toBeUndefined();
+    expect(savedHistory(entries.slice(0, 1), 0, origin)).toBeUndefined();
+    expect(restoredHistory({ entries: [{ url: '/screens/S1.html', title: 'S1' }], index: 0 }, 'damocles-design://cc33')).toEqual({ entries: [{ url: 'damocles-design://cc33/screens/S1.html', title: 'S1' }], index: 0 });
+  });
+
+  it('drops an answer for the screen asked before the host went away', async () => {
+    const { tabId } = await shown(h, 'screens/S1.html');
+    const facts = heldInfo(h);
+    h.previews.designChanged('local', 'contacts-1a2b3c4d', []);
+    h.support = 'offline';
+    h.previews.designChanged('local', 'contacts-1a2b3c4d', []);
+    facts.release();
+    await flush();
+    expect(h.previews.tabs().find((tab) => tab.id === tabId)!.designPreview!.status).toBe('reconnecting');
+  });
+
+  it('restores two tabs that show one screen', () => {
+    h.previews.restore(chat, [{ designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html' }, { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 900 }]);
+    expect(h.previews.tabs().map((tab) => tab.designPreview!.width)).toEqual([1280, 900]);
+  });
+
+  describe('a journey replay that follows links (D93)', () => {
+    const STEPS = contacts.steps as JourneyStep[];
+
+    // The view's debugger over a fake page; `navigate` runs at the page's first click, as a link the click follows would.
+    function replayer(contents: FakeContents, navigate: () => void): void {
+      const page = contactsPage(1280);
+      let attached = false;
+      let clicked = false;
+      Object.assign(contents, {
+        debugger: {
+          isAttached: () => attached,
+          attach: () => {
+            attached = true;
+          },
+          detach: () => {
+            attached = false;
+          },
+          on: () => undefined,
+          off: () => undefined,
+          sendCommand: async (method: never, params: Record<string, unknown>) => {
+            const result = await page.send(method, params);
+            if (!clicked && String(method) === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+              clicked = true;
+              navigate();
+            }
+            return result;
+          },
+        },
+      });
+    }
+
+    it('ends on the entry it started on with its pages gone, the tab on its screen at its state, and panels.json untouched', async () => {
+      const { tabId, contents } = await shown(h, 'screens/S1.html');
+      h.previews.set(tabId, { state: 'empty' });
+      const saves = h.saved.length;
+      replayer(contents, () => contents.followLink(`${originOf(contents)}/screens/S2.html`));
+      await h.previews.replayJourney(chat, 'contacts-1a2b3c4d', 'screens/S1.html', null, STEPS, true, new AbortController().signal);
+      await flush();
+      expect(contents.navigationHistory.getAllEntries().map((entry) => entry.url.slice(entry.url.indexOf('/screens/')))).toEqual(['/screens/S1.html']);
+      expect(contents.navigationHistory.goToIndex).toHaveBeenCalledWith(0);
+      expect(contents.reload).toHaveBeenCalledOnce();
+      expect(published(h).designPreview).toMatchObject({ relPath: 'screens/S1.html', state: 'empty', status: 'ready', canGoBack: false, canGoForward: false });
+      expect(h.saved.slice(saves).every(([, tabs]) => (tabs as Array<{ relPath: string; state?: string }>)[0]!.relPath === 'screens/S1.html')).toBe(true);
+      // a later document of the replay got the outline's sheet too
+      expect(vi.mocked(contents.insertCSS).mock.calls.filter(([css]) => String(css).includes('[data-damocles-replay]'))).toHaveLength(2);
+    }, 15_000);
+
+    it('reloads after going back to a same-document entry, so the view is loaded and nothing the replay typed stays', async () => {
+      const { tabId, contents } = await shown(h, 'screens/S1.html');
+      replayer(contents, () => contents.followLink(`${originOf(contents)}/screens/S1.html#settings`));
+      await h.previews.replayJourney(chat, 'contacts-1a2b3c4d', 'screens/S1.html', null, STEPS, true, new AbortController().signal);
+      await flush();
+      expect(contents.reload).toHaveBeenCalledOnce();
+      expect(contents.navigationHistory.length()).toBe(1);
+      await expect(h.previews.screenshot(tabId)).resolves.toMatchObject({ chat });
+    }, 15_000);
   });
 });
 
@@ -478,24 +725,34 @@ describe('tweaks on the live preview (PD-13)', () => {
     await flush();
     h.previews.applyTweak(tabId, '--radius', '--radius-lg');
     await flush();
-    contents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    // a navigation the lock cancels starts too (Electron emits it before will-navigate): the document stays and takes tweaks
+    contents.emit('did-start-navigation', { url: 'https://elsewhere.example/', isMainFrame: true, isSameDocument: false });
     h.previews.applyTweak(tabId, '--radius', '--radius-sm');
     await flush();
-    expect(tweakSheets(contents)).toEqual([':root { --radius: var(--radius-lg) !important; }']);
+    expect(tweakSheets(contents).at(-1)).toBe(':root { --radius: var(--radius-sm) !important; }');
+    h.previews.applyTweak(tabId, '--radius', '--radius-lg');
+    await flush();
+    const before = tweakSheets(contents).length;
+    // a committed document takes the tweak at its dom-ready
+    contents.emit('did-navigate', {}, contents.getURL(), 200);
+    h.previews.applyTweak(tabId, '--radius', '--radius-sm');
+    await flush();
+    expect(tweakSheets(contents)).toHaveLength(before);
     contents.emit('dom-ready');
     await flush();
     expect(tweakSheets(contents).at(-1)).toBe(':root { --radius: var(--radius-sm) !important; }');
     // a decision that locks the applied value keeps it on the page; one at another value takes it off
+    const removed = vi.mocked(contents.removeInsertedCSS).mock.calls.length;
     tweaks = { ...TWEAKS!, controls: TWEAKS!.controls.map((control) => (control.id === 'radius' ? { ...control, locked: { decisionId: 'D2', value: '--radius-sm' } } : control)) };
     h.previews.designChanged('local', 'contacts-1a2b3c4d', []);
     await flush();
     expect(h.previews.tabs()[0]!.designPreview!.tweaks).toEqual({ '--radius': '--radius-sm' });
-    expect(contents.removeInsertedCSS).not.toHaveBeenCalled();
+    expect(contents.removeInsertedCSS).toHaveBeenCalledTimes(removed);
     tweaks = { ...TWEAKS!, controls: TWEAKS!.controls.map((control) => (control.id === 'radius' ? { ...control, locked: { decisionId: 'D3', value: '--radius-lg' } } : control)) };
     h.previews.designChanged('local', 'contacts-1a2b3c4d', []);
     await flush();
     expect(h.previews.tabs()[0]!.designPreview!.tweaks).toBeUndefined();
-    expect(contents.removeInsertedCSS).toHaveBeenCalled();
+    expect(vi.mocked(contents.removeInsertedCSS).mock.calls.length).toBeGreaterThan(removed);
   });
 
   it('keeps only well-formed controls from a core, and a swatch only over literal colors', async () => {

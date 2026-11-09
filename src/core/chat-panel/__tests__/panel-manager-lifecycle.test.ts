@@ -11,6 +11,7 @@ vi.mock('../ide-context-manager', () => ({
 }));
 
 import { createHarness, folderEntry, makeFakeHost, type FakeSession, type Harness } from './panel-manager-harness';
+import { DAMOCLES_DESIGNS_DIR } from '../../paths';
 
 const A = path.join(path.resolve(os.tmpdir(), 'pml-root'), 'alpha');
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -196,6 +197,11 @@ describe('design chats (PD-1, PD-50)', () => {
     (h.instance(panelId).session as unknown as FakeSession).storedId = 'held-1';
     expect(await h.manager.showSession('held-1', A)).toBe('shown');
     expect(reveal).toHaveBeenCalledTimes(1);
+    // a host whose reveal says the panel could not be shown to the device that asked
+    reveal.mockResolvedValueOnce(false);
+    expect(await h.manager.showSession('held-1', A)).toBe('notShown');
+    reveal.mockResolvedValueOnce(true);
+    expect(await h.manager.showSession('held-1', A)).toBe('shown');
     expect(await h.manager.showSession('gone-1', A)).toBe('missing');
 
     const opening = h.manager.openStored('stored-1');
@@ -204,6 +210,96 @@ describe('design chats (PD-1, PD-50)', () => {
     opened.fireMessage({ type: 'ready', panelToken: 'tok' });
     const openedId = await opening;
     expect(h.routed.filter((r) => r.panelId === openedId).map((r) => r.message)).toContainEqual({ type: 'resumeSession', sessionId: 'stored-1' });
+  });
+
+  it("answers a shown session, and opens a screen's preview, only once the holding panel's reveal settled, so the preview opens where the chat shows", async () => {
+    h = createHarness([folderEntry(A)]);
+    const screen = path.join(DAMOCLES_DESIGNS_DIR, 'd-1234', 'screens', 'S1.html');
+    const order: string[] = [];
+    const reveals: Array<() => void> = [];
+    const host = makeFakeHost();
+    vi.spyOn(host, 'reveal').mockImplementation(() => new Promise<boolean>((resolve) => reveals.push(() => {
+      order.push('revealed');
+      resolve(true);
+    })));
+    const panelId = await h.manager.initializeHost(host);
+    const session = h.instance(panelId).session as unknown as FakeSession;
+    session.storedId = 'design-1';
+    session.design = {
+      role: () => ({ designId: 'd-1234' }),
+      ownLink: () => undefined,
+      standing: () => ({ kind: 'current' }),
+      openPreview: vi.fn(async () => {
+        order.push('preview');
+        return { opened: true };
+      }),
+    } as unknown as FakeSession['design'];
+    const shown = h.manager.showSession('design-1', A).then((result) => order.push(`showSession ${result}`));
+    const previewed = h.manager.previewDesignScreen(screen).then(() => order.push('previewDesignScreen'));
+    await tick();
+    expect(order).toEqual([]);
+    reveals[0]!();
+    await shown;
+    expect(order).toEqual(['revealed', 'showSession shown']);
+    reveals[1]!();
+    await previewed;
+    expect(order).toEqual(['revealed', 'showSession shown', 'revealed', 'preview', 'previewDesignScreen']);
+  });
+
+  it("opens a design screen's preview in the panel holding its current design chat, shown first, else through its main chat's panel", async () => {
+    h = createHarness([folderEntry(A)]);
+    const screen = path.join(DAMOCLES_DESIGNS_DIR, 'd-1234', 'screens', 'S1.html');
+    const order: string[] = [];
+    type Opening = { opened: true } | { refused: { message: string } };
+    const designOf = (kind: 'main' | 'current' | 'superseded', openPreview: () => Promise<Opening>) => ({
+      role: () => (kind === 'main' ? undefined : { designId: 'd-1234' }),
+      ownLink: () => (kind === 'main' ? { designId: 'd-1234' } : undefined),
+      standing: () => (kind === 'superseded' ? { kind: 'superseded', by: 'design-2' } : { kind: 'current' }),
+      openPreview,
+    }) as unknown as FakeSession['design'];
+    const opens = (name: string, result: Opening = { opened: true }) => vi.fn(async () => {
+      order.push(name);
+      return result;
+    });
+    expect(await h.manager.previewDesignScreen(screen)).toEqual({ refused: expect.objectContaining({ message: 'Open the design chat of {0} to preview it.' }) });
+
+    // a chat a rewind took the design from comes first in the panels, and is passed over
+    const supersededHost = makeFakeHost();
+    const supersededReveal = vi.spyOn(supersededHost, 'reveal');
+    const supersededId = await h.manager.initializeHost(supersededHost);
+    const supersededOpen = opens('superseded');
+    (h.instance(supersededId).session as unknown as FakeSession).design = designOf('superseded', supersededOpen);
+    const parentId = await h.manager.initializeHost(makeFakeHost());
+    const parentOpen = opens('parent');
+    (h.instance(parentId).session as unknown as FakeSession).design = designOf('main', parentOpen);
+    expect(await h.manager.previewDesignScreen(screen)).toEqual({ opened: true });
+    expect(parentOpen).toHaveBeenCalledWith('d-1234', 'screens/S1.html');
+
+    const designHost = makeFakeHost();
+    vi.spyOn(designHost, 'reveal').mockImplementation(() => void order.push('reveal'));
+    const designChatId = await h.manager.initializeHost(designHost);
+    const designOpen = opens('design');
+    (h.instance(designChatId).session as unknown as FakeSession).design = designOf('current', designOpen);
+    expect(await h.manager.previewDesignScreen(screen)).toEqual({ opened: true });
+    expect(order).toEqual(['parent', 'reveal', 'design']);
+    expect(designOpen).toHaveBeenCalledWith('d-1234', 'screens/S1.html');
+    expect([supersededOpen, supersededReveal].map((fn) => fn.mock.calls.length)).toEqual([0, 0]);
+
+    // a design chat that could not be shown to the device that asked opens no preview anywhere
+    order.length = 0;
+    vi.spyOn(designHost, 'reveal').mockImplementationOnce(async () => {
+      order.push('reveal');
+      return false;
+    });
+    expect(await h.manager.previewDesignScreen(screen)).toEqual({ refused: { message: 'The design chat could not be shown on this device, so {0} did not open.', args: ['S1.html'] } });
+    expect(order).toEqual(['reveal']);
+
+    // the design chat's own reason, and a failure, reach the user
+    designOpen.mockResolvedValueOnce({ refused: { message: 'This design continues in another chat.' } });
+    expect(await h.manager.previewDesignScreen(screen)).toEqual({ refused: { message: 'This design continues in another chat.' } });
+    designOpen.mockRejectedValueOnce(new Error('The design chat is not loaded'));
+    expect(await h.manager.previewDesignScreen(screen)).toEqual({ refused: expect.objectContaining({ message: 'Could not preview {0}: {1}', args: ['S1.html', expect.anything()] }) });
+    expect(await h.manager.previewDesignScreen(path.join(DAMOCLES_DESIGNS_DIR, 'd-1234', 'design.md'))).toEqual({ refused: expect.objectContaining({ message: '{0} is not a screen of a design.' }) });
   });
 
   // New Session runs `newSession`; Reload runs `resetConversations` with `authFailureCleared`.

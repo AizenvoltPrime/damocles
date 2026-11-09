@@ -460,6 +460,10 @@ export class CoreClient implements Disposable {
     return this.request('design.tweak', { panelId, tweakId, value });
   }
 
+  designPreviewScreen(screenPath: string): Promise<{ readonly opened: true } | { readonly refused: LocalizedText }> {
+    return this.request('design.previewScreen', { path: screenPath });
+  }
+
   scmGenerateMessage(repoId: string): Promise<unknown> {
     return this.request('scm.generateMessage', { repoId });
   }

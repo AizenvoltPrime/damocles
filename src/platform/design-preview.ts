@@ -2,8 +2,11 @@ import type { DesignCapture, DesignJourneyRun, DesignProbeResult, JourneyStep } 
 
 /** The desktop preview, which only desktop has; its renders run in the attached client's own runner (PD-11, PD-41). */
 export interface DesignPreviewHost {
-  /** Opens or shows the preview tab of `relPath` ('/' separated, below the design folder) in design chat `panelId`. */
-  open(panelId: string, designId: string, relPath: string): Promise<void>;
+  /**
+   * Opens or shows the preview tab of `relPath` ('/' separated, below the design folder) in design chat `panelId`; false when
+   * no app it may open in shows the chat (inside a device's work, only that device's).
+   */
+  open(panelId: string, designId: string, relPath: string): Promise<boolean>;
   /** Files of design `designId` changed, '/' separated below its folder, so its open previews reload. */
   changed(designId: string, paths: readonly string[]): void;
   /**

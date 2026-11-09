@@ -1,8 +1,14 @@
 // Design folder paths both core and desktop main read (docs/invariants.md "Design mode").
 import { isSafeAgentPathId } from './agent-path-id';
+import { hasUnsafeWindowsSegment, isRelativeFilePath } from './relative-path';
 
 /** A screen file relative to its design folder: `screens/<name>.html`, `screens/` exactly as spelled, the extension in any case. */
 export const SCREEN_FILE: RegExp = /^screens\/([^/]+)\.[Hh][Tt][Mm][Ll]$/;
+
+/** A screen file the preview serves: SCREEN_FILE's shape, and a relative file path safe on Windows too. */
+export function isDesignScreenFile(relPath: string): boolean {
+  return SCREEN_FILE.test(relPath) && isRelativeFilePath(relPath) && !hasUnsafeWindowsSegment(relPath);
+}
 
 /** The longest design id: every design message on the core protocol carries one, and its parser refuses a longer one. */
 export const MAX_DESIGN_ID_CHARS = 128;

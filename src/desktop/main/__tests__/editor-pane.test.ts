@@ -53,6 +53,8 @@ let uploadConflicts: TextDocument[][];
 let whileAsking: (() => Promise<void>) | undefined;
 // the pane's log lines
 let paneLog: string[];
+// the paths main's designScreens answers as a design's screens
+let designScreenPaths: string[];
 // what the pane last told HtmlPreviews: its preview tabs and its active tab
 let previewSync: { readonly tabs: ReadonlyArray<{ readonly tabId: string; readonly file: FileRef }>; readonly active: string | null } | undefined;
 
@@ -79,6 +81,7 @@ beforeEach(() => {
   revealError = undefined;
   whileAsking = undefined;
   paneLog = [];
+  designScreenPaths = [];
   previewSync = undefined;
   const ask = async (question: MessageQuestion): Promise<number | undefined> => {
     asked.push(question);
@@ -173,6 +176,10 @@ beforeEach(() => {
     reviewClosed: (reviewId) => events.push(`reviewClosed:${reviewId}`),
     openChanges: async (location) => { events.push(`openChanges:${JSON.stringify(location)}`); },
     gitOf: () => undefined,
+    designScreens: {
+      is: (location) => designScreenPaths.includes(location.path),
+      preview: async (location) => { events.push(`designPreview:${location.path}`); },
+    },
     worktreeBranch: () => undefined,
   });
 });
@@ -1197,6 +1204,19 @@ describe('HTML preview tabs', () => {
     if (!ts.ok) throw new Error('not opened');
     await pane.tabAction('openPreview', ts.tabId);
     expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'code', 'htmlPreview']);
+  });
+
+  it("flags a design's screen and sends its Open Preview to the design's own preview, never an HTML preview tab", async () => {
+    const screen = fs.realpathSync.native(write('screens/S1-home.html', '<p>hi</p>'));
+    write('other.html', '<p>other</p>');
+    designScreenPaths = [screen];
+    const code = await pane.openFromUser(project.key, 'screens/S1-home.html');
+    const other = await pane.openFromUser(project.key, 'other.html');
+    if (!code.ok || !other.ok) throw new Error('not opened');
+    expect(pane.state().tabs.map((tab) => [tab.title, tab.designScreen])).toEqual([['S1-home.html', true], ['other.html', undefined]]);
+    await pane.tabAction('openPreview', code.tabId);
+    expect(events).toContain(`designPreview:${screen}`);
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'code']);
   });
 
   it("copies the preview's path and relative path, reveals and mentions its file, and closes it", async () => {

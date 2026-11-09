@@ -217,7 +217,7 @@ describe('a design preview tab', () => {
   const designTab: ShellEditorTab = {
     id: 'dp1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', dirty: false, readOnly: false, conflict: false,
     designPreview: {
-      designId: 'c-1a2b', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', status: 'ready', width: 1280, state: 'default', provenance: false,
+      designId: 'c-1a2b', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/c-1a2b/screens/S1-contacts.html', status: 'ready', width: 1280, state: 'default', provenance: false, canGoBack: false, canGoForward: false,
       info: { breakpoints: [{ name: 'xl', width: 1280 }], primary: 1280, checked: [], journey: [], states: [], tweaks: null },
     },
   };
@@ -304,6 +304,11 @@ describe('HTML previews', () => {
     // a file outside every project has no project folder to serve
     const loose: ShellEditorTab = { id: 'loose', kind: 'code', documentId: 'd-loose', title: 'loose.html', displayPath: 'C:\\elsewhere\\loose.html', dirty: false, readOnly: false, conflict: false };
     expect((await menuFor(loose)).ids).not.toContain('openPreview');
+    // a design's screen outside every project previews in its design chat, which main decides
+    const screen: ShellEditorTab = { ...loose, id: 'screen', title: 'S2-home.html', displayPath: '/home/a/.damocles/designs/d/screens/S2-home.html', designScreen: true };
+    const { ids, api } = await menuFor(screen, 'openPreview');
+    expect(ids).toContain('openPreview');
+    expect(api.editorTab).toHaveBeenCalledWith({ action: 'openPreview', tabId: 'screen' });
   });
 
   it('offers Open preview only for a file the preview would serve: none inside a dot folder but .well-known', async () => {

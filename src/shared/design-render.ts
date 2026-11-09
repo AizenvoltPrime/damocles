@@ -2,6 +2,8 @@
 
 /** The exact refusal of `design.capture` and `design.probe` while no client that renders designs is attached. */
 export const DESIGN_RENDER_CLIENT_ABSENT = 'No Damocles app is attached to render this design.';
+/** The exact refusal of `design.openPreview` while no app that may open the tab shows the design chat. */
+export const DESIGN_PREVIEW_CLIENT_ABSENT = 'No Damocles app that may open this preview shows the design chat.';
 
 export const MIN_RENDER_WIDTH = 320;
 export const MAX_RENDER_WIDTH = 2560;

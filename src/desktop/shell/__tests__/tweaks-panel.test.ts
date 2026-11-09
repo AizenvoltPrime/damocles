@@ -178,7 +178,7 @@ const INFO: ShellDesignInfo = { breakpoints: [{ name: 'xl', width: 1280 }], prim
 function designTab(preview: Partial<ShellDesignPreview> = {}): DesignTab {
   const designPreview: ShellDesignPreview = {
     designId: 'contacts-1a2b3c4d', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/contacts-1a2b3c4d/screens/S1-contacts.html',
-    status: 'ready', info: INFO, width: 1280, state: 'default', provenance: false, ...preview,
+    status: 'ready', info: INFO, width: 1280, state: 'default', provenance: false, canGoBack: false, canGoForward: false, ...preview,
   };
   return { id: 'd1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: designPreview.path, dirty: false, readOnly: false, conflict: false, designPreview };
 }

@@ -19,8 +19,11 @@ export interface DesignSeed {
   readonly ruleSet: DesignRuleSetId;
 }
 
-/** Where a chat asked to show is: shown here, open in another Damocles process (its lease), or its file is gone. */
-export type SessionShown = 'shown' | 'elsewhere' | 'missing';
+/**
+ * Where a chat asked to show is: shown here, open in another Damocles process (its lease), held by a panel that could not be
+ * shown on the device that asked (`notShown`), or its file is gone.
+ */
+export type SessionShown = 'shown' | 'elsewhere' | 'notShown' | 'missing';
 
 /** What the panel layer does for a design chat and its main chat. */
 export interface DesignPanels {

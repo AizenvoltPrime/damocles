@@ -27,7 +27,7 @@ const INFO: ShellDesignInfo = {
 function designTab(preview: Partial<ShellDesignPreview> = {}): DesignTab {
   const designPreview: ShellDesignPreview = {
     designId: 'contacts-1a2b3c4d', relPath: 'screens/S1-contacts.html', path: '/home/u/.damocles/designs/contacts-1a2b3c4d/screens/S1-contacts.html',
-    status: 'ready', info: INFO, width: 1280, state: 'default', provenance: false, ...preview,
+    status: 'ready', info: INFO, width: 1280, state: 'default', provenance: false, canGoBack: false, canGoForward: false, ...preview,
   };
   return { id: 'd1', kind: 'designPreview', title: 'S1 · Contacts', displayPath: designPreview.path, dirty: false, readOnly: false, conflict: false, designPreview };
 }
@@ -127,6 +127,61 @@ describe('the design preview tab', () => {
 
     await wrapper.get('[data-testid="design-preview-browser"]').trigger('click');
     expect(api.designPreviewAction).toHaveBeenCalledWith({ tabId: 'd1', action: 'openInBrowser' });
+  });
+
+  it("offers Back and Forward only as far as the view's history goes, by click and by Alt+Left and Alt+Right", async () => {
+    const { wrapper, api } = mountTab(designTab({ canGoBack: true }));
+    const back = wrapper.get('[data-testid="design-preview-back"]');
+    const forward = wrapper.get('[data-testid="design-preview-forward"]');
+    expect([back.attributes('aria-disabled'), forward.attributes('aria-disabled')]).toEqual([undefined, 'true']);
+    expect(back.attributes('title')).toBe('Back to the page before (Alt+Left)');
+    expect([back.attributes('aria-keyshortcuts'), forward.attributes('aria-keyshortcuts')]).toEqual(['Alt+ArrowLeft', 'Alt+ArrowRight']);
+
+    await forward.trigger('click');
+    expect(api.designPreviewAction).not.toHaveBeenCalled();
+    await back.trigger('click');
+    expect(api.designPreviewAction).toHaveBeenCalledWith({ tabId: 'd1', action: 'back' });
+
+    await wrapper.setProps({ tab: designTab({ canGoForward: true }) });
+    await wrapper.get('[data-testid="design-preview-tab"]').trigger('keydown', { code: 'ArrowRight', altKey: true });
+    await wrapper.get('[data-testid="design-preview-tab"]').trigger('keydown', { code: 'ArrowLeft', altKey: true });
+    expect(vi.mocked(api.designPreviewAction).mock.calls.map(([request]) => request.action)).toEqual(['back', 'forward']);
+  });
+
+  it('names the macOS history keys for assistive technology by their key values', () => {
+    const api = fakeShellApi();
+    const wrapper = mount(DesignPreviewTab, { props: { api, tab: designTab(), platform: 'darwin' }, global: { plugins: [shellI18n] }, attachTo: document.body });
+    mounted.push(wrapper);
+    expect(wrapper.get('[data-testid="design-preview-back"]').attributes()).toMatchObject({ title: 'Back to the page before (⌘[)', 'aria-keyshortcuts': 'Meta+[' });
+    expect(wrapper.get('[data-testid="design-preview-forward"]').attributes('aria-keyshortcuts')).toBe('Meta+]');
+  });
+
+  it('holds Back and Forward while a replay drives the view and while the host cannot serve it', async () => {
+    const { wrapper, api } = mountTab(designTab({ canGoBack: true, canGoForward: true }));
+    const buttons = () => ['back', 'forward'].map((step) => wrapper.get(`[data-testid="design-preview-${step}"]`).attributes('aria-disabled'));
+    expect(buttons()).toEqual([undefined, undefined]);
+
+    const replay: DesignReplayProgress = { tabId: 'd1', steps: [{ action: 'click', target: { role: 'button', name: 'Add contact' } }], active: 0, results: [], done: false, reducedMotion: false };
+    (api as FakeShellApi).designReplay(replay);
+    await nextTick();
+    expect(buttons()).toEqual(['true', 'true']);
+    await wrapper.get('[data-testid="design-preview-tab"]').trigger('keydown', { code: 'ArrowLeft', altKey: true });
+    expect(api.designPreviewAction).not.toHaveBeenCalled();
+    (api as FakeShellApi).designReplay({ ...replay, active: null, results: [{ ok: true }], done: true });
+    await nextTick();
+    expect(buttons()).toEqual([undefined, undefined]);
+
+    for (const status of ['reconnecting', 'updateServer'] as const) {
+      await wrapper.setProps({ tab: designTab({ status, canGoBack: true, canGoForward: true }) });
+      expect(buttons()).toEqual(['true', 'true']);
+    }
+    await wrapper.get('[data-testid="design-preview-back"]').trigger('click');
+    expect(api.designPreviewAction).not.toHaveBeenCalled();
+
+    // Back is the way out of a page the design does not have.
+    await wrapper.setProps({ tab: designTab({ status: 'notFound', canGoBack: true }) });
+    await wrapper.get('[data-testid="design-preview-back"]').trigger('click');
+    expect(api.designPreviewAction).toHaveBeenCalledWith({ tabId: 'd1', action: 'back' });
   });
 
   it('takes a screenshot through main, disabled while it captures, then flashes the frame and says where it went', async () => {
@@ -313,10 +368,13 @@ describe('the design preview tab', () => {
   });
 
   it('shows each status in the frame, the last frame dimmed while reconnecting, fetched once per frame id', async () => {
-    for (const status of ['loading', 'updateServer', 'failed'] as const) {
+    for (const status of ['loading', 'updateServer', 'failed', 'notFound'] as const) {
       const { wrapper } = mountTab(designTab({ status }));
       expect(wrapper.get('[data-testid="design-preview-status"]').attributes('data-status')).toBe(status);
     }
+    const notFound = mountTab(designTab({ status: 'notFound' })).wrapper;
+    expect(notFound.get('[data-testid="design-preview-status"]').text()).toBe('No page of this design is at this address. Use Back to return.');
+    expect(notFound.get('[data-testid="design-preview-announcer"]').text()).toBe('No page of this design is at this address. Use Back to return.');
     expect(mountTab(designTab({ status: 'updateServer' })).wrapper.get('[data-testid="design-preview-status"]').text())
       .toBe('Update the Damocles server on this host to preview designs.');
 

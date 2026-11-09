@@ -106,6 +106,7 @@ beforeEach(() => {
     reviewClosed: () => undefined,
     openChanges: async () => undefined,
     gitOf: () => undefined,
+    designScreens: { is: () => false, preview: async () => undefined },
     worktreeBranch: () => undefined,
   });
   host = new SearchHost({

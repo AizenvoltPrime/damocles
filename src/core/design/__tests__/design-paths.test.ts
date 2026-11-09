@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DAMOCLES_DESIGNS_DIR, planFileIdSuffix, planFileStem, computePlanFilePath } from '../../paths';
-import { designFolderOf, designsFolderAllowsWrite, designStateDirOf, forkDesignId, isDesignerFile, isDesignerRelative, newDesignId } from '../design-paths';
+import { designFolderOf, designScreenOf, designsFolderAllowsWrite, designStateDirOf, forkDesignId, isDesignerFile, isDesignerRelative, newDesignId } from '../design-paths';
 import { designStateTokens, MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
 
 describe('designStateTokens', () => {
@@ -92,5 +92,19 @@ describe('design paths', () => {
     ]) {
       expect(designsFolderAllowsWrite(refused)).toBe(false);
     }
+  });
+});
+
+describe('designScreenOf', () => {
+  it('names the design and screen of a screens/<name>.html below the designs folder, and nothing else', () => {
+    const at = (...segments: string[]) => path.join(DAMOCLES_DESIGNS_DIR, ...segments);
+    expect(designScreenOf(at('contacts-abcd1234', 'screens', 'S1-home.html'))).toEqual({ designId: 'contacts-abcd1234', relPath: 'screens/S1-home.html' });
+    expect(designScreenOf(at('contacts-abcd1234', 'screens', 'S1.HTML'))).toEqual({ designId: 'contacts-abcd1234', relPath: 'screens/S1.HTML' });
+    expect(designScreenOf(at('contacts-abcd1234', 'design.md'))).toBeUndefined();
+    expect(designScreenOf(at('contacts-abcd1234', 'variants', 'a.html'))).toBeUndefined();
+    expect(designScreenOf(at('contacts-abcd1234', 'screens', 'nested', 'a.html'))).toBeUndefined();
+    expect(designScreenOf(at('.state', 'screens', 'a.html'))).toBeUndefined();
+    expect(designScreenOf(at('screens', 'a.html'))).toBeUndefined();
+    expect(designScreenOf(path.join(path.dirname(DAMOCLES_DESIGNS_DIR), 'other', 'd', 'screens', 'a.html'))).toBeUndefined();
   });
 });

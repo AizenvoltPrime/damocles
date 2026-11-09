@@ -79,7 +79,7 @@ The server goes to `~/.damocles/server` on the target. When the home folder is s
 
 ## Several devices
 
-Several computers can use one host at once, each signed in over SSH as the same account. They share the host's chats and terminals, and each sees the others listed on the host card. Each turn uses the AI sign-in of the device that sent the message. When that device is away and its token runs out, the chat shows Sign-in needed on every device, and only a click on "Continue with my sign-in" moves the turn to another device's sign-in.
+Several computers can use one host at once, each signed in over SSH as the same account. They share the host's chats and terminals, and each sees the others listed on the host card. What you open shows on the computer you clicked on: a conversation another computer has open, or the design preview of such a chat, opens on yours as well, and the other computer stays where it is. If it cannot open on yours, for example because this app is older than the server, your computer says so and nothing opens on the other. Each turn uses the AI sign-in of the device that sent the message. When that device is away and its token runs out, the chat shows Sign-in needed on every device, and only a click on "Continue with my sign-in" moves the turn to another device's sign-in.
 
 People who share one server account share everything Damocles keeps on that host: chats, files, terminals, project memories and trust. The operating system gives them the same powers there, so either can read the other's short-lived access tokens. Give each person their own account on the host.
 

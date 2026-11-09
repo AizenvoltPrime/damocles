@@ -94,6 +94,9 @@ export type ReconcileTrigger = 'bind' | 'prompt' | 'live';
  * Whether a design chat is the one `link.json` names (PD-36): `superseded` once a takeover named another session, `handing-over`
  * while this chat's own rewind takeover runs, `unreadable` for a link.json that does not parse.
  */
+/** An Open preview's outcome: opened, or refused with the reason the user reads. */
+export type DesignPreviewOpening = { readonly opened: true } | { readonly refused: LocalizedText };
+
 export type DesignStanding = { readonly kind: 'current' } | { readonly kind: 'superseded'; readonly by: string } | { readonly kind: 'handing-over' } | { readonly kind: 'unreadable' };
 
 export class SessionDesign implements Disposable {
@@ -342,26 +345,35 @@ export class SessionDesign implements Disposable {
     }, DESIGN_CHANGED_DEBOUNCE_MS);
     if (!SCREEN_FILE.test(relPath) || this.previewedScreens.has(relPath.toLowerCase())) return;
     this.previewedScreens.add(relPath.toLowerCase());
-    void this.openPreview(role.designId, relPath).catch((err: unknown) => log('[SessionDesign] opening the preview of %s failed: %O', relPath, err));
+    this.openPreview(role.designId, relPath).then((opening) => {
+      if ('refused' in opening) log('[SessionDesign] the preview of %s did not open: %s', relPath, opening.refused.message);
+    }, (err: unknown) => log('[SessionDesign] opening the preview of %s failed: %O', relPath, err));
   }
 
   /**
    * Opens the preview tab of `relPath` of design `designId` in its design chat (PD-33): this chat when it is the design chat,
-   * else the design chat this parent's own link names, shown first. False when there is no such chat or the host has no preview.
+   * else the design chat this parent's own link names, shown first. A refusal names why it did not open.
    */
-  async openPreview(designId: string, relPath: string): Promise<boolean> {
+  async openPreview(designId: string, relPath: string): Promise<DesignPreviewOpening> {
     const preview = this.deps.platform.designPreview;
-    if (!preview || !this.ruleSet().preview) return false;
+    if (!preview || !this.ruleSet().preview) return { refused: l('This chat shows no design previews.') };
     if (this.role()?.designId === designId) {
       const panelId = this.deps.panelId();
-      if (panelId === undefined || this.standing().kind !== 'current') return false;
-      await preview.open(panelId, designId, relPath);
-      return true;
+      if (panelId === undefined) return { refused: l('Open the design chat to preview {0}.', relPath) };
+      if (this.standing().kind !== 'current') return { refused: l('This design continues in another chat.') };
+      if (!(await preview.open(panelId, designId, relPath))) return { refused: l('Open the design chat to preview {0}.', relPath) };
+      return { opened: true };
     }
-    if (this.ownLink()?.designId !== designId) return false;
+    if (this.ownLink()?.designId !== designId) return { refused: l('Could not preview {0}.', relPath) };
+    const notOpen: DesignPreviewOpening = { refused: l('Open the design chat to preview {0}.', relPath) };
     const current = (await readDesignLink(designStateDirOf(designId)))?.designSessionId;
-    if (!current || (await this.deps.panels()?.showSession(current)) !== 'shown') return false;
-    return (await PiRuntime.liveSessionMutator(current)?.openDesignPreview(designId, relPath)) === true;
+    if (!current) return notOpen;
+    const shown = await this.deps.panels()?.showSession(current);
+    if (shown === 'elsewhere') return { refused: l('This conversation is open in another Damocles window.') };
+    if (shown === 'notShown') return { refused: l('The design chat could not be shown on this device, so {0} did not open.', relPath) };
+    if (shown === 'missing') return { refused: l('The chat this design continues in no longer exists.') };
+    if (shown !== 'shown') return notOpen;
+    return (await PiRuntime.liveSessionMutator(current)?.openDesignPreview(designId, relPath)) ?? notOpen;
   }
 
   /** Posts the design entries of the branch not on screen yet; a delivered message's entry lands by either of pi's paths. */
@@ -483,7 +495,7 @@ export class SessionDesign implements Disposable {
     this.compute().then((state) => {
       if (run !== this.publishRun || this.disposed) return;
       const ruleSet = this.hostRuleSet();
-      const message: ExtensionToWebviewMessage = { type: 'designState', ...state, openInBrowser: ruleSet.openInBrowserFromChat, openPreview: ruleSet.preview && this.deps.platform.designPreview !== undefined };
+      const message: ExtensionToWebviewMessage = { type: 'designState', ...state, openInBrowser: ruleSet.openInBrowserFromChat, openPreview: this.ruleSet().preview && this.deps.platform.designPreview !== undefined };
       const key = JSON.stringify(message);
       if (key === this.lastPublished) return;
       this.lastPublished = key;
@@ -818,10 +830,11 @@ export class SessionDesign implements Disposable {
     return link ? link.parentSessionId : role.parentSessionId;
   }
 
-  /** Tells the user why a chat did not show: open in another process (the lease's wording), or gone. */
+  /** Tells the user why a chat did not show: open in another process (the lease's wording), not shown on their device, or gone. */
   private warnNotShown(shown: SessionShown | undefined, missing: LocalizedText): void {
     if (shown === 'shown') return;
-    void this.deps.platform.notifications.warn(shown === 'elsewhere' ? l('This conversation is open in another Damocles window.') : missing);
+    const why = shown === 'elsewhere' ? l('This conversation is open in another Damocles window.') : shown === 'notShown' ? l('The chat could not be shown on this device.') : missing;
+    void this.deps.platform.notifications.warn(why);
   }
 
   /** Shows the current chat of design `designId`: this parent's design chat, or, from a superseded design chat, its successor. */

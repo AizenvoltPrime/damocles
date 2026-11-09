@@ -20,6 +20,7 @@ import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { removeSavedMcpOutputs } from './mcp/content';
 import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNoticeEntry, ToolNameList } from './mcp/tool-name-migration';
+import type { DesignPreviewOpening } from '../design/session-design';
 import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
 import { piSupportedModels, type ModelLookup } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
@@ -382,8 +383,8 @@ export interface LiveSessionMutator extends LiveSessionMetaSource {
   offerDesignResult(designId: string): void;
   /** Brief `briefId` was written for this design chat: it reconciles now (PD-27). */
   offerDesignBrief(briefId: string): void;
-  /** This design chat opens the preview tab of `relPath` of its design `designId`; false when it cannot (PD-33). */
-  openDesignPreview(designId: string, relPath: string): Promise<boolean>;
+  /** This design chat opens the preview tab of `relPath` of its design `designId`, or says why it cannot (PD-33). */
+  openDesignPreview(designId: string, relPath: string): Promise<DesignPreviewOpening>;
 }
 
 /**

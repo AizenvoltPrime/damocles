@@ -3,8 +3,9 @@ import { MAX_MARKUP_MARKS, type MarkupJsonInput, type MarkupMark } from '../../.
 import type { DesignFreeze } from '../../preload/shell-channels';
 import { shapeBox, strokeAnchors, type MarkupElement, type MarkupPoint } from './markup';
 
-// A preview tab's markup in shell memory (PD-12): the frozen capture and its marks, kept across Exit and chat switches
-// until Send, Clear with an Exit, or the tab's real close (onDesignPreviewClosed).
+// A preview tab's markup in shell memory (PD-12), one session per screen of the tab (its freeze's file): the frozen capture
+// and its marks, kept across Exit, chat switches and moves to another screen until Send, Clear with an Exit, or the tab's
+// real close (onDesignPreviewClosed).
 
 export type MarkupTool = 'pen' | 'arrow' | 'box' | 'pin';
 export type PinKind = 'change' | 'note';
@@ -41,18 +42,28 @@ export interface MarkupSession {
 const sessions = shallowReactive(new Map<string, MarkupSession>());
 let nextId = 1;
 
-export function markupSession(tabId: string): MarkupSession | undefined {
-  return sessions.get(tabId);
+const keyOf = (tabId: string, file: string): string => JSON.stringify([tabId, file]);
+
+export function markupSession(tabId: string, file: string): MarkupSession | undefined {
+  return sessions.get(keyOf(tabId, file));
+}
+
+export function tabMarkupSessions(tabId: string): MarkupSession[] {
+  return [...sessions.values()].filter((session) => session.tabId === tabId);
 }
 
 export function startMarkupSession(tabId: string, freeze: DesignFreeze): MarkupSession {
   const session = shallowReactive<MarkupSession>({ tabId, freeze: markRaw(freeze), marks: [], undo: [], tool: 'pin', active: true });
-  sessions.set(tabId, session);
+  sessions.set(keyOf(tabId, freeze.file), session);
   return session;
 }
 
-export function dropMarkupSession(tabId: string): void {
-  sessions.delete(tabId);
+export function dropMarkupSession(tabId: string, file: string): void {
+  sessions.delete(keyOf(tabId, file));
+}
+
+export function dropTabMarkupSessions(tabId: string): void {
+  for (const session of tabMarkupSessions(tabId)) dropMarkupSession(tabId, session.freeze.file);
 }
 
 export function newMarkId(): number {

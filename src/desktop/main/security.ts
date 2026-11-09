@@ -88,8 +88,8 @@ export function registerLockedContents(contents: WebContents, origin: string, op
 // A page's script can try to navigate away in a loop, so each locked view logs only its first blocked navigation.
 const lockedNavigationLogged = new WeakSet<WebContents>();
 
-// Node's URL reports origin 'null' for a scheme it does not know, so the origin is spelled from the scheme and host.
-function originOf(url: string): string | undefined {
+/** A URL's origin, spelled from its scheme and host in lower case, since Node's URL reports 'null' for a scheme it does not know. */
+export function originOf(url: string): string | undefined {
   if (!URL.canParse(url)) return undefined;
   const parsed = new URL(url);
   return parsed.host === '' ? undefined : `${parsed.protocol}//${parsed.host}`.toLowerCase();

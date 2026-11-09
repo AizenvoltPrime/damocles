@@ -78,8 +78,8 @@ export function createDesignHandlers(deps: HandlerDependencies): HandlerRegistry
         return;
       }
       try {
-        if (await ctx.session.design.openPreview(msg.designId, msg.relPath)) return;
-        postMessage(ctx.reply, { type: "notification", message: l("Open the design chat to preview {0}.", msg.relPath), notificationType: "warning" });
+        const opening = await ctx.session.design.openPreview(msg.designId, msg.relPath);
+        if ("refused" in opening) postMessage(ctx.reply, { type: "notification", message: opening.refused, notificationType: "warning" });
       } catch (err) {
         log("[DesignHandlers] previewing %s of design %s failed: %O", msg.relPath, msg.designId, err);
         postMessage(ctx.reply, { type: "notification", message: l("Could not preview {0}: {1}", msg.relPath, errorTextOf(err)), notificationType: "error" });

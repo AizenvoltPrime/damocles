@@ -328,6 +328,9 @@ export interface EditorPaneDeps {
   // the file's place in an open repository of a trusted project (ShellEditorTab.git), on the file's own authority; undefined
   // anywhere else
   readonly gitOf: (location: Location) => ShellFileGit | undefined;
+  // a design's screen on its own authority, whose core serves design.previewScreen (ShellEditorTab.designScreen), and its
+  // Open preview, which that core opens in the screen's design chat
+  readonly designScreens: { readonly is: (location: Location) => boolean; readonly preview: (location: Location) => Promise<void> };
 }
 
 function readSetting<T>(settings: SettingsStore, key: string, fallback: T): T {
@@ -485,7 +488,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   state(): ShellEditorState {
     this.previewTabsChanged();
     return {
-      tabs: [...this.tabs.map((tab) => shownTitle(this.revealableTab(tab))), ...this.browserTabs(), ...this.terminalTabs()],
+      tabs: [...this.tabs.map((tab) => shownTitle(this.fileFlaggedTab(tab))), ...this.browserTabs(), ...this.terminalTabs()],
       activeTabId: this.activeId,
       settings: editorSettings(this.deps.settings),
       documents: this.shellDocuments(),
@@ -1207,6 +1210,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       case 'openSource': {
         if (tab.htmlPreview) {
           if (action === 'openSource') await this.openHtmlSource(tab.htmlPreview);
+          return;
+        }
+        if (action === 'openPreview' && tab.kind === 'code' && document?.location && this.deps.designScreens.is(document.location)) {
+          await this.deps.designScreens.preview(document.location);
           return;
         }
         // an offline placeholder's file previews too; the preview shows its host's state itself
@@ -1974,11 +1981,16 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return projectKeyOfDocument(tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined);
   }
 
-  private revealableTab(tab: Tab): ShellEditorTab {
+  private fileFlaggedTab(tab: Tab): ShellEditorTab {
     const shell = this.shellTab(tab);
     if (NO_PATH_TAB_KINDS.has(shell.kind)) return shell;
     const location = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : this.actionDocument(tab)?.location;
-    return location && revealPathOf(location, this.deps.wslDistro) !== undefined ? { ...shell, revealable: true } : shell;
+    if (!location) return shell;
+    return {
+      ...shell,
+      ...(revealPathOf(location, this.deps.wslDistro) !== undefined ? { revealable: true as const } : {}),
+      ...(shell.kind === 'code' && this.deps.designScreens.is(location) ? { designScreen: true as const } : {}),
+    };
   }
 
   private shellTab(tab: Tab): ShellEditorTab {

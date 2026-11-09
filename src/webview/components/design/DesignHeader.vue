@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { FileText, Folder, Globe, Link, Palette, PowerOff } from 'lucide-vue-next';
+import { FileText, Folder, Globe, Link, Monitor, Palette, PowerOff } from 'lucide-vue-next';
 import type { DesignChatStateView } from '@shared/types/design';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useOpenDesignInBrowser } from '@/composables/useOpenDesignInBrowser';
+import { useOpenDesignPreview } from '@/composables/useOpenDesignPreview';
 import { useDesignStore } from '@/stores/useDesignStore';
 import { formatBytes } from '@/utils/format-bytes';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
@@ -17,13 +18,15 @@ import DesignDecisionChip from './DesignDecisionChip.vue';
 import { DESIGN_STRIP } from './design-strip';
 import { DESIGN_MENU_CONTENT, DESIGN_MENU_ITEM, DESIGN_MENU_LABEL, DESIGN_MENU_STATUS } from './design-menu';
 
-// The design chat's header: the way back to the main chat, the design folder's files, and the decisions so far. Its two rows
-// never wrap, so it keeps DESIGN_STRIP's fixed height, which the shell's gutter edge continues.
+// The design chat's header: the way back to the main chat, the design folder's files, its screens in a preview tab (desktop)
+// or the browser (VS Code), and the decisions so far. Its two rows never wrap, so it keeps DESIGN_STRIP's fixed height, which
+// the shell's gutter edge continues.
 const props = defineProps<{ design: DesignChatStateView }>();
 const { t, locale } = useI18n();
 const { postMessage } = usePlatformBridge();
 const designStore = useDesignStore();
 const { available: canOpenInBrowser } = useOpenDesignInBrowser();
+const { available: canOpenPreview } = useOpenDesignPreview();
 
 const CHIP = 'd-press h-6 min-w-0 gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-2 text-11.5 font-normal text-(--d-muted) hover:border-[color-mix(in_srgb,var(--d-design)_45%,var(--d-border2))] hover:bg-(--d-card) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 disabled:opacity-(--d-opacity-disabled) [&_svg]:size-3';
 
@@ -184,6 +187,26 @@ watch(() => props.design.decisions.length, async (count, previous) => {
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        <DesignScreensMenu
+          v-if="canOpenPreview"
+          :design-id="design.designId"
+          target="preview"
+        >
+          <Button
+            type="button"
+            variant="ghost"
+            :class="[CHIP, 'flex-none']"
+            :title="t('design.preview.open')"
+            data-testid="design-header-open-preview"
+          >
+            <Monitor
+              class="size-3 flex-none text-(--d-design)"
+              aria-hidden="true"
+            />
+            <span class="@max-[32rem]/design:sr-only">{{ t('design.preview.open') }}</span>
+          </Button>
+        </DesignScreensMenu>
 
         <DesignScreensMenu
           v-if="canOpenInBrowser"

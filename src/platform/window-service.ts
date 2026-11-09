@@ -44,8 +44,10 @@ export interface PanelHost {
   setIcon(path: string | undefined): void;
   setTitle(title: string): void;
   setFolderLabel(label: string | undefined): void;
-  // column undefined keeps the panel's current column
-  reveal(column?: number): void;
+  // column undefined keeps the panel's current column. A host whose panel several devices show (a daemon's core) reveals it
+  // only on the device whose work this is, which may first open a view of it, and settles once it shows there: false when
+  // it could not be shown on that device.
+  reveal(column?: number): void | Promise<boolean>;
   close(): void;
 }
 

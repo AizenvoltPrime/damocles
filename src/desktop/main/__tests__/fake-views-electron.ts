@@ -3,6 +3,11 @@ import { vi } from 'vitest';
 import { NO_PAGES, type PanelStateStore, type PersistedChat, type PersistedPages } from '../panel-state-store';
 import type { DesktopPanel } from '../views';
 
+// Two URLs of one document: they differ in their hash at most.
+function sameDocument(a: string, b: string): boolean {
+  return a.split('#')[0] === b.split('#')[0];
+}
+
 // The electron pieces PanelViews and its pages touch, for a vi.mock('electron') factory; webPreferences records each view's options.
 export function fakeViewsElectron(webPreferences: unknown[] = []): Record<string, unknown> {
   let nextId = 1;
@@ -32,19 +37,76 @@ export function fakeViewsElectron(webPreferences: unknown[] = []): Record<string
     readonly removeInsertedCSS = vi.fn(async () => undefined);
     readonly executeJavaScriptInIsolatedWorld = vi.fn(async () => undefined);
     readonly setWebRTCIPHandlingPolicy = vi.fn();
-    readonly reload = vi.fn();
     // an evicted surface captures as an empty image; mockResolvedValueOnce(EMPTY_CAPTURE) gives one
     readonly capturePage = vi.fn(async () => ({ isEmpty: () => false, getSize: () => ({ width: 640, height: 400 }), resize: () => { throw new Error('no resize below the cap'); }, toJPEG: () => Buffer.from('jpeg'), toPNG: () => Buffer.from('png') }));
     zoom = 1;
     getZoomFactor(): number {
       return this.zoom;
     }
-    // A load commits, and its document is ready, at once.
+    // A load commits, and its document is ready, at once; the test finishes it (did-finish-load) when it needs to.
     readonly loadURL = vi.fn(async (url: string) => {
+      this.history.entries.splice(this.history.index + 1, Infinity, { url, title: '', status: 200 });
+      this.history.index = this.history.entries.length - 1;
       this.mainFrame.url = url;
-      this.emit('did-navigate');
+      this.emit('did-navigate', {}, url, 200);
       this.emit('dom-ready');
     });
+    // a reload loads the current entry as a new document, in Electron's full order
+    readonly reload = vi.fn(() => this.navigateTo(this.history.index, false));
+    // Chromium's session history, as a design view's Back, Forward, rebuild and replay use it
+    private readonly history = { entries: [] as Array<{ url: string; title: string; status: number }>, index: -1 };
+    readonly navigationHistory = {
+      canGoBack: (): boolean => this.history.index > 0,
+      canGoForward: (): boolean => this.history.index < this.history.entries.length - 1,
+      goBack: vi.fn(() => this.goToIndex(this.history.index - 1)),
+      goForward: vi.fn(() => this.goToIndex(this.history.index + 1)),
+      goToIndex: vi.fn((index: number) => this.goToIndex(index)),
+      getActiveIndex: (): number => this.history.index,
+      length: (): number => this.history.entries.length,
+      getAllEntries: (): Array<{ url: string; title: string }> => this.history.entries.map(({ url, title }) => ({ url, title })),
+      // Chromium refuses to remove the active entry
+      removeEntryAtIndex: vi.fn((index: number): boolean => {
+        if (index === this.history.index || index < 0 || index >= this.history.entries.length) return false;
+        this.history.entries.splice(index, 1);
+        if (index < this.history.index) this.history.index--;
+        return true;
+      }),
+      restore: vi.fn(async ({ entries, index }: { entries: Array<{ url: string; title: string }>; index?: number }) => {
+        this.history.entries = entries.map((entry) => ({ ...entry, status: 200 }));
+        this.history.index = index ?? entries.length - 1;
+        this.navigateTo(this.history.index, false);
+      }),
+    };
+    private goToIndex(index: number): void {
+      if (index < 0 || index >= this.history.entries.length) return;
+      const from = this.history.entries[this.history.index]?.url;
+      this.history.index = index;
+      this.navigateTo(index, from !== undefined && sameDocument(from, this.history.entries[index]!.url));
+    }
+    // a page's link: a new entry after the current one, as a click on it adds; a link to a hash of this page stays in it
+    followLink(url: string, status = 200): void {
+      const from = this.history.entries[this.history.index]?.url;
+      this.history.entries.splice(this.history.index + 1, Infinity, { url, title: '', status });
+      this.history.index = this.history.entries.length - 1;
+      this.navigateTo(this.history.index, from !== undefined && sameDocument(from, url));
+    }
+    // Electron's order, after the call that asked for it returns: did-start-navigation; then did-navigate-in-page alone, or
+    // did-navigate, dom-ready and did-finish-load
+    private navigateTo(index: number, inPage: boolean): void {
+      queueMicrotask(() => this.commitEntry(index, inPage));
+    }
+    private commitEntry(index: number, inPage: boolean): void {
+      const { url, status } = this.history.entries[index]!;
+      this.emit('did-start-navigation', { url, isMainFrame: true, isSameDocument: inPage });
+      this.mainFrame.url = url;
+      if (inPage) {
+        this.emit('did-navigate-in-page', {}, url, true);
+        return;
+      }
+      this.emit('did-navigate', {}, url, status);
+      this.emit('dom-ready');
+      this.emit('did-finish-load');
+    }
     getURL(): string {
       return this.mainFrame.url;
     }
@@ -107,6 +169,7 @@ export type FakeContents = DesktopPanel['webContents'] & {
   zoom: number;
   loadURL: ReturnType<typeof vi.fn>;
   mainFrame: { url: string; parent: null };
+  followLink(url: string, status?: number): void;
 };
 
 export type FakeView = {

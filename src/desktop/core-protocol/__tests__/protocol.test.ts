@@ -165,6 +165,17 @@ describe('the design preview’s wire', () => {
     expect(tweak.result({ refused: 'plain text' })).toBe(INVALID);
   });
 
+  it('takes design.previewScreen with a file path, answering opened or a localized refusal', () => {
+    const preview = MAIN_TO_CORE.requests['design.previewScreen'];
+    expect(preview.params({ path: '/home/a/.damocles/designs/d/screens/S1.html' })).toEqual({ path: '/home/a/.damocles/designs/d/screens/S1.html' });
+    expect(preview.params({ path: '' })).toBe(INVALID);
+    expect(preview.params({})).toBe(INVALID);
+    expect(preview.result({ opened: true })).toEqual({ opened: true });
+    expect(preview.result({ opened: false })).toBe(INVALID);
+    expect(preview.result({ refused: { message: '{0} is not a screen of a design.', args: ['S1.html'] } })).toEqual({ refused: { message: '{0} is not a screen of a design.', args: ['S1.html'] } });
+    expect(preview.result({ refused: 'plain text' })).toBe(INVALID);
+  });
+
   it('takes design.openPreview with a design and a path only, and design.changed with at most MAX_CHANGED_PATHS paths', () => {
     const open = CORE_TO_MAIN.requests['design.openPreview'].params;
     expect(open({ panelId: 'p', designId: 'd', relPath: 'screens/S1.html' })).toEqual({ panelId: 'p', designId: 'd', relPath: 'screens/S1.html' });
