@@ -495,7 +495,8 @@
       "openLiveAria": "Open live: {label}",
       "openInBrowserAria": "Open in browser: {label}"
     },
-    "ariaLabel": "Question prompt"
+    "ariaLabel": "Question prompt",
+    "moreWaiting": "{n} more question waiting | {n} more questions waiting"
   },
   "form": {
     "ariaLabel": "Input form prompt",

@@ -66,7 +66,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toContain('Architecture-level forks MUST be escalated, not chosen.');
       expect(prompt).toContain('thin synchronous skeleton');
       expect(prompt).toContain('full async pipeline');
-      expect(prompt).toContain('If the brief is silent on an architecture-level fork, ask the user. Do not invent the architecture.');
+      expect(prompt).toContain('If the brief is silent on an architecture-level fork, surface it the same way. Do not invent the architecture.');
     });
 
     it('handles a flagged brief conflict via reconcile / dismiss / escalate-to-user', () => {
@@ -182,7 +182,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         ### Phase 1.5: Ambiguity Gate
         List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop. The user re-spawns the team after answering.
 
-        **Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work, for example "a thin synchronous skeleton" versus "a full async pipeline", do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, ask the user. Do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
+        **Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work, for example "a thin synchronous skeleton" versus "a full async pipeline", do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, surface it the same way. Do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
 
         If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
 
@@ -255,7 +255,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing. Synthesis is mechanically blocked while any flag is open. You have three moves:
         - **Reconcile by changing the work** → \`team_request_revision\` with corrections that bring the work back in line with the brief (this also clears the flag). A specialist that just flagged a conflict is in \`standby\`, not \`awaiting-review\`, so revision is only available once it re-enters review. Wait for the \`[REVIEW ROUND READY]\` notification, or dismiss/escalate now if you don't need its revised output.
         - **Dismiss** → \`team_resolve_brief_conflict\` with a written rationale, ONLY when the flag is a misread of the brief or a deviation the brief itself permits.
-        - **Escalate when you genuinely cannot decide.** This is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team.
+        - **Escalate when you genuinely cannot decide.** This is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team. There is no limit on AskUserQuestion calls: each call holds up to 4 questions, so call it again whenever you have more, or when a question depends on an earlier answer, rather than guessing.
 
         ## 7. Quality Standards
 
@@ -433,7 +433,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         ### Phase 1.5: Ambiguity Gate
         List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop. The user re-spawns the team after answering.
 
-        **Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work, for example "a thin synchronous skeleton" versus "a full async pipeline", do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, ask the user. Do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
+        **Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work, for example "a thin synchronous skeleton" versus "a full async pipeline", do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, surface it the same way. Do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
 
         If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
 
@@ -506,7 +506,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing. Synthesis is mechanically blocked while any flag is open. You have three moves:
         - **Reconcile by changing the work** → \`team_request_revision\` with corrections that bring the work back in line with the brief (this also clears the flag). A specialist that just flagged a conflict is in \`standby\`, not \`awaiting-review\`, so revision is only available once it re-enters review. Wait for the \`[REVIEW ROUND READY]\` notification, or dismiss/escalate now if you don't need its revised output.
         - **Dismiss** → \`team_resolve_brief_conflict\` with a written rationale, ONLY when the flag is a misread of the brief or a deviation the brief itself permits.
-        - **Escalate when you genuinely cannot decide.** This is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team.
+        - **Escalate when you genuinely cannot decide.** This is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team. There is no limit on AskUserQuestion calls: each call holds up to 4 questions, so call it again whenever you have more, or when a question depends on an earlier answer, rather than guessing.
 
         ## 7. Quality Standards
 

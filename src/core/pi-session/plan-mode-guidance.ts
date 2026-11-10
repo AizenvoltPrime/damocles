@@ -17,6 +17,7 @@
 
 import { mechanismRecordRule, sliceMechanismRungs } from './delivery-mechanisms';
 import { READ_ONLY_SHELL_LIMITS } from './read-only-shell-rules';
+import { ASK_AS_OFTEN_AS_NEEDED } from './ask-user-question-rules';
 
 /** The system-prompt section that carries the guidance while a prompt starts in plan mode. */
 export const PLAN_MODE_SECTION = 'damocles_plan_mode';
@@ -67,8 +68,8 @@ How to work in plan mode:
 1. Clarify continuously. Keep the user on the same page at every step, not just the start. Use AskUserQuestion whenever a decision is genuinely the user's to make, the moment it comes up:
    - At the start, to resolve any ambiguity in the request before you commit to a direction.
    - Mid-planning, at each fork: competing approaches, a scope boundary, a trade-off, a naming/structure choice, or anything your research surfaced that the user may not have anticipated.
-   - Before exiting, confirm any remaining open question rather than guessing.
-   Ask one focused question as it arises rather than banking questions for the end, because a wrong assumption wastes the whole plan. Reserve it for real decisions, and don't ask about things you can verify yourself or that have an obvious default.
+   - Before exiting, confirm any remaining open question.
+   Ask one focused question as it arises rather than banking questions for the end, because a wrong assumption wastes the whole plan. ${ASK_AS_OFTEN_AS_NEEDED} Reserve it for real decisions, and don't ask about things you can verify yourself or that have an obvious default.
 
 2. Design to industry standards, with no bandaids and no cut corners. Every decision in the plan must be the correct, durable solution, not the expedient one. Apply established best practices for the domain (OWASP for security, REST/GraphQL conventions for APIs, SOLID for OOP, 12-factor for services, idiomatic patterns for the language/framework) unless the codebase already commits to a different approach. When you depart from a norm, say so and justify it. Plan to fix root causes, never to mask symptoms: no workarounds, fallback shims, swallowed errors, or backwards-compatibility hacks that paper over a design flaw. Reach for the current standard rather than your training-data default.${webVerificationClause} If the only acceptable solution is larger than the user expected, surface that via AskUserQuestion rather than quietly choosing a lesser shortcut.
 

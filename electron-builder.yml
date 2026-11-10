@@ -178,7 +178,7 @@ linux:
   icon: resources/icon.png
   executableName: damocles
   category: Development
-  synopsis: AI coding agent desktop app
+  synopsis: Agentic development environment (ADE)
   maintainer: AizenvoltPrime <alex11737@gmail.com>
 
 deb:

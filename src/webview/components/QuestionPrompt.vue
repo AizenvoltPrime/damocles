@@ -259,6 +259,15 @@ watch(() => store.currentTabIndex, () => {
         {{ t('question.title') }}
       </div>
       <span
+        class="flex-none text-11 text-(--d-muted)"
+        aria-live="polite"
+        data-testid="question-waiting"
+      >
+        <Transition name="t-fade">
+          <span v-if="store.waitingCount > 0">{{ t('question.moreWaiting', { n: store.waitingCount }, store.waitingCount) }}</span>
+        </Transition>
+      </span>
+      <span
         v-if="hasAgentDescription"
         class="flex min-w-0 items-center gap-1.5 truncate rounded-full bg-(--d-accent-soft) px-2 py-0.5 text-11 font-medium text-(--d-accent-text)"
       >

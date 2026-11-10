@@ -96,6 +96,11 @@ describe('AskUserQuestion design-kind previews (PD-18)', () => {
     expect(tool(true).description).toContain('One question uses one preview kind');
   });
 
+  it('names a question\'s reference only in design work', () => {
+    expect(tool(false).description).not.toContain('reference: "R<n>#<element>"');
+    expect(tool(true).description).toContain('To ask about an element of a reference image, give its question reference: "R<n>#<element>", naming a row MapReference wrote, such as "R1#Hero card". The decision the answer records names that row, so ask one question per element.');
+  });
+
   it('lets a design chat\'s call through to the question manager, and refuses one elsewhere before it asks', () => {
     const args = ask({ kind: 'design', path: 'variants/a/S1.html' });
     expect(preparedByPi(tool(true), args)).toEqual(args);
@@ -239,6 +244,53 @@ describe('a design chat subagent\'s AskUserQuestion (D99, F3)', () => {
     expect(made.records).toEqual([]);
     expect(ledger.entries).toEqual([]);
     expect(made.notes).toEqual(['The answer to "Accent" was not recorded. This design continues in another chat, so nothing was recorded here. Report the user\'s choice in your result; the designer records it.']);
+  });
+});
+
+describe('a question that names a reference row (D96)', () => {
+  const question = { question: 'What replaces the carousel?', header: 'Carousel', multiSelect: false, options: [{ label: 'A static strip', description: '' }, { label: 'A grid', description: '' }] };
+  let folder = '';
+  afterEach(() => fs.rmSync(folder, { recursive: true, force: true }));
+
+  async function askWithReference(reference: string, asker?: QuestionAsker, designFolder = true) {
+    folder = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-ask-reference-'));
+    fs.mkdirSync(path.join(folder, 'references'));
+    fs.writeFileSync(path.join(folder, 'references', 'R1.json'), JSON.stringify({ schemaVersion: 1, image: 'references/R1.png', userEntryId: 'u1', sha256: 'x', mapping: [{ element: 'Carousel', mapsTo: null, status: 'needsDecision' }] }));
+    const ledger = memoryLedger(folder, []);
+    const posted: ExtensionToWebviewMessage[] = [];
+    const handler = new PermissionHandler(createFakePlatform());
+    if (designFolder) handler.setDesignQuestionFolder(() => folder);
+    handler.setPostMessage((msg) => {
+      posted.push(msg);
+      if (msg.type === 'requestQuestion') handler.resolveQuestion(msg.toolUseId, { [question.question]: 'A static strip' });
+    });
+    const decisions: QuestionDecisions = { record: (questions, answers, signal) => recordQuestionDecisions(ledger, cleanJudge(), questions, answers, signal, asker ? { agentId: asker.agentId } : undefined) };
+    const tool = createAskUserQuestionTool(pi, handler, decisions, true, asker) as unknown as AskTool;
+    const result = tool.execute('q1', { questions: [{ ...question, reference }] }, new AbortController().signal);
+    return { ledger, posted, result };
+  }
+
+  it('records the answer\'s decision with the row as its reference, for the designer and for a subagent, and never shows the row in the prompt', async () => {
+    for (const asker of [undefined, { agentId: 'sub-1', parentToolUseId: 'call-agent' }]) {
+      const { ledger, posted, result } = await askWithReference('R1#Carousel', asker);
+      await result;
+      expect(decisionsOnBranch(ledger.entries)).toEqual([expect.objectContaining({ id: 'D1', title: 'Carousel', source: { kind: 'question', ref: question.question }, reference: 'R1#Carousel', ...(asker ? { agentId: 'sub-1' } : {}) })]);
+      const request = posted.find((msg) => msg.type === 'requestQuestion') as Extract<ExtensionToWebviewMessage, { type: 'requestQuestion' }>;
+      expect(request.questions[0]).not.toHaveProperty('reference');
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a row the reference does not map, and any reference outside a design chat, before it asks', async () => {
+    const missing = await askWithReference('R1#Footer');
+    await expect(missing.result).rejects.toThrow(POLICY_BLOCK_MARKER);
+    await expect(missing.result).rejects.toThrow(/R1 has no mapping row "Footer"/);
+    expect(missing.posted).toEqual([]);
+    fs.rmSync(folder, { recursive: true, force: true });
+    const elsewhere = await askWithReference('R1#Carousel', undefined, false);
+    await expect(elsewhere.result).rejects.toThrow(/a reference is available only in a design chat/);
+    expect(elsewhere.posted).toEqual([]);
+    expect(elsewhere.ledger.entries).toEqual([]);
   });
 });
 

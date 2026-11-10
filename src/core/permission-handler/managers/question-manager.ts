@@ -2,13 +2,17 @@ import { ASK_USER_QUESTION_LIMITS, type Question, type QuestionAnnotations, type
 import { parseQuestionPreview, QUESTION_PREVIEW_FORM } from '../../../shared/question-preview';
 import { statDesignFile } from '../../design/design-file-read';
 import { isDesignPreviewPath, MAX_SCREEN_BYTES } from '../../design/design-paths';
+import { MAX_REFERENCE_ROW_REF_CHARS, referenceRowFormatRefusal, referenceSourceRefusal } from '../../design/references';
 import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, QuestionResult, PostMessageFn } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUnaskedDenyResult } from '../utils';
 
+/** A validated question; `reference` ('R<n>#<element>', design work only) stays in core and never reaches the prompt. */
+export type AskedQuestion = Question & { reference?: string };
+
 export type ValidationResult =
-  | { ok: true; questions: Question[] }
+  | { ok: true; questions: AskedQuestion[] }
   | { ok: false; reason: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,7 +50,10 @@ export function questionPreviewRefusal(questions: unknown, designPreviews: boole
   return undefined;
 }
 
-/** `designPreviews`: a design chat's, which also takes `{kind:'design', path}` (its file is checked by `designPreviewRefusal`). */
+/**
+ * `designPreviews`: design work's, which also takes `{kind:'design', path}` (its file is checked by `designPreviewRefusal`) and a
+ * question's `reference` (its row is checked by `questionReferenceRefusal`).
+ */
 export function validateQuestions(input: unknown, designPreviews = false): ValidationResult {
   if (!Array.isArray(input)) {
     return { ok: false, reason: 'questions must be an array' };
@@ -77,6 +84,15 @@ export function validateQuestions(input: unknown, designPreviews = false): Valid
     if (!Array.isArray(options) || options.length < MIN_OPTIONS || options.length > MAX_OPTIONS) {
       return { ok: false, reason: `questions[${i}].options must have ${MIN_OPTIONS}-${MAX_OPTIONS} items` };
     }
+    const reference = q['reference'];
+    if (reference !== undefined) {
+      if (!designPreviews) return { ok: false, reason: `questions[${i}].reference: a reference is available only in a design chat; leave it out` };
+      if (typeof reference !== 'string' || reference.length > MAX_REFERENCE_ROW_REF_CHARS) {
+        return { ok: false, reason: `questions[${i}].reference must be a string of at most ${MAX_REFERENCE_ROW_REF_CHARS} characters` };
+      }
+      const malformed = referenceRowFormatRefusal(reference);
+      if (malformed) return { ok: false, reason: `questions[${i}].reference: ${malformed}` };
+    }
     const parsedOptions: QuestionOption[] = [];
     for (let j = 0; j < options.length; j++) {
       const o = options[j];
@@ -104,7 +120,7 @@ export function validateQuestions(input: unknown, designPreviews = false): Valid
     if (kinds.size > 1) {
       return { ok: false, reason: `questions[${i}].options mix markdown and design previews; give every preview of one question the same kind, or ask the markdown comparison as a separate question` };
     }
-    questions.push({ question, header, multiSelect, options: parsedOptions });
+    questions.push({ question, header, multiSelect, options: parsedOptions, ...(typeof reference === 'string' ? { reference } : {}) });
   }
   return { ok: true, questions };
 }
@@ -123,6 +139,16 @@ export async function designPreviewRefusal(questions: readonly Question[], folde
       const file = await statDesignFile(folder, option.preview.path, MAX_SCREEN_BYTES);
       if (file.kind !== 'file') return `questions[${i}].options[${j}].preview.path: ${option.preview.path} ${unpreviewableBecause[file.kind]}`;
     }
+  }
+  return undefined;
+}
+
+/** The first question whose `reference` names no mapping row of a reference of `folder`. */
+export async function questionReferenceRefusal(questions: readonly AskedQuestion[], folder: string): Promise<string | undefined> {
+  for (const [i, question] of questions.entries()) {
+    if (question.reference === undefined) continue;
+    const refusal = await referenceSourceRefusal(folder, question.reference);
+    if (refusal) return `questions[${i}].reference: ${refusal}`;
   }
   return undefined;
 }
@@ -155,10 +181,10 @@ export class QuestionManager {
       return buildUnaskedDenyResult(undefined, invalidQuestionInput(validated.reason));
     }
     const questions = validated.questions;
-    const missing = folder === undefined ? undefined : await designPreviewRefusal(questions, folder);
+    const missing = folder === undefined ? undefined : (await designPreviewRefusal(questions, folder)) ?? (await questionReferenceRefusal(questions, folder));
     if (missing) return buildUnaskedDenyResult(undefined, invalidQuestionInput(missing));
 
-    const result = await this.requestQuestionFromWebview(questions, context);
+    const result = await this.requestQuestionFromWebview(questions.map(({ reference: _reference, ...shown }) => shown), context);
 
     if (!result.approved || !result.answers) {
       return result.userAnswered

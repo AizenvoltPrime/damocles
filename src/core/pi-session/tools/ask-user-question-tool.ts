@@ -3,15 +3,18 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import { invalidQuestionInput, questionPreviewRefusal, validateQuestions } from '../../permission-handler/managers/question-manager';
-import type { QuestionAnnotations } from '../../../shared/types/permissions';
+import { ASK_USER_QUESTION_LIMITS, type QuestionAnnotations } from '../../../shared/types/permissions';
 import { buildCanUseToolContext, formatDenyReason, formatPolicyBlockReason } from '../permission-gate';
 import { TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
 import { MAX_QUESTION_PREVIEW_CHARS, QUESTION_PREVIEW_FORM } from '../../../shared/question-preview';
 import { DESIGN_DECISIONS_DETAIL_KEY } from '../../../shared/types/design';
 import { MAX_DECISION_FIELD_CHARS, type DesignDecisionRecord } from '../../design/design-entries';
 import type { QuestionDecisionResult, QuestionLike } from '../../design/decisions';
+import { MAX_REFERENCE_ROW_REF_CHARS } from '../../design/references';
 import type { UserAnswerNote } from '../../../shared/steer';
+import { ASK_AS_OFTEN_AS_NEEDED } from '../ask-user-question-rules';
 
+const { MIN_QUESTIONS, MAX_QUESTIONS, MIN_OPTIONS, MAX_OPTIONS } = ASK_USER_QUESTION_LIMITS;
 const DESIGN_PREVIEW_FORM = '{ "kind": "design", "path": "variants/<option>/<screen>.html" }';
 
 /** Records the decisions an answered question set makes in a design chat (PD-6, PD-15, D99); a subagent's questions record on its design chat's branch. */
@@ -73,14 +76,16 @@ const questionSchema = Type.Object({
   header: Type.String({ description: 'Very short label displayed as a chip/tag (max 12 chars). Examples: "Auth method", "Library", "Approach".' }),
   multiSelect: Type.Boolean({ description: 'Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive.' }),
   options: Type.Array(optionSchema, {
-    minItems: 2,
-    maxItems: 4,
-    description: "The available choices for this question. Must have 2-4 options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). There should be no 'Other' option, that will be provided automatically.",
+    minItems: MIN_OPTIONS,
+    maxItems: MAX_OPTIONS,
+    description: `The available choices for this question. Must have ${MIN_OPTIONS}-${MAX_OPTIONS} options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). There should be no 'Other' option, that will be provided automatically.`,
   }),
+  // question-manager.ts takes a reference only in design work, so only a design description names it.
+  reference: Type.Optional(Type.String({ maxLength: MAX_REFERENCE_ROW_REF_CHARS })),
 });
 
 const askSchema = Type.Object(
-  { questions: Type.Array(questionSchema, { minItems: 1, maxItems: 4, description: 'Questions to ask the user (1-4 questions)' }) },
+  { questions: Type.Array(questionSchema, { minItems: MIN_QUESTIONS, maxItems: MAX_QUESTIONS, description: `Questions to ask the user (${MIN_QUESTIONS}-${MAX_QUESTIONS} questions)` }) },
   { additionalProperties: false },
 );
 
@@ -114,6 +119,7 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
       'Use this tool only when you are blocked on a decision that is genuinely the user\'s to make: one you cannot resolve from the request, the code, or sensible defaults.',
       '',
       'Usage notes:',
+      `- ${ASK_AS_OFTEN_AS_NEEDED}`,
       '- Users will always be able to select "Other" to provide custom text input',
       '- Use multiSelect: true to allow multiple answers to be selected for a question',
       '- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label',
@@ -129,6 +135,7 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
       '',
       `A preview is an object: ${QUESTION_PREVIEW_FORM}. The content is Markdown (at most ${MAX_QUESTION_PREVIEW_CHARS} characters), shown beside the options while one is focused; HTML in it is shown as literal text, never rendered. Do not use previews for simple preference questions where labels and descriptions suffice. Previews work on single-select and multiSelect questions.`,
       ...(designPreviews ? [`In this design chat a preview may also be ${DESIGN_PREVIEW_FORM}: a screen you wrote in this design (an .html file below screens/ or variants/, relative to the design folder), which the user sees as a thumbnail they can open. Write each option's screen first, then ask; use it to compare layouts side by side. One question uses one preview kind: every preview of a question is design, or every one is markdown.`] : []),
+      ...(designPreviews ? ['', 'To ask about an element of a reference image, give its question reference: "R<n>#<element>", naming a row MapReference wrote, such as "R1#Hero card". The decision the answer records names that row, so ask one question per element.'] : []),
     ].join('\n'),
     parameters: askSchema,
     prepareArguments: (args) => {

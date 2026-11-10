@@ -127,6 +127,8 @@ test('a layout question shows each variant as a thumbnail that opens live, and t
       ] }] }),
       { chunks: ['Going with the cards.'] },
     ]);
+    // The S1 preview tab beside the chat leaves its view 284 px wide, where the cards stack; three in a row need 26 rem.
+    await setPageSize(design, 900, 6000);
 
     // Three thumbnails, each rendered at the primary width by the app, side by side.
     const question = design.getByRole('region', { name: 'Question prompt' });

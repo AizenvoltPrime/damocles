@@ -24,8 +24,11 @@ import {
   ReferenceRefusedError,
   writeReference,
 } from '../references';
-import type { DesignChatToolDeps } from '../tools/design-chat-tools';
+import { createDesignChatTools, type DesignChatToolDeps } from '../tools/design-chat-tools';
 import { createMapReferenceTool } from '../tools/map-reference';
+import { designSection } from '../guidance';
+import { designRuleSet, designRuleSetById } from '../rule-set';
+import { ASK_AS_OFTEN_AS_NEEDED } from '../../pi-session/ask-user-question-rules';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46]);
@@ -180,7 +183,23 @@ describe('MapReference', () => {
     const result = await tool.execute('call-1', { reference: 'R1', rows: [{ element: 'Hero card', mapsTo: 'Card', status: 'mapped' }, { element: 'Carousel', status: 'needsDecision' }] });
     expect(result.details).toEqual({ reference: 'R1', image: 'references/R1.png', rows: [{ element: 'Hero card', mapsTo: 'Card', status: 'mapped' }, { element: 'Carousel', mapsTo: null, status: 'needsDecision' }] });
     expect(result.content[0]!.text).toContain('R1#<element>');
+    expect(result.content[0]!.text).toContain(ASK_AS_OFTEN_AS_NEEDED);
+    // an answer records its own decision, so the result never sends the designer to RecordDecision for it
+    expect(result.content[0]!.text).toContain('Ask the user about Carousel with AskUserQuestion, one question per element, each with reference: "R1#<element>". Each answer records the element\'s decision; cite its id in the new UI\'s data-ds-new.');
+    expect(result.content[0]!.text).not.toContain('RecordDecision');
+    const { description } = tool as unknown as { description: string };
+    expect(description).toContain('ask the user with AskUserQuestion, giving the question reference: "R<n>#<element>", and the answer records the decision');
+    expect(description).toContain('when the user decides it in chat instead, record it with RecordDecision, source {kind: "reference", ref: "R<n>#<element>"}');
     await expect(tool.execute('call-2', { reference: 'R1', rows: [{ element: 'Hero', mapsTo: 'Nope', status: 'mapped' }] })).rejects.toThrow(/MapReference wrote nothing/);
+  });
+
+  it('tells the designer to ask about an element with a question naming its row, and to use RecordDecision only for a decision made in chat', () => {
+    const guidance = designSection('/d', designRuleSet({ designPreview: true }));
+    expect(guidance).toContain('ask the user about each element marked needsDecision with AskUserQuestion, giving its question reference: "R<n>#<element>", and the answer records the decision. When the user decides an element in chat instead, record it with RecordDecision, source {kind: "reference", ref: "R<n>#<element>"}.');
+    expect(guidance).not.toContain('record the answer with RecordDecision');
+    const pi = { defineTool: (definition: unknown) => definition } as unknown as PiCodingAgentModule;
+    const recordDecision = (createDesignChatTools(pi, {} as DesignChatToolDeps, designRuleSetById('full')) as unknown as { name: string; description: string }[]).find((tool) => tool.name === 'RecordDecision')!;
+    expect(recordDecision.description).toContain('kind "reference" with R<n>#<element> naming a row MapReference recorded, for an element the user decided in chat (an answer to an AskUserQuestion question with that reference records its own decision)');
   });
 
   it('waits for the reference its message is still writing, which the same baseline released', async () => {

@@ -3,7 +3,9 @@ import { DAMOCLES_DESIGN_BRIEF, DAMOCLES_DESIGN_RESULT } from '../../pi-session/
 import { designFolderOf, designStateDirOf } from '../design-paths';
 import { takeOverDesignLink, updateDesignLink, writeBriefRecord, type DesignVersionRecord } from '../design-state';
 import { deliveredBriefs } from '../design-entries';
-import { designBriefMessage, designResultMessage } from '../delivery';
+import { designBriefMessage, designResultMessage, designVersionInstruction } from '../delivery';
+import { DECISIONS_FILE_NOTE } from '../design-files';
+import { designLinkSection } from '../guidance';
 import { PiRuntime, type LiveSessionMutator } from '../../pi-session/pi-runtime';
 import { clearDesigns, designHarness, fakeSession, stampDesignVersion, type FakeDesignSession } from './design-harness';
 
@@ -245,10 +247,16 @@ describe('what the parent and the designer read (D99)', () => {
   it('lists the current decisions only, says a decision outranks the brief, and names the decisions approved unchecked (acceptance)', () => {
     const message = designResultMessage({ record, changes: [{ kind: 'decisionAdded', id: 'D23', title: 'Accent', chosen: 'taupe', replaces: ['D18'] }] }, designFolderOf(DESIGN));
     expect(message.content).toContain('Current decisions: D1 Fidelity: Static mockup; D23 Accent: taupe (replaces D18).');
+    expect(message.content).toContain(DECISIONS_FILE_NOTE);
     expect(message.content).toContain('Where a decision differs from your brief, the decision holds: the user made it after the brief.');
     expect(message.content).toContain('The user approved with decisions D23 and D24 unchecked for conflicts.');
     expect(message.content).toContain('Changed since v1: D23 Accent · taupe (replaces D18).');
     expect(message.details).toMatchObject({ decisions: [{ id: 'D1' }, { id: 'D23', replaces: ['D18'] }], uncheckedDecisions: ['D23', 'D24'] });
+  });
+
+  it('tells the main chat that decisions.md\'s replaced decisions no longer apply wherever it is sent to read the file', () => {
+    expect(designVersionInstruction({ designId: DESIGN, fromVersion: 1, toVersion: 2 }, 'replan', designFolderOf(DESIGN)).content).toContain(DECISIONS_FILE_NOTE);
+    expect(designLinkSection(designFolderOf(DESIGN))).toContain(DECISIONS_FILE_NOTE);
   });
 
   it('names the brief\'s id in its content, with the source that cites it (acceptance)', () => {

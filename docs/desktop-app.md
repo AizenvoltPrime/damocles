@@ -2,7 +2,7 @@
 
 This page covers the Damocles desktop app for Windows, macOS and Linux: installing and approving it, updates, the sidebar, settings and notifications, the editor, terminals and source control, and the data it shares with the VS Code extension.
 
-The desktop app runs the same agent, chat and tools as the extension. In place of VS Code windows, a sidebar lists your projects and the selected project's chats, and the chat you pick fills the window. Remote projects are covered in [Remote development](remote-development.md).
+The desktop app is an agentic development environment (ADE): the agent's chat is the center of the window, and the editor, terminals, search and source control sit beside it. It runs the same agent, chat and tools as the extension. In place of VS Code windows, a sidebar lists your projects and the selected project's chats, and the chat you pick fills the window. Remote projects are covered in [Remote development](remote-development.md).
 
 ## Install
 

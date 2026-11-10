@@ -225,12 +225,26 @@ export async function mapReference(folder: string, input: MapReferenceInput, inv
   return { reference: input.reference, image: reference.image, rows };
 }
 
-/** Why a RecordDecision reference source `ref` ('R<n>#<element>') names no mapping row of design folder `folder`, or undefined. */
-export async function referenceSourceRefusal(folder: string, ref: string): Promise<string | undefined> {
+/** A reference row's ref, 'R<n>#<element>', is at most this long: the longest id, '#' and the longest element. */
+export const MAX_REFERENCE_ROW_REF_CHARS: number = 8 + MAX_REFERENCE_ELEMENT_CHARS;
+
+function referenceRowParts(ref: string): { readonly id: string; readonly element: string } | undefined {
   const hash = ref.indexOf('#');
   const id = hash === -1 ? '' : ref.slice(0, hash);
   const element = hash === -1 ? '' : ref.slice(hash + 1);
-  if (!REFERENCE_ID.test(id) || element === '') return `A reference source is R<n>#<element>, such as R1#Hero card; ${JSON.stringify(ref.slice(0, 80))} is not one.`;
+  return REFERENCE_ID.test(id) && element !== '' ? { id, element } : undefined;
+}
+
+/** Why `ref` is not of the form 'R<n>#<element>', split at the first '#', or undefined when it is. */
+export function referenceRowFormatRefusal(ref: string): string | undefined {
+  return referenceRowParts(ref) ? undefined : `A reference is R<n>#<element>, such as R1#Hero card; ${JSON.stringify(ref.slice(0, 80))} is not one.`;
+}
+
+/** Why `ref` ('R<n>#<element>', a RecordDecision reference source or a question's reference) names no mapping row of design folder `folder`, or undefined. */
+export async function referenceSourceRefusal(folder: string, ref: string): Promise<string | undefined> {
+  const parts = referenceRowParts(ref);
+  if (!parts) return referenceRowFormatRefusal(ref);
+  const { id, element } = parts;
   const reference = await readReference(folder, id);
   if (!reference) return `No reference ${id} is in this design.`;
   if (!reference.mapping?.some((row) => row.element === element)) return `${id} has no mapping row ${JSON.stringify(element.slice(0, MAX_REFERENCE_ELEMENT_CHARS))}; map it with MapReference first.`;

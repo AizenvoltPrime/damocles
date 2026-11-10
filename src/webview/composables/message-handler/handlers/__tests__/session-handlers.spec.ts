@@ -249,6 +249,18 @@ describe('the webview reading sessionStateChanged', () => {
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(awaiting);
   });
 
+  it('drops a question core closed without an answer, such as an aborted agent\'s, and shows the next one', () => {
+    const ctx = context();
+    const question = (toolUseId: string) => ({ toolUseId, questions: [{ question: 'Which?', header: 'Q', multiSelect: false, options: [{ label: 'A', description: '' }, { label: 'B', description: '' }] }] });
+    ctx.stores.questionStore.setQuestion(question('q-1'));
+    ctx.stores.questionStore.setQuestion(question('q-2'));
+
+    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1', pendingPrompts: [{ id: 'q-2', owner: { kind: 'main' } }] }, ctx);
+
+    expect(ctx.stores.questionStore.pendingQuestion?.toolUseId).toBe('q-2');
+    expect(ctx.stores.questionStore.queue).toEqual([]);
+  });
+
   it('replays a full parked-and-resumed turn onto the store in order', () => {
     const ctx = context();
     const seen: string[] = [];

@@ -33,6 +33,7 @@ import DesignDecisionChip from './DesignDecisionChip.vue';
 import DeclareTweaksList from './DeclareTweaksList.vue';
 import MapReferenceTable from './MapReferenceTable.vue';
 import { DESIGN_TILE } from './design-tone';
+import { referenceRowParts } from './reference-row';
 
 // The design chat's grounding and check tools; StartDesign and FinishDesign have their own cards.
 const props = defineProps<{ toolCall: ToolCall }>();
@@ -131,10 +132,8 @@ const reference = computed(() => {
 // A tweak's ref is its control id; a reference's is 'R<n>#<element>', an element of that reference's mapping.
 function sourceText(source: DesignDecisionView['source']): string {
   if (source.kind === 'tweak') return t('design.decision.sourceRef.tweak', { ref: source.ref });
-  if (source.kind === 'reference') {
-    const split = source.ref.indexOf('#');
-    if (split > 0) return t('design.decision.sourceRef.reference', { reference: source.ref.slice(0, split), element: source.ref.slice(split + 1) });
-  }
+  const row = source.kind === 'reference' ? referenceRowParts(source.ref) : undefined;
+  if (row) return t('design.decision.sourceRef.reference', row);
   return tKnown('design.decision.source', source.kind, source.kind);
 }
 

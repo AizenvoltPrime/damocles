@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { DESIGN_DECISIONS_DETAIL_KEY } from '../../../shared/types/design';
 import {
+  decisionEntryData,
   decisionsOnBranch,
+  decisionView,
   deliveredBriefs,
   deliveredDesignResults,
   deliveredResultKey,
@@ -10,6 +12,7 @@ import {
   designRoleOf,
   finishedDesignVersion,
   inheritedDesignLink,
+  MAX_DECISION_FIELD_CHARS,
   ownDesignLink,
   currentDecisions,
   replacedBy,
@@ -161,5 +164,15 @@ describe('decision entries (D99)', () => {
     expect(all.map((d) => [d.id, d.chosen])).toEqual([['D1', 'Static mockup'], ['D2', 'Compact']]);
     expect(all[1]).toMatchObject({ conflictCheck: 'checked', conflicts: [{ id: 'D1', kind: 'restates', reason: 'same' }] });
     expect(all[1]!.uncheckedReason).toBeUndefined();
+  });
+
+  it('reads a question decision\'s reference as written, an entry without one as before, and drops one whose reference is not a bounded string', () => {
+    const referenced = { ...decision('D1', 'Carousel', 'A static strip'), reference: 'R1#Carousel' };
+    const record = decisionsOnBranch([entered(referenced)])[0]!;
+    expect(record.reference).toBe('R1#Carousel');
+    expect(decisionsOnBranch([entered(decisionEntryData(record))])).toEqual([record]);
+    expect(decisionView(record)).toMatchObject({ reference: 'R1#Carousel' });
+    expect(decisionsOnBranch([entered(decision('D2', 'Density', 'Compact'))])[0]).not.toHaveProperty('reference');
+    expect(decisionsOnBranch([entered({ ...decision('D3', 'Bad', 'x'), reference: 7 }), entered({ ...decision('D4', 'Long', 'x'), reference: 'R1#'.padEnd(MAX_DECISION_FIELD_CHARS + 1, 'x') })])).toEqual([]);
   });
 });

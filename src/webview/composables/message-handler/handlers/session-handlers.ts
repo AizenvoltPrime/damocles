@@ -84,6 +84,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     // The panel owns one session and `running` can arrive before `sessionStarted`, so no session id filter here.
     sessionStateChanged: (msg, ctx) => {
       ctx.stores.sessionStore.setSessionState(msg.state, msg.pendingPrompts, msg.windDown ?? null);
+      ctx.stores.questionStore.dropClosed(new Set(msg.pendingPrompts.map((prompt) => prompt.id)));
     },
 
     storedSessions: (msg, ctx) => {

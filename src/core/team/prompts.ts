@@ -3,6 +3,7 @@ import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rule
 import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
 import { STEERING_PROTOCOL_BLOCK } from "../pi-session/steering-protocol";
 import { READ_ONLY_SHELL_LIMITS } from "../pi-session/read-only-shell-rules";
+import { ASK_AS_OFTEN_AS_NEEDED } from "../pi-session/ask-user-question-rules";
 import type { PlanModeStatement } from "../pi-session/plan-mode-change";
 import { withResumeNote } from "../../shared/steer";
 
@@ -178,7 +179,7 @@ Ground your contract in the Mission Brief above (authoritative). You MAY and SHO
 ### Phase 1.5: Ambiguity Gate
 List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop. The user re-spawns the team after answering.
 
-**Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work, for example "a thin synchronous skeleton" versus "a full async pipeline", do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, ask the user. Do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
+**Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work, for example "a thin synchronous skeleton" versus "a full async pipeline", do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, surface it the same way. Do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
 
 If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
 
@@ -251,7 +252,7 @@ A \`failed\` or \`cancelled\` specialist can be re-run via \`team_redispatch_spe
 When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing. Synthesis is mechanically blocked while any flag is open. You have three moves:
 - **Reconcile by changing the work** → \`team_request_revision\` with corrections that bring the work back in line with the brief (this also clears the flag). A specialist that just flagged a conflict is in \`standby\`, not \`awaiting-review\`, so revision is only available once it re-enters review. Wait for the \`[REVIEW ROUND READY]\` notification, or dismiss/escalate now if you don't need its revised output.
 - **Dismiss** → \`team_resolve_brief_conflict\` with a written rationale, ONLY when the flag is a misread of the brief or a deviation the brief itself permits.
-- **Escalate when you genuinely cannot decide.** This is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team.
+- **Escalate when you genuinely cannot decide.** This is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team. ${ASK_AS_OFTEN_AS_NEEDED}
 
 ## 7. Quality Standards
 

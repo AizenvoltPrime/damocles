@@ -1,10 +1,10 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/AizenvoltPrime/damocles/main/resources/icon.png" alt="Damocles" width="128">
   <h1>Damocles</h1>
-  <p>An AI coding assistant, just keep in mind that just because something works doesn't mean it's good.</p>
+  <p>An agentic development environment, just keep in mind that just because something works doesn't mean it's good.</p>
 </div>
 
-Damocles is a desktop app for Windows, macOS and Linux that runs an AI coding agent on the [pi](https://github.com/earendil-works/pi) agent engine. The app puts your projects and chats in a sidebar beside an editor, terminals, search and source control, and connects to SSH hosts, WSL distros and dev containers. The agent helps with coding, debugging and refactoring, and talks to Anthropic, OpenAI, GitHub Copilot and other model providers directly.
+Damocles is an agentic development environment (ADE) for Windows, macOS and Linux: a desktop app built around an AI coding agent that runs on the [pi](https://github.com/earendil-works/pi) agent engine. The app puts your projects and chats in a sidebar beside an editor, terminals, search and source control, and connects to SSH hosts, WSL distros and dev containers. The agent helps with coding, debugging and refactoring, and talks to Anthropic, OpenAI, GitHub Copilot and other model providers directly.
 
 Damocles is also a VS Code extension. The extension runs the same agent, chat and tools as the desktop app, and the two share conversations, memory, settings and pi sign-ins through `~/.damocles`.
 

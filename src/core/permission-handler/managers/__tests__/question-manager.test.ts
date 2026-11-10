@@ -2,11 +2,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, it, expect } from 'vitest';
-import { designPreviewRefusal, questionPreviewRefusal, QuestionManager, validateQuestions } from '../question-manager';
+import { designPreviewRefusal, questionPreviewRefusal, questionReferenceRefusal, QuestionManager, validateQuestions } from '../question-manager';
 import { PermissionState } from '../../state';
 import type { CanUseToolContext } from '../../types';
 import { MAX_QUESTION_PREVIEW_CHARS, QUESTION_PREVIEW_FORM } from '../../../../shared/question-preview';
 import { MAX_SCREEN_BYTES } from '../../../design/design-paths';
+import { MAX_REFERENCE_ROW_REF_CHARS } from '../../../design/references';
 
 const validOption = (label: string) => ({ label, description: `desc for ${label}` });
 
@@ -235,5 +236,59 @@ describe('design-kind previews (PD-18)', () => {
     const gone = { questions: [validQuestion({ options: [designOption('A', 'variants/z/S1.html'), validOption('B')] })] };
     expect(await manager.handleQuestion(gone, context)).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/is not a file of this design yet/) });
     expect(posted).toEqual([]);
+  });
+});
+
+describe('a question\'s reference (D96)', () => {
+  const folders: string[] = [];
+  afterEach(() => {
+    for (const folder of folders.splice(0)) fs.rmSync(folder, { recursive: true, force: true });
+  });
+  function referenceFolder(): string {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'question-reference-'));
+    folders.push(folder);
+    fs.mkdirSync(path.join(folder, 'references'));
+    fs.writeFileSync(path.join(folder, 'references', 'R1.json'), JSON.stringify({ schemaVersion: 1, image: 'references/R1.png', userEntryId: 'u1', sha256: 'x', mapping: [{ element: 'Carousel', mapsTo: null, status: 'needsDecision' }] }));
+    return folder;
+  }
+
+  it('takes R<n>#<element> only in design work, bounded, and keeps it on the validated question', () => {
+    expect(validateQuestions([validQuestion({ reference: 'R1#Carousel' })], true)).toMatchObject({ ok: true, questions: [{ reference: 'R1#Carousel' }] });
+    expect(validateQuestions([validQuestion()], true)).toEqual({ ok: true, questions: [expect.not.objectContaining({ reference: expect.anything() })] });
+    expect(validateQuestions([validQuestion({ reference: 'R1#Carousel' })], false)).toEqual({ ok: false, reason: 'questions[0].reference: a reference is available only in a design chat; leave it out' });
+    expect(validateQuestions([validQuestion({ reference: 7 })], true)).toEqual({ ok: false, reason: `questions[0].reference must be a string of at most ${MAX_REFERENCE_ROW_REF_CHARS} characters` });
+    expect(validateQuestions([validQuestion({ reference: `R1#${'x'.repeat(MAX_REFERENCE_ROW_REF_CHARS)}` })], true).ok).toBe(false);
+    for (const reference of ['R1', 'R1#', 'r1#Carousel', 'R0#Carousel', '#Carousel']) {
+      expect(validateQuestions([validQuestion({ reference })], true)).toEqual({ ok: false, reason: expect.stringMatching(/^questions\[0\]\.reference: A reference is R<n>#<element>, such as R1#Hero card; .* is not one\.$/) });
+    }
+  });
+
+  it('names a mapping row of the design\'s own reference', async () => {
+    const folder = referenceFolder();
+    const asked = (reference: string) => {
+      const result = validateQuestions([validQuestion(), validQuestion({ question: 'Which?', reference })], true);
+      if (!result.ok) throw new Error(result.reason);
+      return result.questions;
+    };
+    expect(await questionReferenceRefusal(asked('R1#Carousel'), folder)).toBeUndefined();
+    expect(await questionReferenceRefusal(asked('R1#Footer'), folder)).toBe('questions[1].reference: R1 has no mapping row "Footer"; map it with MapReference first.');
+    expect(await questionReferenceRefusal(asked('R2#Carousel'), folder)).toBe('questions[1].reference: No reference R2 is in this design.');
+  });
+
+  it('QuestionManager refuses a reference outside a design chat and one naming no row before it asks, and never shows it in the prompt', async () => {
+    const posted: { type: string; questions?: unknown[] }[] = [];
+    const manager = new QuestionManager(new PermissionState(), () => (message) => {
+      posted.push(message as { type: string; questions?: unknown[] });
+      if (message.type === 'requestQuestion') manager.resolveQuestion(message.toolUseId, { 'Pick one?': 'A' });
+    });
+    const context = { toolUseID: 'q1', signal: new AbortController().signal } as unknown as CanUseToolContext;
+    const input = { questions: [validQuestion({ reference: 'R1#Carousel' })] };
+    expect(await manager.handleQuestion(input, context)).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/a reference is available only in a design chat/) });
+    const folder = referenceFolder();
+    manager.setDesignFolder(() => folder);
+    expect(await manager.handleQuestion({ questions: [validQuestion({ reference: 'R1#Footer' })] }, context)).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/R1 has no mapping row "Footer"/) });
+    expect(posted).toEqual([]);
+    expect(await manager.handleQuestion(input, context)).toMatchObject({ behavior: 'allow', updatedInput: { questions: [{ reference: 'R1#Carousel' }] } });
+    expect(posted.map((message) => message.questions)).toEqual([[expect.not.objectContaining({ reference: expect.anything() })]]);
   });
 });

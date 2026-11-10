@@ -5,6 +5,7 @@ import type { DesignBriefView, DesignChange, DesignJourneyRecord, DesignResultVi
 import { DAMOCLES_DESIGN_BRIEF, DAMOCLES_DESIGN_RESULT, DAMOCLES_DESIGN_VERSION_INSTRUCTION } from '../pi-session/session-store/constants';
 import { deliveredBriefs, deliveredDesignResults, deliveredResultKey, type DesignLink, type DesignRole, type DesignVersionPause } from './design-entries';
 import { designStateDirOf } from './design-paths';
+import { DECISIONS_FILE_NOTE } from './design-files';
 import { changesFromPrevious, describeChanges, readBriefRecords, readDesignLink, readLatestVersion, type DesignBriefRecord, type DesignVersionRecord } from './design-state';
 
 /** A custom message as `sendCustomMessage` and a settle draft take it. */
@@ -73,7 +74,7 @@ export function designResultMessage(owed: OwedDesignResult, folder: string, paus
   const view = designResultView(owed, folder, pausedFrom);
   const lines = [
     `Design finished: "${record.title}", version v${record.version}. This is a report from the linked design chat, not a message from the user.`,
-    `The design is in ${folder}. Read design.md (screens, states and the responsive table), decisions.md (the decisions), manifest.json (screens and their check results) and the screens in screens/.`,
+    `The design is in ${folder}. Read design.md (screens, states and the responsive table), ${DECISIONS_FILE_NOTE}, manifest.json (screens and their check results) and the screens in screens/.`,
     `Screens: ${view.screens.length > 0 ? view.screens.join(', ') : 'none'}.`,
     `Current decisions: ${view.decisions.length > 0 ? view.decisions.map((d) => `${d.id} ${d.title}: ${d.chosen}${d.replaces?.length ? ` (replaces ${d.replaces.join(', ')})` : ''}`).join('; ') : 'none'}.`,
     'Where a decision differs from your brief, the decision holds: the user made it after the brief.',
@@ -110,7 +111,7 @@ export function designVersionInstruction(
   const lines = choice === 'replan'
     ? [
       `The user chose to update the plan: it was approved against ${approvedAgainst(pause.fromVersion)}, and the linked design is now v${pause.toVersion}. Plan mode is on.`,
-      `Read the design again in ${folder} (design.md, decisions.md and manifest.json), update the plan file against design v${pause.toVersion}, cite that version in the plan, and call ExitPlanMode for the user's approval.`,
+      `Read the design again in ${folder} (design.md, ${DECISIONS_FILE_NOTE} and manifest.json), update the plan file against design v${pause.toVersion}, cite that version in the plan, and call ExitPlanMode for the user's approval.`,
     ]
     : [
       `The user chose to finish the approved plan first: it was approved against ${approvedAgainst(pause.fromVersion)}, and the linked design is now v${pause.toVersion}.`,

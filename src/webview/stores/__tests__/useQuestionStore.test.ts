@@ -164,7 +164,7 @@ describe('useQuestionStore against a re-posted question', () => {
     expect(store.currentTabIndex).toBe(1);
   });
 
-  it('clears the answer state when a different question takes the screen', () => {
+  it('clears the answer state when a different question takes the screen after the first is settled', () => {
     const store = useQuestionStore();
     const first = multiSelectQuestion();
     store.setQuestion(withId('t1', [first]));
@@ -172,9 +172,24 @@ describe('useQuestionStore against a re-posted question', () => {
 
     const second = singleSelectQuestion();
     store.setQuestion(withId('t2', [second]));
+    expect(store.compiledAnswers[first.question]).toBe('X');
 
+    store.clearQuestion();
     expect(store.compiledAnswers[second.question]).toBe('');
     expect(store.currentTabIndex).toBe(0);
+  });
+
+  it('keeps a re-posted queued question in its place in the queue, not on screen', () => {
+    const store = useQuestionStore();
+    store.setQuestion(withId('t1', [singleSelectQuestion()]));
+    store.setQuestion(withId('t2', [multiSelectQuestion()]));
+    store.setQuestion(withId('t3', [singleSelectQuestion()]));
+
+    store.setQuestion(withId('t2', [multiSelectQuestion({ options: [opt('X'), opt('Y')] })]));
+
+    expect(store.pendingQuestion?.toolUseId).toBe('t1');
+    expect(store.queue.map((q) => q.toolUseId)).toEqual(['t2', 't3']);
+    expect(store.queue[0]!.questions[0]!.options.map((o) => o.label)).toEqual(['X', 'Y']);
   });
 
   it('takes the re-posted question payload, so a withdrawn option cannot linger', () => {
@@ -186,5 +201,70 @@ describe('useQuestionStore against a re-posted question', () => {
     store.setQuestion(withId('t1', [narrowed]));
 
     expect(store.questions[0]!.options.map((o) => o.label)).toEqual(['X', 'Y']);
+  });
+});
+
+describe('useQuestionStore with several questions open at once', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const withId = (id: string, questions: Question[]): PendingQuestionInfo => ({ toolUseId: id, questions });
+
+  it('shows the first question and queues the later ones, keeping the one on screen and its answer', () => {
+    const store = useQuestionStore();
+    const first = singleSelectQuestion();
+    store.setQuestion(withId('t1', [first]));
+    store.toggleOption(first.question, 'B', false);
+
+    store.setQuestion(withId('t2', [multiSelectQuestion(), singleSelectQuestion({ question: 'Which size?' })]));
+    store.setQuestion(withId('t3', [singleSelectQuestion()]));
+
+    expect(store.pendingQuestion?.toolUseId).toBe('t1');
+    expect(store.compiledAnswers[first.question]).toBe('B');
+    expect(store.queue.map((q) => q.toolUseId)).toEqual(['t2', 't3']);
+    expect(store.waitingCount).toBe(3);
+  });
+
+  it('shows the next queued question, with a fresh answer, once the one on screen is settled', () => {
+    const store = useQuestionStore();
+    const q = singleSelectQuestion();
+    store.setQuestion(withId('t1', [q]));
+    store.setQuestion(withId('t2', [q]));
+    store.toggleOption(q.question, 'A', false);
+
+    store.clearQuestion();
+
+    expect(store.pendingQuestion?.toolUseId).toBe('t2');
+    expect(store.compiledAnswers[q.question]).toBe('');
+    expect(store.currentTabIndex).toBe(0);
+    expect(store.waitingCount).toBe(0);
+
+    store.clearQuestion();
+    expect(store.pendingQuestion).toBeNull();
+  });
+
+  it('drops the questions core no longer holds open, on screen and queued', () => {
+    const store = useQuestionStore();
+    store.setQuestion(withId('t1', [singleSelectQuestion()]));
+    store.setQuestion(withId('t2', [singleSelectQuestion()]));
+    store.setQuestion(withId('t3', [singleSelectQuestion()]));
+
+    store.dropClosed(new Set(['t1', 't3']));
+    expect(store.pendingQuestion?.toolUseId).toBe('t1');
+    expect(store.queue.map((q) => q.toolUseId)).toEqual(['t3']);
+
+    store.dropClosed(new Set(['t3', 'other-prompt']));
+    expect(store.pendingQuestion?.toolUseId).toBe('t3');
+    expect(store.queue).toEqual([]);
+  });
+
+  it('forgets every question on reset', () => {
+    const store = useQuestionStore();
+    store.setQuestion(withId('t1', [singleSelectQuestion()]));
+    store.setQuestion(withId('t2', [singleSelectQuestion()]));
+
+    store.$reset();
+
+    expect(store.pendingQuestion).toBeNull();
+    expect(store.queue).toEqual([]);
   });
 });

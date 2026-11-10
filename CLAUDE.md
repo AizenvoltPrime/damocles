@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Damocles embeds an AI coding agent (Claude, GPT and others) in a Vue webview, shipped as a VS Code extension and an Electron desktop app. The agent runs on the **pi** runtime (`@earendil-works/pi-coding-agent`), the only backend.
+Damocles embeds an AI coding agent (Claude, GPT and others) in a Vue webview, shipped as a VS Code extension and an Electron desktop app, an agentic development environment (ADE). The agent runs on the **pi** runtime (`@earendil-works/pi-coding-agent`), the only backend.
 
 ## Development Commands
 

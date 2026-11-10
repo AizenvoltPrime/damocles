@@ -121,9 +121,11 @@ test('DesignParity scores the real app against the design at two widths, n/12 co
     await expect(parent.getByText('Parity scored at sm and xl.')).toBeVisible();
     await expect(parityCard(parent)).toHaveCount(2);
 
-    // R11: the refusal names the app's address and says to start it; the judge never ran for it.
+    // R11: the refusal names the app's address, the browser's net error and says to start it; the judge never ran for it.
+    // Which error a reset reports depends on the OS's timing (ERR_CONNECTION_RESET, or ERR_SOCKET_NOT_CONNECTED on Windows).
     const refused = parityCard(parent).first();
-    await expect(refused.getByTestId('design-parity-error')).toHaveText(`The app at ${stopped.url} did not load (net::ERR_CONNECTION_RESET). Start the app or check the address, then call DesignParity again.`);
+    const origin = stopped.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(refused.getByTestId('design-parity-error')).toHaveText(new RegExp(`^The app at ${origin} did not load \\(net::ERR_[A-Z_]+\\)\\. Start the app or check the address, then call DesignParity again\\.$`));
     await expect(refused.getByTestId('design-parity-table')).toHaveCount(0);
 
     const card = parityCard(parent).last();

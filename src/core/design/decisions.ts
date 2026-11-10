@@ -306,6 +306,8 @@ export interface QuestionLike {
   readonly header?: string;
   readonly multiSelect?: boolean;
   readonly options: readonly { readonly label: string }[];
+  /** The reference row the question asks about, 'R<n>#<element>', which the question manager checked. */
+  readonly reference?: string;
 }
 
 /** The decisions an AskUserQuestion answer recorded, and what the model reads about them. */
@@ -324,9 +326,9 @@ export interface QuestionSubagent {
 }
 
 /**
- * One decision per answered question that chose an option: the header is the title, the answer the chosen value and the other
- * options the rejected ones. A current decision answering the same question is replaced; every other current decision, one of
- * the same title included, is checked as RecordDecision's are, and the flags are stored rather than refused, since the user
+ * One decision per answered question that chose an option: the header is the title, the answer the chosen value, the other
+ * options the rejected ones and the question's reference row its `reference`. A current decision answering the same question is
+ * replaced; every other current decision, one of the same title included, is checked as RecordDecision's are, and the flags are stored rather than refused, since the user
  * already answered (D99). A subagent's answer also leaves what the user typed and noted on the design chat's branch, the only
  * place its designer can quote it from. A question that fails to record becomes a note, and the others still record.
  */
@@ -363,6 +365,7 @@ export async function recordQuestionDecisions(
         chosen: clip(answer.trim()),
         rejected: labels.filter((label) => !chosen.has(label)).map(clip),
         source: { kind: 'question', ref: clip(question.question) },
+        ...(question.reference !== undefined ? { reference: question.reference } : {}),
         files: [],
         ...(subagent ? { agentId: subagent.agentId } : {}),
       }, signal);

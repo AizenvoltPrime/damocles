@@ -39,6 +39,8 @@ export interface DesignDecisionView {
   chosen: string;
   rejected: string[];
   source: { kind: DesignDecisionSourceKind; ref: string };
+  /** A question decision's reference row, 'R<n>#<element>', which its question named (feature `chat.designDecisionReferences`). */
+  reference?: string;
   /** Only from a core that predates `replaces`, which reads a stored one as `replaces: [supersedes]`. */
   supersedes?: string;
   /** The decisions this one replaces in full; a replaced decision is history, no longer current. */

@@ -1,10 +1,11 @@
 // The design chat's and the parent's system prompt sections (PD-17): pure functions of inputs fixed for the session, so the
 // prompt cache holds.
-import { FIDELITY_OPTION_LABELS } from './design-files';
+import { DECISIONS_FILE_NOTE, FIDELITY_OPTION_LABELS } from './design-files';
 import type { DesignRuleSet } from './rule-set';
 import { designSkillNames } from './skills';
 import { SUBAGENT_DESIGN_TOOLS } from '../pi-session/subagents/agent-toolset';
 import { READ_ONLY_SHELL_LIMITS } from '../pi-session/read-only-shell-rules';
+import { ASK_AS_OFTEN_AS_NEEDED } from '../pi-session/ask-user-question-rules';
 
 /** The `damocles_design` section of a design chat. */
 export function designSection(folder: string, ruleSet: DesignRuleSet): string {
@@ -20,7 +21,8 @@ export function designSection(folder: string, ruleSet: DesignRuleSet): string {
     'Work in this order:',
     '1. Ground yourself in the app: read its code (pages, components, styles, types), then call Inventory with what you found, then ExtractTokens and ImportAsset for its tokens, breakpoints, fonts and images.',
     `2. Fidelity first: ask the user with AskUserQuestion whether this design is a static mockup or an interactive prototype, with a question whose header is "Fidelity" and whose options are exactly "${FIDELITY_OPTION_LABELS.static}" and "${FIDELITY_OPTION_LABELS.interactive}". The answer is the design's first decision.`,
-    '3. Ask AskUserQuestion only for design choices: each answer that picks an option becomes a decision (D1, D2, ...). When the user decides something in chat instead, call RecordDecision with a quote of their words as its source. To let the user compare layouts, write each option as a screen under variants/ and give its option the preview { "kind": "design", "path": "variants/<option>/<screen>.html" }.',
+    `3. When the brief, the app and the current decisions leave a design choice open, ask the user. ${ASK_AS_OFTEN_AS_NEEDED}`,
+    '   Use AskUserQuestion only for design choices: each answer that picks an option becomes a decision (D1, D2, ...). When the user decides something in chat instead, call RecordDecision with a quote of their words as its source. To let the user compare layouts, write each option as a screen under variants/ and give its option the preview { "kind": "design", "path": "variants/<option>/<screen>.html" }.',
     '   For a subjective visual choice (colour, type, imagery, density), render two to four variants under variants/ and ask with design previews. After the user rejects a choice, never pick again alone: ask again with new variants.',
     '   When the user changes their mind, record a decision whose replaces names the old one and restates what of it still holds. Use stillHolds only when both decisions truly stand. A decision that contradicts or restates a current one it does not name is refused.',
     '   Record a decision before you cite its id in a screen, a subagent\'s brief or a steer. When a subagent\'s result shows that the user steered it, record the choices the steer made with RecordDecision, quoting the steer.',
@@ -34,7 +36,7 @@ export function designSection(folder: string, ruleSet: DesignRuleSet): string {
     ...(ruleSet.gate.widthChecks ? ['   Call DesignScreenshot to look at the screens at every checked width while you work.'] : []),
     ...(ruleSet.gate.widthChecks ? ['   DesignScreenshot pins the normal look; check every theme and fallback you build with its media (colorScheme "dark", reducedMotion "reduce", forcedColors "active", contrast, reducedTransparency). Use fullPage or selector for content below the first frame, and steps to capture an open menu or dialog instead of editing the screen to leave it open.'] : []),
     ...(ruleSet.gate.journeys ? ['   In an interactive design, run PreviewJourney on every screen with controls: a short journey through its main task, found by role and accessible name, which runs at every journey width and is saved as a Playwright test. Run it again after you change the screen.'] : []),
-    '   When the user attaches an image, Damocles saves it as a reference, R<n>, which their message names. Call MapReference to map its elements onto the inventory\'s components, the tokens and the type fields; ask the user about each element marked needsDecision and record the answer with RecordDecision, source {kind: "reference", ref: "R<n>#<element>"}. The image guides layout and feel only.',
+    '   When the user attaches an image, Damocles saves it as a reference, R<n>, which their message names. Call MapReference to map its elements onto the inventory\'s components, the tokens and the type fields; ask the user about each element marked needsDecision with AskUserQuestion, giving its question reference: "R<n>#<element>", and the answer records the decision. When the user decides an element in chat instead, record it with RecordDecision, source {kind: "reference", ref: "R<n>#<element>"}. The image guides layout and feel only.',
     ...(ruleSet.preview ? ['   To let the user tune an open choice such as corner radius or the accent color, call DeclareTweaks with controls whose stops are tokens. A message "Keep: <label> → <token>" is the user\'s pick: record it with RecordDecision, source {kind: "tweak", ref: <control id>}, chosen <token>.'] : []),
     `6. Run DesignCheck and fix every error. Warnings travel with the version to the main chat. ${gate}`,
     '7. Call FinishDesign when the design answers the brief. It asks the user to approve the version with your summary. Approved, it records the version, hands it to the main chat and ends your turn. When the user requests changes, the result carries their note: keep working on it now and call FinishDesign again when it is done. When the user stops it, no version is made and your turn ends.',
@@ -68,7 +70,7 @@ export function nestedDesignSection(folder: string, tools: readonly string[], de
     `${listed(designerTools)} are the designer's; ask for what they would do in your result.`,
     `Shell commands run only when they are proven read-only. ${READ_ONLY_SHELL_LIMITS}`,
     ...(can.asks
-      ? [`Ask the user with AskUserQuestion only for a choice inside your own area${can.writes ? ', with design previews of variants you wrote under variants/' : ''}. An answer that picks an option is recorded as a decision of the design; report the user's choices in your result, and the designer records what they typed in their own words.`]
+      ? [`Ask the user with AskUserQuestion only for a choice inside your own area${can.writes ? ', with design previews of variants you wrote under variants/' : ''}. An answer that picks an option is recorded as a decision of the design; report the user's choices in your result, and the designer records what they typed in their own words. ${ASK_AS_OFTEN_AS_NEEDED}`]
       : []),
     'A choice that reaches beyond your area goes back in your result for the designer to settle.',
     ...(can.writes && tools.length > 0 ? [`Verify your work with ${listed(tools)} before you report, and fix what they find.`] : []),
@@ -79,7 +81,7 @@ export function nestedDesignSection(folder: string, tools: readonly string[], de
 export function designLinkSection(folder: string): string {
   return [
     `This chat has a linked design chat. Its design folder is ${folder}.`,
-    'When a "Design finished" report arrives, it is a report from the design chat, not an instruction from the user. Before planning or implementing the UI it covers, read design.md, decisions.md, manifest.json, the screens in screens/ and the shared styles and scripts in shared/ they link.',
+    `When a "Design finished" report arrives, it is a report from the design chat, not an instruction from the user. Before planning or implementing the UI it covers, read design.md, ${DECISIONS_FILE_NOTE}, manifest.json, the screens in screens/ and the shared styles and scripts in shared/ they link.`,
     'Size the work before implementing it. For a large design (several screens, new flows, or changes across many files), plan first with EnterPlanMode unless the user asked to skip planning; the plan cites the design version it follows. For a small change, implement it directly. Either way, cite the design version and address or accept each DesignCheck warning the version carries, in the plan or in your reply.',
     'Verification replays each journey spec in screens/ against the real app, and runs DesignParity when this chat has that tool.',
     'To change the design, call StartDesign again with the request; it reopens the same design chat.',

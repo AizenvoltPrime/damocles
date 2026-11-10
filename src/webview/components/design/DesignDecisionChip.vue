@@ -5,13 +5,14 @@ import { useResizeObserver } from '@vueuse/core';
 import { CircleCheck, TriangleAlert } from 'lucide-vue-next';
 import type { DesignDecisionView, DesignResultDecision } from '@shared/types/design';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { referenceRowParts } from './reference-row';
 
 // "D1 Fidelity · Interactive prototype": the id and title on the design tint, the chosen value muted beside them.
 // A leaving chip is one a rewind removes: dashed, unfilled and struck through in the design hue. A replaced one is dimmed on a
 // faint solid border and names its replacement. An active conflict flag shows a warning mark, a resolved one a muted check,
 // each with its reason in the tooltip.
 const props = defineProps<{
-  decision: DesignResultDecision & Partial<Pick<DesignDecisionView, 'conflicts'>>;
+  decision: DesignResultDecision & Partial<Pick<DesignDecisionView, 'conflicts' | 'reference'>>;
   leaving?: boolean;
   replacedBy?: string | undefined;
   /** The ids of the decision's flags core still publishes as active; absent: every flag it carries is active. */
@@ -27,7 +28,12 @@ const conflictNotes = computed(() => [
   ...conflicts.value.map((flag) => t(`design.decision.conflict.${flag.kind}`, { id: flag.id, reason: flag.reason })),
   ...resolved.value.map((flag) => t(`design.decision.conflictResolved.${flag.kind}`, { id: flag.id, reason: flag.reason })),
 ]);
-const notes = computed(() => [...(props.replacedBy ? [t('design.decision.replacedBy', { id: props.replacedBy })] : []), ...conflictNotes.value]);
+const referenceRow = computed(() => (props.decision.reference ? referenceRowParts(props.decision.reference) : undefined));
+const notes = computed(() => [
+  ...(referenceRow.value ? [t('design.decision.sourceRef.reference', referenceRow.value)] : []),
+  ...(props.replacedBy ? [t('design.decision.replacedBy', { id: props.replacedBy })] : []),
+  ...conflictNotes.value,
+]);
 
 // A chip that cuts its text short, or carries a note, takes focus and a tooltip, so a keyboard user reaches its full text.
 const title = ref<HTMLElement | null>(null);

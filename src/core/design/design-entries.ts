@@ -180,12 +180,13 @@ function conflictOf(value: unknown): DesignDecisionConflict | undefined {
 
 function decisionOf(value: unknown): DesignDecisionRecord | undefined {
   if (!isRecord(value) || value['v'] !== 1) return undefined;
-  const { id, title, chosen, rejected, source, files, supersedes, replaces, stillHolds, conflicts, conflictCheck, uncheckedReason, agentId } = value;
+  const { id, title, chosen, rejected, source, reference, files, supersedes, replaces, stillHolds, conflicts, conflictCheck, uncheckedReason, agentId } = value;
   if (!isDecisionId(id)) return undefined;
   if (!boundedString(title) || !boundedString(chosen)) return undefined;
   if (!Array.isArray(rejected) || !rejected.every(boundedString)) return undefined;
   if (!Array.isArray(files) || !files.every(boundedString)) return undefined;
   if (!isRecord(source) || typeof source['kind'] !== 'string' || !SOURCE_KINDS.has(source['kind']) || !boundedString(source['ref'])) return undefined;
+  if (reference !== undefined && !boundedString(reference)) return undefined;
   if (supersedes !== undefined && !isDecisionId(supersedes)) return undefined;
   if ((replaces !== undefined && !isDecisionIdList(replaces)) || (stillHolds !== undefined && !isDecisionIdList(stillHolds))) return undefined;
   if (conflicts !== undefined && (!Array.isArray(conflicts) || conflicts.length > MAX_DECISION_REFS)) return undefined;
@@ -203,6 +204,7 @@ function decisionOf(value: unknown): DesignDecisionRecord | undefined {
     chosen,
     rejected: [...rejected],
     source: { kind: source['kind'] as DesignDecisionSourceKind, ref: source['ref'] },
+    ...(reference !== undefined ? { reference } : {}),
     files: [...files],
     ...(replaced && replaced.length > 0 ? { replaces: [...replaced] } : {}),
     ...(stillHolds && stillHolds.length > 0 ? { stillHolds: [...stillHolds] } : {}),

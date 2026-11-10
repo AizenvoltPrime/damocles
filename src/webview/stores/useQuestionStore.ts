@@ -4,6 +4,8 @@ import type { PendingQuestionInfo, Question, QuestionAnnotations } from '@shared
 
 export const useQuestionStore = defineStore('question', () => {
   const pendingQuestion = ref<PendingQuestionInfo | null>(null);
+  // Questions raised while one is on screen, oldest first; core holds each open until it is answered, cancelled or closed.
+  const queue = ref<PendingQuestionInfo[]>([]);
   const currentTabIndex = ref(0);
   const selectedOptions = ref<Map<string, Set<string>>>(new Map());
   const customInputs = ref<Map<string, string>>(new Map());
@@ -11,6 +13,9 @@ export const useQuestionStore = defineStore('question', () => {
   const annotationNotes = ref<Map<string, string>>(new Map());
 
   const questions = computed(() => pendingQuestion.value?.questions ?? []);
+
+  /** How many questions the queued prompts hold, shown after the one on screen. */
+  const waitingCount = computed(() => queue.value.reduce((count, info) => count + info.questions.length, 0));
 
   const totalTabs = computed(() => questions.value.length + 1);
 
@@ -86,13 +91,7 @@ export const useQuestionStore = defineStore('question', () => {
     annotationNotes.value = new Map(annotationNotes.value).set(questionText, notes);
   }
 
-  function setQuestion(info: PendingQuestionInfo) {
-    // The extension re-posts every pending prompt when the webview reports ready, and the answer the
-    // user has already typed for this same prompt outlives that replay.
-    if (pendingQuestion.value?.toolUseId === info.toolUseId) {
-      pendingQuestion.value = info;
-      return;
-    }
+  function show(info: PendingQuestionInfo | null) {
     pendingQuestion.value = info;
     currentTabIndex.value = 0;
     selectedOptions.value = new Map();
@@ -101,13 +100,38 @@ export const useQuestionStore = defineStore('question', () => {
     isCustomInputMode.value = false;
   }
 
+  function setQuestion(info: PendingQuestionInfo) {
+    // The extension re-posts every pending prompt when the webview reports ready, and the answer the
+    // user has already typed for this same prompt outlives that replay.
+    if (pendingQuestion.value?.toolUseId === info.toolUseId) {
+      pendingQuestion.value = info;
+      return;
+    }
+    if (queue.value.some((queued) => queued.toolUseId === info.toolUseId)) {
+      queue.value = queue.value.map((queued) => (queued.toolUseId === info.toolUseId ? info : queued));
+      return;
+    }
+    if (pendingQuestion.value) {
+      queue.value = [...queue.value, info];
+      return;
+    }
+    show(info);
+  }
+
+  /** The question on screen is settled: the next queued one takes its place. */
   function clearQuestion() {
-    pendingQuestion.value = null;
-    currentTabIndex.value = 0;
-    selectedOptions.value = new Map();
-    customInputs.value = new Map();
-    annotationNotes.value = new Map();
-    isCustomInputMode.value = false;
+    const [next, ...rest] = queue.value;
+    queue.value = rest;
+    show(next ?? null);
+  }
+
+  /**
+   * Drops the questions core no longer holds open (`openIds`, from the session state), such as an aborted
+   * agent's. Core publishes a question's id before it posts the question, so a question just raised is never dropped.
+   */
+  function dropClosed(openIds: ReadonlySet<string>) {
+    queue.value = queue.value.filter((queued) => openIds.has(queued.toolUseId));
+    if (pendingQuestion.value && !openIds.has(pendingQuestion.value.toolUseId)) clearQuestion();
   }
 
   function goToTab(index: number) {
@@ -177,11 +201,14 @@ export const useQuestionStore = defineStore('question', () => {
   }
 
   function $reset() {
-    clearQuestion();
+    queue.value = [];
+    show(null);
   }
 
   return {
     pendingQuestion,
+    queue,
+    waitingCount,
     currentTabIndex,
     selectedOptions,
     customInputs,
@@ -199,6 +226,7 @@ export const useQuestionStore = defineStore('question', () => {
     setAnnotationNotes,
     setQuestion,
     clearQuestion,
+    dropClosed,
     goToTab,
     nextTab,
     prevTab,

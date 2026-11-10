@@ -217,10 +217,14 @@ function decisionSection(decision: DesignDecisionRecord, lines: readonly string[
     `- Chosen: ${decision.chosen}`,
     `- Rejected: ${decision.rejected.length > 0 ? decision.rejected.join('; ') : 'none'}`,
     `- Source: ${decision.source.kind}${decision.source.ref ? ` (${decision.source.ref})` : ''}`,
+    ...(decision.reference ? [`- Reference: ${decision.reference}`] : []),
     `- Files: ${decision.files.length > 0 ? decision.files.join(', ') : 'none'}`,
     ...lines,
   ].join('\n');
 }
+
+/** How a prompt names decisions.md to a chat that reads it; describes `decisionsMarkdown`'s layout. */
+export const DECISIONS_FILE_NOTE = 'decisions.md (the current decisions, then the replaced ones, which no longer apply)';
 
 /** decisions.md: a generated-file notice, the current decisions in branch order, then the replaced ones as history. */
 export function decisionsMarkdown(decisions: readonly DesignDecisionRecord[]): string {

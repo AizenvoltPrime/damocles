@@ -61,6 +61,17 @@ afterEach(() => {
 });
 
 describe('the question card', () => {
+  it('says how many questions wait behind the one on screen, and nothing when none do', async () => {
+    const wrapper = questionCard([{ label: 'Grid', description: '' }, { label: 'List', description: '' }]);
+    await nextTick();
+    expect(wrapper.get('[data-testid="question-waiting"]').text()).toBe('');
+
+    useQuestionStore().setQuestion({ toolUseId: 'q-2', questions: [{ question: 'Which size?', header: 'Size', multiSelect: false, options: [{ label: 'S', description: '' }, { label: 'L', description: '' }] }] });
+    await nextTick();
+    expect(wrapper.get('[data-testid="question-waiting"]').text()).toBe('1 more question waiting');
+    expect(wrapper.get('[data-testid="question-waiting"]').attributes('aria-live')).toBe('polite');
+  });
+
   it('moves its tab selection with the shared sliding indicator', async () => {
     const wrapper = questionCard([{ label: 'Grid', description: '' }]);
     await nextTick();

@@ -181,7 +181,8 @@
   "browser.servedFileUrl",
   "chat.steeredDesignPrompts",
   "chat.designDecisionChecks",
-  "browser.servedFileUnavailable"
+  "browser.servedFileUnavailable",
+  "chat.designDecisionReferences"
  ],
  "contracts": {
   "CoreRequests": {
@@ -22677,6 +22678,10 @@
                 "optional": false,
                 "type": "string"
                },
+               "reference": {
+                "optional": true,
+                "type": "string"
+               },
                "rejected": {
                 "optional": false,
                 "type": {
@@ -31490,6 +31495,10 @@
               },
               "id": {
                "optional": false,
+               "type": "string"
+              },
+              "reference": {
+               "optional": true,
                "type": "string"
               },
               "rejected": {

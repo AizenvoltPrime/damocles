@@ -8,7 +8,7 @@ Design mode is on by default. `damocles.design.enabled` turns it off, in Setting
 
 Ask the agent to design first. It calls StartDesign with a title and a brief, which opens a linked design chat titled "Design · {title}"; there is no button for it. In the desktop app the design chat is listed nested under its main chat. Calling StartDesign again reopens the same design chat and sends it the new brief.
 
-The designer reads your app before it draws. Inventory records its components, screens, types, stores and actions, ExtractTokens its tokens, breakpoints and fonts, and ImportAsset copies a font or image into the design, from your project, another file on the chat's machine, or an https URL. It asks whether you want static mockups or an interactive prototype, and each answer becomes a numbered decision (D1, D2, ...); see [Decisions](#decisions).
+The designer reads your app before it draws. Inventory records its components, screens, types, stores and actions, ExtractTokens its tokens, breakpoints and fonts, and ImportAsset copies a font or image into the design, from your project, another file on the chat's machine, or an https URL. It asks whether you want static mockups or an interactive prototype, then about every design choice your brief, the app and the current decisions leave open, and each answer becomes a numbered decision (D1, D2, ...); see [Decisions](#decisions).
 
 ## The design folder
 
@@ -70,12 +70,12 @@ LoadDesignSkill loads a design skill: `accessibility-states`, `empty-states`, `l
 
 Every design choice is a numbered decision (D1, D2, ...) with its source: your words in the chat, the text you typed into an answer, a change note, a steer you sent a subagent, a brief (whose message names its id), a markup pin, a kept tweak or a reference row. Damocles records each one in the design chat itself, so a rewind or a fork keeps exactly the decisions of its branch, and `decisions.md` lists the current decisions first, then the replaced ones.
 
-- **Answers.** An AskUserQuestion answer that picks an option records a decision; one where you only typed your own text records none, and the designer records what you meant with RecordDecision, quoting you. This holds for a subagent's question too: what you typed or noted there is kept in the design chat, where the designer can quote it. Answering the same question again replaces the earlier decision; an answer to another question with the same short title does not, and is checked against it like any other decision.
+- **Answers.** An AskUserQuestion answer that picks an option records a decision; one where you only typed your own text records none, and the designer records what you meant with RecordDecision, quoting you. This holds for a subagent's question too: what you typed or noted there is kept in the design chat, where the designer can quote it. Answering the same question again replaces the earlier decision; an answer to another question with the same short title does not, and is checked against it like any other decision. A question about an element of a reference image names that element, and the decision its answer records keeps it: `decisions.md` lists it as `Reference: R<n>#<element>`, and the decision's chip names it.
 - **Changing your mind.** A new decision names what it replaces (`replaces`) and should restate what still holds, or names the decisions that stay valid beside it (`stillHolds`). A decision the designer records with the same title as a current one must name it.
 - **Conflict check.** Before a decision is recorded, the background model checks it against the current decisions. RecordDecision is refused when the new decision contradicts or restates one it does not name. Your answer to a question is never refused: its conflict is flagged, DesignCheck reports it, and FinishDesign waits until the designer records a decision that resolves it. So two current decisions can conflict only while such a flag stands; once a later decision replaces either one, the flag shows as resolved.
 - **No background model.** When the check cannot run, the decision is recorded unchecked and DesignCheck warns. FinishDesign checks it again; if it still cannot, the approval names the unchecked decisions, so you approve knowingly, and the version and the main chat's report record them.
 
-The main chat receives the current decisions only, and is told that a decision outranks its brief, since you made it later.
+The main chat's report lists the current decisions only, and tells it that a decision outranks its brief, since you made it later. When it reads `decisions.md`, it is told that the replaced decisions after the current ones no longer apply.
 
 ## Versions and approval
 
@@ -116,7 +116,7 @@ DesignScreenshot captures screens and variants for the designer, at each checked
 
 ## Reference images
 
-An image you attach in a design chat becomes a reference, `references/R<n>`, at most 4 per message and 4 MiB each (PNG, JPEG, GIF or WebP). MapReference maps each element of a reference onto an inventory component, a token or a type field, or marks it as needing a decision or out of scope.
+An image you attach in a design chat becomes a reference, `references/R<n>`, at most 4 per message and 4 MiB each (PNG, JPEG, GIF or WebP). MapReference maps each element of a reference onto an inventory component, a token or a type field, or marks it as needing a decision or out of scope. The designer asks you about each element that needs a decision, one question per element, and your answer records its decision. A decision you make about an element in the chat instead is recorded with the element's row as its source.
 
 ## Open in browser
 

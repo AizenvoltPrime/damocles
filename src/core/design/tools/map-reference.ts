@@ -7,11 +7,12 @@ import type { MapReferenceDetails } from '../../../shared/types/design';
 import { readInventory } from '../inventory';
 import { mapReference, mapReferenceSchema, ReferenceRefusedError, type MapReferenceInput } from '../references';
 import { readTokenNames } from '../tokens';
+import { ASK_AS_OFTEN_AS_NEEDED } from '../../pi-session/ask-user-question-rules';
 import { activeRole, type DesignChatToolDeps } from './design-chat-tools';
 
 const DESCRIPTION = [
   'Map a reference image the user attached (saved by Damocles as references/R<n>.png or another image type, named in their message) onto the app: one row per element of the image you take or leave.',
-  'mapsTo names what the app has: an inventory component (Button), a tokens.css token (--radius-lg) or a type field (Contact.email). status is mapped (it names one), needsDecision (nothing in the app matches: ask the user, then RecordDecision with source {kind: "reference", ref: "R<n>#<element>"} and mark the new UI data-ds-new citing that decision) or out (not taken). The image guides layout and feel only; it never adds components, tokens or fields by itself. Calling it again replaces the mapping.',
+  'mapsTo names what the app has: an inventory component (Button), a tokens.css token (--radius-lg) or a type field (Contact.email). status is mapped (it names one), needsDecision (nothing in the app matches: ask the user with AskUserQuestion, giving the question reference: "R<n>#<element>", and the answer records the decision; when the user decides it in chat instead, record it with RecordDecision, source {kind: "reference", ref: "R<n>#<element>"}; mark the new UI data-ds-new citing that decision) or out (not taken). The image guides layout and feel only; it never adds components, tokens or fields by itself. Calling it again replaces the mapping.',
 ].join('\n\n');
 
 export function createMapReferenceTool(pi: PiCodingAgentModule, deps: DesignChatToolDeps): ToolDefinition {
@@ -38,7 +39,7 @@ export function createMapReferenceTool(pi: PiCodingAgentModule, deps: DesignChat
       const lines = [
         `${details.reference} (${details.image}) maps ${details.rows.filter((row) => row.status === 'mapped').length} of ${details.rows.length} elements.`,
         ...details.rows.map((row) => `- ${row.element}: ${row.status}${row.mapsTo !== null ? ` → ${row.mapsTo}` : ''}`),
-        ...(open.length > 0 ? [`Ask the user about ${open.join(', ')}, and record each answer with RecordDecision, source {kind: "reference", ref: "${details.reference}#<element>"}.`] : []),
+        ...(open.length > 0 ? [`Ask the user about ${open.join(', ')} with AskUserQuestion, one question per element, each with reference: "${details.reference}#<element>". Each answer records the element's decision; cite its id in the new UI's data-ds-new. ${ASK_AS_OFTEN_AS_NEEDED}`] : []),
       ];
       return { content: [{ type: 'text', text: lines.join('\n') }], details };
     },

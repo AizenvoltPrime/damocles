@@ -300,6 +300,19 @@ describe('the design chat header', () => {
     expect(flagged.text()).toContain('Contradicts D1: white vs no white');
   });
 
+  it('names a question decision\'s reference row in its chip\'s tooltip (D96)', async () => {
+    const wrapper = header({
+      ...DESIGN,
+      decisions: [...DESIGN.decisions, { id: 'D2', title: 'Carousel', chosen: 'A static strip', rejected: ['A grid'], source: { kind: 'question', ref: 'What replaces the carousel?' }, reference: 'R1#Carousel' }],
+    });
+    const chip = wrapper.get('[data-decision-id="D2"]');
+    expect(chip.attributes('tabindex')).toBe('0');
+    (chip.element as HTMLElement).focus();
+    await nextTick();
+    await nextTick();
+    expect(document.querySelector('[data-testid="design-decision-chip-tooltip"]')?.textContent).toContain('From reference R1 · Carousel');
+  });
+
   it('reads an older core\'s supersedes as a replacement', () => {
     const wrapper = header({
       ...DESIGN,

@@ -48,6 +48,17 @@ describe('decisions recorded from answers', () => {
     expect(ledger.changes).toBe(3);
   });
 
+  it('keeps a question\'s reference row on the decision its answer records, whose question source a re-answer still replaces', async () => {
+    const CAROUSEL = { question: 'What replaces the carousel?', header: 'Carousel', options: [{ label: 'A static strip' }, { label: 'A grid' }], reference: 'R1#Carousel' };
+    const ledger = memoryLedger(tempFolder());
+    const made = await recordQuestionDecisions(ledger, cleanJudge(), [CAROUSEL, DENSITY], { [CAROUSEL.question]: 'A static strip', [DENSITY.question]: 'Compact' }, signal());
+    expect(made.records.map((d) => [d.id, d.source, d.reference])).toEqual([['D1', { kind: 'question', ref: CAROUSEL.question }, 'R1#Carousel'], ['D2', { kind: 'question', ref: DENSITY.question }, undefined]]);
+    const again = await recordQuestionDecisions(ledger, cleanJudge(), [CAROUSEL], { [CAROUSEL.question]: 'A grid' }, signal());
+    expect(again.records[0]).toMatchObject({ id: 'D3', reference: 'R1#Carousel', replaces: ['D1'] });
+    expect(decisionsOnBranch(ledger.entries).find((d) => d.id === 'D3')?.reference).toBe('R1#Carousel');
+    expect(currentDecisions(decisionsOnBranch(ledger.entries)).map((d) => d.id)).toEqual(['D2', 'D3']);
+  });
+
   it('records no decision for a free-text "Other" answer, and tells the designer to record the user\'s words (acceptance)', async () => {
     const ledger = memoryLedger(tempFolder());
     const made = await recordQuestionDecisions(ledger, cleanJudge(), [DENSITY], { [DENSITY.question]: 'Something between the two, like Linear' }, signal());
@@ -305,6 +316,8 @@ describe('decisions.md', () => {
     expect(markdown).toContain('- Replaces: D2\n- Holds alongside: D1');
     expect(markdown).toContain('- Replaced by: D3');
     expect(markdown).toContain('- Not checked for conflicts with other decisions');
+    expect(markdown).not.toContain('- Reference:');
+    expect(decisionsMarkdown([record('D1', 'Carousel', 'A static strip', { reference: 'R1#Carousel' })])).toContain('- Source: question (Carousel?)\n- Reference: R1#Carousel\n- Files: none');
     expect((await readManifest(folder, 'contacts-abcd1234')).fidelity).toBe('interactive');
     expect(fidelityOf([record('D1', 'Fidelity', 'Static mockup'), record('D2', 'Fidelity', 'Interactive prototype', { replaces: ['D1'] })])).toBe('interactive');
     expect(fidelityOf([])).toBeNull();

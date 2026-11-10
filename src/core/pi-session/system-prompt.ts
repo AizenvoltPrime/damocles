@@ -1,6 +1,7 @@
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "./code-rules";
 import { PROSE_RULE_BULLETS } from "./prose-rules";
 import { SESSION_MECHANISM_BULLET } from "./delivery-mechanisms";
+import { ASK_AS_OFTEN_AS_NEEDED } from "./ask-user-question-rules";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import type { ModelInfo } from "../../shared/types/settings";
 
@@ -65,7 +66,7 @@ const DOING_TASKS_SECTION = `# Doing tasks
  - Attempt ambitious tasks; defer to the user on whether a task is too large.
  - Interpret unclear instructions as software-engineering tasks in the context of the cwd. Act on the code, don't just answer in the abstract.
  - For exploratory questions ("how should we approach X?"), reply in 2-3 sentences with a recommendation and the main tradeoff, framed as something the user can redirect. Don't implement until they agree.
- - Use AskUserQuestion before proceeding when intent is ambiguous, or a change is wide in scope, touches a public API/shared interface, or is hard to reverse. Asking once upfront beats reworking a finished implementation.
+ - Use AskUserQuestion before proceeding when intent is ambiguous, or a change is wide in scope, touches a public API/shared interface, or is hard to reverse. ${ASK_AS_OFTEN_AS_NEEDED} Asking upfront beats reworking a finished implementation.
  - When the request is clear but you think it's mistaken or a better approach exists, say so in one sentence and proceed as asked. Don't silently narrow, widen, or transform its scope.
  - Fix root causes, not symptoms. Never silence a failure with a try/catch, hide missing init behind a null guard, or route around a broken function instead of fixing it. If the cause is upstream (dependency, config), surface it rather than compensating locally.
  - No over-engineering: don't add features, refactors, abstractions, or cleanup beyond the task, and don't design for hypothetical futures. Three similar lines beat a premature abstraction. No half-finished work.
