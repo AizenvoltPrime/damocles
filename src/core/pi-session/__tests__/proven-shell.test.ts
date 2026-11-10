@@ -26,7 +26,8 @@ function windowsMachine(search: Partial<PowerShellSearch> & { path: string }): C
 
 const powershell = (command: string, machine: ChatMachine) => provenReadOnlyShell('PowerShell', { command }, machine);
 
-describe('provenReadOnlyShell: what a PowerShell command runs on win32', () => {
+// The PATH folders are real folders of this host, which a POSIX host spells as relative ones under win32's rules.
+describe.runIf(process.platform === 'win32')('provenReadOnlyShell: what a PowerShell command runs on win32', () => {
   it('proves a command whose program PATH holds only as an .exe', async () => {
     const verdict = await powershell('rg TODO src', windowsMachine({ path: pathFolder('rg.exe') }));
     expect(verdict).toEqual({ readOnly: true, commandNames: ['rg', 'get-rg'] });
@@ -76,13 +77,6 @@ describe('provenReadOnlyShell: what a PowerShell command runs on win32', () => {
     expect(verdict.readOnly).toBe(true);
   });
 
-  it('refuses every program when PATH holds a relative folder, which PowerShell searches from a folder a command can change', async () => {
-    for (const entry of ['.', 'bin', String.raw`\tools`, 'C:tools', '%SystemRoot%\\bin']) {
-      const verdict = await powershell('rg TODO src', windowsMachine({ path: `${pathFolder('rg.exe')};${entry}` }));
-      expect(verdict).toMatchObject({ readOnly: false, reason: expect.stringContaining('relative folder') });
-    }
-  });
-
   it('reads a quoted PATH entry as its folder', async () => {
     expect((await powershell('rg TODO src', windowsMachine({ path: `"${pathFolder('rg.cmd')}"` }))).readOnly).toBe(false);
   });
@@ -91,6 +85,15 @@ describe('provenReadOnlyShell: what a PowerShell command runs on win32', () => {
     const file = path.join(pathFolder('x'), 'x');
     const machine: ChatMachine = { ...windowsMachine({ path: '' }), powerShellSearch: () => Promise.resolve({ path: `${file}\0`, pathext: undefined, pwshHome: undefined }) };
     expect(await powershell('rg TODO src', machine)).toMatchObject({ readOnly: false, reason: expect.stringContaining('could not be read') });
+  });
+});
+
+describe('provenReadOnlyShell: the PowerShell lookup on any host', () => {
+  it('refuses every program when PATH holds a relative folder, which PowerShell searches from a folder a command can change', async () => {
+    for (const entry of ['.', 'bin', String.raw`\tools`, 'C:tools', '%SystemRoot%\\bin']) {
+      const verdict = await powershell('rg TODO src', windowsMachine({ path: `${String.raw`C:\Program Files\ripgrep`};${entry}` }));
+      expect(verdict).toMatchObject({ readOnly: false, reason: expect.stringContaining(`relative folder \`${entry}\``) });
+    }
   });
 
   it('refuses a native program when the lookup is not available', async () => {

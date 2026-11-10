@@ -2181,17 +2181,7 @@ describe('the three readers of a shell call\'s read-only verdict agree (plan mod
     return { platform: 'win32', allowedNetworkHosts: () => Promise.resolve(new Set()), powerShellSearch: () => Promise.resolve({ path: folder, pathext: '.COM;.EXE;.BAT;.CMD', pwshHome: undefined }) };
   }
 
-  it('runs, blocks and waits exactly as provenReadOnlyShell proves', async () => {
-    const cases: Array<[string, string, ChatMachine, boolean]> = [
-      ['PowerShell', 'rg TODO src', windows('rg.exe'), true],
-      ['PowerShell', 'rg TODO src', windows('rg.exe', 'rg.cmd'), false],
-      ['PowerShell', 'Get-ChildItem | rg x', windows('rg.bat'), false],
-      ['PowerShell', 'Get-Content a.txt', windows('Get-Content.ps1'), false],
-      ['PowerShell', 'Get-Content a.txt', windows('rg.cmd'), true],
-      ['PowerShell', 'Set-Content a.txt x', windows(), false],
-      ['Bash', 'rg TODO src', windows('rg.cmd'), true],
-      ['Bash', 'cat //evil/s/x', windows(), false],
-    ];
+  async function expectReadersAgree(cases: Array<[string, string, ChatMachine, boolean]>): Promise<void> {
     for (const [tool, command, machine, expected] of cases) {
       const proven = (await provenReadOnlyShell(tool, { command }, machine)).readOnly;
       expect(proven, `proven: ${tool} ${command}`).toBe(expected);
@@ -2214,5 +2204,24 @@ describe('the three readers of a shell call\'s read-only verdict agree (plan mod
       await runPermissionGate(ev(tool, 'c1', { command }), waiting.panel, undefined);
       expect(waited.length === 0, `checkpoint wait: ${tool} ${command}`).toBe(proven);
     }
+  }
+
+  it('runs, blocks and waits exactly as provenReadOnlyShell proves, for a call no PATH lookup decides', async () => {
+    await expectReadersAgree([
+      ['PowerShell', 'Set-Content a.txt x', windows(), false],
+      ['Bash', 'rg TODO src', windows('rg.cmd'), true],
+      ['Bash', 'cat //evil/s/x', windows(), false],
+    ]);
+  });
+
+  // The PATH folder is a real folder of this host, which a POSIX host spells as a relative one under win32's rules.
+  it.runIf(process.platform === 'win32')('runs, blocks and waits exactly as provenReadOnlyShell proves, for a PowerShell program PATH decides', async () => {
+    await expectReadersAgree([
+      ['PowerShell', 'rg TODO src', windows('rg.exe'), true],
+      ['PowerShell', 'rg TODO src', windows('rg.exe', 'rg.cmd'), false],
+      ['PowerShell', 'Get-ChildItem | rg x', windows('rg.bat'), false],
+      ['PowerShell', 'Get-Content a.txt', windows('Get-Content.ps1'), false],
+      ['PowerShell', 'Get-Content a.txt', windows('rg.cmd'), true],
+    ]);
   });
 });
