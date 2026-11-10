@@ -3231,13 +3231,20 @@
         "visible": "{target} is visible",
         "hidden": "{target} is hidden",
         "textContains": "{target} contains {value}",
-        "valueEquals": "{target} has the value {value}"
+        "valueEquals": "{target} has the value {value}",
+        "scroll": "Scroll {target} into view",
+        "scrollEnd": "Scroll {target} to its end",
+        "scrollPage": "Scroll the page to its end"
       },
       "target": {
         "role": "{role} {name}",
         "label": "field {name}",
         "placeholder": "field with placeholder {name}",
-        "text": "text {name}"
+        "text": "text {name}",
+        "roleLoose": "{role} containing {name}",
+        "labelLoose": "field whose label contains {name}",
+        "placeholderLoose": "field with a placeholder containing {name}",
+        "textLoose": "text containing {name}"
       },
       "quoted": "“{text}”",
       "empty": "(empty)"

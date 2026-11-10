@@ -91,8 +91,34 @@ describe('the design approval prompt', () => {
     expect(texts(w, '[data-testid="design-change"]')).toEqual(['S1 changed', 'S2 added']);
     expect(texts(w, '[data-testid="design-approval-warnings"] [data-testid="design-result-warning"]')).toEqual(['Required field hidden at a width S1 input#email']);
     expect(texts(w, '[data-testid="design-decision"]')).toEqual(['D1 Fidelity · Static mockup']);
+    expect(w.find('[data-testid="design-approval-unchecked"]').exists()).toBe(false);
     expect(options(w)).toEqual(['Approve and send to main chat', 'Request changes', 'Stop']);
     expect(posted).toEqual([]);
+  });
+
+  it('names the decisions the conflict check could not check, and why, so the user approves knowingly (D98, acceptance)', async () => {
+    const w = await raised({ ...REQUEST, uncheckedDecisions: [{ ids: ['D23', 'D24'], cause: 'noModel' }] });
+    expect(texts(w, '[data-testid="design-approval-unchecked"]')).toEqual(['The conflict check could not run for D23, D24 (no background model). Approve only if they do not contradict other decisions.']);
+  });
+
+  it('shows each cause with its own decisions, worded for one decision or several, in both languages', async () => {
+    const w = await raised({ ...REQUEST, uncheckedDecisions: [{ ids: ['D3'], cause: 'unreachable' }, { ids: ['D5', 'D6'], cause: 'stopped' }] });
+    expect(texts(w, '[data-testid="design-approval-unchecked"]')).toEqual([
+      'The conflict check could not run for D3 (the background model could not be reached). Approve only if it does not contradict other decisions.',
+      'The conflict check could not run for D5, D6 (the check was stopped). Approve only if they do not contradict other decisions.',
+    ]);
+    await loadLocale('el');
+    i18n.global.locale.value = 'el';
+    await flushPromises();
+    expect(texts(w, '[data-testid="design-approval-unchecked"]')).toEqual([
+      'Ο έλεγχος αντιφάσεων δεν μπόρεσε να γίνει για την D3 (το μοντέλο παρασκηνίου δεν ήταν διαθέσιμο). Εγκρίνετε μόνο αν δεν αντιφάσκει με άλλες αποφάσεις.',
+      'Ο έλεγχος αντιφάσεων δεν μπόρεσε να γίνει για τις D5, D6 (ο έλεγχος διακόπηκε). Εγκρίνετε μόνο αν δεν αντιφάσκουν με άλλες αποφάσεις.',
+    ]);
+  });
+
+  it('words a cause from a newer core generically, never as its key', async () => {
+    const w = await raised({ ...REQUEST, uncheckedDecisions: [{ ids: ['D9'], cause: 'quotaExceeded' as never }] });
+    expect(texts(w, '[data-testid="design-approval-unchecked"]')).toEqual(['The conflict check could not run for D9 (an unknown cause). Approve only if it does not contradict other decisions.']);
   });
 
   it('says a first version is one, and that a version with no main chat is only approved', async () => {

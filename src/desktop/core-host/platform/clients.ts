@@ -93,10 +93,10 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
       await endpoint.request('user.voice.speak', { viewId, text });
     },
     runProviders: (panelId, providers) => endpoint.emit('chat.providers', { panelId, providers }),
-    browserTool: async (host, scope, tool, input, signal) => {
+    browserTool: async (host, scope, tool, input, signal, served) => {
       const viewId = viewIdOf(host);
       if (viewId === undefined) throw new Error('The chat has no view');
-      return endpoint.request('user.browser.tool', { viewId, scope, tool, input }, signal);
+      return endpoint.request('user.browser.tool', { viewId, scope, tool, input, ...(served ? { served } : {}) }, signal);
     },
     browserRelease: async (host, scope, closeTabs) => {
       const viewId = viewIdOf(host);

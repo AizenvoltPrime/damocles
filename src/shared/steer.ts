@@ -76,6 +76,34 @@ export function formatUserSteerPrefix(userSteers: readonly UserSteerNote[] | und
   return userSteers.map((note) => `[User steered this agent mid-task: ${describeUserSteer(note, rawQuote)}]`).join('\n') + '\n';
 }
 
+/** A question a design chat's subagent asked the user, as its parent, the designer, learns of it. */
+export interface UserAnswerNote {
+  question: string;
+  answer: string;
+  /** The note the user added to the answer. */
+  notes?: string;
+  /** The design decision the answer recorded. */
+  decisionId?: string;
+  /** The current decisions the recorded answer conflicts with, which the parent resolves. */
+  conflicts?: string[];
+  /** What the user typed or noted is on the design chat's branch, where RecordDecision can quote it. */
+  wordsOnRecord?: boolean;
+}
+
+/**
+ * Parent-facing prefix noting each question a subagent asked the user mid-task, read by the same paths as
+ * `formatUserSteerPrefix`. The user's text is JSON-quoted, so no line of it can open a line of the result.
+ */
+export function formatUserAnswerPrefix(answers: readonly UserAnswerNote[] | undefined): string {
+  if (!answers?.length) return '';
+  return answers.map((note) => {
+    const said = `${JSON.stringify(note.question)} → ${JSON.stringify(note.answer)}${note.notes ? ` with the note ${JSON.stringify(note.notes)}` : ''}`;
+    const recorded = note.decisionId ? `recorded as ${note.decisionId}${note.conflicts?.length ? `, which conflicts with ${note.conflicts.join(', ')}` : ''}` : 'not recorded as a decision';
+    const words = note.wordsOnRecord ? '; the user\'s words are on this design chat\'s record, so you can record what they decided with RecordDecision, quoting them (source kind "chat")' : '';
+    return `[The user answered a question mid-task: ${said}, ${recorded}${words}]`;
+  }).join('\n') + '\n';
+}
+
 /** The team counterpart of `formatUserSteerPrefix`, prefixed onto a team's result. */
 export function formatTeamUserSteerPrefix(steers: ReadonlyArray<UserSteerNote & { memberName: string }>): string {
   if (!steers.length) return '';

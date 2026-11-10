@@ -10,6 +10,7 @@ describe('the design serve policy', () => {
     expect(servedContentType('assets/LOGO.PNG')).toBe('image/png');
     expect(servedContentType('assets/photo.jpg')).toBe('image/jpeg');
     expect(servedContentType('assets/a.webp')).toBe('image/webp');
+    expect(servedContentType('assets/photo.avif')).toBe('image/avif');
     expect(servedContentType('assets/a.gif')).toBe('image/gif');
     expect(servedContentType('assets/icon.svg')).toBe('image/svg+xml');
     expect(servedContentType('assets/Inter.woff')).toBe('font/woff');
@@ -18,7 +19,8 @@ describe('the design serve policy', () => {
     expect(servedContentType('assets/Inter.otf')).toBe('font/otf');
     expect(servedContentType('assets/favicon.ico')).toBe('image/x-icon');
     expect(servedContentType('notes.txt')).toBe('text/plain; charset=utf-8');
-    for (const refused of ['design.md', 'screens/S1.journey.spec.ts', 'a.jpeg', 'a.htm', 'a.xhtml', 'a.mjs', 'a.wasm', 'a.pdf', 'Makefile', '.html', 'assets/.png', 'a.html.exe', 'dir.html/']) {
+    // ImportAsset saves a JPEG as .jpg, the one JPEG name every app version serves.
+    for (const refused of ['design.md', 'screens/S1.journey.spec.ts', 'assets/photo.jpeg', 'a.htm', 'a.xhtml', 'a.mjs', 'a.wasm', 'a.pdf', 'Makefile', '.html', 'assets/.png', 'a.html.exe', 'dir.html/']) {
       expect(servedContentType(refused), refused).toBeUndefined();
     }
   });

@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { designFilesWriteBlock, designWriteBlock, type DesignScope } from '../design-write-rule';
 import { designFolderOf } from '../design-paths';
 import { BROWSER_PI_TOOL_NAMES, DESIGN_BROWSER_TOOL_NAMES, designBrowserAllows } from '../../pi-session/tools/browser-tools';
+import { provenReadOnlyShell, type ChatMachine } from '../../pi-session/proven-shell';
 
 const windows = process.platform === 'win32';
 const PROJECT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'design-rule-project-')));
@@ -13,6 +14,14 @@ const scope: DesignScope = { folder: FOLDER, cwd: PROJECT };
 
 const write = (filePath: string): string | undefined => designWriteBlock('Write', { file_path: filePath, content: 'x' }, scope);
 const edit = (filePath: string): string | undefined => designWriteBlock('Edit', { file_path: filePath, old_string: 'a', new_string: 'b' }, scope);
+// An empty PowerShell PATH, so PowerShell finds no script for any command.
+const machine: ChatMachine = {
+  platform: process.platform,
+  allowedNetworkHosts: () => Promise.resolve(new Set<string>()),
+  powerShellSearch: () => Promise.resolve({ path: '', pathext: undefined, pwshHome: undefined }),
+};
+const shell = async (tool: string, command: string, at: DesignScope = scope): Promise<string | undefined> =>
+  designWriteBlock(tool, { command }, at, { shellVerdict: await provenReadOnlyShell(tool, { command }, machine) });
 
 const canLink = (() => {
   const probe = path.join(PROJECT, 'link-probe');
@@ -35,7 +44,9 @@ afterAll(() => {
 });
 
 describe('a design chat writes only its design folder (PD-4)', () => {
-  it('allows design.md, screens and variants', () => {
+  it('allows design.md, screens, variants and shared styles and scripts', () => {
+    expect(write(path.join(FOLDER, 'shared', 'base.css'))).toBeUndefined();
+    expect(edit(path.join(FOLDER, 'shared', 'app.js'))).toBeUndefined();
     expect(write(path.join(FOLDER, 'design.md'))).toBeUndefined();
     expect(write(path.join(FOLDER, 'screens', 'S1-contacts.html'))).toBeUndefined();
     expect(edit(path.join(FOLDER, 'variants', 'S1-a.html'))).toBeUndefined();
@@ -50,8 +61,8 @@ describe('a design chat writes only its design folder (PD-4)', () => {
   });
 
   it('blocks every file core owns, and every other file the designer does not write (D65)', () => {
-    for (const owned of ['manifest.json', 'decisions.md', 'inventory.json', 'tokens.css', 'assets/x.png', 'references/R1.png', 'feedback/F1.json', 'screens/S1.journey.json', 'screens/S1.journey.spec.ts', 'notes.txt', 'screens/a/b.html', 'screens/x.css', 'foo/bar.js']) {
-      expect(write(path.join(FOLDER, ...owned.split('/')))).toMatch(/writes only design\.md, screens\/<name>\.html and files under variants\//);
+    for (const owned of ['manifest.json', 'decisions.md', 'inventory.json', 'tokens.css', 'assets/x.png', 'references/R1.png', 'feedback/F1.json', 'screens/S1.journey.json', 'screens/S1.journey.spec.ts', 'notes.txt', 'screens/a/b.html', 'screens/x.css', 'foo/bar.js', 'shared/a/b.css', 'shared/logo.png']) {
+      expect(write(path.join(FOLDER, ...owned.split('/')))).toMatch(/writes only design\.md, screens\/<name>\.html, shared\/<name>\.css, shared\/<name>\.js and files under variants\//);
     }
     expect(designWriteBlock('GenerateImage', { file_path: path.join(FOLDER, 'hero.png'), prompt: 'x' }, scope)).toMatch(/writes only design\.md/);
   });
@@ -93,11 +104,26 @@ describe('a design chat writes only its design folder (PD-4)', () => {
     expect(write(path.join(realHome, path.relative(os.homedir(), FOLDER), 'design.md'))).toBeUndefined();
   });
 
-  it('runs only shell commands proven read-only, in every mode', () => {
-    expect(designWriteBlock('Bash', { command: 'ls -la' }, scope)).toBeUndefined();
-    expect(designWriteBlock('Bash', { command: 'echo x > a.txt' }, scope)).toMatch(/proven read-only/);
-    expect(designWriteBlock('PowerShell', { command: 'Set-Content a.txt x' }, scope)).toMatch(/proven read-only/);
-    expect(designWriteBlock('PowerShell', { command: 'Get-ChildItem' }, scope)).toBeUndefined();
+  it('runs only shell commands proven read-only, in every mode', async () => {
+    expect(await shell('Bash', 'ls -la')).toBeUndefined();
+    expect(await shell('Bash', 'echo x > a.txt')).toMatch(/proven read-only/);
+    expect(await shell('PowerShell', 'Set-Content a.txt x')).toMatch(/proven read-only/);
+    expect(await shell('PowerShell', 'Get-ChildItem')).toBeUndefined();
+  });
+
+  it('refuses a shell call the gate took no read-only verdict for', () => {
+    expect(designWriteBlock('Bash', { command: 'ls -la' }, scope)).toMatch(/no read-only verdict was taken/);
+  });
+
+  it('says why the classifier refused a shell command, and how to read instead', async () => {
+    expect(await shell('Bash', 'diff <(a) <(b)')).toBe(
+      'A design chat runs only shell commands proven read-only; this one is not: process substitution (`<(`) is not allowed. Read files with Read (offset and limit for a range), Grep and Glob.',
+    );
+    expect(await shell('Bash', "sed -n '1w x' f")).toMatch(/this one is not: `sed` script command `w` is not allowed/);
+  });
+
+  it('refuses a write whose target may reach a network host without resolving it', () => {
+    expect(designWriteBlock('Write', { file_path: path.join(FOLDER, 'design.md'), content: 'x' }, scope, { reachesNetwork: true })).toMatch(/is outside it/);
   });
 
   it('lets the browser only look (PD-25)', () => {
@@ -119,6 +145,14 @@ describe('a design chat writes only its design folder (PD-4)', () => {
     expect(write(path.join(FOLDER, 'assets::$INDEX_ALLOCATION', 'x.png'))).toMatch(/no ":"|writes only design\.md/);
     expect(write(path.join(FOLDER, 'Inventory.JSON'))).toMatch(/writes only design\.md/);
     expect(write(path.join(FOLDER, 'screens', 'S1.Journey.Spec.TS'))).toMatch(/writes only design\.md/);
+  });
+
+  it.runIf(canLink)('refuses a shared/ that is a link to the folder or the project, whose files would be core-owned or outside', () => {
+    fs.symlinkSync(FOLDER, path.join(FOLDER, 'shared'), 'junction');
+    expect(write(path.join(FOLDER, 'shared', 'tokens.css'))).toMatch(/writes only design\.md/);
+    fs.unlinkSync(path.join(FOLDER, 'shared'));
+    fs.symlinkSync(PROJECT, path.join(FOLDER, 'shared'), 'junction');
+    expect(write(path.join(FOLDER, 'shared', 'app.js'))).toMatch(/reaches outside it through a link/);
   });
 
   it.runIf(canLink)('refuses a link in the folder whose target is a core-owned file of the folder', () => {
@@ -143,7 +177,7 @@ describe('a design chat writes only its design folder (PD-4)', () => {
     ] as const) {
       expect(designWriteBlock(tool, input, unreadable)).toMatch(/design role cannot be read/);
     }
-    expect(designWriteBlock('mcp__figma__get_file', {}, unreadable, true)).toBeUndefined();
+    expect(designWriteBlock('mcp__figma__get_file', {}, unreadable, { mcpReadOnly: true })).toBeUndefined();
     expect(designWriteBlock('Read', { file_path: path.join(PROJECT, 'a.ts') }, unreadable)).toBeUndefined();
     expect(designWriteBlock('Grep', { pattern: 'x' }, unreadable)).toBeUndefined();
     for (const name of DESIGN_BROWSER_TOOL_NAMES) expect(designWriteBlock(name, {}, unreadable)).toBeUndefined();
@@ -187,8 +221,8 @@ describe('a design chat writes only its design folder (PD-4)', () => {
     expect(designFilesWriteBlock({ file_path: path.join(FOLDER, 'variants', 'm.json') }, PROJECT)).toMatch(/is in the designs folder/);
   });
 
-  it('blocks Bash when its shell is one the read-only check cannot read', () => {
-    expect(designWriteBlock('Bash', { command: 'ls' }, { ...scope, shellPath: '/usr/bin/fish' })).toMatch(/cannot read/);
-    expect(designWriteBlock('Bash', { command: 'ls' }, { ...scope, shellPath: '/bin/bash' })).toBeUndefined();
+  it('blocks Bash when its shell is one the read-only check cannot read', async () => {
+    expect(await shell('Bash', 'ls', { ...scope, shellPath: '/usr/bin/fish' })).toMatch(/cannot read/);
+    expect(await shell('Bash', 'ls', { ...scope, shellPath: '/bin/bash' })).toBeUndefined();
   });
 });

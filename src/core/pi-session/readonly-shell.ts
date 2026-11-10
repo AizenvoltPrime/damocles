@@ -6,29 +6,38 @@
  *
  * Purpose: in plan mode and for a read-only agent (a subagent with no write tool, a team reviewer) a
  * provably read-only shell command runs with no prompt while any other asks the user, and the
- * checkpoint baseline wait skips proven reads in every mode. This classifier is the sole arbiter of "read-only": it FAILS CLOSED at every stage — any
+ * checkpoint baseline wait skips proven reads in every mode. Every caller reaches it through `provenReadOnlyShell`
+ * (proven-shell.ts), which adds the PowerShell PATH check. It FAILS CLOSED at every stage — any
  * command that is not POSITIVELY recognized as read-only gets a not-read-only verdict, which the gate routes to the approval flow.
  * Every disputed classification resolves toward not-read-only.
  *
  * Trust boundary: the adversary is the MODEL'S COMMAND STRING, not the user's machine configuration.
  * Git commands may invoke user-configured helpers (pager, textconv, fsmonitor) — trusted because the
  * model cannot change that config in plan mode or as a read-only agent without a shell command passing
- * the approval flow (which YOLO approves). The classifier's
- * SOLE job is to prevent the model from MUTATING STATE or EXECUTING ARBITRARY PROGRAMS without approval.
+ * the approval flow (which YOLO approves). The classifier's job is to keep the model from mutating state, executing
+ * arbitrary programs, opening network paths or reading environment secrets without approval.
  */
+
+import { leavesLocalDrives } from '../network-fs';
 
 export type ShellKind = 'bash' | 'powershell';
 
 export type ReadOnlyVerdict =
-  | { readOnly: true }
+  /** commandNames: under PowerShell, every command name PowerShell looks up for the command, a PATH script included; under bash, none. */
+  | { readOnly: true; commandNames: readonly string[] }
   | { readOnly: false; reason: string }; // reason = category text, e.g. "redirection (`>`) is not allowed"
+
+export interface ShellCheckContext {
+  /** Hosts a network path may name (`networkPathHost` of each open project folder and working folder spelling). */
+  readonly allowedNetworkHosts: ReadonlySet<string>;
+}
 
 /** Convenience DENY constructor keeps the reason strings terse and consistent at the call sites. */
 function deny(reason: string): ReadOnlyVerdict {
   return { readOnly: false, reason };
 }
 
-const ALLOW: ReadOnlyVerdict = { readOnly: true };
+const ALLOW: ReadOnlyVerdict = { readOnly: true, commandNames: [] };
 
 // ---------------------------------------------------------------------------
 // Command rule table (declarative; shared shape so Slice 3 can reuse it for PowerShell).
@@ -44,14 +53,16 @@ type CommandRule =
       bannedShortLetters?: readonly string[];
     }
   | { kind: 'exactArgs'; allowed: readonly (readonly string[])[] }
-  | { kind: 'git' };
+  | { kind: 'git' }
+  | { kind: 'sedPrint' }
+  | { kind: 'date' };
 
 /**
  * The bash allowlist. Every entry documents WHY it is safe and WHAT is banned. A command absent from
  * this table is denied by stage 3 (unknown token). `always` entries are pure readers that cannot mutate
  * state or execute another program; `flagGated` entries are readers with a narrow exec/write escape hatch
  * closed by banning specific flags; `exactArgs` entries are interpreters allowed ONLY for version probes;
- * `git` routes to the dedicated subcommand walker.
+ * `git` routes to the dedicated subcommand walker; `sedPrint` admits only `sed -n` with a print-only script.
  */
 const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule>([
   // Pure readers — safe ONLY because stage 1 structurally bans all redirection/substitution, so none of
@@ -63,7 +74,6 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   ['head', { kind: 'always' }],
   ['wc', { kind: 'always' }],
   ['stat', { kind: 'always' }],
-  ['file', { kind: 'always' }],
   ['which', { kind: 'always' }],
   ['du', { kind: 'always' }],
   ['df', { kind: 'always' }],
@@ -76,16 +86,14 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   ['grep', { kind: 'always' }],
   ['cut', { kind: 'always' }],
   ['tr', { kind: 'always' }],
-  ['diff', { kind: 'always' }],
   ['cmp', { kind: 'always' }],
   ['nl', { kind: 'always' }],
   ['sha256sum', { kind: 'always' }],
   ['md5sum', { kind: 'always' }],
   ['echo', { kind: 'always' }],
-  ['printf', { kind: 'always' }],
 
   // More stdout-only readers. Each takes an input operand and writes nothing: no output-file operand, no
-  // exec hook, no in-place mode. `base64 -d` decodes to stdout; `seq` takes only numbers.
+  // exec hook, no in-place mode.
   ['column', { kind: 'always' }],
   ['paste', { kind: 'always' }],
   ['comm', { kind: 'always' }],
@@ -94,7 +102,6 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   ['expand', { kind: 'always' }],
   ['od', { kind: 'always' }],
   ['strings', { kind: 'always' }],
-  ['base64', { kind: 'always' }],
   ['rev', { kind: 'always' }],
   // `seq` is DELIBERATELY ABSENT — do not add it. `seq inf` / `seq 1 inf` emit forever, and pi's bash
   // tool has no default timeout, so the turn hangs until the user cancels: the same hang class `tail -f`
@@ -106,10 +113,10 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   // is impossible, and `segment()` classifies each `&&`/`|`/`;` segment independently, so `cd x && <cmd>`
   // gives `<cmd>` no RULE it lacked.
   //
-  // It does, however, change what a later RELATIVE path resolves to — and the classifier is per-segment
-  // and stateless, so it cannot see that `cd /proc/self && cat environ` reads the one file
-  // `screenProcEnviron` exists to block. That screen therefore also refuses `cd` INTO procfs; see
-  // `PROC_DIR_PATH`. Any future path-based screen must close the same laundering path.
+  // It does, however, change what a later RELATIVE path resolves to, and the classifier does not track the
+  // working folder, so every path screen must hold without it: `environRefusal` judges the last segment,
+  // `cd` into a `proc` folder is refused, and a walk after a `cd` that left the working folder is refused
+  // (`nativePathRefusal`).
   //
   // NOTE: `classifyPowershell` looks up the bash table FIRST, so this also allows `cd` in PowerShell,
   // where it aliases the read-only `Set-Location` — intended, and stated here because the entry lives
@@ -119,8 +126,12 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   // jq is DELIBERATELY ABSENT — do not add it. It predefines `$ENV` and an `env` builtin, so
   // `jq -n 'env'` dumps the process environment; single quotes make `$` literal to the stage-1 scan, so
   // the structural `$` ban does not stop `jq -n '$ENV'`. That is the same env-secret disclosure
-  // `screenProcEnviron` exists to block, and screening jq's program text means parsing a language —
-  // the same reason `awk` and `sed` are out.
+  // `environRefusal` exists to block, and screening jq's program text means parsing a language —
+  // the same reason `awk` is out.
+
+  // sed — only `-n` with a script of print commands (`evalSedPrint`). Its other commands and options write
+  // files (`w`, `s///w`, `-i`), run programs (`e`, `s///e`) or read a script from elsewhere (`-f`, `-e`).
+  ['sed', { kind: 'sedPrint' }],
 
   // find — recurses and prints; its escape hatches all EXECUTE a program (`-exec`/`-execdir`/`-ok`/
   // `-okdir`) or WRITE (`-delete`, `-fls`, `-fprint*`). find options are single-dash WORDS, not clusters,
@@ -133,26 +144,41 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
     },
   ],
 
-  // sort — a reader except `-o/--output` (writes a file) and `--compress-program` (executes an arbitrary
-  // program to compress temp files). Ban the short letter `o` so `-o` AND clusters like `-zo` are caught.
+  // sort — a reader except `-o/--output` (writes a file), `--compress-program` (executes an arbitrary
+  // program to compress temp files) and `-T/--temporary-directory` (puts its temp files in a folder the model names,
+  // where a killed sort leaves them). Ban the short letters `o` and `T` so clusters like `-zo` are caught.
   [
     'sort',
     {
       kind: 'flagGated',
-      bannedFlags: ['--output', '--compress-program'],
-      bannedShortLetters: ['o'],
+      bannedFlags: ['--output', '--compress-program', '--temporary-directory'],
+      bannedShortLetters: ['o', 'T'],
     },
   ],
 
   // rg (ripgrep) — a reader except its preprocessor/exec hooks: `--pre` runs a program per file,
   // `--pre-glob` scopes it, `--hostname-bin` runs a program to resolve the hostname.
+  // `-z`/`--search-zip` runs gzip, xz, zstd and the other decompressors.
   [
     'rg',
     {
       kind: 'flagGated',
-      bannedFlags: ['--pre', '--pre-glob', '--hostname-bin'],
+      bannedFlags: ['--pre', '--pre-glob', '--hostname-bin', '--search-zip'],
+      bannedShortLetters: ['z'],
     },
   ],
+
+  // file — `-C`/`--compile` writes a `.mgc` file; `-z`/`-Z` (`--uncompress`, `--uncompress-noreport`) run decompressors.
+  ['file', { kind: 'flagGated', bannedFlags: ['--compile', '--uncompress', '--uncompress-noreport'], bannedShortLetters: ['C', 'z', 'Z'] }],
+
+  // diff — `-l`/`--paginate` runs `pr` on the output (GNU and BSD).
+  ['diff', { kind: 'flagGated', bannedFlags: ['--paginate'], bannedShortLetters: ['l'] }],
+
+  // base64 — macOS and BSD `-o`/`--output` write the output file.
+  ['base64', { kind: 'flagGated', bannedFlags: ['--output'], bannedShortLetters: ['o'] }],
+
+  // printf — bash's builtin `-v NAME` assigns a shell variable, and `printf -v PATH <folder>` makes a later segment run that folder's programs.
+  ['printf', { kind: 'flagGated', bannedFlags: [], bannedShortLetters: ['v'] }],
 
   // tail — a reader except FOLLOW mode (`-f`/`-F`/`--follow`), which never returns: pi's native bash tool
   // has NO default timeout, so a follow HANGS the turn until the user cancels. Ban the short letter `f`
@@ -172,16 +198,18 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   ['uniq', { kind: 'flagGated', bannedFlags: [] }],
   ['xxd', { kind: 'flagGated', bannedFlags: [] }],
 
-  // tree — a reader except `-o file`, which writes the listing to a file. Ban short letter `o`.
-  ['tree', { kind: 'flagGated', bannedFlags: [], bannedShortLetters: ['o'] }],
+  // tree — a reader except `-o file`, which writes the listing to a file, and `-R`, which runs tree again in each folder with
+  // `-o 00Tree.html`. Ban short letters `o` and `R`.
+  ['tree', { kind: 'flagGated', bannedFlags: [], bannedShortLetters: ['o', 'R'] }],
 
-  // date — a reader except `-s/--set`, which SETS the system clock (state mutation). Ban short letter `s`.
-  ['date', { kind: 'flagGated', bannedFlags: ['--set'], bannedShortLetters: ['s'] }],
+  // date — a reader except `-s/--set` and an operand not starting with `+`, which SET the system clock (`evalDate`).
+  ['date', { kind: 'date' }],
 
-  // Interpreters — allowed ONLY as a version probe. Any other argument executes a script/expression.
+  // Interpreters — allowed ONLY as a version probe. Any other argument executes a script/expression; python's `-v` is
+  // verbose mode, which runs the program it reads from stdin (`echo '...' | python -v`).
   ['node', { kind: 'exactArgs', allowed: [['--version'], ['-v'], ['-V']] }],
-  ['python', { kind: 'exactArgs', allowed: [['--version'], ['-v'], ['-V']] }],
-  ['python3', { kind: 'exactArgs', allowed: [['--version'], ['-v'], ['-V']] }],
+  ['python', { kind: 'exactArgs', allowed: [['--version'], ['-V']] }],
+  ['python3', { kind: 'exactArgs', allowed: [['--version'], ['-V']] }],
 
   // git — routed to the dedicated subcommand walker (read-only subcommands only).
   ['git', { kind: 'git' }],
@@ -366,6 +394,8 @@ function scanStructure(command: string): ReadOnlyVerdict | null {
     // none or double state: backslash consumes the next character as a literal.
     if (ch === '\\') {
       if (i === command.length - 1) return deny('a trailing backslash is not allowed');
+      // bash deletes `\<newline>` as a line continuation, joining the words on either side.
+      if (command[i + 1] === '\n' || command[i + 1] === '\r') return deny('multi-line commands are not allowed');
       i++; // skip the escaped character
       continue;
     }
@@ -427,9 +457,10 @@ function scanStructure(command: string): ReadOnlyVerdict | null {
  * Split the (already structurally validated) command into segments on unquoted `&&`, `||`, `|`, `;`.
  * The scan in stage 1 guarantees quotes are balanced and no banned metachars remain, so this pass only
  * needs quote/backslash tracking to avoid splitting on a separator that sits inside quotes.
+ * Each segment carries the separator that ended it; the last carries none.
  */
-function segment(command: string): string[] {
-  const segments: string[] = [];
+function segment(command: string): Array<{ text: string; endedBy?: ';' | '&&' | '||' | '|' }> {
+  const segments: Array<{ text: string; endedBy?: ';' | '&&' | '||' | '|' }> = [];
   let current = '';
   let state: ScanState = 'none';
   for (let i = 0; i < command.length; i++) {
@@ -468,24 +499,24 @@ function segment(command: string): string[] {
       continue;
     }
     if (ch === ';') {
-      segments.push(current);
+      segments.push({ text: current, endedBy: ';' });
       current = '';
       continue;
     }
     if ((ch === '&' && command[i + 1] === '&') || (ch === '|' && command[i + 1] === '|')) {
-      segments.push(current);
+      segments.push({ text: current, endedBy: ch === '&' ? '&&' : '||' });
       current = '';
       i++; // consume the second char
       continue;
     }
     if (ch === '|') {
-      segments.push(current);
+      segments.push({ text: current, endedBy: '|' });
       current = '';
       continue;
     }
     current += ch;
   }
-  segments.push(current);
+  segments.push({ text: current });
   return segments;
 }
 
@@ -493,37 +524,66 @@ function segment(command: string): string[] {
 // Stage 3 — tokenize a segment on unquoted whitespace (quote/backslash aware).
 // ---------------------------------------------------------------------------
 
+/** The characters a backslash escapes inside bash double quotes; before any other the backslash stays. */
+const BASH_DOUBLE_QUOTE_ESCAPABLE = '$`"\\\n';
+
 /**
- * Tokenize a segment on unquoted whitespace and strip surrounding quotes / backslash escapes so the
- * table lookup and flag matching see the shell's actual argument values. Stage 1 has already guaranteed
- * the segment is structurally clean, so this pass is unquoting, not re-validation.
+ * Tokenize a segment on unquoted whitespace and remove quoting so the table lookup and flag matching see
+ * the argument values the shell hands the program. Stage 1 has already guaranteed the segment is
+ * structurally clean, so this pass is unquoting, not re-validation.
+ *
+ * bash: an unquoted `\x` is `x`; inside double quotes `\` escapes only `$`, backtick, `"`, `\` and a line
+ * break and is otherwise kept; single quotes are literal. PowerShell: `\` is an ordinary character, and a
+ * doubled quote inside a string of the same quote (`''` in `'…'`, `""` in `"…"`) is one literal quote, and a word
+ * that starts with a quote ends at its closing quote, so `'x'y` is two arguments.
  */
-function tokenize(segment: string): string[] {
+export function tokenize(segment: string, dialect: ShellKind): string[] {
   const tokens: string[] = [];
   let current = '';
   let started = false; // distinguishes an empty-string token ('' ) from no token yet
+  let quotedWord = false;
   let state: ScanState = 'none';
   for (let i = 0; i < segment.length; i++) {
-    const ch = segment[i];
+    const ch = segment[i] as string;
 
-    if (state === 'single') {
-      if (ch === "'") state = 'none';
-      else current += ch;
+    if (state !== 'none') {
+      const quote = state === 'single' ? "'" : '"';
+      if (ch === quote) {
+        if (dialect === 'powershell' && segment[i + 1] === quote) {
+          current += quote;
+          i++;
+        } else {
+          state = 'none';
+          if (quotedWord) {
+            tokens.push(current);
+            current = '';
+            started = false;
+            quotedWord = false;
+          }
+        }
+        continue;
+      }
+      if (ch === '\\' && state === 'double' && dialect === 'bash' && i + 1 < segment.length) {
+        const next = segment[i + 1] as string;
+        if (BASH_DOUBLE_QUOTE_ESCAPABLE.includes(next)) {
+          if (next !== '\n') current += next;
+          i++;
+          continue;
+        }
+      }
+      current += ch;
       continue;
     }
 
-    if (ch === '\\') {
+    if (ch === '\\' && dialect === 'bash') {
       if (i + 1 < segment.length) {
-        current += segment[i + 1] ?? '';
-        started = true;
+        const next = segment[i + 1] as string;
+        if (next !== '\n') {
+          current += next;
+          started = true;
+        }
         i++;
       }
-      continue;
-    }
-
-    if (state === 'double') {
-      if (ch === '"') state = 'none';
-      else current += ch;
       continue;
     }
 
@@ -536,13 +596,9 @@ function tokenize(segment: string): string[] {
       }
       continue;
     }
-    if (ch === "'") {
-      state = 'single';
-      started = true;
-      continue;
-    }
-    if (ch === '"') {
-      state = 'double';
+    if (ch === "'" || ch === '"') {
+      state = ch === "'" ? 'single' : 'double';
+      quotedWord = dialect === 'powershell' && !started;
       started = true;
       continue;
     }
@@ -660,6 +716,26 @@ function evalFlagGated(
     }
   }
 
+  return ALLOW;
+}
+
+/**
+ * `date` as a reader: no `-s`/`--set`, and only `+FORMAT` operands, since GNU and BSD date set the clock to any other operand
+ * (`date 0101000025`). The value after `-d`, `-f`, `-r`, `-v` or `-z` (GNU and BSD) is skipped.
+ */
+function evalDate(args: readonly string[]): ReadOnlyVerdict {
+  const flags = evalFlagGated('date', args, ['--set'], ['s']);
+  if (!flags.readOnly) return flags;
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (options && arg === '--') options = false;
+    else if (options && arg.startsWith('-') && arg !== '-') {
+      if (/^-[uRjn]*[dfrvz]$/.test(arg) || /^--(?:date|file|reference)$/.test(arg)) i++;
+    } else if (!arg.startsWith('+')) {
+      return deny(`\`date\` with the operand \`${arg}\` is not allowed because it sets the clock; format with \`date +FORMAT\``);
+    }
+  }
   return ALLOW;
 }
 
@@ -838,69 +914,407 @@ function evalGit(args: readonly string[]): ReadOnlyVerdict {
 }
 
 // ---------------------------------------------------------------------------
-// Bash classification pipeline.
+// sed print-only walker.
 // ---------------------------------------------------------------------------
 
-/**
- * Reading `/proc/<pid|self>/environ` dumps a process's environment block — the same env-secret
- * disclosure the PowerShell classifier blocks for the `env:` PSDrive. A plain reader (`cat`, `head`,
- * `grep`, …) can open it, so screen ANY token that resolves to a `.../environ` procfs path, before the
- * table lookup, so an allowlisted reader pointed at it is still denied. Matches the canonical procfs
- * spellings (`/proc/self/environ`, `/proc/<pid>/environ`, `/proc/<pid>/task/<tid>/environ`); the model
- * cannot forge a symlink to bypass it (all writes are blocked in plan mode).
- */
-const PROC_ENVIRON_PATH = /\/proc\/(?:self|thread-self|\d+)\/(?:task\/\d+\/)?environ(?:$|\/)/;
+/** Long options that change only how sed reads and matches; exact spellings only, so an abbreviation fails closed. */
+const SED_ALLOWED_LONG: ReadonlySet<string> = new Set(['--regexp-extended', '--separate', '--null-data', '--unbuffered', '--posix', '--sandbox']);
+const SED_QUIET_LONG: ReadonlySet<string> = new Set(['--quiet', '--silent']);
+/** `-n` plus the short forms of `SED_ALLOWED_LONG`; none takes a value, so a cluster's every letter is an option. */
+const SED_ALLOWED_SHORT = 'nErsuz';
 
 /**
- * A `cd` into procfs, which would let a LATER segment read `environ` by a relative name that carries no
- * `/proc/` prefix for `PROC_ENVIRON_PATH` to match (`cd /proc/self && cat environ`). The classifier is
- * per-segment and stateless by design — it does not model the working directory across segments — so the
- * only sound fix is to refuse to ENTER the directory whose contents are screened. Matches any path under
- * `/proc`, since `cd /proc` + `cat self/environ` is the same laundering one level up.
+ * `sed` as a reader: `-n` (or `--quiet`/`--silent`), only the options above, and exactly one script argument whose commands
+ * are all `p`. Options may follow operands, as getopt permutes them, until `--`.
  */
-const PROC_DIR_PATH = /^\/proc(?:$|\/)/;
-
-/**
- * Collapse duplicate slashes so the screens see one canonical spelling. POSIX treats `//dev` specially
- * (implementation-defined) but Linux collapses it, and every path here is a Linux procfs path: without
- * this, `cat /proc//self/environ` and `cat /proc/self//environ` both read the file while matching
- * neither pattern. Interior `.` / `..` segments are NOT resolved — a token containing either is refused
- * outright below rather than normalized, since resolving them correctly needs the real cwd.
- */
-function collapseSlashes(token: string): string {
-  return token.replace(/\/{2,}/g, '/');
+function evalSedPrint(args: readonly string[]): ReadOnlyVerdict {
+  const inPlace = (arg: string): ReadOnlyVerdict => deny(`\`sed\` with \`${arg}\` is not allowed because it edits files in place`);
+  const scriptOption = (arg: string): ReadOnlyVerdict => deny(`\`sed\` with \`${arg}\` is not allowed; give exactly one script argument, with no \`-e\` or \`-f\``);
+  let quiet = false;
+  let script: string | undefined;
+  let optionsEnded = false;
+  for (const arg of args) {
+    if (optionsEnded || arg === '-' || !arg.startsWith('-')) {
+      script ??= arg;
+      continue;
+    }
+    if (arg === '--') {
+      optionsEnded = true;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      const name = arg.split('=', 1)[0]!;
+      if (SED_QUIET_LONG.has(arg)) quiet = true;
+      else if (SED_ALLOWED_LONG.has(arg)) continue;
+      else if (name.length > 2 && '--in-place'.startsWith(name)) return inPlace(arg);
+      else if (name.length > 2 && ('--expression'.startsWith(name) || '--file'.startsWith(name))) return scriptOption(arg);
+      else return deny(`\`sed\` option \`${name}\` is not allowed`);
+      continue;
+    }
+    for (const letter of arg.slice(1)) {
+      if (letter === 'i') return inPlace(arg);
+      if (letter === 'e' || letter === 'f') return scriptOption(arg);
+      if (!SED_ALLOWED_SHORT.includes(letter)) return deny(`\`sed\` option \`-${letter}\` is not allowed`);
+      if (letter === 'n') quiet = true;
+    }
+  }
+  if (!quiet) return deny("`sed` without `-n` is not allowed; read lines with `sed -n '<address>p' <file>`");
+  if (script === undefined) return deny('`sed` needs a script');
+  return sedScriptVerdict(script);
 }
 
 /**
- * Screen every token of a segment for procfs env-secret access. Runs BEFORE the table lookup, so an
- * allowlisted reader (`cat`/`head`/`grep`) pointed at `environ` is still denied.
- *
- * Three distinct evasions are closed here, all confirmed live against the pre-fix classifier:
- *  - doubled slashes (`/proc//self/environ`) — collapsed before matching
- *  - `cd` into procfs (`cd /proc/self && cat environ`) — entering the directory is refused
- *  - dot segments (`/proc/self/./environ`, `/proc/self/task/../environ`) — refused, not normalized,
- *    because resolving `..` soundly requires the working directory this classifier deliberately
- *    does not track. Fail-closed: a procfs path with a dot segment has no legitimate read-only use.
+ * The print-only script grammar: `cmd (';' cmd)*`, `cmd := addr? 'p'`, `addr := line (',' (line | '+' N))?`,
+ * `line := N | '$' | N '~' N | '/' re '/' 'I'?`, where `re` holds no unescaped `/` and no line break, which is where GNU sed's
+ * own scan ends a regex. Blanks may stand around a command.
  */
-function screenProcEnviron(command: string, tokens: readonly string[]): ReadOnlyVerdict | null {
-  for (const token of tokens) {
-    const normalized = collapseSlashes(token);
-    if (PROC_ENVIRON_PATH.test(normalized)) {
-      return deny('reading `/proc/<pid>/environ` is not allowed (it exposes environment secrets)');
+function sedScriptVerdict(script: string): ReadOnlyVerdict {
+  let i = 0;
+  const shown = (ch: string): string => (ch === '\n' ? '\\n' : ch);
+  const blanks = (): void => {
+    while (script[i] === ' ' || script[i] === '\t') i++;
+  };
+  const number = (): boolean => {
+    const start = i;
+    while (/[0-9]/.test(script[i] ?? '')) i++;
+    return i > start;
+  };
+  const badAddress = (): ReadOnlyVerdict => {
+    const at = script[i] === undefined ? 'the end of the script' : `\`${shown(script[i]!)}\``;
+    return deny(`a \`sed\` address must be a line number, \`$\`, \`N~N\`, /regex/ or \`+N\`, not ${at}`);
+  };
+  const line = (): ReadOnlyVerdict | null => {
+    if (script[i] === '$') {
+      i++;
+      return null;
     }
-    if (normalized.includes('/proc/') || normalized === '/proc') {
-      if (/(?:^|\/)\.\.?(?:$|\/)/.test(normalized)) {
-        return deny('a `/proc` path with `.` or `..` segments is not allowed (it can reach environment secrets)');
+    if (script[i] === '/') {
+      for (i++; i < script.length && script[i] !== '/'; i++) {
+        if (script[i] === '\\') i++;
+        if (script[i] === '\n') return deny('a `sed` address /regex/ with a line break is not allowed');
       }
+      if (i >= script.length) return deny('a `sed` address /regex/ is not closed');
+      i++;
+      if (script[i] === 'I') i++;
+      return null;
     }
-    if (command === 'cd' && PROC_DIR_PATH.test(normalized)) {
-      return deny('`cd` into `/proc` is not allowed (it would expose environment secrets to a later command)');
+    if (!number()) return badAddress();
+    if (script[i] === '~') {
+      i++;
+      if (!number()) return badAddress();
+    }
+    return null;
+  };
+  for (;;) {
+    blanks();
+    if (script[i] !== undefined && /[0-9$/]/.test(script[i]!)) {
+      const first = line();
+      if (first) return first;
+      if (script[i] === ',') {
+        i++;
+        if (script[i] === '+') {
+          i++;
+          if (!number()) return badAddress();
+        } else {
+          const second = line();
+          if (second) return second;
+        }
+      }
+      blanks();
+    }
+    const command = script[i];
+    if (command === undefined) return deny('a `sed` script command is missing; only `p` is allowed');
+    if (command !== 'p') {
+      return deny(`\`sed\` script command \`${shown(command)}\` is not allowed; only \`p\` after a line number, \`$\`, \`N~N\` or /regex/ address is`);
+    }
+    i++;
+    blanks();
+    if (i >= script.length) return ALLOW;
+    if (script[i] !== ';') return deny(`\`sed\` script text \`${shown(script[i]!)}\` after \`p\` is not allowed; separate commands with \`;\``);
+    i++;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Path screens: wildcards, network paths, environment files and procfs walks.
+// ---------------------------------------------------------------------------
+
+/**
+ * The first word of a bash segment holding an unquoted `*`, `?` or `[`, as written, and that character. bash replaces such a
+ * word with the file names it matches before the program starts, so the classifier cannot know the argv (a file named
+ * `-n` becomes an option of `ls *`).
+ */
+function unquotedWildcard(segment: string): { word: string; char: string } | undefined {
+  let state: ScanState = 'none';
+  let wordStart = 0;
+  let found: string | undefined;
+  let i = 0;
+  for (; i < segment.length; i++) {
+    const ch = segment[i]!;
+    if (state === 'single') {
+      if (ch === "'") state = 'none';
+      continue;
+    }
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (state === 'double') {
+      if (ch === '"') state = 'none';
+      continue;
+    }
+    if (ch === "'") state = 'single';
+    else if (ch === '"') state = 'double';
+    else if (ch === ' ' || ch === '\t') {
+      if (found !== undefined) break;
+      wordStart = i + 1;
+    } else if (found === undefined && (ch === '*' || ch === '?' || ch === '[')) found = ch;
+  }
+  return found === undefined ? undefined : { word: segment.slice(wordStart, i), char: found };
+}
+
+/**
+ * The parts of an argument a program may open as a path: the word, the text after each `=`, a single-dash word's attached
+ * value, and the file after a leading `@` (a response file, as binutils reads it).
+ */
+function pathParts(word: string): string[] {
+  const parts = [word];
+  if (word.startsWith('@')) parts.push(word.slice(1));
+  for (let i = word.indexOf('='); i >= 0; i = word.indexOf('=', i + 1)) parts.push(word.slice(i + 1));
+  const letters = /^-[A-Za-z0-9]+/.exec(word);
+  if (letters && !word.startsWith('--')) parts.push(word.slice(letters[0].length));
+  return parts.filter((part) => part !== '');
+}
+
+/** A path's segments; Windows, MSYS2 and PowerShell all read `\` as a separator too. */
+function segmentsOf(part: string): string[] {
+  return part.split(/[\\/]/);
+}
+
+/** Whether a PowerShell wildcard pattern (`*`, `?`, `[az]`, `[a-z]`) matches name, ignoring case, as the providers match paths. */
+function psWildcardMatches(pattern: string, name: string): boolean {
+  const p = pattern.toLowerCase();
+  const n = name.toLowerCase();
+  // matched[j]: the pattern read so far matches the first j characters of name.
+  let matched = Array.from({ length: n.length + 1 }, (_, j) => j === 0);
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i]!;
+    const close = ch === '[' ? p.indexOf(']', i + 2) : -1;
+    const accepts = (c: string): boolean => {
+      if (ch === '?') return true;
+      if (close < 0) return c === ch;
+      const set = p.slice(i + 1, close);
+      for (let k = 0; k < set.length; k++) {
+        if (set[k + 1] === '-' && k + 2 < set.length) {
+          if (c >= set[k]! && c <= set[k + 2]!) return true;
+          k += 2;
+        } else if (c === set[k]) return true;
+      }
+      return false;
+    };
+    const next = matched.map(() => false);
+    for (let j = 0; j <= n.length; j++) {
+      if (ch === '*') next[j] = matched[j]! || (j > 0 && next[j - 1]!);
+      else next[j] = j > 0 && matched[j - 1]! && accepts(n[j - 1]!);
+    }
+    matched = next;
+    if (close > 0) i = close;
+  }
+  return matched[n.length]!;
+}
+
+/** Whether a path segment names `name` (ignoring case), or, as a PowerShell wildcard pattern, may match it. */
+function segmentNames(segment: string, name: string, wildcards: boolean): boolean {
+  return wildcards ? psWildcardMatches(segment, name) : segment.toLowerCase() === name;
+}
+
+/**
+ * Screen each argument for a network or device path (`leavesLocalDrives`): opening `\\host\share` sends the user's NTLM hash
+ * to `host`. PowerShell also binds each element of a comma list as a path and reads a `FileSystem::` provider-qualified one.
+ */
+function networkPathRefusal(args: readonly string[], context: ShellCheckContext, dialect: ShellKind): ReadOnlyVerdict | null {
+  for (const arg of args) {
+    for (const part of argumentPaths(arg, dialect)) {
+      if (leavesLocalDrives(part, context.allowedNetworkHosts)) {
+        return deny(`a network or device path (\`${arg}\`) is not allowed: opening it can send your Windows credentials to another computer`);
+      }
     }
   }
   return null;
 }
 
-function classifyBash(command: string): ReadOnlyVerdict {
+const PS_FILESYSTEM_PROVIDER = /^(?:microsoft\.powershell\.core\\)?filesystem::/i;
+
+/** The paths an argument may name (`pathParts`); under PowerShell, of each comma element, which a cmdlet binds as its own path, with a `FileSystem::` prefix dropped. */
+function argumentPaths(arg: string, dialect: ShellKind): string[] {
+  const elements = dialect === 'powershell' ? arg.split(',').map((element) => element.replace(PS_FILESYSTEM_PROVIDER, '')) : [arg];
+  return elements.flatMap(pathParts);
+}
+
+/**
+ * Environments are private (`/proc/<pid>/environ` is mode 0400) and Damocles refuses environment dumps, so no argument part
+ * may end in a segment named `environ`. That holds whatever the working folder and whatever links the path crosses
+ * (`proc/self/environ` after `cd /`, `/dev/fd/../environ`). A cmdlet's wildcard (`/proc/self/envir*`) counts where it can
+ * reach procfs: in an absolute path, one with `..`, or after a `cd` that left the working folder (`walkRootRisk`).
+ * Process listings stay proven: command lines are public (`/proc/<pid>/cmdline` is 0444; CWE-214 makes a secret there its program's bug).
+ */
+function environRefusal(args: readonly string[], dialect: ShellKind, wildcards: boolean, cwdMoved: boolean): ReadOnlyVerdict | null {
+  for (const arg of args) {
+    for (const part of argumentPaths(arg, dialect)) {
+      const segments = segmentsOf(part);
+      const reachesProcfs = cwdMoved || segments[0] === '' || segments.includes('..');
+      if (segmentNames(segments.at(-1)!, 'environ', wildcards && reachesProcfs)) {
+        return deny(`reading a file named \`environ\` (\`${arg}\`) is not allowed: \`/proc/<pid>/environ\` holds a process's environment secrets`);
+      }
+    }
+  }
+  return null;
+}
+
+const PS_REGISTRY_PROVIDER = /^(?:microsoft\.powershell\.core\\)?registry::/i;
+// Cygwin's registry folders, as MSYS2 programs in Git Bash read them.
+const PROCFS_REGISTRY = /^registry(?:32|64)?$/i;
+
+/**
+ * The subkeys below a user's hive that a path names, from the top: `HKCU:\Environment`, `Registry::HKEY_CURRENT_USER\Environment`,
+ * `Registry::HKEY_USERS\<sid>\Environment` and `/proc/registry/HKEY_CURRENT_USER/Environment` all give `['Environment']`; a
+ * hive, `Registry::`, `HKEY_USERS` or one of its users gives `[]`, and so does such a path holding `..`, which the registry
+ * provider and Cygwin both resolve (`HKCU:\Software\..\Environment`). Undefined for any other path.
+ * A `registry` segment is Cygwin's registry folder when `proc` comes before it, or when the path may climb or start
+ * elsewhere than the working folder: it holds `..` (`/proc/self/../registry`), or is relative after `cd` left the working folder.
+ */
+function userHiveSubkeys(part: string, wildcards: boolean, cwdMoved: boolean): string[] | undefined {
+  const provider = PS_REGISTRY_PROVIDER.exec(part);
+  const written = segmentsOf(provider ? part.slice(provider[0].length) : part);
+  const segments = written.filter((segment) => segment !== '' && segment !== '.');
+  const climbs = segments.includes('..');
+  let hive: string;
+  let below: string[];
+  const drive = provider ? null : /^(hkcu|hku):(.*)$/i.exec(segments[0] ?? '');
+  if (provider || drive === null) {
+    const registryFolder = (segment: string, i: number): boolean =>
+      PROCFS_REGISTRY.test(segment) && (segments[i - 1]?.toLowerCase() === 'proc' || climbs || (cwdMoved && written[0] !== ''));
+    const start = provider ? 0 : segments.findIndex(registryFolder) + 1;
+    if (!provider && start === 0) return undefined;
+    if (start === segments.length) return [];
+    hive = segments[start]!;
+    below = segments.slice(start + 1);
+  } else {
+    hive = drive[1]!;
+    // `HKCU:Environment` is relative to the drive's location, its root in a fresh session.
+    below = [...(drive[2] && drive[2] !== '.' ? [drive[2]] : []), ...segments.slice(1)];
+  }
+  const cu = segmentNames(hive, 'hkey_current_user', wildcards) || segmentNames(hive, 'hkcu', wildcards);
+  const users = segmentNames(hive, 'hkey_users', wildcards) || segmentNames(hive, 'hku', wildcards);
+  if (!cu && !users && !(provider && climbs)) return undefined;
+  if (climbs || below.includes('..')) return [];
+  return cu ? below : below.slice(1);
+}
+
+/**
+ * A user's saved environment variables are as private as a process's (`HKCU\Environment`, `HKCU\Volatile Environment` and
+ * their `HKEY_USERS\<sid>` forms are readable only by the user, SYSTEM and administrators), so no argument may name those
+ * keys, a value under them, or a key above them that a listing or walk would show them from. The system-wide
+ * `HKLM\...\Session Manager\Environment`, which every user can read, and every other key stay readable.
+ */
+function registryEnvironmentRefusal(args: readonly string[], dialect: ShellKind, wildcards: boolean, cwdMoved: boolean): ReadOnlyVerdict | null {
+  for (const arg of args) {
+    for (const part of argumentPaths(arg, dialect)) {
+      const subkeys = userHiveSubkeys(part, wildcards, cwdMoved);
+      if (subkeys === undefined) continue;
+      const key = subkeys[0];
+      if (key === undefined || segmentNames(key, 'environment', wildcards) || segmentNames(key, 'volatile environment', wildcards)) {
+        return deny(`reading \`${arg}\` is not allowed: a user's \`Environment\` and \`Volatile Environment\` registry keys hold their saved environment secrets`);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Why a folder a command walks may reach `/proc/<pid>/environ`, else undefined. The session's working folder is never `/`
+ * nor inside procfs, so a walk reaches it only by climbing with `..` (`/dev/fd/..` is `/proc/self`), from wherever an
+ * earlier `cd` moved, or from an absolute path that is the root or holds a `proc` segment.
+ */
+function walkRootRisk(root: string, cwdMoved: boolean, wildcards: boolean): string | undefined {
+  const segments = segmentsOf(root);
+  if (segments.includes('..')) return 'a path with `..`';
+  if (segments[0] !== '') return cwdMoved ? 'a relative path after `cd` left the working folder' : undefined;
+  if (segments.some((segment) => segmentNames(segment, 'proc', wildcards))) return 'a `proc` folder';
+  if (segments.every((segment) => segment === '' || segment === '.')) return 'the root folder';
+  return undefined;
+}
+
+/** Judges every path any argument names (`argumentPaths`), since an option's value can name a folder too (`--from-file=DIR`). */
+function walkRefusal(subject: string, args: readonly string[], dialect: ShellKind, cwdMoved: boolean, wildcards: boolean): ReadOnlyVerdict | null {
+  // No operand walks the working folder.
+  const roots = [...args.flatMap((arg) => argumentPaths(arg, dialect)), ...(operands(args).length === 0 ? ['.'] : [])];
+  for (const root of roots) {
+    const risk = walkRootRisk(root, cwdMoved, wildcards);
+    if (risk) {
+      return deny(`${subject} over ${risk} (\`${root}\`) is not allowed: it can reach \`/proc/<pid>/environ\`, which holds environment secrets; name a folder below the working folder`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a bash-table program may read the files of a folder and print them: rg, grep recursing, diff (two folders compare
+ * their same-named files), and git's `diff`, which runs as `--no-index` on a path outside the working tree.
+ */
+function walksFolders(cmd: string, args: readonly string[]): boolean {
+  switch (cmd) {
+    case 'rg':
+      return true;
+    case 'grep':
+      return args.some((arg) => clusterBansLetter(arg, ['r', 'R', 'd']) || matchesBannedFlag(arg, ['--recursive', '--dereference-recursive', '--directories']));
+    case 'diff':
+      return true;
+    case 'git':
+      return args.find((arg) => !arg.startsWith('-')) === 'diff' || args.some((arg) => matchesBannedFlag(arg, ['--no-index']));
+    default:
+      return false;
+  }
+}
+
+/** The operands of a bash-table command (words not starting with `-`, and a lone `-`), which a walker may take as folders. */
+function operands(args: readonly string[]): string[] {
+  return args.filter(isPositionalOperand);
+}
+
+/** Whether `cd` with these arguments leaves the working folder for a place a later relative path cannot be judged from. */
+function cdLeavesWorkingFolder(args: readonly string[]): boolean {
+  const target = operands(args)[0];
+  if (target === undefined || target === '-' || target.startsWith('~') || /^[A-Za-z]:/.test(target)) return true;
+  const segments = segmentsOf(target);
+  return segments[0] === '' || segments.includes('..');
+}
+
+/**
+ * The screens every bash-table program gets under either shell, before its rule: network paths, `environ`, and the folders
+ * `cd` enters or a walker reads. `wildcards`: arguments are PowerShell wildcard patterns (a cmdlet's), not literal paths.
+ */
+function nativePathRefusal(cmd: string, args: readonly string[], cwdMoved: boolean, context: ShellCheckContext, dialect: ShellKind): ReadOnlyVerdict | null {
+  const screened = networkPathRefusal(args, context, dialect) ?? environRefusal(args, dialect, false, cwdMoved) ?? registryEnvironmentRefusal(args, dialect, false, cwdMoved);
+  if (screened) return screened;
+  if (cmd === 'cd') {
+    const target = operands(args)[0];
+    if (target !== undefined && segmentsOf(target).some((segment) => segmentNames(segment, 'proc', false))) {
+      return deny(`\`cd\` into a \`proc\` folder (\`${target}\`) is not allowed: a later command could read \`environ\` there by a relative name`);
+    }
+    // PowerShell's `cd` enters a provider (`HKCU:`, `Registry::`), where a later relative name reads that store.
+    if (target !== undefined && /^[^\\/:]{2,}:|::/.test(target)) {
+      return deny(`\`cd\` into a PowerShell drive or provider other than a file system drive (\`${target}\`) is not allowed`);
+    }
+  }
+  return walksFolders(cmd, args) ? walkRefusal(`\`${cmd}\` reading folders`, args, dialect, cwdMoved, false) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Bash classification pipeline.
+// ---------------------------------------------------------------------------
+
+function classifyBash(command: string, context: ShellCheckContext): ReadOnlyVerdict {
   // Stage 0 — strip provably inert redirections. The stripped string feeds BOTH stage 1 and stage 2,
   // else `>` and `/dev/null` land in the arg list and break the positional-count rule.
   const scannable = stripNoOpRedirections(command);
@@ -909,11 +1323,14 @@ function classifyBash(command: string): ReadOnlyVerdict {
   const structural = scanStructure(scannable);
   if (structural) return structural;
 
-  // Stage 2 — segmentation; every segment must independently pass.
+  // Stage 2 — segmentation; every segment must independently pass. A `cd` changes where the later segments' relative paths point.
   const segments = segment(scannable);
-  for (const seg of segments) {
+  let cwdMoved = false;
+  for (const [index, { text: seg }] of segments.entries()) {
     const trimmed = seg.trim();
     if (trimmed === '') {
+      // `ls;` runs `ls` and nothing after it; an empty segment anywhere else, or after `|`, `&&` or `||`, is a syntax error.
+      if (index > 0 && index === segments.length - 1 && segments[index - 1]!.endedBy === ';') continue;
       return deny('an empty command segment is not allowed');
     }
 
@@ -921,7 +1338,7 @@ function classifyBash(command: string): ReadOnlyVerdict {
     if (firstTokenIsQuoted(seg)) {
       return deny('a quoted command name is not allowed');
     }
-    const tokens = tokenize(seg);
+    const tokens = tokenize(seg, 'bash');
     const cmd = tokens[0];
     if (cmd === undefined) {
       return deny('an empty command segment is not allowed');
@@ -935,10 +1352,17 @@ function classifyBash(command: string): ReadOnlyVerdict {
       return deny(`a path-qualified command (\`${cmd}\`) is not allowed; use a bare read-only command name`);
     }
 
-    // Env-secret screen: deny any reader pointed at a `/proc/<pid>/environ` path, BEFORE the table
-    // lookup (an allowlisted `cat`/`head`/`grep` reading it is still denied).
-    const procEnviron = screenProcEnviron(cmd, args);
-    if (procEnviron) return procEnviron;
+    const wildcard = unquotedWildcard(seg);
+    if (wildcard) {
+      return deny(
+        `an unquoted wildcard (\`${wildcard.char}\` in \`${wildcard.word}\`) is not allowed: the shell replaces it with file names before the command runs, and a file name can become an option. Quote the pattern and let the tool match it (\`rg -g '*.md' foo\`, \`find src -name '*.ts'\`)`,
+      );
+    }
+
+    // Path screens run before the table lookup, so an allowlisted reader pointed at such a path is still denied.
+    const pathRefusal = nativePathRefusal(cmd, args, cwdMoved, context, 'bash');
+    if (pathRefusal) return pathRefusal;
+    if (cmd === 'cd' && cdLeavesWorkingFolder(args)) cwdMoved = true;
 
     const rule = BASH_RULES.get(cmd);
     if (!rule) {
@@ -946,21 +1370,7 @@ function classifyBash(command: string): ReadOnlyVerdict {
     }
 
     // Stage 4 — per-command rule.
-    let verdict: ReadOnlyVerdict;
-    switch (rule.kind) {
-      case 'always':
-        verdict = ALLOW;
-        break;
-      case 'flagGated':
-        verdict = evalFlagGated(cmd, args, rule.bannedFlags, rule.bannedShortLetters);
-        break;
-      case 'exactArgs':
-        verdict = evalExactArgs(cmd, args, rule.allowed);
-        break;
-      case 'git':
-        verdict = evalGit(args);
-        break;
-    }
+    const verdict = applyCommandRule(cmd, args, rule);
     if (!verdict.readOnly) {
       return verdict;
     }
@@ -1012,8 +1422,7 @@ const PS_ARG_SEPARATOR_WHITESPACE = /[\u000b\u000c\u0085\u00a0\u1680\u2000-\u200
  * States: none / single / double.
  * - Single quotes `'...'` are FULLY LITERAL in PS — nothing inside them expands or executes, only the
  *   closing `'` matters (so `Select-String 'literal $x'` is safe). A `''` inside a single-quoted string
- *   is PS's escape for a literal quote; treating a lone `'` as toggling the state is harmless here
- *   because the run between the two quotes is inert either way.
+ *   (and `""` inside a double-quoted one) is one literal quote and does not close the string.
  * - `$` and backtick are banned in BOTH none AND double states: PS expands `$var`/`$(...)` and processes
  *   backtick escapes inside double quotes, so `"$(Get-Date)"` MUST be blocked.
  * - Exotic argument-separator whitespace (see `PS_ARG_SEPARATOR_WHITESPACE`) is banned in BOTH none AND
@@ -1026,12 +1435,37 @@ const PS_ARG_SEPARATOR_WHITESPACE = /[\u000b\u000c\u0085\u00a0\u1680\u2000-\u200
  */
 function scanStructurePowershell(command: string): ReadOnlyVerdict | null {
   let state: ScanState = 'none';
+  let wordStart = true;
+  let parameterWord = false;
+  let quotedWord = false;
+  // A word that starts with a quote ends at its closing quote; what follows starts another word.
+  const closeQuote = (i: number): ReadOnlyVerdict | null => {
+    state = 'none';
+    if (!quotedWord) return null;
+    quotedWord = false;
+    wordStart = true;
+    parameterWord = false;
+    const next = command[i + 1];
+    if (next === '.' || next === '[' || command.startsWith('::', i + 1)) {
+      return deny(`member access or indexing (\`${next === ':' ? '::' : next}\`) after a quoted word is not allowed`);
+    }
+    return null;
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
 
+    // PowerShell reads U+2018-U+201B as `'` and U+201C-U+201E as `"`, so each opens or closes a string.
+    if (ch !== undefined && ch >= '\u2018' && ch <= '\u201e') return deny('a typographic quote character is not allowed');
+
     if (state === 'single') {
-      // Single quotes are fully literal — only a closing quote matters.
-      if (ch === "'") state = 'none';
+      // Single quotes are fully literal; a doubled `''` is one literal quote.
+      if (ch === "'") {
+        if (command[i + 1] === "'") i++;
+        else {
+          const verdict = closeQuote(i);
+          if (verdict) return verdict;
+        }
+      }
       continue;
     }
 
@@ -1047,26 +1481,48 @@ function scanStructurePowershell(command: string): ReadOnlyVerdict | null {
     if (ch === '$') return deny('variable or subexpression expansion (`$`) is not allowed');
 
     if (state === 'double') {
-      // Inside double quotes, `; & { } ( ) > <` are literal; only a closing quote matters here.
-      if (ch === '"') state = 'none';
+      // Inside double quotes, `; & { } ( ) > <` are literal; a doubled `""` is one literal quote.
+      if (ch === '"') {
+        if (command[i + 1] === '"') i++;
+        else {
+          const verdict = closeQuote(i);
+          if (verdict) return verdict;
+        }
+      }
       continue;
     }
 
     // none state.
-    if (ch === "'") {
-      state = 'single';
+    if (ch === ' ' || ch === '\t' || ch === '|') {
+      wordStart = true;
+      parameterWord = false;
       continue;
     }
-    if (ch === '"') {
-      state = 'double';
+    if (wordStart && ch === '-' && command[i + 1] !== '-') parameterWord = true;
+    if (ch === "'" || ch === '"') {
+      quotedWord = wordStart;
+      wordStart = false;
+      state = ch === "'" ? 'single' : 'double';
       continue;
     }
-    if (ch === ';') return deny('a statement separator (`;`) is not allowed');
+    wordStart = false;
+    // PowerShell ends a `-name` parameter word at `:` or before `.` or `[` and passes what follows as another argument.
+    if (parameterWord && (ch === ':' || ch === '.' || ch === '[')) {
+      return deny(`a \`-parameter\` word holding \`${ch}\` is not allowed under PowerShell`);
+    }
+    // PowerShell reads an en dash, em dash or horizontal bar as `-` when it starts a parameter.
+    if (ch !== undefined && ch >= '\u2013' && ch <= '\u2015') return deny('a typographic dash outside quotes is not allowed');
+    // `@name` splats a variable, `@env:NAME` included, into arguments.
+    if (ch === '@') return deny('splatting (`@`) is not allowed');
+    // A `;` with only blanks after it ends the one statement and starts no other.
+    if (ch === ';' && !/^[ \t]*$/.test(command.slice(i + 1))) return deny('a statement separator (`;`) is not allowed');
     if (ch === '&') return deny('the call/background operator (`&`) is not allowed');
     if (ch === '{' || ch === '}') return deny('a script block (`{`/`}`) is not allowed');
     if (ch === '(' || ch === ')') return deny('a parenthesized expression (`(`/`)`) is not allowed');
     if (ch === '>') return deny('redirection (`>`) is not allowed');
     if (ch === '<') return deny('redirection (`<`) is not allowed');
+    // After `--%` PowerShell passes the rest of the line verbatim and expands `%NAME%` environment variables.
+    if (ch === '-' && command.startsWith('--%', i)) return deny('the stop-parsing token (`--%`) is not allowed');
   }
 
   if (state !== 'none') return deny('an unbalanced quote is not allowed');
@@ -1131,7 +1587,8 @@ function splitPowershellPipeline(command: string): string[] {
  * Common PowerShell aliases the model emits constantly → their canonical cmdlet (all lowercased). The
  * incoming command token is lowercased and resolved through this map BEFORE the PS-table lookup, so the
  * rules live once on the canonical name. `ls`/`cat`/`pwd`/`echo`/`sort` are deliberately ABSENT — the
- * bash-table-first lookup already covers them with the correct, stricter native-binary rules.
+ * bash-table-first lookup already covers them with the correct, stricter native-binary rules. `write` is absent too:
+ * pwsh on Linux and macOS has no such alias and runs write(1), which messages another user's terminal.
  */
 const PS_ALIASES: ReadonlyMap<string, string> = new Map<string, string>([
   ['dir', 'get-childitem'],
@@ -1146,7 +1603,6 @@ const PS_ALIASES: ReadonlyMap<string, string> = new Map<string, string>([
   ['ft', 'format-table'],
   ['fl', 'format-list'],
   ['fw', 'format-wide'],
-  ['write', 'write-output'],
 ]);
 
 /**
@@ -1167,6 +1623,7 @@ const PS_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule>(
   ['get-itemproperty', { kind: 'always' }],
   ['get-location', { kind: 'always' }],
   ['get-date', { kind: 'always' }],
+  // Command lines are public (/proc/<pid>/cmdline is 0444; CWE-214 makes a secret there its program's bug), environments are not.
   ['get-process', { kind: 'always' }],
   ['get-service', { kind: 'always' }],
   ['get-command', { kind: 'always' }],
@@ -1190,11 +1647,14 @@ const PS_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule>(
  * PSDrive read screen. `env:`/`function:`/`variable:` PSDrive reads (`gci env:`, `Get-Content env:PATH`)
  * dump process secrets, so ANY token (command OR argument) matching one of these prefixes denies,
  * case-insensitively, BEFORE the table lookup. `variable:` is harmless in a fresh process but is blocked
- * for symmetry with `env:`/`function:`. Applied to the already-tokenized (unquoted) values.
+ * for symmetry with `env:`/`function:`. Applied to the already-tokenized (unquoted) values. A provider-qualified path
+ * (`Environment::NAME`, `Microsoft.PowerShell.Core\Function::x`) reaches the same stores without a drive. A cmdlet
+ * binds each element of a comma list (`x,env:NAME`) as its own path, so each element is screened.
  */
 function screenPsDriveTokens(tokens: readonly string[]): ReadOnlyVerdict | null {
-  for (const token of tokens) {
-    if (/^env:/i.test(token)) {
+  for (const raw of tokens.flatMap((token) => token.split(','))) {
+    const token = raw.replace(/^[^\\]*\\(?=(?:environment|function|variable)::)/i, '');
+    if (/^env:/i.test(token) || /^environment::/i.test(token)) {
       return deny('reading the `env:` PSDrive is not allowed (it exposes environment secrets)');
     }
     if (/^function:/i.test(token)) {
@@ -1219,6 +1679,7 @@ function screenPsDriveTokens(tokens: readonly string[]): ReadOnlyVerdict | null 
  */
 const PS_BANNED_PARAM_PREFIXES: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
   ['get-content', ['-wai']], // -Wait / -Wai — follow mode, hangs the turn
+  ['cat', ['-wai']], // Windows PowerShell aliases `cat` to Get-Content, ahead of the bash-table rule
 ]);
 
 /**
@@ -1240,6 +1701,36 @@ function screenPsBannedParams(canonical: string, args: readonly string[]): ReadO
   return null;
 }
 
+/**
+ * Deny a native command argument whose argv the program may not receive as one value. Windows PowerShell 5.1's legacy
+ * argument passing rebuilds a command line without escaping, so the program's parser re-splits an argument holding `"`,
+ * drops an empty one, and reads a trailing `\` of an argument it wrapped in quotes as escaping the closing quote.
+ * pwsh 7 passes an unquoted `,` list holding a quoted element as several arguments. An MSYS2 program (Git's usr/bin)
+ * parses its own command line, removing `'`, brace-expanding `{a,b}` and replacing `@file` with the file's words.
+ */
+function screenPsNativeArgs(segment: string, args: readonly string[]): ReadOnlyVerdict | null {
+  let quote: string | undefined;
+  for (const ch of segment) {
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === ',') {
+      return deny('an unquoted `,` in a native command is not allowed under PowerShell');
+    }
+  }
+  for (const arg of args) {
+    if (arg === '') return deny('an empty argument to a native command is not allowed under PowerShell');
+    if (arg.startsWith('@')) return deny(`a native command argument starting with \`@\` (\`${arg}\`) is not allowed under PowerShell`);
+    const reparsed = /["'{}]/.exec(arg);
+    if (reparsed) return deny(`a native command argument holding \`${reparsed[0]}\` (\`${arg}\`) is not allowed under PowerShell`);
+    if (/\s/.test(arg) && arg.endsWith('\\')) {
+      return deny(`a native command argument with whitespace ending in \`\\\` (\`${arg}\`) is not allowed under PowerShell`);
+    }
+  }
+  return null;
+}
+
 /** Apply a `CommandRule` (shared shape) to a resolved command + args — the SAME switch bash uses. */
 function applyCommandRule(cmd: string, args: readonly string[], rule: CommandRule): ReadOnlyVerdict {
   switch (rule.kind) {
@@ -1251,6 +1742,10 @@ function applyCommandRule(cmd: string, args: readonly string[], rule: CommandRul
       return evalExactArgs(cmd, args, rule.allowed);
     case 'git':
       return evalGit(args);
+    case 'sedPrint':
+      return evalSedPrint(args);
+    case 'date':
+      return evalDate(args);
   }
 }
 
@@ -1258,13 +1753,15 @@ function applyCommandRule(cmd: string, args: readonly string[], rule: CommandRul
 // PowerShell classification pipeline.
 // ---------------------------------------------------------------------------
 
-function classifyPowershell(command: string): ReadOnlyVerdict {
+function classifyPowershell(command: string, context: ShellCheckContext): ReadOnlyVerdict {
   // PS Stage 1 — structural scan (bans backtick/$/{}/()/;/&/></ newlines outside single quotes).
   const structural = scanStructurePowershell(command);
   if (structural) return structural;
 
-  // PS Stage 2 — split into pipeline stages on unquoted `|`; every stage must independently pass.
-  const segments = splitPowershellPipeline(command);
+  // PS Stage 2 — split into pipeline stages on unquoted `|`; every stage must independently pass. Stage 1 admits a `;` only
+  // as the last character before trailing blanks, outside quotes, so it is dropped here.
+  const segments = splitPowershellPipeline(command.replace(/;[ \t]*$/, ''));
+  const stages: Array<{ seg: string; cmd: string; args: string[] }> = [];
   for (const seg of segments) {
     const trimmed = seg.trim();
     if (trimmed === '') {
@@ -1282,24 +1779,27 @@ function classifyPowershell(command: string): ReadOnlyVerdict {
       return deny('a quoted command name is not allowed');
     }
 
-    // Tokenize with the SHARED bash tokenizer. It treats `\` as an escape char, which is technically
-    // wrong for PS — but every structural metachar (backtick, `$`, quotes' partners) is ALREADY banned
-    // by scanStructurePowershell BEFORE we get here, so a surviving `\` is only ever a literal path
-    // separator inside an ARGUMENT (e.g. `Get-Content src\a.txt`). tokenize collapses `src\a.txt` →
-    // `srca.txt` for the table lookup ONLY (we never re-execute args), and the command NAME token never
-    // legitimately contains `\` (a path-qualified `.\x.ps1` is denied below anyway). So this cannot
-    // cause an UNDER-block: `Get-Content src\a.txt` still ALLOWS (command token `Get-Content` is clean;
-    // the arg mangling is inert). A dedicated PS tokenizer would only change harmless arg values.
-    const tokens = tokenize(seg);
+    // PowerShell quoting: `\` is a literal character and only a doubled quote escapes, so `"x\"` is the whole string `x\`.
+    const tokens = tokenize(seg, 'powershell');
     const cmd = tokens[0];
     if (cmd === undefined) {
       return deny('an empty command segment is not allowed');
     }
-    const args = tokens.slice(1);
+    stages.push({ seg, cmd, args: tokens.slice(1) });
+  }
+
+  // A pipeline that hands a listing to Get-Content, Select-String or `cat` reads every file the listing names
+  // (`Get-ChildItem /proc/self | Get-Content`), so the other stages' arguments are folders it walks.
+  const readsListing = stages.length > 1 && stages.some(isPsContentReader);
+  const cwdMoved = stages.some((stage) => stage.cmd === 'cd' && cdLeavesWorkingFolder(stage.args));
+  // PowerShell searches PATH for a command name before it loads the module of the cmdlet that name means.
+  const commandNames: string[] = [];
+  for (const stage of stages) {
+    const { seg, cmd, args } = stage;
 
     // PSDrive read screen over ALL tokens, BEFORE the table lookup (an allowlisted cmdlet reading
     // `env:` is still denied).
-    const psDrive = screenPsDriveTokens(tokens);
+    const psDrive = screenPsDriveTokens([cmd, ...args]);
     if (psDrive) return psDrive;
 
     // Command-token path/assignment checks — identical to bash (over-blocking is acceptable).
@@ -1314,28 +1814,78 @@ function classifyPowershell(command: string): ReadOnlyVerdict {
     // are native binaries (not shadowed by aliases), so they MUST inherit the stricter bash rule (e.g.
     // `sort` bans `-o`). `git` is in the bash table (kind:'git'), so `git status`/`git commit` route
     // through the shared `evalGit` automatically — no separate PS git entry exists or is needed.
-    const bashRule = BASH_RULES.get(cmd);
+    // PowerShell on Windows resolves `expand` to expand.exe, the cabinet expander, which writes its destination operand.
+    const bashRule = cmd === 'expand' ? undefined : BASH_RULES.get(cmd);
     if (bashRule) {
+      const nativeArgs = screenPsNativeArgs(seg, args);
+      if (nativeArgs) return nativeArgs;
+      const wildcard = args.find((arg) => /[*?[]/.test(arg));
+      if (wildcard !== undefined) {
+        return deny(
+          `a wildcard in a native command's argument (\`${wildcard}\`) is not allowed under PowerShell, quoted or not: Git's MSYS2 programs on Windows and pwsh on Linux and macOS replace it with file names before the program runs, and a file name can become an option. Match with a cmdlet instead (\`Get-ChildItem src -Filter *.ts\`, \`Select-String foo -Path *.md\`) or a type filter (\`rg -t md foo\`)`,
+        );
+      }
+      const pathRefusal = nativePathRefusal(cmd, args, cwdMoved, context, 'powershell');
+      if (pathRefusal) return pathRefusal;
+      if (readsListing && !isPsContentReader(stage)) {
+        const walk = walkRefusal(`\`${cmd}\` piped to a file reader`, args, 'powershell', cwdMoved, false);
+        if (walk) return walk;
+      }
+      const aliasedParam = screenPsBannedParams(cmd, args);
+      if (aliasedParam) return aliasedParam;
       const verdict = applyCommandRule(cmd, args, bashRule);
       if (!verdict.readOnly) return verdict;
+      // PowerShell tries `Get-<name>` for a name it finds no command for.
+      commandNames.push(cmd, ...(PS_WINDOWS_ALIAS_TARGETS.get(cmd) ?? []), `get-${cmd}`);
       continue;
     }
 
     // Not a native/bash command — resolve as a PowerShell cmdlet (case-insensitive; alias → canonical).
-    const lowered = cmd.toLowerCase();
-    const canonical = PS_ALIASES.get(lowered) ?? lowered;
+    const canonical = psCanonical(cmd);
     const psRule = PS_RULES.get(canonical);
     if (!psRule) {
       return deny(`\`${cmd}\` is not a recognized read-only PowerShell command`);
+    }
+    // A cmdlet matches its path arguments as wildcard patterns itself, so each screen tests the names it guards against them.
+    const pathRefusal =
+      networkPathRefusal(args, context, 'powershell') ?? environRefusal(args, 'powershell', true, cwdMoved) ?? registryEnvironmentRefusal(args, 'powershell', true, cwdMoved);
+    if (pathRefusal) return pathRefusal;
+    if (readsListing && !isPsContentReader(stage)) {
+      const walk = walkRefusal(`\`${cmd}\` piped to a file reader`, args, 'powershell', cwdMoved, true);
+      if (walk) return walk;
     }
     // Screen hang-inducing parameters (e.g. Get-Content -Wait) before applying the base rule.
     const bannedParam = screenPsBannedParams(canonical, args);
     if (bannedParam) return bannedParam;
     const verdict = applyCommandRule(canonical, args, psRule);
     if (!verdict.readOnly) return verdict;
+    commandNames.push(canonical);
   }
 
-  return ALLOW;
+  return { readOnly: true, commandNames };
+}
+
+/** The cmdlets bash-table names are aliases of on Windows. */
+const PS_WINDOWS_ALIAS_TARGETS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['cat', ['get-content']],
+  ['cd', ['set-location']],
+  ['diff', ['compare-object']],
+  ['echo', ['write-output']],
+  ['ls', ['get-childitem']],
+  ['pwd', ['get-location']],
+  ['sort', ['sort-object']],
+]);
+
+/** A cmdlet name, lowercased, with an alias resolved. */
+function psCanonical(cmd: string): string {
+  const lowered = cmd.toLowerCase();
+  return PS_ALIASES.get(lowered) ?? lowered;
+}
+
+/** Whether a pipeline stage reads the files its input names: Get-Content, Select-String, or `cat`, Windows' alias of Get-Content. */
+function isPsContentReader(stage: { readonly cmd: string }): boolean {
+  const canonical = psCanonical(stage.cmd);
+  return stage.cmd === 'cat' || canonical === 'get-content' || canonical === 'select-string';
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,14 +1905,14 @@ export const MAX_COMMAND_LENGTH = 8192;
  * any command not positively recognized as read-only returns a DENY verdict with a category-naming
  * reason. Both bash and PowerShell are supported; PowerShell is classified more strictly.
  */
-export function classifyReadOnlyShellCommand(shell: ShellKind, command: string): ReadOnlyVerdict {
+export function classifyReadOnlyShellCommand(shell: ShellKind, command: string, context: ShellCheckContext): ReadOnlyVerdict {
   if (command.length > MAX_COMMAND_LENGTH) {
     return deny(`the command is too long to classify (over ${MAX_COMMAND_LENGTH} characters)`);
   }
   if (shell === 'powershell') {
-    return classifyPowershell(command);
+    return classifyPowershell(command, context);
   }
-  return classifyBash(command);
+  return classifyBash(command, context);
 }
 
 /** A character standing for computed text: a word holding it is computed. */

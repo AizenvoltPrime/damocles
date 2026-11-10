@@ -1,7 +1,7 @@
 import { ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
 import type {
-  DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignResultDecision, DesignResultView,
+  DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignResultDecision, DesignResultView, UncheckedDecisionGroup,
 } from '@shared/types/design';
 import type { LocalizedText } from '@shared/localized-text';
 
@@ -39,6 +39,8 @@ export interface DesignApprovalPromptView {
   decisions: DesignResultDecision[];
   screens: DesignApprovalScreen[];
   hasParent: boolean;
+  /** Decisions the conflict check could not check, grouped by cause, which the user approves knowingly. */
+  uncheckedDecisions?: UncheckedDecisionGroup[];
 }
 
 export interface DesignFileList {

@@ -2,10 +2,10 @@
 // in every mode, YOLO included, and before any PreToolUse hook's force-allow, as worktree isolation is. docs/invariants.md "Design mode".
 import * as path from 'node:path';
 import { designBrowserAllows } from '../pi-session/tools/browser-tools';
-import { classifyReadOnlyShellCommand } from '../pi-session/readonly-shell';
+import type { ReadOnlyVerdict } from '../pi-session/readonly-shell';
 import { toolShell } from '../pi-session/worktree-isolation';
 import { resolveToCwd } from '../pi-session/tools/search-tools';
-import { SHELL_TOOLS, TOOL_BASH, TOOL_POWERSHELL, WRITE_TOOLS } from '../../shared/tool-names';
+import { SHELL_TOOLS, TOOL_BASH, WRITE_TOOLS } from '../../shared/tool-names';
 import { BUILT_DESIGN_TOOL_NAMES } from './tools/design-tool-specs';
 import { DAMOCLES_DESIGNS_DIR, isFileBelow } from '../paths';
 import { spelledPath } from '../canonical-path';
@@ -26,28 +26,37 @@ export interface DesignFolderScope {
   readonly superseded?: true;
 }
 
+/** What the gate read of a call (`CallFacts` in `permission-gate.ts`), and whether it is a read-only-annotated MCP tool. */
+export interface DesignCallFacts {
+  readonly mcpReadOnly?: boolean;
+  /** A shell call's `provenReadOnlyShell` verdict. */
+  readonly shellVerdict?: ReadOnlyVerdict;
+  /** A write's target may reach a network host the chat does not live on. */
+  readonly reachesNetwork?: boolean;
+}
+
 /** A chat whose latest design role entry does not parse: it writes and runs nothing, reads aside, and never becomes a normal chat. */
 export interface UnreadableDesignScope {
   readonly unreadable: true;
 }
 
-const DESIGNER_FILES = 'design.md, screens/<name>.html and files under variants/';
-const DESIGN_TOOLS_WRITING = 'StartDesign, Inventory, ExtractTokens, ImportAsset, RecordDecision, MapReference, PreviewJourney and FinishDesign';
+const DESIGNER_FILES = 'design.md, screens/<name>.html, shared/<name>.css, shared/<name>.js and files under variants/';
+const DESIGN_TOOLS_WRITING = 'StartDesign, Inventory, ExtractTokens, ImportAsset, RecordDecision, MapReference, PreviewJourney, RemoveDesignFile and FinishDesign';
 
-/** Whether `command` is one `readonly-shell.ts` proves read-only for shell tool `toolName`. */
-export function provenReadOnlyShell(toolName: string, input: Record<string, unknown>): boolean {
-  const shell = toolName === TOOL_BASH ? 'bash' : toolName === TOOL_POWERSHELL ? 'powershell' : null;
-  const command = typeof input['command'] === 'string' ? input['command'] : '';
-  return shell !== null && classifyReadOnlyShellCommand(shell, command).readOnly;
+/** Why a design chat refuses a shell command `verdict` denies, with the classifier's reason. */
+export function designShellRefusal(verdict: ReadOnlyVerdict & { readOnly: false }): string {
+  return `A design chat runs only shell commands proven read-only; this one is not: ${verdict.reason}. Read files with Read (offset and limit for a range), Grep and Glob.`;
 }
 
 /**
  * The policy reason a design chat's call is blocked for, or undefined when the posture allows it: a write tool's target must be
  * a designer file of the chat's own design folder (D65), a shell command must be proven read-only, a browser tool must be a read,
  * and an unreadable scope runs no write, shell, design, page-acting browser or not read-only MCP tool. `input` is the normalized
- * input as the hooks left it; `mcpReadOnly` whether the call is a read-only-annotated MCP tool.
+ * input as the hooks left it; `call` holds what the gate read of it (`CallFacts`) and whether it is a read-only-annotated MCP tool. A
+ * shell call without a verdict is not proven.
  */
-export function designWriteBlock(toolName: string, input: Record<string, unknown>, scope: DesignScope, mcpReadOnly = false): string | undefined {
+export function designWriteBlock(toolName: string, input: Record<string, unknown>, scope: DesignScope, call: DesignCallFacts = {}): string | undefined {
+  const { mcpReadOnly = false } = call;
   if ('unreadable' in scope) {
     const runs = WRITE_TOOLS.has(toolName) || SHELL_TOOLS.has(toolName) || BUILT_DESIGN_TOOL_NAMES.has(toolName)
       || !designBrowserAllows(toolName) || (toolName.startsWith('mcp__') && !mcpReadOnly);
@@ -60,7 +69,8 @@ export function designWriteBlock(toolName: string, input: Record<string, unknown
     const target = input['file_path'] ?? input['path'];
     if (typeof target !== 'string' || target === '') return `A design chat writes only files in its design folder, ${scope.folder}, and this call names no file.`;
     const resolved = resolveToCwd(target, scope.cwd);
-    if (!isFileBelow(scope.folder, resolved)) {
+    // Resolving a target that may reach a network host would send it the user's credentials, so it counts as outside.
+    if (call.reachesNetwork === true || !isFileBelow(scope.folder, resolved)) {
       return `A design chat writes only files in its design folder, ${scope.folder}. ${target} is outside it, or reaches outside it through a link.`;
     }
     // On NTFS `name:stream` writes `name`, so a stream suffix would reach another file under another spelling.
@@ -73,10 +83,9 @@ export function designWriteBlock(toolName: string, input: Record<string, unknown
   if (toolName === TOOL_BASH && toolShell(scope.shellPath) === undefined) {
     return `The Bash tool runs ${scope.shellPath ?? 'a shell'}, whose commands the read-only check cannot read. Use the PowerShell tool, or set shellPath to bash.`;
   }
-  if (toolName === TOOL_BASH || toolName === TOOL_POWERSHELL) {
-    return provenReadOnlyShell(toolName, input)
-      ? undefined
-      : 'A design chat runs only shell commands proven read-only. Read files with Read, Grep and Glob, and write design files with Write and Edit.';
+  if (SHELL_TOOLS.has(toolName)) {
+    const verdict = call.shellVerdict ?? { readOnly: false, reason: 'no read-only verdict was taken for this command' };
+    return verdict.readOnly ? undefined : designShellRefusal(verdict);
   }
   if (!designBrowserAllows(toolName)) return `A design chat may only look at pages in the browser; ${toolName} is not available to it.`;
   return undefined;

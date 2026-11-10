@@ -52,7 +52,7 @@ function liveSessionUsage(file: string, sessionDir: string): ExtensionToWebviewM
     showCacheMissNotices: () => false,
     showThinkingDroppedNotices: () => false,
     onBudgetStop: () => undefined,
-    onUserMessageDelivered: () => false,
+    onUserMessageDelivered: () => null,
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => null,
     onTurnStateChanged: () => undefined,

@@ -3,7 +3,8 @@ import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runPermissionGate, gateErrorFallback, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
+import { pathToFileURL } from 'url';
+import { runPermissionGate, gateErrorFallback, callFactsOf, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
 import { buildNestedMcpToolset } from '../tools/mcp-tools';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { McpClientManager } from '../mcp/mcp-client-manager';
@@ -17,10 +18,18 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ToolCallHookResult } from '../hooks/dispatch';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
+import { provenReadOnlyShell, type ChatMachine } from '../proven-shell';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
   return { type: 'tool_call', toolName, toolCallId, input } as unknown as ToolCallEvent;
 }
+
+// A machine whose PowerShell PATH is empty, so PowerShell finds no script for any command.
+const NO_PATH_MACHINE: ChatMachine = {
+  platform: process.platform,
+  allowedNetworkHosts: () => Promise.resolve(new Set()),
+  powerShellSearch: () => Promise.resolve({ path: '', pathext: undefined, pwshHome: undefined }),
+};
 
 function makePanel(opts: {
   plan?: boolean;
@@ -55,6 +64,7 @@ function makePanel(opts: {
     }),
     getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,
+    machine: NO_PATH_MACHINE,
   };
   return { panel, canUseTool, decide, matchRule };
 }
@@ -66,8 +76,8 @@ describe('runPermissionGate', () => {
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
     // The evaluator sees the Damocles shape (file_path), not pi's raw `path`.
-    expect(matchRule).toHaveBeenCalledWith('Read', { file_path: '/a.ts' }, undefined);
-    expect(decide).toHaveBeenCalledWith('Read', { file_path: '/a.ts' }, null);
+    expect(matchRule).toHaveBeenCalledWith('Read', { file_path: '/a.ts' }, undefined, {});
+    expect(decide).toHaveBeenCalledWith('Read', { file_path: '/a.ts' }, null, false, false);
   });
 
   it('blocks a read tool denied by a settings rule, rendering as denied (marker present)', async () => {
@@ -131,7 +141,7 @@ describe('runPermissionGate', () => {
     const { panel, canUseTool, matchRule } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
     expect(result).toBeUndefined();
-    expect(matchRule).toHaveBeenCalledWith('Bash', { command: 'git status' }, undefined);
+    expect(matchRule).toHaveBeenCalledWith('Bash', { command: 'git status' }, undefined, {});
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
@@ -170,7 +180,7 @@ describe('runPermissionGate', () => {
     const { panel, canUseTool, matchRule } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Get-Content a.txt' }), panel, undefined);
     expect(result).toBeUndefined();
-    expect(matchRule).toHaveBeenCalledWith('PowerShell', { command: 'Get-Content a.txt' }, undefined);
+    expect(matchRule).toHaveBeenCalledWith('PowerShell', { command: 'Get-Content a.txt' }, undefined, {});
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
@@ -214,7 +224,7 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('SaveObservation', 'm1', { title: 'x' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(matchRule).toHaveBeenCalledWith('SaveObservation', { title: 'x' }, undefined);
+    expect(matchRule).toHaveBeenCalledWith('SaveObservation', { title: 'x' }, undefined, {});
   });
 
   it('blocks a module tool denied by a settings rule (denied marker present)', async () => {
@@ -237,7 +247,7 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('CompassSearch', 'm1', { query: 'x' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(matchRule).toHaveBeenCalledWith('CompassSearch', { query: 'x' }, undefined);
+    expect(matchRule).toHaveBeenCalledWith('CompassSearch', { query: 'x' }, undefined, {});
   });
 
   it('correlates parallel write approvals by distinct toolCallId', async () => {
@@ -260,7 +270,7 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('mcp__git__status', 'm1', { a: 1 }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(decide).toHaveBeenCalledWith('mcp__git__status', { a: 1 }, null);
+    expect(decide).toHaveBeenCalledWith('mcp__git__status', { a: 1 }, null, false, false);
   });
 
   it('blocks a read-only MCP tool denied by a settings rule (marker present)', async () => {
@@ -395,7 +405,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     const result = await runPermissionGate(event, panel, undefined, null, gate);
     expect(result).toBeUndefined();
     expect((event.input as Record<string, unknown>).path).toBe('/new');
-    expect(decide).toHaveBeenCalledWith('Read', { file_path: '/new' }, null);
+    expect(decide).toHaveBeenCalledWith('Read', { file_path: '/new' }, null, false, false);
   });
 
   it('ask falls through to the normal approval flow', async () => {
@@ -879,7 +889,7 @@ describe('nested gate — MCP auto-allow vs. approval (criterion 10)', () => {
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
     // Still routed through the settings evaluator, so a user deny rule is honored.
-    expect(decide).toHaveBeenCalledWith('mcp__git__status', { a: 1 }, null);
+    expect(decide).toHaveBeenCalledWith('mcp__git__status', { a: 1 }, null, false, false);
   });
 
   it('a NON-annotated MCP tool DOES reach canUseTool, with parentToolUseId = the spawning tool-call id', async () => {
@@ -990,7 +1000,7 @@ describe('nested gate — a read-only agent MAY call a non-annotated MCP tool: D
 
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(decide).toHaveBeenCalledWith('mcp__git__status', {}, null);
+    expect(decide).toHaveBeenCalledWith('mcp__git__status', {}, null, false, false);
   });
 
   it('DECIDED: a read-only agent in PLAN MODE behaves the same — both exemptions compose', async () => {
@@ -1498,7 +1508,7 @@ describe('runPermissionGate — an MCP resource call is checked as one of its se
     const { panel, matchRule } = makePanel({});
     const gate = preToolUseGate(hookResult({ decision: 'ask', mutated: true, finalInput: { server: 'secret', uri: 'secret://a' } }));
     await runPermissionGate(ev('read_mcp_resource', 'r1', { server: 'public', uri: 'secret://a' }), panel, undefined, null, gate);
-    expect(matchRule).toHaveBeenCalledWith('read_mcp_resource', { server: 'secret', uri: 'secret://a' }, { server: 'secret', tool: 'read_mcp_resource' });
+    expect(matchRule).toHaveBeenCalledWith('read_mcp_resource', { server: 'secret', uri: 'secret://a' }, { server: 'secret', tool: 'read_mcp_resource' }, {});
   });
 
   it('passes the identity to the approval prompt an ask rule raises', async () => {
@@ -1692,10 +1702,11 @@ describe('a design chat\'s posture (PD-4, PD-25)', () => {
     const { gate } = designChat();
     const waited: string[] = [];
     gate.checkpointBaseline = { folder: DESIGN_FOLDER, wait: async (_signal, toolName) => { waited.push(toolName); } };
-    for (const name of ['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'MapReference', 'StartDesign', 'LoadDesignSkill', 'DeclareTweaks']) {
-      expect(await runPermissionGate(ev(name, `t-${name}`, {}), gate, undefined)).toBeUndefined();
+    const inputs: Record<string, Record<string, unknown>> = { ImportAsset: { path: 'img/logo.png' }, RemoveDesignFile: { file: 'screens/S0-probe.html' }, OpenPreview: { file: 'variants/accent/b.html' } };
+    for (const name of ['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'MapReference', 'RemoveDesignFile', 'StartDesign', 'LoadDesignSkill', 'DeclareTweaks', 'OpenPreview']) {
+      expect(await runPermissionGate(ev(name, `t-${name}`, inputs[name] ?? {}), gate, undefined)).toBeUndefined();
     }
-    expect(waited).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'MapReference']);
+    expect(waited).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'MapReference', 'RemoveDesignFile']);
   });
 
   it('raises no force-allow notice for a hook allow that the user still has to approve, and raises it where the hook\'s allow runs the call', async () => {
@@ -1865,5 +1876,343 @@ describe('a design chat\'s MCP call that is not read-only, under YOLO, through t
     expect(handler.pendingPrompts().length > 0).toBe(true);
     await handler.resolveApproval('m2', false, { customMessage: 'not now' });
     expect((await pending)?.reason).toContain(FEEDBACK_MARKER);
+  });
+});
+
+describe('ImportAsset\'s permission: a URL as a WebFetch of it, an outside file as a Read of it, a project path as today (D101)', () => {
+  const DESIGN_FOLDER = designFolderOf('gate-import-abcd1234');
+  const ROOT = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'design-import-')));
+  afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }));
+  /** Claude Code's `//` absolute form of a native path: `C:\x` as `//c/x`, `/tmp/x` as `//tmp/x`. */
+  const absRule = (native: string): string => {
+    const slashed = native.split(path.sep).join('/');
+    return `/${/^[A-Za-z]:\//.test(slashed) ? `/${slashed[0]!.toLowerCase()}${slashed.slice(2)}` : slashed}`;
+  };
+
+  function importingChat(rules: Record<string, string[]>) {
+    const workspace = fs.mkdtempSync(path.join(ROOT, 'ws-'));
+    fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: rules }));
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setCwd(workspace);
+    handler.setWorkspacePath(workspace);
+    const prompts: Array<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>> = [];
+    handler.setPostMessage((msg) => { if (msg.type === 'requestPermission') prompts.push(msg); });
+    const gate: GatePermissionContext = {
+      permissionHandler: handler,
+      isPlanMode: () => false,
+      shellCancel: new ShellCancelStore().forContext(() => undefined),
+      designScope: () => ({ folder: DESIGN_FOLDER, cwd: workspace }),
+    };
+    return { gate, handler, prompts, workspace };
+  }
+  const importing = (id: string, input: Record<string, unknown>) => ev('ImportAsset', id, input);
+
+  it('refuses a URL a settings deny rule WebFetch(domain:example.com) names, and runs one from another host unasked', async () => {
+    const { gate, prompts } = importingChat({ deny: ['WebFetch(domain:example.com)'] });
+    for (const url of ['https://example.com/photo.avif', 'https://EXAMPLE.com./photo.avif']) {
+      const result = await runPermissionGate(importing(`u-${url}`, { url }), gate, undefined);
+      expect(result?.block, url).toBe(true);
+      expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+      expect(result?.reason).toContain('Permission denied by a rule in your Damocles settings');
+    }
+    expect(await runPermissionGate(importing('u-other', { url: 'https://images.other.org/photo.avif' }), gate, undefined)).toBeUndefined();
+    expect(prompts).toEqual([]);
+  });
+
+  it('prompts for a URL an ask rule WebFetch(domain:example.com) names, as ImportAsset', async () => {
+    const { gate, handler, prompts } = importingChat({ ask: ['WebFetch(domain:example.com)'] });
+    const pending = runPermissionGate(importing('u-ask', { url: 'https://example.com/photo.png' }), gate, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    expect(prompts[0]!.toolName).toBe('ImportAsset');
+    await handler.resolveApproval('u-ask', true);
+    expect(await pending).toBeUndefined();
+  });
+
+  it('refuses an outside file a Read deny rule on its folder covers, and copies one elsewhere unasked', async () => {
+    const photos = fs.mkdtempSync(path.join(ROOT, 'photos-'));
+    const { gate, prompts } = importingChat({ deny: [`Read(${absRule(photos)}/**)`] });
+    const denied = await runPermissionGate(importing('f-deny', { file: path.join(photos, 'wallpaper.jpg') }), gate, undefined);
+    expect(denied?.block).toBe(true);
+    expect(denied?.reason).toContain('Permission denied by a rule in your Damocles settings');
+    expect(await runPermissionGate(importing('f-other', { file: path.join(ROOT, 'elsewhere', 'wallpaper.jpg') }), gate, undefined)).toBeUndefined();
+    expect(prompts).toEqual([]);
+  });
+
+  it('decides a project path as a Read of it, so a Read rule covers it and a WebFetch rule does not, beside its own ImportAsset rule', async () => {
+    const read = importingChat({ deny: ['Read(secrets/**)'] });
+    for (const [id, input] of [['p-path', { path: 'secrets/x.png' }], ['p-file', { file: 'secrets/x.png' }]] as const) {
+      const result = await runPermissionGate(importing(id, input), read.gate, undefined);
+      expect(result?.block, id).toBe(true);
+      expect(result?.reason).toContain('Permission denied by a rule in your Damocles settings');
+    }
+    expect(await runPermissionGate(importing('p-other', { path: 'img/logo.png' }), read.gate, undefined)).toBeUndefined();
+    const web = importingChat({ deny: ['WebFetch'] });
+    expect(await runPermissionGate(importing('p-web', { path: 'img/logo.png' }), web.gate, undefined)).toBeUndefined();
+    const askRead = importingChat({ ask: ['Read(img/**)'] });
+    const pending = runPermissionGate(importing('p-ask', { path: 'img/logo.png' }), askRead.gate, undefined);
+    await expect.poll(() => askRead.prompts.length).toBe(1);
+    expect(askRead.prompts[0]!.toolName).toBe('ImportAsset');
+    await askRead.handler.resolveApproval('p-ask', true);
+    expect(await pending).toBeUndefined();
+    const own = importingChat({ deny: ['ImportAsset'] });
+    expect((await runPermissionGate(importing('p-own', { path: 'img/logo.png' }), own.gate, undefined))?.block).toBe(true);
+  });
+
+  it('under YOLO keeps the design write rule and, as YOLO does for Read and WebFetch, skips their deny rules', async () => {
+    const { gate, handler, workspace } = importingChat({ deny: ['Read(secrets/**)', 'WebFetch(domain:example.com)', 'ImportAsset'] });
+    handler.setDangerouslySkipPermissions(true);
+    for (const input of [{ path: 'secrets/x.png' }, { file: 'secrets/x.png' }, { url: 'https://example.com/a.png' }]) {
+      expect(await runPermissionGate(importing(`y-${JSON.stringify(input)}`, input), gate, undefined), JSON.stringify(input)).toBeUndefined();
+    }
+    const superseded: GatePermissionContext = { ...gate, designScope: () => ({ folder: DESIGN_FOLDER, cwd: workspace, superseded: true }) };
+    const unreadable: GatePermissionContext = { ...gate, designScope: () => ({ unreadable: true }) };
+    for (const [label, context] of [['superseded', superseded], ['unreadable', unreadable]] as const) {
+      const result = await runPermissionGate(importing(`y-${label}`, { path: 'img/logo.png' }), context, undefined);
+      expect(result?.block, label).toBe(true);
+      expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    }
+  });
+
+  it('keeps an ImportAsset rule for a URL and a file too, the stricter of it and the WebFetch or Read rule deciding', async () => {
+    const own = importingChat({ deny: ['ImportAsset'] });
+    for (const input of [{ url: 'https://example.com/a.png' }, { file: path.join(ROOT, 'a.png') }]) {
+      const result = await runPermissionGate(importing(`o-${JSON.stringify(input)}`, input), own.gate, undefined);
+      expect(result?.block, JSON.stringify(input)).toBe(true);
+      expect(result?.reason).toContain('Permission denied by a rule in your Damocles settings');
+    }
+    const askOwn = importingChat({ ask: ['ImportAsset'], allow: ['WebFetch(domain:example.com)'] });
+    const pending = runPermissionGate(importing('o-ask', { url: 'https://example.com/a.png' }), askOwn.gate, undefined);
+    await expect.poll(() => askOwn.prompts.length).toBe(1);
+    await askOwn.handler.resolveApproval('o-ask', false, { customMessage: 'not that one' });
+    expect((await pending)?.block).toBe(true);
+    const denyWeb = importingChat({ allow: ['ImportAsset'], deny: ['WebFetch(domain:example.com)'] });
+    expect((await runPermissionGate(importing('o-web', { url: 'https://example.com/a.png' }), denyWeb.gate, undefined))?.block).toBe(true);
+  });
+
+  it('decides a file named as Read takes it by the path Read resolves, so a deny rule on the folder covers each spelling', async () => {
+    const photos = fs.mkdtempSync(path.join(ROOT, 'spelled-'));
+    const { gate } = importingChat({ deny: [`Read(${absRule(photos)}/**)`] });
+    const spellings = [path.join(photos, 'wall\u00a0paper.png'), pathToFileURL(path.join(photos, 'wall paper.png')).href];
+    if (process.platform === 'win32') spellings.push(`/${photos[0]!.toLowerCase()}${photos.slice(2).split(path.sep).join('/')}/wall paper.png`);
+    for (const file of spellings) expect((await runPermissionGate(importing(`s-${file}`, { file }), gate, undefined))?.block, file).toBe(true);
+  });
+
+  it('blocks a call that names no single source, which no rule can decide', async () => {
+    const { gate } = importingChat({});
+    for (const input of [{}, { path: 'a.png', url: 'https://example.com/a.png' }, { file: '' }, { url: 42 }]) {
+      const result = await runPermissionGate(importing(`x-${JSON.stringify(input)}`, input), gate, undefined);
+      expect(result?.block, JSON.stringify(input)).toBe(true);
+      expect(result?.reason).toContain('ImportAsset takes exactly one of path, file and url');
+    }
+  });
+
+  it('still blocks a shell write in the design chat', async () => {
+    const { gate } = importingChat({ allow: ['Bash'] });
+    const result = await runPermissionGate(ev('bash', 's-1', { command: 'curl -o assets/a.png https://example.com/a.png' }), gate, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain('A design chat runs only shell commands proven read-only');
+  });
+});
+
+describe.runIf(process.platform === 'win32')('a file tool whose path may reach a network host asks (win32)', () => {
+  const machine = (hosts: string[] = []): ChatMachine => ({ platform: 'win32', allowedNetworkHosts: () => Promise.resolve(new Set(hosts)) });
+  const roots: string[] = [];
+  afterAll(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
+
+  /** A chat in a fresh project whose settings hold `permissions`; its webview records each prompt and leaves it open. */
+  function networkChat(opts: { mode?: 'default' | 'acceptEdits' | 'plan'; yolo?: boolean; permissions?: Record<string, string[]> } = {}) {
+    const workspace = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-unc-')));
+    roots.push(workspace);
+    fs.mkdirSync(path.join(workspace, '.damocles'));
+    fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: opts.permissions ?? {} }));
+    const platform = createFakePlatform();
+    const handler = new PermissionHandler(platform);
+    handler.setWorkspacePath(workspace);
+    handler.setCwd(workspace);
+    handler.setPermissionMode(opts.mode ?? 'default');
+    handler.setDangerouslySkipPermissions(opts.yolo ?? false);
+    const prompts: Array<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>> = [];
+    handler.setPostMessage((msg) => { if (msg.type === 'requestPermission') prompts.push(msg); });
+    const { panel } = makePanel({ plan: opts.mode === 'plan' });
+    panel.permissionHandler = handler;
+    panel.machine = machine();
+    return { panel, handler, prompts, workspace, platform };
+  }
+
+  for (const mode of ['default', 'acceptEdits', 'plan'] as const) {
+    it(`asks for Read, Grep, Glob and Ls of a network share in ${mode} mode`, async () => {
+      const { panel, handler, prompts } = networkChat({ mode });
+      const calls = [ev('read', 'n1', { path: '\\\\evil\\s\\x' }), ev('grep', 'n2', { pattern: 'a', path: '//evil/s' }), ev('find', 'n3', { pattern: '*', path: '\\\\?\\UNC\\evil\\s' }), ev('ls', 'n4', { path: '\\\\evil@SSL\\s' })];
+      for (const [index, call] of calls.entries()) {
+        const pending = runPermissionGate(call, panel, undefined);
+        await expect.poll(() => prompts.length).toBe(index + 1);
+        await handler.resolveApproval(call.toolCallId, true);
+        expect(await pending).toBeUndefined();
+      }
+      expect(prompts.map((prompt) => prompt.toolName)).toEqual(['Read', 'Grep', 'Glob', 'Ls']);
+    });
+  }
+
+  it('asks for an ImportAsset of a network file, as a Read of it', async () => {
+    const { panel, handler, prompts } = networkChat();
+    const pending = runPermissionGate(ev('ImportAsset', 'i1', { file: '\\\\evil\\s\\logo.png', name: 'logo' }), panel, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    expect(prompts[0]).toMatchObject({ toolName: 'ImportAsset' });
+    await handler.resolveApproval('i1', false);
+    expect((await pending)?.block).toBe(true);
+  });
+
+  it('asks for a Write of a network path in acceptEdits, with a prompt that reads no file', async () => {
+    const { panel, handler, prompts, platform } = networkChat({ mode: 'acceptEdits' });
+    const readText = vi.spyOn(platform.editor, 'readText');
+    const pending = runPermissionGate(ev('write', 'w1', { path: '\\\\evil\\s\\x.txt', content: 'x' }), panel, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    expect(prompts[0]).toMatchObject({ toolName: 'Write' });
+    expect(readText).not.toHaveBeenCalled();
+    await handler.resolveApproval('w1', true);
+    expect(await pending).toBeUndefined();
+  });
+
+  it('asks for a browser load of a file: URL on a share and an upload of a network file, and runs a local one', async () => {
+    const { panel, handler, prompts, workspace } = networkChat();
+    for (const [index, call] of [ev('BrowserNavigate', 'b1', { url: 'file://evil/s/x.html' }), ev('BrowserOpen', 'b2', { url: 'FILE:////evil/s/x.html' }), ev('BrowserUpload', 'b3', { paths: [path.join(workspace, 'a.png'), '\\\\evil\\s\\x.png'] })].entries()) {
+      const pending = runPermissionGate(call, panel, undefined);
+      await expect.poll(() => prompts.length).toBe(index + 1);
+      await handler.resolveApproval(call.toolCallId, true);
+      expect(await pending).toBeUndefined();
+    }
+    expect(await runPermissionGate(ev('BrowserNavigate', 'b4', { url: pathToFileURL(path.join(workspace, 'a.html')).href }), panel, undefined)).toBeUndefined();
+    expect(await runPermissionGate(ev('BrowserNavigate', 'b5', { url: 'https://example.com/' }), panel, undefined)).toBeUndefined();
+    expect(prompts).toHaveLength(3);
+  });
+
+  it('runs a local Read with no prompt', async () => {
+    const { panel, prompts, workspace } = networkChat();
+    fs.writeFileSync(path.join(workspace, 'a.txt'), 'a');
+    expect(await runPermissionGate(ev('read', 'l1', { path: 'a.txt' }), panel, undefined)).toBeUndefined();
+    expect(prompts).toEqual([]);
+  });
+
+  it('runs it unasked when an allow rule names it, blocks it when a deny rule does, and YOLO approves it', async () => {
+    const allowed = networkChat({ permissions: { allow: ['Read'] } });
+    expect(await runPermissionGate(ev('read', 'a1', { path: '\\\\evil\\s\\x' }), allowed.panel, undefined)).toBeUndefined();
+    expect(allowed.prompts).toEqual([]);
+
+    const denied = networkChat({ permissions: { deny: ['Read(//evil/**)'] } });
+    const result = await runPermissionGate(ev('read', 'd1', { path: '\\\\evil\\s\\x' }), denied.panel, undefined);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(denied.prompts).toEqual([]);
+
+    const yolo = networkChat({ yolo: true });
+    expect(await runPermissionGate(ev('read', 'y1', { path: '\\\\evil\\s\\x' }), yolo.panel, undefined)).toBeUndefined();
+    expect(yolo.prompts).toEqual([]);
+  });
+
+  it('asks for a Read through a junction whose target is a share', async () => {
+    const { panel, handler, prompts, workspace } = networkChat();
+    const link = path.join(workspace, 'shared');
+    fs.mkdirSync(path.join(workspace, 'real'));
+    fs.symlinkSync(path.join(workspace, 'real'), link, 'junction');
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    const spy = vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) =>
+      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\attacker\\share' : readlink(file))) as typeof fs.promises.readlink);
+    onTestFinished(() => { spy.mockRestore(); });
+    const pending = runPermissionGate(ev('read', 'j1', { path: 'shared/a.txt' }), panel, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    await handler.resolveApproval('j1', true);
+    expect(await pending).toBeUndefined();
+  });
+
+  it('asks for a Read and a Write through a junction to a share that a path allow rule names, which only a tool-wide allow rule runs', async () => {
+    const { panel, handler, prompts, workspace } = networkChat({ permissions: { allow: ['Read(shared/**)', 'Edit(shared/**)'] } });
+    const link = path.join(workspace, 'shared');
+    fs.mkdirSync(path.join(workspace, 'real'));
+    fs.symlinkSync(path.join(workspace, 'real'), link, 'junction');
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    const spy = vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) =>
+      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\attacker\\share' : readlink(file))) as typeof fs.promises.readlink);
+    onTestFinished(() => { spy.mockRestore(); });
+    for (const [index, call] of [ev('read', 'p1', { path: 'shared/a.txt' }), ev('write', 'p2', { path: 'shared/x.txt', content: 'x' })].entries()) {
+      const pending = runPermissionGate(call, panel, undefined);
+      await expect.poll(() => prompts.length).toBe(index + 1);
+      await handler.resolveApproval(call.toolCallId, false);
+      expect((await pending)?.block).toBe(true);
+    }
+
+    const toolWide = networkChat({ permissions: { allow: ['Read'] } });
+    const otherLink = path.join(toolWide.workspace, 'shared');
+    fs.mkdirSync(path.join(toolWide.workspace, 'real'));
+    fs.symlinkSync(path.join(toolWide.workspace, 'real'), otherLink, 'junction');
+    spy.mockImplementation((async (file: fs.PathLike) =>
+      ([link, otherLink].some((known) => String(file).toLowerCase() === known.toLowerCase()) ? '\\\\attacker\\share' : readlink(file))) as typeof fs.promises.readlink);
+    expect(await runPermissionGate(ev('read', 'p3', { path: 'shared/a.txt' }), toolWide.panel, undefined)).toBeUndefined();
+    expect(toolWide.prompts).toEqual([]);
+  });
+
+  it('allows the hosts of the chat\'s folders and WSL\'s, in every spelling, and nothing else', async () => {
+    const lstat = vi.spyOn(fs.promises, 'lstat').mockImplementation((async () => ({ isSymbolicLink: () => false })) as never);
+    onTestFinished(() => { lstat.mockRestore(); });
+    const cwd = () => path.resolve('/repo');
+    const facts = (searched: string, hosts: string[]) => callFactsOf('Grep', { pattern: 'a', path: searched }, machine(hosts), cwd);
+    expect(await facts('\\\\nas\\proj\\src', ['nas'])).toEqual({ reachesNetwork: false });
+    expect(await facts('//NAS/proj/src', ['nas'])).toEqual({ reachesNetwork: false });
+    expect(await facts('\\\\?\\UNC\\nas\\proj\\src', ['nas'])).toEqual({ reachesNetwork: false });
+    expect(await facts('\\\\nas\\proj\\src', [])).toEqual({ reachesNetwork: true });
+    expect(await facts('\\\\wsl.localhost\\Ubuntu\\home', [])).toEqual({ reachesNetwork: false });
+    expect(await facts('\\\\wsl$\\Ubuntu\\home', [])).toEqual({ reachesNetwork: false });
+    expect(await facts('\\\\wsl.localhost@SSL\\Ubuntu\\home', [])).toEqual({ reachesNetwork: true });
+    expect(await facts('\\\\evil\\s', ['nas'])).toEqual({ reachesNetwork: true });
+  });
+});
+
+describe('the three readers of a shell call\'s read-only verdict agree (plan mode and read-only agents, design chats, the checkpoint wait)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-path-'));
+  const DESIGN = designFolderOf('gate-agree-abcd1234');
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(DESIGN, { recursive: true, force: true });
+  });
+
+  // A Windows machine whose PowerShell PATH is one folder holding `files`.
+  function windows(...files: string[]): ChatMachine {
+    const folder = fs.mkdtempSync(path.join(root, 'bin-'));
+    for (const file of files) fs.writeFileSync(path.join(folder, file), '');
+    return { platform: 'win32', allowedNetworkHosts: () => Promise.resolve(new Set()), powerShellSearch: () => Promise.resolve({ path: folder, pathext: '.COM;.EXE;.BAT;.CMD', pwshHome: undefined }) };
+  }
+
+  it('runs, blocks and waits exactly as provenReadOnlyShell proves', async () => {
+    const cases: Array<[string, string, ChatMachine, boolean]> = [
+      ['PowerShell', 'rg TODO src', windows('rg.exe'), true],
+      ['PowerShell', 'rg TODO src', windows('rg.exe', 'rg.cmd'), false],
+      ['PowerShell', 'Get-ChildItem | rg x', windows('rg.bat'), false],
+      ['PowerShell', 'Get-Content a.txt', windows('Get-Content.ps1'), false],
+      ['PowerShell', 'Get-Content a.txt', windows('rg.cmd'), true],
+      ['PowerShell', 'Set-Content a.txt x', windows(), false],
+      ['Bash', 'rg TODO src', windows('rg.cmd'), true],
+      ['Bash', 'cat //evil/s/x', windows(), false],
+    ];
+    for (const [tool, command, machine, expected] of cases) {
+      const proven = (await provenReadOnlyShell(tool, { command }, machine)).readOnly;
+      expect(proven, `proven: ${tool} ${command}`).toBe(expected);
+
+      const plan = makePanel({ plan: true });
+      plan.panel.machine = machine;
+      await runPermissionGate(ev(tool, 'p1', { command }), plan.panel, undefined);
+      expect(plan.canUseTool.mock.calls.length === 0, `plan mode: ${tool} ${command}`).toBe(proven);
+
+      const designed = makePanel({});
+      designed.panel.machine = machine;
+      designed.panel.designScope = () => ({ folder: DESIGN, cwd: root });
+      const result = await runPermissionGate(ev(tool, 'd1', { command }), designed.panel, undefined);
+      expect(result?.block !== true, `design chat: ${tool} ${command}`).toBe(proven);
+
+      const waiting = makePanel({});
+      waiting.panel.machine = machine;
+      const waited: string[] = [];
+      waiting.panel.checkpointBaseline = { folder: root, wait: async (_signal, toolName) => { waited.push(toolName); } };
+      await runPermissionGate(ev(tool, 'c1', { command }), waiting.panel, undefined);
+      expect(waited.length === 0, `checkpoint wait: ${tool} ${command}`).toBe(proven);
+    }
   });
 });

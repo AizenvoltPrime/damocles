@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFile } from 'fs/promises';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
@@ -11,8 +10,6 @@ import type { BranchAgent } from '../subagents/agent-manager';
 import type { AgentRecord } from '../subagents/types';
 import { emptyAgentUsage } from '../../../shared/usage-accounting';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
-
-vi.mock('fs/promises', () => ({ readFile: vi.fn() }));
 
 type EditToolExecute = ReturnType<PiCodingAgentModule['createEditToolDefinition']>['execute'];
 
@@ -36,6 +33,7 @@ function fakePi(): PiCodingAgentModule {
     createFindToolDefinition: vi.fn(() => ({ name: 'find', label: 'find', description: 'pi find', parameters: {}, execute: vi.fn() })),
     createWriteToolDefinition: vi.fn(() => ({ name: 'write', label: 'write', description: 'pi write', parameters: {}, execute: vi.fn() })),
     createLsToolDefinition: vi.fn(() => ({ name: 'ls', label: 'ls', description: 'pi ls', parameters: {}, execute: vi.fn() })),
+    createReadToolDefinition: vi.fn(() => ({ name: 'read', label: 'read', description: 'pi read', parameters: {}, execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }
 
@@ -162,22 +160,6 @@ describe('buildCustomTools — behavior', () => {
     await tool('Edit').execute('id', { file_path: '/a', old_string: 'x', new_string: 'y' }, undefined, undefined, {} as never);
     expect(editExec).toHaveBeenCalled();
     expect(editExec.mock.calls[0]![1]).toEqual({ path: '/a', edits: [{ oldText: 'x', newText: 'y' }] });
-  });
-
-  it('Edit replace_all collapses every occurrence into one whole-file edit pi can apply uniquely', async () => {
-    editExec.mockClear();
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('foo a foo b foo'));
-    const { tool } = build();
-    await tool('Edit').execute('id', { file_path: '/a', old_string: 'foo', new_string: 'bar', replace_all: true }, undefined, undefined, {} as never);
-    expect(editExec.mock.calls[0]![1]).toEqual({ path: '/a', edits: [{ oldText: 'foo a foo b foo', newText: 'bar a bar b bar' }] });
-  });
-
-  it('Edit replace_all throws when old_string is absent (mirrors CC not-found)', async () => {
-    vi.mocked(readFile).mockResolvedValue(Buffer.from('nothing here'));
-    const { tool } = build();
-    await expect(
-      tool('Edit').execute('id', { file_path: '/a', old_string: 'foo', new_string: 'bar', replace_all: true }, undefined, undefined, {} as never),
-    ).rejects.toThrow('not found');
   });
 
   it('AskUserQuestion returns the full SDK output (questions + answers + annotations) the card and model read', async () => {

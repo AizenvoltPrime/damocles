@@ -1,6 +1,7 @@
 // The askpass IPC server (plan AD4, "Askpass"; the request and answer shape follow VS Code's extensions/git/src/askpass.ts and
 // ipc/ipcServer.ts, MIT, see THIRD-PARTY-NOTICES.md). git and ssh run the helper scripts, which run askpass-main.js; the helper
 // sends one JSON line naming its registration's nonce and git's prompt, and gets back one JSON line with the answer or a cancel.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as net from 'node:net';
@@ -569,11 +570,15 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       (await previous?.catch(() => undefined))?.server.close();
     },
     async register(mode, label, prompt) {
+      // a helper's connection keeps the async context the server listened in; its prompt runs in the registering call's (its actor)
+      const inRegisteringContext = AsyncLocalStorage.snapshot();
       if (disposed) throw new Error('The askpass server was disposed');
       const { handle } = await listen();
       if (disposed) throw new Error('The askpass server was disposed');
       const nonce = randomBytes(32);
-      const registration: Registration = { mode, label, prompt: prompt ?? deps.prompt, nonce, ended: new AbortController(), cancelled: new AbortController(), loggedRefusal: false };
+      const asks = prompt ?? deps.prompt;
+      const registered: PromptCredential = (request, signal) => inRegisteringContext(asks, request, signal);
+      const registration: Registration = { mode, label, prompt: registered, nonce, ended: new AbortController(), cancelled: new AbortController(), loggedRefusal: false };
       registrations.add(registration);
       const env: Record<string, string> = {
         GIT_ASKPASS: deps.paths.askpass,

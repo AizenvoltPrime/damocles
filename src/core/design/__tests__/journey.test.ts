@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { describeJourneyTarget, MAX_JOURNEY_STEPS, parseJourneySteps, parseJourneyUntested } from '../../../shared/design-journey';
+import { describeJourneyTarget, journeyNeedsScrollFeature, MAX_JOURNEY_STEPS, parseJourneySteps, parseJourneyUntested } from '../../../shared/design-journey';
 import type { JourneyFile, JourneyStep } from '../../../shared/types/design';
-import { journeyFilesOf, journeyOnBranch, journeyStanding, parseJourneyFile, screenContentHash } from '../journey';
+import { journeyFilesOf, journeyOnBranch, journeyStanding, parseJourneyFile, prepareJourneyArguments, screenContentHash } from '../journey';
 import contacts from '../../../../e2e/fixtures/design-app/static/contacts.preview-journey.json' with { type: 'json' };
 
 const STEPS = contacts.steps as JourneyStep[];
@@ -31,7 +31,7 @@ describe('a journey\'s steps (PD-13, PD-45)', () => {
   });
 
   it('takes only accessible targets, never a CSS or data-ds selector', () => {
-    expect(problemsOf([{ action: 'click', target: { selector: '#save' } }, shown])).toEqual(['step 1: target must be exactly one of {role, name}, {label}, {placeholder} or {text}; never a CSS selector.']);
+    expect(problemsOf([{ action: 'click', target: { selector: '#save' } }, shown])).toEqual(['step 1: target must be exactly one of {role, name}, {label}, {placeholder} or {text}, with an optional exact; never a CSS selector.']);
     expect(problemsOf([{ action: 'click', target: { role: 'button', name: 'Save', label: 'Save' } }, shown])).toHaveLength(1);
     expect(problemsOf([{ action: 'click', target: { role: 'save-button', name: 'Save' } }, shown])).toEqual(['step 1: "save-button" is not an ARIA role.']);
   });
@@ -50,7 +50,41 @@ describe('a journey\'s steps (PD-13, PD-45)', () => {
     expect(problemsOf([{ action: 'click', target: { label: 'Name' }, value: 'x' }, shown])).toEqual(['step 1: click takes only a target.']);
     expect(problemsOf([{ action: 'assert', target: { label: 'Name' }, expect: { visible: true, valueEquals: 'x' } }])).toEqual(['step 1: expect must be exactly one of {visible}, {textContains} or {valueEquals}.']);
     expect(problemsOf([{ action: 'assert', target: { label: 'Name' } }])).toHaveLength(1);
-    expect(problemsOf([{ action: 'hover', target: { label: 'Name' } }])).toContain('step 1: action must be fill, select, click, press or assert.');
+    expect(problemsOf([{ action: 'hover', target: { label: 'Name' } }])).toContain('step 1: action must be fill, select, click, press, scroll or assert.');
+  });
+
+  it('takes exact on any target, absent meaning exact, and only as true or false (acceptance)', () => {
+    const loose: JourneyStep = { action: 'assert', target: { text: 'save', exact: false }, expect: { visible: true } };
+    expect(parseJourneySteps([loose])).toEqual({ steps: [loose] });
+    expect(parseJourneySteps([{ action: 'click', target: { role: 'button', name: 'Folding the sections', exact: false } }, shown])).toEqual({ steps: [{ action: 'click', target: { role: 'button', name: 'Folding the sections', exact: false } }, shown] });
+    expect(problemsOf([{ action: 'assert', target: { label: 'Name', exact: 'no' }, expect: { visible: true } }])).toEqual(['step 1: target.exact must be true or false.']);
+    expect(parseJourneySteps([{ action: 'assert', target: { label: 'Name', exact: true }, expect: { visible: true } }])).toEqual({ steps: [{ action: 'assert', target: { label: 'Name' }, expect: { visible: true } }] });
+    expect(describeJourneyTarget(loose.target)).toBe('text ~"save"');
+  });
+
+  it('takes a scroll to a target, to the end, or both, and nothing else on it (acceptance)', () => {
+    const more: JourneyStep = { action: 'assert', target: { text: 'Item 21' }, expect: { visible: true } };
+    expect(parseJourneySteps([{ action: 'scroll', to: 'end' }, more])).toEqual({ steps: [{ action: 'scroll', to: 'end' }, more] });
+    expect(parseJourneySteps([{ action: 'scroll', target: { role: 'list', name: 'Results' }, to: 'end' }, more])).toEqual({ steps: [{ action: 'scroll', target: { role: 'list', name: 'Results' }, to: 'end' }, more] });
+    expect(problemsOf([{ action: 'scroll' }, more])).toEqual(['step 1: scroll needs a target to scroll into view, to: "end", or both.']);
+    expect(problemsOf([{ action: 'scroll', to: 'top' }, more])).toEqual(['step 1: to must be "end".']);
+    expect(problemsOf([{ action: 'scroll', to: 'end', value: 'x' }, more])).toEqual(['step 1: scroll takes a target, to: "end", or both.']);
+    expect(problemsOf([{ action: 'scroll', to: 'end' }])).toEqual(['step 1: every action must be followed by an assert of its outcome.']);
+  });
+
+  it('lets a render\'s steps stand without asserts, and names an app update for scroll and any explicit exact', () => {
+    expect(parseJourneySteps([click], { asserts: false })).toEqual({ steps: [click] });
+    expect(journeyNeedsScrollFeature(STEPS)).toBe(false);
+    expect(journeyNeedsScrollFeature([{ action: 'scroll', to: 'end' }])).toBe(true);
+    expect(journeyNeedsScrollFeature([{ action: 'assert', target: { text: 'save', exact: false }, expect: { visible: true } }])).toBe(true);
+    expect(journeyNeedsScrollFeature([{ action: 'assert', target: { text: 'save', exact: true }, expect: { visible: true } }])).toBe(true);
+  });
+
+  it('turns a malformed argument into one sentence naming the step and field, never a validator dump (acceptance)', () => {
+    expect(() => prepareJourneyArguments({ screen: 'screens/S1-contacts.html', steps: [{ action: 'click', target: { css: '#x' } }, shown], untested: [] })).toThrow('PreviewJourney ran nothing: step 1: target must be exactly one of {role, name}, {label}, {placeholder} or {text}, with an optional exact; never a CSS selector.');
+    expect(() => prepareJourneyArguments({ screen: 'screens/S1-contacts.html', steps: [{ action: 'hover' }, { action: 'click' }], untested: [] })).toThrow(/^PreviewJourney ran nothing: step 1: [^\n]+ \(\d+ more problems? after this one\.\)$/);
+    expect(() => prepareJourneyArguments({ screen: 'screens/S1-contacts.html', steps: STEPS })).toThrow('PreviewJourney ran nothing: untested must be a list.');
+    expect(prepareJourneyArguments({ screen: 'screens/S1-contacts.html', steps: STEPS, untested: [] })).toEqual({ screen: 'screens/S1-contacts.html', steps: STEPS, untested: [] });
   });
 
   it('bounds the untested remainder', () => {
@@ -79,6 +113,7 @@ describe('journey files', () => {
     viewports: [{ breakpoint: 'base', width: 390 }, { breakpoint: 'xl', width: 1280 }],
     state: 'default',
     contentHash: screenContentHash(Buffer.from('<html></html>')),
+    renderHash: 'render-1',
     steps: STEPS,
     results: [390, 1280].map((width) => ({ width, passed: true, steps: STEPS.map(() => ({ ok: true })) })),
     untested: ['Saving a contact'],
@@ -94,11 +129,14 @@ describe('journey files', () => {
     expect(parseJourneyFile({ ...file(), results: file().results.map((result) => ({ ...result, steps: [{ ok: false, failure: 'teleported' }] })) })).toBeUndefined();
   });
 
-  it('vouch for the screen only at its current bytes and at every journey width (PD-21)', () => {
-    const hash = screenContentHash(Buffer.from('<html></html>'));
+  it('vouch for the screen only at its current render inputs and at every journey width (PD-21, D86)', () => {
+    const hash = 'render-1';
     expect(journeyStanding(file(), hash, [390, 1280])).toEqual({ passes: true });
     expect(journeyStanding(undefined, hash, [390, 1280])).toEqual({ passes: false, reason: 'missing' });
-    expect(journeyStanding(file(), screenContentHash(Buffer.from('<html> </html>')), [390, 1280])).toEqual({ passes: false, reason: 'stale' });
+    expect(journeyStanding(file(), 'render-2', [390, 1280])).toEqual({ passes: false, reason: 'stale' });
+    const { renderHash: _dropped, ...withoutRenderHash } = file();
+    expect(parseJourneyFile(withoutRenderHash)).toEqual(withoutRenderHash);
+    expect(journeyStanding(withoutRenderHash, hash, [390, 1280])).toEqual({ passes: false, reason: 'stale' });
     expect(journeyStanding(file(), hash, [390, 768, 1280])).toEqual({ passes: false, reason: 'widths' });
     const failedAtBase = file({ passed: false, results: [{ width: 390, passed: false, steps: [{ ok: false, failure: 'hidden', hiddenAt: 390 }] }, file().results[1]!] });
     expect(journeyStanding(failedAtBase, hash, [390, 1280])).toEqual({ passes: false, reason: 'failed' });

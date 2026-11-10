@@ -164,8 +164,40 @@ function steerBranchAgentResult(id: string, agent: BranchAgent): ReturnType<type
   return steerResult(text, details);
 }
 
+/** A user message in pi's steering queue, which ends a wait early so pi can deliver it at the wait's boundary. */
+export interface UserInput {
+  /** A user message sits in pi's steering queue, undelivered. */
+  pending(): boolean;
+  /** Resolves when pi next queues a user message as a steer, or as `signal` aborts. */
+  next(signal: AbortSignal): Promise<void>;
+}
+
+/** The input of a session no user types into. */
+export const NO_USER_INPUT: UserInput = {
+  pending: () => false,
+  next: (signal) => new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true })),
+};
+
+/** How a wait for a running record ended. */
+async function waitForRecord(record: AgentRecord, userInput: UserInput, signal: AbortSignal | undefined): Promise<'settled' | 'userInput' | 'stopped'> {
+  if (signal?.aborted) return 'stopped';
+  if (userInput.pending()) return 'userInput';
+  const ended = new AbortController();
+  const stop = (): void => ended.abort();
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    return await Promise.race([
+      (record.promise ?? Promise.resolve()).then(() => 'settled' as const),
+      userInput.next(ended.signal).then(() => (signal?.aborted ? 'stopped' as const : 'userInput' as const)),
+    ]);
+  } finally {
+    signal?.removeEventListener('abort', stop);
+    ended.abort();
+  }
+}
+
 /** Build the three subagent tools for a session whose subagents are run by `manager`. */
-export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManager): ToolDefinition[] {
+export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManager, userInput: UserInput): ToolDefinition[] {
   const agents = manager.getSpawnableAgents();
   const agentSchema = buildAgentSchema(agents);
   const agentTool = pi.defineTool<typeof agentSchema, AgentToolDetails>({
@@ -211,14 +243,18 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
   const getResultTool = pi.defineTool<typeof getResultSchema, SubagentResultFetchDetails | undefined>({
     name: TOOL_GET_SUBAGENT_RESULT,
     label: 'Get subagent result',
-    description: 'Read (and optionally wait for) the result of a background agent spawned with Agent(run_in_background:true).',
+    description: 'Read (and optionally wait for) the result of a background agent spawned with Agent(run_in_background:true). A wait returns early, with the agent still running, only when a message from the user reaches you at this point; read it, then call again to keep waiting.',
     parameters: getResultSchema,
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const id = params.agent_id;
       const record = manager.branchRecord(id);
       if (record) {
         if (params.wait && (record.status === 'running' || record.status === 'queued')) {
-          await record.promise;
+          // A tool still waiting has no boundary, so pi could not deliver what the user queued until the agent finished.
+          const ended = await waitForRecord(record, userInput, signal);
+          if (ended === 'userInput' && (record.status === 'running' || record.status === 'queued')) {
+            return textResult(`Subagent "${id}" is still running. The user sent a message while you waited; read it, then call GetSubagentResult again with wait:true if you still need the result.`);
+          }
         }
         if (record.status === 'running' || record.status === 'queued') {
           return textResult(`Subagent "${id}" is still ${record.status}. Call again with wait:true to block until it finishes.`);

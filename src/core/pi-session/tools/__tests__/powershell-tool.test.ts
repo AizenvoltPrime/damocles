@@ -5,10 +5,10 @@ import { constants as osConstants, tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 // The REAL pi shell definition, because every status string asserted below is pi's and a stub would
 // pin nothing but the stub. Test files may value-import the ESM pi package; extension source may not.
-import { createPowerShellToolDefinition } from '@earendil-works/pi-coding-agent';
+import { createPowerShellToolDefinition, getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { createPowerShellTool, createTrackedPowerShellOperations } from '../powershell-tool';
+import { createPowerShellTool, createTrackedPowerShellOperations, powerShellSearch } from '../powershell-tool';
 import { createShellJob, killProcessTree } from '../process-tree';
 import { windowsPowerShell } from '../../../system-tools';
 
@@ -193,6 +193,27 @@ function useFakeShellEnvironment(): void {
     vi.useRealTimers();
   });
 }
+
+// The permission gate looks PowerShell's commands up where this search says, so it must be the environment the tool really starts.
+describe('powerShellSearch', () => {
+  useFakeShellEnvironment();
+
+  it('names the PATH, PATHEXT and pwsh folder of the environment the tool starts PowerShell with', async () => {
+    const shell = armFakeShell();
+    const extra = { DAMOCLES_PROJECT_FOLDER: CWD };
+    const tool = createPowerShellTool(pi, CWD, undefined, () => extra);
+    const pending = tool.execute('ps-env', { command: 'Write-Output ok' }, undefined, undefined, ctx) as Promise<unknown>;
+    await shell.spawned;
+    endShell(shell.child, 0);
+    await pending;
+    const spawned = spawnControl.calls[0]!;
+    const env = spawned.options['env'] as NodeJS.ProcessEnv;
+    const variable = (name: string): string | undefined => env[Object.keys(env).find((key) => key.toLowerCase() === name) ?? name];
+    const search = await powerShellSearch({ getAgentDir }, extra);
+    expect(search).toEqual({ path: variable('path'), pathext: variable('pathext'), pwshHome: dirname(spawned.exe) });
+    expect(search.path.split(delimiter)[0]).toBe(join(getAgentDir(), 'bin'));
+  });
+});
 
 /**
  * The operations layer on its own. It is the half that owns the spawn, the executable fallback and the

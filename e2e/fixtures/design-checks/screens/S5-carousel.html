@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" data-ds-screen="S5" data-ds-states="default">
+<head>
+  <meta charset="utf-8">
+  <title>Carousel</title>
+  <style>
+    html, body { margin: 0; background: #ffffff; }
+    #slide { width: 390px; height: 300px; }
+  </style>
+</head>
+<body>
+  <div id="slide"></div>
+  <script>
+    // a carousel that never stops: each frame paints another hue
+    const slide = document.getElementById('slide');
+    let hue = 0;
+    const turn = () => {
+      hue = (hue + 7) % 360;
+      slide.style.background = `hsl(${hue} 80% 50%)`;
+      requestAnimationFrame(turn);
+    };
+    requestAnimationFrame(turn);
+  </script>
+</body>
+</html>

@@ -15,7 +15,7 @@ import { verbatim } from '../../core/l10n';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import type { Disposable } from '../../platform/disposable';
 import type { LogSink } from '../../platform/log-sink';
-import { INVALID, MAX_MESSAGE_CHARS, parseScmProjects, type RepositoryCall, type ScmCall, type ScmCommitOutcome, type ScmRepositoryEntry } from '../core-protocol';
+import { INVALID, MAX_MESSAGE_CHARS, parseScmProjects, processActor, type RepositoryCall, type ScmCall, type ScmCommitOutcome, type ScmRepositoryEntry } from '../core-protocol';
 import { credentialPrompt } from './askpass-prompt';
 import { backgroundCompletion } from './commit-message-completion';
 import type { CorePlatform } from './platform';
@@ -89,6 +89,8 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
       return true;
     });
   };
+  // the relay follows the acting client (D20), never an actor: its server's connections keep the context of whatever work listened
+  const asNoActor = <T>(send: () => T): T => processActor.run(undefined, send);
   const relayCredential: RelayCredential = async ({ op, cwd, fields, passwordHash }, signal) => {
     if (op === 'erase') {
       if (passwordHash === undefined) {
@@ -99,10 +101,10 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
         return { kind: 'none' };
       }
       if (!relayedPasswords.refused(fields, passwordHash)) return { kind: 'none' };
-      return endpoint.request('askpass.credential', { op, fields, targetHelper: false }, signal);
+      return asNoActor(() => endpoint.request('askpass.credential', { op, fields, targetHelper: false }, signal));
     }
     const targetHelper = await helperProbe(cwd, `${fields.protocol}://${fields.host}/${fields.path ?? ''}`);
-    const answer = await endpoint.request('askpass.credential', { op, fields, targetHelper }, signal);
+    const answer = await asNoActor(() => endpoint.request('askpass.credential', { op, fields, targetHelper }, signal));
     if (answer.kind === 'credential') relayedPasswords.answered(fields, answer.password);
     return answer;
   };

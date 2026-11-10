@@ -1,3 +1,4 @@
+import type { ServedFile, ServedFileAnswer } from '../shared/served-file-url';
 import type { HostCapabilities } from '../shared/types/messages';
 import type { AppInfo } from './app-info';
 import type { AppPaths } from './app-paths';
@@ -18,7 +19,7 @@ import type { SecretsStore } from './secrets-store';
 import type { SettingsStore } from './settings-store';
 import type { ShellService } from './shell-service';
 import type { TrustService } from './trust-service';
-import type { WindowService } from './window-service';
+import type { PanelHost, WindowService } from './window-service';
 import type { WorkspaceFolders } from './workspace-folders';
 
 export interface Platform {
@@ -48,4 +49,11 @@ export interface Platform {
   readonly design?: DesignHost;
   // set only where a design opens in a preview tab (desktop, a daemon's core included)
   readonly designPreview?: DesignPreviewHost;
+  // set only for desktop's local core: main's loopback server of a chat's project and design roots, for its browser tools
+  readonly browserServedFiles?: BrowserServedFiles;
+}
+
+export interface BrowserServedFiles {
+  // the one-time URL that opens a root file of the chat's view, or why main serves none
+  url(chat: PanelHost, file: ServedFile): Promise<ServedFileAnswer>;
 }

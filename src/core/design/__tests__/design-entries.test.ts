@@ -11,7 +11,9 @@ import {
   finishedDesignVersion,
   inheritedDesignLink,
   ownDesignLink,
-  userMessageQuoted,
+  currentDecisions,
+  replacedBy,
+  userAuthoredQuoted,
 } from '../design-entries';
 import { designFolderOf } from '../design-paths';
 
@@ -101,8 +103,63 @@ describe('design branch readers', () => {
 
   it('finds a quote of the user only in user messages, spaces collapsed', () => {
     const branch = [user('Make the table   compact, please'), customMessage('damocles-design-brief', { briefId: 'b1', text: 'use cards' })];
-    expect(userMessageQuoted(branch, 'table compact')).toBe(true);
-    expect(userMessageQuoted(branch, 'use cards')).toBe(false);
-    expect(userMessageQuoted(branch, '   ')).toBe(false);
+    expect(userAuthoredQuoted(branch, 'table compact')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'use cards')).toBe(false);
+    expect(userAuthoredQuoted(branch, '   ')).toBe(false);
+  });
+
+  it('takes a quote from an answer\'s typed part, a FinishDesign change note and a steer the user sent a subagent, never the designer\'s own SteerSubagent (acceptance)', () => {
+    const answered = entry({ type: 'message', message: { role: 'toolResult', toolCallId: 'q1', toolName: 'AskUserQuestion', isError: false, details: undefined, content: [{ type: 'text', text: JSON.stringify({
+      questions: [{ question: 'Which accent?', header: 'Accent', multiSelect: false, options: [{ label: 'Taupe' }, { label: 'Graphite' }] }],
+      answers: { 'Which accent?': 'Taupe, but a little warmer' },
+      annotations: { 'Which accent?': { notes: 'keep the contrast AA' } },
+    }) }] } });
+    const changes = toolResult('FinishDesign', { designId: 'contacts-abcd1234', approval: 'changesRequested', feedback: 'Load more on scroll, no pager' }, true);
+    const steer = custom('damocles-steer', { agentId: 'a1', message: 'use the flipbook wallpaper' });
+    const designerSteer = [
+      entry({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 's1', name: 'SteerSubagent', arguments: { agentId: 'a1', message: 'make it glassy' } }] } }),
+      toolResult('SteerSubagent', { agentId: 'a1' }),
+    ];
+    const branch = [answered, changes, steer, ...designerSteer];
+    expect(userAuthoredQuoted(branch, 'a little warmer')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'contrast AA')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'Taupe')).toBe(false);
+    expect(userAuthoredQuoted(branch, 'load more   on scroll')).toBe(false);
+    expect(userAuthoredQuoted(branch, 'Load more on scroll')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'flipbook wallpaper')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'make it glassy')).toBe(false);
+  });
+});
+
+describe('decision entries (D99)', () => {
+  const entered = (record: Record<string, unknown>) => custom('damocles-design-decision', record);
+
+  it('reads the decisions of a session written before entries, with their original ids, a superseded one as replaced (acceptance)', () => {
+    const branch = [
+      toolResult('AskUserQuestion', { [DESIGN_DECISIONS_DETAIL_KEY]: [decision('D1', 'Fidelity', 'Static mockup'), decision('D2', 'Accent', 'graphite')] }),
+      toolResult('RecordDecision', { [DESIGN_DECISIONS_DETAIL_KEY]: [{ ...decision('D3', 'Accent', 'taupe'), supersedes: 'D2' }] }),
+    ];
+    const all = decisionsOnBranch(branch);
+    expect(all.map((d) => [d.id, d.chosen, d.replaces])).toEqual([['D1', 'Static mockup', undefined], ['D2', 'graphite', undefined], ['D3', 'taupe', ['D2']]]);
+    expect(all[2]).not.toHaveProperty('supersedes');
+    expect(currentDecisions(all).map((d) => d.id)).toEqual(['D1', 'D3']);
+    expect(replacedBy(all)).toEqual(new Map([['D2', 'D3']]));
+  });
+
+  it('reads entries in branch order, the entry winning over its own result\'s details, and applies a later check', () => {
+    const first = { ...decision('D1', 'Fidelity', 'Static mockup') };
+    const second = { ...decision('D2', 'Density', 'Compact'), conflictCheck: 'unchecked', uncheckedReason: 'noModel' };
+    const branch = [
+      entered(first),
+      toolResult('AskUserQuestion', { [DESIGN_DECISIONS_DETAIL_KEY]: [{ ...first, chosen: 'forged' }] }),
+      entered(second),
+      entered({ ...decision('D3', 'Bad', 'x'), replaces: ['nope'] }),
+      custom('damocles-design-decision-check', { v: 1, id: 'D2', conflictCheck: 'checked', conflicts: [{ id: 'D1', kind: 'restates', reason: 'same' }] }),
+      custom('damocles-design-decision-check', { v: 1, id: 'D9', conflictCheck: 'checked' }),
+    ];
+    const all = decisionsOnBranch(branch);
+    expect(all.map((d) => [d.id, d.chosen])).toEqual([['D1', 'Static mockup'], ['D2', 'Compact']]);
+    expect(all[1]).toMatchObject({ conflictCheck: 'checked', conflicts: [{ id: 'D1', kind: 'restates', reason: 'same' }] });
+    expect(all[1]!.uncheckedReason).toBeUndefined();
   });
 });

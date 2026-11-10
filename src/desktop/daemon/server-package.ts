@@ -18,10 +18,11 @@ export function daemonE2eHooks(env: NodeJS.ProcessEnv, serverPackage: boolean = 
 }
 
 /**
- * The e2e hooks' shorter reconnection grace and held-frame bound, read only where daemonE2eHooks holds:
- * DAMOCLES_E2E_RECONNECTION_GRACE_MS and DAMOCLES_E2E_MAX_HELD_BYTES, each a positive integer within its bound.
+ * The e2e hooks' shorter reconnection grace, held-frame bound and actor intent expiry, read only where daemonE2eHooks holds:
+ * DAMOCLES_E2E_RECONNECTION_GRACE_MS, DAMOCLES_E2E_MAX_HELD_BYTES and DAMOCLES_E2E_ACTOR_INTENT_EXPIRY_MS, each a positive
+ * integer within its bound.
  */
-export function e2eConnectionLimits(env: NodeJS.ProcessEnv): { readonly graceMs?: number; readonly maxHeldBytes?: number } {
+export function e2eConnectionLimits(env: NodeJS.ProcessEnv): { readonly graceMs?: number; readonly maxHeldBytes?: number; readonly actorIntentExpiryMs?: number } {
   const positive = (name: string, max: number): number | undefined => {
     const raw = env[name];
     if (raw === undefined) return undefined;
@@ -31,5 +32,10 @@ export function e2eConnectionLimits(env: NodeJS.ProcessEnv): { readonly graceMs?
   // setTimeout fires a longer delay after 1 ms
   const graceMs = positive('DAMOCLES_E2E_RECONNECTION_GRACE_MS', 2 ** 31 - 1);
   const maxHeldBytes = positive('DAMOCLES_E2E_MAX_HELD_BYTES', Number.MAX_SAFE_INTEGER);
-  return { ...(graceMs !== undefined ? { graceMs } : {}), ...(maxHeldBytes !== undefined ? { maxHeldBytes } : {}) };
+  const actorIntentExpiryMs = positive('DAMOCLES_E2E_ACTOR_INTENT_EXPIRY_MS', 2 ** 31 - 1);
+  return {
+    ...(graceMs !== undefined ? { graceMs } : {}),
+    ...(maxHeldBytes !== undefined ? { maxHeldBytes } : {}),
+    ...(actorIntentExpiryMs !== undefined ? { actorIntentExpiryMs } : {}),
+  };
 }

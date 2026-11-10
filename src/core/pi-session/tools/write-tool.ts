@@ -34,11 +34,13 @@ async function writeDetails(path: string, absolutePath: string, content: string)
  * paired with an `excludeTools` entry, which would drop the replacement too ("Tool overrides").
  * The old content is read through pi's `operations`, inside the write's mutation queue slot. A second
  * `withFileMutationQueue` around `execute` would deadlock, since pi's call queues behind it on that key.
+ * Sequential, so pi runs any batch holding a write one call at a time, in the model's order.
  */
 export function createWriteTool(pi: PiCodingAgentModule, cwd: string): ToolDefinition {
   const metadata: AnyToolDefinition = pi.createWriteToolDefinition(cwd);
   return {
     ...metadata,
+    executionMode: 'sequential',
     execute: async (toolCallId, params: WriteToolInput, signal, onUpdate, ctx) => {
       let details: WriteDetails | undefined;
       // pi's default local operations (`write.js`), built per call so the read lands in this call's slot.

@@ -396,9 +396,9 @@ describe('design tools in the active set (PD-15, PD-25)', () => {
   });
 
   it('gives a design chat its rule set\'s built tools, and no plan mode, StartDesign or team tools', () => {
-    for (const [ruleSet, own] of [[full, ['DesignScreenshot', 'PreviewJourney', 'DeclareTweaks']], [reduced, []]] as const) {
+    for (const [ruleSet, own] of [[full, ['DesignScreenshot', 'PreviewJourney', 'DeclareTweaks', 'OpenPreview']], [reduced, []]] as const) {
       const names = fullActiveToolNames(deps({ designEnabled: true, designRole: true, ruleSet, teamAvailable: true, teamEnabled: true }));
-      expect(names.filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference', ...own]);
+      expect(names.filter((n) => DESIGN_PI_TOOL_NAMES.has(n))).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference', 'RemoveDesignFile', ...own]);
       for (const gone of ['EnterPlanMode', 'ExitPlanMode', 'StartDesign', 'DesignParity', ...TEAM_MAIN_PI_TOOL_NAMES]) expect(names).not.toContain(gone);
     }
   });

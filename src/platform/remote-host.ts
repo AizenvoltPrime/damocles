@@ -1,5 +1,6 @@
 import type { BrokerAnswer, BrowserToolAnswer, ClientGlobalProfile, ClientPolicy, ClientUser, GlobalMemoryListPage, GlobalMemoryListRequest, GlobalMemoryResolution, GlobalMemorySearchFilters, GlobalMemoryWrite, HeldAuth, HeldMemoryQueue, RelayedMcpServer, SearchedGlobalMemory } from '../shared/remote-user';
 
+import type { RelayedServedFile } from '../shared/served-file-url';
 import type { Disposable } from './disposable';
 import type { ActiveEditorContext } from './editor-service';
 import type { PanelHost, TerminalToggle } from './window-service';
@@ -56,8 +57,9 @@ export interface RemoteHost {
   speak(host: PanelHost, text: string): Promise<void>;
   // the providers a chat's runs read through the broker, for the daemon's run registry (control.listRuns)
   runProviders(panelId: string, providers: readonly string[]): void;
-  // a browser tool of the chat's view, run by the client showing it in that view's browser scope
-  browserTool(host: PanelHost, scope: string, tool: string, input: unknown, signal: AbortSignal | undefined): Promise<BrowserToolAnswer>;
+  // a browser tool of the chat's view, run by the client showing it in that view's browser scope; served: the root file a
+  // BrowserOpen or BrowserNavigate names, which the client serves, rejected with CLIENT_FEATURE_MISSING by an app too old to
+  browserTool(host: PanelHost, scope: string, tool: string, input: unknown, signal: AbortSignal | undefined, served?: RelayedServedFile): Promise<BrowserToolAnswer>;
   // a subagent's or team member's browser scope of the chat ended: the client showing the chat disposes it there, closing its
   // tabs when closeTabs
   browserRelease(host: PanelHost, scope: string, closeTabs: boolean): Promise<void>;

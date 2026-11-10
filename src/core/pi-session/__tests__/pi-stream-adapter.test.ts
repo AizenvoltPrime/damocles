@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { log } from '../../logger';
-import { PiStreamAdapter, isNothingToCompact } from '../pi-stream-adapter';
+import { PiStreamAdapter, isNothingToCompact, type QueuedDelivery } from '../pi-stream-adapter';
 import { TOOL_OUTPUT_COALESCE_MS, ToolOutputCoalescer } from '../tool-output-coalescer';
 import { DAMOCLES_TURN_STOPPED_ENTRY } from '../session-store/constants';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -53,7 +53,7 @@ function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRunti
 function makeAdapter(
   out: ExtensionToWebviewMessage[],
   hooks?: {
-    onUserMessageDelivered?: (deliveredText: string) => boolean;
+    onUserMessageDelivered?: (deliveredText: string) => QueuedDelivery | null;
     onMidStreamEntryCommitted?: (id: string) => void;
     modelValue?: () => string;
     showCacheMissNotices?: () => boolean;
@@ -74,7 +74,7 @@ function makeAdapter(
     showCacheMissNotices: hooks?.showCacheMissNotices ?? (() => false),
     showThinkingDroppedNotices: hooks?.showThinkingDroppedNotices ?? (() => true),
     onBudgetStop: () => undefined,
-    onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => false),
+    onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => null),
     onMidStreamEntryCommitted: hooks?.onMidStreamEntryCommitted ?? (() => undefined),
     promptEntryId: () => 'u-entry',
     onTurnStateChanged: (...[state, outcome]) => hooks?.onTurnStateChanged?.(state, outcome),
@@ -98,7 +98,7 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     showCacheMissNotices: () => false,
     showThinkingDroppedNotices: () => true,
     onBudgetStop: onStop,
-    onUserMessageDelivered: () => false,
+    onUserMessageDelivered: () => null,
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => 'u-entry',
     onTurnStateChanged: (...[state, outcome]) => {
@@ -658,7 +658,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const committed: string[] = [];
     const adapter = makeAdapter(out, {
-      onUserMessageDelivered: () => true,
+      onUserMessageDelivered: () => ({}),
       onMidStreamEntryCommitted: (id) => committed.push(id),
     });
     // pi commits the steered user entry AFTER its message_end, persisting the delivered message object itself.
@@ -690,7 +690,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   it('marks a note and a batch delivered at one boundary, each by its own entry, in delivery order', () => {
     const committed: string[] = [];
     const adapter = makeAdapter([], {
-      onUserMessageDelivered: () => true,
+      onUserMessageDelivered: () => ({}),
       onMidStreamEntryCommitted: (id) => committed.push(id),
     });
     const branch: unknown[] = [];
@@ -714,10 +714,37 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(committed).toEqual(['u-note', 'u-batch']);
   });
 
+  it("hands a design prompt's delivery its own entry, after that entry's marker", () => {
+    const calls: string[] = [];
+    const adapter = makeAdapter([], {
+      onUserMessageDelivered: (text) => (text.startsWith('Markup') ? { onCommitted: (id) => calls.push(`committed:${id}`) } : {}),
+      onMidStreamEntryCommitted: (id) => calls.push(`marker:${id}`),
+    });
+    const branch: unknown[] = [];
+    let listener: ((e: unknown) => void) | undefined;
+    const session = {
+      sessionId: 'SID',
+      sessionManager: { getLeafId: () => 'leaf', getBranch: () => branch },
+      subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
+    };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-design');
+
+    const markup = { role: 'user', content: [{ type: 'text', text: 'Markup F1 on screens/S1.html' }] };
+    const batch = { role: 'user', content: [{ type: 'text', text: 'also say hi' }] };
+    listener!({ type: 'message_end', message: markup });
+    branch.push({ type: 'message', id: 'u-markup', parentId: null, timestamp: '', message: markup });
+    listener!({ type: 'message_end', message: batch });
+    branch.push({ type: 'message', id: 'u-batch', parentId: 'u-markup', timestamp: '', message: batch });
+    listener!({ type: 'message_start', message: { role: 'assistant', content: [] } });
+
+    expect(calls).toEqual(['marker:u-markup', 'committed:u-markup', 'marker:u-batch']);
+  });
+
   it('hands the delivered text to the host, so an injected note can be told from a queued batch', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const delivered: string[] = [];
-    const adapter = makeAdapter(out, { onUserMessageDelivered: (text) => { delivered.push(text); return false; } });
+    const adapter = makeAdapter(out, { onUserMessageDelivered: (text) => { delivered.push(text); return null; } });
     let listener: ((e: unknown) => void) | undefined;
     const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
     adapter.subscribe(session as never);
@@ -734,7 +761,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const committed: string[] = [];
     const adapter = makeAdapter(out, {
-      onUserMessageDelivered: () => true,
+      onUserMessageDelivered: () => ({}),
       onMidStreamEntryCommitted: (id) => committed.push(id),
     });
     const branch: unknown[] = [];
@@ -765,7 +792,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const committed: string[] = [];
     const adapter = makeAdapter(out, {
-      onUserMessageDelivered: () => false,
+      onUserMessageDelivered: () => null,
       onMidStreamEntryCommitted: (id) => committed.push(id),
     });
     const session = fakeSession([
@@ -1843,7 +1870,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
       showCacheMissNotices: () => false,
       showThinkingDroppedNotices: () => true,
       onBudgetStop: onStop,
-      onUserMessageDelivered: () => false,
+      onUserMessageDelivered: () => null,
       onMidStreamEntryCommitted: () => undefined,
       promptEntryId: () => 'u-entry',
       onTurnStateChanged: () => undefined,

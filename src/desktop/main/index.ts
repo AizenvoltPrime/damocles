@@ -25,7 +25,7 @@ import { homeDirectory } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
 import type { InputBoxOptions } from '../../platform/dialog-service';
 import type { PanelOptions } from '../../platform/window-service';
-import type { ChatPermissions, PanelCreate } from '../core-protocol';
+import type { ChatPermissions, CoreRequests, PanelCreate } from '../core-protocol';
 import type { RelayView } from './core-services/host-services';
 import type { StoredSession } from '../../shared/types/session';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
@@ -73,6 +73,7 @@ import { BrowserTabs } from './browser-tabs';
 import { createDesignSession, serveDesignRequest, type DesignViewTarget } from './design/design-session';
 import { DesignPreviews, markupPngForModel, type DesignSupport } from './design/design-previews';
 import { HtmlPreviews } from './html-preview/html-previews';
+import { servedPathRefusal, ServedRoots } from './html-preview/served-roots';
 import { createPreviewSession } from './html-preview/preview-session';
 import { DesignRunner } from './design/design-runner';
 import { DesignRendererHost } from './design/design-renderer-host';
@@ -986,6 +987,16 @@ class DesktopApp {
   // core's worktree git and registry work, on the running core
   private readonly worktreeEngine: WorktreeEngine = worktreeEngine((method, args) => this.core.run(`Worktree ${method}`, (core) => core.client.worktreeCall(method, args)));
   private readonly roots = new WorktreeRoots({ projects: () => this.workspaceProjects(), registry: (authority) => this.worktreeRegistry(authority), osOf: (projectKey) => this.projectOs(projectKey) });
+  // the loopback servers of chats' project and design roots and of Open in Browser (docs/invariants.md "Ports and the remote browser")
+  private readonly servedRoots = new ServedRoots({
+    projectOfView: (authority, viewId) => this.servedProjectOf(authority, viewId),
+    projects: () => this.roots.all(),
+    files: (rootKey) => this.requireWorkspaces().forProject(rootKey).files,
+    isTrusted: (project) => this.isProjectTrusted(project),
+    designRead: (authority, designId, relPath) => this.designRead({ authority, designId }, relPath),
+    refusalText: () => this.requireLocalization().t('Open this preview from Damocles.'),
+    log: (line) => log(line),
+  });
   private worktrees: WorktreeController | undefined;
   // each remote host's registry and controller: its worktrees live in its core's registry and git, kept across a reattach
   private readonly remoteWorktreeRecords = new Map<string, WorktreeRecords>();
@@ -1275,6 +1286,7 @@ class DesktopApp {
         const chat = this.views?.panel(viewId);
         return chat && chat.kind === 'chat' && chat.authority !== 'local' ? chat : undefined;
       },
+      servedFile: (request) => this.servedFile(request),
       clientNetwork: {
         current: () => this.requirePorts().clientNetworks(),
         onDidChange: (listener) => this.requirePorts().onClientNetwork(listener),
@@ -1397,6 +1409,7 @@ class DesktopApp {
         this.forgetUnlistedProjects();
         // a remote project's trust is its host record's
         this.htmlPreviews?.trustChanged();
+        this.servedRoots.trustChanged();
         this.devcontainerConfigs.sync(this.devcontainerProjectKeys());
         // a removed remote project hands the selection back to the selected chat's project
         if (this.remoteSelected() && !this.remoteProject(this.selectedProjectKey!)) {
@@ -1424,6 +1437,7 @@ class DesktopApp {
       this.trust.onDidGrant(() => {
         this.shownFolders.refresh();
         this.htmlPreviews?.trustChanged();
+        this.servedRoots.trustChanged();
         this.shellStateChanged();
       }),
       this.platform.settings.onDidChange('damocles', (change) => {
@@ -3241,6 +3255,7 @@ class DesktopApp {
 
   // A chat left memory: by retention, Delete, or the window or core closing (which keep the saved selection).
   private chatClosed(panel: DesktopPanel): void {
+    this.servedRoots.release(panel.panelId);
     const projectKey = this.projectOf(panel);
     this.chatsChanged(projectKey);
     if (panel.authority !== 'local') {
@@ -3955,7 +3970,7 @@ class DesktopApp {
       openInBrowserFailed: () => void this.notifications.error(t('Damocles could not open the preview in the browser.')),
       changed: () => this.editorPane?.htmlPreviewsChanged(),
       createSession: (deps) => createPreviewSession(deps).ready,
-      refusalText: () => t('Open this preview from Damocles.'),
+      served: this.servedRoots,
       focusAway: () => this.focusAwayFromPage(),
       focusPart: (step) => this.focusPart(step),
       log: report,
@@ -4532,7 +4547,7 @@ class DesktopApp {
     return this.designSessionReady;
   }
 
-  // design.capture and design.probe from the authority's core (PD-41): its own design only, read through its design.read.
+  // design.capture, design.render and design.probe from the authority's core (PD-41): its own design only, read through its design.read.
   private designRenderFor(authority: string): HostServicesDeps['designRender'] {
     const runner = (): DesignRunner => {
       // a run's page lives in the design renderer process, which asks main for each design byte as the preview does
@@ -4548,6 +4563,7 @@ class DesktopApp {
     const target = (designId: string, relPath: string): DesignViewTarget => designTargetOf(authority, designId, relPath, 'page');
     return {
       capture: ({ designId, relPath, width, state, scale }, signal) => runner().capture(target(designId, relPath), { relPath, width, state, scale }, signal),
+      render: ({ designId, relPath, ...request }, signal) => runner().render(target(designId, relPath), { relPath, ...request }, signal),
       probe: ({ designId, relPath, widths, state, sweepTo }, signal) => runner().probe(target(designId, relPath), { relPath, widths, state, ...(sweepTo !== undefined ? { sweepTo } : {}) }, signal),
       journey: ({ designId, relPath, widths, state, steps, outline }, signal) => runner().journey(target(designId, relPath), { relPath, widths, state, steps, outline: outline === true }, signal),
       replay: ({ panelId, designId, relPath, state, steps, reducedMotion }, signal) => this.replayDesignJourney(authority, panelId, { designId, relPath, state, steps, reducedMotion }, signal),
@@ -5305,6 +5321,10 @@ class DesktopApp {
           attachView: (viewId) => this.foreignViews.attachView(viewId, authority),
           tunnels: () => this.requirePorts().forwarding.forwardingFor(this.hostIdOf(authority)),
           policy: () => this.clientNetworkPolicy(authority),
+          served: {
+            grant: (served) => this.servedRoots.grant({ authority, ...served }),
+            mappings: () => this.servedRoots.mappings(authority),
+          },
           run: (params, abort) => this.core.run('Browser tool', (core) => core.client.browserTool(params, abort)),
         }, request, signal),
         browserRelease: (agentScope) => this.core.run('Browser tool', (core) => core.client.releaseBrowser(authority, agentScope)),
@@ -5947,6 +5967,8 @@ class DesktopApp {
         accepted: (host, port) => acceptedWithin(host, port),
         networkingMode: (distro) => wslNetworkingMode(distro),
       } : {}),
+      servedPorts: (authority) => this.servedRoots.servedPorts(authority),
+      onServedChange: (listener) => this.servedRoots.onDidChange(listener),
       log: (line) => log(line),
     });
     this.portsView = ports.onView((view) => this.shell?.portsView(view));
@@ -6056,6 +6078,27 @@ class DesktopApp {
     return this.ports;
   }
 
+  // The project root a chat view of the authority works in, as main lists it: its project folder, or its live chat worktree;
+  // never the default target or a path its core names.
+  private servedProjectOf(authority: string, viewId: string): Project | undefined {
+    const panel = this.views?.panel(viewId);
+    if (!panel || panel.kind !== 'chat' || panel.isDisposed || panel.authority !== authority || !this.views?.chats().includes(panel)) return undefined;
+    const folder = this.clientOf(panel)?.chatOfView(panel.panelId)?.folder;
+    if (!folder) return undefined;
+    if (folder.ownerKey === undefined) return this.roots.projectRoots().find((root) => root.key === folder.key);
+    const event = this.worktreeEventOf(panel);
+    return event?.worktreeId !== undefined && event.state.place === 'worktree' ? this.roots.ofWorktree(event.worktreeId, authority) : undefined;
+  }
+
+  // browser.servedFileUrl of the local core: a root file of one of its chat views, on that root's served origin.
+  private async servedFile(request: CoreRequests['browser.servedFileUrl']['params']): Promise<CoreRequests['browser.servedFileUrl']['result']> {
+    const root = request.kind === 'project' ? { kind: 'project' as const } : { kind: 'design' as const, designId: request.designId };
+    const refusal = servedPathRefusal(root, request.relPath);
+    if (refusal !== undefined) return { refused: refusal };
+    const grant = await this.servedRoots.grant({ authority: 'local', root, viewId: request.viewId });
+    return 'refused' in grant ? grant : { url: grant.open(request.relPath), origin: grant.origin };
+  }
+
   // the host's forwarded local ports and its switch, as its browser context's proxy applies them
   private clientNetworkPolicy(authority: string): { readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean } {
     return this.requirePorts().clientNetworks()[authority] ?? { allowedPorts: [], allowLocalNetwork: false };
@@ -6087,7 +6130,7 @@ class DesktopApp {
   private async remotePageAddress(chat: DesktopPanel, url: string): Promise<string | undefined> {
     let verdict: Awaited<ReturnType<typeof typedRemoteAddress>>;
     try {
-      verdict = await typedRemoteAddress(url, chat.authority, this.requirePorts().forwarding.forwardingFor(this.hostIdOf(chat.authority)), () => this.clientNetworkPolicy(chat.authority));
+      verdict = await typedRemoteAddress(url, chat.authority, this.requirePorts().forwarding.forwardingFor(this.hostIdOf(chat.authority)), () => this.clientNetworkPolicy(chat.authority), this.servedRoots.servedPorts(chat.authority));
     } catch (err) {
       // a forward the address needs and cannot have is told, never a typed address that does nothing
       log(`[browser] ${chat.authority}: a typed address could not be forwarded — ${err instanceof Error ? err.message : String(err)}`);
@@ -7403,6 +7446,7 @@ class DesktopApp {
       this.editorPane?.rootsChanged();
       // a preview's root made before its project registered took no trust
       this.htmlPreviews?.trustChanged();
+      this.servedRoots.trustChanged();
       for (const key of changed.removed) this.quickOpenIndex?.invalidate(key);
     }
     this.shownFolders.refresh();
@@ -8827,6 +8871,7 @@ class DesktopApp {
     this.designRunner?.closeAll('Damocles is quitting.');
     this.designRenderer?.stop('Damocles is quitting');
     await this.designServer?.dispose();
+    this.servedRoots.dispose();
     for (const disposable of this.disposables.reverse()) disposable.dispose();
     this.notificationCenter.dispose();
     this.taskbar.dispose();

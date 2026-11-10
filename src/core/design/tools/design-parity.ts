@@ -7,19 +7,21 @@ import type { StructuredCompletionRequest, StructuredCompletionResult } from '..
 import type { DesignPreviewHost } from '../../../platform/design-preview';
 import { l, verbatim } from '../../l10n';
 import { log } from '../../logger';
-import { MAX_PROBE_WIDTHS, MAX_RENDER_SCALE, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH } from '../../../shared/design-render';
+import { DEFAULT_RENDER_IMAGE_TARGET, DEFAULT_RENDER_MEDIA, MAX_PROBE_WIDTHS, MAX_RENDER_IMAGE_SIDE, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH } from '../../../shared/design-render';
 import { DESIGN_PARITY_CHECK_COUNT, type DesignParityDetails, type DesignParityImage, type DesignParityRefusal, type DesignParityWidth } from '../../../shared/design-parity';
 import { englishText, LocalizedError, type LocalizedText } from '../../../shared/localized-text';
 import type { BrowserToolAnswer } from '../../../shared/remote-user';
 import { TOOL_DESIGN_PARITY } from '../../../shared/tool-names';
 import { latestDesignResult, ownDesignLink } from '../design-entries';
-import { readManifest, renderInputHashes } from '../design-files';
+import { readManifest } from '../design-files';
+import { renderInputsMatch } from '../render-inputs';
 import { designStateDirOf } from '../design-paths';
 import { readVersionRecord } from '../design-state';
 import { checkedWidthsOf, designViewports, type DesignViewports } from '../design-preview';
 import { PARITY_CHECKS, PARITY_OUTPUT_TOOL, PARITY_SCHEMA, PARITY_SYSTEM_PROMPT, parityWidth, parseParityVerdicts } from '../parity';
 import { isHttpUrl, parseAppFrame, type AppCaptureFailed, type AppFrame } from '../parity-capture';
-import { DesignRenderUnavailableError, rendered } from '../width-checks';
+import { renderForModel, type ModelRender } from '../model-render';
+import { DesignRenderUnavailableError } from '../width-checks';
 
 const JUDGE_TIMEOUT_MS = 120_000;
 // a page that hangs the browser (a busy loop blocks every CDP call to it) must end the call, as a design render's 60 s does
@@ -118,9 +120,8 @@ async function runParity(deps: DesignParityDeps, toolCallId: string, params: { s
   if (!screen) refuse(l('Not a screen of this design: {0}. The screens are {1}.', params.screen, screens.map((candidate) => candidate.id).join(', ') || '-'));
   // the render shows the folder as it is now, which must still be the delivered version's
   const version = delivered!.version;
-  const recorded = (await readVersionRecord(designStateDirOf(designId), version)).renderHashes;
-  if (!recorded) refuse(l('v{0} of the design predates the render hashes DesignParity compares. Finish the design again in its design chat, then compare.', version));
-  if (recorded![screen!.file] !== (await renderInputHashes(folder, [screen!.file]))[screen!.file]) refuse(l('The design changed since v{0}; compare after its next version.', version));
+  const record = await readVersionRecord(designStateDirOf(designId), version);
+  if (!(await renderInputsMatch(folder, screen!.file, record.renderHashes, record.contentHash))) refuse(l('The design changed since v{0}; compare after its next version.', version));
   if (!isHttpUrl(params.url)) refuse(l('DesignParity opens only http and https addresses.'));
   const viewports = await designViewports(folder);
   const widths = params.widths ? [...new Set(params.widths)].sort((a, b) => a - b) : checkedWidthsOf(viewports).map((checked) => checked.width);
@@ -145,16 +146,17 @@ async function runParity(deps: DesignParityDeps, toolCallId: string, params: { s
     for (const width of widths) {
       // both settle before either failure is reported, so no capture is still running when the scope is released
       const [designed, answered] = await Promise.allSettled([
-        rendered(() => render!.capture(designId, screen!.file, width, null, MAX_RENDER_SCALE, signal)),
+        // a PNG at the scale the app's capture takes (renderScale within MAX_RENDER_IMAGE_SIDE), so the judge compares like with like
+        renderForModel(render!, designId, screen!.file, { width, state: null, media: DEFAULT_RENDER_MEDIA, format: 'png', maxSide: MAX_RENDER_IMAGE_SIDE, quality: DEFAULT_RENDER_IMAGE_TARGET.jpegQuality }, signal),
         withDeadline(app!, scope, params.url, width, signal),
       ]);
       if (designed.status === 'rejected') throw designed.reason;
       if (answered.status === 'rejected') refuse(appErrorRefusal(app!.remote, origin, answered.reason));
-      const design = (designed as PromiseFulfilledResult<Awaited<ReturnType<DesignPreviewHost['capture']>>>).value;
+      const design = (designed as PromiseFulfilledResult<ModelRender>).value.frames[0]!;
       const frame = parseAppFrame((answered as PromiseFulfilledResult<BrowserToolAnswer>).value, width);
       if ('failure' in frame) refuse(appFailureRefusal(app!.remote, origin, frame));
       const appFrame = frame as AppFrame;
-      const designPng = Buffer.from(design.png).toString('base64');
+      const designPng = Buffer.from(design.image).toString('base64');
       const judged = await deps.judge<unknown>({
         systemPrompt: PARITY_SYSTEM_PROMPT,
         userMessage: `Screen ${screen!.id} (${screen!.file}) at ${width} CSS px. Image 1: the design. Image 2: the app at ${params.url}.`,

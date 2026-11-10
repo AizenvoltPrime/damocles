@@ -118,10 +118,21 @@ export function createCorePlatform(
       }),
       changed: (designId, paths) => endpoint.emit('design.changed', { designId, paths }),
       capture: (designId, relPath, width, state, scale, signal) => endpoint.request('design.capture', { designId, relPath, width, state, scale }, signal),
+      render: (designId, relPath, request, signal) => endpoint.request('design.render', { designId, relPath, ...request }, signal),
       probe: (designId, relPath, widths, state, sweepTo, signal) => endpoint.request('design.probe', { designId, relPath, widths, state, ...(sweepTo !== undefined ? { sweepTo } : {}) }, signal),
       journey: (designId, relPath, widths, state, steps, outline, signal) => endpoint.request('design.journey', { designId, relPath, widths, state, steps, outline }, signal),
       replayJourney: (panelId, designId, relPath, state, steps, reducedMotion, signal) => endpoint.request('design.replayJourney', { panelId, designId, relPath, state, steps, reducedMotion }, signal),
     },
+    // a daemon's core relays its browser calls instead, with the root file it resolved (user.browser.tool's served)
+    ...(init.remote ? {} : {
+      browserServedFiles: {
+        url: (chat, file) => {
+          const viewId = panels.idOf(chat);
+          if (viewId === undefined) return Promise.reject(new Error('The chat has no view'));
+          return endpoint.request('browser.servedFileUrl', { viewId, ...file });
+        },
+      },
+    }),
     logSinks: local.logSinks,
     get worktrees() {
       if (!worktrees) throw new Error('Worktree services read before core built them');

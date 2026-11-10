@@ -33,6 +33,28 @@ async function runSpec(source: string): Promise<{ titles: string[]; calls: unkno
 }
 
 describe('journeyToPlaywright (PD-45)', () => {
+  it('writes exact: false only where a target set it, and a scroll as scrollIntoViewIfNeeded and mouse.wheel (acceptance)', () => {
+    const steps: JourneyStep[] = [
+      { action: 'click', target: { role: 'button', name: 'Folding the sections', exact: false } },
+      { action: 'assert', target: { text: 'save', exact: false }, expect: { visible: true } },
+      { action: 'scroll', target: { role: 'list', name: 'Results' } },
+      { action: 'assert', target: { role: 'list', name: 'Results' }, expect: { visible: true } },
+      { action: 'scroll', target: { role: 'list', name: 'Results' }, to: 'end' },
+      { action: 'assert', target: { text: 'Item 21' }, expect: { visible: true } },
+      { action: 'scroll', to: 'end' },
+      { action: 'assert', target: { text: 'Item 41' }, expect: { visible: true } },
+    ];
+    const spec = journeyToPlaywright({ screen: 'S1', state: 'default', steps, untested: [], viewports: VIEWPORTS });
+    const { diagnostics } = ts.transpileModule(spec, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, reportDiagnostics: true });
+    expect(diagnostics ?? []).toEqual([]);
+    expect(spec).toContain('await page.getByRole("button", { name: "Folding the sections", exact: false }).click();');
+    expect(spec).toContain('await expect(page.getByText("save", { exact: false })).toBeVisible();');
+    expect(spec).toContain('    await page.getByRole("list", { name: "Results", exact: true }).scrollIntoViewIfNeeded();\n');
+    expect(spec).toContain('await page.getByRole("list", { name: "Results", exact: true }).scrollIntoViewIfNeeded(); await page.getByRole("list", { name: "Results", exact: true }).hover(); await page.mouse.wheel(0, 100000);');
+    expect(spec).toContain('    await page.mouse.wheel(0, 100000);\n');
+    expect(spec).toContain('await expect(page.getByText("Item 41", { exact: true })).toBeVisible();');
+  });
+
   it('writes the contacts journey as the committed spec that Playwright runs against contacts.html', () => {
     const spec = journeyToPlaywright({ screen: 'S1', state: contacts.state, steps: contacts.steps as JourneyStep[], untested: contacts.untested, viewports: VIEWPORTS });
     expect(fs.readFileSync(CONTACTS_SPEC, 'utf8')).toBe(spec);

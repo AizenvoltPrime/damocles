@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { Agent } from '@earendil-works/pi-agent-core';
-import type { AgentSession, ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { Type } from 'typebox';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { BUDGET_STOP_HOOK, installTurnDecider } from '../finish-turn';
@@ -14,6 +15,11 @@ import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
 import { bindPanel, blockingShell, callPowerShell, panelSession, realPiSessions, wire } from './real-pi-fixtures';
 import { englishText } from '../../../shared/localized-text';
+import { buildSubagentTools } from '../tools/subagent-tools';
+import type { AgentManager } from '../subagents/agent-manager';
+import type { PiCodingAgentModule } from '../pi-loader';
+import { CheckpointService, type CheckpointProducer, type CheckpointTreeReader } from '../checkpoint-service';
+import { setCheckpointGitAvailability } from '../checkpoints';
 
 /** Queued typed input and cancel notes against pi's real queue and agent loop, with a scripted model. */
 
@@ -993,6 +999,417 @@ describe('the mid-run queue against pi', () => {
       expect(noteCount()).toBe(1);
       expect(session.agent.state.messages.filter((m) => m.role === 'custom' && m.content === note)).toHaveLength(1);
     });
+  });
+
+  describe('a markup or Keep sent while the designer runs', () => {
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    const MARKUP = {
+      screen: 'S1', file: 'screens/S1.html', viewport: { breakpoint: 'xl', width: 1280 }, zoom: 1, pixelRatio: 2, state: 'default',
+      marks: [{ type: 'pin', n: 1, kind: 'change', text: 'Taller rows', at: [40, 200], anchor: { element: 'ui/Table', facts: [] } }],
+    };
+    const markupText = (n: number): string => `Markup F${n} on screens/S1.html at xl · 1280 · default:\nPin 1 (change) on ui/Table: Taller rows`;
+    const VIEW = { file: 'screens/S1.html', breakpoint: 'xl', width: 1280, state: 'default', marks: [{ type: 'pin', n: 1, kind: 'change', element: 'ui/Table', text: 'Taller rows' }] };
+
+    /** `panel` as a design chat of a fresh design folder in the desktop app. */
+    function asDesignChat(panel: PiSession): string {
+      const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-steered-markup-'));
+      onTestFinished(() => fs.rmSync(folder, { recursive: true, force: true }));
+      vi.spyOn(panel.design, 'role').mockReturnValue({ designId: 'contacts-1a2b3c4d', folder, parentSessionId: 'parent', ruleSet: 'full', title: 'Contacts' });
+      vi.spyOn(panel.design, 'ruleSet').mockReturnValue({ preview: true } as never);
+      vi.spyOn(panel.design, 'readLink').mockResolvedValue({ kind: 'current' });
+      vi.spyOn(panel.design, 'sendRefusal').mockReturnValue(undefined);
+      onTestFinished(() => { vi.restoreAllMocks(); });
+      return folder;
+    }
+
+    const feedbackFiles = (folder: string): string[] => (fs.existsSync(path.join(folder, 'feedback')) ? fs.readdirSync(path.join(folder, 'feedback')).sort() : []);
+    const chipOf = (emitted: readonly ExtensionToWebviewMessage[], text: string): string | undefined =>
+      emitted.flatMap((m) => (m.type === 'messageQueued' && Array.isArray(m.message.content) && m.message.content.some((b) => b.type === 'text' && b.text === text) ? [m.message.id] : []))[0];
+    const withoutImageNote = (line: string): string => line.replace(/\n\n\[Image omitted: [^\]]*\]$/, '');
+
+    it('reaches the next boundary as one user message each, beside a cancel note and a typed message, never merged, its files written once after its own entry', async () => {
+      const shell = blockingShell();
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const bound: { session?: AgentSession } = {};
+      const { tool, store } = wire(shell, () => bound.session, panel);
+      const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Done.')]);
+      bound.session = session;
+      bindPanel(panel, session);
+      internals(panel).adapter.subscribe(session);
+      readyToSend(panel);
+      const folder = asDesignChat(panel);
+
+      const run = panel.sendMessage(PROMPT, undefined, 'c0', { content: PROMPT });
+      await shell.started;
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F2' });
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([markupText(1), markupText(2), QUEUED]));
+      expect(store.cancel('call-1', NOTE)).toBe(true);
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([NOTE, markupText(1), markupText(2), QUEUED]));
+      shell.release();
+      await run;
+
+      // one request after the boundary: the note, then each markup on its own, then the typed message
+      expect(contexts).toHaveLength(2);
+      expect(contexts[1]!.slice(-5).map(withoutImageNote)).toEqual(['toolResult: call-1', `user: ${NOTE}`, `user: ${markupText(1)}`, `user: ${markupText(2)}`, `user: ${QUEUED}`]);
+      const batches = emitted.filter((m) => m.type === 'queueBatchProcessed');
+      expect(batches.map((m) => m.messageIds)).toEqual([[chipOf(emitted, markupText(1))], [chipOf(emitted, markupText(2))], ['q1']]);
+      expect(batches[0]).toMatchObject({ combinedContent: markupText(1), designMarkup: { feedbackId: 'F1', markup: VIEW } });
+      expect(batches[0]!.contentBlocks?.[1]).toMatchObject({ type: 'image', origin: 'designPreview' });
+      expect(batches[2]).toEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
+
+      await vi.waitFor(() => expect(feedbackFiles(folder)).toEqual(['F1.json', 'F1.png', 'F2.json', 'F2.png']));
+      const branch = session.sessionManager.getBranch();
+      const entryOf = (text: string): string | undefined => branch.find((e) => e.type === 'message' && e.message.role === 'user' && userContent(session, text) === e.message.content)?.id;
+      const custom = (type: string): unknown[] => branch.flatMap((e) => (e.type === 'custom' && e.customType === type ? [e.data] : []));
+      expect(custom('damocles.design-markup')).toEqual([
+        { userEntryId: entryOf(markupText(1)), feedbackId: 'F1', markup: VIEW },
+        { userEntryId: entryOf(markupText(2)), feedbackId: 'F2', markup: VIEW },
+      ]);
+      expect(custom(DAMOCLES_MID_STREAM_ENTRY)).toEqual(expect.arrayContaining([{ userEntryId: entryOf(markupText(1)) }, { userEntryId: entryOf(markupText(2)) }]));
+      expect((panel as unknown as { pendingMarkups: Map<string, unknown> }).pendingMarkups.size).toBe(0);
+      expect(notices(emitted)).toEqual([]);
+    });
+
+    /** Holds the screening of every message the panel queues (pi's input handlers on `interactive` input) until `release`; the first prompt passes. */
+    function screeningHold(): { extend: (pi: ExtensionAPI) => void; release: () => void } {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      return {
+        extend: (pi) => {
+          pi.on('input', async (event) => {
+            if (event.source === 'interactive' && event.text !== PROMPT) await released;
+            return undefined;
+          });
+        },
+        release,
+      };
+    }
+
+    /** Holds the `agent_settled` handlers of the first run that settles until `release`; `reached` resolves as pi runs them. */
+    function settleHold(): { extend: (pi: ExtensionAPI) => void; reached: Promise<void>; release: () => void } {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let reach!: () => void;
+      const reached = new Promise<void>((resolve) => { reach = resolve; });
+      let held = false;
+      return {
+        extend: (pi) => {
+          pi.on('agent_settled', async () => {
+            if (held) return;
+            held = true;
+            reach();
+            await released;
+          });
+        },
+        reached,
+        release,
+      };
+    }
+
+    /** A design chat on real pi whose first run calls the blocking shell; `runs` counts the runs pi opened. */
+    async function designRun(responses: Parameters<typeof boot>[1], ...extend: Array<(pi: ExtensionAPI) => void>) {
+      const shell = blockingShell();
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const bound: { session?: AgentSession } = {};
+      const { tool, store } = wire(shell, () => bound.session, panel);
+      const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Done.'), ...responses], (pi) => {
+        for (const add of extend) add(pi);
+      });
+      bound.session = session;
+      bindPanel(panel, session);
+      internals(panel).adapter.subscribe(session);
+      readyToSend(panel);
+      const folder = asDesignChat(panel);
+      const counted = { runs: 0 };
+      session.subscribe((event) => {
+        if (event.type === 'agent_start') counted.runs++;
+      });
+      const run = panel.sendMessage(PROMPT, undefined, 'c0', { content: PROMPT });
+      await shell.started;
+      // the shell call ends with no note, so the run's next reply ends it
+      const endRun = (): void => {
+        store.cancel('call-1');
+        shell.release();
+      };
+      return { panel, session, emitted, contexts, folder, counted, run, endRun };
+    }
+
+    it('puts two markups and a batch back on an idle chat into one run: the first opens it, the rest reach its first boundary each as its own message', async () => {
+      const hold = screeningHold();
+      const { panel, session, emitted, contexts, counted, run, endRun } = await designRun(['Two.', 'Three.', 'Four.'].map((text) => fauxAssistantMessage(text)), hold.extend);
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F2' });
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      endRun();
+      await run;
+      expect(counted.runs).toBe(1);
+
+      hold.release();
+      await vi.waitFor(() => expect(typedTexts(session)).toEqual([PROMPT, markupText(1), markupText(2), QUEUED]));
+      await session.waitForIdle();
+      // one run took all three, never one run each
+      expect(counted.runs).toBe(2);
+      expect(contexts.at(-1)!.map(withoutImageNote).filter((line) => line.startsWith('user: ')).slice(-3)).toEqual([`user: ${markupText(1)}`, `user: ${markupText(2)}`, `user: ${QUEUED}`]);
+      const batches = emitted.filter((m) => m.type === 'queueBatchProcessed');
+      expect(batches.map((m) => m.messageIds)).toEqual([[chipOf(emitted, markupText(1))], [chipOf(emitted, markupText(2))], ['q1']]);
+      expect(notices(emitted)).toEqual([]);
+    });
+
+    it('goes with the batch queued for the run a settle hands on, ahead of a message typed after it, never after that run', async () => {
+      const screening = screeningHold();
+      const settle = settleHold();
+      const { panel, session, counted, run, endRun } = await designRun(['Two.', 'Three.', 'Four.'].map((text) => fauxAssistantMessage(text)), screening.extend, settle.extend);
+      expect(panel.queueInput('first', 'q1')).toBe('queued');
+      endRun();
+      await settle.reached;
+      // pi settles the run with `first` still in screening, so a pass will put it back for the next run
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      expect(panel.queueInput('second', 'q2')).toBe('queued');
+      screening.release();
+      settle.release();
+      await run;
+
+      await vi.waitFor(() => expect(typedTexts(session)).toEqual([PROMPT, markupText(1), 'first\n\nsecond']));
+      await session.waitForIdle();
+      expect(counted.runs).toBe(2);
+    });
+
+    it('sends a markup and a message typed after it while pi settles a run in the order they were sent, each as its own prompt', async () => {
+      const settle = settleHold();
+      const { panel, session, emitted, counted, run, endRun } = await designRun([fauxAssistantMessage('Two.'), fauxAssistantMessage('Three.')], settle.extend);
+      endRun();
+      await settle.reached;
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      settle.release();
+      await run;
+
+      await vi.waitFor(() => expect(typedTexts(session)).toEqual([PROMPT, markupText(1), QUEUED]));
+      await vi.waitFor(() => expect(counted.runs).toBe(3));
+      await session.waitForIdle();
+      expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', sentAs: expect.any(String) });
+      expect(notices(emitted)).toEqual([]);
+    });
+
+    it("sends and stops a markup a Stop overtook in pi's hands when its run opens after the stopped run ended, with its files", async () => {
+      let releaseSteer!: () => void;
+      const steerHeld = new Promise<void>((resolve) => { releaseSteer = resolve; });
+      let held!: () => void;
+      const holding = new Promise<void>((resolve) => { held = resolve; });
+      // A repository `.pi/` extension that knows nothing of the Stop and passes the steer on.
+      const slowSteer = (pi: ExtensionAPI): void => {
+        pi.on('input', async (event) => {
+          if (event.source !== 'extension') return undefined;
+          held();
+          await steerHeld;
+          return undefined;
+        });
+      };
+      const { panel, session, emitted, contexts, folder, run, endRun } = await designRun([fauxAssistantMessage('Again.')], slowSteer);
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      await holding;
+      expect((panel as unknown as { designInPi: unknown }).designInPi).not.toBeNull();
+      const stopped = panel.interrupt();
+      endRun();
+      await stopped;
+      await run;
+      // pi holds the markup with no verdict yet, so the Stop neither drops it nor delivers it
+      expect(emitted.filter((m) => m.type === 'queueCancelled' || m.type === 'queueBatchProcessed')).toEqual([]);
+
+      releaseSteer();
+      await vi.waitFor(() => expect(typedTexts(session)).toEqual([PROMPT, markupText(1)]));
+      await session.waitForIdle();
+      // pi opened a run with it, which stopped at its start: a sent, stopped turn that reached no model, with its card and files
+      expect(contexts.flat().some((line) => line.includes('Markup F1'))).toBe(false);
+      expect(emitted).toContainEqual(expect.objectContaining({ type: 'queueBatchProcessed', messageIds: [chipOf(emitted, markupText(1))], designMarkup: { feedbackId: 'F1', markup: VIEW } }));
+      expect(emitted.some((m) => m.type === 'queueCancelled')).toBe(false);
+      await vi.waitFor(() => expect(feedbackFiles(folder)).toEqual(['F1.json', 'F1.png']));
+      expect(notices(emitted)).toEqual([]);
+    });
+
+    it('a Stop drops a steered markup: no file is written, its chip goes, and the user is told', async () => {
+      const shell = blockingShell();
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const bound: { session?: AgentSession } = {};
+      const { tool } = wire(shell, () => bound.session, panel);
+      const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Again.')]);
+      bound.session = session;
+      bindPanel(panel, session);
+      internals(panel).adapter.subscribe(session);
+      readyToSend(panel);
+      const folder = asDesignChat(panel);
+
+      const run = panel.sendMessage(PROMPT, undefined, 'c0', { content: PROMPT });
+      await shell.started;
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([markupText(1)]));
+      const stopped = panel.interrupt();
+      shell.release();
+      await stopped;
+      await run;
+
+      expect(session.pendingMessageCount).toBe(0);
+      expect(contexts.flat().some((line) => line.includes('Markup F1'))).toBe(false);
+      expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: chipOf(emitted, markupText(1)) });
+      expect(emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
+      expect(notices(emitted)).toContain('The markup F1 was not sent: the chat stopped before it could run.');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(feedbackFiles(folder)).toEqual([]);
+      expect((panel as unknown as { pendingMarkups: Map<string, unknown> }).pendingMarkups.size).toBe(0);
+    });
+  });
+
+  it('a GetSubagentResult wait returns when the user queues a message, which reaches the model at that boundary', async () => {
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const record = { id: 'a1', type: 'Explore', description: 'find things', status: 'running', toolCallId: 'tc-a1', promise: new Promise<string>(() => {}) };
+    const manager = { getSpawnableAgents: () => [], branchRecord: () => record } as unknown as AgentManager;
+    const piStub = { defineTool: (definition: unknown) => definition } as unknown as PiCodingAgentModule;
+    const getResult = buildSubagentTools(piStub, manager, panel.userInput)[1] as unknown as { execute: (id: string, params: unknown, signal?: AbortSignal) => Promise<unknown> };
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    // Scripted as the PowerShell call the fixture's model makes.
+    const waiting = {
+      name: 'PowerShell',
+      label: 'PowerShell',
+      description: 'Waits for a subagent',
+      parameters: Type.Object({ command: Type.String() }),
+      execute: (_id: string, _params: unknown, signal?: AbortSignal) => {
+        markStarted();
+        return getResult.execute('tc-wait', { agent_id: 'a1', wait: true }, signal);
+      },
+    } as unknown as ToolDefinition;
+    const { session, contexts } = await boot(waiting, [callPowerShell, fauxAssistantMessage('Read it.')]);
+    bindPanel(panel, session);
+
+    const run = session.prompt(PROMPT);
+    await started;
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await run;
+
+    expect(contexts).toHaveLength(2);
+    expect(contexts[1]!.slice(-2)).toEqual(['toolResult: call-1', `user: ${QUEUED}`]);
+    const result = session.agent.state.messages.find((m) => m.role === 'toolResult');
+    expect(JSON.stringify(result)).toContain('The user sent a message while you waited');
+  });
+
+  it('a GetSubagentResult wait called again after the user\'s message reached the model waits for the agent', async () => {
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    let finish!: () => void;
+    const record = { id: 'a1', type: 'Explore', description: 'find things', status: 'running', toolCallId: 'tc-a1', result: 'found it', promise: new Promise<string>((resolve) => { finish = () => resolve('found it'); }) };
+    const manager = { getSpawnableAgents: () => [], branchRecord: () => record } as unknown as AgentManager;
+    const piStub = { defineTool: (definition: unknown) => definition } as unknown as PiCodingAgentModule;
+    const getResult = buildSubagentTools(piStub, manager, panel.userInput)[1] as unknown as { execute: (id: string, params: unknown, signal?: AbortSignal) => Promise<unknown> };
+    const waits: Array<() => void> = [];
+    const started = [new Promise<void>((resolve) => waits.push(resolve)), new Promise<void>((resolve) => waits.push(resolve))];
+    const waiting = {
+      name: 'PowerShell',
+      label: 'PowerShell',
+      description: 'Waits for a subagent',
+      parameters: Type.Object({ command: Type.String() }),
+      execute: (id: string, _params: unknown, signal?: AbortSignal) => {
+        waits.shift()?.();
+        return getResult.execute(id, { agent_id: 'a1', wait: true }, signal);
+      },
+    } as unknown as ToolDefinition;
+    const waitAgain = fauxAssistantMessage(fauxToolCall('PowerShell', { command: 'wait again' }, { id: 'call-2' }), { stopReason: 'toolUse' });
+    const { session, contexts } = await boot(waiting, [callPowerShell, waitAgain, fauxAssistantMessage('Done.')]);
+    bindPanel(panel, session);
+    // The adapter reports the delivery, which takes the message off the queue.
+    internals(panel).adapter.subscribe(session);
+
+    const run = session.prompt(PROMPT);
+    await started[0];
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await started[1];
+    // the message reached the model at the first wait's boundary, so nothing the user sent is left to end this one
+    expect(contexts[1]!.slice(-2)).toEqual(['toolResult: call-1', `user: ${QUEUED}`]);
+    expect(panel.userInput.pending()).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(contexts).toHaveLength(2);
+    record.status = 'completed';
+    finish();
+    await run;
+
+    expect(contexts).toHaveLength(3);
+    const results = session.agent.state.messages.filter((m) => m.role === 'toolResult').map((m) => JSON.stringify(m));
+    expect(results[0]).toContain('The user sent a message while you waited');
+    expect(results[1]).not.toContain('The user sent a message while you waited');
+  });
+
+  // A stopped run that opens with the batch still streams an aborted assistant message, whose start begins the batch's turn.
+  it('starts the checkpoint turn of a batch a Stop left to pi inside the run it opened, before any later prompt', async () => {
+    setCheckpointGitAvailability({ available: true });
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const hooks: Array<() => void> = [];
+    const turns: string[][] = [];
+    const bound: { session?: AgentSession } = {};
+    const producer = {
+      turnStart: async ({ userEntryId }: { userEntryId: string }) => { turns.push([userEntryId]); return { ok: true, entries: [] }; },
+      turnStartBatch: async (inputs: ReadonlyArray<{ userEntryId: string }>) => { turns.push(inputs.map((input) => input.userEntryId)); return { ok: true, entries: [] }; },
+      markNotRewindable: () => false,
+      finalizeRun: async () => ({ ok: false }),
+      dispose: () => null,
+    } as unknown as CheckpointProducer;
+    const service = new CheckpointService({
+      cwd: '/cwd',
+      get sessionId() { return bound.session?.sessionId ?? ''; },
+      onCheckpointReady: () => undefined,
+      persist: () => true,
+      onBaselineTimeout: () => undefined,
+      baselineWaitMs: () => 30_000,
+      maxFileSizeBytes: () => 1,
+      createProducer: () => producer,
+    });
+    // The producer is made for a session with a file; an in-memory one has none, so the reader names one.
+    const reader = (sm: CheckpointTreeReader): CheckpointTreeReader => ({
+      getBranch: (fromId) => sm.getBranch(fromId),
+      getLeafId: () => sm.getLeafId(),
+      getEntries: () => sm.getEntries(),
+      getSessionFile: () => '/sessions/s.jsonl',
+    });
+    const extension = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => {
+        if (event.source === 'extension') await new Promise<void>((resolve) => hooks.push(resolve));
+        return undefined;
+      });
+      pi.on('message_start', (event, ctx) => service.onMessageStart(event.message, reader(ctx.sessionManager)));
+    };
+    const { tool } = wire(shell, () => bound.session, panel);
+    const { session } = await boot(tool, [callPowerShell, fauxAssistantMessage('First.'), fauxAssistantMessage('Second.')], extension);
+    bound.session = session;
+    bindPanel(panel, session);
+    internals(panel).adapter.subscribe(session);
+    readyToSend(panel);
+    (panel as unknown as { checkpointService: CheckpointService }).checkpointService = service;
+    const entryOf = (text: string): string | undefined => session.sessionManager.getBranch().find((e) => e.type === 'message' && e.message.role === 'user' && userContent(session, text) === e.message.content)?.id;
+
+    const run = session.prompt(PROMPT).catch(() => undefined);
+    await shell.started;
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect(hooks).toHaveLength(1));
+    const stopped = panel.interrupt();
+    shell.release();
+    await stopped;
+    await run;
+    hooks.shift()!();
+    await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
+    await session.waitForIdle();
+    await service.drain(2_000);
+    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
+    expect(turns).toEqual([[entryOf(PROMPT)], [entryOf(QUEUED)]]);
+
+    expect(await panel.sendMessage('Start over.', undefined, 'c1', { content: 'Start over.' })).toBe('sent');
+    await service.drain(2_000);
+    expect(turns).toEqual([[entryOf(PROMPT)], [entryOf(QUEUED)], [entryOf('Start over.')]]);
   });
 
   it('names each prompt by its own user entry, not the one before it', async () => {

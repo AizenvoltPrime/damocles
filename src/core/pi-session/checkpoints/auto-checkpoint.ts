@@ -78,6 +78,8 @@ interface PendingTurn {
   readonly prompt: string;
   baseline: Promise<BaselineOutcome>;
   notRewindable: { reason: NotRewindableReason; params: NotRewindableParams } | null;
+  /** Every turn started with this one on one baseline, oldest first, this one included. */
+  group: readonly PendingTurn[];
 }
 
 function errorText(err: unknown): string {
@@ -101,6 +103,8 @@ export class AutoCheckpointProducer {
   private readonly folder: FolderRepoHandle;
   private pending: PendingTurn | null = null;
   private readonly finalized = new Set<string>();
+  /** Turns whose record is decided: a mark after that changes nothing. */
+  private readonly decided = new WeakSet<PendingTurn>();
   private disposed = false;
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -123,44 +127,70 @@ export class AutoCheckpointProducer {
    * returned in `entries`.
    */
   turnStart(input: AutoCheckpointTurnStartInput): Promise<AutoCheckpointStartResult> {
-    if (this.finalized.has(input.userEntryId)) {
-      log('[Checkpoints] turnStart(%s) refused: that turn already has its record', input.userEntryId);
-      return Promise.resolve({ ok: false, message: 'already-finalized', entries: [] });
-    }
+    return this.turnStartBatch([input]);
+  }
+
+  /**
+   * `turnStart` for the user entries one boundary committed together, oldest first. Nothing runs between them, so they share
+   * one baseline snapshot: each earlier turn is finalized at it (after = before, no changes) with no second snapshot, and the
+   * last stays pending. An entry already finalized or pending is passed over; `entries` also holds the earlier turns' records.
+   */
+  turnStartBatch(inputs: readonly AutoCheckpointTurnStartInput[]): Promise<AutoCheckpointStartResult> {
     const current = this.pending;
-    if (current?.userEntryId === input.userEntryId) {
+    const fresh = inputs.filter((input, index) => {
+      if (inputs.findIndex((other) => other.userEntryId === input.userEntryId) !== index) return false;
+      if (this.finalized.has(input.userEntryId)) {
+        log('[Checkpoints] turnStart(%s) refused: that turn already has its record', input.userEntryId);
+        return false;
+      }
+      return input.userEntryId !== current?.userEntryId;
+    });
+    if (fresh.length === 0) {
+      if (!current || !inputs.some((input) => input.userEntryId === current.userEntryId)) {
+        return Promise.resolve({ ok: false, message: 'already-finalized', entries: [] });
+      }
       return current.baseline.then((o) => (o.ok ? { ok: true, entries: [] } : { ok: false, message: o.error, entries: [] }));
     }
     const carried = current ? this.finalizeTurn(current) : Promise.resolve(null);
-    const turn: PendingTurn = {
-      turnId: this.options.createTurnId(),
-      userEntryId: input.userEntryId,
-      prompt: input.prompt,
-      notRewindable: null,
-      baseline: Promise.resolve({ ok: false, error: 'not started' }),
-    };
-    turn.baseline = this.enqueue(() => this.takeBaseline(turn));
-    this.pending = turn;
-    return Promise.all([carried, turn.baseline]).then(([record, outcome]): AutoCheckpointStartResult => {
-      const entries = record ? [record] : [];
+    const group: PendingTurn[] = [];
+    for (const input of fresh) {
+      group.push({
+        turnId: this.options.createTurnId(),
+        userEntryId: input.userEntryId,
+        prompt: input.prompt,
+        notRewindable: null,
+        baseline: Promise.resolve({ ok: false, error: 'not started' }),
+        group,
+      });
+    }
+    const baseline = this.enqueue(() => this.takeBaseline(group));
+    for (const turn of group) turn.baseline = baseline;
+    const earlier = group.slice(0, -1).map((turn) => this.finalizeTurn(turn));
+    this.pending = group.at(-1) ?? null;
+    return Promise.all([carried, ...earlier, baseline]).then((settled): AutoCheckpointStartResult => {
+      const outcome = settled.at(-1) as BaselineOutcome;
+      const entries = (settled.slice(0, -1) as Array<CheckpointRecord | null>).filter((record): record is CheckpointRecord => record !== null);
       return outcome.ok ? { ok: true, entries } : { ok: false, message: outcome.error, entries };
     });
   }
 
   /**
    * The turn cannot use its baseline: a tool may have run before it was taken. Valid before or after
-   * `turnStart` resolves; the first call per turn decides the reason. A call for a turn that is not
+   * `turnStart` resolves; the first call per turn decides the reason. The baseline is shared by the turns
+   * started with it, so every one of them not finalized yet is marked too. A call for a turn that is not
    * pending (never started, or already finalized) changes nothing and is logged. Returns whether this
    * call made the turn not rewindable.
    */
   markNotRewindable(userEntryId: string, reason: NotRewindableReason, params: NotRewindableParams): boolean {
-    const turn = this.pending;
-    if (turn?.userEntryId !== userEntryId) {
+    const turn = this.pending?.group.find((member) => member.userEntryId === userEntryId && !this.decided.has(member));
+    if (!turn) {
       log('[Checkpoints] markNotRewindable(%s) ignored: that turn is not pending', userEntryId);
       return false;
     }
     if (turn.notRewindable) return false;
-    turn.notRewindable = { reason, params };
+    for (const member of turn.group) {
+      if (member.notRewindable === null && !this.decided.has(member)) member.notRewindable = { reason, params };
+    }
     return true;
   }
 
@@ -369,36 +399,45 @@ export class AutoCheckpointProducer {
     return dropped;
   }
 
-  private async takeBaseline(turn: PendingTurn): Promise<BaselineOutcome> {
+  /** One snapshot, the before-state of every turn in `group`, each refed under its own entry. */
+  private async takeBaseline(group: readonly PendingTurn[]): Promise<BaselineOutcome> {
     const started = Date.now();
+    const subject = group.at(-1)?.userEntryId ?? '';
     if (this.disposed) return { ok: false, error: 'the conversation was closed before its baseline' };
     try {
-      const ref = checkpointRefName(this.options.sessionId, turn.userEntryId, 'before');
-      const skippedRef = checkpointRefName(this.options.sessionId, turn.userEntryId, 'skipped');
+      const refs = group.map((turn) => ({
+        turn,
+        ref: checkpointRefName(this.options.sessionId, turn.userEntryId, 'before'),
+        skippedRef: checkpointRefName(this.options.sessionId, turn.userEntryId, 'skipped'),
+      }));
       const { repo, repoDir } = this.folder;
       const outcome = await repo.withLock(async (): Promise<BaselineOutcome> => {
         const lockWaitMs = Date.now() - started;
-        const snap = await this.snapshotLocked(`checkpoint ${this.options.sessionId} ${turn.userEntryId} before`);
+        const snap = await this.snapshotLocked(`checkpoint ${this.options.sessionId} ${subject} before`);
         // Decided under the lock, so a turn marked before this point never gets a ref at all.
-        if (turn.notRewindable === null && !this.disposed) {
+        const kept = refs.filter(({ turn }) => turn.notRewindable === null);
+        if (kept.length > 0 && !this.disposed) {
           await registerSession(repoDir, this.options.sessionId, this.options.sessionFile);
-          await repo.updateRefs(AutoCheckpointProducer.snapshotRefs(snap, ref, skippedRef));
+          await repo.updateRefs(kept.flatMap(({ ref, skippedRef }) => AutoCheckpointProducer.snapshotRefs(snap, ref, skippedRef)));
         }
-        log(formatPerfLine('checkpoint.baseline', Date.now() - started, { files: snap.files, skipped: snap.skipped.totalCount, lockWaitMs }));
+        log(formatPerfLine('checkpoint.baseline', Date.now() - started, { files: snap.files, skipped: snap.skipped.totalCount, lockWaitMs, turns: group.length }));
         return { ok: true, commit: snap.commit, skipped: snap.skipped };
       });
       this.consolidatePacks();
       return outcome;
     } catch (err) {
-      log('[Checkpoints] baseline for user entry %s failed: %s', turn.userEntryId, errorText(err));
+      log('[Checkpoints] baseline for user entry %s failed: %s', subject, errorText(err));
       return { ok: false, error: errorText(err) };
     }
   }
 
+  /** Close `turn` after its baseline: at the after-state, or, for a turn a later one of its group follows, at the baseline itself. */
   private finalizeTurn(turn: PendingTurn): Promise<CheckpointRecord | null> {
     this.finalized.add(turn.userEntryId);
+    const atBaseline = turn.group.at(-1) !== turn;
     return this.enqueue(async (): Promise<CheckpointRecord | null> => {
       const outcome = await turn.baseline;
+      this.decided.add(turn);
       const createdAt = this.options.now().toISOString();
       if (turn.notRewindable || !outcome.ok) {
         const { reason, params } = turn.notRewindable ?? { reason: 'baseline-failed' as const, params: outcome.ok ? {} : { error: outcome.error } };
@@ -407,8 +446,27 @@ export class AutoCheckpointProducer {
         return this.disposed ? null : record;
       }
       if (this.disposed) return null;
+      if (atBaseline) return this.entryFor(turn, outcome.commit, outcome.commit, [], outcome.skipped, createdAt);
       return this.takeAfterState(turn, outcome.commit, outcome.skipped, createdAt);
     });
+  }
+
+  private entryFor(turn: PendingTurn, beforeCommit: string, afterCommit: string, fileChanges: readonly FileChange[], skipped: SkippedSummary, createdAt: string): CheckpointEntryV3 {
+    return {
+      v: 3,
+      kind: 'checkpoint',
+      repo: 'folder',
+      folderId: this.folder.folderId,
+      turnId: turn.turnId,
+      userEntryId: turn.userEntryId,
+      beforeCommit,
+      afterCommit,
+      prompt: turn.prompt,
+      fileCount: fileChanges.length,
+      fileChanges,
+      skipped,
+      createdAt,
+    };
   }
 
   private async dropBeforeRef(turn: PendingTurn): Promise<void> {
@@ -429,21 +487,7 @@ export class AutoCheckpointProducer {
    * that fails the turn keeps its baseline, which is all a rewind needs, with an empty change list.
    */
   private async takeAfterState(turn: PendingTurn, beforeCommit: string, skipped: SkippedSummary, createdAt: string): Promise<CheckpointEntryV3 | null> {
-    const entryFor = (afterCommit: string, fileChanges: readonly FileChange[]): CheckpointEntryV3 => ({
-      v: 3,
-      kind: 'checkpoint',
-      repo: 'folder',
-      folderId: this.folder.folderId,
-      turnId: turn.turnId,
-      userEntryId: turn.userEntryId,
-      beforeCommit,
-      afterCommit,
-      prompt: turn.prompt,
-      fileCount: fileChanges.length,
-      fileChanges,
-      skipped,
-      createdAt,
-    });
+    const entryFor = (afterCommit: string, fileChanges: readonly FileChange[]): CheckpointEntryV3 => this.entryFor(turn, beforeCommit, afterCommit, fileChanges, skipped, createdAt);
     const { repo } = this.folder;
     try {
       const entry = await repo.withLock(async () => {

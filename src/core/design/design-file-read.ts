@@ -1,4 +1,5 @@
 // The one read path of a served design file (docs/invariants.md "Design mode"): confined to the design folder, through no link.
+import { createHash } from 'node:crypto';
 import { constants, promises as fs, type BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -123,6 +124,28 @@ export async function readDesignFile(folder: string, relPath: string, maxBytes: 
       if (total > maxBytes) return TOO_LARGE;
     }
     return { kind: 'file', bytes: Buffer.concat(chunks, total) };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The SHA-256 of `relPath`'s bytes under `openDesignFile`'s checks, streamed in chunks, so no file is held whole. */
+export async function hashDesignFile(folder: string, relPath: string, maxBytes: number): Promise<{ readonly kind: 'file'; readonly hash: string } | Exclude<DesignFileRead, { kind: 'file' }>> {
+  const opened = await openDesignFile(folder, relPath, maxBytes);
+  if (opened.kind !== 'open') return opened;
+  const { handle } = opened;
+  try {
+    const hash = createHash('sha256');
+    const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let total = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(READ_CHUNK_BYTES, maxBytes + 1 - total), total);
+      if (bytesRead === 0) break;
+      hash.update(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+      if (total > maxBytes) return TOO_LARGE;
+    }
+    return { kind: 'file', hash: hash.digest('hex') };
   } finally {
     await handle.close();
   }

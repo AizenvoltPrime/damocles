@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { AgentManager } from '../../subagents/agent-manager';
-import { buildSubagentTools } from '../subagent-tools';
+import { buildSubagentTools, NO_USER_INPUT } from '../subagent-tools';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT } from '../../../../shared/tool-names';
 
 type PiTool = {
@@ -16,7 +16,7 @@ function build(): Map<string, PiTool> {
   const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
   // buildSubagentTools reads the spawnable-agent list to advertise subagent_type values.
   const mgr = { getSpawnableAgents: () => [] } as unknown as AgentManager;
-  const tools = buildSubagentTools(pi, mgr) as unknown as PiTool[];
+  const tools = buildSubagentTools(pi, mgr, NO_USER_INPUT) as unknown as PiTool[];
   return new Map(tools.map((t) => [t.name, t]));
 }
 

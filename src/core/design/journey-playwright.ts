@@ -7,15 +7,26 @@ import { RENDER_FRAME_HEIGHT } from '../../shared/design-render';
 // the spec sees the line as it runs, and older parsers never end a string at U+2028 or U+2029.
 const literal = (value: string): string => JSON.stringify(value).replace(/[\p{Cf}\p{Zl}\p{Zp}]/gu, (ch) => [...Array(ch.length).keys()].map((at) => `\\u${ch.charCodeAt(at).toString(16).padStart(4, '0')}`).join(''));
 
+// A target without `exact` is exact, so its locator says so; an explicit one is written as it was set.
 function locator(target: JourneyTarget): string {
-  if ('role' in target) return `page.getByRole(${literal(target.role)}, { name: ${literal(target.name)}, exact: true })`;
-  if ('label' in target) return `page.getByLabel(${literal(target.label)}, { exact: true })`;
-  if ('placeholder' in target) return `page.getByPlaceholder(${literal(target.placeholder)}, { exact: true })`;
-  return `page.getByText(${literal(target.text)}, { exact: true })`;
+  const exact = `exact: ${target.exact !== false}`;
+  if ('role' in target) return `page.getByRole(${literal(target.role)}, { name: ${literal(target.name)}, ${exact} })`;
+  if ('label' in target) return `page.getByLabel(${literal(target.label)}, { ${exact} })`;
+  if ('placeholder' in target) return `page.getByPlaceholder(${literal(target.placeholder)}, { ${exact} })`;
+  return `page.getByText(${literal(target.text)}, { ${exact} })`;
 }
 
+// Past any page's height, which Chromium clamps to the scrollable end, as the runner's wheel does.
+const WHEEL_TO_END = 'page.mouse.wheel(0, 100000)';
+
 function statement(step: JourneyStep): string {
-  const element = locator(step.target);
+  if (step.action === 'scroll') {
+    if (!step.target) return `await ${WHEEL_TO_END};`;
+    const scrolled = locator(step.target);
+    // the wheel scrolls the box under the mouse, so it moves over the target first
+    return step.to === 'end' ? `await ${scrolled}.scrollIntoViewIfNeeded(); await ${scrolled}.hover(); await ${WHEEL_TO_END};` : `await ${scrolled}.scrollIntoViewIfNeeded();`;
+  }
+  const element = locator(step.target!);
   switch (step.action) {
     case 'fill':
       return `await ${element}.fill(${literal(step.value!)});`;

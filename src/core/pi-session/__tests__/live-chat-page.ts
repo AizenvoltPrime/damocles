@@ -141,7 +141,7 @@ export function makeAdapter(out: ExtensionToWebviewMessage[] | ((message: Extens
     onUserMessageDelivered: (text) => {
       const delivered = queued(text);
       if (!delivered) promptStored = true;
-      return delivered;
+      return delivered ? {} : null;
     },
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => (promptStored ? 'u-entry' : null),

@@ -50,7 +50,7 @@ function makeAdapter(
     showCacheMissNotices: gates?.showCacheMissNotices ?? (() => false),
     showThinkingDroppedNotices: gates?.showThinkingDroppedNotices ?? (() => true),
     onBudgetStop: () => undefined,
-    onUserMessageDelivered: () => false,
+    onUserMessageDelivered: () => null,
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => null,
     onTurnStateChanged: () => undefined,

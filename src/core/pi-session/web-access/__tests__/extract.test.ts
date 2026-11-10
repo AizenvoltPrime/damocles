@@ -293,3 +293,69 @@ describe('extractUrl — output controls', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('extractUrl — hosts a deny or ask WebFetch rule covers are never contacted on a step of its own', () => {
+  const readerMd = '# Recovered\n\nReader content body that is comfortably longer than the one hundred character minimum the Jina branch enforces before accepting a result.';
+  const refusing = (...hosts: string[]) => (url: string): boolean => hosts.includes(new URL(url).hostname);
+  const fetched = (): string[] => fetchMock.mock.calls.map(([url]) => url as string);
+  const redirect = (location: string, cancelled: string[]): Response => {
+    const body = new ReadableStream({ cancel: () => { cancelled.push(location); } });
+    return new Response(body, { status: 302, headers: { location } });
+  };
+
+  it('fetches a GitHub blob URL as named when raw.githubusercontent.com is refused', async () => {
+    fetchMock.mockImplementation((url: string) => Promise.resolve(htmlResponse(`fetched: ${url}`, 200, 'text/plain')));
+    const blob = 'https://github.com/a/b/blob/main/x.ts';
+    const result = await extractUrl(blob, undefined, { hostRefused: refusing('raw.githubusercontent.com') });
+    expect(result.error).toBeNull();
+    expect(fetched()).toEqual([blob]);
+  });
+
+  it('returns the direct result without the reader when r.jina.ai is refused', async () => {
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('https://r.jina.ai/') ? jinaResponse(readerMd) : htmlResponse('', 404)),
+    );
+    const result = await extractUrl('https://example.com/missing', undefined, { hostRefused: refusing('r.jina.ai') });
+    expect(result.error).toMatch(/^HTTP 404/);
+    expect(fetched()).toEqual(['https://example.com/missing']);
+  });
+
+  it('stops at a redirect to a refused host, naming its URL, cancels the redirect body, and asks no reader', async () => {
+    const cancelled: string[] = [];
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url === 'https://example.com/go' ? redirect('https://tracker.org/landing', cancelled) : htmlResponse(ARTICLE_HTML)),
+    );
+    const result = await extractUrl('https://example.com/go', undefined, { hostRefused: refusing('tracker.org') });
+    expect(result.error).toContain('Redirect not followed: https://example.com/go redirects (HTTP 302) to https://tracker.org/landing');
+    expect(result.error).toContain('call WebFetch with that URL');
+    expect(fetched()).toEqual(['https://example.com/go']);
+    expect(cancelled).toEqual(['https://tracker.org/landing']);
+  });
+
+  it('follows a redirect on the named host, which the call\'s own rules judged', async () => {
+    const cancelled: string[] = [];
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url === 'https://example.com/old' ? redirect('/new', cancelled) : htmlResponse(ARTICLE_HTML)),
+    );
+    const result = await extractUrl('https://example.com/old', undefined, { hostRefused: refusing('example.com') });
+    expect(result.error).toBeNull();
+    expect(fetched()).toEqual(['https://example.com/old', 'https://example.com/new']);
+    expect(cancelled).toEqual(['/new']);
+  });
+
+  it('with no rule rewrites, follows a cross-host redirect and asks the reader as before', async () => {
+    const cancelled: string[] = [];
+    fetchMock.mockImplementation((url: string) => {
+      if (url === 'https://example.com/go') return Promise.resolve(redirect('https://tracker.org/landing', cancelled));
+      if (url.startsWith('https://r.jina.ai/')) return Promise.resolve(jinaResponse(readerMd));
+      return Promise.resolve(htmlResponse('', 404));
+    });
+    const none = (): boolean => false;
+    expect((await extractUrl('https://example.com/go', undefined, { hostRefused: none })).markdown).toContain('Reader content body');
+    expect(fetched()).toEqual(['https://example.com/go', 'https://tracker.org/landing', 'https://r.jina.ai/https://example.com/go']);
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => Promise.resolve(htmlResponse(`fetched: ${url}`, 200, 'text/plain')));
+    await extractUrl('https://github.com/a/b/blob/main/x.ts', undefined, { hostRefused: none });
+    expect(fetched()).toEqual(['https://raw.githubusercontent.com/a/b/main/x.ts']);
+  });
+});

@@ -17,6 +17,7 @@ import { NotConnectedError } from '../../workspace/workspaces';
 import { hardenWebContents } from '../../security';
 import { HtmlPreviews, RELOAD_DEBOUNCE_MS, type HtmlPreviewsDeps } from '../html-previews';
 import type { PreviewSessionDeps } from '../preview-session';
+import { ServedRoots } from '../served-roots';
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
@@ -45,6 +46,7 @@ interface Harness {
   readonly opened: string[];
   readonly changed: { count: number };
   readonly projects: Project[];
+  readonly served: ServedRoots;
 }
 
 function setUp(): Harness {
@@ -89,13 +91,23 @@ function setUp(): Harness {
     createSession: async (session) => {
       h.session = session;
     },
-    refusalText: () => 'Open this preview from Damocles.',
+    served: undefined as unknown as ServedRoots,
     focusAway: vi.fn(),
     focusPart: vi.fn(),
     log: () => undefined,
     platform: 'win32',
   };
-  Object.assign(h, { deps, files, previews: new HtmlPreviews(deps) });
+  const served = new ServedRoots({
+    projectOfView: () => undefined,
+    projects: () => h.projects,
+    files: deps.files,
+    isTrusted: deps.isTrusted,
+    designRead: async () => undefined,
+    refusalText: () => 'Open this preview from Damocles.',
+    log: () => undefined,
+  });
+  Object.assign(deps, { served });
+  Object.assign(h, { deps, files, served, previews: new HtmlPreviews(deps) });
   h.previews.attach(window as unknown as Parameters<HtmlPreviews['attach']>[0], vi.fn());
   return h;
 }
@@ -350,6 +362,7 @@ describe('trust', () => {
     const first = new URL(h.opened[0]!);
     h.trusted.delete(LOCAL.key);
     h.previews.trustChanged();
+    h.served.trustChanged();
     await flush();
     await expect(new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port: Number(first.port), path: '/', agent: false }, resolve).on('error', reject))).rejects.toThrow();
     // the next Open in Browser starts a new server, with a new secret
@@ -387,6 +400,35 @@ describe('closing', () => {
     expect(() => h.previews.state('t2')).toThrow();
     await flush();
     await expect(new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port: Number(opened.port), path: '/', agent: false }, resolve).on('error', reject))).rejects.toThrow();
+  });
+
+  it('keeps the root\'s browser port while another preview of the root stays open, and across a rename within the root', async () => {
+    const status = (port: number): Promise<number> => new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port, path: '/', agent: false }, (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    }).on('error', reject));
+    const tabs = [{ tabId: 't1', file: site('a.html') }, { tabId: 't2', file: site('b.html') }];
+    await shown(h, tabs, 't1');
+    await h.previews.action({ tabId: 't1', action: 'openInBrowser' });
+    const port = Number(new URL(h.opened[0]!).port);
+    h.previews.tabsChanged([tabs[1]!], 't2');
+    await flush();
+    expect(await status(port)).toBe(403);
+    h.previews.tabsChanged([{ tabId: 't2', file: site('c.html') }], 't2');
+    await flush();
+    expect(await status(port)).toBe(403);
+    h.previews.tabsChanged([], null);
+    await flush();
+    await expect(status(port)).rejects.toThrow();
+  });
+
+  it('opens the renamed file when a rename within the root lands while the port opens, with no failure', async () => {
+    await shown(h, [{ tabId: 't1', file: site('a.html') }], 't1');
+    const action = h.previews.action({ tabId: 't1', action: 'openInBrowser' });
+    h.previews.tabsChanged([{ tabId: 't1', file: site('c.html') }], 't1');
+    await action;
+    expect(h.deps.openInBrowserFailed).not.toHaveBeenCalled();
+    expect(new URL(h.opened[0]!).searchParams.get('p')).toBe('c.html');
   });
 
   it('drops every view with the window and builds the active one again in the next window', async () => {

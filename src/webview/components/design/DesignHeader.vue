@@ -15,6 +15,7 @@ import { useOverflowStrip } from '@/composables/useOverflowStrip';
 import OverflowSlider from '@/components/OverflowSlider.vue';
 import DesignScreensMenu from './DesignScreensMenu.vue';
 import DesignDecisionChip from './DesignDecisionChip.vue';
+import { decisionReplacements } from './decision-replacements';
 import { DESIGN_STRIP } from './design-strip';
 import { DESIGN_MENU_CONTENT, DESIGN_MENU_ITEM, DESIGN_MENU_LABEL, DESIGN_MENU_STATUS } from './design-menu';
 
@@ -58,6 +59,7 @@ const strip = ref<HTMLElement | null>(null);
 const stripRow = ref<ComponentPublicInstance | null>(null);
 const overflow = useOverflowStrip(strip, stripRow);
 const { fadeClass, onScroll, onWheel, onPointerEnter, onPointerLeave } = overflow;
+const replacedBy = computed(() => decisionReplacements(props.design.decisions));
 const decisionsLabelId = useId();
 watch(() => props.design.decisions.length, async (count, previous) => {
   if (previous === undefined || count <= previous) return;
@@ -281,7 +283,10 @@ watch(() => props.design.decisions.length, async (count, previous) => {
                 :key="decision.id"
                 class="flex flex-none"
               >
-                <DesignDecisionChip :decision="decision" />
+                <DesignDecisionChip
+                  :decision="decision"
+                  :replaced-by="replacedBy.get(decision.id)"
+                />
               </li>
             </TransitionGroup>
           </div>

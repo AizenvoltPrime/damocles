@@ -15,7 +15,9 @@ import {
   TOOL_INVENTORY,
   TOOL_LOAD_DESIGN_SKILL,
   TOOL_MAP_REFERENCE,
+  TOOL_OPEN_PREVIEW,
   TOOL_RECORD_DECISION,
+  TOOL_REMOVE_DESIGN_FILE,
   TOOL_START_DESIGN,
 } from '@shared/tool-names';
 import { i18n } from '@/i18n';
@@ -48,7 +50,7 @@ describe('the tool card router for design tools', () => {
   });
 
   it('routes each design chat tool, by its exact name, to the design tool card', () => {
-    const names = [TOOL_INVENTORY, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_DESIGN_CHECK, TOOL_RECORD_DECISION, TOOL_DESIGN_SCREENSHOT, TOOL_LOAD_DESIGN_SKILL, TOOL_DECLARE_TWEAKS, TOOL_MAP_REFERENCE];
+    const names = [TOOL_INVENTORY, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_DESIGN_CHECK, TOOL_RECORD_DECISION, TOOL_DESIGN_SCREENSHOT, TOOL_LOAD_DESIGN_SKILL, TOOL_DECLARE_TWEAKS, TOOL_MAP_REFERENCE, TOOL_REMOVE_DESIGN_FILE, TOOL_OPEN_PREVIEW];
     expect([...DESIGN_CHAT_TOOLS].sort()).toEqual([...names].sort());
     for (const name of names) {
       const card = route(name).find('[data-testid="design-tool-card"]');

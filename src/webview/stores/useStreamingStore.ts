@@ -641,7 +641,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     return removed;
   }
 
-  function combineQueuedMessages(messageIds: string[], combinedContent: string, contentBlocks?: UserContentBlock[]): void {
+  function combineQueuedMessages(messageIds: string[], combinedContent: string, contentBlocks?: UserContentBlock[], designMarkup?: ChatMessage['designMarkup']): void {
     flushReplayQueue();
     const combinedId = messageIds[0];
     if (combinedId === undefined) return;
@@ -654,6 +654,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       role: "user",
       content: combinedContent,
       ...(contentBlocks !== undefined && { contentBlocks }),
+      ...(designMarkup !== undefined && { designMarkup }),
       timestamp: firstQueued?.timestamp ?? Date.now(),
       isCombinedQueue: true,
     };

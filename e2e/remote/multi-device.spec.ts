@@ -1,11 +1,14 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ElectronApplication, Locator, Page } from '@playwright/test';
-import { approveDesign, DESIGN_SCHEME, designTabs, startDesignChat } from '../desktop/support/design';
+import type { ElectronApplication, Locator, Page, TestInfo } from '@playwright/test';
+import { ACTOR_INTENT_EXPIRY_MS } from '../../src/desktop/daemon/actor-outbox';
+import { designChatName } from '../../src/shared/types/design';
+import { approveDesign, DESIGN_SCHEME, designApproval, designTabs, startDesignChat } from '../desktop/support/design';
 import { chatIdOf, selectChatPage } from '../desktop/support/fixtures';
 import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { cleanUp } from '../desktop/support/loopback';
 import { mergeJson, sendPrompt } from '../desktop/support/loopback-agent';
-import { call, STUB_MODEL_ID, type OpenAIStub, type RecordedRequest } from '../desktop/support/openai-stub';
+import { call, STUB_MODEL_ID, type OpenAIStub, type RecordedRequest, type StubReply } from '../desktop/support/openai-stub';
 import { menuItem, readyOverlay } from '../desktop/support/overlay';
 import { recordedToasts, recordToasts, shellPage, shellState } from '../desktop/support/shell';
 import { listChats } from '../desktop/support/shell-ui';
@@ -13,9 +16,11 @@ import { activeTerminal, openTerminal, runInTerminal, waitForOutputLine } from '
 import { awaitTurnEnd, postFromWebview } from '../desktop/support/ui';
 import { openConnect } from './support/connect-ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
+import { reconnectPhase } from './support/flaky';
+import type { ReleaseMirror } from './support/release-mirror';
 import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
-import { chatShowing, occurrences, stubOAuth, targetSessions } from './support/remote-runs';
-import { secondDevice } from './support/second-device';
+import { chatShowing, occurrences, stubOAuth, targetCoreLog, targetSessions } from './support/remote-runs';
+import { proxiedSecondDevice, secondDevice, type ProxiedDevice } from './support/second-device';
 import { TARGET_HOME, type SshdFixture } from './support/sshd';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 
@@ -455,6 +460,209 @@ test('two devices on one target, one in English and one in Greek: core\'s notice
     throw error;
   } finally {
     await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+  }
+});
+
+// a server package never reads the e2e hooks, so a target's daemon waits the full expiry
+const EXPIRY_MS = ACTOR_INTENT_EXPIRY_MS;
+const DESIGN_TITLE = 'Contacts list';
+const DESIGN_CHAT = designChatName(DESIGN_TITLE);
+const FINISHED = `The design "${DESIGN_TITLE}" is finished`;
+
+/** The target daemon's own log lines, the core router's among them, every rotated file included. */
+const targetDaemonLog = (fixture: Pick<SshdFixture, 'sh'>): Promise<string> =>
+  fixture.sh(`for f in ${TARGET_HOME}/.damocles/server/run-*/logs/*.log; do case "$f" in *Damocles_Core*) ;; *) cat "$f" ;; esac; done; true`, 'dev');
+const countIn = (text: string, needle: string | RegExp): number => text.split(needle).length - 1;
+
+/** The target daemon's and core's logs, which the target's container takes with it. */
+async function attachTargetLogs(testInfo: TestInfo, fixture: Pick<SshdFixture, 'sh'>): Promise<void> {
+  for (const [name, read] of [['target-daemon.log', targetDaemonLog], ['target-core.log', targetCoreLog]] as const) {
+    const file = testInfo.outputPath(name);
+    fs.writeFileSync(file, await read(fixture).catch(String));
+    await testInfo.attach(name, { path: file, contentType: 'text/plain' });
+  }
+}
+
+/** Resolves once the daemon logged `needle` more than `before` times. */
+async function daemonLogged(fixture: Pick<SshdFixture, 'sh'>, needle: string | RegExp, before: number, timeout = 60_000): Promise<void> {
+  await expect.poll(async () => countIn(await targetDaemonLog(fixture), needle), { timeout }).toBeGreaterThan(before);
+}
+
+// a launch serves stubOAuth before its engine runs, which then refuses it
+const signIn = (app: ElectronApplication, account: string): Promise<void> => expect.poll(() => stubOAuth(app, account, TOKEN_MS).then(() => true, (error: unknown) => {
+  if (String(error).includes('CoreNotRunningError')) return false;
+  throw error;
+}), { timeout: 60_000 }).toBe(true);
+
+/** Refuses every connection of the proxied device until restore, and resolves once the daemon holds it as lost. */
+async function loseDevice(fixture: Pick<SshdFixture, 'sh'>, device: ProxiedDevice): Promise<void> {
+  const before = countIn(await targetDaemonLog(fixture), ' lost (');
+  device.proxy.refuse();
+  await daemonLogged(fixture, ' lost (', before);
+}
+
+/**
+ * A third device starts a design from a main chat of its own, the designer drafts one screen, and that device quits, so the
+ * main chat and the design chat stay stored on the target and no device shows either.
+ */
+async function designMadeElsewhere(fixture: SshdFixture, mirror: Pick<ReleaseMirror, 'url'>, stub: OpenAIStub, testInfo: TestInfo): Promise<string> {
+  const maker = await secondDevice(fixture, 'prod-1', mirror);
+  let failed = true;
+  try {
+    writeUserSettings(maker.home, { 'damocles.model': STUB_MODEL_ID });
+    const desktop = await maker.launch();
+    await signIn(desktop.app, 'carol');
+    const { key } = await connect(desktop.app);
+    const { folder } = await designOnSecondDevice(desktop.app, key, stub, maker.home, fixture, false);
+    await desktop.close();
+    failed = false;
+    return folder;
+  } finally {
+    await maker.dispose(testInfo, failed);
+  }
+}
+
+const designChatOf = async (app: ElectronApplication, key: string): Promise<{ readonly loaded: boolean } | undefined> =>
+  (await listChats(app, key)).chats.find((chat) => chat.title === DESIGN_CHAT);
+
+/** The stored design chat's session file on the target, which only its own turns write. */
+const designSessionFile = (fixture: Pick<SshdFixture, 'sh'>): Promise<string> =>
+  fixture.sh(`grep -rl --include='*.jsonl' 'Drafted the screen.' ${TARGET_HOME}/.damocles/pi/agent/sessions | xargs cat`, 'dev');
+
+test('a closed design chat that a device\'s turn reopens opens on that device alone: held while its link is down, opened once it is back, and past the expiry nowhere, the stored chat intact', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(900_000);
+  const fixture = await sshd('prod-1');
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  const proxiedA = await proxiedSecondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID });
+    writeUserSettings(proxiedA.home, { 'damocles.model': STUB_MODEL_ID });
+    // Device B stays connected throughout; device A, behind the proxy, shows the main chat, whose agent reopens the design.
+    const deviceB = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    await designMadeElsewhere(fixture, mirror, stub, testInfo);
+    const stored = await designSessionFile(fixture);
+    expect(stored).not.toBe('');
+    await signIn(deviceB, 'alice');
+    const { hostId, key: keyB } = await connect(deviceB);
+    const selectedOnB = (await shellState(deviceB)).selected.chatId;
+    const desktopA = await proxiedA.launch();
+    const deviceA = desktopA.app;
+    await signIn(deviceA, 'bob');
+    const { key: keyA } = await connect(deviceA);
+    const parent = await openOtherDevicesChat(deviceA, keyA, 'Design the contacts page', 'Design the contacts page');
+    expect((await designChatOf(deviceA, keyA))?.loaded).toBe(false);
+
+    // The reply that calls StartDesign holds mid-stream, A's link goes down, and only then does the tool reopen the design chat.
+    const reopenWhileAway = async (brief: string): Promise<void> => {
+      let release!: () => void;
+      let reached!: () => void;
+      const streaming = new Promise<void>((resolve) => (reached = resolve));
+      stub.replies.push({ chunks: ['Reopening the design.', ' Now.'], holds: [{ before: 1, until: new Promise<void>((resolve) => (release = resolve)), sent: reached }], toolCalls: [{ name: 'StartDesign', arguments: { title: DESIGN_TITLE, brief } }] });
+      await sendPrompt(parent, brief);
+      await streaming;
+      const held = countIn(await targetDaemonLog(fixture), 'holding the new panel');
+      await loseDevice(fixture, proxiedA);
+      release();
+      await daemonLogged(fixture, 'holding the new panel', held);
+    };
+
+    // Past the expiry the new panel is cancelled: nothing opens on either device once A is back, and the stored chat is unchanged.
+    const expired = /dropped the new panel \S+ for client \S+, which did not return within/;
+    const dropped = countIn(await targetDaemonLog(fixture), expired);
+    await reopenWhileAway('Show the empty state too.');
+    await daemonLogged(fixture, expired, dropped, EXPIRY_MS + 60_000);
+    proxiedA.proxy.restore();
+    // StartDesign went on with notShown once the panel was cancelled, so the turn ends
+    await expect(parent.getByTestId('composer-send')).toHaveAttribute('aria-label', 'Send (Enter)', { timeout: 120_000 });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect((await designChatOf(deviceA, keyA))?.loaded).toBe(false);
+    expect((await designChatOf(deviceB, keyB))?.loaded).not.toBe(true);
+    expect((await shellState(deviceB)).selected.chatId).toBe(selectedOnB);
+    expect(await designSessionFile(fixture)).toBe(stored);
+
+    // Back within the expiry, A gets the design chat and B never does.
+    await reopenWhileAway('Add a search field too.');
+    proxiedA.proxy.restore();
+    await expect.poll(async () => (await designChatOf(deviceA, keyA))?.loaded, { timeout: 120_000 }).toBe(true);
+    await awaitTurnEnd(parent);
+    expect((await designChatOf(deviceB, keyB))?.loaded).not.toBe(true);
+    expect((await shellState(deviceB)).selected.chatId).toBe(selectedOnB);
+
+    await desktopA.close();
+    await shutdownHostDaemon(deviceB, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (failure !== undefined) await attachTargetLogs(testInfo, fixture);
+    await cleanUp(testInfo, failure, () => proxiedA.dispose(testInfo, failure !== undefined));
+    await stub.close();
+  }
+});
+
+test('core\'s notice for a device\'s work shows on that device alone: held while its link is down, shown once it is back, and past the expiry dropped and logged', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(900_000);
+  const fixture = await sshd('prod-1');
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  const proxiedA = await proxiedSecondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID });
+    writeUserSettings(proxiedA.home, { 'damocles.model': STUB_MODEL_ID });
+    // the main chat is closed on every device, so a finished version reaches it as a notice to the device whose turn made it
+    const deviceB = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    const folder = await designMadeElsewhere(fixture, mirror, stub, testInfo);
+    await signIn(deviceB, 'alice');
+    const { hostId, key: keyB } = await connect(deviceB);
+    const desktopA = await proxiedA.launch();
+    const deviceA = desktopA.app;
+    await signIn(deviceA, 'bob');
+    const { hostId: hostIdA, key: keyA } = await connect(deviceA);
+    const designA = await openOtherDevicesChat(deviceA, keyA, DESIGN_CHAT, 'Drafted the screen.');
+    const designB = await openOtherDevicesChat(deviceB, keyB, DESIGN_CHAT, 'Drafted the screen.');
+    for (const app of [deviceB, deviceA]) await recordToasts(app);
+    const finishedNotices = async (app: ElectronApplication): Promise<string[]> => (await recordedToasts(app)).map((toast) => toast.message).filter((message) => message.startsWith(FINISHED));
+
+    // A's message starts the turn whose FinishDesign asks for approval; A's link goes down, and B approves.
+    const finishWhileAway = async (prompt: string, script: StubReply[]): Promise<void> => {
+      stub.replies.push(...script, call('FinishDesign', { summary: 'The contacts list page.' }));
+      await sendPrompt(designA, prompt);
+      await expect(designApproval(designB)).toBeVisible({ timeout: 120_000 });
+      const held = countIn(await targetDaemonLog(fixture), 'holding core\'s notifications.show');
+      await loseDevice(fixture, proxiedA);
+      await approveDesign(designB);
+      await daemonLogged(fixture, 'holding core\'s notifications.show', held);
+    };
+
+    // Back within the expiry, A shows the notice and B never does.
+    await finishWhileAway('Finish the design', []);
+    proxiedA.proxy.restore();
+    await expect.poll(() => finishedNotices(deviceA), { timeout: 120_000 }).toEqual([expect.stringContaining('(v1)')]);
+    await awaitTurnEnd(designB);
+    expect(await finishedNotices(deviceB)).toEqual([]);
+
+    // Past the expiry the notice is dropped and logged, and neither device shows it.
+    const expired = /dropped core's notifications\.show for client \S+, which did not return within/;
+    const dropped = countIn(await targetDaemonLog(fixture), expired);
+    await finishWhileAway('Finish it again', [call('write', { path: `${folder}/${SCREEN_FILE}`, content: SCREEN.replace('No contacts yet', 'Nobody here yet') })]);
+    await daemonLogged(fixture, expired, dropped, EXPIRY_MS + 60_000);
+    proxiedA.proxy.restore();
+    await awaitTurnEnd(designB);
+    await expect.poll(() => reconnectPhase(deviceA, `ssh+${hostIdA}`), { timeout: 120_000 }).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    expect(await finishedNotices(deviceA)).toEqual([expect.stringContaining('(v1)')]);
+    expect(await finishedNotices(deviceB)).toEqual([]);
+
+    await desktopA.close();
+    await shutdownHostDaemon(deviceB, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (failure !== undefined) await attachTargetLogs(testInfo, fixture);
+    await cleanUp(testInfo, failure, () => proxiedA.dispose(testInfo, failure !== undefined));
+    await stub.close();
   }
 });
 

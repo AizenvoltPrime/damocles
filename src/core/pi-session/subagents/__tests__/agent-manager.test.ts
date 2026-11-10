@@ -6,6 +6,8 @@ import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-age
 import { loadFormatNoApiKeyFoundMessage } from '../../../../__mocks__/pi-auth-guidance';
 import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
+import { nestedDesignGrantOf } from '../agent-toolset';
+import { designRuleSet } from '../../../design/rule-set';
 import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
@@ -24,7 +26,7 @@ import type { PiCreateSubagentSessionOptions } from '../../folder-runtime';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import * as fsp from 'node:fs/promises';
-import { buildSubagentTools } from '../../tools/subagent-tools';
+import { buildSubagentTools, NO_USER_INPUT } from '../../tools/subagent-tools';
 import { backgroundResultsDetails, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../background-results';
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
 import { recordResultText } from '../status-note';
@@ -665,7 +667,7 @@ describe('AgentManager.agentIdOfToolCall', () => {
 
 describe('AgentManager user stop of one subagent', () => {
   type Posted = ExtensionToWebviewMessage;
-  const agentTool = (mgr: AgentManager) => buildSubagentTools(piStub, mgr).find((t) => t.name === 'Agent')!;
+  const agentTool = (mgr: AgentManager) => buildSubagentTools(piStub, mgr, NO_USER_INPUT).find((t) => t.name === 'Agent')!;
   const resultText = (result: { content: Array<{ type: string; text?: string }> }): string => {
     const parsed = JSON.parse(result.content[0]!.text!) as { content: Array<{ text: string }> };
     return parsed.content[0]!.text;
@@ -1112,7 +1114,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
     const id = mgr.spawn(spec(0)); // type 'general-purpose', no registered config
     await flush();
 
-    expect(buildAgentToolsetCalls).toEqual([{ agentId: id, agentName: 'general-purpose', mcpDisallowed: expect.any(Set) }]);
+    expect(buildAgentToolsetCalls).toEqual([expect.objectContaining({ agentId: id, agentName: 'general-purpose', mcpDisallowed: expect.any(Set) })]);
     gates[0]?.resolve();
     await flush();
     mgr.dispose();
@@ -2435,7 +2437,7 @@ describe('AgentManager resume', () => {
   });
 
   type Exec = (id: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
-  const agentExecute = (mgr: AgentManager): Exec => (buildSubagentTools(piStub, mgr)[0] as unknown as { execute: Exec }).execute;
+  const agentExecute = (mgr: AgentManager): Exec => (buildSubagentTools(piStub, mgr, NO_USER_INPUT)[0] as unknown as { execute: Exec }).execute;
   /** The model-visible text inside a foreground `Agent` result. */
   const resultText = (result: { content: Array<{ text: string }> }): string =>
     (JSON.parse(result.content[0]!.text) as { content: Array<{ text: string }> }).content[0]!.text;
@@ -2826,7 +2828,7 @@ describe('AgentManager undelivered live results', () => {
     await flush();
     branch.length = 0;
     type Run = (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: unknown }>;
-    const [, getResult, steer] = buildSubagentTools(piStub, mgr) as unknown as Array<{ execute: Run }>;
+    const [, getResult, steer] = buildSubagentTools(piStub, mgr, NO_USER_INPUT) as unknown as Array<{ execute: Run }>;
 
     const fetched = await getResult!.execute('tc-get', { agent_id: id });
     const steered = await steer!.execute('tc-steer', { agent_id: running, message: 'go left' });
@@ -3008,5 +3010,107 @@ describe('AgentManager Agent result JSON', () => {
     } finally {
       finish.mockRestore();
     }
+  });
+});
+
+describe('AgentManager → a design chat grants its subagents its verification tools (F3)', () => {
+  const VERIFY = ['DesignCheck', 'DesignScreenshot', 'PreviewJourney'];
+  type ToolsetInput = Parameters<SubagentEngine['buildAgentToolset']>[0];
+
+  function designEngine(grant: boolean): { engine: SubagentEngine; gates: Gate[]; inputs: ToolsetInput[]; models: { current?: unknown } } {
+    const made = makeEngine();
+    const inputs: ToolsetInput[] = [];
+    const models: { current?: unknown } = {};
+    made.engine.parentFullToolNames = () => ['read', 'Edit', 'write', 'AskUserQuestion', 'RecordDecision', 'FinishDesign', ...VERIFY];
+    if (grant) made.engine.nestedDesign = () => nestedDesignGrantOf('/designs/contacts-abcd1234', designRuleSet({ designPreview: true }));
+    const build = made.engine.buildAgentToolset;
+    made.engine.buildAgentToolset = (input) => {
+      inputs.push(input);
+      return build(input);
+    };
+    const create = made.engine.createSession;
+    made.engine.createSession = async (opts) => {
+      const session = await create(opts);
+      // the model pi seats the session on, which for a reopened file the runtime resolves from the file
+      Object.defineProperty(session, 'model', { get: () => models.current });
+      return session;
+    };
+    return { ...made, inputs, models };
+  }
+
+  it('lists the three tools and AskUserQuestion in tools:, hands their names to the build, and briefs the agent', async () => {
+    const { engine, gates, inputs } = designEngine(true);
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn(spec(0));
+    await flush();
+    for (const name of [...VERIFY, 'AskUserQuestion']) expect(sessionOpts[0]!.tools, name).toContain(name);
+    expect(sessionOpts[0]!.tools).not.toContain('RecordDecision');
+    expect(inputs[0]!.designTools).toEqual(VERIFY);
+    expect(inputs[0]!.parentToolUseId).toBe('tc0');
+    expect(sessionOpts[0]!.systemPrompt).toContain('You hold DesignCheck, DesignScreenshot and PreviewJourney.');
+    gateAt(gates, 0).resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('briefs a writing agent on what it writes and how it asks, and a read-only agent on neither', async () => {
+    const { engine, gates } = designEngine(true);
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn(spec(0));
+    mgr.spawn({ ...spec(1), type: 'Explore' });
+    await flush();
+    const [writer, reader] = [sessionOpts[0]!.systemPrompt, sessionOpts[1]!.systemPrompt];
+    expect(writer).toContain('You write only design.md, screens/<name>.html');
+    expect(writer).toContain('Ask the user with AskUserQuestion only for a choice inside your own area, with design previews');
+    expect(writer).toContain('RemoveDesignFile, DeclareTweaks and OpenPreview are the designer\'s');
+    expect(reader).toContain('# Design work');
+    expect(reader).toContain('RemoveDesignFile, DeclareTweaks and OpenPreview are the designer\'s');
+    expect(reader).not.toContain('You write only');
+    expect(reader).not.toContain('Ask the user with AskUserQuestion');
+    expect(reader).not.toContain('Verify your work');
+    gateAt(gates, 0).resolve();
+    gateAt(gates, 1).resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('gives a subagent of a normal chat no design tool and no design block', async () => {
+    const { engine, gates, inputs } = designEngine(false);
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn(spec(0));
+    await flush();
+    for (const name of VERIFY) expect(sessionOpts[0]!.tools, name).not.toContain(name);
+    expect(inputs[0]!.designTools).toEqual([]);
+    expect(sessionOpts[0]!.systemPrompt).not.toContain('# Design work');
+    gateAt(gates, 0).resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('reads the model of the subagent\'s own live session at call time, which a reopened session gets from its file', async () => {
+    const { engine, gates, inputs, models } = designEngine(true);
+    // a reopened run resolves no model of its own: the runtime seats the session on the file's
+    engine.resolveModel = () => ({});
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn(spec(0));
+    await flush();
+    expect(inputs[0]!.model()).toBeUndefined();
+    models.current = { id: 'text-only', input: ['text'] };
+    expect(inputs[0]!.model()).toEqual({ id: 'text-only', input: ['text'] });
+    gateAt(gates, 0).resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('opens the subagent\'s result with each answer the user gave it, and the decision it recorded', async () => {
+    const { engine, gates, inputs } = designEngine(true);
+    const mgr = new AgentManager(engine, 2);
+    const id = mgr.spawn(spec(0));
+    await flush();
+    inputs[0]!.answered([{ question: 'Which accent?', answer: 'Taupe', decisionId: 'D7' }]);
+    gateAt(gates, 0).resolve();
+    await flush();
+    expect(recordResultText(mgr.getRecord(id)!).startsWith('[The user answered a question mid-task: "Which accent?" → "Taupe", recorded as D7]\n')).toBe(true);
+    mgr.dispose();
   });
 });

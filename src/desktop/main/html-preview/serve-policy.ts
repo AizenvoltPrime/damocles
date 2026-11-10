@@ -1,7 +1,7 @@
 // What an HTML preview serves, for the damocles-preview scheme and the loopback server alike (docs/invariants.md "Desktop
 // host", HTML previews). Pure: no IO.
 // The shell renderer imports this module too: no Node built-in, electron or desktop main import.
-import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../../shared/relative-path';
+import { folderIndexPath, hasUnsafeWindowsSegment, isRelativeFilePath } from '../../../shared/relative-path';
 
 // The loopback server's own paths; no project file under it is ever served.
 export const RESERVED_PREVIEW_SEGMENT = '__damocles_preview';
@@ -100,8 +100,8 @@ export function previewRequestPath(pathname: string): { readonly relativePath: s
     if (err instanceof URIError) return undefined;
     throw err;
   }
-  const folderIndex = decoded === '' || decoded.endsWith('/');
-  const relativePath = folderIndex ? `${decoded}index.html` : decoded;
+  const relativePath = folderIndexPath(decoded);
+  const folderIndex = relativePath !== decoded;
   if (!isServablePreviewPath(relativePath)) return undefined;
   return { relativePath, folderIndex };
 }

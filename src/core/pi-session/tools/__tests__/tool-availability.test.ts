@@ -23,6 +23,7 @@ function fakePi(): PiCodingAgentModule {
     createFindToolDefinition: vi.fn(() => ({ name: 'find', label: 'find', description: 'pi find', parameters: {}, execute: vi.fn() })),
     createWriteToolDefinition: vi.fn(() => ({ name: 'write', label: 'write', description: 'pi write', parameters: {}, execute: vi.fn() })),
     createLsToolDefinition: vi.fn(() => ({ name: 'ls', label: 'ls', description: 'pi ls', parameters: {}, execute: vi.fn() })),
+    createReadToolDefinition: vi.fn(() => ({ name: 'read', label: 'read', description: 'pi read', parameters: {}, execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }
 

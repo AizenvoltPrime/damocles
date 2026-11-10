@@ -19,6 +19,30 @@ import { BlockList, isIP } from 'node:net';
 
 const MAX_REDIRECTS = 5;
 
+/** A fetch the guard refused: a blocked scheme or address, too many redirects, a body over its cap, or a refused redirect. */
+export class FetchRefusedError extends Error {}
+
+/** A redirect `safeFetch` did not follow because its caller refused the target (`SafeFetchOptions.redirectRefused`). */
+export class RedirectRefusedError extends FetchRefusedError {
+  readonly from: string;
+  readonly location: string;
+  readonly status: number;
+
+  constructor(from: string, location: string, status: number) {
+    super(`Redirect not followed: ${from} redirects (HTTP ${status}) to ${location}`);
+    this.from = from;
+    this.location = location;
+    this.status = status;
+  }
+}
+
+export interface SafeFetchOptions {
+  /** Refuse an http hop, the first or a redirect's. */
+  readonly httpsOnly?: boolean;
+  /** Whether a redirect to this absolute URL must not be followed; the fetch then throws `RedirectRefusedError`. */
+  readonly redirectRefused?: (target: string) => boolean;
+}
+
 /**
  * Loopback/private/link-local/ULA/reserved ranges that must never be fetched. `BlockList` is the
  * platform primitive for this — it canonicalizes IP forms (decimal/octal/hex literals collapse in the
@@ -55,34 +79,40 @@ export function isBlockedIp(ip: string): boolean {
  */
 export async function assertPublicUrl(url: URL): Promise<void> {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`Blocked URL scheme: ${url.protocol}`);
+    throw new FetchRefusedError(`Blocked URL scheme: ${url.protocol}`);
   }
   const host = url.hostname.replace(/^\[/, '').replace(/\]$/, ''); // strip IPv6 brackets
   if (isIP(host)) {
-    if (isBlockedIp(host)) throw new Error(`Blocked private address: ${host}`);
+    if (isBlockedIp(host)) throw new FetchRefusedError(`Blocked private address: ${host}`);
     return;
   }
   const addresses = await lookup(host, { all: true, family: 0 }); // both A and AAAA — validate every answer
   if (addresses.length === 0) throw new Error(`DNS resolution failed for ${host}`);
   for (const { address } of addresses) {
-    if (isBlockedIp(address)) throw new Error(`Blocked private address: ${host} → ${address}`);
+    if (isBlockedIp(address)) throw new FetchRefusedError(`Blocked private address: ${host} → ${address}`);
   }
 }
 
 /**
  * SSRF-guarded `fetch` that follows redirects manually, re-validating each hop against the private-range
- * blocklist. Validation errors are prefixed `Blocked` so the caller can treat them as non-recoverable.
+ * blocklist. Validation errors are `FetchRefusedError`s prefixed `Blocked`, so the caller can treat them as non-recoverable.
  */
-export async function safeFetch(initialUrl: string, init: RequestInit): Promise<Response> {
+export async function safeFetch(initialUrl: string, init: RequestInit, options: SafeFetchOptions = {}): Promise<Response> {
   let current = initialUrl;
   for (let hop = 0; ; hop++) {
-    await assertPublicUrl(new URL(current));
+    const url = new URL(current);
+    if (options.httpsOnly && url.protocol !== 'https:') throw new FetchRefusedError(`Blocked URL scheme: ${url.protocol} (only https is fetched)`);
+    await assertPublicUrl(url);
     const response = await fetch(current, { ...init, redirect: 'manual' });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (!location) return response;
-      if (hop >= MAX_REDIRECTS) throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
-      current = new URL(location, current).href;
+      // An unread body holds its connection until it is collected.
+      await response.body?.cancel();
+      if (hop >= MAX_REDIRECTS) throw new FetchRefusedError(`Too many redirects (>${MAX_REDIRECTS})`);
+      const next = new URL(location, current).href;
+      if (options.redirectRefused?.(next)) throw new RedirectRefusedError(current, next, response.status);
+      current = next;
       continue;
     }
     return response;
@@ -96,7 +126,7 @@ export async function safeFetch(initialUrl: string, init: RequestInit): Promise<
  * which keeps the cap honest (we never buffer-before-checking, even on that path).
  */
 export async function readBodyCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
-  const tooLarge = (): Error => new Error(`Response too large (>${Math.ceil(maxBytes / 1024 / 1024)}MB)`);
+  const tooLarge = (): Error => new FetchRefusedError(`Response too large (>${Math.ceil(maxBytes / 1024 / 1024)}MB)`);
   const body = response.body;
   if (!body) return new Uint8Array(0);
   const reader = body.getReader();

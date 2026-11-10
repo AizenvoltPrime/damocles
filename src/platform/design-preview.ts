@@ -1,4 +1,4 @@
-import type { DesignCapture, DesignJourneyRun, DesignProbeResult, JourneyStep } from '../shared/types/design';
+import type { DesignCapture, DesignJourneyRun, DesignProbeResult, DesignRender, DesignRenderRequest, JourneyStep } from '../shared/types/design';
 
 /** The desktop preview, which only desktop has; its renders run in the attached client's own runner (PD-11, PD-41). */
 export interface DesignPreviewHost {
@@ -14,6 +14,11 @@ export interface DesignPreviewHost {
    * DESIGN_RENDER_CLIENT_ABSENT's text while no client that renders designs is attached.
    */
   capture(designId: string, relPath: string, width: number, state: string | null, scale: number, signal: AbortSignal): Promise<DesignCapture>;
+  /**
+   * A model-facing render of `relPath` (D85): media pinned, the page settled and still, after `request.steps` in the same page,
+   * sized and encoded as asked. Refuses as `capture` does, and so does a client that predates it.
+   */
+  render(designId: string, relPath: string, request: DesignRenderRequest, signal: AbortSignal): Promise<DesignRender>;
   /** Screen `relPath` measured at each width, and with `sweepTo` the overflow sweep up to it; refuses as `capture` does. */
   probe(designId: string, relPath: string, widths: readonly number[], state: string | null, sweepTo: number | undefined, signal: AbortSignal): Promise<DesignProbeResult>;
   /** The journey's steps on screen `relPath` in a fresh page at each width; with `outline`, each page's DOM outline; refuses as `capture` does. */

@@ -14,7 +14,7 @@ export function createQueueHandlers(): Partial<HandlerRegistry> {
     },
 
     queueBatchProcessed: (msg, ctx) => {
-      ctx.stores.streamingStore.combineQueuedMessages(msg.messageIds, msg.combinedContent, msg.contentBlocks);
+      ctx.stores.streamingStore.combineQueuedMessages(msg.messageIds, msg.combinedContent, msg.contentBlocks, msg.designMarkup);
     },
 
     queueCancelled: (msg, ctx) => {

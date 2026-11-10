@@ -60,7 +60,9 @@ export function forkDesignId(inheritedDesignId: string, forkSessionId: string): 
 }
 
 const VARIANTS_DIR = 'variants';
+export const SHARED_DIR = 'shared';
 const HTML_EXTENSION = '.html';
+const SHARED_EXTENSIONS: readonly string[] = ['.css', '.js'];
 
 // ASCII only, on every platform: a case-insensitive volume folds non-ASCII letters too (APFS reads `ſ` as `s`), so a wider fold
 // would let such a spelling match an allowed name while it opens another file.
@@ -73,17 +75,22 @@ function relativeWithin(folder: string, target: string): string | undefined {
   return relative.split(path.sep).join('/');
 }
 
+/** Whether `name`, one ASCII-lowercased segment, ends in one of `extensions` after a non-empty stem. */
+const hasStemAndExtension = (name: string, extensions: readonly string[]): boolean =>
+  extensions.some((extension) => name.length > extension.length && name.endsWith(extension));
+
 /**
- * Whether a design-folder-relative path (forward slashes) is a file the designer writes (D65): `design.md`, `screens/<name>.html`
- * or a file below `variants/`, in any ASCII case, with no segment Windows resolves to another entry (a trailing dot or space, a
- * device name, a `:` stream). Every other file of a design folder is core's.
+ * Whether a design-folder-relative path (forward slashes) is a file the designer writes (D65): `design.md`, `screens/<name>.html`,
+ * `shared/<name>.css`, `shared/<name>.js` or a file below `variants/`, in any ASCII case, with no segment Windows resolves to
+ * another entry (a trailing dot or space, a device name, a `:` stream). Every other file of a design folder is core's.
  */
 export function isDesignerRelative(relative: string): boolean {
   const segments = relative.split('/');
   if (segments.some((segment) => segment === '' || isUnsafeWindowsName(segment))) return false;
   const [first, ...rest] = segments.map(asciiLower);
   if (rest.length === 0) return first === DESIGN_DOC_FILE;
-  if (first === SCREENS_DIR) return rest.length === 1 && rest[0]!.length > HTML_EXTENSION.length && rest[0]!.endsWith(HTML_EXTENSION);
+  if (first === SCREENS_DIR) return rest.length === 1 && hasStemAndExtension(rest[0]!, [HTML_EXTENSION]);
+  if (first === SHARED_DIR) return rest.length === 1 && hasStemAndExtension(rest[0]!, SHARED_EXTENSIONS);
   return first === VARIANTS_DIR;
 }
 

@@ -102,6 +102,15 @@ export const DAMOCLES_DESIGN_REFERENCES_ENTRY = 'damocles.design-references';
 export const DAMOCLES_DESIGN_TWEAK_KEPT = 'damocles-design-tweak-kept';
 /** Parent custom message (hidden): the model's instruction for the version pause's answer, sent after its choice entry. */
 export const DAMOCLES_DESIGN_VERSION_INSTRUCTION = 'damocles-design-version-instruction';
+/** Design chat custom entry (hidden): one decision, `DesignDecisionRecord`, numbered and appended by core inside the design folder's write lane (D99). */
+export const DAMOCLES_DESIGN_DECISION = 'damocles-design-decision';
+/** Design chat custom entry (hidden): `{ v: 1, id, conflictCheck: 'checked', conflicts? }`, FinishDesign's later conflict check of decision `id`. */
+export const DAMOCLES_DESIGN_DECISION_CHECK = 'damocles-design-decision-check';
+/**
+ * Design chat custom entry (hidden): `{ v: 1, agentId, question, typed, notes? }`, what the user typed and noted answering a
+ * subagent's AskUserQuestion, from the question manager's answer only; RecordDecision quotes it as a `chat` source (D99).
+ */
+export const DAMOCLES_DESIGN_SUBAGENT_ANSWER = 'damocles-design-subagent-answer';
 
 /** Agent-file custom entry: a resume starts here; later messages render on that resume call's card. */
 export const DAMOCLES_AGENT_SEGMENT_ENTRY = 'damocles-agent-segment';

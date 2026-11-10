@@ -1,5 +1,6 @@
 // HTML preview tabs' views (docs/invariants.md "Desktop host", HTML previews): the editor pane owns the tabs, this owns each
-// tab's view, its project root's token and loopback server, the reload on save and the rebuild on a trust change.
+// tab's view, its project root's token, its grant of the root's loopback server (ServedRoots), the reload on save and the
+// rebuild on a trust change.
 import { randomBytes } from 'node:crypto';
 import { WebContentsView, type Rectangle, type WebContents } from 'electron';
 import type { Disposable } from '../../../platform/disposable';
@@ -14,8 +15,8 @@ import { leavePageOnPartKeys, type PartStep } from '../page-focus';
 import { PREVIEW_SCHEME } from '../protocol';
 import { mainFrameLoadFailed, registerLockedContents } from '../security';
 import { NotConnectedError } from '../workspace/workspaces';
-import { answerPreview, type PreviewAnswer, type PreviewFileReads } from './preview-reader';
-import { PreviewHttpServer } from './preview-http-server';
+import { answerPreview, type PreviewFileReads } from './preview-reader';
+import type { ServedGrant, ServedRoots } from './served-roots';
 import { HTML_PREVIEW_PARTITION, previewResponse, type PreviewSessionDeps } from './preview-session';
 import { previewHeaders, previewRequestPath, previewUrlPath } from './serve-policy';
 
@@ -50,8 +51,8 @@ export interface HtmlPreviewsDeps {
   readonly changed: () => void;
   // builds the html-preview session once (createPreviewSession) and resolves once its proxy is set
   readonly createSession: (deps: PreviewSessionDeps) => Promise<void>;
-  // "Open this preview from Damocles.", in main's language
-  readonly refusalText: () => string;
+  // Open in Browser's loopback server of the tab's root, held per root until the root's last preview tab goes
+  readonly served: Pick<ServedRoots, 'grantPreview' | 'releasePreview'>;
   // a preview view that held keyboard focus hid or closed; a hidden view keeps focus, so the owner moves it
   readonly focusAway: () => void;
   // Focus Next or Previous Part, from the editor part a focused preview view belongs to
@@ -60,14 +61,13 @@ export interface HtmlPreviewsDeps {
   readonly platform?: NodeJS.Platform;
 }
 
-// A project root with a preview open: one origin, damocles-preview://<token>, and at most one loopback server.
+// A project root with a preview open: one origin, damocles-preview://<token>.
 interface Root {
   readonly key: string;
   // 128 bits of lowercase hex, since Chromium lower-cases a standard scheme's host
   readonly token: string;
   // the trust its views and responses were built with
   trusted: boolean;
-  server: Promise<PreviewHttpServer> | undefined;
 }
 
 interface Live {
@@ -217,8 +217,6 @@ export class HtmlPreviews implements HtmlPreviewSource, Disposable {
       if (trusted === root.trusted) continue;
       root.trusted = trusted;
       flipped = true;
-      // a page open in the browser stops running scripts and reading the root: its port and cookie secret go
-      if (!trusted) this.closeServer(root);
       for (const preview of this.previews.values()) {
         if (preview.root !== root) continue;
         this.destroyView(preview);
@@ -271,23 +269,17 @@ export class HtmlPreviews implements HtmlPreviewSource, Disposable {
     let root = this.roots.get(rootKey);
     if (!root) {
       const project = this.projectOf(rootKey);
-      root = { key: rootKey, token: randomBytes(16).toString('hex'), trusted: project !== undefined && this.deps.isTrusted(project), server: undefined };
+      root = { key: rootKey, token: randomBytes(16).toString('hex'), trusted: project !== undefined && this.deps.isTrusted(project) };
       this.roots.set(rootKey, root);
     }
     return root;
   }
 
-  // The root's last preview went: its token stops resolving and its port closes.
+  // The root's last preview went: its token stops resolving, and its Open in Browser server goes unless a chat view holds it.
   private releaseRoot(root: Root): void {
     if ([...this.previews.values()].some((preview) => preview.root === root)) return;
     this.roots.delete(root.key);
-    this.closeServer(root);
-  }
-
-  private closeServer(root: Root): void {
-    const server = root.server;
-    root.server = undefined;
-    server?.then((started) => started.close()).catch((err: unknown) => this.deps.log(`[html-preview] closing a preview's browser port failed: ${errorText(err)}`));
+    this.deps.served.releasePreview(root.key);
   }
 
   private close(preview: Preview): void {
@@ -324,26 +316,22 @@ export class HtmlPreviews implements HtmlPreviewSource, Disposable {
 
   private async openInBrowser(preview: Preview): Promise<void> {
     const root = preview.root;
-    root.server ??= PreviewHttpServer.start({
-      serve: (request): Promise<PreviewAnswer> => answerPreview({ ...request, trusted: root.trusted, target: 'browser' }, this.reads(root), this.deps.log),
-      trusted: () => root.trusted,
-      refusalText: () => this.deps.refusalText(),
-      log: this.deps.log,
-    });
-    const server = root.server;
-    let started: PreviewHttpServer;
+    const project = this.projectOf(root.key);
+    if (!project) throw new Error('The preview\'s project is no longer open');
+    let grant: ServedGrant;
     try {
-      started = await server;
+      grant = await this.deps.served.grantPreview(project);
     } catch (err) {
-      // a port that never opened is dropped, so the next Open in Browser tries again
-      if (root.server === server) root.server = undefined;
+      // the root's last preview tab closed while the port opened, which released it
+      if (this.roots.get(root.key) !== root) return;
       this.deps.log(`[html-preview] the preview's browser port could not open: ${errorText(err)}`);
       this.deps.openInBrowserFailed();
       return;
     }
-    // the root's last preview closed while the port opened, which closed it
-    if (root.server !== server) return;
-    const opened = await this.deps.openExternal(started.openUrl(preview.file.relativePath)).catch((err: unknown) => {
+    // the tab closed or moved to another root meanwhile: nothing of its own is left to open
+    if (this.previews.get(preview.tabId) !== preview || preview.root !== root) return;
+    const url = grant.open(preview.file.relativePath);
+    const opened = await this.deps.openExternal(url).catch((err: unknown) => {
       this.deps.log(`[html-preview] opening a preview in the browser failed: ${errorText(err)}`);
       return false;
     });

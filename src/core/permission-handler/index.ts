@@ -331,14 +331,19 @@ export class PermissionHandler {
     return this.evaluatorManager.sessionCwd();
   }
 
-  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO; `requiresUser` as `EvaluatorManager.decide`. */
-  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null, requiresUser = false): 'allow' | 'deny' | 'ask' {
-    return this.evaluatorManager.decide(toolName, input, rule, requiresUser);
+  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO; `requiresUser` and `reachesNetwork` as `EvaluatorManager.decide`. */
+  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null, requiresUser = false, reachesNetwork = false): 'allow' | 'deny' | 'ask' {
+    return this.evaluatorManager.decide(toolName, input, rule, requiresUser, reachesNetwork);
   }
 
   /** Whether a `Read` deny or ask rule covers a file, for Grep and Glob to leave it out of their results. */
   async readRuleFilter(): Promise<(filePath: string) => boolean> {
     return this.evaluatorManager.readRuleFilter(this.state.workspacePath);
+  }
+
+  /** Whether a deny or ask `WebFetch(domain:…)` rule covers a URL's host, which WebFetch and ImportAsset then never contact on a step of their own. */
+  async webHostFilter(): Promise<(url: string) => boolean> {
+    return this.evaluatorManager.webHostFilter(this.state.workspacePath);
   }
 
   /** What the settings rules hide from an MCP resource list call of `toolName` (`McpResourceRuleFilter`). */
@@ -371,7 +376,7 @@ export class PermissionHandler {
     const evaluation = context.requiresUser
       ? this.decide(toolName, input, context.rule, true)
       : context.rule !== undefined
-        ? this.decide(toolName, input, context.rule)
+        ? this.decide(toolName, input, context.rule, false, context.reachesNetwork === true)
         : await this.evaluatePermission(toolName, input, context.mcpTool);
 
     if (evaluation === 'allow') {
@@ -382,7 +387,8 @@ export class PermissionHandler {
       return buildUnaskedDenyResult(undefined, 'Permission denied by settings rule');
     }
 
-    if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
+    // Its diff would read the file, which on a network host sends the user's Windows credentials there before they answer.
+    if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && context.reachesNetwork !== true) {
       return this.approvalManager.handleFilePermission(toolName, input, context);
     }
 

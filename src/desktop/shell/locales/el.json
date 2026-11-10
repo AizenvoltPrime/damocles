@@ -3231,13 +3231,20 @@
         "visible": "Εμφανίζεται: {target}",
         "hidden": "Δεν εμφανίζεται: {target}",
         "textContains": "{target}: περιέχει {value}",
-        "valueEquals": "{target}: τιμή {value}"
+        "valueEquals": "{target}: τιμή {value}",
+        "scroll": "Κύλιση ώστε να φαίνεται: {target}",
+        "scrollEnd": "Κύλιση ως το τέλος: {target}",
+        "scrollPage": "Κύλιση της σελίδας ως το τέλος"
       },
       "target": {
         "role": "{role} {name}",
         "label": "πεδίο {name}",
         "placeholder": "πεδίο με υπόδειξη {name}",
-        "text": "κείμενο {name}"
+        "text": "κείμενο {name}",
+        "roleLoose": "{role} που περιέχει {name}",
+        "labelLoose": "πεδίο με ετικέτα που περιέχει {name}",
+        "placeholderLoose": "πεδίο με υπόδειξη που περιέχει {name}",
+        "textLoose": "κείμενο που περιέχει {name}"
       },
       "quoted": "«{text}»",
       "empty": "(κενό)"

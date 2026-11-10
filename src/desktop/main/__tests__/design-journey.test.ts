@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { JourneyStep } from '../../../shared/types/design';
-import { runJourney, type JourneyCdpMethod } from '../design/design-journey';
+import type { JourneyStep, JourneyTarget } from '../../../shared/types/design';
+import { runJourney, SCROLL_POSITION, type JourneyCdpMethod } from '../design/design-journey';
 import { contactsPage, FakeJourneyPage } from './fake-journey-page';
 import contacts from '../../../../e2e/fixtures/design-app/static/contacts.preview-journey.json' with { type: 'json' };
 
@@ -66,6 +66,101 @@ describe('runJourney (PD-45)', () => {
     const hostile = { send: async (method: JourneyCdpMethod, params: Record<string, unknown>) => (method === 'Accessibility.queryAXTree' ? { nodes: 'all of them' } : page.send(method, params)) };
     const result = await runJourney(hostile, STEPS.slice(2, 4), fast(1280));
     expect(result.steps[0]).toEqual({ ok: false, failure: 'error', message: 'The page failed the step: The page answered Accessibility.queryAXTree with something unexpected' });
+  });
+
+  it('matches exact: false as a case-insensitive part of the name or text, as Playwright does (acceptance)', async () => {
+    const page = new FakeJourneyPage([
+      { id: 2, tag: 'button', role: 'button', name: 'Save changes', nameFrom: 'contents', text: 'Save changes' },
+      { id: 3, tag: 'button', role: 'button', name: 'Folding the sections (3 open)', nameFrom: 'contents', text: 'Folding the sections (3 open)' },
+      { id: 4, tag: 'input', role: 'textbox', name: 'Email address', nameFrom: 'label', placeholder: 'you@example.com', value: '' },
+    ], 1280);
+    const visible = (target: JourneyTarget): JourneyStep => ({ action: 'assert', target, expect: { visible: true } });
+    const loose = await runJourney(page, [visible({ text: 'save', exact: false }), visible({ role: 'button', name: 'folding  the SECTIONS', exact: false }), visible({ label: 'email', exact: false }), visible({ placeholder: 'EXAMPLE', exact: false })], fast(1280));
+    expect(loose).toEqual({ passed: true, steps: [{ ok: true }, { ok: true }, { ok: true }, { ok: true }] });
+    // an inexact role query names the role alone and keeps the names that contain the text
+    expect(page.sent.find(([method, params]) => method === 'Accessibility.queryAXTree' && params['role'] === 'button')![1]).toEqual({ backendNodeId: 1, role: 'button' });
+    const exact = await runJourney(page, [visible({ text: 'save' })], fast(1280));
+    expect(exact.steps[0]).toMatchObject({ ok: false, failure: 'hidden' });
+  });
+
+  it('fails an inexact role look whose role lists more nodes than it reads, rather than missing a match past them', async () => {
+    const page = new FakeJourneyPage(Array.from({ length: 1025 }, (_, index) => ({ id: index + 2, tag: 'button' as const, role: 'button', name: `Row ${index}`, nameFrom: 'contents' as const })), 1280);
+    const result = await runJourney(page, [{ action: 'assert', target: { role: 'button', name: 'row 1024', exact: false }, expect: { visible: true } }], fast(1280));
+    expect(result.steps[0]).toEqual({ ok: false, failure: 'ambiguous', message: 'Too many button elements at 1280 px to search for button ~"row 1024"; use an exact name.' });
+  });
+
+  it('presses as locator.press does: focus that an element may refuse, then the key to the focused element or the page (acceptance)', async () => {
+    const page = new FakeJourneyPage([
+      { id: 6, tag: 'div', role: 'dialog', name: 'Menu', nameFrom: 'aria-label', shown: (current) => current.state['open'] === true },
+    ], 1280);
+    page.state['open'] = true;
+    page.documentKey = (key, current) => {
+      if (key === 'Escape') current.state['open'] = false;
+    };
+    const result = await runJourney(page, [{ action: 'press', target: { role: 'dialog', name: 'Menu' }, key: 'Escape' }, { action: 'assert', target: { role: 'dialog', name: 'Menu' }, expect: { visible: false } }], fast(1280));
+    expect(result.passed).toBe(true);
+    expect(page.sent.some(([method]) => method === 'DOM.focus')).toBe(false);
+    expect(page.events).toEqual(['key Escape']);
+  });
+
+  it('scrolls a target into view, and to: "end" wheels the page or the target box to its end, loading the next batch (acceptance)', async () => {
+    const page = new FakeJourneyPage([
+      { id: 2, tag: 'ul', role: 'list', name: 'Results', nameFrom: 'aria-label', scroll: { top: 0, height: 2000, visible: 400 } },
+      { id: 3, tag: 'span', text: 'Item 21', shown: (current) => current.state['loaded'] === true },
+    ], 1280);
+    page.scroll.height = 3000;
+    page.onScrolledToEnd = (current) => {
+      current.state['loaded'] = true;
+    };
+    const more: JourneyStep = { action: 'assert', target: { text: 'Item 21' }, expect: { visible: true } };
+    expect(await runJourney(page, [{ action: 'scroll', to: 'end' }, more], fast(1280))).toEqual({ passed: true, steps: [{ ok: true }, { ok: true }] });
+    expect(page.scroll.top).toBe(2100);
+    await runJourney(page, [{ action: 'scroll', target: { role: 'list', name: 'Results' }, to: 'end' }, more], fast(1280));
+    expect(page.elements[0]!.scroll!.top).toBe(1600);
+    expect(page.events).toEqual(['wheel page', 'wheel 2']);
+    expect(page.sent.filter(([method]) => method === 'DOM.scrollIntoViewIfNeeded').length).toBeGreaterThan(0);
+  });
+
+  it('wheels the box that scrolls a target that does not scroll itself: its scrolling ancestor, else the page (acceptance)', async () => {
+    const page = new FakeJourneyPage([
+      { id: 2, tag: 'ul', role: 'list', name: 'Results', nameFrom: 'aria-label' },
+      { id: 4, tag: 'div', role: 'region', name: 'Feed', nameFrom: 'aria-label', scroll: { top: 0, height: 1500, visible: 500 } },
+      { id: 5, tag: 'ul', role: 'list', name: 'Posts', nameFrom: 'aria-label', parent: 4 },
+      { id: 3, tag: 'span', text: 'Item 21', shown: (current) => current.state['loaded'] === true },
+    ], 1280);
+    page.scroll.height = 3000;
+    page.onScrolledToEnd = (current) => {
+      current.state['loaded'] = true;
+    };
+    const more: JourneyStep = { action: 'assert', target: { text: 'Item 21' }, expect: { visible: true } };
+    expect(await runJourney(page, [{ action: 'scroll', target: { role: 'list', name: 'Results' }, to: 'end' }, more], fast(1280))).toEqual({ passed: true, steps: [{ ok: true }, { ok: true }] });
+    expect(page.scroll.top).toBe(2100);
+    await runJourney(page, [{ action: 'scroll', target: { role: 'list', name: 'Posts' }, to: 'end' }, more], fast(1280));
+    expect(page.elements[1]!.scroll!.top).toBe(1000);
+    expect(page.events).toEqual(['wheel page', 'wheel 4']);
+  });
+
+  it('measures the scroll box the wheel chains to in the page\'s own terms', () => {
+    const box = (overflowY: string, scrollHeight: number, clientHeight: number, parentElement: unknown) => ({ overflowY, scrollTop: 7, scrollHeight, clientHeight, parentElement, getRootNode: () => ({}) });
+    const body = { overflowY: 'visible', parentElement: null };
+    const scrollingElement = { scrollTop: 40, scrollHeight: 3000, clientHeight: 900 };
+    const measure = new Function('document', 'getComputedStyle', 'ShadowRoot', `return ${SCROLL_POSITION};`)({ body, documentElement: scrollingElement, scrollingElement }, (element: { overflowY: string }) => ({ overflowY: element.overflowY }), class {}) as (element: unknown) => number[];
+    const feed = box('auto', 1500, 500, body);
+    expect(measure(box('visible', 400, 400, feed))).toEqual([7, 1500, 500]);
+    // a box that could scroll but has nothing more to show passes the wheel on, as does one that clips
+    expect(measure(box('visible', 400, 400, box('auto', 500, 500, box('hidden', 2000, 500, body))))).toEqual([40, 3000, 900]);
+    expect(measure(null)).toEqual([40, 3000, 900]);
+  });
+
+  it('settles the page after each action that passed, before the next step looks', async () => {
+    const order: string[] = [];
+    const page = contactsPage(1280);
+    const traced = { send: (method: JourneyCdpMethod, params: Record<string, unknown>) => {
+      if (method.startsWith('Input.')) order.push(method);
+      return page.send(method, params);
+    } };
+    await runJourney(traced, STEPS.slice(2, 4), { ...fast(1280), afterAction: async () => void order.push('settle') });
+    expect(order.slice(-2)).toEqual(['Input.dispatchMouseEvent', 'settle']);
   });
 
   it('outlines each target before its step acts when it replays, and stops at once on abort', async () => {

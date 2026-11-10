@@ -4,14 +4,16 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { DesignPreviewHost } from '../../platform/design-preview';
-import { DESIGN_RENDER_CLIENT_ABSENT, MIN_RENDER_WIDTH } from '../../shared/design-render';
+import { DESIGN_RENDER_CLIENT_ABSENT, MAX_QUEUED_RUNS_PER_AUTHORITY, MIN_RENDER_WIDTH } from '../../shared/design-render';
 import type { DesignCheckIssue } from '../../shared/types/design';
 import { widthIssues, type CheckedWidth } from './design-check';
-import { designContentHash, renderInputHashes, updateManifest, type ManifestScreen } from './design-files';
+import { designContentHash, updateManifest, type ManifestScreen } from './design-files';
+import { renderInputHashes } from './render-inputs';
 import { log } from '../logger';
 import { designStateDirOf } from './design-paths';
 import { checkedWidthsOf, designViewports } from './design-preview';
 import { writeJsonAtomic } from './design-state';
+import { withDesignWrite } from './design-writes';
 
 export const WIDTH_CHECKS_DIR = 'checks';
 const RECORD_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -22,6 +24,16 @@ export class DesignRenderUnavailableError extends Error {
     super(DESIGN_RENDER_CLIENT_ABSENT);
     this.name = 'DesignRenderUnavailableError';
   }
+}
+
+/**
+ * `work` over `items`, at most MAX_QUEUED_RUNS_PER_AUTHORITY at once, so a call's runs fit one authority's queue in the app
+ * even while another authority holds every running slot; the results in `items`' order.
+ */
+export async function inRenderBatches<T, R>(items: readonly T[], work: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let start = 0; start < items.length; start += MAX_QUEUED_RUNS_PER_AUTHORITY) results.push(...await Promise.all(items.slice(start, start + MAX_QUEUED_RUNS_PER_AUTHORITY).map(work)));
+  return results;
 }
 
 /** A render request through `render`, with the daemon's refusal turned into DesignRenderUnavailableError. */
@@ -79,9 +91,9 @@ export interface WidthCheckResult {
 }
 
 /** The record's file: the screen file's stem when it is a plain name, else a hash of the file's path. */
-function recordFile(stateDir: string, screen: WidthCheckScreen): string {
-  const stem = path.posix.basename(screen.file).replace(/\.html$/i, '');
-  const name = RECORD_NAME.test(stem) ? stem : createHash('sha256').update(screen.file).digest('hex').slice(0, 16);
+function recordFile(stateDir: string, screenFile: string): string {
+  const stem = path.posix.basename(screenFile).replace(/\.html$/i, '');
+  const name = RECORD_NAME.test(stem) ? stem : createHash('sha256').update(screenFile).digest('hex').slice(0, 16);
   return path.join(stateDir, WIDTH_CHECKS_DIR, `${name}.json`);
 }
 
@@ -108,10 +120,19 @@ const widthRecordOf = (value: Partial<WidthCheckRecord> | undefined): WidthCheck
   value && typeof value.renderHash === 'string' && Array.isArray(value.issues) && Array.isArray(value.widths) ? value as WidthCheckRecord : undefined;
 
 /** Records a PreviewJourney run in the screen's `checks/<screen>.json`, keeping its width check. */
-export async function recordJourneyCheck(designId: string, screen: WidthCheckScreen, journey: JourneyCheckRecord): Promise<void> {
-  const file = recordFile(designStateDirOf(designId), screen);
-  const held = await readRawRecord(file);
-  await writeJsonAtomic(file, held?.file === screen.file ? { ...held, journey } : { schemaVersion: 1, screen: screen.id, file: screen.file, journey });
+export function recordJourneyCheck(designId: string, screen: WidthCheckScreen, journey: JourneyCheckRecord): Promise<void> {
+  const stateDir = designStateDirOf(designId);
+  const file = recordFile(stateDir, screen.file);
+  return withDesignWrite(stateDir, async () => {
+    const held = await readRawRecord(file);
+    await writeJsonAtomic(file, held?.file === screen.file ? { ...held, journey } : { schemaVersion: 1, screen: screen.id, file: screen.file, journey });
+  });
+}
+
+/** Removes screen file `file`'s `checks/<screen>.json`, if any, a cache the next check rebuilds. */
+export function removeCheckRecord(designId: string, file: string): Promise<void> {
+  const stateDir = designStateDirOf(designId);
+  return withDesignWrite(stateDir, () => fs.rm(recordFile(stateDir, file), { force: true }));
 }
 
 const sameWidths = (a: readonly CheckedWidth[], b: readonly CheckedWidth[]): boolean => a.length === b.length && a.every((width, index) => width.width === b[index]?.width);
@@ -137,8 +158,8 @@ export async function runWidthChecks(input: {
   // one screen's failure ends the other screens' runs
   const run = new AbortController();
   const signal = AbortSignal.any([input.signal, run.signal]);
-  const records = await Promise.all(input.screens.map(async (screen): Promise<WidthCheckRecord> => {
-    const file = recordFile(stateDir, screen);
+  const records = await inRenderBatches(input.screens, async (screen): Promise<WidthCheckRecord> => {
+    const file = recordFile(stateDir, screen.file);
     const raw = await readRawRecord(file);
     const renderHash = renderHashes[screen.file]!;
     const held = input.reuse ? widthRecordOf(raw) : undefined;
@@ -156,11 +177,15 @@ export async function runWidthChecks(input: {
       issues: widthIssues(screen.id, probe, widths),
       consoleErrors: [...probe.consoleErrors],
       checkedAt: new Date().toISOString(),
-      ...(raw?.file === screen.file && raw.journey ? { journey: raw.journey } : {}),
     };
-    await writeJsonAtomic(file, record);
-    return record;
-  })).finally(() => run.abort(new Error('The width check of another screen failed')));
+    // a PreviewJourney that recorded while the probe ran keeps its journey
+    return withDesignWrite(stateDir, async () => {
+      const latest = await readRawRecord(file);
+      const kept: WidthCheckRecord = { ...record, ...(latest?.file === screen.file && latest.journey ? { journey: latest.journey } : {}) };
+      await writeJsonAtomic(file, kept);
+      return kept;
+    });
+  }).finally(() => run.abort(new Error('The width check of another screen failed')));
   await updateManifest(input.folder, input.designId, (current) => ({
     ...current,
     screens: current.screens.map((screen): ManifestScreen => {

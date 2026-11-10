@@ -1,6 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanJudge, decisionEntry, flaggingJudge, judgeOf, memoryLedger, noModelJudge, record } from './decision-kit';
+import type { DecisionConflictJudge } from '../decision-conflicts';
+import { decisionsOnBranch } from '../design-entries';
 import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import { createVsCodeFileConfinement } from '../../../vscode/platform/file-confinement';
 import { DESIGN_DECISIONS_DETAIL_KEY, type DesignCheckSummary, type FinishDesignDetails } from '../../../shared/types/design';
@@ -37,11 +40,11 @@ function deps(overrides: Partial<DesignChatToolDeps> = {}): Deps {
     cwd: FOLDER,
     confinement: createVsCodeFileConfinement(),
     branch: () => BRANCH,
-    pendingDecisions: () => [],
+    decisions: () => undefined,
+    conflictJudge: () => cleanJudge(),
     sessionId: () => 'design-1',
     readStanding: async () => ({ kind: 'current' as const }),
     standing: () => ({ kind: 'current' as const }),
-    decisionsChanged: async () => undefined,
     publish: () => undefined,
     offerResult: vi.fn(async () => 'live' as const),
     hasParent: async () => true,
@@ -287,12 +290,80 @@ function turnWith(result: { content: { text: string }[]; details: unknown; isErr
 }
 
 describe('design tools that read the folder or number decisions run alone in their batch (F3)', () => {
-  it('marks FinishDesign, DesignCheck, RecordDecision, MapReference, ExtractTokens, ImportAsset and DesignScreenshot sequential', async () => {
+  it('marks FinishDesign, DesignCheck, RecordDecision, MapReference, ExtractTokens, ImportAsset, DesignScreenshot, RemoveDesignFile and OpenPreview sequential', async () => {
     const { createDesignChatTools } = await import('../tools/design-chat-tools');
     const { createMapReferenceTool } = await import('../tools/map-reference');
     const { createDeclareTweaksTool } = await import('../tools/declare-tweaks');
     const { createDesignScreenshotTool } = await import('../tools/design-screenshot');
-    const tools = [createFinishDesignTool(pi, deps()), ...createDesignChatTools(pi, deps(), designRuleSetById('reduced')), createMapReferenceTool(pi, deps()), createDeclareTweaksTool(pi, deps()), createDesignScreenshotTool(pi, deps())] as unknown as { name: string; executionMode?: string }[];
-    expect(tools.filter((t) => t.executionMode === 'sequential').map((t) => t.name).sort()).toEqual(['DesignCheck', 'DesignScreenshot', 'ExtractTokens', 'FinishDesign', 'ImportAsset', 'MapReference', 'RecordDecision']);
+    const { createDesignFileTools } = await import('../tools/design-file-tools');
+    const tools = [createFinishDesignTool(pi, deps()), ...createDesignChatTools(pi, deps(), designRuleSetById('reduced')), createMapReferenceTool(pi, deps()), createDeclareTweaksTool(pi, deps()), createDesignScreenshotTool(pi, deps()), ...createDesignFileTools(pi, deps(), designRuleSetById('full'))] as unknown as { name: string; executionMode?: string }[];
+    expect(tools.filter((t) => t.executionMode === 'sequential').map((t) => t.name).sort()).toEqual(['DesignCheck', 'DesignScreenshot', 'ExtractTokens', 'FinishDesign', 'ImportAsset', 'MapReference', 'OpenPreview', 'RecordDecision', 'RemoveDesignFile']);
+  });
+});
+
+describe('FinishDesign and the decisions recorded unchecked (D99)', () => {
+  const unchecked = (id: string, title: string, chosen: string) => decisionEntry(record(id, title, chosen, { kind: 'chat', source: { kind: 'chat', ref: chosen }, conflictCheck: 'unchecked', uncheckedReason: 'noModel' }));
+  const withLedger = (entries: Record<string, unknown>[], judge: DecisionConflictJudge, overrides: Partial<DesignChatToolDeps> = {}) => {
+    const ledger = memoryLedger(FOLDER, entries);
+    return { ledger, d: deps({ branch: () => entries, decisions: () => ledger, conflictJudge: () => judge, ...overrides }) };
+  };
+
+  it('checks them again with the model back: a contradiction refuses, naming the call that resolves it (acceptance)', async () => {
+    await designReady();
+    const { d } = withLedger([decisionEntry(record('D1', 'Fidelity', 'Static mockup')), decisionEntry(record('D2', 'Density', 'Compact')), decisionEntry(record('D8', 'Page shell', 'White cards')), unchecked('D23', 'Surfaces', 'No white')], flaggingJudge([{ id: 'D8', kind: 'contradicts', reason: 'white vs no white' }]));
+    const result = await finish(d);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/^FinishDesign refused: the conflict check found current decisions that conflict\.\n- D23 Surfaces conflicts with D8 Page shell \(contradicts: white vs no white\)\. Record it again with RecordDecision, replaces: \["D23", "D8"\]/);
+    expect(d.requestApproval).not.toHaveBeenCalled();
+    expect(await readLatestVersion(designStateDirOf(DESIGN))).toBeUndefined();
+  });
+
+  it('checks them again with the model back: a clean result clears the warning before the user is asked (acceptance)', async () => {
+    await designReady();
+    const entries = [decisionEntry(record('D1', 'Fidelity', 'Static mockup')), unchecked('D2', 'Density', 'Compact')];
+    const { d } = withLedger(entries, cleanJudge());
+    const result = await finish(d);
+    expect(result.isError).toBeUndefined();
+    expect(decisionsOnBranch(entries).find((decision) => decision.id === 'D2')).toMatchObject({ conflictCheck: 'checked' });
+    expect(d.requestApproval.mock.calls[0]![0]).not.toHaveProperty('unchecked');
+    const version = await readLatestVersion(designStateDirOf(DESIGN));
+    expect(version!.check.warnings.map((issue) => issue.rule)).not.toContain('decisions.unchecked');
+    expect(version).not.toHaveProperty('uncheckedDecisions');
+  });
+
+  it('with the model still missing, names the unchecked decisions in the prompt and records them in the version (acceptance)', async () => {
+    await designReady();
+    const entries = [decisionEntry(record('D1', 'Fidelity', 'Static mockup')), decisionEntry(record('D2', 'Density', 'Compact')), unchecked('D23', 'Accent', 'taupe'), unchecked('D24', 'Surfaces', 'warm')];
+    const { d: base } = withLedger(entries, noModelJudge());
+    const { d, raised, handler } = onHandler({ branch: base.branch, decisions: base.decisions, conflictJudge: base.conflictJudge });
+    const finished = finish(d);
+    const prompt = await raised();
+    expect(prompt.uncheckedDecisions).toEqual([{ ids: ['D23', 'D24'], cause: 'noModel' }]);
+    handler.resolveDesignApproval(prompt.promptId, 'approve', undefined);
+    expect((await finished).isError).toBeUndefined();
+    const version = await readLatestVersion(designStateDirOf(DESIGN));
+    expect(version).toMatchObject({ uncheckedDecisions: ['D23', 'D24'], decisions: [{ id: 'D1' }, { id: 'D2' }, { id: 'D23' }, { id: 'D24' }] });
+    expect(version!.check.warnings.filter((issue) => issue.rule === 'decisions.unchecked').map((issue) => issue.element)).toEqual(['D23', 'D24']);
+  });
+
+  it('carries each unchecked decision\'s own cause to the prompt, grouped by cause (G1-N9)', async () => {
+    await designReady();
+    const entries = [decisionEntry(record('D1', 'Fidelity', 'Static mockup')), decisionEntry(record('D2', 'Density', 'Compact')), unchecked('D23', 'Accent', 'taupe'), unchecked('D24', 'Surfaces', 'warm'), unchecked('D25', 'Rows', 'Striped')];
+    const judge = judgeOf((request) => (request.userMessage.split('\n')[1]!.includes('"title":"Surfaces"') ? { kind: 'rejected' as const } : { kind: 'unreachable' as const }));
+    const { d: base } = withLedger(entries, judge);
+    const { d, raised, handler } = onHandler({ branch: base.branch, decisions: base.decisions, conflictJudge: base.conflictJudge });
+    const finished = finish(d);
+    const prompt = await raised();
+    expect(prompt.uncheckedDecisions).toEqual([{ ids: ['D23', 'D25'], cause: 'unreachable' }, { ids: ['D24'], cause: 'rejected' }]);
+    handler.resolveDesignApproval(prompt.promptId, 'approve', undefined);
+    expect((await finished).isError).toBeUndefined();
+  });
+
+  it('records only the current decisions in the version, with what each replaced', async () => {
+    await designReady();
+    const entries = [decisionEntry(record('D1', 'Fidelity', 'Static mockup')), decisionEntry(record('D2', 'Density', 'Compact')), decisionEntry(record('D18', 'Accent colour', 'graphite')), decisionEntry(record('D19', 'Accent', 'taupe', { replaces: ['D18'] }))];
+    const { d } = withLedger(entries, cleanJudge());
+    await finish(d);
+    expect((await readLatestVersion(designStateDirOf(DESIGN)))!.decisions).toEqual([{ id: 'D1', title: 'Fidelity', chosen: 'Static mockup' }, { id: 'D2', title: 'Density', chosen: 'Compact' }, { id: 'D19', title: 'Accent', chosen: 'taupe', replaces: ['D18'] }]);
   });
 });

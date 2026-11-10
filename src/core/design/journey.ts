@@ -7,11 +7,12 @@ import { Type, type TSchema } from 'typebox';
 import { JOURNEY_FAILURES, JOURNEY_KEYS, type JourneyFile, type JourneyStep, type JourneyStepResult, type JourneyWidthResult } from '../../shared/types/design';
 import { DESIGN_NAME, SCREEN_FILE } from '../../shared/design-paths';
 import { TOOL_PREVIEW_JOURNEY } from '../../shared/tool-names';
-import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_STEPS, MAX_JOURNEY_TARGET_CHARS, MAX_JOURNEY_UNTESTED, MAX_JOURNEY_UNTESTED_CHARS, MAX_JOURNEY_VALUE_CHARS, parseJourneySteps, parseJourneyUntested } from '../../shared/design-journey';
+import { journeyProblemSentence, MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_STEPS, MAX_JOURNEY_TARGET_CHARS, MAX_JOURNEY_UNTESTED, MAX_JOURNEY_UNTESTED_CHARS, MAX_JOURNEY_VALUE_CHARS, parseJourneySteps, parseJourneyUntested } from '../../shared/design-journey';
 import { log } from '../logger';
 import { readDesignFile } from './design-file-read';
 import { SCREENS_DIR } from './design-paths';
 import { writeJsonAtomic, writeTextAtomic } from './design-state';
+import { withDesignWrite } from './design-writes';
 
 const MAX_JOURNEY_FILE_BYTES = 256 * 1024;
 // a journey file's name is its screen file's stem, so it is one plain segment that ends in .journey.json (PD-26)
@@ -19,28 +20,50 @@ const STEM = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 const targetText = (what: string) => Type.String({ minLength: 1, maxLength: MAX_JOURNEY_TARGET_CHARS, description: what });
 
-/** PreviewJourney's arguments as the model sees them; `parseJourneySteps` decides what passes. */
-export const previewJourneySchema: TSchema = Type.Object({
-  screen: Type.String({ maxLength: 400, description: 'The screen file, relative to the design folder, such as screens/S1-contacts.html.' }),
-  state: Type.Optional(Type.String({ maxLength: 64, description: 'A state the screen declares in data-ds-states; default when omitted.' })),
-  steps: Type.Array(Type.Object({
-    action: Type.Union([Type.Literal('fill'), Type.Literal('select'), Type.Literal('click'), Type.Literal('press'), Type.Literal('assert')]),
-    target: Type.Union([
-      Type.Object({ role: Type.String({ description: 'An ARIA role, such as button, link, textbox, dialog, list or heading.' }), name: targetText('The accessible name, exactly.') }, { additionalProperties: false }),
-      Type.Object({ label: targetText('The text of the control\'s <label>, aria-label or aria-labelledby, exactly.') }, { additionalProperties: false }),
-      Type.Object({ placeholder: targetText('The placeholder attribute, exactly.') }, { additionalProperties: false }),
-      Type.Object({ text: targetText('The element\'s whole visible text, exactly (whitespace collapsed).') }, { additionalProperties: false }),
-    ]),
+const exact = Type.Optional(Type.Boolean({ description: 'false: match a case-insensitive part of the text, whitespace collapsed, as Playwright does; exact when omitted.' }));
+
+/** Journey steps as the model sees them; `assertions`: every action is followed by an assert. */
+export function journeyStepsSchema(assertions: boolean): TSchema {
+  return Type.Array(Type.Object({
+    action: Type.Union([Type.Literal('fill'), Type.Literal('select'), Type.Literal('click'), Type.Literal('press'), Type.Literal('scroll'), Type.Literal('assert')]),
+    target: Type.Optional(Type.Union([
+      Type.Object({ role: Type.String({ description: 'An ARIA role, such as button, link, textbox, dialog, list or heading.' }), name: targetText('The accessible name, exactly unless exact is false.'), exact }, { additionalProperties: false }),
+      Type.Object({ label: targetText('The text of the control\'s <label>, aria-label or aria-labelledby, exactly unless exact is false.'), exact }, { additionalProperties: false }),
+      Type.Object({ placeholder: targetText('The placeholder attribute, exactly unless exact is false.'), exact }, { additionalProperties: false }),
+      Type.Object({ text: targetText('The element\'s whole visible text (whitespace collapsed), exactly unless exact is false.'), exact }, { additionalProperties: false }),
+    ], { description: 'Every action but scroll names one; scroll names one to bring into view, or none with to: "end" to scroll the page.' })),
     value: Type.Optional(Type.String({ maxLength: MAX_JOURNEY_VALUE_CHARS, description: 'fill: the text typed in place of the field\'s; select: the option\'s value or label.' })),
     key: Type.Optional(Type.Union(JOURNEY_KEYS.map((key) => Type.Literal(key)), { description: 'press only.' })),
+    to: Type.Optional(Type.Literal('end', { description: 'scroll only: wheel the target, else the page, to its end, which loads what an infinite list loads there.' })),
     expect: Type.Optional(Type.Union([
       Type.Object({ visible: Type.Boolean() }, { additionalProperties: false }),
       Type.Object({ textContains: Type.String({ minLength: 1, maxLength: MAX_JOURNEY_VALUE_CHARS }) }, { additionalProperties: false }),
       Type.Object({ valueEquals: Type.String({ maxLength: MAX_JOURNEY_VALUE_CHARS }) }, { additionalProperties: false }),
     ], { description: 'assert only: exactly one expectation.' })),
-  }, { additionalProperties: false }), { minItems: 1, maxItems: MAX_JOURNEY_STEPS, description: `At most ${MAX_JOURNEY_STEPS} steps, asserts counted; every action is followed by an assert.` }),
+  }, { additionalProperties: false }), { minItems: 1, maxItems: MAX_JOURNEY_STEPS, description: assertions ? `At most ${MAX_JOURNEY_STEPS} steps, asserts counted; every action is followed by an assert.` : `At most ${MAX_JOURNEY_STEPS} steps.` });
+}
+
+/** PreviewJourney's arguments as the model sees them; `parseJourneySteps` decides what passes. */
+export const previewJourneySchema: TSchema = Type.Object({
+  screen: Type.String({ maxLength: 400, description: 'The screen file, relative to the design folder, such as screens/S1-contacts.html.' }),
+  state: Type.Optional(Type.String({ maxLength: 64, description: 'A state the screen declares in data-ds-states; default when omitted.' })),
+  steps: journeyStepsSchema(true),
   untested: Type.Array(Type.String({ minLength: 1, maxLength: MAX_JOURNEY_UNTESTED_CHARS }), { maxItems: MAX_JOURNEY_UNTESTED, description: 'What this journey leaves untested, in a few words each.' }),
 }, { additionalProperties: false });
+
+/**
+ * PreviewJourney's prepareArguments: the steps and the untested remainder through their parsers before the schema's, so a
+ * malformed argument is one sentence naming the step and field, never a validator dump.
+ */
+export function prepareJourneyArguments(args: unknown): Record<string, unknown> {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) throw new Error('PreviewJourney takes {screen, state, steps, untested}.');
+  const record = args as Record<string, unknown>;
+  const steps = parseJourneySteps(record['steps']);
+  if ('problems' in steps) throw new Error(`PreviewJourney ran nothing: ${journeyProblemSentence(steps.problems)}`);
+  const untested = parseJourneyUntested(record['untested']);
+  if ('problems' in untested) throw new Error(`PreviewJourney ran nothing: ${journeyProblemSentence(untested.problems)}`);
+  return { ...record, steps: steps.steps, untested: untested.untested };
+}
 
 /** A screen's journey as manifest.json records it (PD-21): the journey's files and outcome, or DesignCheck's waiver. */
 export type ScreenJourney =
@@ -79,8 +102,9 @@ function widthResultOf(value: unknown, steps: number): JourneyWidthResult | unde
 /** A journey file's content, or undefined when it is not one. */
 export function parseJourneyFile(value: unknown): JourneyFile | undefined {
   if (!isRecord(value) || value['schemaVersion'] !== 1) return undefined;
-  const { screen, file, viewports, state, contentHash, steps, results, untested, passed, ranAt } = value;
+  const { screen, file, viewports, state, contentHash, renderHash, steps, results, untested, passed, ranAt } = value;
   if (typeof screen !== 'string' || typeof file !== 'string' || typeof state !== 'string' || typeof contentHash !== 'string' || typeof passed !== 'boolean' || typeof ranAt !== 'string') return undefined;
+  if (renderHash !== undefined && typeof renderHash !== 'string') return undefined;
   if (!Array.isArray(viewports) || !viewports.every((viewport) => isRecord(viewport) && isWidth(viewport['width']) && (viewport['breakpoint'] === null || typeof viewport['breakpoint'] === 'string'))) return undefined;
   const parsedSteps = parseJourneySteps(steps);
   if (!('steps' in parsedSteps) || !('untested' in parseJourneyUntested(untested))) return undefined;
@@ -105,18 +129,20 @@ export async function readJourneyFile(folder: string, relFile: string): Promise<
 }
 
 /** Writes the journey and its spec; core alone writes either (PD-26). */
-export async function writeJourneyFiles(folder: string, files: { readonly journeyFile: string; readonly specFile: string }, journey: JourneyFile, spec: string): Promise<void> {
-  await writeJsonAtomic(path.join(folder, ...files.journeyFile.split('/')), journey);
-  await writeTextAtomic(path.join(folder, ...files.specFile.split('/')), spec);
+export function writeJourneyFiles(folder: string, files: { readonly journeyFile: string; readonly specFile: string }, journey: JourneyFile, spec: string): Promise<void> {
+  return withDesignWrite(folder, async () => {
+    await writeJsonAtomic(path.join(folder, ...files.journeyFile.split('/')), journey);
+    await writeTextAtomic(path.join(folder, ...files.specFile.split('/')), spec);
+  });
 }
 
 /**
- * Whether `journey` vouches for its screen now (PD-21): run against the screen's current bytes and passed at every one of
- * `widths`. The reason names what the designer must do otherwise.
+ * Whether `journey` vouches for its screen now (PD-21): run against the screen's current render inputs (`renderHash`, D86) and
+ * passed at every one of `widths`. The reason names what the designer must do otherwise.
  */
-export function journeyStanding(journey: JourneyFile | undefined, screenHash: string, widths: readonly number[]): { readonly passes: true } | { readonly passes: false; readonly reason: 'missing' | 'stale' | 'failed' | 'widths' } {
+export function journeyStanding(journey: JourneyFile | undefined, renderHash: string, widths: readonly number[]): { readonly passes: true } | { readonly passes: false; readonly reason: 'missing' | 'stale' | 'failed' | 'widths' } {
   if (!journey) return { passes: false, reason: 'missing' };
-  if (journey.contentHash !== screenHash) return { passes: false, reason: 'stale' };
+  if (journey.renderHash !== renderHash) return { passes: false, reason: 'stale' };
   const passedAt = new Set(journey.results.filter((result) => result.passed && result.steps.length === journey.steps.length && result.steps.every((step) => step.ok)).map((result) => result.width));
   if (widths.every((width) => passedAt.has(width))) return { passes: true };
   return { passes: false, reason: journey.passed ? 'widths' : 'failed' };

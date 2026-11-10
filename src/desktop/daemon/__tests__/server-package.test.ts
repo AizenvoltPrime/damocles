@@ -31,4 +31,10 @@ describe('e2eConnectionLimits', () => {
     expect(() => e2eConnectionLimits({ DAMOCLES_E2E_RECONNECTION_GRACE_MS: String(2 ** 31) })).toThrow(/up to 2147483647/);
     expect(e2eConnectionLimits({ DAMOCLES_E2E_MAX_HELD_BYTES: String(2 ** 40) })).toEqual({ maxHeldBytes: 2 ** 40 });
   });
+
+  it('reads a shorter actor intent expiry under the same rule', () => {
+    expect(e2eConnectionLimits({ DAMOCLES_E2E_ACTOR_INTENT_EXPIRY_MS: '5000' })).toEqual({ actorIntentExpiryMs: 5000 });
+    expect(() => e2eConnectionLimits({ DAMOCLES_E2E_ACTOR_INTENT_EXPIRY_MS: '0' })).toThrow(/positive integer/);
+    expect(() => e2eConnectionLimits({ DAMOCLES_E2E_ACTOR_INTENT_EXPIRY_MS: String(2 ** 31) })).toThrow(/up to 2147483647/);
+  });
 });

@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'path';
 import ignore from 'ignore';
@@ -8,13 +7,14 @@ import type { PermissionState } from '../state';
 import type { MatchRuleOptions, McpToolIdentity } from '../types';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions } from '../permission-settings';
-import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, SHELL_TOOLS } from '../../../shared/tool-names';
+import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, TOOL_WEB_FETCH, SHELL_TOOLS } from '../../../shared/tool-names';
 import { isPlanFilePath } from '../../paths';
 import { canonicalPath, rememberedPathQueries, spelledPath } from '../../canonical-path';
-import { resolveToCwd } from '../../pi-session/tools/search-tools';
+import { resolveReadPath, resolveToCwd } from '../../pi-session/tools/search-tools';
 import { MCP_TOOL_PREFIX } from '../../pi-session/mcp/naming';
 import { matchesToolPattern } from '../../pi-session/mcp/exposure';
 import { READ_MCP_RESOURCE, uriRuleCovers, type McpResourceRuleFilter } from '../mcp-resource-rule';
+import { matchesWebFetchSpecifier } from '../web-fetch-rule';
 import { bypassAllowed, currentPin, hostDefaultMode } from '../../client-snapshots';
 import type { PermissionMode } from '../../../shared/types/settings';
 import type { PermissionRuleLists } from '../../../shared/remote-user';
@@ -30,13 +30,6 @@ const RULE_SHAPE = /^([\w*-]+)(?:\((.+)\))?$/;
 
 /** A pin with no client user rules; one shared value, since the permissions cache compares rule lists by identity. */
 const NO_CLIENT_RULES: readonly PermissionRuleLists[] = Object.freeze([]);
-
-/** pi's `resolveReadPath` (`dist/core/tools/path-utils.js`), which its package does not export; keep the two in step. */
-function resolveReadPath(resolved: string): string {
-  const nfd = resolved.normalize('NFD');
-  const candidates = [resolved, resolved.replace(/ (AM|PM)\./gi, '\u202F$1.'), nfd, resolved.replace(/'/g, '\u2019'), nfd.replace(/'/g, '\u2019')];
-  return candidates.find((candidate) => existsSync(candidate)) ?? resolved;
-}
 
 /** Whether a rule's tool name, in which `*` matches any run of characters, names the whole of `name`; linear, since `name` can be a model-written server. */
 function namesTool(ruleName: string, name: string): boolean {
@@ -97,11 +90,13 @@ function memoized(resolve: (target: string) => string): (target: string) => stri
 interface PathResolvers {
   canonical: (target: string) => string;
   spelled: (target: string) => string;
+  /** The call's own path is matched as written, with no file system call on it (`MatchRuleOptions.pathsAsWritten`). */
+  targetAsWritten: boolean;
 }
 
-const pathResolvers = (): PathResolvers => {
+const pathResolvers = (targetAsWritten = false): PathResolvers => {
   const queries = rememberedPathQueries();
-  return { canonical: memoized((target) => canonicalPath(target, queries)), spelled: memoized((target) => spelledPath(target, queries)) };
+  return { canonical: memoized((target) => canonicalPath(target, queries)), spelled: memoized((target) => spelledPath(target, queries)), targetAsWritten };
 };
 
 export class EvaluatorManager {
@@ -164,9 +159,10 @@ export class EvaluatorManager {
   /**
    * The verdict on a call under the current mode and YOLO, given `rule`, the settings rule it matches
    * (`matchRule`). Synchronous, so an open prompt can be decided again the moment the mode changes.
-   * `requiresUser`: only a deny rule or the user decides, so YOLO and an allow rule ask (PD-25).
+   * `requiresUser`: only a deny rule or the user decides, so YOLO and an allow rule ask (PD-25). `reachesNetwork`: the call's
+   * file path may reach a network host the chat does not live on, so with no rule it asks, and nothing here touches the path.
    */
-  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null, requiresUser = false): PermissionBehavior {
+  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null, requiresUser = false, reachesNetwork = false): PermissionBehavior {
     if (requiresUser) {
       return rule === 'deny' ? 'deny' : 'ask';
     }
@@ -178,6 +174,10 @@ export class EvaluatorManager {
     // A matching rule decides before any mode or tool default, so an ask rule prompts even for a read.
     if (rule) {
       return rule;
+    }
+
+    if (reachesNetwork) {
+      return 'ask';
     }
 
     if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && this.isPlanFile(typeof input['file_path'] === 'string' ? input['file_path'] : '')) {
@@ -217,7 +217,7 @@ export class EvaluatorManager {
       return null;
     }
     const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
-    return this.matchAgainstPatterns(toolName, input, permissions, mcpTool);
+    return this.matchAgainstPatterns(toolName, input, permissions, mcpTool, options.pathsAsWritten === true);
   }
 
   /**
@@ -231,6 +231,21 @@ export class EvaluatorManager {
     return (filePath) => permissions.some((file) =>
       (['deny', 'ask'] as const).some((behavior) =>
         file[behavior].some((rule, index, rules) => this.matchesPattern(TOOL_READ, { file_path: filePath }, rule, behavior, file.root, undefined, resolvers, rules.slice(index + 1)))));
+  }
+
+  /**
+   * Whether a deny or ask `WebFetch(specifier)` rule matches a URL, for WebFetch and ImportAsset never to contact its host on a
+   * step they take by themselves (a rewrite, the reader fallback, a redirect). A bare `WebFetch` rule judges calls, not hosts.
+   * Nothing is refused under YOLO.
+   */
+  async webHostFilter(workspacePath: string | null): Promise<(url: string) => boolean> {
+    if (this.bypassing()) return () => false;
+    const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
+    const hostRules = permissions.flatMap((file) => (['deny', 'ask'] as const).flatMap((behavior) => file[behavior].flatMap((rule) => {
+      const [, ruleTool = '', specifier] = rule.match(RULE_SHAPE) ?? [];
+      return specifier !== undefined && namesTool(ruleTool, TOOL_WEB_FETCH) ? [{ ruleTool, specifier, behavior }] : [];
+    })));
+    return (url) => hostRules.some(({ ruleTool, specifier, behavior }) => matchesWebFetchSpecifier(ruleTool, specifier, { url }, behavior));
   }
 
   /**
@@ -339,8 +354,9 @@ export class EvaluatorManager {
     input: Record<string, unknown>,
     permissionsByFile: FilePermissions[],
     mcpTool: McpToolIdentity | undefined,
+    pathsAsWritten: boolean,
   ): PermissionBehavior | null {
-    const resolvers = pathResolvers();
+    const resolvers = pathResolvers(pathsAsWritten);
     for (const behavior of ['deny', 'ask', 'allow'] as PermissionBehavior[]) {
       for (const filePerms of permissionsByFile) {
         const rules = filePerms[behavior];
@@ -394,6 +410,7 @@ export class EvaluatorManager {
       const filePath = typeof input['file_path'] === 'string' ? input['file_path'] : '';
       return this.matchFileSpecifier(toolName, filePath, specifier, behavior, root, resolvers, carveOuts);
     }
+    if (toolName === TOOL_WEB_FETCH) return matchesWebFetchSpecifier(ruleTool, specifier, input, behavior);
     return false;
   }
 
@@ -522,9 +539,11 @@ export class EvaluatorManager {
     };
 
     const requested = resolveToCwd(filePath, cwd);
-    const spelled = resolvers.spelled(requested);
-    const canonical = resolvers.canonical(toolName === TOOL_READ ? resolveReadPath(requested) : requested);
+    const spelled = resolvers.targetAsWritten ? requested : resolvers.spelled(requested);
+    const canonical = resolvers.targetAsWritten ? requested : resolvers.canonical(toolName === TOOL_READ ? resolveReadPath(requested) : requested);
     if (behavior === 'allow') {
+      // Unresolved, the file it reaches is unknown, so no path proves it inside the cwd; a tool-wide allow rule still matches.
+      if (resolvers.targetAsWritten) return false;
       if (under(resolvers.spelled(cwd), spelled) === null || under(resolvers.canonical(path.resolve(cwd)), canonical) === null) return false;
       return covers(views[1]!, spelled) && covers(views[2]!, canonical);
     }

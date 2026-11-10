@@ -28,7 +28,9 @@
  *    get none
  *  - disallowed_tools subtracts (mapped) from the resolved set
  *  - the three subagent tools are always removed (no recursion — FR-11)
- *  - GenerateImage and the design tools are always removed (both are main-session only)
+ *  - GenerateImage is always removed (main-session only), and so is every design tool but those a design chat grants its
+ *    subagents (`nested.designTools`, at most `SUBAGENT_DESIGN_TOOLS`), which reach every agent type the panel holds them
+ *    for, minus disallowed_tools, as ToolSearch does
  *  - the plan-mode tools (EnterPlanMode/ExitPlanMode) are always removed — plan mode is a top-level
  *    panel concern; a subagent must never enter or exit it
  *
@@ -45,11 +47,34 @@ import {
   TEAM_CREATE_TOOL,
   TEAM_MANAGEMENT_TOOLS,
   TOOL_GENERATE_IMAGE,
+  TOOL_DESIGN_CHECK,
+  TOOL_DESIGN_SCREENSHOT,
+  TOOL_PREVIEW_JOURNEY,
 } from '../../../shared/tool-names';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
-import { DESIGN_PI_TOOL_NAMES } from '../../design/rule-set';
+import { DESIGN_PI_TOOL_NAMES, type DesignRuleSet } from '../../design/rule-set';
 import { isNestedMcpName } from '../mcp/naming';
 import type { AgentConfig } from './types';
+
+/** The design tools a design chat's subagents may hold: the ones that verify; deciding and finishing stay the designer's. */
+export const SUBAGENT_DESIGN_TOOLS: ReadonlySet<string> = new Set([TOOL_DESIGN_CHECK, TOOL_DESIGN_SCREENSHOT, TOOL_PREVIEW_JOURNEY]);
+
+/** A design chat's grant to its subagents (D99): its folder, the verification tools its rule set builds for them, and the rest. */
+export interface NestedDesignGrant {
+  readonly folder: string;
+  readonly designTools: readonly string[];
+  /** The design chat's design tools its subagents never get. */
+  readonly designerTools: readonly string[];
+}
+
+/** The grant of a design chat whose folder is `folder` and whose own design tools are `ruleSet`'s. */
+export function nestedDesignGrantOf(folder: string, ruleSet: DesignRuleSet): NestedDesignGrant {
+  return {
+    folder,
+    designTools: ruleSet.designTools.filter((name) => SUBAGENT_DESIGN_TOOLS.has(name)),
+    designerTools: ruleSet.designTools.filter((name) => !SUBAGENT_DESIGN_TOOLS.has(name)),
+  };
+}
 
 /** pi-native frontmatter tool name → Damocles active-set name. */
 const FRONTMATTER_TO_ACTIVE: Readonly<Record<string, string>> = {
@@ -104,8 +129,9 @@ export interface ResolvedToolset {
  *
  * @param config             The agent definition.
  * @param parentFullToolNames The parent panel's `fullActiveToolNames()` — used for the "all" case.
+ * @param nested             A design chat's grant; absent elsewhere, where no design tool survives.
  */
-export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: readonly string[]): ResolvedToolset {
+export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: readonly string[], nested?: NestedDesignGrant): ResolvedToolset {
   // `undefined` builtinToolNames means "all available tools" (omitted `tools:` or `tools: *`).
   // An explicit list is intersected with what the panel actually has active, so an opt-in tool it
   // names (e.g. WebSearch) only resolves when that capability is enabled — always-on native/custom
@@ -117,6 +143,8 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
       : config.builtinToolNames.map(mapName).filter((n) => available.has(n));
 
   if (available.has(TOOL_TOOL_SEARCH)) names = [...names, TOOL_TOOL_SEARCH];
+  const granted = (n: string): boolean => SUBAGENT_DESIGN_TOOLS.has(n) && (nested?.designTools.includes(n) ?? false);
+  names = [...names, ...[...SUBAGENT_DESIGN_TOOLS].filter((n) => granted(n) && available.has(n))];
 
   const denied = new Set((config.disallowedTools ?? []).map(mapName));
   if (denied.size) names = names.filter((n) => !denied.has(n));
@@ -129,7 +157,7 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
 
   // Image generation is main-session only and no nested build carries its definition. Stripped before
   // `readOnly` is computed, so naming it cannot lift a read-only agent's shell restriction.
-  names = names.filter((n) => n !== TOOL_GENERATE_IMAGE && !DESIGN_PI_TOOL_NAMES.has(n));
+  names = names.filter((n) => n !== TOOL_GENERATE_IMAGE && (!DESIGN_PI_TOOL_NAMES.has(n) || granted(n)));
 
   // Plan mode is a top-level panel concern owned by the primary session; a subagent must never enter
   // or exit plan mode, so strip these even when the parent inherits them (e.g. while the panel is in

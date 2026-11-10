@@ -12,10 +12,9 @@ function sessionWithQueued(refuse: (self: PiSession, prompt: unknown, broadcast:
     processingFlag: false,
     compacting: false,
     runOf: () => ({ settling: false }),
-    afterSettleTarget: 'S1',
-    afterSettleInputs: [
-      { id: 'q-a', text: 'from a', typed: '/fix from a', images: [], content: 'from a' },
-      { id: 'q-b', text: 'from b', images: [], content: [{ type: 'text', text: 'from b' }, { type: 'image', data: 'x', mimeType: 'image/png' }] },
+    settleInputs: [
+      { kind: 'typed', target: 'S1', input: { id: 'q-a', text: 'from a', typed: '/fix from a', images: [], content: 'from a' } },
+      { kind: 'typed', target: 'S1', input: { id: 'q-b', text: 'from b', images: [], content: [{ type: 'text', text: 'from b' }, { type: 'image', data: 'x', mimeType: 'image/png' }] } },
     ],
     emit: (message: ExtensionToWebviewMessage) => emitted.push(message),
     sendMessage: async (prompt: unknown, _target: unknown, correlationId: string, broadcast: unknown) => {

@@ -387,9 +387,18 @@ test('Open in browser trades a one-time token for a per-port cookie and serves t
     expect(refused.body, target).not.toContain(SECRET);
   }
 
-  // A cross-site subresource request is refused even with the cookie; a cross-site navigation is not.
-  expect((await get(port, '/data.json', { cookie, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'script' })).status).toBe(403);
-  expect((await get(port, '/index.html', { cookie, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' })).status).toBe(200);
+  // Only the browser's own navigation (none) and the page's own origin (same-origin) pass with the cookie; another site's or
+  // another loopback port's (same-site) navigation is refused with the reason, and a subresource with no body.
+  const subresource = await get(port, '/data.json', { cookie, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'script' });
+  expect(subresource.status).toBe(403);
+  expect(subresource.body).toBe('');
+  for (const site of ['cross-site', 'same-site']) {
+    const navigation = await get(port, '/index.html', { cookie, 'sec-fetch-site': site, 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' });
+    expect(navigation.status, site).toBe(403);
+    expect(navigation.body, site).toBe('Open this preview from Damocles.');
+  }
+  expect((await get(port, '/index.html', { cookie, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' })).status).toBe(200);
+  expect((await get(port, '/data.json', { cookie, 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' })).status).toBe(200);
   expect((await get(port, '/index.html', { host: `localhost:${port}`, cookie })).status).toBe(200);
 
   // Closing the project's last preview closes its port.

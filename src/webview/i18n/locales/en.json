@@ -1021,7 +1021,8 @@
       "btw": "/btw side questions",
       "memory-audit": "Memory quality audit",
       "commit-message": "Commit messages",
-      "design-parity": "Design parity checks"
+      "design-parity": "Design parity checks",
+      "design-decision-conflicts": "Design decision checks"
     },
     "heatmap": {
       "title": "Activity by weekday and hour (local time)",
@@ -3463,7 +3464,16 @@
       "stop": "Stop",
       "noteLabel": "What should the designer change?",
       "notePlaceholder": "Describe the changes you want…",
-      "sendNote": "Send to the designer"
+      "sendNote": "Send to the designer",
+      "unchecked": "The conflict check could not run for {ids} ({cause}). Approve only if it does not contradict other decisions. | The conflict check could not run for {ids} ({cause}). Approve only if they do not contradict other decisions.",
+      "uncheckedCause": {
+        "noModel": "no background model",
+        "unreachable": "the background model could not be reached",
+        "rejected": "the background model refused the request",
+        "unanswered": "the background model gave no valid answer",
+        "stopped": "the check was stopped",
+        "other": "an unknown cause"
+      }
     },
     "header": {
       "label": "Design",
@@ -3507,6 +3517,18 @@
         "brief": "From a brief"
       },
       "supersedes": "replaces {id}",
+      "replaces": "replaces {ids}",
+      "replacedBy": "replaced by {id}",
+      "stillHolds": "holds alongside {ids}",
+      "unchecked": "not checked for conflicts",
+      "conflict": {
+        "contradicts": "Contradicts {id}: {reason}",
+        "restates": "Restates {id}: {reason}"
+      },
+      "conflictResolved": {
+        "contradicts": "Contradicted {id}, now resolved: {reason}",
+        "restates": "Restated {id}, now resolved: {reason}"
+      },
       "sourceRef": {
         "tweak": "From tweak {ref}",
         "reference": "From reference {reference} · {element}"
@@ -3535,6 +3557,8 @@
       "previewJourney": "Preview journey",
       "declareTweaks": "Declare tweaks",
       "mapReference": "Map reference",
+      "removeDesignFile": "Remove design file",
+      "openPreview": "Open preview",
       "designParity": "Design parity",
       "moreRefs": "{n} more"
     },
@@ -3560,7 +3584,8 @@
           "bind-known": "Unknown binding",
           "decision-known": "Unknown decision",
           "new-cites-decision": "New element without a decision",
-          "hidden-required": "Required field hidden at a width"
+          "hidden-required": "Required field hidden at a width",
+          "decision-replaced": "Cites a replaced decision"
         },
         "tokens": {
           "color": "Color not from a token",
@@ -3600,6 +3625,13 @@
         },
         "journey": {
           "required": "Journey missing"
+        },
+        "motion": {
+          "reduced-motion": "Motion ignores reduced motion"
+        },
+        "decisions": {
+          "conflict": "Conflicting decisions",
+          "unchecked": "Decision not checked for conflicts"
         },
         "states": {
           "empty-declared": "Empty state not declared",
@@ -3647,13 +3679,20 @@
         "visible": "{target} is visible",
         "hidden": "{target} is hidden",
         "textContains": "{target} contains {value}",
-        "valueEquals": "{target} has the value {value}"
+        "valueEquals": "{target} has the value {value}",
+        "scroll": "Scroll {target} into view",
+        "scrollEnd": "Scroll {target} to its end",
+        "scrollPage": "Scroll the page to its end"
       },
       "target": {
         "role": "{role} {name}",
         "label": "field {name}",
         "placeholder": "field with placeholder {name}",
-        "text": "text {name}"
+        "text": "text {name}",
+        "roleLoose": "{role} containing {name}",
+        "labelLoose": "field whose label contains {name}",
+        "placeholderLoose": "field with a placeholder containing {name}",
+        "textLoose": "text containing {name}"
       },
       "quoted": "“{text}”",
       "empty": "(empty)",

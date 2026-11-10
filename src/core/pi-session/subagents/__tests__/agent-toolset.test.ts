@@ -545,3 +545,44 @@ describe('Explore/Plan prompts state how to load the deferred web and browser gr
     }
   });
 });
+
+/** A design chat's subagents get the verification tools its rule set has; every other nested agent gets no design tool (D64, F3). */
+describe('resolveAgentToolset — a design chat grants its verification tools', () => {
+  const VERIFY = ['DesignScreenshot', 'DesignCheck', 'PreviewJourney'];
+  const grant = (designTools: readonly string[]) => ({ folder: '/designs/contacts-abcd1234', designTools, designerTools: [] });
+  const DESIGN_CHAT = [...PARENT_WITH_SEARCH, 'AskUserQuestion', 'Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'FinishDesign', 'DeclareTweaks', 'LoadDesignSkill', 'MapReference', ...VERIFY];
+
+  it('a general-purpose subagent of a FULL design chat holds the three tools and AskUserQuestion, and no designer-only tool', () => {
+    const { names } = resolveAgentToolset(DEFAULT_AGENTS.get('general-purpose')!, DESIGN_CHAT, grant(VERIFY));
+    for (const name of [...VERIFY, 'AskUserQuestion']) expect(names, name).toContain(name);
+    for (const name of ['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'FinishDesign', 'DeclareTweaks', 'LoadDesignSkill', 'MapReference']) expect(names, name).not.toContain(name);
+  });
+
+  it('grants them to an explicit-list agent too, since no frontmatter can name them', () => {
+    const { names, readOnly } = resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, DESIGN_CHAT, grant(VERIFY));
+    for (const name of VERIFY) expect(names, name).toContain(name);
+    expect(readOnly).toBe(true);
+  });
+
+  it('grants only what the rule set names: REDUCED is DesignCheck alone', () => {
+    const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), DESIGN_CHAT, grant(['DesignCheck']));
+    expect(names.filter((n) => VERIFY.includes(n))).toEqual(['DesignCheck']);
+  });
+
+  it('disallowed_tools opts out of a granted design tool', () => {
+    const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined, disallowedTools: ['PreviewJourney'] }), DESIGN_CHAT, grant(VERIFY));
+    expect(names).toContain('DesignCheck');
+    expect(names).not.toContain('PreviewJourney');
+  });
+
+  it('a subagent of a normal chat gets no design tool, whatever its parent set holds', () => {
+    const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, 'StartDesign', 'DesignParity', ...VERIFY]);
+    expect(names.filter((n) => VERIFY.includes(n) || n === 'StartDesign' || n === 'DesignParity')).toEqual([]);
+  });
+
+  it('never grants a design tool the grant does not name, even one the parent holds', () => {
+    const { names } = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'FinishDesign', 'RecordDecision'] }), DESIGN_CHAT, grant(VERIFY));
+    expect(names).not.toContain('FinishDesign');
+    expect(names).not.toContain('RecordDecision');
+  });
+});

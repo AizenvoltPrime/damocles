@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import type { DesignResultDecision } from '@shared/types/design';
+import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
+import type { DesignDecisionView, DesignResultDecision } from '@shared/types/design';
+import { decisionReplacements } from './decision-replacements';
 
-// A design's decisions on the branch; each title and chosen value is the designer's own words.
-defineProps<{ decisions: readonly DesignResultDecision[] }>();
+// A design's decisions; each title and chosen value is the designer's own words. One the list replaces is dimmed and names its
+// replacement, and a stored conflict flag shows with its reason.
+const props = defineProps<{ decisions: readonly (DesignResultDecision & Partial<Pick<DesignDecisionView, 'conflicts'>>)[] }>();
+const { t } = useI18n();
+
+const replacedBy = computed(() => decisionReplacements(props.decisions));
 </script>
 
 <template>
@@ -11,7 +18,9 @@ defineProps<{ decisions: readonly DesignResultDecision[] }>();
       v-for="decision in decisions"
       :key="decision.id"
       class="flex min-w-0 items-start gap-2"
+      :class="replacedBy.has(decision.id) ? 'opacity-60' : ''"
       data-testid="design-decision"
+      :data-replaced-by="replacedBy.get(decision.id)"
     >
       <span
         class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-design)"
@@ -25,6 +34,20 @@ defineProps<{ decisions: readonly DesignResultDecision[] }>();
           class="text-(--d-faint)"
         > · </span>
         <span class="text-(--d-muted)">{{ decision.chosen }}</span>
+        <span
+          v-if="decision.replaces?.length"
+          class="text-(--d-faint-text)"
+        >{{ ` · ${t('design.decision.replaces', { ids: decision.replaces.join(', ') })}` }}</span>
+        <span
+          v-if="replacedBy.has(decision.id)"
+          class="text-(--d-faint-text)"
+        >{{ ` · ${t('design.decision.replacedBy', { id: replacedBy.get(decision.id) })}` }}</span>
+        <span
+          v-for="flag in decision.conflicts ?? []"
+          :key="flag.id"
+          class="block text-(--d-warning-text)"
+          data-testid="design-decision-conflict"
+        >{{ t(`design.decision.conflict.${flag.kind}`, { id: flag.id, reason: flag.reason }) }}</span>
       </span>
     </li>
   </ul>

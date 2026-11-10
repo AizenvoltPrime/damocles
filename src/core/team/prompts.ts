@@ -2,6 +2,7 @@ import type { AgentSpec } from "./types";
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rules";
 import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
 import { STEERING_PROTOCOL_BLOCK } from "../pi-session/steering-protocol";
+import { READ_ONLY_SHELL_LIMITS } from "../pi-session/read-only-shell-rules";
 import type { PlanModeStatement } from "../pi-session/plan-mode-change";
 import { withResumeNote } from "../../shared/steer";
 
@@ -353,7 +354,7 @@ ${buildPlanModeDirective("lead")}`
 function buildReviewAssignment(reviews: readonly string[]): string {
   const posture = `### Your review assignment
 
-You are a **reviewer**, and you are read-only: you cannot edit or create files. Read-only shell commands run directly; any other shell command asks the user for approval, and you never use the shell to create, change or delete files. The Verification Evidence section says how you judge test results.`;
+You are a **reviewer**, and you are read-only: you cannot edit or create files. Read-only shell commands run directly; any other shell command asks the user for approval, and you never use the shell to create, change or delete files. ${READ_ONLY_SHELL_LIMITS} The Verification Evidence section says how you judge test results.`;
   if (reviews.length === 0) {
     return `${posture}
 

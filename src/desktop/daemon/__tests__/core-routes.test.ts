@@ -1,7 +1,10 @@
+import * as net from 'node:net';
 import { runInNewContext } from 'node:vm';
 import { setFlagsFromString } from 'node:v8';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createAskpassServer } from '../../../core/scm/askpass/askpass-server';
 import { GitError } from '../../../core/scm/errors';
+import { credentialPrompt } from '../../core-host/askpass-prompt';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type MainEndpoint } from '../../core-protocol';
 import { CORE_TO_MAIN, MAIN_TO_CORE, type ChatEntry, type StateScope } from '../../core-protocol/messages';
 import { LANGUAGE_PREFERENCE_KEY } from '../../../shared/language-preference';
@@ -13,6 +16,7 @@ import {
   createClientMirrors,
   createCoreRouter,
   MAIN_EVENT_ROUTES,
+  MAX_HELD_PANEL_OPS,
   MAIN_PANEL_OP_ROUTES,
   MAIN_REQUEST_ROUTES,
   MIRROR_TOPIC_ROUTES,
@@ -24,7 +28,7 @@ import { createRunRegistry, type RunRegistry } from '../run-registry';
 import { CodecError, decode, encode } from '../../../remote/codec';
 import { FEATURES } from '../../../remote/protocol-version';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../../shared/remote-user';
-import { DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT } from '../../../shared/design-render';
+import { DEFAULT_RENDER_MEDIA, DESIGN_JOURNEY_UPDATE_NEEDED, DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../../shared/design-render';
 
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -71,6 +75,10 @@ interface ClientOptions {
   readonly clientId?: string;
   // the names of FEATURES its attach listed; none when absent, as an app that predates core.attachFeatures
   readonly features?: readonly string[] | undefined;
+  // runs before the attach, so what the attach delivers (a held intent) finds its handlers
+  readonly before?: (main: MainEndpoint) => void;
+  // its transport refuses any message carrying this text, as the wire refuses one over its bound
+  readonly refuses?: string;
 }
 
 // an app that renders designs but predates journeys and design.openPreview
@@ -79,7 +87,7 @@ const DESIGN_FEATURES = ['design.capture', 'design.probe', 'design.journey', 'de
 
 let current: Harness | undefined;
 
-function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; log?: (line: string) => void } = {}): Harness {
+function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; log?: (line: string) => void; actorIntentExpiryMs?: number } = {}): Harness {
   const coreLoop = createLoopback();
   const daemonMain = createMainEndpoint(coreLoop.main, quiet, undefined, processActor);
   const core = createCoreEndpoint(coreLoop.core, quiet, undefined, processActor);
@@ -88,7 +96,7 @@ function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; 
   const reload = vi.fn();
   const secrets = new Map<string, string | undefined>();
   const mirrors = createClientMirrors();
-  const router = createCoreRouter({ core: daemonMain, state, registry, mirrors, secrets, e2eHooks: options.e2eHooks ?? false, reload, agentShellUrl: () => undefined, clientPolicyChanged: options.clientPolicyChanged ?? (() => undefined), log: options.log ?? quiet });
+  const router = createCoreRouter({ core: daemonMain, state, registry, mirrors, secrets, e2eHooks: options.e2eHooks ?? false, reload, agentShellUrl: () => undefined, clientPolicyChanged: options.clientPolicyChanged ?? (() => undefined), log: options.log ?? quiet, ...(options.actorIntentExpiryMs !== undefined ? { actorIntentExpiryMs: options.actorIntentExpiryMs } : {}) });
   const harness: Harness = {
     core,
     router,
@@ -97,10 +105,18 @@ function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; 
     reload,
     secrets,
     mirrors,
-    client: (id, { hostId = 'h1', drained = () => Promise.resolve(), clientId = id, features = [] } = {}) => {
+    client: (id, { hostId = 'h1', drained = () => Promise.resolve(), clientId = id, features = [], before, refuses } = {}) => {
       const loop = createLoopback();
+      const transport = refuses === undefined ? loop.core : {
+        post: (message: unknown): void => {
+          if (JSON.stringify(message).includes(refuses)) throw new CodecError('a message over the bound');
+          loop.core.post(message);
+        },
+        onMessage: loop.core.onMessage,
+      };
       const close = vi.fn();
       const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+      before?.(main);
       let lost = false;
       const lostChange = new Set<() => void>();
       const setLost = (value: boolean): void => {
@@ -111,7 +127,7 @@ function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; 
         lostChange.add(listener);
         return { dispose: () => { lostChange.delete(listener); } };
       };
-      const attached = router.attach({ id, clientId, hostId, features: new Set(features), transport: loop.core, mirrors: emptyMirrors, close, drained, lost: () => lost, onLostChange });
+      const attached = router.attach({ id, clientId, hostId, features: new Set(features), transport, mirrors: emptyMirrors, close, drained, lost: () => lost, onLostChange });
       return { main, close, raw: loop.main, detach: () => attached.dispose(), lose: () => setLost(true), resume: () => setLost(false) };
     },
   };
@@ -185,6 +201,45 @@ describe('core routes', () => {
     expect(await h.core.request('notifications.show', notice)).toBe(0);
   });
 
+  it('send askpass.prompt to the device whose git call registered it, while another device acts', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const b = h.client('connection-2', { clientId: 'device-b' });
+    const asked: string[] = [];
+    a.main.serve('askpass.prompt', () => {
+      asked.push('device-a');
+      return { answer: 'from-a', cancelled: false };
+    });
+    b.main.serve('askpass.prompt', () => {
+      asked.push('device-b');
+      return { answer: 'from-b', cancelled: false };
+    });
+    const askpass = createAskpassServer({
+      paths: { askpass: '/srv/dist/askpass/askpass.sh', sshAskpass: '/srv/dist/askpass/ssh-askpass.sh', node: process.execPath, main: '/srv/dist/askpass-main.js' },
+      prompt: credentialPrompt((prompt, signal) => h.core.request('askpass.prompt', prompt, signal)),
+      log: quiet,
+    });
+    try {
+      // core's server starts listening outside every actor, as the credential relay's listen at core start does
+      (await askpass.register('background', 'autofetch')).dispose();
+      const push = await processActor.run('device-a', () => askpass.register('interactive', 'push'));
+      await b.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+      expect(h.mirrors.actingClient.clientId).toBe('device-b');
+      const reply = await new Promise<string>((resolve) => {
+        const helper = net.connect(push.env['DAMOCLES_ASKPASS_HANDLE']!);
+        let received = '';
+        helper.on('data', (chunk) => (received += chunk.toString('utf8')));
+        helper.on('error', () => undefined);
+        helper.on('close', () => resolve(received));
+        helper.write(`${JSON.stringify({ nonce: push.env['DAMOCLES_ASKPASS_NONCE'], kind: 'askpass', argv: ["Password for 'https://example.com': "] })}\n`);
+      });
+      expect(reply).toBe(`${JSON.stringify({ answer: 'from-a' })}\n`);
+      expect(asked).toEqual(['device-a']);
+    } finally {
+      await askpass.dispose();
+    }
+  });
+
   it('publish a client that attached fresh after a drop as the acting client before its first message, so core refreshes for it', async () => {
     const h = setUp();
     const seen: string[] = [];
@@ -253,7 +308,13 @@ describe('core routes', () => {
   });
 
   it('name only features the app has in every route\'s needs', () => {
-    const needs = [...Object.values(CORE_REQUEST_ROUTES), ...Object.values(CORE_EVENT_ROUTES)].flatMap((route) => (typeof route === 'object' && 'needs' in route && route.needs !== undefined ? [route.needs] : []));
+    // a route that reads its needs from the request names one for plain journey steps and one for scroll steps
+    const asked = [{ steps: [] }, { steps: [{ action: 'scroll', to: 'end' }] }] as never[];
+    const needs = [...Object.values(CORE_REQUEST_ROUTES), ...Object.values(CORE_EVENT_ROUTES)].flatMap((route) => {
+      if (typeof route !== 'object' || !('needs' in route) || route.needs === undefined) return [];
+      const named = route.needs as string | ((params: never) => string | undefined);
+      return typeof named === 'function' ? asked.flatMap((params) => named(params) ?? []) : [named];
+    });
     expect(needs.length).toBeGreaterThan(0);
     for (const name of needs) expect(FEATURES).toContain(name);
   });
@@ -362,8 +423,42 @@ describe('core routes', () => {
     expect(await h.core.request('design.capture', capture)).toEqual({ png, cssWidth: 390, cssHeight: 900, contentHeight: 1200, scale: 2 });
     expect((await h.core.request('design.probe', probe)).widths.map((measured) => measured.width)).toEqual([390, 640]);
     expect(asked).toBe(0);
-    expect(CORE_REQUEST_ROUTES['design.capture']).toMatchObject({ to: 'client', needs: 'design.capture' });
-    expect(CORE_REQUEST_ROUTES['design.probe']).toMatchObject({ to: 'client', needs: 'design.probe' });
+    expect(CORE_REQUEST_ROUTES['design.capture']).toMatchObject({ to: 'workClient', needs: 'design.capture' });
+    expect(CORE_REQUEST_ROUTES['design.probe']).toMatchObject({ to: 'workClient', needs: 'design.probe' });
+  });
+
+  it('send a browser call with a served root file only to a viewer that serves root files, refusing with CLIENT_FEATURE_MISSING while a viewer lacks it', async () => {
+    const h = setUp();
+    h.core.serve('chats.restore', () => undefined);
+    const plain = { viewId: 'view-1', scope: 'chat', tool: 'BrowserNavigate', input: { url: 'http://localhost:5173/' } };
+    const served = { ...plain, input: { url: 'file:///srv/app/docs/index.html' }, served: { kind: 'project' as const, relPath: 'docs/index.html', displayRoot: '/srv/app' } };
+    // no device shows the chat: no app to update, so the plain refusal
+    const unshown = h.client('c-unshown', { features: [] });
+    await expect(h.core.request('user.browser.tool', served)).rejects.toThrow('No client is attached to run a browser tool');
+    unshown.detach();
+    // an app that predates served root files would close its connection on the unknown field, so it never gets one
+    const older = h.client('c-old', { features: [] });
+    const asked: unknown[] = [];
+    older.main.serve('user.browser.tool', (params) => {
+      asked.push(params);
+      return { content: [{ type: 'text' as const, text: 'ran' }] };
+    });
+    await older.main.request('chats.restore', { viewId: 'view-1' });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    await expect(h.core.request('user.browser.tool', served)).rejects.toThrow(CLIENT_FEATURE_MISSING);
+    expect(asked).toEqual([]);
+    // a call without one still reaches it
+    expect(await h.core.request('user.browser.tool', plain)).toEqual({ content: [{ type: 'text', text: 'ran' }] });
+    older.detach();
+    const current = h.client('c-new', { features: ['user.browser.servedFiles'] });
+    current.main.serve('user.browser.tool', (params) => {
+      asked.push(params);
+      return { content: [{ type: 'text' as const, text: 'served' }] };
+    });
+    await current.main.request('chats.restore', { viewId: 'view-1' });
+    expect(await h.core.request('user.browser.tool', served)).toEqual({ content: [{ type: 'text', text: 'served' }] });
+    expect(asked.at(-1)).toEqual(served);
+    await expect(h.core.request('browser.servedFileUrl', { viewId: 'view-1', kind: 'project', relPath: 'docs/index.html' })).rejects.toThrow('not available on this host');
   });
 
   it('send design.journey to a client that lists it and design.replayJourney to one that also shows the chat, refusing with the render text otherwise', async () => {
@@ -400,8 +495,54 @@ describe('core routes', () => {
     h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
     await h.core.request('design.replayJourney', replay);
     expect(replayed).toEqual([replay]);
-    expect(CORE_REQUEST_ROUTES['design.journey']).toMatchObject({ to: 'client', needs: 'design.journey' });
-    expect(CORE_REQUEST_ROUTES['design.replayJourney']).toMatchObject({ to: 'chatClient', needs: 'design.replayJourney' });
+    expect(CORE_REQUEST_ROUTES['design.journey']).toMatchObject({ to: 'workClient' });
+    expect(CORE_REQUEST_ROUTES['design.replayJourney']).toMatchObject({ to: 'chatClient' });
+  });
+
+  it('send a journey with a scroll step or an explicit exact target only to a client that lists design.journeyScroll, naming the update otherwise', async () => {
+    const h = setUp();
+    const scroll = { action: 'scroll' as const, to: 'end' as const };
+    const more = { action: 'assert' as const, target: { text: 'item', exact: false }, expect: { visible: true } };
+    const journey = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null, steps: [scroll, more], outline: false };
+    const replay = { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', state: null, steps: [scroll, more], reducedMotion: true };
+    // with no app attached the refusal names no update
+    await expect(h.core.request('design.journey', journey)).rejects.toThrow(DESIGN_RENDER_CLIENT_ABSENT);
+    // an app before design.journeyScroll would refuse these steps in its parser and close the channel, so it is never asked
+    const older = h.client('c-old', { features: DESIGN_FEATURES });
+    let asked = 0;
+    older.main.serve('design.journey', () => {
+      asked++;
+      throw new Error('asked');
+    });
+    await expect(h.core.request('design.journey', journey)).rejects.toThrow(DESIGN_JOURNEY_UPDATE_NEEDED);
+    await expect(h.core.request('design.replayJourney', replay)).rejects.toThrow(DESIGN_JOURNEY_UPDATE_NEEDED);
+    expect(asked).toBe(0);
+    // that parser refuses any exact key, true included, so the wire's parse drops an exact: true, which means what absent does
+    const sent: unknown[] = [];
+    older.main.serve('design.journey', ({ widths, steps }) => {
+      sent.push(steps);
+      return { widths: widths.map((width) => ({ width, passed: true, steps: steps.map(() => ({ ok: true })) })), consoleErrors: [] };
+    });
+    const exactTrue = { action: 'assert' as const, target: { text: 'item', exact: true }, expect: { visible: true } };
+    await h.core.request('design.journey', { ...journey, steps: [{ action: 'click' as const, target: { text: 'item' } }, exactTrue] });
+    expect(sent).toEqual([[{ action: 'click', target: { text: 'item' } }, { action: 'assert', target: { text: 'item' }, expect: { visible: true } }]]);
+    older.detach();
+    const current = h.client('c1', { features: [...DESIGN_FEATURES, 'design.journeyScroll'] });
+    current.main.serve('design.journey', ({ widths, steps }) => ({ widths: widths.map((width) => ({ width, passed: true, steps: steps.map(() => ({ ok: true })) })), consoleErrors: [] }));
+    expect((await h.core.request('design.journey', journey)).widths.map((width) => width.passed)).toEqual([true]);
+  });
+
+  it('send design.render only to a client that lists it, refusing with the predates text when an older app renders so core can take design.capture', async () => {
+    const h = setUp();
+    const render = { designId: 'contacts-1a2b3c4d', relPath: 'variants/a/S1.html', width: 390, state: null, media: DEFAULT_RENDER_MEDIA, format: 'jpeg' as const, maxSide: 1568, quality: 80 };
+    await expect(h.core.request('design.render', render)).rejects.toThrow(DESIGN_RENDER_CLIENT_ABSENT);
+    h.client('c-old', { features: RENDER_FEATURES });
+    await expect(h.core.request('design.render', render)).rejects.toThrow(DESIGN_RENDER_PREDATES);
+    const current = h.client('c1', { features: [...RENDER_FEATURES, 'design.render'] });
+    const frame = { image: new Uint8Array([0xff, 0xd8]), mimeType: 'image/jpeg' as const, cssWidth: 390, cssHeight: 900, top: 0 };
+    current.main.serve('design.render', () => ({ frames: [frame], contentHeight: 1200, scale: 2, moving: false }));
+    expect(await h.core.request('design.render', render)).toEqual({ frames: [frame], contentHeight: 1200, scale: 2, moving: false });
+    expect(CORE_REQUEST_ROUTES['design.render']).toMatchObject({ to: 'workClient', needs: 'design.render' });
   });
 
   it('end the capture of a client when core cancels it, so Stop in the design chat ends a running capture', async () => {
@@ -1029,7 +1170,7 @@ describe('several clients', () => {
   });
 
   it('answer a reveal for a device\'s work that cannot show the chat there as not shown, and move no other device\'s view', async () => {
-    const h = setUp();
+    const h = setUp({ actorIntentExpiryMs: 20 });
     const features = ['chats.showSession', ...DESIGN_FEATURES];
     const { a, b } = await shared(h, undefined, features);
     const reveals: string[] = [];
@@ -1054,7 +1195,7 @@ describe('several clients', () => {
     const silent = h.client('connection-5', { clientId: 'device-e', features });
     silent.main.serve('chats.showSession', () => undefined);
     expect(await reveal('device-e')).toBe(false);
-    // a device inside its grace, though it shows the panel, and one no longer attached
+    // past the expiry: a device inside its grace, though it shows the panel, and one no longer attached
     b.lose();
     expect(await reveal('device-b')).toBe(false);
     b.resume();
@@ -1068,6 +1209,42 @@ describe('several clients', () => {
     expect(await reveal('device-f')).toBe(false);
     expect(unasked).not.toHaveBeenCalled();
     expect(reveals).toEqual([]);
+  });
+
+  it('hold a reveal for a device\'s work while that device is away, and show the chat there once it is back, on its resumed or fresh connection', async () => {
+    const h = setUp();
+    const features = ['chats.showSession', ...DESIGN_FEATURES];
+    const { a, b } = await shared(h, undefined, features);
+    const reveals: string[] = [];
+    for (const [name, client] of [['a', a], ['b', b]] as const) {
+      client.main.onPanel((viewId, envelope) => {
+        if (envelope.op === 'reveal') reveals.push(`${name} ${viewId}`);
+      });
+    }
+    b.lose();
+    let shown: unknown = 'pending';
+    void processActor.run('device-b', () => h.core.request('chats.reveal', { viewId: 'view-1' })).then((value) => (shown = value));
+    await flush();
+    expect([shown, reveals]).toEqual(['pending', []]);
+    b.resume();
+    await vi.waitFor(() => expect(shown).toBe(true));
+    expect(reveals).toEqual(['b view-b']);
+
+    // a device that detached opens the chat by its stored session when the same install attaches again
+    b.detach();
+    shown = 'pending';
+    void processActor.run('device-b', () => h.core.request('chats.reveal', { viewId: 'view-1' })).then((value) => (shown = value));
+    await flush();
+    const again = h.client('connection-3', {
+      clientId: 'device-b',
+      features,
+      before: (main) => main.serve('chats.showSession', async ({ sessionId }) => {
+        await main.request('views.join', { viewId: 'view-b2', viewKey: 'token-of-b2', sessionId });
+      }),
+    });
+    await vi.waitFor(() => expect(shown).toBe(true));
+    expect(again.close).not.toHaveBeenCalled();
+    expect(reveals).toEqual(['b view-b']);
   });
 
   it('send design.openPreview and design.replayJourney of a device\'s work to that device alone, refusing while it shows no view of the chat, never to another device', async () => {
@@ -1405,18 +1582,382 @@ describe('a client inside its reconnection grace', () => {
     expect(h.mirrors.actingClient).toEqual({ clientId: 'device-a' });
   });
 
-  it('gets no request while it is the actor or acting client: another attached client does, else none', async () => {
+  it('gets no request of work with no actor while it is the acting client: another attached client does, else none', async () => {
     const h = setUp();
     const a = h.client('c1');
     const b = h.client('c2');
     a.main.serve('notifications.show', () => 0);
     b.main.serve('notifications.show', () => 1);
-    const ask = (): Promise<unknown> => processActor.run('c1', () => h.core.request('notifications.show', { severity: 'info', message: { message: 'hi' }, actions: [] }));
+    await a.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    const ask = (): Promise<unknown> => h.core.request('notifications.show', { severity: 'info', message: { message: 'hi' }, actions: [] });
     expect(await ask()).toBe(0);
     a.lose();
     expect(await ask()).toBe(1);
     b.lose();
     expect(await ask()).toBeUndefined();
+  });
+});
+
+describe('the work of a device that is away', () => {
+  const notice = { severity: 'info', message: { message: 'hi' }, actions: [] } as const;
+  const create = { kind: 'chat' as const, title: 'Contacts', localResourceRoots: [] };
+  const AWAY = { error: 'the device that asked is away', reason: 'user' };
+
+  it('holds a request while its device is lost, never asks another device, and sends it on the resume', async () => {
+    const h = setUp();
+    const a = h.client('c1');
+    const b = h.client('c2');
+    const asked: string[] = [];
+    a.main.serve('notifications.show', () => {
+      asked.push('a');
+      return 0;
+    });
+    b.main.serve('notifications.show', () => {
+      asked.push('b');
+      return 1;
+    });
+    a.lose();
+    let answer: unknown = 'pending';
+    void processActor.run('c1', () => h.core.request('notifications.show', notice)).then((value) => (answer = value));
+    await flush();
+    expect([answer, asked]).toEqual(['pending', []]);
+    a.resume();
+    await vi.waitFor(() => expect(answer).toBe(0));
+    expect(asked).toEqual(['a']);
+  });
+
+  it('sends a request held for a detached device to the same install when it attaches again', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    h.client('connection-2', { clientId: 'device-b' }).main.serve('dialogs.pickFolder', () => '/from-b');
+    a.detach();
+    const picked = processActor.run('device-a', () => h.core.request('dialogs.pickFolder', {}));
+    await flush();
+    h.client('connection-3', { clientId: 'device-a', before: (main) => main.serve('dialogs.pickFolder', () => '/from-a') });
+    expect(await picked).toBe('/from-a');
+  });
+
+  it('answers a held request with its no-client answer once the intent expired, and logs it', async () => {
+    const lines: string[] = [];
+    const h = setUp({ actorIntentExpiryMs: 20, log: (line) => lines.push(line) });
+    const a = h.client('c1');
+    const b = h.client('c2');
+    const asked: string[] = [];
+    a.main.serve('shell.openExternal', () => {
+      asked.push('a');
+      return true;
+    });
+    b.main.serve('shell.openExternal', () => {
+      asked.push('b');
+      return true;
+    });
+    a.lose();
+    expect(await processActor.run('c1', () => h.core.request('shell.openExternal', { url: 'https://a.test/' }))).toBe(false);
+    expect(lines.some((line) => line.includes('shell.openExternal') && line.includes('c1') && line.includes('20 ms'))).toBe(true);
+    a.resume();
+    await flush();
+    expect(asked).toEqual([]);
+  });
+
+  it('ends a held request core cancelled, which its device never gets', async () => {
+    const h = setUp();
+    const a = h.client('c1');
+    const asked = vi.fn();
+    a.main.serve('trust.request', asked);
+    a.lose();
+    const cancel = new AbortController();
+    const trusted = processActor.run('c1', () => h.core.request('trust.request', { folderPath: '/srv/app' }, cancel.signal));
+    await flush();
+    cancel.abort();
+    await trusted.catch(() => undefined);
+    a.resume();
+    await flush();
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it('holds only what surfaces on a device: a request that only returns data is a workClient route', () => {
+    const work = Object.entries(CORE_REQUEST_ROUTES).flatMap(([method, route]) => (route.to === 'workClient' ? [method] : []));
+    expect(work.sort()).toEqual(['design.capture', 'design.journey', 'design.probe', 'design.render', 'editor.readText']);
+  });
+
+  it('serves a data request of its work on another present device that can when its own present device cannot', async () => {
+    const h = setUp();
+    const older = h.client('c-old');
+    const client = h.client('c1', { features: RENDER_FEATURES });
+    const asked: string[] = [];
+    const shot = { png: new Uint8Array([1]), cssWidth: 390, cssHeight: 900, contentHeight: 900, scale: 1 };
+    client.main.serve('design.capture', () => {
+      asked.push('c1');
+      return shot;
+    });
+    older.main.serve('design.capture', () => {
+      asked.push('c-old');
+      return shot;
+    });
+    const capture = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 1 };
+    expect(await processActor.run('c-old', () => h.core.request('design.capture', capture))).toEqual(shot);
+    expect(asked).toEqual(['c1']);
+    // the actor's own device first when it can, though another acted last
+    const own = h.client('c2', { features: RENDER_FEATURES });
+    own.main.serve('design.capture', () => {
+      asked.push('c2');
+      return shot;
+    });
+    await client.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    await processActor.run('c2', () => h.core.request('design.capture', capture));
+    expect(asked).toEqual(['c1', 'c2']);
+  });
+
+  it('never holds a data request while its device is away: another present device serves it, else its no-client answer comes at once', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a', features: RENDER_FEATURES });
+    const b = h.client('connection-2', { clientId: 'device-b' });
+    const read: string[] = [];
+    a.main.serve('editor.readText', () => {
+      read.push('a');
+      return 'from a';
+    });
+    b.main.serve('editor.readText', () => {
+      read.push('b');
+      return 'from b';
+    });
+    a.lose();
+    expect(await processActor.run('device-a', () => h.core.request('editor.readText', { path: '/srv/app/a.ts' }))).toBe('from b');
+    // no other device renders: refused before the outbox's minute, and not sent on the resume
+    const capture = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 1 };
+    const captured = vi.fn();
+    a.main.serve('design.capture', captured);
+    await expect(processActor.run('device-a', () => h.core.request('design.capture', capture))).rejects.toThrow(DESIGN_RENDER_CLIENT_ABSENT);
+    a.resume();
+    await flush();
+    expect(captured).not.toHaveBeenCalled();
+    expect(read).toEqual(['b']);
+  });
+
+  it('holds an acting-client event while its device is lost and emits it there on the resume, or drops and logs it past the expiry', async () => {
+    const lines: string[] = [];
+    const h = setUp({ actorIntentExpiryMs: 20, log: (line) => lines.push(line) });
+    const a = h.client('c1');
+    const b = h.client('c2');
+    const seen: string[] = [];
+    a.main.onEvent('window.openAppSettings', () => seen.push('a'));
+    b.main.onEvent('window.openAppSettings', () => seen.push('b'));
+    a.lose();
+    processActor.run('c1', () => h.core.emit('window.openAppSettings', {}));
+    await flush();
+    expect(seen).toEqual([]);
+    a.resume();
+    expect(seen).toEqual(['a']);
+    a.lose();
+    processActor.run('c1', () => h.core.emit('window.openAppSettings', {}));
+    await vi.waitFor(() => expect(lines.some((line) => line.includes('window.openAppSettings') && line.includes('20 ms'))).toBe(true));
+    a.resume();
+    expect(seen).toEqual(['a']);
+  });
+
+  it('creates a new panel of its work on that device alone: held while it is away, created on its resume or fresh attach', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const b = h.client('connection-2', { clientId: 'device-b' });
+    const created: string[] = [];
+    const record = (name: string) => (main: MainEndpoint): void => {
+      main.onPanel((viewId, envelope) => {
+        if (envelope.op === 'create') created.push(`${name} ${viewId}`);
+      });
+    };
+    record('a')(a.main);
+    record('b')(b.main);
+    const disposed: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') disposed.push(viewId);
+    });
+    const opsOfA: string[] = [];
+    a.main.onPanel((viewId, envelope) => opsOfA.push(`${envelope.op} ${viewId}`));
+    a.lose();
+    // core sets the new panel up at once: its page, icon and title wait with it and follow it, in order
+    processActor.run('device-a', () => {
+      h.core.postPanel('view-1', 'create', create);
+      h.core.postPanel('view-1', 'setIcon', { path: '/app/icon.png' });
+      h.core.postPanel('view-1', 'setTitle', { title: 'Design · Contacts' });
+    });
+    await flush();
+    expect([created, opsOfA]).toEqual([[], []]);
+    a.resume();
+    expect(created).toEqual(['a view-1']);
+    expect(opsOfA).toEqual(['create view-1', 'setIcon view-1', 'setTitle view-1']);
+    // the held panel is the device's view: core's posts reach it
+    h.core.postPanel('view-1', 'post', { type: 'x', json: '{}' });
+    expect(opsOfA.at(-1)).toBe('post view-1');
+
+    a.detach();
+    processActor.run('device-a', () => h.core.postPanel('view-2', 'create', create));
+    await flush();
+    h.client('connection-3', { clientId: 'device-a', before: record('a again') });
+    expect(created).toEqual(['a view-1', 'a again view-2']);
+    // view-1 by the panel rule on the detach; the held view-2 never
+    expect(disposed).toEqual(['view-1']);
+  });
+
+  it('cancels a new panel of its work past the expiry: core is told the device is away, and no device gets it', async () => {
+    const lines: string[] = [];
+    const h = setUp({ actorIntentExpiryMs: 20, log: (line) => lines.push(line) });
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const b = h.client('connection-2', { clientId: 'device-b' });
+    const created: string[] = [];
+    a.main.onPanel((viewId, envelope) => {
+      if (envelope.op === 'create') created.push(`a ${viewId}`);
+    });
+    b.main.onPanel((viewId, envelope) => {
+      if (envelope.op === 'create') created.push(`b ${viewId}`);
+    });
+    const disposed: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') disposed.push([viewId, envelope.payload]);
+    });
+    a.lose();
+    processActor.run('device-a', () => h.core.postPanel('view-1', 'create', create));
+    await vi.waitFor(() => expect(disposed).toEqual([['view-1', AWAY]]));
+    expect(lines.some((line) => line.includes('view-1') && line.includes('device-a'))).toBe(true);
+    a.resume();
+    expect(created).toEqual([]);
+  });
+
+  it('drops a held new panel core closed meanwhile, without telling core it was disposed', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const created = vi.fn();
+    a.main.onPanel((_viewId, envelope) => {
+      if (envelope.op === 'create') created();
+    });
+    const disposed = vi.fn();
+    h.core.onPanel((_viewId, envelope) => {
+      if (envelope.op === 'disposed') disposed();
+    });
+    const ops = vi.fn();
+    a.main.onPanel(ops);
+    a.lose();
+    processActor.run('device-a', () => h.core.postPanel('view-1', 'create', create));
+    h.core.postPanel('view-1', 'setTitle', { title: 'Contacts' });
+    h.core.postPanel('view-1', 'close', {});
+    await flush();
+    a.resume();
+    expect(created).not.toHaveBeenCalled();
+    expect(ops).not.toHaveBeenCalled();
+    expect(disposed).not.toHaveBeenCalled();
+  });
+
+  it('keeps what is still held for the device\'s next session when a delivery closes the session it came back on', async () => {
+    const OVERSIZED = 'oversized-marker';
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a', refuses: OVERSIZED });
+    const disposed: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') disposed.push([viewId, envelope.payload]);
+    });
+    a.lose();
+    let answer: unknown = 'pending';
+    processActor.run('device-a', () => {
+      h.core.postPanel('view-1', 'create', { ...create, title: OVERSIZED });
+      h.core.postPanel('view-2', 'create', create);
+      void h.core.request('notifications.show', notice).then((value) => (answer = value));
+    });
+    await flush();
+    a.resume();
+    expect(a.close).toHaveBeenCalledExactlyOnceWith('a message over the bound');
+    // core learns the refused panel is gone, by the panel rule of the detach
+    await vi.waitFor(() => expect(disposed).toEqual([['view-1', { reason: 'detach' }]]));
+    expect(answer).toBe('pending');
+    const created: string[] = [];
+    h.client('connection-2', {
+      clientId: 'device-a',
+      before: (main) => {
+        main.onPanel((viewId, envelope) => {
+          if (envelope.op === 'create') created.push(viewId);
+        });
+        main.serve('notifications.show', () => 0);
+      },
+    });
+    await vi.waitFor(() => expect(answer).toBe(0));
+    expect(created).toEqual(['view-2']);
+    expect(disposed).toHaveLength(1);
+  });
+
+  it('cancels a held new panel core sends more updates than the bound for, and tells core the device is away', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const ops: string[] = [];
+    a.main.onPanel((viewId, envelope) => ops.push(`${envelope.op} ${viewId}`));
+    const disposed: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') disposed.push([viewId, envelope.payload]);
+    });
+    a.lose();
+    processActor.run('device-a', () => h.core.postPanel('view-1', 'create', create));
+    for (let index = 0; index < MAX_HELD_PANEL_OPS; index++) h.core.postPanel('view-1', 'post', { type: 'partial', json: '{}' });
+    await flush();
+    expect(disposed).toEqual([]);
+    h.core.postPanel('view-1', 'post', { type: 'partial', json: '{}' });
+    await vi.waitFor(() => expect(disposed).toEqual([['view-1', AWAY]]));
+    a.resume();
+    await flush();
+    expect(ops).toEqual([]);
+  });
+
+  it('answers views.drained for a held new panel only once the panel reached its device, so core folds its partials meanwhile', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const created = vi.fn();
+    a.main.onPanel((_viewId, envelope) => {
+      if (envelope.op === 'create') created();
+    });
+    a.lose();
+    processActor.run('device-a', () => h.core.postPanel('view-1', 'create', create));
+    let drained = false;
+    void h.core.request('views.drained', { viewId: 'view-1' }).then(() => { drained = true; });
+    await flush();
+    expect(drained).toBe(false);
+    a.resume();
+    await vi.waitFor(() => expect(drained).toBe(true));
+    expect(created).toHaveBeenCalledOnce();
+  });
+
+  it('answers views.drained for a held new panel once its hold ends unanswered', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    a.lose();
+    processActor.run('device-a', () => h.core.postPanel('view-1', 'create', create));
+    let drained = false;
+    void h.core.request('views.drained', { viewId: 'view-1' }).then(() => { drained = true; });
+    await flush();
+    expect(drained).toBe(false);
+    h.core.postPanel('view-1', 'close', {});
+    await vi.waitFor(() => expect(drained).toBe(true));
+  });
+
+  it('sends work with no actor to the acting client: another attached one while it is lost, a lost one when it is the only one for a new panel', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', { clientId: 'device-a' });
+    const b = h.client('connection-2', { clientId: 'device-b' });
+    const seen: string[] = [];
+    for (const [name, client] of [['a', a], ['b', b]] as const) {
+      client.main.serve('notifications.show', () => {
+        seen.push(`${name} notice`);
+        return undefined;
+      });
+      client.main.onEvent('window.openAppSettings', () => seen.push(`${name} event`));
+      client.main.onPanel((viewId, envelope) => {
+        if (envelope.op === 'create') seen.push(`${name} ${viewId}`);
+      });
+    }
+    await a.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    a.lose();
+    await h.core.request('notifications.show', notice);
+    h.core.emit('window.openAppSettings', {});
+    h.core.postPanel('view-1', 'create', create);
+    b.detach();
+    h.core.postPanel('view-2', 'create', create);
+    await flush();
+    expect(seen).toEqual(['b notice', 'b event', 'b view-1', 'a view-2']);
   });
 });
 

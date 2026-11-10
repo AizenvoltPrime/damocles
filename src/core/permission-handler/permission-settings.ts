@@ -5,8 +5,9 @@ import { log } from "../logger";
 import { writeJsonConfig } from "../config/json-config-write";
 import { personalConfigRoot } from "../worktrees/personal-config";
 import { parseSettingsText } from "../config/settings-file";
-import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_READ, TOOL_WRITE } from "../../shared/tool-names";
+import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_READ, TOOL_WEB_FETCH, TOOL_WRITE } from "../../shared/tool-names";
 import { inertMcpSpecifierRule } from "./mcp-resource-rule";
+import { inertWebFetchAllowSpecifier } from "./web-fetch-rule";
 import type { PermissionRuleLists } from "../../shared/remote-user";
 
 export interface FilePermissions {
@@ -95,6 +96,7 @@ function inertAllowRule(rule: string): string | null {
   if (tool.includes("*")) {
     return /^mcp__.+?__/.test(tool.slice(0, tool.indexOf("*"))) ? null : "has a tool-name wildcard without a literal mcp__<server>__ before it";
   }
+  if (paren >= 0 && rule.endsWith(")") && tool === TOOL_WEB_FETCH) return inertWebFetchAllowSpecifier(rule.slice(paren + 1, -1));
   if (paren < 0 || !rule.endsWith(")") || !FILE_RULE_TOOLS.has(tool)) return null;
   // Claude Code never consults a `Write(path)` rule; a deny or ask one is still matched, since dropping it would fail open.
   if (tool === TOOL_WRITE) return "is a Write path rule, which Claude Code never consults (use Edit(path))";

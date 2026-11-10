@@ -54,13 +54,29 @@ describe('design paths', () => {
     expect(designFolderOf('a'.repeat(MAX_DESIGN_ID_CHARS))).toBe(path.join(DAMOCLES_DESIGNS_DIR, 'a'.repeat(MAX_DESIGN_ID_CHARS)));
   });
 
-  it('allows the designer only design.md, screens/<name>.html and files under variants/ (D65)', () => {
-    for (const designer of ['design.md', 'screens/S1-contacts.html', 'variants/S1-a.html', 'variants/a/b.png']) {
+  it('allows the designer only design.md, screens/<name>.html, shared/<name>.css and .js and files under variants/ (D65)', () => {
+    for (const designer of ['design.md', 'screens/S1-contacts.html', 'variants/S1-a.html', 'variants/a/b.png', 'shared/base.css', 'shared/app.js', 'shared/.x.css']) {
       expect(isDesignerRelative(designer)).toBe(true);
     }
     for (const owned of ['manifest.json', 'decisions.md', 'inventory.json', 'tokens.css', 'assets/inter.woff2', 'references/R1.png', 'feedback/F1.json', 'screens/S1.journey.json', 'screens/S1.journey.spec.ts', 'notes/manifest.json', 'notes.txt', 'screens/a/b.html', 'screens/x.css', 'screens/.html', 'variants']) {
       expect(isDesignerRelative(owned)).toBe(false);
     }
+  });
+
+  it('allows exactly one plain segment ending in .css or .js below shared/, never a nested path, dot segment, alias or other type (D64, D65)', () => {
+    for (const designer of ['SHARED/Base.CSS', 'Shared/app.Js']) expect(isDesignerRelative(designer)).toBe(true);
+    for (const refused of [
+      'shared', 'shared/', 'shared/.css', 'shared/.js', 'shared/a/b.css', 'shared/a/b.js', 'shared/./a.css', 'shared/../tokens.css', 'shared/..',
+      'shared/a.css.', 'shared/a.css ', 'shared/a.css:x', 'shared/con.css', 'shared/nul.js', 'ſhared/a.css', 'shared/a.cſs', 'shared/a.mjs', 'shared/a.html',
+      'shared/a.png', 'shared/a.json', 'shared/a.css/b', 'shared//a.css', 'x/shared/a.css',
+    ]) {
+      expect(isDesignerRelative(refused), refused).toBe(false);
+    }
+    const folder = designFolderOf('contacts-abcd1234');
+    expect(isDesignerFile(folder, path.join(folder, 'shared', 'base.css'))).toBe(true);
+    expect(isDesignerFile(folder, path.join(folder, 'shared', '..', 'tokens.css'))).toBe(false);
+    expect(designsFolderAllowsWrite(path.join(folder, 'shared', 'app.js'))).toBe(true);
+    expect(designsFolderAllowsWrite(path.join(folder, 'shared', 'nested', 'app.js'))).toBe(false);
   });
 
   it('folds ASCII case alone, on every platform, and refuses a name Windows resolves elsewhere', () => {

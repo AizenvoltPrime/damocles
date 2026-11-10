@@ -597,6 +597,27 @@ describe('loadPiSessionHistory — mid-conversation system message', () => {
     expect(replays.map((r) => r.designMarkup)).toEqual([{ feedbackId: 'F1' }, undefined]);
   });
 
+  it('replays a markup steered mid-run as its own message with its card, marked mid-run and counted as no prompt (D94)', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'make the table'),
+      assistantMsg('a1', 'Working.'),
+      userMsg('u-markup', 'Markup F1 on screens/S1.html at xl · 1280 · default:\nPin 1 (change) on ui/Table: Taller rows'),
+      userMsg('u-typed', 'and the header too'),
+      { id: 'm1', type: 'custom', customType: 'damocles.design-markup', data: { userEntryId: 'u-markup', feedbackId: 'F1' } } as unknown as SessionEntry,
+      { id: 'ms1', type: 'custom', customType: 'damocles-mid-stream', data: { userEntryId: 'u-markup' } } as unknown as SessionEntry,
+      { id: 'ms2', type: 'custom', customType: 'damocles-mid-stream', data: { userEntryId: 'u-typed' } } as unknown as SessionEntry,
+      assistantMsg('a2', 'Taller rows and a new header.'),
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-steered-markup', (m) => posts.push(m));
+    const replays = posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+    expect(replays.map((r) => [r.sdkMessageId, r.designMarkup, r.isMidStream, r.promptIndex])).toEqual([
+      ['u1', undefined, undefined, 0],
+      ['u-markup', { feedbackId: 'F1' }, true, undefined],
+      ['u-typed', undefined, true, undefined],
+    ]);
+  });
+
   it('replays a markup\'s marks from its entry, as the live echo carried them', async () => {
     const markup = { file: 'screens/S1.html', breakpoint: 'xl', width: 1280, state: 'default', marks: [{ type: 'pin', n: 1, kind: 'change', element: 'ui/Table: rows', text: 'Taller rows' }] };
     hoisted.branch = [

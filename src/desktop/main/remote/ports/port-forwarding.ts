@@ -39,6 +39,9 @@ export interface PortForwardingDeps {
   readonly detected: (hostId: string, action: Exclude<OnDetect, 'silent' | 'ignore'>, reached: Reached) => void;
   // the host switched to output-only detection after `count` automatic forwards; undo turns it back for good
   readonly fallbackSwitched: (hostId: string, count: number) => void;
+  // the loopback ports of the authority's served roots (ServedRoots), which only its own browser context's proxy lets through
+  readonly servedPorts: (authority: string) => readonly number[];
+  readonly onServedChange: (listener: (authority: string) => void) => Disposable;
   readonly now: () => number;
   readonly log: (line: string) => void;
 }
@@ -130,14 +133,21 @@ export class PortForwarding {
   private readonly changed = listeners<[string]>();
   private readonly networkChanged = listeners<[ClientNetwork]>();
   private readonly networks = new Map<string, string>();
-  private readonly subscription: Disposable;
+  private readonly subscriptions: Disposable[];
 
   constructor(deps: PortForwardingDeps) {
     this.deps = deps;
-    this.subscription = deps.tunnels.onDidChange((authority) => {
-      const runtime = [...this.hosts.values()].find((host) => host.authority === authority);
-      if (runtime) this.publish(runtime);
-    });
+    const runtimeOf = (authority: string): HostRuntime | undefined => [...this.hosts.values()].find((host) => host.authority === authority);
+    this.subscriptions = [
+      deps.tunnels.onDidChange((authority) => {
+        const runtime = runtimeOf(authority);
+        if (runtime) this.publish(runtime);
+      }),
+      deps.onServedChange((authority) => {
+        const runtime = runtimeOf(authority);
+        if (runtime) this.publishNetwork(runtime);
+      }),
+    ];
   }
 
   /** A host's Ports view changed (its hostId). */
@@ -404,9 +414,9 @@ export class PortForwarding {
     };
   }
 
-  // the forwards stop after the subscription ends, so no view is published while the app tears down
+  // the forwards stop after the subscriptions end, so no view is published while the app tears down
   dispose(): void {
-    this.subscription.dispose();
+    for (const subscription of this.subscriptions) subscription.dispose();
     for (const runtime of this.hosts.values()) {
       this.reset(runtime);
       this.deps.tunnels.stopAll(runtime.authority);
@@ -569,7 +579,7 @@ export class PortForwarding {
 
   private networkOf(runtime: HostRuntime): ClientNetwork {
     const direct = [...runtime.rows.values()].filter((row) => row.viaWsl).map((row) => row.remote.port);
-    const allowedPorts = [...new Set([...this.deps.tunnels.list(runtime.authority).map((tunnel) => tunnel.localPort), ...direct])].sort((a, b) => a - b);
+    const allowedPorts = [...new Set([...this.deps.tunnels.list(runtime.authority).map((tunnel) => tunnel.localPort), ...direct, ...this.deps.servedPorts(runtime.authority)])].sort((a, b) => a - b);
     return { authority: runtime.authority, allowedPorts, allowLocalNetwork: this.deps.store.localNetwork(runtime.hostId) };
   }
 

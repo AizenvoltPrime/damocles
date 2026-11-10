@@ -123,8 +123,12 @@ const ALLOWED: Readonly<Record<string, string>> = {
   // a markup pin's comment, which the user typed in the preview
   'ExtensionToWebviewMessage[type="userMessage"].designMarkup.markup.marks[][type="pin"].text': USER,
   'ExtensionToWebviewMessage[type="userReplay"].designMarkup.markup.marks[][type="pin"].text': USER,
+  'ExtensionToWebviewMessage[type="queueBatchProcessed"].designMarkup.markup.marks[][type="pin"].text': USER,
   'ExtensionToWebviewMessage[type="designResult"].result.title': MODEL,
   'ExtensionToWebviewMessage[type="designState"].design.decisions[].title': MODEL,
+  // the decision conflict check's own words, naming both values; the view words the flag around it
+  'ExtensionToWebviewMessage[type="designState"].design.decisions[].conflicts[].reason': MODEL,
+  'ExtensionToWebviewMessage[type="rewindHistory"].prompts[].designDecisionsAfter[].conflicts[].reason': MODEL,
   'ExtensionToWebviewMessage[type="designState"].design.title': MODEL,
   'ExtensionToWebviewMessage[type="designState"].link.title': MODEL,
   'ExtensionToWebviewMessage[type="rewindHistory"].prompts[].designDecisionsAfter[].title': MODEL,
@@ -203,6 +207,8 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'CoreRequests.design.journey.params.steps[].target.text': MODEL,
   'CoreRequests.design.replayJourney.params.steps[].target.label': MODEL,
   'CoreRequests.design.replayJourney.params.steps[].target.text': MODEL,
+  'CoreRequests.design.render.params.steps[].target.label': MODEL,
+  'CoreRequests.design.render.params.steps[].target.text': MODEL,
   'CoreEvents.chat.worktreeState.event.state.heldPrompt.text': USER,
   'CoreMirrorTopics.chats.entry.folder.label': NAME,
   'CoreMirrorTopics.folderTargets.targets[].label': NAME,

@@ -12,7 +12,7 @@ import { call, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { menuItem, overlayMenu, overlayViewState, readyOverlay } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
 import { shellPage } from './support/shell';
-import { awaitTurnEnd } from './support/ui';
+import { awaitTurnEnd, chatInput } from './support/ui';
 
 // A screen the designer writes opens in a preview tab of the design chat, a sandboxed view laid over the tab's frame at
 // the chosen width. Widths come from the fixture app (Tailwind's breakpoints, primary xl 1280).
@@ -487,6 +487,74 @@ test('preview tabs persist with their chat across a restart, keep four live view
     expect(await shell.evaluate((id) => window.damoclesShell!.deleteChat(id), designId)).toEqual({ ok: true });
     await expect.poll(() => designContentsCount(app)).toBe(0);
     await expect.poll(async () => (await designTabs(app)).length).toBe(0);
+  } finally {
+    await stub.close();
+  }
+});
+
+// The layout and computed styles of every element of the shown page: two pages render the same when these are equal.
+const RENDERED = `JSON.stringify([...document.body.querySelectorAll('*')].map((element) => {
+  const style = getComputedStyle(element);
+  const box = element.getBoundingClientRect();
+  return [element.tagName, Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height), style.paddingTop, style.color, style.backgroundColor, style.fontSize, style.display];
+}))`;
+
+test('a screen linking shared/base.css renders as the copied shell, OpenPreview opens a variant where the chat is shown, and a shared edit and ExtractTokens reload the preview', async ({ foreground: _foreground, home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    fs.cpSync(DESIGN_APP, home.project, { recursive: true });
+    const { app } = await launch();
+    const { design, folder } = await designWithScreens(home, stub, app, [['S1', 'Contacts']]);
+    const shell = await shellPage(app);
+    const shellCss = (padding: number): string => `.shell { padding-top: ${padding}px; color: rgb(20, 30, 40); background: rgb(250, 248, 240); font-size: 15px; } .shell nav { display: flex; }`;
+    const shellScreen = (id: string, title: string, head: string, tokens = '../tokens.css'): string =>
+      `<!doctype html><html lang="en" data-ds-screen="${id}" data-ds-states="default"><head><meta charset="utf-8"><title>${title}</title><link rel="stylesheet" href="${tokens}">${head}</head><body><div class="shell"><nav><a href="S1-contacts.html">Contacts</a></nav><main><h1>Deals</h1></main></div></body></html>`;
+    stub.replies.push(
+      call('write', { path: path.join(folder, 'shared', 'base.css'), content: shellCss(7) }),
+      call('write', { path: path.join(folder, 'screens', 'S2-linked.html'), content: shellScreen('S2', 'Linked', '<link rel="stylesheet" href="../shared/base.css">') }),
+      call('write', { path: path.join(folder, 'screens', 'S3-copied.html'), content: shellScreen('S3', 'Copied', `<style>${shellCss(7)}</style>`) }),
+      call('write', { path: path.join(folder, 'variants', 'accent', 'b.html'), content: shellScreen('S2', 'Accent B', '<link rel="stylesheet" href="../../shared/base.css">', '../../tokens.css') }),
+      call('OpenPreview', { file: 'variants/accent/b.html' }),
+      { chunks: ['The accent variant is open.'] },
+    );
+    await chatInput(design).fill('Put the shell in shared/ and show me accent B');
+    await chatInput(design).press('Enter');
+    await expect.poll(() => stub.replies.length, { timeout: 60_000 }).toBe(0);
+    await awaitTurnEnd(design);
+
+    // OpenPreview opened the variant in a tab of the design chat, which is the chat shown.
+    const tabs = shell.locator('[data-testid="editor-tab"][data-kind="designPreview"]');
+    await expect.poll(async () => (await designTabs(app)).map((tab) => tab.designPreview.relPath).sort()).toEqual(['screens/S1-contacts.html', 'screens/S2-linked.html', 'screens/S3-copied.html', 'variants/accent/b.html']);
+    await expect(shell.getByTestId('design-preview-path')).toHaveText('variants/accent/b.html');
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Accent B');
+
+    // The screen that links the shared shell lays out exactly as the one that copies it.
+    await tabs.filter({ hasText: 'Copied' }).click();
+    await viewAt(app, shell, 1280);
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Copied');
+    const copied = await inShownDesignView<string>(app, RENDERED);
+    await tabs.filter({ hasText: 'Linked' }).click();
+    await viewAt(app, shell, 1280);
+    await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Linked');
+    expect(await inShownDesignView<string>(app, RENDERED)).toBe(copied);
+    expect(await inShownDesignView<string>(app, `getComputedStyle(document.querySelector('.shell')).paddingTop`)).toBe('7px');
+
+    // The designer's edit of the shared stylesheet reloads the open preview that links it.
+    await inShownDesignView(app, 'window.__beforeReload = true');
+    stub.replies.push(call('write', { path: path.join(folder, 'shared', 'base.css'), content: shellCss(13) }), { chunks: ['Roomier shell.'] });
+    await chatInput(design).fill('More room at the top');
+    await chatInput(design).press('Enter');
+    await expect.poll(() => inShownDesignView<string>(app, `String(window.__beforeReload === true) + getComputedStyle(document.querySelector('.shell')).paddingTop`), { timeout: 30_000 }).toBe('false13px');
+    await awaitTurnEnd(design);
+
+    // ExtractTokens rewrites tokens.css, which every page loads, and reloads the open preview too.
+    await inShownDesignView(app, 'window.__beforeReload = true');
+    stub.replies.push(call('ExtractTokens', { files: ['resources/css/app.css'] }), { chunks: ['Tokens again.'] });
+    await chatInput(design).fill('Extract the tokens again');
+    await chatInput(design).press('Enter');
+    await expect.poll(() => inShownDesignView<boolean>(app, 'window.__beforeReload === true'), { timeout: 30_000 }).toBe(false);
+    await awaitTurnEnd(design);
   } finally {
     await stub.close();
   }

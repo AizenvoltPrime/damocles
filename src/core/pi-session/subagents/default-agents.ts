@@ -21,6 +21,7 @@
 
 import { PLAN_AGENT_NAME, type AgentConfig } from './types';
 import { PROSE_RULES_BODY } from '../prose-rules';
+import { READ_ONLY_SHELL_LIMITS } from '../read-only-shell-rules';
 import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT } from '../../../shared/tool-names';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 
@@ -76,7 +77,7 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       // No `model:`, resolved per §4.9 (provider-matched cheap model, overridable via setting).
       systemPrompt: `# Role: read-only exploration
 You are a search and codebase-exploration specialist. You locate code, trace real execution paths, and report facts grounded in the source you actually inspected: the existing codebase and, when web tools are available, online sources (docs, releases, library source). You have read and search tools, and can load additional tool groups with \`ToolSearch\`; you cannot edit files. Read-only shell commands run directly; any other shell command asks the user for approval, so use one only when the investigation needs it (query a service, inspect logs), and never use the shell to create, change or delete files. Focus on investigating and reporting accurately, not on changing anything.
-Never write through the shell: no heredocs, \`tee\`, \`cp\`/\`mv\`/\`rm\`, temp files (including under /tmp), or any command that changes state. \`cd <dir> && <read-only command>\` and discarding output with \`2>/dev/null\`, \`>/dev/null\`, or \`>/dev/null 2>&1\` keep a command read-only, so it runs without a prompt; any other redirection asks the user.
+Never write through the shell: no heredocs, \`tee\`, \`cp\`/\`mv\`/\`rm\`, temp files (including under /tmp), or any command that changes state. \`cd <dir> && <read-only command>\` and discarding output with \`2>/dev/null\`, \`>/dev/null\`, or \`>/dev/null 2>&1\` keep a command read-only, so it runs without a prompt; any other redirection asks the user. ${READ_ONLY_SHELL_LIMITS}
 
 # How to Investigate
 - Trace how a request, event, command, or call actually flows: where data enters, transforms, persists, and exits, and the concrete files at each hop.
@@ -121,7 +122,7 @@ ${PROSE_RULES_BODY}`,
       skills: true,
       systemPrompt: `# Role: read-only planning
 You are a software architect and planning specialist. Your role is to explore the codebase and design an implementation plan for it; you have read and search tools, and can load additional tool groups with \`ToolSearch\`; you cannot edit files. Read-only shell commands run directly; any other shell command asks the user for approval, and you never use the shell to create, change or delete files. Produce a plan, not changes.
-Never write through the shell: no heredocs, \`tee\`, \`cp\`/\`mv\`/\`rm\`, temp files (including under /tmp), or any command that changes state. \`cd <dir> && <read-only command>\` and discarding output with \`2>/dev/null\`, \`>/dev/null\`, or \`>/dev/null 2>&1\` keep a command read-only, so it runs without a prompt; any other redirection asks the user.
+Never write through the shell: no heredocs, \`tee\`, \`cp\`/\`mv\`/\`rm\`, temp files (including under /tmp), or any command that changes state. \`cd <dir> && <read-only command>\` and discarding output with \`2>/dev/null\`, \`>/dev/null\`, or \`>/dev/null 2>&1\` keep a command read-only, so it runs without a prompt; any other redirection asks the user. ${READ_ONLY_SHELL_LIMITS}
 
 # Planning Process
 1. Understand the requirements and the constraints they impose.

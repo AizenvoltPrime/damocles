@@ -389,6 +389,18 @@ describe('buildAgentStartResult — design sections (PD-14, PD-17)', () => {
     expect('damocles_plan_mode' in first.systemPromptOptions.sections).toBe(false);
   });
 
+  it('tells the designer how decisions are made, replaced and cited (D99)', async () => {
+    const { panel } = makePanel({});
+    panel.designPrompt = () => ({ design: { folder, ruleSet: designRuleSet({ designPreview: true }) } });
+    const ev = event();
+    await runAgentStart(ev, panel, 'sess-1');
+    const section = ev.systemPromptOptions.sections.damocles_design!;
+    expect(section).toContain('render two to four variants under variants/ and ask with design previews. After the user rejects a choice, never pick again alone');
+    expect(section).toContain('record a decision whose replaces names the old one and restates what of it still holds. Use stillHolds only when both decisions truly stand.');
+    expect(section).toContain('Record a decision before you cite its id in a screen, a subagent\'s brief or a steer.');
+    expect(section).toContain('record the choices the steer made with RecordDecision, quoting the steer.');
+  });
+
   it("adds the parent's link section once the link exists", async () => {
     const { panel } = makePanel({});
     const ev = event();

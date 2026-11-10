@@ -163,7 +163,7 @@ macOS builds are signed ad hoc, and Linux packages are not signed. The procedure
 | [Authentication](docs/authentication.md) | Signing in to each provider, billing and key precedence |
 | [Agents and teams](docs/agents.md) | Subagents, custom agents, steering, resuming and collaborative teams |
 | [Plan mode](docs/plan-mode.md) | Plan files, what runs while planning, approval and binding a plan |
-| [Design mode](docs/design-mode.md) | Design chats, the design folder, checks, versions and approval, the desktop preview, Open in browser and DesignParity |
+| [Design mode](docs/design-mode.md) | Design chats, the design folder, checks, decisions, versions and approval, the desktop preview, Open in browser and DesignParity |
 | [Checkpoints](docs/checkpoints.md) | File checkpoints, rewind, forking and rewinding to before a compaction |
 | [Compaction](docs/compaction.md) | Manual and automatic compaction, per-model budgets and prompt cache warming |
 | [Permissions](docs/permissions.md) | Permission modes, YOLO and allow, deny and ask rules |

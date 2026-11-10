@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanJudge } from './decision-kit';
 import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import type { DesignPreviewHost } from '../../../platform/design-preview';
 import { createVsCodeFileConfinement } from '../../../vscode/platform/file-confinement';
@@ -9,6 +10,7 @@ import { DESIGN_DECISIONS_DETAIL_KEY, type DesignCheckSummary, type DesignJourne
 import { isDesignerRelative, designFolderOf, designStateDirOf } from '../design-paths';
 import type { DesignDecisionRecord, DesignRole } from '../design-entries';
 import { readManifest } from '../design-files';
+import { runWidthChecks } from '../width-checks';
 import { readLatestVersion } from '../design-state';
 import { designResultMessage } from '../delivery';
 import { updateInventory } from '../inventory';
@@ -18,6 +20,20 @@ import { createFinishDesignTool } from '../tools/finish-design';
 import { createPreviewJourneyTool } from '../tools/preview-journey';
 import { clearDesigns } from './design-harness';
 import contacts from '../../../../e2e/fixtures/design-app/static/contacts.preview-journey.json' with { type: 'json' };
+
+const renderInputsHook = vi.hoisted(() => ({ once: undefined as (() => Promise<void>) | undefined }));
+vi.mock('../render-inputs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../render-inputs')>();
+  return {
+    ...actual,
+    renderInputHashes: async (...args: Parameters<typeof actual.renderInputHashes>) => {
+      const hook = renderInputsHook.once;
+      renderInputsHook.once = undefined;
+      await hook?.();
+      return actual.renderInputHashes(...args);
+    },
+  };
+});
 
 const DESIGN = 'contacts-abcd1234';
 const FOLDER = designFolderOf(DESIGN);
@@ -42,6 +58,7 @@ function fakeRender(outcome: (width: number) => { passed: boolean; steps: Journe
     open: async () => true,
     changed: () => undefined,
     capture: () => Promise.reject(new Error('unused')),
+    render: () => Promise.reject(new Error('unused')),
     replayJourney: () => Promise.reject(new Error('unused')),
     probe: async (_designId, _relPath, widths, _state, sweepTo) => {
       const result: DesignProbeResult = {
@@ -68,18 +85,22 @@ function deps(options: { ruleSet?: 'full' | 'reduced'; fidelity?: string; render
     cwd: FOLDER,
     confinement: createVsCodeFileConfinement(),
     branch: () => branch,
-    pendingDecisions: () => [],
+    decisions: () => undefined,
+    conflictJudge: () => cleanJudge(),
     sessionId: () => 'design-1',
     readStanding: async () => ({ kind: 'current' as const }),
     standing: () => ({ kind: 'current' as const }),
-    decisionsChanged: async () => undefined,
     publish: () => undefined,
     offerResult: vi.fn(async () => 'live' as const),
     hasParent: async () => true,
     requestApproval: async () => ({ choice: 'approve' as const }),
     render: () => options.render ?? fakeRender(),
     imageBudget: () => options.imageBudget ?? 12,
+    model: () => undefined,
     referenceWritten: async () => undefined,
+    openPreview: async () => ({ opened: true as const }),
+    webToolsEnabled: () => true,
+    webHostFilter: async () => () => false,
   } as DesignChatToolDeps & { offerResult: ReturnType<typeof vi.fn> };
 }
 
@@ -194,6 +215,21 @@ describe('the journey gate (PD-21, PD-52)', () => {
     expect(await readLatestVersion(designStateDirOf(DESIGN))).toBeUndefined();
   });
 
+  it('keeps the manifest journey a PreviewJourney records after DesignCheck read the journey files (D65)', async () => {
+    await designReady();
+    const d = deps();
+    await check(d);
+    renderInputsHook.once = async () => {
+      await journey(d);
+    };
+    await check(d);
+    const manifest = await readManifest(FOLDER, DESIGN);
+    expect(manifest.screens.map((screen) => screen.journey)).toEqual([
+      { file: 'screens/S1-contacts.journey.json', spec: 'screens/S1-contacts.journey.spec.ts', widths: [390, 1280], passed: true, untested: contacts.untested },
+      { waiver: true },
+    ]);
+  });
+
   it('waives a screen with no interactive control, and finishes once the other screen\'s journey passed (acceptance)', async () => {
     await designReady();
     const d = deps();
@@ -239,7 +275,7 @@ describe('the journey gate (PD-21, PD-52)', () => {
     const screen = path.join(FOLDER, 'screens', 'S1-contacts.html');
     fs.writeFileSync(screen, fs.readFileSync(screen, 'utf8').replace('<h1>Contacts</h1>', '<h1>People</h1>'));
     const stale = await check(d);
-    expect(stale.errors).toEqual([expect.objectContaining({ rule: 'journey.required', screen: 'S1', message: 'S1 changed after its journey ran, so the journey no longer vouches for it. Run PreviewJourney on screens/S1-contacts.html again.' })]);
+    expect(stale.errors).toEqual([expect.objectContaining({ rule: 'journey.required', screen: 'S1', message: 'S1 or a file it loads (tokens.css, shared/, assets/) changed after its journey ran, so the journey no longer vouches for it. Run PreviewJourney on screens/S1-contacts.html again.' })]);
     expect((await finish(d)).isError).toBe(true);
     await journey(d);
     expect((await finish(d)).isError).toBeUndefined();
@@ -264,5 +300,58 @@ describe('the journey gate (PD-21, PD-52)', () => {
     const reduced = await finish(deps({ ruleSet: 'reduced' }));
     expect(reduced.isError).toBeUndefined();
     expect((reduced.details as FinishDesignDetails).journeys).toEqual([]);
+  });
+});
+
+describe('render inputs a journey and a width record vouch for (D86, D90)', () => {
+  const REFRESH_SCREEN = HELP_SCREEN.replace('data-ds-screen="S2"', 'data-ds-screen="S3"').replace('<p>Contacts sync every hour.</p>', '<button type="button">Refresh</button>');
+
+  async function sharedShell(): Promise<void> {
+    await designReady();
+    fs.mkdirSync(path.join(FOLDER, 'shared'), { recursive: true });
+    fs.writeFileSync(path.join(FOLDER, 'shared', 'app.js'), 'document.body.dataset.ready = "1";');
+    const screen = path.join(FOLDER, 'screens', 'S1-contacts.html');
+    fs.writeFileSync(screen, fs.readFileSync(screen, 'utf8').replace('</body>', '<script src="../shared/app.js"></script></body>'));
+    fs.writeFileSync(path.join(FOLDER, 'screens', 'S3-refresh.html'), REFRESH_SCREEN);
+  }
+
+  it('makes only the journeys of the screens that link an edited shared/app.js stale', async () => {
+    await sharedShell();
+    const d = deps();
+    await journey(d);
+    await journey(d, STEPS, 'screens/S3-refresh.html');
+    expect((await check(d)).errors).toEqual([]);
+    fs.appendFileSync(path.join(FOLDER, 'shared', 'app.js'), ' document.body.dataset.ready = "2";');
+    const stale = await check(d);
+    expect(stale.errors.map((issue) => [issue.rule, issue.screen])).toEqual([['journey.required', 'S1']]);
+    expect(stale.errors[0]!.message).toContain('changed after its journey ran');
+  });
+
+  it('reads a journey file without a renderHash as stale, so the screen runs PreviewJourney once', async () => {
+    await sharedShell();
+    const d = deps();
+    await journey(d);
+    const file = path.join(FOLDER, 'screens', 'S1-contacts.journey.json');
+    const { renderHash: _dropped, ...older } = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify(older));
+    expect((await check(d)).errors).toEqual(expect.arrayContaining([expect.objectContaining({ rule: 'journey.required', screen: 'S1', message: expect.stringContaining('changed after its journey ran') })]));
+  });
+
+  it('probes again only the screens that link an edited shared/app.js', async () => {
+    await sharedShell();
+    const probed: string[] = [];
+    const render: DesignPreviewHost = { ...fakeRender(), probe: async (designId, relPath, widths, state, sweepTo, signal) => {
+      probed.push(relPath);
+      return fakeRender().probe(designId, relPath, widths, state, sweepTo, signal);
+    } };
+    const screens = ['screens/S1-contacts.html', 'screens/S2-help.html', 'screens/S3-refresh.html'].map((file) => ({ id: path.posix.basename(file, '.html'), file, contentHash: 'h' }));
+    const widthCheck = () => runWidthChecks({ designId: DESIGN, folder: FOLDER, screens, render, reuse: true, signal: new AbortController().signal });
+    await widthCheck();
+    expect(probed.splice(0).sort()).toEqual(screens.map((screen) => screen.file));
+    await widthCheck();
+    expect(probed).toEqual([]);
+    fs.appendFileSync(path.join(FOLDER, 'shared', 'app.js'), ' // edited');
+    await widthCheck();
+    expect(probed).toEqual(['screens/S1-contacts.html']);
   });
 });

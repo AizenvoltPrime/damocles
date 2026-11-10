@@ -292,7 +292,9 @@ describe('the design renderer process', () => {
     const run = await runner.journey(target, { relPath: 'screens/S1.html', widths: [390], state: null, steps: contacts.steps as JourneyStep[], outline: false }, new AbortController().signal);
     expect(run.widths[0]).toMatchObject({ width: 390, passed: true });
     const cdp = children[0]!.sent.filter((message): message is Extract<MainToRenderer, { t: 'page' }> => message.t === 'page' && message.op === 'cdp');
-    expect(cdp[0]!.args).toEqual(['Runtime.releaseObjectGroup', { objectGroup: 'damocles-journey' }]);
+    // the media pin goes first, before the page loads
+    expect(cdp[0]!.args[0]).toBe('Emulation.setEmulatedMedia');
+    expect(cdp[1]!.args).toEqual(['Runtime.releaseObjectGroup', { objectGroup: 'damocles-journey' }]);
     expect(cdp.some((message) => message.args[0] === 'Input.dispatchKeyEvent' && (message.args[1] as { key: string }).key === 'Escape')).toBe(true);
     expect(children[0]!.killed).toBe(0);
   });

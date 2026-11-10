@@ -49,11 +49,6 @@
       "count": 1
     }
   },
-  "src/core/permission-handler/managers/evaluator-manager.ts": {
-    "damocles/no-sync": {
-      "count": 1
-    }
-  },
   "src/core/pi-session/agent-dir.ts": {
     "damocles/no-sync": {
       "count": 5
@@ -185,6 +180,11 @@
     }
   },
   "src/core/pi-session/subscription.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/tools/search-tools.ts": {
     "damocles/no-sync": {
       "count": 1
     }

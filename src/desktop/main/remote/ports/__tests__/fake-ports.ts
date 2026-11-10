@@ -85,6 +85,8 @@ export function forwarding(overrides: Partial<PortForwardingDeps> & Pick<PortFor
     viaWsl: async () => () => false,
     detected: (_hostId, action, tunnel) => detected.push({ action, port: tunnel.remote.port }),
     fallbackSwitched: (_hostId, count) => switched.push(count),
+    servedPorts: () => [],
+    onServedChange: () => ({ dispose: () => undefined }),
     now: () => now,
     log: () => undefined,
     ...overrides,

@@ -4,6 +4,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { RelayCredential } from '../../../core/scm/askpass/askpass-server';
 import { installedCredentialRelay, type RelayIdentity } from '../../../core/scm/askpass/credential-relay';
 import { FakeSettings, FakeTrust, folder, git, GIT_PATH, HAS_GIT, MapMemento, makeRepo, useGitSandbox, waitFor, watchers, write } from '../../../core/scm/__tests__/git-harness';
 import { parseGitVersion } from '../../../core/scm/git-version';
@@ -11,9 +12,24 @@ import type { GitCredentialAnswer } from '../../../shared/git-credential';
 import type { LocalizedText } from '../../../shared/localized-text';
 import { createDesktopLocalizationService } from '../../local-services/localization-service';
 import type { RepoSnapshot, ScmEvent } from '../../../core/scm/scm-service';
-import { createCoreEndpoint, createLoopback, createMainEndpoint, type AskQuestion, type MainEndpoint, type ScmMirrorPatch } from '../../core-protocol';
+import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type AskQuestion, type CoreEndpoint, type MainEndpoint, type ScmMirrorPatch } from '../../core-protocol';
+import { createClientMirrors, createCoreRouter } from '../../daemon/core-routes';
+import { createRunRegistry } from '../../daemon/run-registry';
 import type { CorePlatform } from '../platform';
 import { startCoreScm, type CoreScm } from '../scm';
+
+// the askpass server's relay handler, which runs in whatever async context its connection gives it
+const relayHandler = vi.hoisted(() => ({ current: undefined as RelayCredential | undefined }));
+vi.mock('../../../core/scm/askpass/askpass-server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../core/scm/askpass/askpass-server')>();
+  return {
+    ...actual,
+    createAskpassServer: (deps: Parameters<typeof actual.createAskpassServer>[0]) => {
+      relayHandler.current = deps.credential;
+      return actual.createAskpassServer(deps);
+    },
+  };
+});
 
 /** Core's scm mirror as main receives it: what goes out for listed and dropped repositories, and before which event. */
 useGitSandbox();
@@ -26,14 +42,10 @@ afterEach(() => {
   running = undefined;
 });
 
-function start(trusted: string, remote = false, credentialRelay?: RelayIdentity, logs: string[] = []): { seen: Seen[]; asked: AskQuestion[]; trashed: string[]; mainEndpoint: MainEndpoint; call: (method: string, args: unknown[]) => Promise<unknown> } {
-  const { main, core } = createLoopback();
-  const violations: string[] = [];
-  const mainEndpoint = createMainEndpoint(main, () => undefined, (error) => violations.push(error.message));
-  const endpoint = createCoreEndpoint(core, () => undefined);
+function corePlatform(endpoint: CoreEndpoint, trusted: string, remote: boolean, credentialRelay: RelayIdentity | undefined): CorePlatform {
   const trust = new FakeTrust();
   trust.trusted.add(path.resolve(trusted).toLowerCase());
-  const platform = {
+  return {
     endpoint,
     init: { git: { available: true, path: GIT_PATH, version: parseGitVersion(git(['--version'], trusted)) }, paths: { askpass: { askpass: '/a', sshAskpass: '/s', node: '/n', main: '/m', ...(credentialRelay ? { credentialRelay } : {}) } }, ...(remote ? { remote: { hostId: 'h1' } } : {}) },
     localization: { t: (message: string) => message },
@@ -44,6 +56,13 @@ function start(trusted: string, remote = false, credentialRelay?: RelayIdentity,
     notifications: { info: async () => undefined },
     secrets: { get: async () => undefined },
   } as unknown as CorePlatform;
+}
+
+function start(trusted: string, remote = false, credentialRelay?: RelayIdentity, logs: string[] = []): { seen: Seen[]; asked: AskQuestion[]; trashed: string[]; mainEndpoint: MainEndpoint; call: (method: string, args: unknown[]) => Promise<unknown> } {
+  const { main, core } = createLoopback();
+  const violations: string[] = [];
+  const mainEndpoint = createMainEndpoint(main, () => undefined, (error) => violations.push(error.message));
+  const platform = corePlatform(createCoreEndpoint(core, () => undefined), trusted, remote, credentialRelay);
   running = startCoreScm(platform, { appendLine: (line) => logs.push(line), show: () => undefined, dispose: () => undefined }, (line) => logs.push(line));
   const seen: Seen[] = [];
   const asked: AskQuestion[] = [];
@@ -221,6 +240,58 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
     }
     expect(requests).toEqual([expect.objectContaining({ op: 'get', targetHelper: true })]);
     await running!.close();
+  });
+
+  it('sends a request made inside a device\'s work to the acting client, never to that device, which is away', async () => {
+    const repo = makeRepo(folder('relay-actor'));
+    const identity = relayIdentity();
+    const quiet = (): void => undefined;
+    const coreLoop = createLoopback();
+    const coreEndpoint = createCoreEndpoint(coreLoop.core, quiet, undefined, processActor);
+    const router = createCoreRouter({
+      core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor),
+      state: { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined },
+      registry: createRunRegistry(),
+      mirrors: createClientMirrors(),
+      secrets: new Map(),
+      e2eHooks: false,
+      reload: quiet,
+      agentShellUrl: quiet,
+      clientPolicyChanged: quiet,
+      actorIntentExpiryMs: 50,
+      log: quiet,
+    });
+    const mirrors = { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' as const }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } };
+    const answered: string[] = [];
+    const device = (clientId: string, lost: () => boolean): void => {
+      const loop = createLoopback();
+      const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+      main.serve('askpass.credential', (): GitCredentialAnswer => {
+        answered.push(clientId);
+        return { kind: 'credential', username: clientId, password: 'relayed-7f3a' };
+      });
+      router.attach({ id: clientId, clientId, hostId: 'h1', features: new Set(), transport: loop.core, mirrors, close: quiet, drained: () => Promise.resolve(), lost, onLostChange: () => ({ dispose: quiet }) });
+    };
+    try {
+      let away = false;
+      device('device-a', () => away);
+      device('device-b', () => false);
+      // device a's work starts this core, so the relay's first listen runs as that actor
+      processActor.run('device-a', () => {
+        running = startCoreScm(corePlatform(coreEndpoint, repo, true, identity), { appendLine: quiet, show: quiet, dispose: quiet }, quiet);
+      });
+      await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+      away = true;
+      // a connection handler keeps the async context of the listen, here device a's work
+      const request = { op: 'get' as const, cwd: repo, fields: { protocol: 'https', host: 'github.com' } };
+      const answer = await processActor.run('device-a', () => relayHandler.current!(request, new AbortController().signal));
+      expect(answer).toMatchObject({ kind: 'credential', username: 'device-b' });
+      await expect(relayRequest(identity, request)).resolves.toContain('"username":"device-b"');
+      expect(answered).toEqual(['device-b', 'device-b']);
+      await running!.close();
+    } finally {
+      router.dispose();
+    }
   });
 
   it('listens again when a git call or agent shell wants the relay after its listen failed', async () => {

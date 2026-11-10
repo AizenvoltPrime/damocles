@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -16,6 +17,7 @@ import {
   PROMPT_CANCELLED,
   removeAbandonedSocketFolders,
   WITHDRAWN_PROMPT_GRACE_MS,
+  type AskpassRegistration,
   type AskpassServer,
   type AskpassServerDeps,
   type CredentialPrompt,
@@ -295,6 +297,25 @@ describe('the askpass server', () => {
     release!();
     await Promise.all([first, second]);
     expect(order).toEqual(['start Username: first', 'end Username: first', 'start Username: second', 'end Username: second']);
+  });
+
+  it('runs each prompt in the async context of the call that registered it, not the helper connection\'s', async () => {
+    const context = new AsyncLocalStorage<string>();
+    const seen: Array<[string, string | undefined]> = [];
+    const { server } = start(async (prompt) => {
+      seen.push([prompt.text, context.getStore()]);
+      return 'x';
+    });
+    // the server listens outside every store, as a daemon's core starts it for the credential relay
+    (await server.register('background', 'autofetch')).dispose();
+    const first = await context.run('device-a', () => server.register('interactive', 'push'));
+    const second = await context.run('device-b', () => server.register('interactive', 'fetch', async (prompt) => {
+      seen.push([prompt.text, context.getStore()]);
+      return 'y';
+    }));
+    const ask = (registration: AskpassRegistration, text: string) => exchange(registration.env['DAMOCLES_ASKPASS_HANDLE']!, line({ nonce: registration.env['DAMOCLES_ASKPASS_NONCE'], kind: 'askpass', argv: [text] }));
+    await context.run('helper', () => Promise.all([ask(second, 'Username: second'), ask(first, 'Username: first')]));
+    expect(seen.sort()).toEqual([['Username: first', 'device-a'], ['Username: second', 'device-b']]);
   });
 
   it('keeps the line when a waiting prompt is withdrawn: the next one starts only once the one showing settled', async () => {

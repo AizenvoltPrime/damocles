@@ -1,7 +1,7 @@
 // FinishDesign's approval prompt: the gate passed, and the user approves the version, asks for changes with a note, or stops
 // the designer. A content decision, not a tool permission: no mode, YOLO, rule or hook answers it.
 import { randomUUID } from 'node:crypto';
-import type { DesignApprovalChoice, DesignApprovalScreen, DesignChange, DesignCheckIssue, DesignResultDecision } from '../../../shared/types/design';
+import type { DesignApprovalChoice, DesignApprovalScreen, DesignChange, DesignCheckIssue, DesignResultDecision, UncheckedDecisionGroup } from '../../../shared/types/design';
 import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { DesignApprovalAnswer, PendingDesignApproval, PostMessageFn } from '../types';
 
@@ -15,6 +15,8 @@ export interface DesignApprovalAsk {
   readonly decisions: readonly DesignResultDecision[];
   readonly screens: readonly DesignApprovalScreen[];
   readonly hasParent: boolean;
+  /** Current decisions whose conflict check could not run at the finish either, grouped by why (D98). */
+  readonly unchecked?: readonly UncheckedDecisionGroup[];
 }
 
 export class DesignApprovalManager {
@@ -48,6 +50,7 @@ export class DesignApprovalManager {
         decisions: [...ask.decisions],
         screens: [...ask.screens],
         hasParent: ask.hasParent,
+        ...(ask.unchecked && ask.unchecked.length > 0 ? { uncheckedDecisions: ask.unchecked.map((group) => ({ ids: [...group.ids], cause: group.cause })) } : {}),
         owner: this.state.promptOwner(null),
       };
       registerAbortablePrompt({

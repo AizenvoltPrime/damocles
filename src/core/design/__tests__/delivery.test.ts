@@ -3,6 +3,7 @@ import { DAMOCLES_DESIGN_BRIEF, DAMOCLES_DESIGN_RESULT } from '../../pi-session/
 import { designFolderOf, designStateDirOf } from '../design-paths';
 import { takeOverDesignLink, updateDesignLink, writeBriefRecord, type DesignVersionRecord } from '../design-state';
 import { deliveredBriefs } from '../design-entries';
+import { designBriefMessage, designResultMessage } from '../delivery';
 import { PiRuntime, type LiveSessionMutator } from '../../pi-session/pi-runtime';
 import { clearDesigns, designHarness, fakeSession, stampDesignVersion, type FakeDesignSession } from './design-harness';
 
@@ -231,5 +232,27 @@ describe('a rewind takeover keeps the delivered set D (PD-27, PD-36)', () => {
     await p.design.reconcile('live');
     await p.design.reconcile('live');
     expect(cards(parent).map((e) => (e['details'] as { version: number }).version)).toEqual([1, 2]);
+  });
+});
+
+describe('what the parent and the designer read (D99)', () => {
+  const record: DesignVersionRecord = {
+    schemaVersion: 1, version: 2, designId: DESIGN, title: 'Contacts', sessionId: 'design-1', toolCallId: 'call-2', contentHash: 'h',
+    decisions: [{ id: 'D1', title: 'Fidelity', chosen: 'Static mockup' }, { id: 'D23', title: 'Accent', chosen: 'taupe', replaces: ['D18'] }],
+    uncheckedDecisions: ['D23', 'D24'], screens: ['S1'], check: { errors: 0, warnings: [] }, journeys: [], summary: 's', changedSinceLast: [], finishedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('lists the current decisions only, says a decision outranks the brief, and names the decisions approved unchecked (acceptance)', () => {
+    const message = designResultMessage({ record, changes: [{ kind: 'decisionAdded', id: 'D23', title: 'Accent', chosen: 'taupe', replaces: ['D18'] }] }, designFolderOf(DESIGN));
+    expect(message.content).toContain('Current decisions: D1 Fidelity: Static mockup; D23 Accent: taupe (replaces D18).');
+    expect(message.content).toContain('Where a decision differs from your brief, the decision holds: the user made it after the brief.');
+    expect(message.content).toContain('The user approved with decisions D23 and D24 unchecked for conflicts.');
+    expect(message.content).toContain('Changed since v1: D23 Accent · taupe (replaces D18).');
+    expect(message.details).toMatchObject({ decisions: [{ id: 'D1' }, { id: 'D23', replaces: ['D18'] }], uncheckedDecisions: ['D23', 'D24'] });
+  });
+
+  it('names the brief\'s id in its content, with the source that cites it (acceptance)', () => {
+    const brief = designBriefMessage({ schemaVersion: 1, briefId: 'b1-0a1b2c3d', seq: 1, parentSessionId: 'parent-1', designSessionId: 'design-1', text: 'Revamp the UI', reopened: false, createdAt: '2026-01-01T00:00:00.000Z' });
+    expect(brief.content).toContain('Brief id: b1-0a1b2c3d. Cite it as RecordDecision source {kind: "brief", ref: "b1-0a1b2c3d"}.');
   });
 });

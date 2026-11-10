@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { validateToolArguments, type Tool } from '@earendil-works/pi-ai';
-import { buildSubagentTools } from '../subagent-tools';
+import { buildSubagentTools, NO_USER_INPUT, type UserInput } from '../subagent-tools';
 import { recordResultText } from '../../subagents/status-note';
 import type { AgentManager } from '../../subagents/agent-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
@@ -36,7 +36,7 @@ describe('Agent tool result details', () => {
   type Exec = (id: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
 
   function agentTool(manager: Partial<AgentManager>): Exec {
-    const tools = buildSubagentTools(piStub, { getSpawnableAgents: () => [], ...manager } as AgentManager);
+    const tools = buildSubagentTools(piStub, { getSpawnableAgents: () => [], ...manager } as AgentManager, NO_USER_INPUT);
     return (tools[0] as unknown as { execute: Exec }).execute;
   }
   const params = { description: 'd', prompt: 'p', subagent_type: 'Explore' };
@@ -128,9 +128,91 @@ describe('Agent tool result details', () => {
   });
 });
 
+describe('GetSubagentResult wait', () => {
+  const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+  type Exec = (id: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
+  const EARLY = 'Subagent "a1" is still running. The user sent a message while you waited; read it, then call GetSubagentResult again with wait:true if you still need the result.';
+
+  /** A user input signal the test fires, as PiSession's queue does when the user queues a message. */
+  function fakeInput(pending = false) {
+    const waiters = new Set<() => void>();
+    const input: UserInput = {
+      pending: () => pending,
+      next: (signal) => new Promise<void>((resolve) => {
+        const done = (): void => {
+          waiters.delete(done);
+          resolve();
+        };
+        waiters.add(done);
+        signal.addEventListener('abort', done, { once: true });
+      }),
+    };
+    return { input, fire: () => { pending = true; for (const waiter of [...waiters]) waiter(); }, waiting: () => waiters.size };
+  }
+
+  function getResult(record: AgentRecord, input: UserInput): Exec {
+    const manager = { getSpawnableAgents: () => [], branchRecord: () => record } as unknown as AgentManager;
+    return (buildSubagentTools(piStub, manager, input)[1] as unknown as { execute: Exec }).execute;
+  }
+
+  function running(): { record: AgentRecord; finish: (text: string) => void } {
+    let finish!: (text: string) => void;
+    const record = rec({ status: 'running' });
+    record.promise = new Promise<string>((resolve) => { finish = (text) => { Object.assign(record, { status: 'completed', result: text }); resolve(text); }; });
+    return { record, finish };
+  }
+
+  /** The result if `promise` settles within one macrotask, else 'pending'. */
+  async function withinATurn<T>(promise: Promise<T>): Promise<T | 'pending'> {
+    return Promise.race([promise, new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 0))]);
+  }
+
+  it('returns as soon as the user queues a message, telling the model to read it', async () => {
+    const { record } = running();
+    const { input, fire, waiting } = fakeInput();
+    const result = getResult(record, input)('tc', { agent_id: 'a1', wait: true });
+    await vi.waitFor(() => expect(waiting()).toBe(1));
+    fire();
+    const answered = await withinATurn(result);
+    expect(answered).not.toBe('pending');
+    expect((answered as Awaited<typeof result>).content[0]!.text).toBe(EARLY);
+    expect(waiting()).toBe(0);
+  });
+
+  it('returns at once when the user already queued something', async () => {
+    const { record } = running();
+    const result = await withinATurn(getResult(record, fakeInput(true).input)('tc', { agent_id: 'a1', wait: true }));
+    expect(result).not.toBe('pending');
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toBe(EARLY);
+  });
+
+  it('returns at once on a Stop, and stops listening for input', async () => {
+    const { record } = running();
+    const { input, waiting } = fakeInput();
+    const stop = new AbortController();
+    const result = getResult(record, input)('tc', { agent_id: 'a1', wait: true }, stop.signal);
+    await vi.waitFor(() => expect(waiting()).toBe(1));
+    stop.abort();
+    const answered = await withinATurn(result);
+    expect(answered).not.toBe('pending');
+    expect((answered as Awaited<typeof result>).content[0]!.text).toBe('Subagent "a1" is still running. Call again with wait:true to block until it finishes.');
+    expect(waiting()).toBe(0);
+  });
+
+  it('returns the result when the agent finishes first, and stops listening for input', async () => {
+    const { record, finish } = running();
+    const { input, waiting } = fakeInput();
+    const result = getResult(record, input)('tc', { agent_id: 'a1', wait: true });
+    await vi.waitFor(() => expect(waiting()).toBe(1));
+    finish('all done');
+    expect((await result).content[0]!.text).toBe('all done');
+    expect(waiting()).toBe(0);
+  });
+});
+
 describe('SteerSubagent arguments', () => {
   const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
-  const steerTool = buildSubagentTools(piStub, { getSpawnableAgents: () => [] } as unknown as AgentManager)[2] as unknown as Tool;
+  const steerTool = buildSubagentTools(piStub, { getSpawnableAgents: () => [] } as unknown as AgentManager, NO_USER_INPUT)[2] as unknown as Tool;
   const validate = (message: string) =>
     validateToolArguments(steerTool, { type: 'toolCall', id: 'tc', name: steerTool.name, arguments: { agent_id: 'a1', message } });
 

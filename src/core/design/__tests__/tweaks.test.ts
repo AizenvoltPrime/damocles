@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import { DESIGN_DECISIONS_DETAIL_KEY, type DeclareTweaksDetails } from '../../../shared/types/design';
 import { isTweakColor, tweakCss } from '../../../shared/design-tweaks';
-import { recordDecision } from '../decisions';
+import { decisionDraft } from '../decisions';
 import { createDeclareTweaksTool } from '../tools/declare-tweaks';
 import type { DesignChatToolDeps } from '../tools/design-chat-tools';
 import { declareTweaks, keepPromptText, keepTweak, tweakLocks, tweaksOnBranch, TweaksRefusedError, type DeclareTweaksInput } from '../tweaks';
@@ -66,6 +66,13 @@ describe('DeclareTweaks', () => {
     expect(tweakLocks([decision('D1', 'radius', '--radius-lg')]).size).toBe(0);
   });
 
+  it('releases a control\'s lock once the tweak decision that locked it is replaced', () => {
+    const replacing = (id: string, replaces: string[]) => entry({ type: 'message', message: { role: 'toolResult', toolCallId: `d${n}`, toolName: 'RecordDecision', content: [], details: { [DESIGN_DECISIONS_DETAIL_KEY]: [{ v: 1, id, title: 'Corner radius', chosen: 'Square corners', rejected: [], source: { kind: 'chat', ref: 'u2' }, files: [], replaces }] } } });
+    const branch = [kept('radius', '--radius', '--radius-lg'), decision('D1', 'radius', '--radius-lg'), replacing('D2', ['D1'])];
+    expect(tweakLocks(branch).size).toBe(0);
+    expect(declareTweaks(INPUT, TOKENS, branch).controls.map((control) => control.locked)).toEqual([null, null]);
+  });
+
   it('serves the latest declaration on the branch with its locks read now; an error result or none is no declaration', () => {
     const first = declareTweaks(INPUT, TOKENS, []);
     expect(tweaksOnBranch([])).toBeNull();
@@ -93,8 +100,8 @@ describe('DeclareTweaks', () => {
     try {
       const branch = [kept('radius', '--radius', '--radius-lg')];
       expect(tweakLocks(branch).size).toBe(0);
-      await expect(recordDecision(branch, { title: 'Corner radius', chosen: '--radius-md', source: { kind: 'tweak', ref: 'radius' } }, [], folder)).rejects.toThrow(/kept --radius-lg/);
-      expect((await recordDecision(branch, { title: 'Corner radius', chosen: '--radius-lg', source: { kind: 'tweak', ref: 'radius' } }, [], folder)).chosen).toBe('--radius-lg');
+      await expect(decisionDraft(branch, { title: 'Corner radius', chosen: '--radius-md', source: { kind: 'tweak', ref: 'radius' } }, folder)).rejects.toThrow(/kept --radius-lg/);
+      expect((await decisionDraft(branch, { title: 'Corner radius', chosen: '--radius-lg', source: { kind: 'tweak', ref: 'radius' } }, folder)).chosen).toBe('--radius-lg');
     } finally {
       fs.rmSync(folder, { recursive: true, force: true });
     }

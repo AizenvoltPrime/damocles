@@ -8,11 +8,14 @@ import { pipeline } from 'node:stream/promises';
 import type { PreviewAnswer, PreviewRequest } from './preview-reader';
 import { previewHeaders, previewUrlPath, RESERVED_PREVIEW_SEGMENT } from './serve-policy';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../../shared/relative-path';
+import { SERVED_OPEN_QUERY } from '../../../shared/served-file-url';
 
 export const OPEN_TOKEN_TTL_MS = 60_000;
 const OPEN_PATH = `/${RESERVED_PREVIEW_SEGMENT}/open`;
 // 256 bits each
 const SECRET_BYTES = 32;
+// a query as the URL serializer writes one: printable ASCII, no space or '#', so it is safe in a Location header
+const URL_QUERY = /^[!"$-~]*$/;
 
 export interface PreviewHttpServerDeps {
   // GET or HEAD of a URL path (still percent-encoded) for the system browser, as the scheme serves it
@@ -39,11 +42,17 @@ function sameSecret(presented: string, secret: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-// Fetch Metadata resource isolation: a cross-site request is refused unless it is a top-level navigation. A browser that
-// sends no Sec-Fetch-Site passes to the cookie check.
-function crossSiteRefused(request: http.IncomingMessage): boolean {
-  if (request.headers['sec-fetch-site'] !== 'cross-site') return false;
-  return !(request.headers['sec-fetch-mode'] === 'navigate' && request.headers['sec-fetch-dest'] === 'document');
+// Fetch Metadata: only the browser's own navigation (none) and the page's own origin (same-origin) pass, since cookies ignore
+// ports and a page on another loopback port can plant this server's cookie in its own jar. A browser that sends no
+// Sec-Fetch-Site passes to the cookie check.
+function crossOriginRefused(request: http.IncomingMessage): boolean {
+  const site = request.headers['sec-fetch-site'];
+  return site !== undefined && site !== 'none' && site !== 'same-origin';
+}
+
+// A top-level navigation shows its refusal to the user who followed a link; a subresource's stays empty.
+function isDocumentNavigation(request: http.IncomingMessage): boolean {
+  return request.headers['sec-fetch-mode'] === 'navigate' && request.headers['sec-fetch-dest'] === 'document';
 }
 
 export class PreviewHttpServer {
@@ -90,7 +99,10 @@ export class PreviewHttpServer {
     return `damocles_preview_${this.listening}`;
   }
 
-  /** A one-time URL that opens relativePath in the browser: valid once, for OPEN_TOKEN_TTL_MS. */
+  /**
+   * A one-time URL that opens relativePath in the browser: valid once, for OPEN_TOKEN_TTL_MS. Its SERVED_OPEN_QUERY, which the
+   * opener may add, becomes the query of the redirect to the file.
+   */
   openUrl(relativePath: string): string {
     const now = this.now();
     for (const [token, entry] of this.tokens) if (entry.expires <= now) this.tokens.delete(token);
@@ -127,7 +139,7 @@ export class PreviewHttpServer {
     if (host !== `127.0.0.1:${this.listening}` && host !== `localhost:${this.listening}`) return this.refuse(response, 421);
     const method = request.method ?? '';
     if (method !== 'GET' && method !== 'HEAD') return this.refuse(response, 405);
-    if (crossSiteRefused(request)) return this.refuse(response, 403);
+    if (crossOriginRefused(request)) return this.refuse(response, 403, isDocumentNavigation(request) ? this.deps.refusalText() : undefined);
     const target = request.url ?? '';
     const queryAt = target.indexOf('?');
     const pathname = queryAt < 0 ? target : target.slice(0, queryAt);
@@ -148,7 +160,8 @@ export class PreviewHttpServer {
     });
   }
 
-  // A GET spends the token on its first use, valid or not for that path; the cookie then carries the server's secret.
+  // A GET spends the token on its first use, valid or not for that path; the cookie then carries the server's secret. The query
+  // the opener added is not bound to the token: it only shapes the address of the file the token opens.
   private exchange(response: http.ServerResponse, method: string, query: URLSearchParams): void {
     if (method !== 'GET') {
       this.refuse(response, 403, this.deps.refusalText());
@@ -158,14 +171,15 @@ export class PreviewHttpServer {
     const entry = this.tokens.get(token);
     this.tokens.delete(token);
     const relativePath = query.get('p');
-    if (!entry || entry.expires <= this.now() || relativePath !== entry.relativePath || !isRelativeFilePath(relativePath) || hasUnsafeWindowsSegment(relativePath)) {
+    const search = query.get(SERVED_OPEN_QUERY) ?? '';
+    if (!entry || entry.expires <= this.now() || relativePath !== entry.relativePath || !isRelativeFilePath(relativePath) || hasUnsafeWindowsSegment(relativePath) || !URL_QUERY.test(search)) {
       this.refuse(response, 403, this.deps.refusalText());
       return;
     }
     response.writeHead(303, {
       ...previewHeaders(this.deps.trusted(), 'browser'),
       'Set-Cookie': `${this.cookieName}=${this.secret}; HttpOnly; SameSite=Strict; Path=/`,
-      Location: previewUrlPath(relativePath),
+      Location: `${previewUrlPath(relativePath)}${search === '' ? '' : `?${search}`}`,
     }).end();
   }
 }

@@ -32,6 +32,15 @@ describe('useStreamingStore.addSteerChip', () => {
   });
 });
 
+describe('useStreamingStore.combineQueuedMessages', () => {
+  it('turns a markup steered mid-run into its own message with its card', () => {
+    const store = useStreamingStore();
+    store.addQueuedMessage({ id: 'q-markup', content: 'Markup F1 on screens/S1.html', timestamp: 1 });
+    store.combineQueuedMessages(['q-markup'], 'Markup F1 on screens/S1.html', undefined, { feedbackId: 'F1' });
+    expect(store.messages).toEqual([expect.objectContaining({ id: 'q-markup', content: 'Markup F1 on screens/S1.html', designMarkup: { feedbackId: 'F1' }, isCombinedQueue: true })]);
+  });
+});
+
 describe('useStreamingStore.updateToolStatus after a final status', () => {
   it('keeps why a call never ran, also when the status arrived before the call', () => {
     const store = useStreamingStore();

@@ -42,6 +42,8 @@ export interface RemoteCoreHostDeps {
   readonly git: GitProbe;
   // the daemon runs with e2e hooks (loopback in e2e)
   readonly e2eHooks: boolean;
+  // the router's ACTOR_INTENT_EXPIRY_MS, shorter only through the e2e hooks
+  readonly actorIntentExpiryMs?: number;
   readonly state: DaemonState;
   readonly registry: RunRegistry;
   readonly fork: (entry: string, args: readonly string[]) => ForkedChild;
@@ -237,7 +239,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
     const current: Running = {
       child,
       endpoint,
-      router: createCoreRouter({ core: endpoint, state: deps.state, registry: deps.registry, mirrors, secrets, e2eHooks: deps.e2eHooks, reload: () => reload(), agentShellUrl: deps.agentShellUrl, clientPolicyChanged: deps.clientPolicyChanged, log }),
+      router: createCoreRouter({ core: endpoint, state: deps.state, registry: deps.registry, mirrors, secrets, e2eHooks: deps.e2eHooks, reload: () => reload(), agentShellUrl: deps.agentShellUrl, clientPolicyChanged: deps.clientPolicyChanged, ...(deps.actorIntentExpiryMs !== undefined ? { actorIntentExpiryMs: deps.actorIntentExpiryMs } : {}), log }),
       exited: new Promise<void>((resolve) => { exit = resolve; }),
       stopping: false,
       shutDown: false,

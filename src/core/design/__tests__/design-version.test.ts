@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DESIGN_VERSION_DETAIL_KEY, type DesignVersionStamp } from '../../../shared/types/design';
+import { DESIGN_VERSION_DETAIL_KEY, type DesignResultDecision, type DesignVersionStamp } from '../../../shared/types/design';
 import { PLAN_VERSION_DETAIL_KEY } from '../../../shared/types/session';
 import { DAMOCLES_DESIGN_RESULT, DAMOCLES_DESIGN_VERSION_CHOICE, DAMOCLES_DESIGN_VERSION_INSTRUCTION } from '../../pi-session/session-store/constants';
 import { designFolderOf, designStateDirOf } from '../design-paths';
-import type { DesignVersionRecord } from '../design-state';
+import { changesSince, describeChanges, type DesignVersionRecord } from '../design-state';
 import { approvedDesignVersion, approvedVersionAfterLink, resultAwaitingContinue, unansweredVersionPause } from '../design-entries';
 import { clearDesigns, designHarness, fakeSession, stampDesignVersion, type DesignHarness, type FakeDesignSession } from './design-harness';
 
@@ -306,5 +306,23 @@ describe('exactly once', () => {
     parent.entries.push(exitPlan({ designId: DESIGN, version: 2 }));
     h.design.idle();
     await vi.waitFor(() => expect(h.asked[0]!.signal.aborted).toBe(true));
+  });
+});
+
+describe('the decisions a version compares (D66, D72)', () => {
+  const stamp = (decisions: DesignResultDecision[], version: number) => stampDesignVersion(designStateDirOf(DESIGN), { sessionId: 'design-1', stillCurrent: () => true }, 'same-hash', decisions, (v, previous) => ({
+    schemaVersion: 1, version: v, designId: DESIGN, title: 'Contacts', sessionId: 'design-1', toolCallId: `c${version}`, contentHash: 'same-hash', decisions, screens: [], screenHashes: {}, renderHashes: {},
+    check: { errors: 0, warnings: [] }, journeys: [], summary: 's', changedSinceLast: describeChanges(changesSince(previous, {}, decisions)), finishedAt: '2026-01-01T00:00:00.000Z',
+  }));
+
+  it('makes a new version when a replacement changes the current decisions, and names what it replaced', async () => {
+    const before = [{ id: 'D1', title: 'Fidelity', chosen: 'Static' }, { id: 'D18', title: 'Accent colour', chosen: 'graphite' }];
+    expect((await stamp(before, 1)).reused).toBe(false);
+    expect((await stamp(before, 1)).reused).toBe(true);
+    const after = [{ id: 'D1', title: 'Fidelity', chosen: 'Static' }, { id: 'D23', title: 'Accent', chosen: 'taupe', replaces: ['D18'] }];
+    const { record, reused } = await stamp(after, 2);
+    expect([reused, record.version]).toEqual([false, 2]);
+    expect(record.changedSinceLast).toEqual(['D23 Accent · taupe (replaces D18)']);
+    expect(changesSince({ decisions: before }, {}, after)).toEqual([{ kind: 'decisionAdded', id: 'D23', title: 'Accent', chosen: 'taupe', replaces: ['D18'] }]);
   });
 });

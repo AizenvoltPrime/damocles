@@ -60,6 +60,9 @@ export interface PortsControllerDeps {
   readonly accepted?: (host: LoopbackAddress, port: number) => Promise<boolean>;
   // `wslinfo --networking-mode` in the distro, logged for diagnosis only
   readonly networkingMode?: (distro: string) => Promise<string>;
+  // ServedRoots' ports of an authority and their change, which its clientNetwork policy carries
+  readonly servedPorts: (authority: string) => readonly number[];
+  readonly onServedChange: (listener: (authority: string) => void) => Disposable;
   readonly log: (line: string) => void;
 }
 
@@ -119,6 +122,8 @@ export class PortsController {
       viaWsl: (hostId, candidates) => this.viaWsl(hostId, candidates),
       detected: (hostId, action, reached) => this.detected(hostId, action, reached),
       fallbackSwitched: (hostId, count) => this.fallbackSwitched(hostId, count),
+      servedPorts: deps.servedPorts,
+      onServedChange: deps.onServedChange,
       now: deps.now ?? Date.now,
       log: deps.log,
     });

@@ -34,7 +34,7 @@ import { extractOriginalInputs } from './original-input';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
 import { storedTypedText } from './prompt-context';
 import { promptTest } from './prompt-index';
-import { decisionsOnBranch, designRoleOf } from '../../design/design-entries';
+import { decisionsOnBranch, decisionView, designRoleOf } from '../../design/design-entries';
 import { rewindableCheckpoints } from '../../design/design-checkpoints';
 
 /**
@@ -295,7 +295,7 @@ export function withDesignDecisionsAfter(items: RewindHistoryItem[], branch: rea
   return items.map((item) => {
     const at = index.get(item.messageId);
     const after = at === undefined ? [] : decisionsOnBranch(branch.slice(at));
-    return { ...item, designDecisionsAfter: after.map(({ id, title, chosen, rejected, source, supersedes }) => ({ id, title, chosen, rejected, source, ...(supersedes ? { supersedes } : {}) })) };
+    return { ...item, designDecisionsAfter: after.map(decisionView) };
   });
 }
 

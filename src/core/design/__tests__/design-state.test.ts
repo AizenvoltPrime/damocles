@@ -67,12 +67,17 @@ describe('the design state folder', () => {
     expect((await readLatestVersion(dir))?.version).toBe(3);
   });
 
-  it('records a new version over one without render hashes, which DesignParity cannot compare', async () => {
+  it('keeps an unchanged version whose render hashes are of an earlier scheme, or absent, and stamps a new one after a change', async () => {
     const dir = stateDir();
     const decisions = [{ id: 'D1', title: 'Fidelity', chosen: 'Static mockup' }];
-    await stampDesignVersion(dir, CHAT, 'hash-a', decisions, (v) => record(v, 'hash-a', null));
-    const again = await stampDesignVersion(dir, CHAT, 'hash-a', decisions, (v) => record(v, 'hash-a'));
-    expect([again.record.version, again.reused, again.record.renderHashes]).toEqual([2, false, { 'screens/S1.html': 'render-hash' }]);
+    for (const [earlier, content] of [[{ 'screens/S1.html': 'old-scheme' }, 'hash-a'], [null, 'hash-b']] as const) {
+      await stampDesignVersion(dir, CHAT, content, decisions, (v) => record(v, content, earlier));
+      // DesignParity judges such a record by its content hash, so an unchanged design asks no new approval
+      const again = await stampDesignVersion(dir, CHAT, content, decisions, (v) => record(v, content, { 'screens/S1.html': 'r2:new' }));
+      expect([again.reused, again.record.renderHashes]).toEqual([true, earlier ?? undefined]);
+    }
+    const changed = await stampDesignVersion(dir, CHAT, 'hash-c', decisions, (v) => record(v, 'hash-c', { 'screens/S1.html': 'r2:new' }));
+    expect([changed.reused, changed.record.renderHashes]).toEqual([false, { 'screens/S1.html': 'r2:new' }]);
   });
 
   it('never hands two finishes one number under contention, and numbers each new version after the latest', async () => {

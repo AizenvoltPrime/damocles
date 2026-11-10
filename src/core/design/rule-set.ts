@@ -11,8 +11,10 @@ import {
   TOOL_INVENTORY,
   TOOL_LOAD_DESIGN_SKILL,
   TOOL_MAP_REFERENCE,
+  TOOL_OPEN_PREVIEW,
   TOOL_PREVIEW_JOURNEY,
   TOOL_RECORD_DECISION,
+  TOOL_REMOVE_DESIGN_FILE,
   TOOL_START_DESIGN,
 } from '../../shared/tool-names';
 
@@ -40,11 +42,11 @@ export interface DesignRuleSet {
   readonly openInBrowserFromChat: boolean;
 }
 
-const SHARED_DESIGN_TOOLS = [TOOL_INVENTORY, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_RECORD_DECISION, TOOL_DESIGN_CHECK, TOOL_FINISH_DESIGN, TOOL_LOAD_DESIGN_SKILL, TOOL_MAP_REFERENCE] as const;
+const SHARED_DESIGN_TOOLS = [TOOL_INVENTORY, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_RECORD_DECISION, TOOL_DESIGN_CHECK, TOOL_FINISH_DESIGN, TOOL_LOAD_DESIGN_SKILL, TOOL_MAP_REFERENCE, TOOL_REMOVE_DESIGN_FILE] as const;
 
 const FULL: DesignRuleSet = {
   id: 'full',
-  designTools: [...SHARED_DESIGN_TOOLS, TOOL_DESIGN_SCREENSHOT, TOOL_PREVIEW_JOURNEY, TOOL_DECLARE_TWEAKS],
+  designTools: [...SHARED_DESIGN_TOOLS, TOOL_DESIGN_SCREENSHOT, TOOL_PREVIEW_JOURNEY, TOOL_DECLARE_TWEAKS, TOOL_OPEN_PREVIEW],
   parentTools: [TOOL_START_DESIGN, TOOL_DESIGN_PARITY],
   gate: { staticCheck: true, widthChecks: true, journeys: true },
   preview: true,
@@ -74,4 +76,4 @@ export function designRuleSetById(id: DesignRuleSetId): DesignRuleSet {
 export const DESIGN_PI_TOOL_NAMES: ReadonlySet<string> = new Set([...FULL.designTools, ...FULL.parentTools, ...REDUCED.designTools, ...REDUCED.parentTools]);
 
 /** The design tools that write nothing into the chat's checkpointed folder, so never wait for its baseline (PD-42). */
-export const DESIGN_TOOLS_WITHOUT_FOLDER_WRITES: ReadonlySet<string> = new Set([TOOL_START_DESIGN, TOOL_DESIGN_PARITY, TOOL_LOAD_DESIGN_SKILL, TOOL_DECLARE_TWEAKS]);
+export const DESIGN_TOOLS_WITHOUT_FOLDER_WRITES: ReadonlySet<string> = new Set([TOOL_START_DESIGN, TOOL_DESIGN_PARITY, TOOL_LOAD_DESIGN_SKILL, TOOL_DECLARE_TWEAKS, TOOL_OPEN_PREVIEW]);

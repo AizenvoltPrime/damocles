@@ -9,6 +9,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import { DOWNLOAD_MAX_BYTES, DOWNLOAD_LAUNCH_MAX_BYTES } from '../../browser';
 import type { BrowserAgentScope } from '../../browser';
 import type { InterceptRule } from '../../browser/types';
+import type { ChatServedFiles } from '../../browser/served-files';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { log } from '../../logger';
 import { abortableTool } from './abortable-tool';
@@ -91,6 +92,8 @@ export interface BrowserPiToolDeps {
   /** The calling agent's per-scope handle. Every tool resolves THIS scope's current tab instead of a
    *  global active page, so concurrent agents each drive their own tab. */
   scope: BrowserAgentScope;
+  /** A local desktop chat's roots, whose file:// addresses BrowserOpen and BrowserNavigate load from main's server. */
+  served?: ChatServedFiles;
 }
 
 /** The SDK browser handlers already emit pi-shaped content blocks (MCP image content is `{ data, mimeType }`). */
@@ -128,6 +131,8 @@ function rejectionReason(sizeBytes: number | undefined): string {
 }
 
 const SCREENSHOT_OPTIONS = { format: 'jpeg', quality: 70 } as const;
+
+const SERVED_FILES_NOTE = 'In the desktop app, a file:// address inside the chat\'s project or design folder loads over http, so its relative links, module scripts and fetch work, and answers show it as the same file:// address; a chat on a remote host opens only those files.';
 
 /**
  * Finite upper bound (ms) passed to every Playwright locator action so a single action can never block
@@ -575,7 +580,10 @@ export async function settle(page: Page, capMs: number): Promise<void> {
 
 /** Build the `damocles-browser` tools as pi-native definitions, reusing the SDK CDP handler logic. */
 export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
-  const { pi, scope } = deps;
+  const { pi, scope, served } = deps;
+
+  // The address to load: a local chat's root file opens on main's server; anything else as given.
+  const target = (url: string): Promise<{ readonly url: string } | { readonly refused: string }> => (served ? served.localTarget(url) : Promise.resolve({ url }));
 
   function requireCdp(_toolName: string) {
     const cdp = scope.getController();
@@ -648,11 +656,13 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserOpenSchema, undefined>({
       name: piName('browser_open'),
       label: piName('browser_open'),
-      description: "Open a URL in the integrated browser with full automation. User sees the browser live in the browser panel. If already open, navigates to the new URL. Provide exact, complete URLs — look up routes in the codebase rather than guessing. After opening, call BrowserQuery to discover interactive elements on the page.",
+      description: `Open a URL in the integrated browser with full automation. User sees the browser live in the browser panel. If already open, navigates to the new URL. Provide exact, complete URLs — look up routes in the codebase rather than guessing. After opening, call BrowserQuery to discover interactive elements on the page. ${SERVED_FILES_NOTE}`,
       parameters: browserOpenSchema,
       execute: async (_id, input, signal) => {
         try {
-          const opened = `Opened browser: ${input.url}${httpErrorNote(await scope.open(input.url, signal))}`;
+          const loaded = await target(input.url);
+          if ('refused' in loaded) return wrap({ content: [{ type: 'text', text: `Error: ${loaded.refused}` }], isError: true });
+          const opened = `Opened browser: ${input.url}${httpErrorNote(await scope.open(loaded.url, signal))}`;
           const cdpReady = await scope.waitForController(25_000, signal);
           if (signal?.aborted) return wrap(textResult(opened));
           if (cdpReady) {
@@ -669,11 +679,13 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserNavigateSchema, undefined>({
       name: piName('browser_navigate'),
       label: piName('browser_navigate'),
-      description: 'Navigate the integrated browser to a new URL. The user sees navigation live in the browser panel. IMPORTANT: Provide the exact, complete URL path. Do not guess URL paths — look up routes in the codebase or ask the user. A wrong path usually loads the server\'s error page, and the result names its HTTP error status (for example "(HTTP 404)"), but a single-page app may answer a wrong path with its own page and status 200, so check the screenshot. A page that does not load at all, or an address that starts a download, is an error. Returns a screenshot after navigation.',
+      description: `Navigate the integrated browser to a new URL. The user sees navigation live in the browser panel. IMPORTANT: Provide the exact, complete URL path. Do not guess URL paths — look up routes in the codebase or ask the user. A wrong path usually loads the server's error page, and the result names its HTTP error status (for example "(HTTP 404)"), but a single-page app may answer a wrong path with its own page and status 200, so check the screenshot. A page that does not load at all, or an address that starts a download, is an error. Returns a screenshot after navigation. ${SERVED_FILES_NOTE}`,
       parameters: browserNavigateSchema,
       execute: async (_id, input, signal) => {
         try {
-          const navigated = `Navigated to: ${input.url}${httpErrorNote(await scope.open(input.url, signal))}`;
+          const loaded = await target(input.url);
+          if ('refused' in loaded) return wrap({ content: [{ type: 'text', text: `Error: ${loaded.refused}` }], isError: true });
+          const navigated = `Navigated to: ${input.url}${httpErrorNote(await scope.open(loaded.url, signal))}`;
           const cdpReady = await scope.waitForController(25_000, signal);
           if (signal?.aborted) return wrap(textResult(navigated));
           if (cdpReady) {
@@ -1932,5 +1944,16 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
   // that leaves `BROWSER_TOOL_CATALOG` undefined mid-init. Its name still lives in `BROWSER_SPECS` above,
   // so `BROWSER_PI_TOOL_NAMES`/`BROWSER_TOOL_CATALOG`/gateability all include it as intended.
   // Every browser tool honors the turn's abort signal at its boundary (CDP has no per-request cancel).
-  return definitions.map(abortableTool);
+  return definitions.map((definition) => abortableTool(served ? servedAsFiles(definition, served) : definition));
+}
+
+// A local chat's served root files read as the file:// addresses the agent opened, in every browser tool's answer.
+function servedAsFiles(definition: ToolDefinition, served: ChatServedFiles): ToolDefinition {
+  return {
+    ...definition,
+    execute: async (...args: Parameters<ToolDefinition['execute']>) => {
+      const result = await definition.execute(...args);
+      return { ...result, content: result.content.map((block) => (block.type === 'text' ? { ...block, text: served.toFile(block.text) } : block)) };
+    },
+  } as ToolDefinition;
 }

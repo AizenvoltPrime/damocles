@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import nodeFs from 'node:fs';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { getShellConfig } from '@earendil-works/pi-coding-agent';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { nativeShellPath, worktreeIsolationBlock, WORKTREE_ISOLATION_REASON, type WorktreeIsolation } from '../worktree-isolation';
 import { parseShellStructure } from '../readonly-shell';
 import { runPermissionGate, type GatePermissionContext } from '../permission-gate';
@@ -69,6 +71,35 @@ describe('worktree isolation (D62)', () => {
     } finally {
       fs.rmSync(linked, { force: true });
     }
+  });
+
+  it.runIf(process.platform === 'win32')('resolves no network path off the chat\'s hosts before any prompt, and still places a drive\'s device path', () => {
+    const realpath = vi.spyOn(fs.realpathSync, 'native');
+    onTestFinished(() => { realpath.mockRestore(); });
+    expect(bash('git -C //evil/s status')).toBeUndefined();
+    expect(ps('git -C \\\\evil\\s status')).toBeUndefined();
+    expect(realpath.mock.calls.filter(([p]) => /evil/i.test(String(p)))).toEqual([]);
+    expect(worktreeIsolationBlock('Write', { file_path: `\\\\?\\${path.join(project, 'src', 'a.ts')}` }, iso)).toContain(WORKTREE_ISOLATION_REASON);
+  });
+
+  it.runIf(process.platform === 'win32')('resolves no path whose walk meets a link to a share before any prompt', () => {
+    const shared = path.join(worktree, 'shared');
+    fs.mkdirSync(path.join(outside, 'real'), { recursive: true });
+    fs.symlinkSync(path.join(outside, 'real'), shared, 'junction');
+    // the module object, whose properties syncBuiltinESMExports copies onto the named exports canonical-path.ts imports
+    const readlinkSync = nodeFs.readlinkSync;
+    const readlink = vi.spyOn(nodeFs, 'readlinkSync').mockImplementation(((file: fs.PathLike, options?: unknown) =>
+      (String(file).toLowerCase() === shared.toLowerCase() ? '\\\\attacker\\share' : readlinkSync(file, options as never))) as typeof fs.readlinkSync);
+    const realpath = vi.spyOn(fs.realpathSync, 'native');
+    syncBuiltinESMExports();
+    onTestFinished(() => {
+      readlink.mockRestore();
+      realpath.mockRestore();
+      syncBuiltinESMExports();
+      fs.rmSync(shared, { force: true });
+    });
+    expect(bash('git -C shared/x status')).toBeUndefined();
+    expect(realpath.mock.calls.filter(([p]) => String(p).toLowerCase().startsWith(shared.toLowerCase()))).toEqual([]);
   });
 
   // Windows environment names have no case, so git there reads `git_dir` as GIT_DIR; bash's own CDPATH keeps its case.

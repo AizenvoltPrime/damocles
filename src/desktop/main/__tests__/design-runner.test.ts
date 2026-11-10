@@ -38,14 +38,14 @@ vi.mock('../security', () => ({
 }));
 vi.mock('../protocol', () => ({ DESIGN_SCHEME: 'damocles-design' }));
 
-import { MAX_CONSOLE_ERRORS, MAX_OVERFLOWING, MAX_PROBE_ELEMENTS, MAX_PROBE_WIDTHS, pngSize } from '../../../shared/design-render';
+import { DEFAULT_RENDER_MEDIA, imageSize, MAX_CONSOLE_ERRORS, MAX_OVERFLOWING, MAX_PROBE_ELEMENTS, MAX_PROBE_WIDTHS, pngSize } from '../../../shared/design-render';
 import { MAX_JOURNEY_OUTLINE_CHARS } from '../../../shared/design-journey';
 import { CORE_TO_MAIN } from '../../core-protocol/messages';
 import { INVALID } from '../../core-protocol/schema';
 import type { JourneyCdp } from '../design/design-journey';
-import { DesignRunner, MAX_CONCURRENT_RUNS, MAX_PROBE_OUTPUT_CHARS, MAX_QUEUED_RUNS_PER_AUTHORITY, openOffscreenPage, parseOutline, parseProbeOutput, type RunnerPage, type RunnerPageEvents } from '../design/design-runner';
+import { DesignRunner, framesOf, MAX_CONCURRENT_RUNS, MAX_PROBE_OUTPUT_CHARS, MAX_QUEUED_RUNS_PER_AUTHORITY, openOffscreenPage, parseOutline, parseProbeOutput, type RenderRequest, type RunnerPage, type RunnerPageEvents, type ShotOptions } from '../design/design-runner';
 import type { JourneyStep } from '../../../shared/types/design';
-import { contactsPage } from './fake-journey-page';
+import { contactsPage, type FakeJourneyPage } from './fake-journey-page';
 import contacts from '../../../../e2e/fixtures/design-app/static/contacts.preview-journey.json' with { type: 'json' };
 
 const target = { authority: 'local', designId: 'contacts-1a2b3c4d' };
@@ -65,17 +65,48 @@ interface FakePage extends RunnerPage {
   readonly events: RunnerPageEvents;
   readonly sizes: [number, number][];
   readonly shots: [number, number, number][];
+  readonly shotOptions: (ShotOptions | undefined)[];
+  readonly media: Record<string, unknown>[];
   closed: number;
   release(): void;
 }
 
+/** A JPEG of `width` × `height` as far as its header goes: SOI, an APP0 segment, then SOF0. */
+function jpeg(width: number, height: number, padding = 0): Uint8Array {
+  const bytes = new Uint8Array(4 + 16 + 19 + padding);
+  bytes.set([0xff, 0xd8, 0xff, 0xe0, 0, 16]);
+  bytes.set([0xff, 0xc0, 0, 17, 8], 20);
+  new DataView(bytes.buffer).setUint16(25, height);
+  new DataView(bytes.buffer).setUint16(27, width);
+  return bytes;
+}
+
+interface HarnessOptions {
+  hold?: boolean;
+  contentHeight?: number;
+  scrollWidth?: (width: number) => number;
+  timeoutMs?: number;
+  cdp?: (width: number) => JourneyCdp;
+  outline?: unknown;
+  // every stable-frame comparison differs, as a page with an endless animation
+  moving?: boolean;
+  jpeg?: (width: number, height: number, scale: number, options: ShotOptions) => Uint8Array;
+  // the selector box script's answer
+  selectorBox?: unknown;
+  // the content's height at the window's height, as viewport-sized content (min-height: 100vh, height: 150vh) measures
+  contentHeightAt?: (windowHeight: number) => number;
+  // the settle script's answer, as a click that replaced the document rejects it
+  settle?: () => Promise<unknown>;
+}
+
 /** Pages whose load waits for `release` when `hold` is set; the content is `contentHeight` tall and `scrollWidth` wide per width. */
-function harness(options: { hold?: boolean; contentHeight?: number; scrollWidth?: (width: number) => number; timeoutMs?: number; cdp?: (width: number) => JourneyCdp; outline?: unknown } = {}) {
+function harness(options: HarnessOptions = {}) {
   const pages: FakePage[] = [];
   const evaluated: string[] = [];
   const sheets: string[] = [];
   const runner = new DesignRunner({
     log: () => undefined,
+    stableMs: 50,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     openPage: (origin, width, events) => {
       let release = (): void => undefined;
@@ -87,6 +118,8 @@ function harness(options: { hold?: boolean; contentHeight?: number; scrollWidth?
         events,
         sizes: [],
         shots: [],
+        shotOptions: [],
+        media: [],
         closed: 0,
         release: () => release(),
         load: () => held,
@@ -100,16 +133,27 @@ function harness(options: { hold?: boolean; contentHeight?: number; scrollWidth?
         evaluate: async (code) => {
           evaluated.push(code);
           const scrollWidth = options.scrollWidth?.(size[0]) ?? size[0];
-          if (code.startsWith('[')) return [options.contentHeight ?? 1500, scrollWidth, size[0]];
+          if (code.startsWith('[')) return [options.contentHeightAt?.(size[1]) ?? options.contentHeight ?? 1500, scrollWidth, size[0]];
+          if (code.includes('getAnimations')) return options.settle ? options.settle() : true;
+          if (code.startsWith('new Promise')) return true;
+          if (code.includes('scrollIntoView({ block')) return options.selectorBox ?? [0, 0, size[0], 100, 0];
           if (code.includes('lines.push')) return options.outline ?? `body
   button "Add contact" at ${size[0]}`;
           return JSON.stringify({ h: options.contentHeight ?? 1500, sw: scrollWidth, cw: size[0], els: [['td', null, null, null, 'Contact.name', 0, 10, 100, 20, size[0] >= 640]], over: scrollWidth > size[0] ? [['div', null, 'wide', 'Table', 812]] : [] });
         },
-        screenshot: async (w, h, scale) => {
+        screenshot: async (w, h, scale, shot) => {
           page.shots.push([w, h, scale]);
+          page.shotOptions.push(shot);
+          if (shot?.format === 'jpeg') return options.jpeg?.(w, h, scale, shot) ?? jpeg(Math.round(w * scale), Math.round(h * scale));
+          // the stable-frame wait's small frames: a moving page answers a different one each time
+          if (scale === 0.25 && options.moving) return png(Math.round(w * scale), Math.round(h * scale) + page.shots.length);
           return png(Math.round(w * scale), Math.round(h * scale));
         },
         cdp: (method, params) => {
+          if (method === 'Emulation.setEmulatedMedia') {
+            page.media.push(params);
+            return Promise.resolve({});
+          }
           if (!options.cdp) return Promise.reject(new Error('No debugger in this test'));
           debuggee ??= options.cdp(size[0]);
           return debuggee.send(method, params);
@@ -126,6 +170,7 @@ function harness(options: { hold?: boolean; contentHeight?: number; scrollWidth?
 }
 
 const capture = { relPath: 'screens/S1-contacts.html', width: 390, state: null, scale: 2 };
+const renderRequest: RenderRequest = { relPath: 'screens/S1-contacts.html', width: 390, state: null, media: DEFAULT_RENDER_MEDIA, format: 'jpeg', maxSide: 1568, quality: 80 };
 
 describe('DesignRunner', () => {
   it('captures the frame W × min(900, content) at the largest scale up to 2 within 1950 px, in a window as tall as the content', async () => {
@@ -299,6 +344,120 @@ describe('DesignRunner', () => {
   });
 });
 
+describe('DesignRunner.render (D85)', () => {
+  const signal = (): AbortSignal => new AbortController().signal;
+
+  it('pins the media before the load, settles, and answers JPEG frames whose long side stays within the model\'s (acceptance)', async () => {
+    const { runner, pages, evaluated } = harness({ contentHeight: 1500 });
+    const shot = await runner.render(target, { ...renderRequest, width: 1440, maxSide: 1568 }, signal());
+    const page = pages[0]!;
+    expect(page.media[0]).toEqual({ media: 'screen', features: [
+      { name: 'prefers-color-scheme', value: 'light' },
+      { name: 'prefers-reduced-motion', value: 'no-preference' },
+      { name: 'forced-colors', value: 'none' },
+      { name: 'prefers-contrast', value: 'no-preference' },
+      { name: 'prefers-reduced-transparency', value: 'no-preference' },
+    ] });
+    expect(evaluated.some((code) => code.includes('document.fonts.ready') && code.includes('getAnimations') && code.includes('finish()') && code.includes('cancel()'))).toBe(true);
+    expect(shot.frames).toHaveLength(1);
+    expect(shot.frames[0]).toMatchObject({ mimeType: 'image/jpeg', cssWidth: 1440, cssHeight: 900, top: 0 });
+    expect(shot).toMatchObject({ contentHeight: 1500, moving: false });
+    expect(Math.round(1440 * shot.scale)).toBeLessThanOrEqual(1568);
+    expect(imageSize(shot.frames[0]!.image, 'image/jpeg').width).toBeLessThanOrEqual(1568);
+    expect(page.shotOptions.at(-1)).toEqual({ x: 0, y: 0, format: 'jpeg', quality: 80 });
+  });
+
+  it('pins the media the call asks for', async () => {
+    const { runner, pages } = harness();
+    await runner.render(target, { ...renderRequest, media: { ...DEFAULT_RENDER_MEDIA, colorScheme: 'dark', forcedColors: 'active', reducedTransparency: 'reduce' } }, signal());
+    expect(pages[0]!.media[0]!['features']).toEqual(expect.arrayContaining([{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'forced-colors', value: 'active' }, { name: 'prefers-reduced-transparency', value: 'reduce' }]));
+  });
+
+  it('waits for two identical frames, and says the page is moving when none came within the bound (acceptance)', async () => {
+    const still = harness();
+    expect((await still.runner.render(target, renderRequest, signal())).moving).toBe(false);
+    // the first small frame and one more, identical
+    expect(still.pages[0]!.shots.filter(([, , scale]) => scale === 0.25)).toHaveLength(2);
+    const carousel = harness({ moving: true });
+    const shot = await carousel.runner.render(target, renderRequest, signal());
+    expect(shot.moving).toBe(true);
+    expect(shot.frames).toHaveLength(1);
+  });
+
+  it('captures a 3000 px page in four frames with fullPage, the fourth rows 2700 to 3000 (acceptance)', async () => {
+    const { runner, pages } = harness({ contentHeight: 3000 });
+    const shot = await runner.render(target, { ...renderRequest, region: 'fullPage' }, signal());
+    expect(shot.frames.map((frame) => [frame.top, frame.cssHeight])).toEqual([[0, 900], [900, 900], [1800, 900], [2700, 300]]);
+    expect(pages[0]!.shotOptions.filter((options) => options?.format === 'jpeg').map((options) => options!.y)).toEqual([0, 900, 1800, 2700]);
+    expect(framesOf({ x: 0, y: 0, width: 390, height: 9000 })).toHaveLength(4);
+  });
+
+  it('clips a selector to its element\'s box, and refuses one that matches nothing or does not parse', async () => {
+    const { runner, pages, evaluated } = harness({ contentHeight: 2000, selectorBox: [16, 1200, 600, 340, 0] });
+    const shot = await runner.render(target, { ...renderRequest, width: 1280, region: { selector: '#tasks' } }, signal());
+    expect(shot.frames).toEqual([expect.objectContaining({ top: 1200, cssWidth: 600, cssHeight: 340 })]);
+    expect(pages[0]!.shotOptions.at(-1)).toMatchObject({ x: 16, y: 1200 });
+    expect(evaluated.find((code) => code.includes('scrollIntoView({ block'))).toContain('"#tasks"');
+    await expect(harness({ selectorBox: 'none' }).runner.render(target, { ...renderRequest, region: { selector: '#gone' } }, signal())).rejects.toThrow('No element matches the selector "#gone".');
+    await expect(harness({ selectorBox: 'invalid' }).runner.render(target, { ...renderRequest, region: { selector: '[' } }, signal())).rejects.toThrow('"[" is not a CSS selector.');
+  });
+
+  it('bounds the frames by the window, not by content that grows with it (150vh)', async () => {
+    const { runner, pages } = harness({ contentHeightAt: (windowHeight) => Math.round(windowHeight * 1.5) });
+    const shot = await runner.render(target, { ...renderRequest, region: 'fullPage' }, signal());
+    // fit at 900 measures 1350, so the window is 1350 high and the content then measures 2025
+    expect(pages[0]!.sizes.at(-1)).toEqual([390, 1350]);
+    expect(shot.frames.map((frame) => [frame.top, frame.cssHeight])).toEqual([[0, 900], [900, 450]]);
+    expect(shot.contentHeight).toBe(2025);
+    const capture = await harness({ contentHeightAt: (windowHeight) => windowHeight + 300 }).runner.capture(target, { relPath: 'screens/S1.html', width: 390, state: null, scale: 2 }, signal());
+    expect(capture).toMatchObject({ cssHeight: 900, contentHeight: 1500 });
+  });
+
+  it('clips a selector below the window within the viewport it scrolled to, and reports where its box ends', async () => {
+    // a 4000 px window scrolled to 5200 for a 600 px box at 5200, and a 5000 px box that runs past the frames
+    const { runner, pages } = harness({ contentHeight: 90_000, selectorBox: [0, 5200, 390, 600, 5200] });
+    const shot = await runner.render(target, { ...renderRequest, region: { selector: '#late' } }, signal());
+    expect(shot.frames).toEqual([expect.objectContaining({ top: 5200, cssHeight: 600 })]);
+    expect(shot.boxBottom).toBe(5800);
+    expect(pages[0]!.shotOptions.at(-1)).toMatchObject({ y: 5200 });
+    const long = await harness({ contentHeight: 90_000, selectorBox: [0, 5200, 390, 5000, 5200] }).runner.render(target, { ...renderRequest, region: { selector: '#long' } }, signal());
+    expect(long.frames.map((frame) => [frame.top, frame.cssHeight])).toEqual([[5200, 900], [6100, 900], [7000, 900], [7900, 900]]);
+    expect(long.boxBottom).toBe(10_200);
+    await expect(harness({ selectorBox: [0, 0, 390, 100] }).runner.render(target, { ...renderRequest, region: { selector: '#x' } }, signal())).rejects.toThrow('The page returned a malformed box');
+  });
+
+  it('goes on when the settle script rejects, as it does once a click replaced the document', async () => {
+    let settles = 0;
+    const { runner } = harness({ cdp: (width) => contactsPage(width), settle: () => (++settles > 1 ? Promise.reject(new Error('Script failed to execute')) : Promise.resolve(true)) });
+    const steps: JourneyStep[] = [{ action: 'click', target: { role: 'button', name: 'Add contact' } }];
+    expect((await runner.render(target, { ...renderRequest, steps }, signal())).frames).toHaveLength(1);
+    expect(settles).toBeGreaterThan(1);
+    const journey = await runner.journey(target, { relPath: 'screens/S1.html', widths: [390], state: null, steps: [...steps, { action: 'assert', target: { role: 'dialog', name: 'New contact' }, expect: { visible: true } }], outline: false }, signal());
+    expect(journey.widths[0]!.passed).toBe(true);
+  }, 15_000);
+
+  it('runs the steps in the same page, with no resize after them, and fails naming a step that did not pass (acceptance)', async () => {
+    let journeyPage: FakeJourneyPage | undefined;
+    const { runner, pages } = harness({ cdp: (width) => (journeyPage = contactsPage(width)) });
+    const steps: JourneyStep[] = [{ action: 'click', target: { role: 'button', name: 'Add contact' } }];
+    await runner.render(target, { ...renderRequest, steps }, signal());
+    expect(journeyPage!.state['dialog']).toBe(true);
+    // the fit's two resizes, and none after the click
+    expect(pages[0]!.sizes).toEqual([[390, 900], [390, 1500]]);
+    const stuck = harness({ cdp: (width) => contactsPage(width, { addHiddenBelow: 640 }) });
+    await expect(stuck.runner.render(target, { ...renderRequest, steps }, signal())).rejects.toThrow(/^The steps stopped at step 1 \(click button "Add contact"\): No visible element matches/);
+  }, 15_000);
+
+  it('takes the frames again smaller while one is over the model\'s byte limit', async () => {
+    const { runner, pages } = harness({ jpeg: (w, h, scale) => jpeg(Math.round(w * scale), Math.round(h * scale), scale > 1 ? 10_000 : 0) });
+    const shot = await runner.render(target, { ...renderRequest, maxBytes: 5000 }, signal());
+    // 1568 px over the 900 px frame, then 0.7 of it while a frame stays over the bytes
+    expect(shot.scale).toBe(0.853);
+    expect(pages[0]!.shots.filter(([, , scale]) => scale !== 0.25).map(([, , scale]) => scale)).toEqual([1.742, 1.219, 0.853]);
+    await expect(harness({ jpeg: (w, h, scale) => jpeg(Math.round(w * scale), Math.round(h * scale), 10_000) }).runner.render(target, { ...renderRequest, maxBytes: 5000 }, signal())).rejects.toThrow(/stays over 5000 bytes/);
+  });
+});
+
 describe('DesignRunner.journey (PD-13, PD-45)', () => {
   const STEPS = contacts.steps as JourneyStep[];
   const request = { relPath: capture.relPath, widths: [1280, 390], state: null, steps: STEPS, outline: false };
@@ -417,6 +576,8 @@ describe('openOffscreenPage', () => {
     await page.cdp('DOM.getDocument', { depth: 0 });
     expect((windows[0]!.contents['debugger'] as { attach: ReturnType<typeof vi.fn> }).attach).toHaveBeenCalledTimes(1);
     expect(sendCommand.mock.calls).toEqual([['Accessibility.queryAXTree', { backendNodeId: 1, accessibleName: 'Save' }], ['DOM.getDocument', { depth: 0 }]]);
+    // a command before the design loaded commits about:blank first, once, since none would answer before a commit
+    expect((windows[0]!.contents['loadURL'] as ReturnType<typeof vi.fn>).mock.calls).toEqual([['about:blank']]);
   });
 
   it('fails a load the design scheme refused', async () => {
@@ -459,10 +620,12 @@ describe('the runner\'s answers at every producer bound', () => {
           evaluate: async (code) => {
             if (code.startsWith('[')) return [contentHeight, 1e12, size[0]];
             if (code.includes('lines.push')) return control.repeat(MAX_JOURNEY_OUTLINE_CHARS);
+            // a box past every edge of the window
+            if (code.includes('scrollIntoView({ block')) return [-5, -5, 1e12, 1e12, 1e12];
             return MAXIMAL_PROBE;
           },
-          screenshot: async (w, h, scale) => png(Math.round(w * scale), Math.round(h * scale)),
-          cdp: (method, params) => journeyPage.send(method, params),
+          screenshot: async (w, h, scale, shot) => (shot?.format === 'jpeg' ? jpeg(Math.round(w * scale), Math.round(h * scale)) : png(Math.round(w * scale), Math.round(h * scale))),
+          cdp: (method, params) => (method === 'Emulation.setEmulatedMedia' ? Promise.resolve({}) : journeyPage.send(method, params)),
           close: () => undefined,
         };
       },
@@ -481,6 +644,10 @@ describe('the runner\'s answers at every producer bound', () => {
     for (const contentHeight of [0, 1e12]) {
       const captured = await maximalRunner(contentHeight).capture(target, capture, signal);
       expect(CORE_TO_MAIN.requests['design.capture'].result(captured), String(contentHeight)).not.toBe(INVALID);
+      for (const region of [undefined, 'fullPage' as const, { selector: '#tasks' }]) {
+        const rendered = await maximalRunner(contentHeight).render(target, { ...renderRequest, width: 2560, ...(region ? { region } : {}) }, signal);
+        expect(CORE_TO_MAIN.requests['design.render'].result(rendered), `${contentHeight} ${JSON.stringify(region)}`).not.toBe(INVALID);
+      }
     }
     const journey = await maximalRunner(900).journey(target, { relPath: capture.relPath, widths: [390], state: null, steps: contacts.steps as JourneyStep[], outline: true }, signal);
     expect(journey.consoleErrors).toHaveLength(MAX_CONSOLE_ERRORS);

@@ -11,7 +11,7 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { AgentStopReason } from '../agent-records';
 import type { LifetimeUsage } from './usage';
 import type { ImageBlock } from '../../../shared/types/content';
-import type { UserSteerNote } from '../../../shared/steer';
+import type { UserAnswerNote, UserSteerNote } from '../../../shared/steer';
 import type { AgentUsageTotals } from '../../../shared/usage-accounting';
 import type { WindDownNotice } from '../wind-down-notice';
 import type { AgentWindDown } from '../../../shared/types/wind-down';
@@ -122,6 +122,8 @@ export interface AgentRecord {
   /** Steering messages issued by the USER via `/steer` (not the model's SteerSubagent tool). Surfaced to
    *  the parent when it consumes this subagent's result, so it knows the user redirected the subagent. */
   userSteers?: UserSteerNote[] | undefined;
+  /** Questions this agent asked the user in a design chat, surfaced to the parent with its result like `userSteers`. */
+  userAnswers?: UserAnswerNote[] | undefined;
   /** The tool_use_id from the original Agent tool call (the webview `parentToolUseId`). */
   toolCallId: string;
   /** Why a `stopped` agent was stopped. */

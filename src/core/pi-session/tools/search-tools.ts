@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { access, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
@@ -75,6 +76,25 @@ function normalizeToolPath(input: string, stripPrefix: boolean): string {
 export function resolveToCwd(filePath: string, cwd: string): string {
   const normalized = normalizeToolPath(filePath, true);
   return path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(normalizeToolPath(cwd, false), normalized);
+}
+
+/** The paths pi's Read tries for `resolved`, in its order (`dist/core/tools/path-utils.js`), which its package does not export; keep the two in step. */
+function readPathCandidates(resolved: string): string[] {
+  const nfd = resolved.normalize('NFD');
+  return [...new Set([resolved, resolved.replace(/ (AM|PM)\./gi, '\u202F$1.'), nfd, resolved.replace(/'/g, '\u2019'), nfd.replace(/'/g, '\u2019')])];
+}
+
+/** pi's `resolveReadPath`, for the evaluator's synchronous rule match; a tool resolves with `resolveReadPathAsync`. */
+export function resolveReadPath(resolved: string): string {
+  return readPathCandidates(resolved).find((candidate) => existsSync(candidate)) ?? resolved;
+}
+
+/** pi's `resolveReadPathAsync`: `resolveReadPath` off the host thread, since a candidate on a share can block until SMB times out. */
+export async function resolveReadPathAsync(resolved: string): Promise<string> {
+  for (const candidate of readPathCandidates(resolved)) {
+    if (await access(candidate).then(() => true, () => false)) return candidate;
+  }
+  return resolved;
 }
 
 function aborted(): Error {

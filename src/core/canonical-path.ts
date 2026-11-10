@@ -3,8 +3,8 @@ import { isIPv6 } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
 import * as path from 'node:path';
 
-/** How many dangling links `canonicalPath` follows, as the OS bounds a link chain. */
-const MAX_LINK_HOPS = 40;
+/** How many links a walk without realpath follows (`canonicalPath`'s dangling links, worktree isolation's link walk), as the OS bounds a link chain. */
+export const MAX_LINK_HOPS = 40;
 
 /** The file system reads the path functions take; a failed read is null, never a throw. */
 export interface PathQueries {

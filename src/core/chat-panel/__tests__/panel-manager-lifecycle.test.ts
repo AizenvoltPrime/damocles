@@ -3,6 +3,12 @@ import * as os from 'os';
 import * as path from 'path';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
+// the stored sessions showSession finds a file for, besides the real lookup
+const storedFiles = vi.hoisted(() => new Set<string>());
+vi.mock('../../pi-session/session-store/reading', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../pi-session/session-store/reading')>();
+  return { ...actual, resolvePiSessionFile: async (cwd: string, sessionId: string) => (storedFiles.has(sessionId) ? `/sessions/${sessionId}.jsonl` : actual.resolvePiSessionFile(cwd, sessionId)) };
+});
 vi.mock('../ide-context-manager', () => ({
   IdeContextManager: class {
     refresh(): void {}
@@ -210,6 +216,23 @@ describe('design chats (PD-1, PD-50)', () => {
     opened.fireMessage({ type: 'ready', panelToken: 'tok' });
     const openedId = await opening;
     expect(h.routed.filter((r) => r.panelId === openedId).map((r) => r.message)).toContainEqual({ type: 'resumeSession', sessionId: 'stored-1' });
+  });
+
+  // a daemon cancels a new panel whose device stayed away, which core sees as the panel closing before its page was ready
+  it('answers notShown when the panel it opened for a stored session closed before its page was ready, and resumes nothing there', async () => {
+    h = createHarness([folderEntry(A)]);
+    storedFiles.add('stored-2');
+    const cancelled = h.manager.showSession('stored-2', A);
+    await tick();
+    h.platform.window.panels.at(-1)!.close();
+    expect(await cancelled).toBe('notShown');
+    expect(h.routed.map((r) => r.message)).not.toContainEqual({ type: 'resumeSession', sessionId: 'stored-2' });
+
+    const opening = h.manager.showSession('stored-2', A);
+    await tick();
+    h.platform.window.panels.at(-1)!.fireMessage({ type: 'ready', panelToken: 'tok-2' });
+    expect(await opening).toBe('shown');
+    expect(h.routed.map((r) => r.message)).toContainEqual({ type: 'resumeSession', sessionId: 'stored-2' });
   });
 
   it("answers a shown session, and opens a screen's preview, only once the holding panel's reveal settled, so the preview opens where the chat shows", async () => {

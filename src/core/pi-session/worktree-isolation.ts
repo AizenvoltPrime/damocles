@@ -2,7 +2,8 @@
 // project folder or another worktree of the project, and git commands aimed there. It reads paths and command text, so it is
 // a guard against wrong-copy mistakes, not a sandbox (docs/worktree-isolation.md).
 import * as path from 'node:path';
-import { canonicalPath, rememberedPathQueries, spelledPath } from '../canonical-path';
+import { canonicalPath, MAX_LINK_HOPS, rememberedPathQueries, spelledPath, type PathQueries } from '../canonical-path';
+import { leavesLocalDrives, networkPathHost } from '../network-fs';
 import { TOOL_BASH, TOOL_POWERSHELL, WRITE_TOOLS } from '../../shared/tool-names';
 import { folderContains } from '../worktrees/records';
 import { COMPUTED_TEXT, DECLARATION_BUILTINS, MAX_COMMAND_LENGTH, parseShellStructure, type ShellLoop, type ShellPart, type ShellSegment, type ShellStructure } from './readonly-shell';
@@ -1015,12 +1016,47 @@ function byNesting<L extends LoopRange>(ranges: L[]): L[] {
   return ranges.sort((a, b) => a.head - b.head || b.end - a.end);
 }
 
+/**
+ * `queries` with no answer for a path that leaves this computer's drives for a host none of `folders` is on, by its spelling or
+ * through a link on its walk, which no protected area holds: reading it would send the user's Windows credentials there before
+ * any prompt. The walk reads links with lstat and readlink alone; a link it cannot read counts as leaving. A drive's device
+ * path (`\\?\C:\`) is still read, since it may name a protected area.
+ */
+function onChatHosts(queries: PathQueries, folders: readonly string[]): PathQueries {
+  const hosts = new Set(folders.map(networkPathHost).filter((host): host is string => host !== undefined && host !== ''));
+  const offDrives = (p: string): boolean => leavesLocalDrives(p, hosts) && !/^[\\/]{2}[?.][\\/][a-z]:/i.test(p);
+  // whether following p's links, its last segment's too when `last`, meets a path off the drives
+  const leadsOff = (p: string, last: boolean): boolean => {
+    let current = path.resolve(p);
+    for (let hops = 0; hops <= MAX_LINK_HOPS; hops++) {
+      if (offDrives(current)) return true;
+      const { root } = path.parse(current);
+      const segments = current.slice(root.length).split(path.sep).filter(Boolean);
+      let prefix = root;
+      let next: string | undefined;
+      for (let index = 0; index < segments.length - (last ? 0 : 1); index++) {
+        prefix = path.join(prefix, segments[index]!);
+        if (queries.lstat(prefix)?.isSymbolicLink() !== true) continue;
+        const target = queries.readlink(prefix);
+        if (target === null) return true;
+        next = path.resolve(path.dirname(prefix), target, ...segments.slice(index + 1));
+        break;
+      }
+      if (next === undefined) return false;
+      current = next;
+    }
+    return true;
+  };
+  const local = <T>(read: (p: string) => T | null, last: boolean) => (p: string): T | null => (leadsOff(p, last) ? null : read(p));
+  return { realpath: local(queries.realpath, true), lstat: local(queries.lstat, false), readlink: local(queries.readlink, false) };
+}
+
 class IsolationRun {
   private readonly iso: WorktreeIsolation;
   private readonly canonical = new Map<string, string>();
   private readonly forms = new Map<string, readonly string[]>();
   // Paths a check reads share their prefixes, so the file system is read once per path for the whole check.
-  private readonly paths = rememberedPathQueries();
+  private readonly paths: PathQueries;
   private areas: { working: readonly string[]; edits: readonly Area[]; git: readonly Area[] } | undefined;
   private reading: Reading = { resolving: false, sites: new Map(), poisoned: false, resolved: new Set(), invalid: false, deferred: false };
   private readonly textIds = new Map<string, number>();
@@ -1058,6 +1094,11 @@ class IsolationRun {
   constructor(iso: WorktreeIsolation, written = '') {
     this.iso = iso;
     this.written = written.toLowerCase();
+    const queries = rememberedPathQueries();
+    for (const folder of [iso.workingFolder, iso.projectPath, iso.repositoryRoot]) {
+      if (!this.canonical.has(folder)) this.canonical.set(folder, canonicalPath(folder, queries));
+    }
+    this.paths = onChatHosts(queries, [...this.canonical.keys(), ...this.canonical.values()]);
   }
 
   /**

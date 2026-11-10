@@ -507,8 +507,7 @@ export class PanelManager {
     if (holder) return (await holder.host.reveal()) === false ? "notShown" : "shown";
     if (sessionLeaseBlocker(sessionId)?.kind === "other-process") return "elsewhere";
     if ((await resolvePiSessionFile(cwd, sessionId)) === null) return "missing";
-    await this.openStored(sessionId);
-    return "shown";
+    return (await this.openStored(sessionId)) === undefined ? "notShown" : "shown";
   }
 
   /**
@@ -533,13 +532,16 @@ export class PanelManager {
     }
   }
 
-  /** Opens closed stored session `sessionId` in a new panel, through the session list's resume. */
-  async openStored(sessionId: string, folderKey?: string): Promise<string> {
+  /**
+   * Opens closed stored session `sessionId` in a new panel, through the session list's resume. Undefined when the panel closed
+   * before its webview was ready, as a daemon's cancelled create of a device that stayed away disposes it.
+   */
+  async openStored(sessionId: string, folderKey?: string): Promise<string | undefined> {
     const panelId = await this.trackOpening(this.openPanelOn(folderKey));
     const instance = this.panels.get(panelId);
     // Posts before the webview's first `ready` are dropped, so the resume waits for it.
     await instance?.webviewReady;
-    if (!instance || this.panels.get(panelId) !== instance) return panelId;
+    if (!instance || this.panels.get(panelId) !== instance) return undefined;
     await this.handleWebviewMessage({ type: "resumeSession", sessionId }, panelId);
     return panelId;
   }

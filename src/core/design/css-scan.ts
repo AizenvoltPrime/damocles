@@ -102,6 +102,37 @@ export function cssUrls(value: string): string[] {
 }
 
 /**
+ * The strings an `image-set()` (or `-webkit-image-set()`) lists bare, such as `image-set("a.png" 1x)`, which load as a `url()`
+ * would; its `url()`s are `cssUrls`'. One pass: a call is read to its closing parenthesis and the search goes on after it.
+ */
+export function imageSetStrings(value: string): string[] {
+  const strings: string[] = [];
+  const lower = value.toLowerCase();
+  for (let at = lower.indexOf('image-set('); at !== -1; at = lower.indexOf('image-set(', at)) {
+    let depth = 1;
+    let i = at + 'image-set('.length;
+    for (; i < value.length && depth > 0; i++) {
+      const ch = value[i]!;
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (ch === '"' || ch === "'") {
+        let end = i + 1;
+        while (end < value.length && value[end] !== ch) end += value[end] === '\\' ? 2 : 1;
+        if (depth === 1) strings.push(value.slice(i + 1, end));
+        i = end;
+      }
+    }
+    at = i;
+  }
+  return strings.filter((text) => text !== '');
+}
+
+/** Every resource a declaration value loads: its `url()`s and the bare strings of its `image-set()`s. */
+export function cssResourceRefs(value: string): string[] {
+  return [...cssUrls(value), ...imageSetStrings(value)];
+}
+
+/**
  * Reads `css` once. Comments are skipped, strings kept whole; a declaration counts only when it sits directly in a
  * tokens block, so `--x` inside `.dark { }` nested in `:root` does not.
  */

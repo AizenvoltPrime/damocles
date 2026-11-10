@@ -57,7 +57,7 @@ import type { ToolsSnapshot, ToolGroup } from './tools';
 import type { WorkspaceFolderInfo } from './workspace-folders';
 import type { SettingsAccountId, SettingsSectionId } from '../settings-sections';
 import type { LocalizedText } from '../localized-text';
-import type { DesignApprovalChoice, DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignPreviewImage, DesignReferenceNote, DesignResultDecision, DesignResultView, DesignVersionChoice, PlanApprovalDesignLink } from './design';
+import type { DesignApprovalChoice, DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignPreviewImage, DesignReferenceNote, DesignResultDecision, DesignResultView, DesignVersionChoice, PlanApprovalDesignLink, UncheckedDecisionGroup } from './design';
 import type { DesignMarkupNote } from '../design-markup';
 import type { UserMemoryViewRequest } from '../remote-user';
 
@@ -789,7 +789,8 @@ export type ExtensionToWebviewMessage =
   | { type: "customAgents"; agents: CustomAgentInfo[] }
   | { type: "messageQueued"; message: QueuedMessage }
   | { type: "queueProcessed"; messageId: string }
-  | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[] }
+  /** `designMarkup`: the one message is a markup steered mid-run (D94), shown with its card as `userMessage` shows one. */
+  | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[]; designMarkup?: DesignMarkupNote }
   /**
    * `messageId`: a queued chip's id, or the correlation id of a prompt pi queued into the running run.
    * `returnToInput`: the message was never sent, and goes back into the composer rather than away.
@@ -1049,6 +1050,8 @@ export type ExtensionToWebviewMessage =
       decisions: DesignResultDecision[];
       screens: DesignApprovalScreen[];
       hasParent: boolean;
+      /** Decisions the conflict check could not check, grouped by cause, which the user approves knowingly (feature `chat.designDecisionChecks`). */
+      uncheckedDecisions?: UncheckedDecisionGroup[];
       owner: PromptOwner;
     }
   /** The approval prompt closed: answered from any view, or ended with the run, the panel, a reset or a resume switch. */

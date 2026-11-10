@@ -14,13 +14,41 @@ export function designChatName(designTitle: string): string {
   return `${DESIGN_CHAT_TITLE_PREFIX}${designTitle}`;
 }
 
+/** A current decision the conflict check found a new decision contradicts or restates; `reason` is the check model's words. */
+export interface DesignDecisionConflict {
+  id: string;
+  kind: 'contradicts' | 'restates';
+  reason: string;
+}
+
+/**
+ * Why a decision's conflict check could not run: no background model, the model unreachable, the request refused, no valid
+ * answer, or the run was stopped before it ran.
+ */
+export type DecisionCheckUnavailable = 'noModel' | 'unreachable' | 'rejected' | 'unanswered' | 'stopped';
+
+/** Decisions whose conflict check could not run for one cause. */
+export interface UncheckedDecisionGroup {
+  ids: string[];
+  cause: DecisionCheckUnavailable;
+}
+
 export interface DesignDecisionView {
   id: string;
   title: string;
   chosen: string;
   rejected: string[];
   source: { kind: DesignDecisionSourceKind; ref: string };
+  /** Only from a core that predates `replaces`, which reads a stored one as `replaces: [supersedes]`. */
   supersedes?: string;
+  /** The decisions this one replaces in full; a replaced decision is history, no longer current. */
+  replaces?: string[];
+  /** Current decisions that stay valid beside this one. */
+  stillHolds?: string[];
+  /** A question decision's stored flags (feature `chat.designDecisionChecks`). */
+  conflicts?: DesignDecisionConflict[];
+  conflictCheck?: 'checked' | 'unchecked';
+  uncheckedReason?: DecisionCheckUnavailable;
 }
 
 export interface DesignCheckIssue {
@@ -59,24 +87,29 @@ export interface DesignCheckSummary {
   widthChecks?: { skipped: LocalizedText };
 }
 
-/** DesignScreenshot's details. Its images follow `screens` in order, each screen's widths ascending; none when `outline`. */
+/**
+ * DesignScreenshot's details. Its images follow `screens` in order, each screen's widths ascending, one `widths` entry per image
+ * (a full-page or selector capture repeats its width once per frame, `top` CSS px down); none when `outline`.
+ */
 export interface DesignScreenshotDetails {
-  screens: { screen: string; file: string; contentHash: string; widths: { breakpoint: string | null; width: number; cssHeight: number }[] }[];
+  /** `cssWidth`: the frame's own width when it is narrower than `width` (a selector's box). */
+  screens: { screen: string; file: string; contentHash: string; widths: { breakpoint: string | null; width: number; cssWidth?: number; cssHeight: number; top?: number }[] }[];
   /** The model reads no images, so it got the probe outline as text and the result holds no image. */
   outline: boolean;
 }
 
 /**
- * A journey step's element (PD-45), matched exactly as Playwright's `getByRole(role, {name, exact: true})`, `getByLabel`,
- * `getByPlaceholder` and `getByText` with `exact: true` match it; never a CSS or `data-ds` selector.
+ * A journey step's element (PD-45), matched as Playwright's `getByRole(role, {name, exact})`, `getByLabel`, `getByPlaceholder`
+ * and `getByText` match it; never a CSS or `data-ds` selector. `exact` absent means exact; `false` is a whitespace-normalized,
+ * case-insensitive substring match.
  */
 export type JourneyTarget =
-  | { readonly role: string; readonly name: string }
-  | { readonly label: string }
-  | { readonly placeholder: string }
-  | { readonly text: string };
+  | { readonly role: string; readonly name: string; readonly exact?: boolean }
+  | { readonly label: string; readonly exact?: boolean }
+  | { readonly placeholder: string; readonly exact?: boolean }
+  | { readonly text: string; readonly exact?: boolean };
 
-export type JourneyAction = 'fill' | 'select' | 'click' | 'press' | 'assert';
+export type JourneyAction = 'fill' | 'select' | 'click' | 'press' | 'scroll' | 'assert';
 
 /** The keys a `press` step may name (Playwright's key names). */
 export const JOURNEY_KEYS = ['Enter', 'Escape', 'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'] as const;
@@ -86,15 +119,18 @@ export type JourneyKey = (typeof JOURNEY_KEYS)[number];
 export type JourneyExpect = { readonly visible: boolean } | { readonly textContains: string } | { readonly valueEquals: string };
 
 /**
- * One step of a journey: `value` on fill and select only, `key` on press only, `expect` on assert only. A journey has at most
+ * One step of a journey: `value` on fill and select only, `key` on press only, `expect` on assert only, `to` on scroll only.
+ * Every action but scroll names a target; scroll names a target, `to: 'end'` or both. A journey has at most
  * MAX_JOURNEY_STEPS steps, asserts counted, and every action is followed by an assert.
  */
 export interface JourneyStep {
   readonly action: JourneyAction;
-  readonly target: JourneyTarget;
+  readonly target?: JourneyTarget;
   readonly value?: string;
   readonly key?: JourneyKey;
   readonly expect?: JourneyExpect;
+  /** scroll: wheel the target, else the page, to its end. */
+  readonly to?: 'end';
 }
 
 /**
@@ -139,8 +175,10 @@ export interface JourneyFile {
   readonly viewports: readonly JourneyViewport[];
   /** A state the screen declares, `default` when it declares none. */
   readonly state: string;
-  /** The SHA-256 of the screen file's bytes the run loaded; another hash makes the journey stale (PD-21). */
+  /** The SHA-256 of the screen file's bytes the run loaded. */
   readonly contentHash: string;
+  /** The screen's render inputs' hash the run loaded (`renderInputHashes`, D86); another one, or none, makes the journey stale (PD-21). */
+  readonly renderHash?: string;
   readonly steps: readonly JourneyStep[];
   /** One per viewport, in the same order. */
   readonly results: readonly JourneyWidthResult[];
@@ -225,6 +263,7 @@ export interface DesignChatStateView {
   status: DesignStatus;
   version: number | null;
   fidelity: DesignFidelity | null;
+  /** Every decision on the branch; `conflicts` holds only the flags still active, which DesignCheck reports. */
   decisions: DesignDecisionView[];
   ruleSet: DesignRuleSetId;
   /** `damocles.design.enabled`; false: the chat refuses sends. */
@@ -254,12 +293,14 @@ export interface DesignResultDecision {
   id: string;
   title: string;
   chosen: string;
+  /** The decisions it replaced; absent from a version that predates it. */
+  replaces?: string[];
 }
 
 /** One change from a version to the next: a screen by its id, or a decision the later version added. */
 export type DesignChange =
   | { kind: 'screenAdded' | 'screenChanged' | 'screenRemoved'; screen: string }
-  | { kind: 'decisionAdded'; id: string; title: string; chosen: string };
+  | { kind: 'decisionAdded'; id: string; title: string; chosen: string; replaces?: string[] };
 
 /** The `damocles-design-result` entry's details; the card renders from these alone. */
 export interface DesignResultView {
@@ -277,6 +318,8 @@ export interface DesignResultView {
   changes: DesignChange[];
   /** Only on a card the version pause appended (PD-29): the version the latest plan approval recorded, 0 for none. No run started with it. */
   versionPause?: { fromVersion: number };
+  /** Decisions the user approved while their conflict check could not run; absent when there were none. */
+  uncheckedDecisions?: string[];
 }
 
 /** Where `ExitPlanMode`'s result `details` record the design version its plan was approved against (PD-16), on every outcome. */
@@ -392,8 +435,8 @@ export function parseFinishDesignUnapprovedDetails(value: unknown): FinishDesign
 export function parseDesignScreenshotDetails(value: unknown): DesignScreenshotDetails | undefined {
   if (!isObject(value) || typeof value['outline'] !== 'boolean' || !Array.isArray(value['screens'])) return undefined;
   const widthOk = (width: unknown): boolean => isObject(width) && isFiniteNumber(width['width']) && isFiniteNumber(width['cssHeight'])
-    && (width['breakpoint'] === null || typeof width['breakpoint'] === 'string');
-  const screenOk = (screen: unknown): boolean => isObject(screen) && typeof screen['screen'] === 'string' && Array.isArray(screen['widths']) && screen['widths'].every(widthOk);
+    && (width['cssWidth'] === undefined || isFiniteNumber(width['cssWidth'])) && (width['breakpoint'] === null || typeof width['breakpoint'] === 'string');
+  const screenOk = (screen: unknown): boolean => isObject(screen) && typeof screen['screen'] === 'string' && typeof screen['file'] === 'string' && Array.isArray(screen['widths']) && screen['widths'].every(widthOk);
   return value['screens'].every(screenOk) ? (value as unknown as DesignScreenshotDetails) : undefined;
 }
 
@@ -406,6 +449,20 @@ export function parseInventoryDetails(value: unknown): InventoryDetails | undefi
 export interface ImportAssetDetails {
   asset: string;
   bytes: number;
+  /** The project path, absolute file path or URL the asset was copied from; absent from a result that predates it. */
+  source?: string;
+}
+
+export interface RemoveDesignFileDetails {
+  /** The file asked for, relative to the design folder. */
+  file: string;
+  /** Every design file removed: the file, and for a screen its journey files. */
+  removed: string[];
+}
+
+export interface OpenPreviewDetails {
+  /** The page whose preview tab opened, relative to the design folder. */
+  file: string;
 }
 
 export type FinishDesignDelivery = 'live' | 'queued' | 'notified' | 'no-parent';
@@ -574,4 +631,51 @@ export interface DesignCapture {
   readonly cssHeight: number;
   readonly contentHeight: number;
   readonly scale: number;
+}
+
+/** The media features a render pins (`Emulation.setEmulatedMedia`); DEFAULT_RENDER_MEDIA is the normal look. */
+export interface DesignRenderMedia {
+  readonly colorScheme: 'light' | 'dark';
+  readonly reducedMotion: 'no-preference' | 'reduce';
+  readonly forcedColors: 'none' | 'active';
+  readonly contrast: 'no-preference' | 'more' | 'less';
+  readonly reducedTransparency: 'no-preference' | 'reduce';
+}
+
+/** `design.render`'s request beside the design and path (D85): what to show, and how to size and encode it for the model. */
+export interface DesignRenderRequest {
+  readonly width: number;
+  /** A declared state, null for the default. */
+  readonly state: string | null;
+  readonly media: DesignRenderMedia;
+  /** Journey steps run in the same page before the capture; no assert need follow an action. */
+  readonly steps?: readonly JourneyStep[];
+  /** Absent: the top frame. `fullPage`: frames down the content, at most MAX_FULL_PAGE_FRAMES. `selector`: the first match's box. */
+  readonly region?: 'fullPage' | { readonly selector: string };
+  readonly format: 'jpeg' | 'png';
+  /** The image's longest side in device px. */
+  readonly maxSide: number;
+  /** JPEG quality, 1 to 100. */
+  readonly quality: number;
+  /** Each image's bytes at most. */
+  readonly maxBytes?: number;
+}
+
+export interface DesignRenderFrame {
+  readonly image: Uint8Array;
+  readonly mimeType: 'image/jpeg' | 'image/png';
+  readonly cssWidth: number;
+  readonly cssHeight: number;
+  /** CSS px from the top of the document. */
+  readonly top: number;
+}
+
+/** `design.render`'s answer: settled, media-pinned frames, and whether the page never became still within the bound. */
+export interface DesignRender {
+  readonly frames: readonly DesignRenderFrame[];
+  readonly contentHeight: number;
+  readonly scale: number;
+  readonly moving: boolean;
+  /** A selector region: the bottom of the element's box in CSS px of the document, which the frames may end before. */
+  readonly boxBottom?: number;
 }

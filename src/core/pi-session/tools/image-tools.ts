@@ -1,5 +1,6 @@
-import { lstat, mkdir, writeFile } from 'fs/promises';
-import { dirname, extname } from 'path';
+import { randomBytes } from 'crypto';
+import { link, lstat, mkdir, open, rename, rm } from 'fs/promises';
+import { basename, dirname, extname, join } from 'path';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
@@ -146,6 +147,38 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
+/** link() errors of a file system without hard links (FAT, exFAT, some network shares); Windows reports FAT's as EISDIR. */
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS', 'EISDIR']);
+
+/**
+ * Creates `filePath` holding `bytes`, never replacing a file, so a reader sees no file or the whole image: a synced hidden
+ * temp file in the same folder is hard-linked into place, which fails with EEXIST if the name was taken meanwhile.
+ * The temp file is always removed.
+ */
+async function createFileAtomically(filePath: string, bytes: Buffer, signal: AbortSignal | undefined): Promise<void> {
+  const temp = join(dirname(filePath), `.${basename(filePath)}.${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    const handle = await open(temp, 'wx');
+    try {
+      await handle.writeFile(bytes, signal ? { signal } : {});
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    signal?.throwIfAborted();
+    try {
+      await link(temp, filePath);
+    } catch (err) {
+      if (!LINK_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+      // rename replaces an existing file, so one created between this check and the rename is lost.
+      if (await pathExists(filePath)) throw Object.assign(new Error(`EEXIST: file already exists, ${filePath}`), { code: 'EEXIST' });
+      await rename(temp, filePath);
+    }
+  } finally {
+    await rm(temp, { force: true }).catch((err: unknown) => log('[GenerateImage] could not remove the temp file %s: %s', temp, err));
+  }
+}
+
 /**
  * The deferred `GenerateImage` tool. It runs after the write gate approved `file_path` and the prompt,
  * so it never changes the path: a format the extension does not match fails, writes nothing, and names
@@ -211,8 +244,9 @@ export function createGenerateImageTool(deps: ImageToolDeps): ToolDefinition {
       try {
         await mkdir(dirname(filePath), { recursive: true });
         if (signal?.aborted) return failure('Image generation was aborted. Nothing was written.', details, usage);
-        await writeFile(filePath, bytes, { flag: 'wx' });
+        await createFileAtomically(filePath, bytes, signal);
       } catch (err) {
+        if (signal?.aborted) return failure('Image generation was aborted. Nothing was written.', details, usage);
         const code = (err as NodeJS.ErrnoException).code;
         return failure(
           code === 'EEXIST'

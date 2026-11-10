@@ -6,6 +6,7 @@ import { designPreviewRefusal, questionPreviewRefusal, QuestionManager, validate
 import { PermissionState } from '../../state';
 import type { CanUseToolContext } from '../../types';
 import { MAX_QUESTION_PREVIEW_CHARS, QUESTION_PREVIEW_FORM } from '../../../../shared/question-preview';
+import { MAX_SCREEN_BYTES } from '../../../design/design-paths';
 
 const validOption = (label: string) => ({ label, description: `desc for ${label}` });
 
@@ -201,7 +202,7 @@ describe('design-kind previews (PD-18)', () => {
     expect(await designPreviewRefusal(present.questions, folder)).toBeUndefined();
     const missing = validateQuestions([validQuestion({ options: [designOption('A', 'variants/b/S1.html'), validOption('B')] })], true);
     if (!missing.ok) throw new Error(missing.reason);
-    expect(await designPreviewRefusal(missing.questions, folder)).toMatch(/variants\/b\/S1\.html is not a screen of this design \(missing\)/);
+    expect(await designPreviewRefusal(missing.questions, folder)).toBe('questions[0].options[0].preview.path: variants/b/S1.html is not a file of this design yet; write it first.');
   });
 
   it('refuses a screen reached through a link out of the folder', async () => {
@@ -212,7 +213,15 @@ describe('design-kind previews (PD-18)', () => {
     fs.symlinkSync(outside, path.join(folder, 'variants', 'out'), 'junction');
     const linked = validateQuestions([validQuestion({ options: [designOption('A', 'variants/out/S1.html'), validOption('B')] })], true);
     if (!linked.ok) throw new Error(linked.reason);
-    expect(await designPreviewRefusal(linked.questions, folder)).toMatch(/is not a screen of this design \(outside\)/);
+    expect(await designPreviewRefusal(linked.questions, folder)).toBe('questions[0].options[0].preview.path: variants/out/S1.html leads outside the design folder through a link, so it cannot be previewed.');
+  });
+
+  it('refuses a screen over the preview size limit', async () => {
+    const folder = designFolder();
+    fs.writeFileSync(path.join(folder, 'variants', 'a', 'big.html'), Buffer.alloc(MAX_SCREEN_BYTES + 1, 0x20));
+    const large = validateQuestions([validQuestion({ options: [designOption('A', 'variants/a/big.html'), validOption('B')] })], true);
+    if (!large.ok) throw new Error(large.reason);
+    expect(await designPreviewRefusal(large.questions, folder)).toBe('questions[0].options[0].preview.path: variants/a/big.html is over the preview size limit of 2 MiB, so it cannot be previewed.');
   });
 
   it('QuestionManager refuses a design preview outside a design chat and one whose file is missing, before it asks', async () => {
@@ -224,7 +233,7 @@ describe('design-kind previews (PD-18)', () => {
     const folder = designFolder();
     manager.setDesignFolder(() => folder);
     const gone = { questions: [validQuestion({ options: [designOption('A', 'variants/z/S1.html'), validOption('B')] })] };
-    expect(await manager.handleQuestion(gone, context)).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/is not a screen of this design/) });
+    expect(await manager.handleQuestion(gone, context)).toMatchObject({ behavior: 'deny', message: expect.stringMatching(/is not a file of this design yet/) });
     expect(posted).toEqual([]);
   });
 });

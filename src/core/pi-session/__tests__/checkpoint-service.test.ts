@@ -62,6 +62,14 @@ function fakeProducer() {
       await new Promise<void>((resolve) => releases.set(userEntryId, resolve));
       return { ok: true as const, entries: [] };
     }),
+    // Released by its newest entry; each earlier entry's record comes back with the start.
+    turnStartBatch: vi.fn(async (inputs: ReadonlyArray<{ userEntryId: string; prompt: string }>) => {
+      const ids = inputs.map((input) => input.userEntryId);
+      calls.push(`turnStartBatch:${ids.join(',')}`);
+      pending = ids.at(-1)!;
+      await new Promise<void>((resolve) => releases.set(ids.at(-1)!, resolve));
+      return { ok: true as const, entries: ids.slice(0, -1).map(entryFor) };
+    }),
     markNotRewindable: vi.fn((userEntryId: string, reason: string, params: NotRewindableParams) => {
       calls.push(`mark:${userEntryId}:${reason}`);
       marked.set(userEntryId, params);
@@ -228,6 +236,53 @@ describe('CheckpointService.awaitBaselineOf', () => {
     fake.release('u2');
     await wait;
     expect(done).toBe(true);
+  });
+
+  // Guards the deadlock where a markup steered beside a cancel note and a typed batch waited on a turn nothing started.
+  it('starts the user entries one boundary committed on one baseline, oldest first, which every entry\'s waiter waits on', async () => {
+    const { service, fake, persisted } = makeService({ baselineWaitMs: () => 60_000 });
+    const message = (id: string, role: string) => ({ type: 'message', id, parentId: null, timestamp: '', message: { role, content: [] } }) as unknown as SessionEntry;
+    const hookContext = { type: 'custom_message', id: 'ctx', parentId: null, timestamp: '' } as unknown as SessionEntry;
+    const sm = treeReader([userEntry('u1'), message('a1', 'assistant'), message('t1', 'toolResult'), userEntry('u-note'), userEntry('u-markup'), hookContext, userEntry('u-batch')]);
+    service.startTurn(sm, 'u1', 'p');
+    const markup = service.awaitBaselineOf('u-markup', never, 'design.markup');
+    service.onMessageStart({ role: 'assistant' }, sm);
+    await vi.waitFor(() => expect(fake.released('u1')).toBe(true));
+    fake.release('u1');
+    await vi.waitFor(() => expect(fake.released('u-batch')).toBe(true));
+    expect(fake.calls).toEqual(['turnStart:u1', 'turnStartBatch:u-note,u-markup,u-batch']);
+    const gate = service.awaitBaseline(never, 'Edit');
+    expect(await settlesWithin(markup, 20)).toBe('pending');
+    expect(await settlesWithin(gate, 20)).toBe('pending');
+    fake.release('u-batch');
+    expect(await markup).toBe(true);
+    await gate;
+    await vi.waitFor(() => expect(persisted.map((r) => (r as CheckpointRecord).userEntryId)).toEqual(['u-note', 'u-markup']));
+  });
+
+  it('marks the shared baseline once when a waiter on an earlier entry of the boundary runs out', async () => {
+    const { service, fake, notices } = makeService();
+    const sm = treeReader([userEntry('u-note'), userEntry('u-markup')]);
+    service.onMessageStart({ role: 'assistant' }, sm);
+    await vi.waitFor(() => expect(fake.calls).toEqual(['turnStartBatch:u-note,u-markup']));
+    expect(await service.awaitBaselineOf('u-note', never, 'design.markup')).toBe(true);
+    // the newest entry's waiters share the timed-out turn, so they return at once with no second notice
+    expect(await settlesWithin(service.awaitBaseline(never, 'Edit'), 2_000)).toBe('settled');
+    expect(fake.calls).toEqual(['turnStartBatch:u-note,u-markup', 'mark:u-markup:baseline-timeout']);
+    expect(notices).toEqual([40]);
+    fake.release('u-markup');
+  });
+
+  it('starts no turn for user entries before the last turn it knows', async () => {
+    const { service, fake } = makeService({ baselineWaitMs: () => 60_000 });
+    // u-stopped is a prompt whose run stopped before any reply; u2 is the send that started its turn at its commit
+    const sm = treeReader([userEntry('u-stopped'), userEntry('u2')]);
+    service.startTurn(sm, 'u2', 'p');
+    service.onMessageStart({ role: 'assistant' }, sm);
+    await vi.waitFor(() => expect(fake.calls).toEqual(['turnStart:u2']));
+    fake.release('u2');
+    await service.drain(2_000);
+    expect(fake.calls).toEqual(['turnStart:u2']);
   });
 
   it('returns true at once for a turn already past, and false when the service ends before the turn starts', async () => {

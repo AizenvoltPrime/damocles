@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" data-ds-screen="S3" data-ds-states="default">
+<head>
+  <meta charset="utf-8">
+  <title>Feed</title>
+  <style>
+    html, body { margin: 0; font: 16px sans-serif; }
+    li { height: 80px; }
+    [role="dialog"] { position: fixed; inset: 100px 20px auto; padding: 16px; background: #ffffff; border: 2px solid #111827; }
+    [role="dialog"][hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <button type="button" id="save">Save changes</button>
+    <button type="button" id="filters">Open filters</button>
+  </header>
+  <!-- a div takes no focus, so a press in it reaches the document's listener as Playwright's would -->
+  <div role="dialog" aria-label="Filters" id="dialog" hidden><p>Only unread</p></div>
+  <ul id="feed" aria-label="Feed"></ul>
+  <div id="sentinel" style="height: 1px"></div>
+  <script>
+    const feed = document.getElementById('feed');
+    const dialog = document.getElementById('dialog');
+    let next = 1;
+    const batch = () => {
+      for (let index = 0; index < 20; index++, next++) {
+        const item = document.createElement('li');
+        item.textContent = `Item ${next}`;
+        feed.append(item);
+      }
+    };
+    batch();
+    // infinite scroll: the next batch loads once the end of the list comes into view
+    new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting) && next === 21) batch();
+    }).observe(document.getElementById('sentinel'));
+    document.getElementById('filters').addEventListener('click', () => {
+      dialog.hidden = false;
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') dialog.hidden = true;
+    });
+  </script>
+</body>
+</html>

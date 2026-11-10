@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { BookOpenCheck, Boxes, Camera, ChevronRight, FileDown, FileText, Images, Milestone, ScanSearch, SlidersHorizontal, SwatchBook } from 'lucide-vue-next';
+import { BookOpenCheck, Boxes, Camera, ChevronRight, Eye, FileDown, FileText, Images, Milestone, ScanSearch, SlidersHorizontal, SwatchBook, Trash2 } from 'lucide-vue-next';
 import type { ToolCall } from '@shared/types/session';
-import { TOOL_DECLARE_TWEAKS, TOOL_DESIGN_CHECK, TOOL_DESIGN_SCREENSHOT, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_INVENTORY, TOOL_LOAD_DESIGN_SKILL, TOOL_MAP_REFERENCE, TOOL_RECORD_DECISION } from '@shared/tool-names';
+import { TOOL_DECLARE_TWEAKS, TOOL_DESIGN_CHECK, TOOL_DESIGN_SCREENSHOT, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_INVENTORY, TOOL_LOAD_DESIGN_SKILL, TOOL_MAP_REFERENCE, TOOL_OPEN_PREVIEW, TOOL_RECORD_DECISION, TOOL_REMOVE_DESIGN_FILE } from '@shared/tool-names';
 import {
   DESIGN_DECISIONS_DETAIL_KEY,
   issueCount,
@@ -22,6 +22,7 @@ import type { ImageBlock } from '@shared/types/content';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useTKnown } from '@/composables/useTKnown';
 import { useUIStore } from '@/stores/useUIStore';
+import { useDesignStore } from '@/stores/useDesignStore';
 import { formatBytes } from '@/utils/format-bytes';
 import ToolCardFrame from '../ToolCardFrame.vue';
 import ToolErrorStrip from '../ToolErrorStrip.vue';
@@ -39,6 +40,7 @@ const emit = defineEmits<{ openLightbox: [image: string | ImageBlock] }>();
 const { t, locale } = useI18n();
 const tKnown = useTKnown();
 const uiStore = useUIStore();
+const designStore = useDesignStore();
 
 const TOOLS: Record<string, { icon: Component; nameKey: string }> = {
   [TOOL_INVENTORY]: { icon: Boxes, nameKey: 'design.tools.inventory' },
@@ -50,6 +52,14 @@ const TOOLS: Record<string, { icon: Component; nameKey: string }> = {
   [TOOL_LOAD_DESIGN_SKILL]: { icon: BookOpenCheck, nameKey: 'design.tools.loadDesignSkill' },
   [TOOL_DECLARE_TWEAKS]: { icon: SlidersHorizontal, nameKey: 'design.tools.declareTweaks' },
   [TOOL_MAP_REFERENCE]: { icon: Images, nameKey: 'design.tools.mapReference' },
+  [TOOL_REMOVE_DESIGN_FILE]: { icon: Trash2, nameKey: 'design.tools.removeDesignFile' },
+  [TOOL_OPEN_PREVIEW]: { icon: Eye, nameKey: 'design.tools.openPreview' },
+};
+// The input that names what a call works on, by tool; ImportAsset names exactly one of its sources.
+const ARG_KEYS: Readonly<Record<string, readonly string[]>> = {
+  [TOOL_IMPORT_ASSET]: ['path', 'file', 'url'],
+  [TOOL_REMOVE_DESIGN_FILE]: ['file'],
+  [TOOL_OPEN_PREVIEW]: ['file'],
 };
 const SESSION_OWNER = { kind: 'session' } as const;
 const CATEGORY_ORDER: readonly DesignInventoryCategoryKey[] = ['components', 'tokens', 'breakpoints', 'types', 'screens'];
@@ -82,6 +92,12 @@ const decisions = computed(() => {
   const value = details.value?.[DESIGN_DECISIONS_DETAIL_KEY];
   return props.toolCall.name === TOOL_RECORD_DECISION && Array.isArray(value) ? (value as DesignDecisionView[]) : [];
 });
+// A card is the record as it was written; the flags core still publishes as active are the ones that stand now.
+function activeConflictsOf(id: string): readonly string[] | undefined {
+  const state = designStore.design;
+  if (!state) return undefined;
+  return (state.decisions.find((decision) => decision.id === id)?.conflicts ?? []).map((flag) => flag.id);
+}
 
 const screenshot = computed(() => (props.toolCall.name === TOOL_DESIGN_SCREENSHOT ? parseDesignScreenshotDetails(details.value) : undefined));
 // One chip per image, in the result's image order: screens in order, each screen's widths ascending.
@@ -89,11 +105,13 @@ const screenshotCaptions = computed(() => {
   const screens = screenshot.value?.screens ?? [];
   return screens.flatMap((screen) => screen.widths.map((width) => {
     const at = width.breakpoint ? t('design.check.atBreakpoint', { breakpoint: width.breakpoint, width: width.width }) : t('design.check.atWidth', { width: width.width });
-    return screens.length > 1 ? `${screen.screen} · ${at}` : at;
+    // a variant's data-ds-screen names the screen it varies, so a page outside screens/ goes by its path
+    const name = screen.file.startsWith('screens/') ? screen.screen : screen.file;
+    return screens.length > 1 ? `${name} · ${at}` : at;
   }));
 });
 // Each image's box keeps its capture's aspect ratio, so the row never moves as the images load.
-const screenshotSizes = computed(() => (screenshot.value?.screens ?? []).flatMap((screen) => screen.widths.map((width) => ({ width: width.width, height: width.cssHeight }))));
+const screenshotSizes = computed(() => (screenshot.value?.screens ?? []).flatMap((screen) => screen.widths.map((width) => ({ width: width.cssWidth ?? width.width, height: width.cssHeight }))));
 
 const skills = computed(() => {
   const value = details.value as LoadDesignSkillDetails | undefined;
@@ -122,7 +140,8 @@ function sourceText(source: DesignDecisionView['source']): string {
 
 const arg = computed(() => {
   const input = props.toolCall.input;
-  if (props.toolCall.name === TOOL_IMPORT_ASSET && typeof input['path'] === 'string') return input['path'];
+  const named = (ARG_KEYS[props.toolCall.name] ?? []).map((key) => input[key]).find((value) => typeof value === 'string');
+  if (typeof named === 'string') return named;
   if (props.toolCall.name === TOOL_RECORD_DECISION && typeof input['title'] === 'string') return input['title'];
   if (checkErrors.value > 0) return t('design.check.errors', { n: checkErrors.value }, checkErrors.value);
   if (tokens.value) return t('design.tools.tokenCount', { n: tokens.value.count }, tokens.value.count);
@@ -331,9 +350,12 @@ const arg = computed(() => {
         :key="decision.id"
         class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
       >
-        <DesignDecisionChip :decision="decision" />
+        <DesignDecisionChip
+          :decision="decision"
+          :active-conflicts="activeConflictsOf(decision.id)"
+        />
         <span class="text-11 text-(--d-faint)">
-          {{ sourceText(decision.source) }}<template v-if="decision.supersedes"> · {{ t('design.decision.supersedes', { id: decision.supersedes }) }}</template>
+          {{ sourceText(decision.source) }}<template v-if="decision.replaces?.length"> · {{ t('design.decision.replaces', { ids: decision.replaces.join(', ') }) }}</template><template v-else-if="decision.supersedes"> · {{ t('design.decision.supersedes', { id: decision.supersedes }) }}</template><template v-if="decision.stillHolds?.length"> · {{ t('design.decision.stillHolds', { ids: decision.stillHolds.join(', ') }) }}</template><template v-if="decision.conflictCheck === 'unchecked'"> · {{ t('design.decision.unchecked') }}</template>
         </span>
       </li>
     </ul>

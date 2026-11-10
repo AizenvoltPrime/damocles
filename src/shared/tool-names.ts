@@ -40,10 +40,13 @@ export const TOOL_PREVIEW_JOURNEY = "PreviewJourney";
 export const TOOL_DECLARE_TWEAKS = "DeclareTweaks";
 export const TOOL_MAP_REFERENCE = "MapReference";
 export const TOOL_DESIGN_PARITY = "DesignParity";
+export const TOOL_REMOVE_DESIGN_FILE = "RemoveDesignFile";
+export const TOOL_OPEN_PREVIEW = "OpenPreview";
 
 /** The design chat's tools that `DesignToolCard` renders; StartDesign, FinishDesign, PreviewJourney and DesignParity have their own cards. */
 export const DESIGN_CHAT_TOOLS: ReadonlySet<string> = new Set([
   TOOL_INVENTORY, TOOL_EXTRACT_TOKENS, TOOL_IMPORT_ASSET, TOOL_DESIGN_CHECK, TOOL_RECORD_DECISION, TOOL_DESIGN_SCREENSHOT, TOOL_LOAD_DESIGN_SKILL, TOOL_DECLARE_TWEAKS, TOOL_MAP_REFERENCE,
+  TOOL_REMOVE_DESIGN_FILE, TOOL_OPEN_PREVIEW,
 ]);
 
 /** The cross-server MCP resource tools (pi 1.4.0's names); each call names its server in `input.server`. */

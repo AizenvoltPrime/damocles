@@ -206,12 +206,12 @@ describe('loadPermissionsByPriority — unusable files', () => {
   });
 
   it('drops an allow rule that can approve nothing and logs its file and index, never its value', async () => {
-    const inert = ['*', 'B*', 'mcp__*', 'mcp__git*__get_x', 'Edit(!secret-a/**)', 'Read(#secret-b)', 'Write(secret-c/**)'];
-    writeSettings(ORDERED_FILES[0], { allow: [...inert, 'mcp__github__get_*', 'Edit(src/**)', 'Write'], deny: inert, ask: inert });
+    const inert = ['*', 'B*', 'mcp__*', 'mcp__git*__get_x', 'Edit(!secret-a/**)', 'Read(#secret-b)', 'Write(secret-c/**)', 'WebFetch(secret-d.com)', 'WebFetch(domain:*.secret-e.com)'];
+    writeSettings(ORDERED_FILES[0], { allow: [...inert, 'mcp__github__get_*', 'Edit(src/**)', 'Write', 'WebFetch(domain:example.com)'], deny: inert, ask: inert });
 
     const result = await loadPermissionsByPriority(workspace);
 
-    expect(result[0]?.allow).toEqual(['mcp__github__get_*', 'Edit(src/**)', 'Write']);
+    expect(result[0]?.allow).toEqual(['mcp__github__get_*', 'Edit(src/**)', 'Write', 'WebFetch(domain:example.com)']);
     expect(result[0]?.deny).toEqual(inert);
     expect(result[0]?.ask).toEqual(inert);
     const logged = logMock.mock.calls.flat().join('\n');
@@ -220,8 +220,10 @@ describe('loadPermissionsByPriority — unusable files', () => {
     expect(logged).toContain(`${file} permissions.allow[4] is a ! carve-out`);
     expect(logged).toContain(`${file} permissions.allow[5] has a path that is not a usable gitignore pattern`);
     expect(logged).toContain(`${file} permissions.allow[6] is a Write path rule`);
+    expect(logged).toContain(`${file} permissions.allow[7] is a WebFetch rule whose specifier is not domain:<host>`);
+    expect(logged).toContain(`${file} permissions.allow[8] is a WebFetch domain rule that names no plain host`);
     expect(logged).not.toContain('secret');
-    expect(logMock).toHaveBeenCalledTimes(7);
+    expect(logMock).toHaveBeenCalledTimes(9);
   });
 
   it('keeps a URI-scoped MCP resource rule in every list exactly as written', async () => {

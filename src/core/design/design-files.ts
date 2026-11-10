@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { DesignCheckIssue, DesignFidelity, DesignFileInfo, DesignStatus } from '../../shared/types/design';
-import type { DesignDecisionRecord } from './design-entries';
+import { currentDecisions, replacedBy, type DesignDecisionRecord } from './design-entries';
 import type { ScreenJourney } from './journey';
 import { SCREEN_FILE } from '../../shared/design-paths';
-import { ASSETS_DIR, DECISIONS_FILE, MANIFEST_FILE, MAX_DESIGN_FILES, SCREENS_DIR, TOKENS_FILE } from './design-paths';
+import { DECISIONS_FILE, isDesignerRelative, MANIFEST_FILE, MAX_DESIGN_FILES, SCREENS_DIR, SHARED_DIR } from './design-paths';
 import { writeJsonAtomic, writeTextAtomic, type DesignVersionRecord } from './design-state';
+import { withDesignWrite } from './design-writes';
 
 export interface ManifestScreen {
   readonly id: string;
@@ -75,35 +76,49 @@ export async function listScreenFiles(folder: string): Promise<string[]> {
   }
 }
 
+/**
+ * Page `relPath` (`isDesignPreviewPath`) as the folder spells it, matched case-blind with an exact match first: a screen as
+ * `listScreenFiles` lists it, a variant page by the names the folders on its path hold. Undefined when there is none.
+ */
+export async function pageAsSpelled(folder: string, relPath: string): Promise<string | undefined> {
+  const segments = relPath.split('/');
+  const blind = (name: string): string => name.toLowerCase();
+  if (blind(segments[0]!) === SCREENS_DIR) {
+    const screens = await listScreenFiles(folder);
+    return screens.find((screen) => screen === relPath) ?? screens.find((screen) => blind(screen) === blind(relPath));
+  }
+  const spelled: string[] = [];
+  for (const segment of segments) {
+    let names: string[];
+    try {
+      names = await fs.readdir(path.join(folder, ...spelled));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'ENOTDIR') return undefined;
+      throw err;
+    }
+    const name = names.includes(segment) ? segment : names.find((candidate) => blind(candidate) === blind(segment));
+    if (name === undefined) return undefined;
+    spelled.push(name);
+  }
+  return spelled.join('/');
+}
+
+/** Every shared file, `shared/<name>.css` or `shared/<name>.js` as the folder spells it (`isDesignerRelative`), sorted. */
+export async function listSharedFiles(folder: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(path.join(folder, SHARED_DIR), { withFileTypes: true });
+    return entries.filter((entry) => entry.isFile() && isDesignerRelative(`${SHARED_DIR}/${entry.name}`)).map((entry) => `${SHARED_DIR}/${entry.name}`).sort();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
 /** The SHA-256 of one file's bytes, streamed, so no file is held whole. */
 export async function fileHash(file: string): Promise<string> {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
   return hash.digest('hex');
-}
-
-async function presentFileHash(file: string): Promise<string> {
-  try {
-    return await fileHash(file);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
-    throw err;
-  }
-}
-
-/**
- * Each screen's render inputs hashed, by screen file: its bytes, tokens.css and every file of assets/, all a screen may load
- * (DesignCheck's `checkResourceRef`). Width checks reuse a probe at the same hash, and DesignParity compares it with the
- * delivered version's.
- */
-export async function renderInputHashes(folder: string, screenFiles: readonly string[]): Promise<Record<string, string>> {
-  const shared = createHash('sha256');
-  const assets = (await listDesignFiles(path.join(folder, ASSETS_DIR))).map((file) => `${ASSETS_DIR}/${file.path}`);
-  for (const relative of [TOKENS_FILE, ...assets]) shared.update(`${relative}\0${await presentFileHash(path.join(folder, ...relative.split('/')))}\n`);
-  const inputs = shared.digest('hex');
-  const hashes: Record<string, string> = {};
-  for (const file of screenFiles) hashes[file] = createHash('sha256').update(`${inputs}\n${file}\0${await presentFileHash(path.join(folder, ...file.split('/')))}`).digest('hex');
-  return hashes;
 }
 
 /** The folder's content: every file but manifest.json and decisions.md, which status and decisions rebuild (PD-24). */
@@ -142,22 +157,21 @@ export async function readManifest(folder: string, designId: string): Promise<De
   return manifest;
 }
 
-// Per folder, the manifest updates still to run: tools of one turn may run at once, and each update reads what the last wrote.
-const manifestChains = new Map<string, Promise<unknown>>();
+// Inside the folder's write lane.
+async function changeManifest(folder: string, designId: string, change: (current: DesignManifest) => Omit<DesignManifest, 'updatedAt'>): Promise<DesignManifest> {
+  const next: DesignManifest = { ...change(await readManifest(folder, designId)), updatedAt: new Date().toISOString() };
+  await writeJsonAtomic(path.join(folder, MANIFEST_FILE), next);
+  return next;
+}
 
-/** Replaces manifest.json with what `change` makes of it; updates of one folder run one at a time. */
+/** Drops screen file `file`'s manifest entry; the caller holds the folder's write lane. */
+export async function dropManifestScreen(folder: string, designId: string, file: string): Promise<void> {
+  await changeManifest(folder, designId, (current) => ({ ...current, screens: current.screens.filter((screen) => screen.file !== file) }));
+}
+
+/** Replaces manifest.json with what `change` makes of it, in the folder's write lane, so each update reads what the last wrote. */
 export function updateManifest(folder: string, designId: string, change: (current: DesignManifest) => Omit<DesignManifest, 'updatedAt'>): Promise<DesignManifest> {
-  const run = (manifestChains.get(folder) ?? Promise.resolve()).then(async () => {
-    const next: DesignManifest = { ...change(await readManifest(folder, designId)), updatedAt: new Date().toISOString() };
-    await writeJsonAtomic(path.join(folder, MANIFEST_FILE), next);
-    return next;
-  });
-  const settled = run.then(() => undefined, () => undefined);
-  manifestChains.set(folder, settled);
-  void settled.then(() => {
-    if (manifestChains.get(folder) === settled) manifestChains.delete(folder);
-  });
-  return run;
+  return withDesignWrite(folder, () => changeManifest(folder, designId, change));
 }
 
 /**
@@ -186,9 +200,9 @@ export async function markDesignEdited(folder: string, designId: string): Promis
 /** The Fidelity question's option labels, which the designer is told to offer; only an answer that is one of them sets the fidelity. */
 export const FIDELITY_OPTION_LABELS: Readonly<Record<DesignFidelity, string>> = { static: 'Static mockup', interactive: 'Interactive prototype' };
 
-/** The fidelity the latest decision titled Fidelity chose: the option whose label it is, case-blind; null for any other answer. */
+/** The fidelity the latest current decision titled Fidelity chose: the option whose label it is, case-blind; null for any other answer. */
 export function fidelityOf(decisions: readonly DesignDecisionRecord[]): DesignFidelity | null {
-  const decision = [...decisions].reverse().find((candidate) => candidate.title.trim().toLowerCase() === 'fidelity');
+  const decision = [...currentDecisions(decisions)].reverse().find((candidate) => candidate.title.trim().toLowerCase() === 'fidelity');
   if (!decision) return null;
   const chosen = decision.chosen.trim().toLowerCase();
   return (Object.keys(FIDELITY_OPTION_LABELS) as DesignFidelity[]).find((fidelity) => FIDELITY_OPTION_LABELS[fidelity].toLowerCase() === chosen) ?? null;
@@ -196,23 +210,47 @@ export function fidelityOf(decisions: readonly DesignDecisionRecord[]): DesignFi
 
 const DECISIONS_NOTICE = '<!-- Generated by Damocles from the design chat\'s decisions. Edits here are overwritten. -->';
 
-/** decisions.md: a generated-file notice, then one section per decision in branch order. */
-export function decisionsMarkdown(decisions: readonly DesignDecisionRecord[]): string {
-  const sections = decisions.map((decision) => [
+function decisionSection(decision: DesignDecisionRecord, lines: readonly string[]): string {
+  return [
     `## ${decision.id} · ${decision.title}`,
     '',
     `- Chosen: ${decision.chosen}`,
     `- Rejected: ${decision.rejected.length > 0 ? decision.rejected.join('; ') : 'none'}`,
     `- Source: ${decision.source.kind}${decision.source.ref ? ` (${decision.source.ref})` : ''}`,
     `- Files: ${decision.files.length > 0 ? decision.files.join(', ') : 'none'}`,
-    ...(decision.supersedes ? [`- Supersedes: ${decision.supersedes}`] : []),
-  ].join('\n'));
-  return [DECISIONS_NOTICE, '', '# Decisions', '', ...(sections.length > 0 ? [sections.join('\n\n')] : ['No decisions yet.']), ''].join('\n');
+    ...lines,
+  ].join('\n');
 }
 
-/** Rebuilds decisions.md and the manifest's fidelity from `decisions`, the active branch's (PD-15). */
-export async function writeDecisions(folder: string, designId: string, decisions: readonly DesignDecisionRecord[]): Promise<void> {
+/** decisions.md: a generated-file notice, the current decisions in branch order, then the replaced ones as history. */
+export function decisionsMarkdown(decisions: readonly DesignDecisionRecord[]): string {
+  const by = replacedBy(decisions);
+  const current = decisions.filter((decision) => !by.has(decision.id)).map((decision) => decisionSection(decision, [
+    ...(decision.replaces?.length ? [`- Replaces: ${decision.replaces.join(', ')}`] : []),
+    ...(decision.stillHolds?.length ? [`- Holds alongside: ${decision.stillHolds.join(', ')}`] : []),
+    ...(decision.conflictCheck === 'unchecked' ? ['- Not checked for conflicts with other decisions'] : []),
+    ...(decision.conflicts ?? []).map((flag) => `- Conflict: ${flag.kind} ${flag.id} (${flag.reason})`),
+  ]));
+  const history = decisions.filter((decision) => by.has(decision.id)).map((decision) => decisionSection(decision, [`- Replaced by: ${by.get(decision.id)!}`]));
+  return [
+    DECISIONS_NOTICE,
+    '',
+    '# Current decisions',
+    '',
+    ...(current.length > 0 ? [current.join('\n\n')] : ['No decisions yet.']),
+    ...(history.length > 0 ? ['', '# History', '', history.join('\n\n')] : []),
+    '',
+  ].join('\n');
+}
+
+/** Rebuilds decisions.md and the manifest's fidelity from `decisions`; the caller holds the folder's write lane. */
+export async function rewriteDecisions(folder: string, designId: string, decisions: readonly DesignDecisionRecord[]): Promise<void> {
   await writeTextAtomic(path.join(folder, DECISIONS_FILE), decisionsMarkdown(decisions));
   const fidelity = fidelityOf(decisions);
-  await updateManifest(folder, designId, (current) => ({ ...current, fidelity }));
+  await changeManifest(folder, designId, (current) => ({ ...current, fidelity }));
+}
+
+/** Rebuilds decisions.md and the manifest's fidelity in the folder's write lane, from the decisions `decisions` reads there (PD-15). */
+export function writeDecisions(folder: string, designId: string, decisions: readonly DesignDecisionRecord[] | (() => readonly DesignDecisionRecord[])): Promise<void> {
+  return withDesignWrite(folder, () => rewriteDecisions(folder, designId, typeof decisions === 'function' ? decisions() : decisions));
 }

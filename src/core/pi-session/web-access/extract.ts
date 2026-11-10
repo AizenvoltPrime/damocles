@@ -15,7 +15,7 @@ import { parseHTML } from 'linkedom';
 import TurndownService from 'turndown';
 import { getDocumentProxy } from 'unpdf';
 import { extractRSCContent } from './rsc-extract';
-import { safeFetch, readBodyCapped, assertPublicUrl } from './safe-fetch';
+import { safeFetch, readBodyCapped, assertPublicUrl, RedirectRefusedError } from './safe-fetch';
 import { mapWithConcurrency, withTimeout, errorMessage, isAbortError } from './util';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -30,7 +30,9 @@ const MULTI_URL_BUDGET = 10_000;
 export const MIN_CHAR_BUDGET = 1000;
 /** Byte cap for the Jina reader response, mirroring the direct-fetch HTML cap (prevents OOM on a huge body). */
 const JINA_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
-const NON_RECOVERABLE_ERRORS = ['Unsupported content type', 'Response too large', 'Invalid URL', 'Blocked'];
+const REDIRECT_NOT_FOLLOWED = 'Redirect not followed';
+// A refused redirect never falls back to the reader, which would follow it.
+const NON_RECOVERABLE_ERRORS = ['Unsupported content type', 'Response too large', 'Invalid URL', 'Blocked', REDIRECT_NOT_FOLLOWED];
 
 const BROWSER_HEADERS: Record<string, string> = {
   'User-Agent':
@@ -63,6 +65,11 @@ export interface ExtractOptions {
   raw?: boolean;
   includeLinks?: boolean;
   includeImages?: boolean;
+  /**
+   * Whether a deny or ask WebFetch rule covers a URL's host, which the fetch then never contacts on a step of its own: the GitHub
+   * raw rewrite, the reader fallback, or a redirect off the named URL's host.
+   */
+  hostRefused?: (url: string) => boolean;
 }
 
 interface ResolvedOptions {
@@ -274,12 +281,15 @@ async function extractWithJinaReader(url: string, budget: number, signal?: Abort
   }
 }
 
-/** Direct HTTP fetch + parse. Errors are tagged recoverable (→ Jina) or non-recoverable per prefix. */
-async function extractViaHttp(url: string, opts: ResolvedOptions, signal?: AbortSignal): Promise<ExtractedResult> {
+/**
+ * Direct HTTP fetch + parse. Errors are tagged recoverable (→ Jina) or non-recoverable per prefix. A redirect `redirectRefused`
+ * names is not followed, and the result names its target for the model to fetch as its own call.
+ */
+async function extractViaHttp(url: string, opts: ResolvedOptions, signal: AbortSignal | undefined, redirectRefused: ((target: string) => boolean) | undefined): Promise<ExtractedResult> {
   const { budget } = opts;
   return withTimeout(DEFAULT_TIMEOUT_MS, signal, async (fetchSignal) => {
     try {
-      const response = await safeFetch(url, { signal: fetchSignal, headers: BROWSER_HEADERS });
+      const response = await safeFetch(url, { signal: fetchSignal, headers: BROWSER_HEADERS }, redirectRefused ? { redirectRefused } : {});
 
       if (!response.ok) return failure(url, `HTTP ${response.status}: ${response.statusText}`);
 
@@ -369,6 +379,9 @@ async function extractViaHttp(url: string, opts: ResolvedOptions, signal?: Abort
           : 'Could not extract readable content from HTML structure',
       );
     } catch (err) {
+      if (err instanceof RedirectRefusedError) {
+        return failure(url, `${REDIRECT_NOT_FOLLOWED}: ${err.from} redirects (HTTP ${err.status}) to ${err.location}, whose host a WebFetch rule in the user's permission settings covers. To read it, call WebFetch with that URL; the rules judge that call.`);
+      }
       return failure(url, errorMessage(err));
     }
   });
@@ -399,25 +412,33 @@ function normalizeFetchUrl(url: string): string {
  * (PDF/HTML), then the Jina reader for recoverable failures. Never throws — a failure is returned as an
  * `error` entry. The URL is normalized first (e.g. GitHub blob → raw); the result keeps the
  * originally-requested URL. With `raw:true` the decoded body is returned verbatim and the Jina fallback
- * is skipped (raw means raw — whatever the direct fetch returned).
+ * is skipped (raw means raw — whatever the direct fetch returned). A host `opts.hostRefused` names is
+ * never contacted on a step the fetch takes by itself: the rewrite and the reader are skipped, and a
+ * redirect there off the named URL's host is not followed.
  */
 export async function extractUrl(url: string, signal?: AbortSignal, opts?: ExtractOptions): Promise<ExtractedResult> {
   if (signal?.aborted) return failure(url, 'Aborted');
+  let namedHost: string;
   try {
-    new URL(url);
+    namedHost = new URL(url).hostname;
   } catch {
     return failure(url, 'Invalid URL');
   }
 
   const resolved = resolveOptions(opts, SINGLE_URL_BUDGET);
-  const fetchUrl = normalizeFetchUrl(url);
+  const hostRefused = opts?.hostRefused;
+  const rewritten = normalizeFetchUrl(url);
+  const fetchUrl = hostRefused?.(rewritten) ? url : rewritten;
   const withRequestedUrl = (r: ExtractedResult): ExtractedResult => (fetchUrl === url ? r : { ...r, url });
+  // The named URL's host is the one the call's own rules judged.
+  const redirectRefused = hostRefused && ((target: string) => new URL(target).hostname !== namedHost && hostRefused(target));
 
-  const httpResult = await extractViaHttp(fetchUrl, resolved, signal);
+  const httpResult = await extractViaHttp(fetchUrl, resolved, signal, redirectRefused);
   if (signal?.aborted) return failure(url, 'Aborted');
   if (!httpResult.error) return withRequestedUrl(httpResult);
   if (resolved.raw) return withRequestedUrl(httpResult); // raw bypasses the Jina fallback entirely
   if (NON_RECOVERABLE_ERRORS.some((prefix) => httpResult.error!.startsWith(prefix))) return withRequestedUrl(httpResult);
+  if (hostRefused?.(JINA_READER_BASE)) return withRequestedUrl(httpResult);
 
   const jina = await extractWithJinaReader(fetchUrl, resolved.budget, signal);
   if (jina) return withRequestedUrl(jina);

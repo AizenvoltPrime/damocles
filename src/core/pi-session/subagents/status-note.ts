@@ -4,7 +4,7 @@
  * Ported from @tintinweb/pi-subagents (MIT, © 2026 tintinweb; see THIRD-PARTY-NOTICES.md).
  */
 
-import { formatUserSteerPrefix } from '../../../shared/steer';
+import { formatUserAnswerPrefix, formatUserSteerPrefix } from '../../../shared/steer';
 import type { AgentStopReason } from '../agent-records';
 import type { AgentRecord } from './types';
 
@@ -63,5 +63,5 @@ export function recordOutcomeText(record: AgentRecord): string {
 
 /** The final-result text the parent model sees for a finished record. */
 export function recordResultText(record: AgentRecord): string {
-  return formatUserSteerPrefix(record.userSteers) + recordOutcomeText(record);
+  return formatUserSteerPrefix(record.userSteers) + formatUserAnswerPrefix(record.userAnswers) + recordOutcomeText(record);
 }

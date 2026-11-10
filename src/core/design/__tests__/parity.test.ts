@@ -5,10 +5,12 @@ import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import type { StructuredCompletionRequest, StructuredCompletionResult } from '../../pi-session/structured-completion';
 import type { DesignPreviewHost } from '../../../platform/design-preview';
 import { DESIGN_PARITY_CHECK_IDS, type DesignParityDetails, type DesignParityRefusal } from '../../../shared/design-parity';
-import { DESIGN_RENDER_CLIENT_ABSENT } from '../../../shared/design-render';
+import { DEFAULT_RENDER_MEDIA, DESIGN_RENDER_CLIENT_ABSENT } from '../../../shared/design-render';
+import type { DesignRenderRequest } from '../../../shared/types/design';
 import type { BrowserToolAnswer } from '../../../shared/remote-user';
 import { DAMOCLES_DESIGN_RESULT } from '../../pi-session/session-store/constants';
-import { renderInputHashes, updateManifest } from '../design-files';
+import { designContentHash, updateManifest } from '../design-files';
+import { RENDER_HASH_SCHEME, renderInputHashes } from '../render-inputs';
 import { designFolderOf, designStateDirOf } from '../design-paths';
 import { writeJsonAtomic, type DesignVersionRecord } from '../design-state';
 import { PARITY_CHECKS, PARITY_OUTPUT_TOOL, PARITY_SCHEMA, PARITY_SYSTEM_PROMPT, parityStatus, parityWidth, parseParityVerdicts } from '../parity';
@@ -51,7 +53,7 @@ function setup(overrides: Partial<DesignParityDeps> = {}, answers: unknown[] = [
   const released: string[] = [];
   const captured: Array<{ scope: string; url: string; width: number }> = [];
   const render = {
-    capture: vi.fn(async (_designId: string, _relPath: string, width: number) => ({ png: new Uint8Array(png(width * 2, 1800)), cssWidth: width, cssHeight: 900, contentHeight: 1200, scale: 2 })),
+    render: vi.fn(async (_designId: string, _relPath: string, request: DesignRenderRequest) => ({ frames: [{ image: new Uint8Array(png(request.width * 2, 1800)), mimeType: 'image/png', cssWidth: request.width, cssHeight: 900, top: 0 }], contentHeight: 1200, scale: 2, moving: false })),
   } as unknown as DesignPreviewHost;
   const deps: DesignParityDeps = {
     enabled: () => true,
@@ -103,9 +105,9 @@ beforeEach(async () => {
   await writeVersion(await renderInputHashes(folder, ['screens/S1-contacts.html']));
 });
 
-function writeVersion(renderHashes: Record<string, string> | undefined): Promise<void> {
+function writeVersion(renderHashes: Record<string, string> | undefined, contentHash = 'c'): Promise<void> {
   const record: DesignVersionRecord = {
-    schemaVersion: 1, version: 1, designId: DESIGN, title: 'Contacts', sessionId: 'design-1', toolCallId: 'finish-1', contentHash: 'c',
+    schemaVersion: 1, version: 1, designId: DESIGN, title: 'Contacts', sessionId: 'design-1', toolCallId: 'finish-1', contentHash,
     decisions: [], screens: ['S1-contacts'], ...(renderHashes ? { renderHashes } : {}), check: { errors: 0, warnings: [] }, journeys: [],
     summary: 'The list.', changedSinceLast: [], finishedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -253,6 +255,8 @@ describe('DesignParity', () => {
     expect(judged.map((req) => [req.purpose, req.outputToolName, req.userImages?.length])).toEqual([['design-parity', PARITY_OUTPUT_TOOL, 2], ['design-parity', PARITY_OUTPUT_TOOL, 2]]);
     expect(judged[0]!.userImages![0]!.data).toBe(png(780, 1800).toString('base64'));
     expect(judged[0]!.attribution).toEqual({ cwd: '/ws', sessionId: PARENT });
+    // the design side settles with the normal look pinned, as a PNG within the side the app's capture keeps
+    expect((deps.render()!.render as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[2])).toEqual([390, 768].map((width) => ({ width, state: null, media: DEFAULT_RENDER_MEDIA, format: 'png', maxSide: 1950, quality: 80 })));
   });
 
   it('takes the design\'s checked widths by default and a screen by its file', async () => {
@@ -276,22 +280,42 @@ describe('DesignParity', () => {
     expect(captured).toEqual([]);
   });
 
-  it('refuses while the design\'s render inputs differ from the delivered version\'s, or the version records none', async () => {
+  it('refuses while the design\'s render inputs differ from the delivered version\'s, by the scheme-tagged hash', async () => {
     const folder = designFolderOf(DESIGN);
-    fs.mkdirSync(path.join(folder, 'assets'), { recursive: true });
-    fs.writeFileSync(path.join(folder, 'assets', 'logo.svg'), '<svg/>');
+    fs.writeFileSync(path.join(folder, 'tokens.css'), ':root { --space-1: 0.25rem; }');
     const { deps, captured } = setup();
     expect(refusalOf(await run(deps))).toBe('The design changed since v{0}; compare after its next version.');
     await writeVersion(await renderInputHashes(folder, ['screens/S1-contacts.html']));
     fs.writeFileSync(path.join(folder, 'decisions.md'), '# Decisions');
     fs.mkdirSync(path.join(folder, 'feedback'), { recursive: true });
     fs.writeFileSync(path.join(folder, 'feedback', 'F1.json'), '{}');
+    fs.mkdirSync(path.join(folder, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(folder, 'assets', 'unused.svg'), '<svg/>');
     expect((await run(deps)).isError).toBeUndefined();
     fs.appendFileSync(path.join(folder, 'screens', 'S1-contacts.html'), '\n');
     expect(refusalOf(await run(deps))).toBe('The design changed since v{0}; compare after its next version.');
-    await writeVersion(undefined);
-    expect(refusalOf(await run(deps))).toBe('v{0} of the design predates the render hashes DesignParity compares. Finish the design again in its design chat, then compare.');
     expect(captured).toHaveLength(2);
+  });
+
+  it('judges a record of an earlier hash scheme, or of none, by the folder\'s content hash', async () => {
+    const folder = designFolderOf(DESIGN);
+    const { deps, captured } = setup();
+    const tagged = (await renderInputHashes(folder, ['screens/S1-contacts.html']))['screens/S1-contacts.html']!;
+    expect(tagged.startsWith(RENDER_HASH_SCHEME)).toBe(true);
+    // an untagged hash never equals one made now, so the content hash decides
+    const untagged = { 'screens/S1-contacts.html': tagged.slice(RENDER_HASH_SCHEME.length) };
+    await writeVersion(untagged, await designContentHash(folder));
+    expect((await run(deps)).isError).toBeUndefined();
+    await writeVersion(undefined, await designContentHash(folder));
+    expect((await run(deps)).isError).toBeUndefined();
+    fs.writeFileSync(path.join(folder, 'tokens.css'), ':root { --space-1: 0.25rem; }');
+    expect(refusalOf(await run(deps))).toBe('The design changed since v{0}; compare after its next version.');
+    await writeVersion(untagged, await designContentHash(folder));
+    expect((await run(deps)).isError).toBeUndefined();
+    fs.appendFileSync(path.join(folder, 'screens', 'S1-contacts.html'), '\n');
+    expect(refusalOf(await run(deps))).toBe('The design changed since v{0}; compare after its next version.');
+    // three runs compared, at two widths each
+    expect(captured).toHaveLength(6);
   });
 
   it('refuses with the browser setting off, naming it, and captures nothing', async () => {
@@ -311,7 +335,7 @@ describe('DesignParity', () => {
 
   it('refuses with the render refusal when no client renders designs, and releases the scope', async () => {
     expect(refusalOf(await run(setup({ render: () => undefined }).deps))).toBe(DESIGN_RENDER_CLIENT_ABSENT);
-    const absent = { capture: async () => { throw new Error(DESIGN_RENDER_CLIENT_ABSENT); } } as unknown as DesignPreviewHost;
+    const absent = { render: async () => { throw new Error(DESIGN_RENDER_CLIENT_ABSENT); }, capture: async () => { throw new Error(DESIGN_RENDER_CLIENT_ABSENT); } } as unknown as DesignPreviewHost;
     const { deps, released, judged } = setup({ render: () => absent });
     expect(refusalOf(await run(deps))).toBe(DESIGN_RENDER_CLIENT_ABSENT);
     expect(released).toEqual(['design-parity-call-1']);

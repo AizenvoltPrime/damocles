@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('electron', () => ({ protocol: {} }));
+
 import type { AddressResolver, ClientNetworkPolicy } from '../../../../../core/browser/client-network-policy';
+import type { Project } from '../../../../local-services/confine';
+import { ServedRoots } from '../../../html-preview/served-roots';
 import { checkClientNavigation } from '../client-network-guard';
+import { AUTHORITY, fakeStore, fakeTunnels, forwarding, HOST } from './fake-ports';
 
 const CLOSED: ClientNetworkPolicy = { allowedPorts: [], allowLocalNetwork: false };
 const OPEN: ClientNetworkPolicy = { allowedPorts: [], allowLocalNetwork: true };
@@ -77,5 +83,50 @@ describe('checkClientNavigation', () => {
       expect(await checkClientNavigation(url, OPEN, resolver), url).toEqual({ allowed: false, reason });
     }
     expect(await checkClientNavigation('about:blank', CLOSED, resolver)).toEqual({ allowed: true });
+  });
+});
+
+describe('a served root in the client network policy', () => {
+  it('lets only its own authority\'s context reach its port, and drops the port when its last chat view closes', async () => {
+    const project: Project = { key: 'ssh+host-1|/srv/app', fsPath: '/srv/app', name: 'app' };
+    const served = new ServedRoots({
+      projectOfView: (authority, viewId) => (authority === AUTHORITY && viewId === 'v1' ? project : undefined),
+      projects: () => [project],
+      files: () => ({ readFileRange: async () => ({ ok: false, reason: 'missing' }) }),
+      isTrusted: () => false,
+      designRead: async () => undefined,
+      refusalText: () => 'Open this preview from Damocles.',
+      log: () => undefined,
+    });
+    const { tunnels } = fakeTunnels();
+    const { store } = fakeStore();
+    const { forwarding: ports } = forwarding({ tunnels, store, servedPorts: (authority) => served.servedPorts(authority), onServedChange: (listener) => served.onDidChange(listener) });
+    const published: Array<{ readonly authority: string; readonly allowedPorts: readonly number[] }> = [];
+    const order: string[] = [];
+    ports.onClientNetwork((network) => {
+      published.push(network);
+      if (network.authority === AUTHORITY && network.allowedPorts.length > 0) order.push('changed');
+    });
+    await ports.connected(HOST);
+    await ports.connected('host-2');
+    const policyOf = (authority: string): ClientNetworkPolicy => ({ allowedPorts: ports.clientNetworks().find((network) => network.authority === authority)!.allowedPorts, allowLocalNetwork: false });
+    try {
+      const pending = served.grant({ authority: AUTHORITY, root: { kind: 'project' }, viewId: 'v1' });
+      void pending.then(() => order.push('resolved'));
+      const grant = await pending;
+      if ('refused' in grant) throw new Error(grant.refused);
+      const port = Number(new URL(grant.origin).port);
+      // published before the grant resolved, so the proxy has it before the browser navigates
+      expect(order).toEqual(['changed', 'resolved']);
+      expect(published.at(-1)).toEqual({ authority: AUTHORITY, allowedPorts: [port], allowLocalNetwork: false });
+      expect(await checkClientNavigation(`${grant.origin}/index.html`, policyOf(AUTHORITY), resolver)).toEqual({ allowed: true });
+      expect(await checkClientNavigation(`${grant.origin}/index.html`, policyOf('ssh+host-2'), resolver)).toMatchObject({ allowed: false });
+      served.release('v1');
+      expect(policyOf(AUTHORITY).allowedPorts).toEqual([]);
+      expect(published.at(-1)).toEqual({ authority: AUTHORITY, allowedPorts: [], allowLocalNetwork: false });
+    } finally {
+      served.dispose();
+      ports.dispose();
+    }
   });
 });

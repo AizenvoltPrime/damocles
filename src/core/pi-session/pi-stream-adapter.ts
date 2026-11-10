@@ -27,6 +27,12 @@ import { failureCard, failureText } from './provider-account';
 /** A message as pi emits and persists it; the mid-stream marker matches entries to deliveries by its identity. */
 type PiMessage = Extract<AgentSessionEvent, { type: 'message_end' }>['message'];
 
+/** A user message pi delivered that was the session's own queued input, owed a mid-stream marker once its entry commits. */
+export interface QueuedDelivery {
+  /** Runs after the marker, with the entry pi committed for it. */
+  onCommitted?(userEntryId: string): void;
+}
+
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
   cwd: string;
@@ -50,11 +56,11 @@ export interface PiStreamAdapterDeps {
   /** pi delivered a user message (a steer, a follow-up or a run's opening prompt) — flush the queued-input buffer.
    *  The delivered text is passed because the host injects user messages of its own and must be able to
    *  tell one of those apart from a queued batch, and the message so the host can find the entry pi commits
-   *  for it. Returns true when the delivery was a real queued batch or a cancel note (so its mid-stream
-   *  marker is owed), false for a plain follow-up or an empty buffer. */
-  onUserMessageDelivered: (deliveredText: string, message: unknown) => boolean;
-  /** A delivered batch's or cancel note's pi user entry id is now committed to the tree (resolved at the
-   *  next assistant message_start). Persist the mid-stream marker keyed to it. */
+   *  for it. Returns the delivery when it was a queued batch, a cancel note or a design prompt (so its
+   *  mid-stream marker is owed), null for a plain follow-up or an empty buffer. */
+  onUserMessageDelivered: (deliveredText: string, message: unknown) => QueuedDelivery | null;
+  /** A delivered batch's, cancel note's or design prompt's pi user entry id is now committed to the tree (resolved at
+   *  the next assistant message_start). Persist the mid-stream marker keyed to it. */
   onMidStreamEntryCommitted: (userEntryId: string) => void;
   /** The id of the user entry this turn's `prompt()` committed, or null until pi has stored it. */
   promptEntryId: () => string | null;
@@ -265,10 +271,10 @@ export class PiStreamAdapter {
   private _pendingCorrelationId: string | undefined;
   /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
   private _userIdEmitted = false;
-  /** Delivered queued batches and cancel notes (user message_end) whose entries pi had not committed yet,
-   *  in delivery order. Several arrive together when they were pending at one boundary. Resolved at the
+  /** Delivered queued batches, cancel notes and design prompts (user message_end) whose entries pi had not committed
+   *  yet, in delivery order. Several arrive together when they were pending at one boundary. Resolved at the
    *  next assistant message_start, where the entries are committed. */
-  private _midStreamPending: PiMessage[] = [];
+  private _midStreamPending: Array<{ message: PiMessage; delivery: QueuedDelivery }> = [];
   /** Whether this adapter has already told the user how the running compaction ended. `PiSession.compact()`
    *  reads it so pi's rethrow does not stack a second card on the one emitted from `compaction_end`. */
   private _compactionReported = false;
@@ -517,16 +523,19 @@ export class PiStreamAdapter {
     if (this._midStreamPending.length === 0 || role !== 'assistant') return;
     const sm = session.sessionManager;
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-    const pending = new Set(this._midStreamPending);
+    const pending = this._midStreamPending;
+    const messages = new Set(pending.map(({ message }) => message));
     const committed = new Map<PiMessage, string>();
-    for (let i = branch.length - 1; i >= 0 && committed.size < pending.size; i--) {
+    for (let i = branch.length - 1; i >= 0 && committed.size < messages.size; i--) {
       const entry = branch[i];
-      if (entry?.type === 'message' && pending.has(entry.message)) committed.set(entry.message, entry.id);
+      if (entry?.type === 'message' && messages.has(entry.message)) committed.set(entry.message, entry.id);
     }
-    this._midStreamPending = this._midStreamPending.filter((message) => !committed.has(message));
-    for (const message of pending) {
+    this._midStreamPending = pending.filter(({ message }) => !committed.has(message));
+    for (const { message, delivery } of pending) {
       const id = committed.get(message);
-      if (id) this.deps.onMidStreamEntryCommitted(id);
+      if (!id) continue;
+      this.deps.onMidStreamEntryCommitted(id);
+      delivery.onCommitted?.(id);
     }
   }
 
@@ -698,9 +707,9 @@ export class PiStreamAdapter {
           // pi emits this for a run's opening prompt too, which the session reports as its own only
           // when a cancel note opened the run. Collapse the queued chips now, and if a real batch or a
           // cancel note was delivered, owe it a mid-stream marker at the next assistant message_start.
-          const queued = !this._aborted && this.deps.onUserMessageDelivered(text, event.message);
-          if (queued) this._midStreamPending.push(event.message);
-          this.settleUserEcho(text, queued);
+          const delivery = this._aborted ? null : this.deps.onUserMessageDelivered(text, event.message);
+          if (delivery) this._midStreamPending.push({ message: event.message, delivery });
+          this.settleUserEcho(text, delivery !== null);
         } else if (event.message.role === 'toolResult') {
           this._unstoredResults.delete(event.message.toolCallId);
         }

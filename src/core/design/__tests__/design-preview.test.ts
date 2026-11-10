@@ -43,6 +43,7 @@ function previewHost(): DesignPreviewHost & { opens: unknown[][]; changes: unkno
       changes.push(args);
     },
     capture: () => Promise.reject(new Error('No design runner')),
+    render: () => Promise.reject(new Error('No design runner')),
     probe: () => Promise.reject(new Error('No design runner')),
     journey: () => Promise.reject(new Error('unused')),
     replayJourney: () => Promise.reject(new Error('unused')),

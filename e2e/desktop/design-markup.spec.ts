@@ -273,3 +273,86 @@ test('markup on the frozen preview: a pin on a row anchors to ui/Table, a box li
     await stub.close();
   }
 });
+
+/** The text of each user message an agent request carries, in order. */
+function requestUserTexts(body: unknown): string[] {
+  const messages = (body as { messages: { role: string; content: string | { type: string; text?: string }[] | null }[] }).messages;
+  return messages.filter((message) => message.role === 'user').map((message) => (typeof message.content === 'string' ? message.content : (message.content ?? []).map((part) => part.text ?? '').join('')));
+}
+
+test('markup sent while the designer works reaches it at its next step as a message of its own, beside a typed one, with its card and files', async ({ foreground: _foreground, home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl, ['text', 'image']);
+    fs.cpSync(DESIGN_APP, home.project, { recursive: true });
+    const { app } = await launch();
+    const { design, folder } = await designWithScreen(home, stub, app);
+    const shell = await shellPage(app);
+    await expect(shell.getByTestId('design-preview-status')).toHaveCount(0, { timeout: 30_000 });
+    await expect.poll(() => rectInView(app, '#row-2').then(() => 'shown').catch(() => 'hidden'), { timeout: 30_000 }).toBe('shown');
+    const row = await rectInView(app, '#row-2');
+
+    // The designer is mid-step: its reply streams and holds before the tool call that ends the step.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    stub.replies.push(
+      { chunks: ['Checking the design.', ' Reading it now.'], toolCalls: [{ name: 'read', arguments: { path: path.join(folder, 'design.md') } }], holdAfterFirst: held },
+      { chunks: ['Noted the markup and the column.'] },
+    );
+    const before = agentRequests(stub).length;
+    await chatInput(design).fill('Tighten the table');
+    await chatInput(design).press('Enter');
+    await expect.poll(() => agentRequests(stub).length, { timeout: 30_000 }).toBe(before + 1);
+
+    await expect(shell.getByTestId('design-preview-readout')).toHaveText(/^xl · 1280 px · \d+%$/);
+    await shell.getByTestId('design-preview-markup').click();
+    await expect(shell.getByTestId('design-markup-canvas')).toBeVisible({ timeout: 30_000 });
+    await expect(shell.getByTestId('design-markup-chip')).toHaveText('Frozen at xl · 1280 · default');
+    await expect.poll(() => shownDesignViews(app)).toBe(0);
+    const image = (await shell.getByTestId('design-markup-image').boundingBox())!;
+    const scale = image.width / 1280;
+    await shell.mouse.click(image.x + (row.x + row.width / 2) * scale, image.y + (row.y + row.height / 2) * scale);
+    await expect(shell.locator('[data-testid="design-markup-pin"][data-n="1"]')).toHaveAttribute('data-element', 'ui/Table');
+    const popover = shell.getByTestId('design-markup-popover');
+    await expect(popover.getByTestId('design-markup-text')).toBeFocused();
+    await shell.keyboard.type('Make the rows denser');
+    await popover.getByTestId('design-markup-done').click();
+    await shell.getByTestId('design-markup-send').click();
+    await expect(shell.getByTestId('design-markup-announcement')).toHaveText('Sent to the design chat as F1');
+    // queued while the step runs: no file yet, since its message has no entry
+    await expect(design.getByText(/^Markup F1 on screens\/S1-contacts\.html/)).toBeVisible({ timeout: 30_000 });
+    expect(fs.existsSync(path.join(folder, 'feedback'))).toBe(false);
+    const composer = design.getByRole('textbox', { name: 'Message Damocles' });
+    await expect(composer).toHaveAttribute('placeholder', 'Type to queue your next message…');
+    await composer.fill('Also widen the email column');
+    await composer.press('Enter');
+    await expect(design.getByText('Also widen the email column', { exact: true })).toBeVisible();
+    release();
+    await expect.poll(() => stub.replies.length, { timeout: 60_000 }).toBe(0);
+    await awaitTurnEnd(design);
+
+    // The step's next request carries the markup and the typed message as two user messages, the markup first, with its image.
+    const next = agentRequests(stub).slice(before + 1).find((request) => JSON.stringify(request.body).includes('Pin 1 (change) on ui/Table'));
+    expect(next).toBeDefined();
+    const texts = requestUserTexts(next!.body);
+    const markupAt = texts.findIndex((text) => text.startsWith('Markup F1 on screens/S1-contacts.html'));
+    expect(markupAt).toBeGreaterThan(texts.indexOf('Tighten the table'));
+    expect(texts[markupAt]).not.toContain('Also widen the email column');
+    expect(texts[markupAt + 1]).toBe('Also widen the email column');
+    expect(JSON.stringify(next!.body)).toContain('data:image/png;base64,');
+    expect(JSON.stringify(next!.body)).not.toContain('[STEERING INSTRUCTION');
+
+    await expect.poll(() => fs.existsSync(path.join(folder, 'feedback', 'F1.png')) && fs.existsSync(path.join(folder, 'feedback', 'F1.json')), { timeout: 30_000 }).toBe(true);
+    const card = design.getByTestId('markup-message');
+    await expect(card).toHaveCount(1);
+    await expect(card).toHaveAttribute('data-feedback-id', 'F1');
+
+    await design.reload();
+    await expect(chatInput(design)).toBeVisible();
+    await setPageSize(design, 900, 6000);
+    await expect(design.getByTestId('markup-message')).toHaveCount(1, { timeout: 30_000 });
+    await expect(design.getByTestId('markup-message')).toHaveAttribute('data-feedback-id', 'F1');
+  } finally {
+    await stub.close();
+  }
+});

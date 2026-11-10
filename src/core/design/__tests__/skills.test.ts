@@ -42,7 +42,7 @@ function designWith(screen: string): string {
 }
 
 function input(folder: string, branch: readonly unknown[]): DesignCheckInput {
-  return { folder, inventory: INVENTORY, tokenNames: [], decisionIds: [], fidelity: 'static', skillHints: loadedSkillHints(branch) };
+  return { folder, inventory: INVENTORY, tokenNames: [], decisions: [], fidelity: 'static', skillHints: loadedSkillHints(branch), screenshots: true };
 }
 
 const page = (body: string, states = 'default'): string => `<!doctype html><html data-ds-screen="S1" data-ds-states="${states}"><head><title>Contacts</title></head><body>${body}</body></html>`;

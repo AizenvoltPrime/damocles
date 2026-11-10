@@ -53,7 +53,7 @@ function piQueue() {
     followUps: followUp,
     // The panel echo stamps the prompt index, which is read from the branch; a Stop reads the leaf; a queued message
     // naming no conversation reads that nothing is stored yet, as an in-memory manager has no file.
-    sessionManager: { getBranch: () => [], getLeafId: (): string | null => null, getSessionFile: (): string | undefined => undefined },
+    sessionManager: { getBranch: () => [], getEntries: () => [], getLeafId: (): string | null => null, getSessionFile: (): string | undefined => undefined },
     prompt: vi.fn(async (text: string, opts?: PromptOptions) => {
       if (session.isStreaming) (opts?.streamingBehavior === 'followUp' ? followUp : steering).push(text);
       opts?.preflightResult?.(session.isStreaming ? 'queued' : 'started');
@@ -308,7 +308,7 @@ describe('the note is echoed once per context', () => {
 
     expect(echoes(h.emitted)).toEqual([]);
     // Nothing of it is left listed, so a later chip batch with the same text still collapses.
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(false);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).toBeNull();
   });
 
   it('does not echo a panel note whose session no longer exists', async () => {
@@ -360,11 +360,11 @@ describe('a delivered note is not mistaken for a queued chip batch', () => {
 
     // pi raises the same user message_end for the note that it raises for a delivered batch. The note
     // owes a mid-stream marker of its own, so it consumes no prompt index, but leaves the chips pending.
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).not.toBeNull();
     expect(h.emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
 
     // The batch's own delivery still collapses the chips and still owes a mid-stream marker.
-    expect(h.session.onQueuedInputsDelivered('rerun the failing spec')).toBe(true);
+    expect(h.session.onQueuedInputsDelivered('rerun the failing spec')).not.toBeNull();
     expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'] });
   });
 
@@ -372,11 +372,11 @@ describe('a delivered note is not mistaken for a queued chip batch', () => {
     const h = harness();
     deliveries(h.session, () => h.piSession).main()(NOTE);
     await vi.waitFor(() => expect(echoes(h.emitted)).toContain('userMessage'));
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).not.toBeNull();
     expect(h.emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
 
     h.session.queueInput(NOTE, 'q1');
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).not.toBeNull();
     expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'] });
   });
 });
@@ -421,7 +421,7 @@ describe('a note that pi accepted is not silently discarded later', () => {
     await vi.waitFor(() => expect(h.piSession.steers).toEqual(['/compact and use seq 1 5', 'rerun the failing spec']));
 
     // Put back as literal text: `steer()` would run the command check and template expansion on it.
-    expect(h.piSession.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'steer', expandPromptTemplates: false });
+    expect(h.piSession.prompt).toHaveBeenCalledWith('/compact and use seq 1 5', expect.objectContaining({ streamingBehavior: 'steer', source: 'extension', expandPromptTemplates: false }));
     expect(h.piSession.steer).not.toHaveBeenCalled();
   });
 
@@ -492,7 +492,7 @@ describe('a note for a run that was stopped', () => {
     expect(echoes(h.emitted)).toEqual([]);
     // Nothing of it is left listed, so a later chip batch with the same text still collapses.
     h.session.queueInput(NOTE, 'q1');
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).not.toBeNull();
     expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'] });
   });
 
@@ -520,7 +520,7 @@ describe('a batch that grew while its re-steer was in flight', () => {
     expect(h.piSession.steers).toEqual(['first']);
 
     // pi delivers the batch it holds before the pending pass re-steers the grown buffer.
-    expect(h.session.onQueuedInputsDelivered('first')).toBe(true);
+    expect(h.session.onQueuedInputsDelivered('first')).not.toBeNull();
     expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'], combinedContent: 'first' });
     h.piSession.steers.splice(0);
     await vi.waitFor(() => expect(h.piSession.steers).toEqual(['second']));
@@ -537,7 +537,7 @@ describe('a note accepted with no run in progress', () => {
     expect(h.emitted).toContainEqual(expect.objectContaining({ type: 'processing', isProcessing: true }));
     // Its re-steer is skipped: nothing is queued in a run that has not started.
     expect(h.piSession.clearQueue).not.toHaveBeenCalled();
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).not.toBeNull();
   });
 });
 

@@ -2,11 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { link, open } from 'fs/promises';
 import type { AssistantImages, ImageApi, ImageModel, Usage } from '@earendil-works/pi-ai';
 import type { PiCodingAgentModule } from '../../pi-loader';
 
 const { logSpy } = vi.hoisted(() => ({ logSpy: vi.fn() }));
 vi.mock('../../../logger', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../../logger')>()), log: logSpy }));
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return { ...actual, link: vi.fn(actual.link), open: vi.fn(actual.open) };
+});
 
 import { createGenerateImageTool, imageAvailability, IMAGE_TIMEOUT_MS, type ImageRuntime, type ImageToolDetails } from '../image-tools';
 import { isOfferedImageModel } from '../image-tool-specs';
@@ -95,6 +100,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.mocked(link).mockReset();
+  vi.mocked(open).mockReset();
   await fs.promises.rm(cwd, { recursive: true, force: true });
 });
 
@@ -299,6 +306,105 @@ describe('GenerateImage — tool body', () => {
     const result = (await tool.execute('tc-1', { prompt: 'x', file_path: 'fox.png' }, undefined, undefined, undefined as never)) as unknown as Result;
     expect(result.isError).toBe(true);
     expect(runtime.generateImages).not.toHaveBeenCalled();
+  });
+});
+
+describe('GenerateImage — atomic create', () => {
+  const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: test`), { code });
+  const realLink = async (existing: string, target: string): Promise<void> => (await vi.importActual<typeof import('fs/promises')>('fs/promises')).link(existing, target);
+
+  it('never shows a partial image at the target: it appears whole, and no temp file is left', async () => {
+    const big = Buffer.alloc(6 * 1024 * 1024, 7);
+    Buffer.from(PNG, 'base64').copy(big);
+    const target = path.join(cwd, 'big.png');
+    const seen = new Set<number>();
+    let done = false;
+    const watch = (): void => {
+      try {
+        seen.add(fs.statSync(target).size);
+      } catch {
+        // not created yet
+      }
+      if (!done) setImmediate(watch);
+    };
+    vi.mocked(link).mockImplementationOnce(async (existing, linked) => {
+      expect(fs.existsSync(target)).toBe(false);
+      expect(fs.statSync(existing).size).toBe(big.length);
+      return realLink(String(existing), String(linked));
+    });
+    watch();
+    const result = await run(fakeRuntime(async () => images({ output: [{ type: 'image', mimeType: 'image/png', data: big.toString('base64') }] })), 'big.png');
+    done = true;
+
+    expect(result.isError).toBeUndefined();
+    expect(link).toHaveBeenCalledTimes(1);
+    expect([...seen].every((size) => size === big.length)).toBe(true);
+    expect(fs.readdirSync(cwd)).toEqual(['big.png']);
+  });
+
+  it('refuses a path another writer took between the write and the link, keeps that file and removes the temp file', async () => {
+    const target = path.join(cwd, 'fox.png');
+    vi.mocked(link).mockImplementationOnce(async (existing, linked) => {
+      fs.writeFileSync(target, 'someone else');
+      return realLink(String(existing), String(linked));
+    });
+    const result = await run(fakeRuntime(async () => images()), 'fox.png');
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('was created while the image was generating');
+    expect(result.usage).toEqual(USAGE);
+    expect(fs.readFileSync(target, 'utf8')).toBe('someone else');
+    expect(fs.readdirSync(cwd)).toEqual(['fox.png']);
+  });
+
+  it.each(['EPERM', 'ENOTSUP', 'EXDEV', 'ENOSYS'])('renames the temp file into place where link fails with %s', async (code) => {
+    vi.mocked(link).mockRejectedValueOnce(errno(code));
+    const result = await run(fakeRuntime(async () => images()), 'fox.png');
+
+    expect(result.isError).toBeUndefined();
+    expect(fs.readFileSync(path.join(cwd, 'fox.png')).equals(Buffer.from(PNG, 'base64'))).toBe(true);
+    expect(fs.readdirSync(cwd)).toEqual(['fox.png']);
+  });
+
+  it('refuses through the rename path too when the target exists, and removes the temp file', async () => {
+    const target = path.join(cwd, 'fox.png');
+    vi.mocked(link).mockImplementationOnce(async () => {
+      fs.writeFileSync(target, 'someone else');
+      throw errno('EPERM');
+    });
+    const result = await run(fakeRuntime(async () => images()), 'fox.png');
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('was created while the image was generating');
+    expect(fs.readFileSync(target, 'utf8')).toBe('someone else');
+    expect(fs.readdirSync(cwd)).toEqual(['fox.png']);
+  });
+
+  it('reports a link failure with usage kept, and removes the temp file', async () => {
+    vi.mocked(link).mockRejectedValueOnce(errno('EIO'));
+    const result = await run(fakeRuntime(async () => images()), 'fox.png');
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('Could not write fox.png');
+    expect(result.usage).toEqual(USAGE);
+    expect(fs.readdirSync(cwd)).toEqual([]);
+  });
+
+  it('writes nothing and removes the temp file when the turn is aborted while the temp file is written', async () => {
+    const controller = new AbortController();
+    const actualOpen = (await vi.importActual<typeof import('fs/promises')>('fs/promises')).open;
+    vi.mocked(open).mockImplementationOnce(async (...args: Parameters<typeof actualOpen>) => {
+      const handle = await actualOpen(...args);
+      controller.abort();
+      return handle;
+    });
+    const result = await run(fakeRuntime(async () => images()), 'fox.png', controller.signal);
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('aborted');
+    expect(result.usage).toEqual(USAGE);
+    expect(link).not.toHaveBeenCalled();
+    expect(fs.readdirSync(cwd)).toEqual([]);
   });
 });
 

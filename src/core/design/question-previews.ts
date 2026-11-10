@@ -3,7 +3,7 @@
 // webview only, never into a message of the session.
 import { createHash } from 'node:crypto';
 import type { DesignPreviewHost } from '../../platform/design-preview';
-import { MAX_RENDER_SCALE, pngSize } from '../../shared/design-render';
+import { DEFAULT_RENDER_IMAGE_TARGET, DEFAULT_RENDER_MEDIA, MAX_RENDER_IMAGE_SIDE, pngSize } from '../../shared/design-render';
 import { LocalizedError } from '../../shared/localized-text';
 import { TOOL_ASK_USER_QUESTION } from '../../shared/tool-names';
 import type { DesignPreviewImage } from '../../shared/types/design';
@@ -11,7 +11,8 @@ import { l } from '../l10n';
 import { designContentHash } from './design-files';
 import { isDesignPreviewPath } from './design-paths';
 import { designPreviewInfo } from './design-preview';
-import { DesignRenderUnavailableError, rendered } from './width-checks';
+import { renderForModel } from './model-render';
+import { DesignRenderUnavailableError } from './width-checks';
 
 const MAX_CACHED_IMAGES = 32;
 const MAX_CACHED_CHARS = 48 * 1024 * 1024;
@@ -61,9 +62,12 @@ export class DesignPreviewImages {
       this.images.set(key, held);
       return held;
     }
-    const capture = rendered(() => render.capture(designId, relPath, info.primary, null, MAX_RENDER_SCALE, signal)).then((shot): DesignPreviewImage => {
-      const { width, height } = pngSize(shot.png);
-      return { mimeType: 'image/png', data: Buffer.from(shot.png).toString('base64'), width, height };
+    // a PNG, which DesignPreviewImage's type an older webview parses names, with the media pinned and the page settled
+    const request = { width: info.primary, state: null, media: DEFAULT_RENDER_MEDIA, format: 'png', maxSide: MAX_RENDER_IMAGE_SIDE, quality: DEFAULT_RENDER_IMAGE_TARGET.jpegQuality } as const;
+    const capture = renderForModel(render, designId, relPath, request, signal).then((shot): DesignPreviewImage => {
+      const image = shot.frames[0]!.image;
+      const { width, height } = pngSize(image);
+      return { mimeType: 'image/png', data: Buffer.from(image).toString('base64'), width, height };
     });
     this.images.set(key, capture);
     try {

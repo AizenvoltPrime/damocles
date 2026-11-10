@@ -46,6 +46,7 @@ describe('SUBCALL_THINKING', () => {
       'memory-audit': 'low',
       'commit-message': 'low',
       'design-parity': 'low',
+      'design-decision-conflicts': 'low',
     });
   });
 });

@@ -4,8 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DAMOCLES_DESIGN_RESULT } from '../../pi-session/session-store/constants';
 import { designFolderOf, designStateDirOf } from '../design-paths';
 import { updateDesignLink, writeBriefRecord } from '../design-state';
-import { decisionsOnBranch, userMessageQuoted, type DesignDecisionRecord } from '../design-entries';
+import { decisionsOnBranch, userAuthoredQuoted, type DesignDecisionRecord } from '../design-entries';
 import * as designFiles from '../design-files';
+import { DecisionRefusedError, DESIGN_CONTINUES_ELSEWHERE, recordDesignDecision, recordQuestionDecisions } from '../decisions';
+import { cleanJudge } from './decision-kit';
 import { clearDesigns, designHarness, fakeSession, stampDesignVersion, type FakeDesignSession } from './design-harness';
 
 const DESIGN = 'contacts-7a7a7a7a';
@@ -42,28 +44,78 @@ describe('decisions.md belongs to the conversation that asked for it (PD-15)', (
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const write = vi.spyOn(designFiles, 'writeDecisions').mockImplementationOnce(() => blocked);
-    // a write already in the chain, behind which the refresh waits
-    const pending = h.design.decisionsChanged([decision('D2', 'Density')]);
+    // a rebuild already in the chain, behind which the next one waits
+    h.design.refresh();
     h.design.refresh();
     await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
     // the panel lets go of the conversation while the chain is held
     h.current = fakeSession('other', []);
     release();
-    await pending;
     await h.design.settledWrites();
     expect(write).toHaveBeenCalledTimes(1);
     expect(decisionsFile()).toContain('D1 · Layout');
   });
 
-  it('takes a decision whose write failed off the pending list, so the next is not numbered past it', async () => {
+  it('appends a decision only to the conversation its ledger was made for (D99)', async () => {
     await linkTo('design-1');
-    const h = designHarness({ session: fakeSession('design-1', [role]) });
-    vi.spyOn(designFiles, 'writeDecisions').mockRejectedValueOnce(new Error('EPERM'));
-    await expect(h.design.decisionsChanged([decision('D1', 'Layout')])).rejects.toThrow('EPERM');
-    expect(h.design.pendingDecisions()).toEqual([]);
-    await h.design.decisionsChanged([decision('D1', 'Spacing')]);
-    expect(h.design.pendingDecisions().map((d) => d.title)).toEqual(['Spacing']);
-    expect(decisionsFile()).toContain('D1 · Spacing');
+    const designA = fakeSession('design-1', [role]);
+    const h = designHarness({ session: designA });
+    const ledger = h.design.decisionLedger(() => undefined)!;
+    ledger.append('damocles-design-decision', { ...decision('D1', 'Layout') });
+    expect(decisionsOnBranch(designA.entries).map((d) => d.id)).toEqual(['D1']);
+    h.current = fakeSession('other', []);
+    expect(() => ledger.append('damocles-design-decision', { ...decision('D2', 'Density') })).toThrow(/no longer open/);
+    expect(decisionsOnBranch(designA.entries).map((d) => d.id)).toEqual(['D1']);
+    expect(h.design.decisionLedger(() => undefined)).toBeUndefined();
+  });
+
+  it('records no answer of a subagent of a chat link.json no longer names, nor while the chat hands its design over (G1-M1)', async () => {
+    await linkTo('design-1');
+    const chat = fakeSession('design-1', [role]);
+    const h = designHarness({ session: chat });
+    const ledger = h.design.decisionLedger(() => undefined)!;
+    const LAYOUT = { question: 'Which layout?', header: 'Layout', options: [{ label: 'Cards' }, { label: 'Table' }] };
+    // a takeover named another chat after this one's ledger was made, and a background subagent's question is answered now
+    await linkTo('design-2');
+    const late = await recordQuestionDecisions(ledger, cleanJudge(), [LAYOUT], { [LAYOUT.question]: 'Cards, and dense' }, new AbortController().signal, { agentId: 'sub-1' });
+    expect(late.records).toEqual([]);
+    expect(late.notes).toEqual([`The answer to "Layout" was not recorded. ${DESIGN_CONTINUES_ELSEWHERE} Report the user's choice in your result; the designer records it.`]);
+    expect(chat.entries).toEqual([role]);
+    expect(fs.existsSync(path.join(FOLDER, 'decisions.md'))).toBe(false);
+
+    await linkTo('design-1');
+    const release = h.design.beginTakeover();
+    await expect(recordDesignDecision(ledger, async () => ({ ...decision('D1', 'Layout'), v: 1 }))).rejects.toThrow(DecisionRefusedError);
+    expect(chat.entries).toEqual([role]);
+    release();
+    await expect(recordDesignDecision(ledger, async () => ({ ...decision('D1', 'Layout'), v: 1 }))).resolves.toMatchObject({ id: 'D1' });
+  });
+});
+
+describe('a design chat\'s restore holds its folder\'s write lane (G1-L1)', () => {
+  it('lands a decision queued while a restore runs after the restore', async () => {
+    await linkTo('design-1');
+    const chat = fakeSession('design-1', [role]);
+    const h = designHarness({ session: chat });
+    const order: string[] = [];
+    let finish!: () => void;
+    const restore = h.design.restoring(async () => {
+      order.push('restore');
+      await new Promise<void>((resolve) => { finish = resolve; });
+      order.push('restored');
+    });
+    await vi.waitFor(() => expect(order).toEqual(['restore']));
+    const recorded = recordDesignDecision(h.design.decisionLedger(() => undefined)!, async () => ({ ...decision('D1', 'Layout'), v: 1 })).then((record) => order.push(`recorded ${record.id}`));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).toEqual(['restore']);
+    finish();
+    await Promise.all([restore, recorded]);
+    expect(order).toEqual(['restore', 'restored', 'recorded D1']);
+  });
+
+  it('runs any other chat\'s restore as it is', async () => {
+    const h = designHarness({ session: fakeSession('plain', []) });
+    await expect(h.design.restoring(async () => 'done')).resolves.toBe('done');
   });
 });
 
@@ -161,6 +213,24 @@ describe('designState (PD-23)', () => {
     await vi.waitFor(() => expect(h.posted).toHaveLength(2));
   });
 
+  it('carries only the conflict flags still active, as DesignCheck counts them (G1-L4)', async () => {
+    await linkTo('design-1');
+    const flag = (id: string) => [{ id, kind: 'contradicts' as const, reason: 'r' }];
+    const entry = (record: DesignDecisionRecord) => ({ id: `e-${record.id}`, type: 'custom', customType: 'damocles-design-decision', data: record });
+    const h = designHarness({ session: fakeSession('design-1', [
+      role,
+      entry(decision('D1', 'Surfaces')),
+      entry({ ...decision('D2', 'Page'), conflicts: flag('D1') }),
+      entry(decision('D3', 'Accent')),
+      entry({ ...decision('D4', 'Text'), conflicts: flag('D3') }),
+      entry({ ...decision('D5', 'Accent'), replaces: ['D3'] }),
+    ]) });
+    h.design.publish();
+    await vi.waitFor(() => expect(h.posted).toHaveLength(1));
+    const decisions = (h.posted[0] as { design: { decisions: { id: string; conflicts?: unknown }[] } }).design.decisions;
+    expect(decisions.map((d) => [d.id, d.conflicts])).toEqual([['D1', undefined], ['D2', flag('D1')], ['D3', undefined], ['D4', undefined], ['D5', undefined]]);
+  });
+
   it('names the main chat by its current title, read again at each publish, so a rename or an AI title shows', async () => {
     await linkTo('design-1');
     const h = designHarness({ session: fakeSession('design-1', [role]) });
@@ -211,11 +281,11 @@ describe('a chat decision quotes only what the user typed (PD-15)', () => {
       sidecar('damocles-original-input', { userEntryId: 'u-ref', original: 'Like this one' }),
       userEntry('u-typed', 'Use the compact table please'),
     ];
-    expect(userMessageQuoted(branch, 'Corner radius → --radius-lg')).toBe(false);
-    expect(userMessageQuoted(branch, 'Taller rows')).toBe(false);
-    expect(userMessageQuoted(branch, 'Map it with MapReference')).toBe(false);
-    expect(userMessageQuoted(branch, 'Like this one')).toBe(true);
-    expect(userMessageQuoted(branch, 'compact table')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'Corner radius → --radius-lg')).toBe(false);
+    expect(userAuthoredQuoted(branch, 'Taller rows')).toBe(false);
+    expect(userAuthoredQuoted(branch, 'Map it with MapReference')).toBe(false);
+    expect(userAuthoredQuoted(branch, 'Like this one')).toBe(true);
+    expect(userAuthoredQuoted(branch, 'compact table')).toBe(true);
     expect(decisionsOnBranch(branch)).toEqual([]);
   });
 });

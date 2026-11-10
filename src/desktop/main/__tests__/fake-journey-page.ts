@@ -16,7 +16,14 @@ export interface FakeElement {
   readonly covered?: boolean;
   readonly click?: (page: FakeJourneyPage) => void;
   readonly key?: (key: string, page: FakeJourneyPage) => void;
+  // a scrolling box: its top, scrollable height and visible height, which a wheel over it moves
+  scroll?: { top: number; height: number; visible: number };
+  // the id of the element it sits in; absent, the body
+  readonly parent?: number;
 }
+
+const FOCUSABLE: ReadonlySet<FakeElement['tag']> = new Set(['input', 'textarea', 'select', 'button']);
+const loose = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
 
 const WANTED = /const wanted = ("(?:[^"\\]|\\.)*")/;
 const quadOf = (id: number): number[] => [id * 20, 0, id * 20 + 10, 0, id * 20 + 10, 10, id * 20, 10];
@@ -28,6 +35,11 @@ export class FakeJourneyPage implements JourneyCdp {
   readonly highlighted: number[] = [];
   readonly events: string[] = [];
   focused: number | undefined;
+  // the page's own scrolling box, and what the page does when its end comes into view (an IntersectionObserver)
+  readonly scroll = { top: 0, height: 900, visible: 900 };
+  onScrolledToEnd?: (page: FakeJourneyPage) => void;
+  // a key that reaches no focused element goes to the body, whose listeners see it bubble to the document
+  documentKey?: (key: string, page: FakeJourneyPage) => void;
   private selected = false;
 
   readonly elements: FakeElement[];
@@ -40,6 +52,14 @@ export class FakeJourneyPage implements JourneyCdp {
 
   visible(element: FakeElement): boolean {
     return element.shown?.(this) ?? true;
+  }
+
+  // the box a wheel over `element` scrolls: its own, else its nearest scrolling ancestor's, else the page's (owner undefined)
+  scrollBoxOf(element: FakeElement | undefined): { readonly owner?: number; readonly box: { top: number; height: number; visible: number } } {
+    for (let at = element; at; at = at.parent === undefined ? undefined : this.element(at.parent)) {
+      if (at.scroll && at.scroll.height > at.scroll.visible) return { owner: at.id, box: at.scroll };
+    }
+    return { box: this.scroll };
   }
 
   private element(id: unknown): FakeElement {
@@ -57,7 +77,7 @@ export class FakeJourneyPage implements JourneyCdp {
       case 'Runtime.releaseObjectGroup': return {};
       case 'DOM.scrollIntoViewIfNeeded': return {};
       case 'Accessibility.queryAXTree': {
-        const nodes = this.elements.filter((element) => this.visible(element) && element.name === params['accessibleName'] && (params['role'] === undefined || element.role === params['role']));
+        const nodes = this.elements.filter((element) => this.visible(element) && (params['accessibleName'] === undefined || element.name === params['accessibleName']) && (params['role'] === undefined || element.role === params['role']));
         return {
           nodes: nodes.map((element) => ({
             ignored: false,
@@ -69,10 +89,16 @@ export class FakeJourneyPage implements JourneyCdp {
       }
       case 'Runtime.evaluate': {
         const expression = String(params['expression']);
+        if (expression.includes('innerWidth')) return { result: { value: [Math.round(this.width / 2), 450] } };
+        if (expression.includes('scrollingElement')) return { result: { value: [this.scroll.top, this.scroll.height, this.scroll.visible] } };
         const wanted = JSON.parse(WANTED.exec(expression)![1]!) as string;
+        const exact = !expression.includes('includes(wanted)');
+        const matches = (text: string | undefined): boolean => text !== undefined && (exact ? text === wanted : loose(text).includes(loose(wanted)));
         const found = expression.includes("'[placeholder]'")
-          ? this.elements.filter((element) => element.placeholder === wanted)
-          : this.elements.filter((element) => element.text === wanted);
+          ? this.elements.filter((element) => matches(element.placeholder))
+          : expression.includes('[aria-labelledby]')
+            ? this.elements.filter((element) => (element.nameFrom === 'label' || element.nameFrom === 'aria-label') && matches(element.name))
+            : this.elements.filter((element) => matches(element.text));
         return { result: found.length === 1 ? { type: 'object', subtype: 'node', objectId: `node-${found[0]!.id}` } : { type: 'number', value: found.length } };
       }
       case 'DOM.describeNode': return { node: { backendNodeId: this.element(params['objectId']).id } };
@@ -84,6 +110,13 @@ export class FakeJourneyPage implements JourneyCdp {
         return {};
       case 'Runtime.callFunctionOn': return { result: { value: this.call(this.element(params['objectId']), String(params['functionDeclaration']), (params['arguments'] as { value: unknown }[]).map((arg) => arg.value)) } };
       case 'Input.dispatchMouseEvent': {
+        if (params['type'] === 'mouseWheel') {
+          const { owner, box } = this.scrollBoxOf(this.elements.find((element) => element.id * 20 + 5 === params['x']));
+          box.top = Math.max(0, Math.min(box.height - box.visible, box.top + Number(params['deltaY'])));
+          this.events.push(`wheel ${owner ?? 'page'}`);
+          if (owner === undefined && box.top >= box.height - box.visible) this.onScrolledToEnd?.(this);
+          return {};
+        }
         if (params['type'] !== 'mouseReleased') return {};
         const target = this.elements.find((element) => element.id * 20 + 5 === params['x']);
         this.events.push(`click ${target?.id}`);
@@ -102,13 +135,23 @@ export class FakeJourneyPage implements JourneyCdp {
         this.events.push(`key ${key}`);
         const field = this.focused === undefined ? undefined : this.element(this.focused);
         if (key === 'Delete' && field && this.selected) field.value = '';
-        field?.key?.(key, this);
+        if (field?.key) field.key(key, this);
+        else this.documentKey?.(key, this);
         return {};
       }
     }
   }
 
   private call(element: FakeElement, fn: string, args: unknown[]): unknown {
+    if (fn.includes('this.focus()')) {
+      // an element that takes no focus leaves it where it was, as element.focus() does
+      if (FOCUSABLE.has(element.tag)) this.focused = element.id;
+      return undefined;
+    }
+    if (fn.includes('scrollingElement')) {
+      const { box } = this.scrollBoxOf(element);
+      return [box.top, box.height, box.visible];
+    }
     if (fn.includes('elementFromPoint')) return element.covered !== true;
     if (fn.includes('createElement')) {
       this.highlighted.push(element.id);

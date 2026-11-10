@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AutoCheckpointProducer } from '../auto-checkpoint';
+import { RepoManager } from '../repo-manager';
 import { folderIdFor, getFolderRepoDir, getGitDir } from '../resolver';
 import type { CheckpointEntryV3, CheckpointRecord } from '../types';
 
@@ -190,6 +191,55 @@ describe('AutoCheckpointProducer (real git, folder repo)', { timeout: 60_000 }, 
     }
     const finalized = await producer.finalizeRun();
     expect(asEntry(finalized.ok ? finalized.record : undefined).userEntryId).toBe('u1');
+  });
+
+  it('starts the entries of one boundary on one snapshot, and a rewind to each restores the tree it started on', async () => {
+    write('a.txt', 'one\n');
+    const producer = makeProducer();
+    await producer.turnStart({ userEntryId: 'u0', prompt: 'p0' });
+    write('a.txt', 'two\n');
+    // every snapshot, baseline or after-state, prepares the work tree once
+    const prepared = vi.spyOn(RepoManager.prototype, 'prepareSnapshot');
+    const started = await producer.turnStartBatch(['u1', 'u2', 'u3'].map((id) => ({ userEntryId: id, prompt: id })));
+    // u0's after-state and the one baseline of u1, u2 and u3
+    expect(prepared).toHaveBeenCalledTimes(2);
+    prepared.mockRestore();
+    expect(started.ok).toBe(true);
+    const [u0, u1, u2] = started.entries.map(asEntry);
+    expect(started.entries.map((record) => record.userEntryId)).toEqual(['u0', 'u1', 'u2']);
+    expect(u0!.fileChanges).toEqual([{ path: 'a.txt', added: 1, removed: 1 }]);
+    const baseline = refs()['refs/damocles/sessions/session-a/u3/before'];
+    for (const entry of [u1!, u2!]) {
+      expect(entry).toMatchObject({ beforeCommit: baseline, afterCommit: baseline, fileCount: 0, fileChanges: [], prompt: entry.userEntryId });
+      expect(refs()[`refs/damocles/sessions/session-a/${entry.userEntryId}/before`]).toBe(baseline);
+      expect(refs()[`refs/damocles/sessions/session-a/${entry.userEntryId}/after`]).toBeUndefined();
+    }
+
+    write('a.txt', 'three\n');
+    const finalized = await producer.finalizeRun();
+    const u3 = asEntry(finalized.ok ? finalized.record : undefined);
+    expect(u3).toMatchObject({ userEntryId: 'u3', beforeCommit: baseline, fileChanges: [{ path: 'a.txt', added: 1, removed: 1 }] });
+
+    const read = (): string => fs.readFileSync(path.join(h.cwd, 'a.txt'), 'utf8');
+    expect((await producer.restore(u0!)).ok).toBe(true);
+    expect(read()).toBe('one\n');
+    for (const entry of [u1!, u2!, u3]) {
+      write('a.txt', 'elsewhere\n');
+      expect((await producer.restore(entry)).ok).toBe(true);
+      expect(read()).toBe('two\n');
+    }
+  });
+
+  it('marks every turn of a shared baseline not rewindable, so none of them gets a ref', async () => {
+    const producer = makeProducer();
+    const started = producer.turnStartBatch([{ userEntryId: 'u1', prompt: 'p' }, { userEntryId: 'u2', prompt: 'p' }]);
+    expect(producer.markNotRewindable('u2', 'baseline-timeout', { tool: 'Edit', waitSeconds: 30 })).toBe(true);
+    expect(producer.markNotRewindable('u1', 'baseline-timeout', { tool: 'Write', waitSeconds: 30 })).toBe(false);
+    const result = await started;
+    expect(result.entries).toEqual([{ v: 3, kind: 'not-rewindable', userEntryId: 'u1', reason: 'baseline-timeout', params: { tool: 'Edit', waitSeconds: 30 }, createdAt: '2026-06-18T12:00:00.000Z' }]);
+    const finalized = await producer.finalizeRun();
+    expect(finalized.ok && finalized.record.kind).toBe('not-rewindable');
+    expect(refs()).toEqual({});
   });
 
   it('refuses an unsafe entry id before git sees it', async () => {

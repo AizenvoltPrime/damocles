@@ -7,10 +7,13 @@ import { parse as parseYaml } from 'yaml';
 import { designStateTokens } from '../../shared/design-paths';
 import { MAX_PROBE_WIDTHS, MIN_RENDER_WIDTH } from '../../shared/design-render';
 import type { DesignCheckIssue, DesignCheckSummary, DesignFidelity, DesignProbeResult } from '../../shared/types/design';
-import { cssUrls, declarationsOf, scanCss, withoutCalls, type CssDeclaration } from './css-scan';
+import { cssResourceRefs, declarationsOf, scanCss, withoutCalls, type CssDeclaration } from './css-scan';
 import { readDesignFile } from './design-file-read';
-import { fileHash, listScreenFiles } from './design-files';
-import { DESIGN_DOC_FILE, MAX_DESIGN_DOC_BYTES, MAX_DESIGN_SCREENS, MAX_SCREEN_BYTES, SCREENS_DIR } from './design-paths';
+import { fileHash, listScreenFiles, listSharedFiles } from './design-files';
+import { designRefPath, elementRefs, isRemoteRef, SVG_RESOURCE_TAGS } from './design-refs';
+import { renderInputHashes } from './render-inputs';
+import { activeConflicts, currentDecisions, replacedBy, type DesignDecisionRecord } from './design-entries';
+import { ASSETS_DIR, DECISIONS_FILE, DESIGN_DOC_FILE, isDesignerRelative, MAX_DESIGN_DOC_BYTES, MAX_DESIGN_FILES, MAX_DESIGN_SCREENS, MAX_SCREEN_BYTES, SCREENS_DIR, SHARED_DIR, TOKENS_FILE } from './design-paths';
 import { resolveDesignViewports, resolveViewportWidth, viewportPresetNames } from './design-preview';
 import type { DesignInventory } from './inventory';
 import { journeyFilesOf, journeyStanding, readJourneyFile, screenContentHash, type ScreenJourney } from './journey';
@@ -20,7 +23,8 @@ export type DesignCheckRule =
   | 'ds.component-known' | 'ds.variant-known' | 'ds.bind-known' | 'ds.decision-known' | 'ds.new-cites-decision'
   | 'tokens.color' | 'tokens.spacing' | 'tokens.radius' | 'tokens.unknown-var' | 'tokens.redefined'
   | 'screen.states' | 'screen.size' | 'design.frontmatter' | 'fidelity.static-no-scripts' | 'links.no-javascript' | 'net.no-external' | 'assets.local-only' | 'a11y.control-name'
-  | 'layout.overflow' | 'ds.hidden-required' | 'journey.required';
+  | 'layout.overflow' | 'ds.hidden-required' | 'journey.required' | 'motion.reduced-motion'
+  | 'decisions.conflict' | 'decisions.unchecked' | 'ds.decision-replaced';
 
 /** Each rule's fixed severity (PD-52); a skill hint's rule takes the severity its hint declares. */
 export const DESIGN_CHECK_SEVERITY: Readonly<Record<DesignCheckRule, 'error' | 'warning'>> = {
@@ -45,18 +49,25 @@ export const DESIGN_CHECK_SEVERITY: Readonly<Record<DesignCheckRule, 'error' | '
   'layout.overflow': 'error',
   'ds.hidden-required': 'warning',
   'journey.required': 'error',
+  'motion.reduced-motion': 'warning',
+  'decisions.conflict': 'error',
+  'decisions.unchecked': 'warning',
+  'ds.decision-replaced': 'warning',
 };
 
 export interface DesignCheckInput {
   readonly folder: string;
   readonly inventory: DesignInventory;
   readonly tokenNames: readonly string[];
-  readonly decisionIds: readonly string[];
+  /** The branch's decisions, replaced ones included, in branch order. */
+  readonly decisions: readonly DesignDecisionRecord[];
   readonly fidelity: DesignFidelity | null;
   /** The hints of the skills loaded on the branch, each checked as its rule. */
   readonly skillHints: readonly LoadedSkillHint[];
   /** The journey gate's widths (PD-21), where the rule set gates journeys (FULL); it applies to an interactive design only. */
   readonly journeys?: { readonly widths: readonly number[] };
+  /** The rule set has DesignScreenshot, which the fix advice may name. */
+  readonly screenshots: boolean;
 }
 
 /** One screen as the check read it, for the manifest. */
@@ -145,7 +156,6 @@ function isInteractive(element: CheckElement, tag: string): boolean {
 }
 
 const CONTROL_ROLES = new Set(['button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'menuitem', 'combobox', 'textbox', 'searchbox', 'slider', 'option', 'spinbutton']);
-const RESOURCE_ATTRIBUTES = ['src', 'srcset', 'poster', 'data'];
 const COLLECTION = 'table, ul, ol, [role="list"], [role="table"], [role="grid"]';
 const ACTION = 'button, a[href], [role="button"], input[type="submit"], input[type="button"]';
 
@@ -226,10 +236,6 @@ function hasLiteralLength(value: string): boolean {
   return literalText(value).split(/[^\w.%-]+/).some((word) => LENGTH_WORD.test(word) && !ZERO_LENGTH.test(word));
 }
 
-function isRemoteRef(ref: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/i.test(ref.trim()) || ref.trim().startsWith('//');
-}
-
 /** Whether a link target runs a script as a browser reads it: tabs and line breaks dropped, leading controls and spaces trimmed. */
 function isJavaScriptUrl(value: string): boolean {
   const text = value.replace(/[\t\n\r]/g, '');
@@ -257,7 +263,7 @@ function capIssues(issues: readonly DesignCheckIssue[]): DesignCheckIssue[] {
   return kept;
 }
 
-/** Checks one design folder; reads screens/*.html, design.md, and nothing outside the folder. */
+/** Checks one design folder; reads screens/*.html, shared/*.css and *.js, design.md, and nothing outside the folder. */
 export async function runDesignCheck(input: DesignCheckInput): Promise<DesignCheckResult> {
   const errors: DesignCheckIssue[] = [];
   const warnings: DesignCheckIssue[] = [];
@@ -280,9 +286,13 @@ export async function runDesignCheck(input: DesignCheckInput): Promise<DesignChe
   if (files.length > MAX_DESIGN_SCREENS) report('screen.size', SCREENS_DIR, SCREENS_DIR, `A design holds at most ${MAX_DESIGN_SCREENS} screens; this one has ${files.length}.`);
   const checked: CheckedScreen[] = [];
   const tokens = new Set(input.tokenNames);
-  const decisions = new Set(input.decisionIds);
+  const decisions = new Set(input.decisions.map((decision) => decision.id));
+  const replaced = replacedBy(input.decisions);
+  checkDecisions(input.decisions, report);
   const components = new Map(input.inventory.components.map((component) => [component.name, component]));
   const types = new Map(input.inventory.types.map((type) => [type.name, new Set(type.fields)]));
+  // a script or stylesheet several screens link is read once
+  const linked = new Map<string, Promise<string>>();
 
   for (const file of files.slice(0, MAX_DESIGN_SCREENS)) {
     const fallbackId = path.posix.basename(file).replace(/\.html$/i, '');
@@ -349,13 +359,17 @@ export async function runDesignCheck(input: DesignCheckInput): Promise<DesignChe
       }
       const decisionRef = element.getAttribute('data-ds-decision');
       if (decisionRef !== null) {
-        for (const id of decisionRef.split(/\s+/).filter(Boolean)) if (!decisions.has(id)) at('ds.decision-known', describe(element), `${echo(id)} is not a decision of this design.`);
+        for (const id of decisionRef.split(/\s+/).filter(Boolean)) {
+          if (!decisions.has(id)) at('ds.decision-known', describe(element), `${echo(id)} is not a decision of this design.`);
+          else if (replaced.has(id)) at('ds.decision-replaced', describe(element), `${id} was replaced by ${replaced.get(id)!}; cite the current decision.`);
+        }
       }
       const newRef = element.getAttribute('data-ds-new');
       if (newRef !== null && !decisions.has(newRef.trim())) at('ds.new-cites-decision', describe(element), `data-ds-new must cite the decision that introduced this UI; "${echo(newRef)}" is not one.`);
+      else if (newRef !== null && replaced.has(newRef.trim())) at('ds.decision-replaced', describe(element), `${newRef.trim()} was replaced by ${replaced.get(newRef.trim())!}; cite the current decision.`);
 
       if (tag === 'script' && input.fidelity === 'static') at('fidelity.static-no-scripts', describe(element), 'A static design runs no scripts; remove the <script>.');
-      checkReferences(element, tag, describe(element), at);
+      checkReferences(element, tag, describe(element), file, at);
       for (const name of COLOR_ATTRIBUTES) {
         const value = element.getAttribute(name);
         if (value !== null && hasLiteralColor(value)) at('tokens.color', describe(element), `${name}="${echo(value)}" uses a color that is not a token; set it in a style with var(--token).`);
@@ -363,23 +377,29 @@ export async function runDesignCheck(input: DesignCheckInput): Promise<DesignChe
       const style = element.getAttribute('style');
       if (style !== null) {
         const declarations = declarationsOf(style, 1);
-        checkDeclarations(declarations, describe(element), tokens, at);
-        if (hints.size > 0) checkSkillDeclarations(declarations, describe(element), hintAt);
+        const where = (): string => describe(element);
+        checkDeclarations(declarations, where, file, tokens, at);
+        if (hints.size > 0) checkSkillDeclarations(declarations, where, hintAt);
       }
       if (tag === 'style') {
         const { declarations, imports } = scanCss(element.textContent ?? '');
-        checkDeclarations(declarations, '<style>', tokens, at);
-        if (hints.size > 0) checkSkillDeclarations(declarations, '<style>', hintAt);
-        for (const url of imports) checkResourceRef(url, '<style>', at, true);
+        const where = (declaration: CssDeclaration): string => `<style> ${echo(declaration.name)}: ${declaration.value.slice(0, 60)}`;
+        checkDeclarations(declarations, where, file, tokens, at);
+        if (hints.size > 0) checkSkillDeclarations(declarations, where, hintAt);
+        for (const url of imports) checkResourceRef(url, '<style>', file, at, true);
       }
       if (isControl(element, tag) && !hasAccessibleName(element, tag, index)) {
         at('a11y.control-name', describe(element), 'This control has no accessible name: give it text, aria-label, aria-labelledby, a <label>, or title.');
       }
     }
     if (hints.size > 0) checkSkillElements(elements, index, states, describe, hintAt);
+    await checkReducedMotion(input.folder, file, elements, linked, input.screenshots, at);
     const contentHash = screenContentHash(bytes);
-    const journey = input.journeys && input.fidelity === 'interactive' ? await gateJourney(input.folder, screenId, file, contentHash, elements, input.journeys.widths, at) : undefined;
+    const journey = input.journeys && input.fidelity === 'interactive' ? await gateJourney(input.folder, screenId, file, elements, input.journeys.widths, at) : undefined;
     checked.push({ id: screenId, file, contentHash, ...(journey ? { journey } : {}) });
+  }
+  for (const file of (await listSharedFiles(input.folder)).slice(0, MAX_DESIGN_FILES)) {
+    await checkSharedFile(input, file, tokens, report, hints.size > 0 ? (rule, element, message) => reportHint(rule, file, element, message) : undefined);
   }
   return {
     summary: { errors: capIssues(errors), warnings: capIssues(warnings), attributesChecked, tokensChecked: tokens.size, skillHints: input.skillHints.length, widths: [] },
@@ -388,10 +408,104 @@ export async function runDesignCheck(input: DesignCheckInput): Promise<DesignChe
 }
 
 /**
- * The journey gate on one screen of an interactive design (PD-21): DesignCheck's waiver when it has no interactive control,
- * else `journey.required` unless its journey ran against these bytes and passed at every journey width.
+ * One shared file, reported as its own screen `shared/<name>`: a stylesheet under the token, network and asset rules of a
+ * `<style>`, a script under a screen's script rules (none in a static design, reduced motion).
  */
-async function gateJourney(folder: string, screen: string, file: string, contentHash: string, elements: readonly CheckElement[], widths: readonly number[], at: (rule: DesignCheckRule, element: string, message: string) => void): Promise<ScreenJourney | undefined> {
+async function checkSharedFile(
+  input: DesignCheckInput,
+  file: string,
+  tokens: ReadonlySet<string>,
+  report: (rule: DesignCheckRule, screen: string, element: string, message: string) => void,
+  hintAt: ((rule: DesignSkillRule, element: string, message: string) => void) | undefined,
+): Promise<void> {
+  const at = (rule: DesignCheckRule, element: string, message: string): void => report(rule, file, element, message);
+  const read = await readDesignFile(input.folder, file, MAX_SCREEN_BYTES);
+  if (read.kind === 'missing') return;
+  if (read.kind === 'outside') throw new Error(`${file} cannot be read: it is a link or has another hard link, which no shared file may have.`);
+  if (read.kind !== 'file') {
+    at('screen.size', file, 'The file is larger than 2 MiB, the most a shared file holds, so it was not checked.');
+    return;
+  }
+  const text = read.bytes.toString('utf8');
+  if (/\.css$/i.test(file)) {
+    const { declarations, imports } = scanCss(text);
+    const where = (declaration: CssDeclaration): string => `line ${declaration.line} ${echo(declaration.name)}: ${declaration.value.slice(0, 60)}`;
+    checkDeclarations(declarations, where, file, tokens, at);
+    if (hintAt) checkSkillDeclarations(declarations, where, hintAt);
+    for (const url of imports) checkResourceRef(url, '@import', file, at, true);
+    return;
+  }
+  if (input.fidelity === 'static') at('fidelity.static-no-scripts', file, `A static design runs no scripts; remove ${file} with RemoveDesignFile.`);
+  if (SCRIPTED_MOTION.test(text) && !REDUCED_MOTION.test(text)) at('motion.reduced-motion', file, scriptMotionMessage(file, input.screenshots));
+}
+
+// Motion a script drives frame by frame or on a timer, and CSS keyframes; WCAG 2.2.2 and 2.3.3 ask that it stop or show its
+// end under reduced motion.
+const SCRIPTED_MOTION = /\brequestAnimationFrame\b|\bsetInterval\b|\.animate\s*\(/;
+const KEYFRAMES = /@(?:-webkit-)?keyframes\b/i;
+const REDUCED_MOTION = /prefers-reduced-motion/i;
+
+/** How the fix advice has the designer look at reduced motion: with DesignScreenshot where the rule set has it. */
+function motionCheck(screenshots: boolean): string {
+  return screenshots ? 'check that with DesignScreenshot media { reducedMotion: "reduce" }' : 'check that by opening the screen in a browser with reduced motion turned on in the system settings';
+}
+
+function scriptMotionMessage(script: string, screenshots: boolean): string {
+  return `${script} animates (requestAnimationFrame, setInterval or .animate()) and never checks prefers-reduced-motion. Under reduced motion, stop it or render its final state at once, and ${motionCheck(screenshots)}.`;
+}
+
+/** A shared script DesignCheck checks as its own file (`checkSharedFile`), which a screen that links it leaves its motion to. */
+const isCheckedSharedScript = (relPath: string | undefined): boolean => relPath !== undefined && relPath.startsWith(`${SHARED_DIR}/`) && isDesignerRelative(relPath);
+
+/** A script or stylesheet `ref` of screen `file`, read through the confined read when it lies in the folder; '' otherwise. */
+function linkedText(folder: string, file: string, ref: string, linked: Map<string, Promise<string>>): Promise<string> {
+  const relPath = designRefPath(file, ref);
+  if (relPath === undefined) return Promise.resolve('');
+  let text = linked.get(relPath);
+  if (!text) {
+    text = readDesignFile(folder, relPath, MAX_SCREEN_BYTES).then((read) => (read.kind === 'file' ? read.bytes.toString('utf8') : ''), () => '');
+    linked.set(relPath, text);
+  }
+  return text;
+}
+
+/**
+ * `motion.reduced-motion` on one screen. Scripts are judged per file, since only a script stops its own motion: the screen's
+ * inline scripts together, and each script it links from outside shared/ on its own text (a shared script is reported once,
+ * on itself). @keyframes are judged by every style the screen loads, since a reduced-motion rule in any of them reaches them.
+ */
+async function checkReducedMotion(folder: string, file: string, elements: readonly CheckElement[], linked: Map<string, Promise<string>>, screenshots: boolean, at: (rule: DesignCheckRule, element: string, message: string) => void): Promise<void> {
+  const inline: string[] = [];
+  const styles: string[] = [];
+  for (const element of elements) {
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'script') {
+      const src = element.getAttribute('src');
+      if (src === null) inline.push(element.textContent ?? '');
+      else if (!isCheckedSharedScript(designRefPath(file, src))) {
+        const text = await linkedText(folder, file, src, linked);
+        if (SCRIPTED_MOTION.test(text) && !REDUCED_MOTION.test(text)) at('motion.reduced-motion', `<script src="${echo(src)}">`, scriptMotionMessage(echo(src), screenshots));
+      }
+    } else if (tag === 'style') {
+      styles.push(element.textContent ?? '');
+    } else if (tag === 'link' && (element.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).includes('stylesheet')) {
+      const href = element.getAttribute('href');
+      if (href !== null) styles.push(await linkedText(folder, file, href, linked));
+    }
+  }
+  if (inline.some((text) => SCRIPTED_MOTION.test(text)) && !inline.some((text) => REDUCED_MOTION.test(text))) {
+    at('motion.reduced-motion', '<script>', `A script of the screen animates (requestAnimationFrame, setInterval or .animate()) and none of its scripts checks prefers-reduced-motion. Under reduced motion, stop it or render its final state at once, and ${motionCheck(screenshots)}.`);
+  }
+  if (styles.some((text) => KEYFRAMES.test(text)) && !styles.some((text) => REDUCED_MOTION.test(text))) {
+    at('motion.reduced-motion', '<style>', `The styles define @keyframes and none of the screen's styles checks prefers-reduced-motion. Under reduced motion, turn the animation off or show its end state, and ${motionCheck(screenshots)}.`);
+  }
+}
+
+/**
+ * The journey gate on one screen of an interactive design (PD-21): DesignCheck's waiver when it has no interactive control,
+ * else `journey.required` unless its journey ran against its current render inputs and passed at every journey width.
+ */
+async function gateJourney(folder: string, screen: string, file: string, elements: readonly CheckElement[], widths: readonly number[], at: (rule: DesignCheckRule, element: string, message: string) => void): Promise<ScreenJourney | undefined> {
   if (!elements.some((element) => isInteractive(element, element.tagName.toLowerCase()))) return { waiver: true };
   const files = journeyFilesOf(file);
   if (!files) {
@@ -399,12 +513,13 @@ async function gateJourney(folder: string, screen: string, file: string, content
     return undefined;
   }
   const journey = await readJourneyFile(folder, files.journeyFile);
-  const standing = journeyStanding(journey, contentHash, widths);
+  const renderHash = (await renderInputHashes(folder, [file]))[file]!;
+  const standing = journeyStanding(journey, renderHash, widths);
   const widthsText = `${widths.join(' and ')} px`;
   if (!standing.passes) {
     const message = {
       missing: `${screen} has controls but no journey. Run PreviewJourney on ${file}; it runs at the journey widths (${widthsText}).`,
-      stale: `${screen} changed after its journey ran, so the journey no longer vouches for it. Run PreviewJourney on ${file} again.`,
+      stale: `${screen} or a file it loads (tokens.css, shared/, assets/) changed after its journey ran, so the journey no longer vouches for it. Run PreviewJourney on ${file} again.`,
       failed: `The journey of ${screen} failed. Fix the screen or the journey and run PreviewJourney on ${file} again.`,
       widths: `The journey of ${screen} did not pass at every journey width (${widthsText}). Run PreviewJourney on ${file} again.`,
     }[standing.reason];
@@ -458,10 +573,10 @@ function checkSkillElements(
 }
 
 /** The skill hints' declaration rules; words are split first, so each test is anchored and linear. */
-function checkSkillDeclarations(declarations: readonly CssDeclaration[], element: string, hintAt: (rule: DesignSkillRule, element: string, message: string) => void): void {
+function checkSkillDeclarations(declarations: readonly CssDeclaration[], whereOf: (declaration: CssDeclaration) => string, hintAt: (rule: DesignSkillRule, element: string, message: string) => void): void {
   for (const declaration of declarations) {
     const property = declaration.name.toLowerCase();
-    const where = element === '<style>' ? `<style> ${echo(declaration.name)}: ${declaration.value.slice(0, 60)}` : element;
+    const where = whereOf(declaration);
     // a clamp() bounds the type at both ends, so only a bare viewport unit is left to find
     if ((property === 'font-size' || property === 'font') && withoutCalls(declaration.value, VAR_AND_CLAMP).split(/[^\w.%-]+/).some((word) => VIEWPORT_LENGTH.test(word))) {
       hintAt('layout.viewport-font', where, `${echo(declaration.name)}: ${echo(declaration.value)} scales the type with the viewport.`);
@@ -527,10 +642,11 @@ export function widthIssues(screen: string, probe: DesignProbeResult, widths: re
   return issues;
 }
 
-function checkDeclarations(declarations: readonly CssDeclaration[], element: string, tokens: ReadonlySet<string>, at: (rule: DesignCheckRule, element: string, message: string) => void): void {
+/** The token and resource rules over `declarations` of design file `from`; `whereOf` names a declaration in an issue. */
+function checkDeclarations(declarations: readonly CssDeclaration[], whereOf: (declaration: CssDeclaration) => string, from: string, tokens: ReadonlySet<string>, at: (rule: DesignCheckRule, element: string, message: string) => void): void {
   for (const declaration of declarations) {
     const property = declaration.name.toLowerCase();
-    const where = element === '<style>' ? `<style> ${echo(declaration.name)}: ${declaration.value.slice(0, 60)}` : element;
+    const where = whereOf(declaration);
     const written = `${echo(declaration.name)}: ${echo(declaration.value)}`;
     if (property.startsWith('--')) {
       // a screen may point a token at another one, never at a literal, which would get past the token rules where it is used
@@ -545,12 +661,15 @@ function checkDeclarations(declarations: readonly CssDeclaration[], element: str
     for (const match of declaration.value.matchAll(VAR_CALL)) {
       if (!tokens.has(match[1]!)) at('tokens.unknown-var', where, `${echo(match[1]!)} is not a token in tokens.css.`);
     }
-    for (const url of cssUrls(declaration.value)) checkResourceRef(url, where, at);
+    for (const url of cssResourceRefs(declaration.value)) checkResourceRef(url, where, from, at);
   }
 }
 
-/** A resource the page loads: never from the network, and only from ../assets/ (and ../tokens.css for a stylesheet). */
-function checkResourceRef(ref: string, element: string, at: (rule: DesignCheckRule, element: string, message: string) => void, stylesheet = false): void {
+/**
+ * A resource design file `from` loads: never from the network, and only a file of assets/ or shared/ (and tokens.css for a
+ * stylesheet), resolved against `from`'s own directory.
+ */
+function checkResourceRef(ref: string, element: string, from: string, at: (rule: DesignCheckRule, element: string, message: string) => void, stylesheet = false): void {
   const value = ref.trim();
   if (value === '' || value.startsWith('#')) return;
   if (/^(?:https?:)?\/\//i.test(value)) {
@@ -558,26 +677,19 @@ function checkResourceRef(ref: string, element: string, at: (rule: DesignCheckRu
     return;
   }
   if (isRemoteRef(value)) {
-    at('assets.local-only', element, `${echo(value)} is not a file of the design; copy assets with ImportAsset and use ../assets/.`);
+    at('assets.local-only', element, `${echo(value)} is not a file of the design; copy assets with ImportAsset and load them from assets/.`);
     return;
   }
-  if (value.startsWith('../assets/') || (stylesheet && value === '../tokens.css')) return;
-  at('assets.local-only', element, `${echo(value)} is not under ../assets/; copy assets with ImportAsset and use ../assets/.`);
+  const relPath = designRefPath(from, value);
+  if (relPath !== undefined && (relPath.startsWith(`${ASSETS_DIR}/`) || relPath.startsWith(`${SHARED_DIR}/`) || (stylesheet && relPath === TOKENS_FILE))) return;
+  at('assets.local-only', element, `${echo(value)} is not a file of assets/ or shared/ (or tokens.css for a stylesheet), relative to ${from}; copy assets with ImportAsset and load them from assets/.`);
 }
 
-function checkReferences(element: CheckElement, tag: string, description: string, at: (rule: DesignCheckRule, element: string, message: string) => void): void {
-  for (const name of RESOURCE_ATTRIBUTES) {
-    const value = element.getAttribute(name);
-    if (value === null) continue;
-    const refs = name === 'srcset' ? value.split(',').map((part) => part.trim().split(/\s+/)[0] ?? '') : [value];
-    for (const ref of refs) checkResourceRef(ref, description, at);
-  }
-  if (tag === 'link') {
-    const href = element.getAttribute('href');
-    if (href !== null) checkResourceRef(href, description, at, true);
-  }
+function checkReferences(element: CheckElement, tag: string, description: string, from: string, at: (rule: DesignCheckRule, element: string, message: string) => void): void {
+  for (const { ref, stylesheet } of elementRefs(element)) checkResourceRef(ref, description, from, at, stylesheet);
   for (const name of ['href', 'action', 'formaction', 'xlink:href']) {
-    if (tag === 'link' && name === 'href') continue;
+    // elementRefs checks these as resources
+    if ((tag === 'link' && name === 'href') || (SVG_RESOURCE_TAGS.has(tag) && (name === 'href' || name === 'xlink:href'))) continue;
     const value = element.getAttribute(name);
     if (value === null) continue;
     if (/^(?:https?:)?\/\//i.test(value.trim())) at('net.no-external', description, `${echo(value)} leads out of the design; link only to its own screens.`);
@@ -612,6 +724,18 @@ function hasAccessibleName(element: CheckElement, tag: string, index: ScreenInde
     return true;
   }
   return !blank(element.getAttribute('title'));
+}
+
+/** The decision rules (D99): a stored flag on another current decision is an error, and an unchecked decision a warning. */
+function checkDecisions(all: readonly DesignDecisionRecord[], report: (rule: DesignCheckRule, screen: string, element: string, message: string) => void): void {
+  const current = currentDecisions(all);
+  const currentIds = new Set(current.map((decision) => decision.id));
+  for (const decision of current) {
+    for (const flag of activeConflicts(decision, currentIds)) {
+      report('decisions.conflict', DECISIONS_FILE, decision.id, `${decision.id} (the user's answer) ${flag.kind} ${flag.id}: ${flag.reason}. Record what the user decided with RecordDecision, source {kind: "question", ref: "${decision.id}"}, replaces: ["${decision.id}", "${flag.id}"] (restate what still holds), or replaces: ["${decision.id}"] and stillHolds: ["${flag.id}"] where both stand.`);
+    }
+    if (decision.conflictCheck === 'unchecked') report('decisions.unchecked', DECISIONS_FILE, decision.id, `${decision.id} was recorded without its conflict check; FinishDesign checks it again.`);
+  }
 }
 
 async function checkFrontmatter(input: DesignCheckInput, report: (rule: DesignCheckRule, screen: string, element: string, message: string) => void): Promise<void> {

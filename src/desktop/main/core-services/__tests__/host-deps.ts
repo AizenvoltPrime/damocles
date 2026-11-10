@@ -56,6 +56,6 @@ export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly 
     refusedPosts: new Set(),
     showSession: async () => undefined,
     openDesignPreview: () => undefined,
-    designRender: { capture: noRunner, probe: noRunner, journey: noRunner, replay: noRunner },
+    designRender: { capture: noRunner, render: noRunner, probe: noRunner, journey: noRunner, replay: noRunner },
   };
 }

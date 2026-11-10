@@ -66,6 +66,7 @@ export function createDesignHandlers(): Partial<HandlerRegistry> {
         decisions: msg.decisions,
         screens: msg.screens,
         hasParent: msg.hasParent,
+        ...(msg.uncheckedDecisions ? { uncheckedDecisions: msg.uncheckedDecisions } : {}),
       });
     },
 

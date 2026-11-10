@@ -26,7 +26,7 @@ export interface CheckpointTreeReader {
 }
 
 /** The producer calls the service makes; `AutoCheckpointProducer` in production. */
-export type CheckpointProducer = Pick<AutoCheckpointProducer, 'turnStart' | 'markNotRewindable' | 'finalizeRun' | 'snapshot' | 'restore' | 'restorePreRewind' | 'dispose' | 'pendingBaseline'>;
+export type CheckpointProducer = Pick<AutoCheckpointProducer, 'turnStart' | 'turnStartBatch' | 'markNotRewindable' | 'finalizeRun' | 'snapshot' | 'restore' | 'restorePreRewind' | 'dispose' | 'pendingBaseline'>;
 
 /**
  * A restore as the user sees it: the producer's result, or why no restore ran. `service-unavailable`
@@ -92,16 +92,21 @@ function piMessageText(content: unknown): string {
     .join(' ');
 }
 
-/** The last user-role message entry on the active branch — the entry that started the current turn. */
-function findLastUserEntry(sm: CheckpointTreeReader): { id: string; prompt: string } | null {
+/**
+ * The user entries committed since the branch's last other message or last turn in `known`, oldest first: one boundary
+ * delivers every pending steer, note and markup as a user entry of its own. Entries that are no message (a hook's context) are passed over.
+ */
+function userEntriesAtLeaf(sm: CheckpointTreeReader, known: ReadonlySet<string>): Array<{ id: string; prompt: string }> {
   const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+  const entries: Array<{ id: string; prompt: string }> = [];
   for (let i = branch.length - 1; i >= 0; i--) {
     const entry = branch[i];
-    if (entry && entry.type === 'message' && (entry as { message?: PiMessage }).message?.role === 'user') {
-      return { id: entry.id, prompt: piMessageText((entry as { message?: PiMessage }).message?.content).slice(0, 500) };
-    }
+    if (!entry || entry.type !== 'message') continue;
+    const message = (entry as { message?: PiMessage }).message;
+    if (message?.role !== 'user' || known.has(entry.id)) break;
+    entries.unshift({ id: entry.id, prompt: piMessageText(message.content).slice(0, 500) });
   }
-  return null;
+  return entries;
 }
 
 /** The turn whose baseline file-changing tools wait for. */
@@ -137,6 +142,8 @@ export class CheckpointService {
   private readonly knownTurns = new Set<string>();
   /** `awaitBaselineOf` callers whose turn has not started yet, by its user entry. */
   private readonly turnWaiters = new Map<string, Array<() => void>>();
+  /** The turn of every user entry started since the run last settled, so `awaitBaselineOf` waits on that entry's baseline; cleared at `onSettled` and `dispose`. */
+  private readonly baselines = new Map<string, CurrentTurn>();
   private disposed = false;
   private readonly disposal = new AbortController();
 
@@ -205,10 +212,20 @@ export class CheckpointService {
    * and a gate waiter in a run keyed on a finished turn has nothing to wait for.
    */
   startTurn(sm: CheckpointTreeReader, userEntryId: string, prompt: string): void {
-    if (this.disposed || this.knownTurns.has(userEntryId)) return;
-    this.knownTurns.add(userEntryId);
+    this.startTurns(sm, [{ id: userEntryId, prompt }]);
+  }
+
+  /**
+   * `startTurn` for the user entries one boundary committed, oldest first, on one baseline (`turnStartBatch`): nothing runs
+   * between them. Every entry maps to that one turn, so a waiter on any of them waits on the shared baseline.
+   */
+  private startTurns(sm: CheckpointTreeReader, entries: ReadonlyArray<{ id: string; prompt: string }>): void {
+    if (this.disposed) return;
+    const fresh = entries.filter((entry, index) => !this.knownTurns.has(entry.id) && entries.findIndex((other) => other.id === entry.id) === index);
+    const newest = fresh.at(-1);
+    if (!newest) return;
     const turn: CurrentTurn = {
-      userEntryId,
+      userEntryId: newest.id,
       baseline: Promise.resolve(),
       baselineDone: false,
       started: false,
@@ -216,32 +233,39 @@ export class CheckpointService {
       timeoutParams: {},
     };
     this.turn = turn;
-    const waiters = this.turnWaiters.get(userEntryId) ?? [];
-    this.turnWaiters.delete(userEntryId);
-    for (const started of waiters) started();
+    for (const { id } of fresh) {
+      this.knownTurns.add(id);
+      this.baselines.set(id, turn);
+    }
+    for (const { id } of fresh) {
+      const waiters = this.turnWaiters.get(id) ?? [];
+      this.turnWaiters.delete(id);
+      for (const started of waiters) started();
+    }
     turn.baseline = this.enqueue('baseline', async () => {
       const producer = await this.ensureProducer(sm);
       if (!producer) return;
-      const started = producer.turnStart({ userEntryId, prompt: prompt.slice(0, 500) });
+      const inputs = fresh.map(({ id, prompt }) => ({ userEntryId: id, prompt: prompt.slice(0, 500) }));
+      const started = inputs.length === 1 ? producer.turnStart(inputs[0]!) : producer.turnStartBatch(inputs);
       turn.started = true;
-      if (turn.timedOut) producer.markNotRewindable(userEntryId, 'baseline-timeout', turn.timeoutParams);
+      if (turn.timedOut) producer.markNotRewindable(newest.id, 'baseline-timeout', turn.timeoutParams);
       const result = await started;
-      if (!result.ok) log('[CheckpointService] baseline for %s failed: %s', userEntryId, result.message);
+      if (!result.ok) log('[CheckpointService] baseline for %s failed: %s', newest.id, result.message);
       for (const record of result.entries) this.deliver(record);
     }).finally(() => {
       turn.baselineDone = true;
     });
   }
 
-  /** Assistant message_start: start the baseline for the latest user entry (a steered message opens a turn here). */
+  /** Assistant message_start: start one baseline for the user entries committed since the last reply (a steered message opens a turn here). */
   onMessageStart(message: PiMessage, sm: CheckpointTreeReader): void {
     if (message.role !== 'assistant') return;
-    const leaf = findLastUserEntry(sm);
-    if (leaf) this.startTurn(sm, leaf.id, leaf.prompt);
+    this.startTurns(sm, userEntriesAtLeaf(sm, this.knownTurns));
   }
 
   /** The run settled: finalize its turn after its baseline, in the background. */
   onSettled(): void {
+    this.baselines.clear();
     if (!this.turn) return;
     this.turn = null;
     void this.enqueue('finalize', async () => {
@@ -270,9 +294,12 @@ export class CheckpointService {
    * proceeds, the turn is marked not rewindable (its late baseline is never used) and the host posts
    * the turn's one notice. An abort or dispose releases the waiter at once.
    */
-  async awaitBaseline(signal: AbortSignal, toolName: string): Promise<void> {
-    const turn = this.turn;
-    if (!turn || turn.baselineDone || turn.timedOut || this.disposed) return;
+  awaitBaseline(signal: AbortSignal, toolName: string): Promise<void> {
+    return this.turn ? this.awaitTurnBaseline(this.turn, signal, toolName) : Promise.resolve();
+  }
+
+  private async awaitTurnBaseline(turn: CurrentTurn, signal: AbortSignal, toolName: string): Promise<void> {
+    if (turn.baselineDone || turn.timedOut || this.disposed) return;
     const waitMs = this.host.baselineWaitMs();
     const span = perfSpan('checkpoint.wait');
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -330,7 +357,8 @@ export class CheckpointService {
       });
       if (!started) return false;
     }
-    if (this.turn?.userEntryId === userEntryId) await this.awaitBaseline(signal, toolName);
+    const turn = this.baselines.get(userEntryId);
+    if (turn) await this.awaitTurnBaseline(turn, signal, toolName);
     return !signal.aborted && !this.disposed;
   }
 
@@ -424,6 +452,7 @@ export class CheckpointService {
     const droppedUserEntryId = this.producer?.dispose() ?? null;
     this.disposal.abort();
     this.turn = null;
+    this.baselines.clear();
     if (droppedUserEntryId) {
       log('[CheckpointService] dispose dropped the unfinalized checkpoint for user entry %s', droppedUserEntryId);
     }

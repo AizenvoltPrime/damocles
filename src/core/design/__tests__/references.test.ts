@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import type { UserContentBlock } from '../../../shared/types/content';
 import type { MapReferenceDetails } from '../../../shared/types/design';
-import { recordDecision } from '../decisions';
+import { decisionDraft } from '../decisions';
 import { runDesignCheck } from '../design-check';
 import { isDesignerRelative } from '../design-paths';
 import type { DesignInventory } from '../inventory';
@@ -158,11 +158,11 @@ describe('MapReference', () => {
   it('lets a mapping row become a decision, which data-ds-new then cites in DesignCheck', async () => {
     const folder = await withReference();
     await mapReference(folder, { reference: 'R1', rows: [{ element: 'Carousel', status: 'needsDecision' }] }, INVENTORY, TOKENS);
-    const record = await recordDecision([], { title: 'Carousel', chosen: 'A new carousel', source: { kind: 'reference', ref: 'R1#Carousel' } }, [], folder);
+    const record = { ...(await decisionDraft([], { title: 'Carousel', chosen: 'A new carousel', source: { kind: 'reference', ref: 'R1#Carousel' } }, folder)), id: 'D1' };
     fs.mkdirSync(path.join(folder, 'screens'));
     const screen = (attributes: string): string => `<!doctype html><html data-ds-screen="S1" data-ds-states="default"><head><title>S1</title></head><body><section ${attributes}>Slides</section></body></html>`;
     fs.writeFileSync(path.join(folder, 'screens', 'S1.html'), screen(`data-ds-new="${record.id}"`));
-    const input = { folder, inventory: INVENTORY, tokenNames: TOKENS, decisionIds: [record.id], fidelity: 'static' as const, skillHints: [] };
+    const input = { folder, inventory: INVENTORY, tokenNames: TOKENS, decisions: [record], fidelity: 'static' as const, skillHints: [], screenshots: true };
     expect((await runDesignCheck(input)).summary.errors.filter((issue) => issue.rule === 'ds.new-cites-decision')).toEqual([]);
     fs.writeFileSync(path.join(folder, 'screens', 'S1.html'), screen('data-ds-new="R1#Carousel"'));
     expect((await runDesignCheck(input)).summary.errors.map((issue) => issue.rule)).toContain('ds.new-cites-decision');

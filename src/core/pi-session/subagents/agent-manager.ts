@@ -17,14 +17,15 @@ import type { AgentSession, ExtensionFactory, SessionEntry, ToolDefinition } fro
 import type { PermissionHandler } from '../../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { SteerTargetInfo } from '../../../shared/types/subagents';
-import { buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../shared/steer';
-import { TEAM_CREATE_TOOL } from '../../../shared/tool-names';
+import { buildResumePrompt, withResumeNote, wrapSteerMessage, type UserAnswerNote } from '../../../shared/steer';
+import { TEAM_CREATE_TOOL, TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
 import { log } from '../../logger';
 import { effortBadgeApplies, PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../folder-runtime';
 import type { CheckpointBaselineGate } from '../permission-gate';
 import type { WorktreeIsolation } from '../worktree-isolation';
 import type { DesignScope } from '../../design/design-write-rule';
+import type { ChatMachine } from '../proven-shell';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
@@ -36,7 +37,9 @@ import { AgentRegistry } from './agent-types';
 import { buildAgentPrompt, buildPlanMechanismBlock, type PromptExtras } from './prompts';
 import { detectEnv } from './env';
 import { preloadSkills } from './skill-loader';
-import { resolveAgentToolset } from './agent-toolset';
+import { resolveAgentToolset, type NestedDesignGrant } from './agent-toolset';
+import { DESIGN_PI_TOOL_NAMES } from '../../design/rule-set';
+import { nestedDesignSection } from '../../design/guidance';
 import {
   agentResultTextOnBranch,
   canResumeSubagent,
@@ -133,6 +136,10 @@ export interface SubagentEngine {
   worktreeIsolation?: () => WorktreeIsolation | undefined;
   /** A design chat's posture (PD-25), which its agents inherit: the write rule, the shell block, the browser read set. */
   designScope?: () => DesignScope | undefined;
+  /** The machine the parent chat's tools run on, which its agents' tools run on too. */
+  machine?: ChatMachine;
+  /** Present while the panel is a design chat: its subagents get its verification tools, and their answers become its decisions. */
+  nestedDesign?: () => NestedDesignGrant | undefined;
   /** The gate's cancel handle for one agent, delivering a note to that agent as its shell tools do. */
   shellCancelFor: (agentId: string) => ShellCancelRegistry;
   postMessage: (message: ExtensionToWebviewMessage) => void;
@@ -161,7 +168,19 @@ export interface SubagentEngine {
    *  and the definitions behind them come from a single read and cannot diverge. Two reads is the bug
    *  this shape exists to prevent — an `mcp__*` name reaching `tools:` with no matching definition is
    *  dropped by pi SILENTLY (no error, no warning, no log). */
-  buildAgentToolset: (input: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => {
+  buildAgentToolset: (input: {
+    agentId: string;
+    agentName: string;
+    mcpDisallowed: ReadonlySet<string>;
+    /** The `Agent` call that started this run, which the agent's question card is attributed to. */
+    parentToolUseId: string;
+    /** The agent's own model, read from its live session at call time, since a reopened run resolves none before it opens. */
+    model: () => Model<Api> | undefined;
+    /** The design tools the agent resolved from a design chat's grant; empty elsewhere. */
+    designTools: readonly string[];
+    /** The user answered the agent's questions; the notes open its result. */
+    answered: (notes: readonly UserAnswerNote[]) => void;
+  }) => {
     customTools: ToolDefinition[];
     mcp: NestedMcpToolset;
   };
@@ -721,8 +740,16 @@ export class AgentManager {
     // actually ends up holding, so the resolved set is an input to the prompt and not the other way
     // round. Nothing between them reads the prompt, so the order is free to be this way.
     const parentNames = this.engine.parentFullToolNames();
-    const toolset = resolveAgentToolset(config, parentNames);
+    const grant = this.engine.nestedDesign?.();
+    const toolset = resolveAgentToolset(config, parentNames, grant);
+    const designTools = toolset.names.filter((n) => DESIGN_PI_TOOL_NAMES.has(n));
     const extras: PromptExtras = {};
+    if (grant) {
+      extras.designBlock = nestedDesignSection(grant.folder, designTools, grant.designerTools, {
+        writes: !toolset.readOnly,
+        asks: toolset.names.includes(TOOL_ASK_USER_QUESTION),
+      });
+    }
     if (Array.isArray(config.skills)) {
       const loaded = preloadSkills(config.skills, this.engine.cwd, {
         includeProjectScope: this.engine.trust.isTrusted(this.engine.cwd),
@@ -754,6 +781,12 @@ export class AgentManager {
       agentId: record.id,
       agentName: config.name,
       mcpDisallowed: toolset.mcpDisallowed,
+      parentToolUseId,
+      model: () => record.session?.model,
+      designTools,
+      answered: (notes) => {
+        if (notes.length > 0) (record.userAnswers ??= []).push(...notes);
+      },
     });
     // The agent's whole ELIGIBLE set, composed once and used for both `tools:` and the deferrable set.
     // `deferredToolNames` INTERSECTS its first argument with the deferrable universe, so an `mcp__*`
@@ -769,6 +802,7 @@ export class AgentManager {
       ...(this.engine.checkpointBaseline ? { checkpointBaseline: this.engine.checkpointBaseline } : {}),
       ...(this.engine.worktreeIsolation ? { worktreeIsolation: this.engine.worktreeIsolation } : {}),
       ...(this.engine.designScope ? { designScope: this.engine.designScope } : {}),
+      ...(this.engine.machine ? { machine: this.engine.machine } : {}),
       shellCancel: this.engine.shellCancelFor(record.id),
       postMessage: this.engine.postMessage,
       // An agent with no write tool (Explore/Plan, or any read-only user agent) keeps that guarantee in

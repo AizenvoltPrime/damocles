@@ -185,6 +185,55 @@ test('tweaks: token stops restyle the live preview with no file change, Reset cl
   }
 });
 
+test('Keep while the designer works reaches it at its next step as a message of its own, and its kept value becomes the decision', async ({ foreground: _foreground, home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl, ['text', 'image']);
+    fs.cpSync(DESIGN_APP, home.project, { recursive: true });
+    fs.writeFileSync(path.join(home.project, 'resources', 'css', 'theme.css'), THEME_CSS);
+    const { app } = await launch();
+    const { design, folder } = await designWithTweaks(home, stub, app);
+    const shell = await shellPage(app);
+    await expect(shell.getByTestId('design-preview-status')).toHaveCount(0, { timeout: 30_000 });
+    await shell.getByTestId('design-preview-tweaks').click();
+    const panel = shell.getByTestId('design-tweaks');
+    await panel.getByRole('button', { name: 'Corner radius: lg, 0.5rem' }).click();
+    await expect.poll(() => buttonRadius(app), { timeout: 10_000 }).toBe('8px');
+
+    // The designer is mid-step; the Keep reaches it at the step's end, and the designer records the kept value.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    stub.replies.push(
+      { chunks: ['Checking the design.', ' Reading it now.'], toolCalls: [{ name: 'read', arguments: { path: path.join(folder, 'design.md') } }], holdAfterFirst: held },
+      call('RecordDecision', { title: 'Corner radius', chosen: '--radius-lg', source: { kind: 'tweak', ref: 'radius' } }),
+      { chunks: ['Recorded the radius.'] },
+    );
+    const before = agentRequests(stub).length;
+    await chatInput(design).fill('Try a softer button');
+    await chatInput(design).press('Enter');
+    await expect.poll(() => agentRequests(stub).length, { timeout: 30_000 }).toBe(before + 1);
+    await panel.getByTestId('design-tweaks-keep').click();
+    await expect(shell.getByTestId('design-markup-announcement')).toHaveText('Sent to the designer: Corner radius → --radius-lg');
+    await expect(design.getByText('Keep: Corner radius → --radius-lg', { exact: true })).toBeVisible({ timeout: 30_000 });
+    release();
+    await expect.poll(() => stub.replies.length, { timeout: 60_000 }).toBe(0);
+    await awaitTurnEnd(design);
+
+    const next = agentRequests(stub).slice(before + 1).find((request) => JSON.stringify(request.body).includes('Keep: Corner radius'));
+    expect(next).toBeDefined();
+    const users = (next!.body as { messages: { role: string; content: string | { text?: string }[] | null }[] }).messages
+      .filter((message) => message.role === 'user')
+      .map((message) => (typeof message.content === 'string' ? message.content : (message.content ?? []).map((part) => part.text ?? '').join('')));
+    expect(users).toContain('Keep: Corner radius → --radius-lg');
+    expect(users).toContain('Try a softer button');
+    await expect(design.getByText('Keep: Corner radius → --radius-lg', { exact: true })).toHaveCount(1);
+    await expect(design.getByTestId('design-decisions').locator('[data-decision-id="D2"]')).toContainText('--radius-lg');
+    await expect(panel.locator('[data-testid="design-tweak"][data-tweak="radius"]')).toHaveAttribute('data-locked', 'true', { timeout: 30_000 });
+  } finally {
+    await stub.close();
+  }
+});
+
 test('references: an image pasted into the design chat is saved by core as references/R1.png, shown on the message, and mapped onto the app', async ({ foreground: _foreground, home, launch }) => {
   const stub = await startOpenAIStub();
   try {

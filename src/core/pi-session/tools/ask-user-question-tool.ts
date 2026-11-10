@@ -2,18 +2,53 @@ import { Type, type Static } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
-import { invalidQuestionInput, questionPreviewRefusal } from '../../permission-handler/managers/question-manager';
+import { invalidQuestionInput, questionPreviewRefusal, validateQuestions } from '../../permission-handler/managers/question-manager';
 import type { QuestionAnnotations } from '../../../shared/types/permissions';
 import { buildCanUseToolContext, formatDenyReason, formatPolicyBlockReason } from '../permission-gate';
 import { TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
 import { MAX_QUESTION_PREVIEW_CHARS, QUESTION_PREVIEW_FORM } from '../../../shared/question-preview';
 import { DESIGN_DECISIONS_DETAIL_KEY } from '../../../shared/types/design';
-import type { DesignDecisionRecord } from '../../design/design-entries';
+import { MAX_DECISION_FIELD_CHARS, type DesignDecisionRecord } from '../../design/design-entries';
+import type { QuestionDecisionResult, QuestionLike } from '../../design/decisions';
+import type { UserAnswerNote } from '../../../shared/steer';
 
 const DESIGN_PREVIEW_FORM = '{ "kind": "design", "path": "variants/<option>/<screen>.html" }';
 
-/** In a design chat, the decisions an answered question set makes (PD-6, PD-15); none elsewhere. */
-export type QuestionDecisions = (questions: readonly { question: string; header?: string; multiSelect?: boolean; options: readonly { label: string }[] }[], answers: Readonly<Record<string, string>>) => Promise<DesignDecisionRecord[]>;
+/** Records the decisions an answered question set makes in a design chat (PD-6, PD-15, D99); a subagent's questions record on its design chat's branch. */
+export interface QuestionDecisions {
+  /** `annotations`: the user's notes and chosen previews, by question; a subagent's notes are kept on the design chat's branch. */
+  record(questions: readonly QuestionLike[], answers: Readonly<Record<string, string>>, signal: AbortSignal, annotations?: QuestionAnnotations): Promise<QuestionDecisionResult>;
+}
+
+/** A subagent's questions: the card names the agent that asks, and in a design chat its parent learns each answer with its result. */
+export interface QuestionAsker {
+  readonly agentId: string;
+  /** The `Agent` call that started the subagent; the question card names the agent through it, as a permission prompt does. */
+  readonly parentToolUseId: string;
+  answered?(notes: readonly UserAnswerNote[]): void;
+}
+
+/**
+ * Each answered question with its note and the decision it recorded, matched by the question text the decision's source holds,
+ * and whether the user's typed words and note are on the design chat's record.
+ */
+function answerNotes(questions: readonly QuestionLike[], answers: Readonly<Record<string, string>>, annotations: QuestionAnnotations | undefined, recorded: QuestionDecisionResult): UserAnswerNote[] {
+  return questions.flatMap((question) => {
+    const answer = answers[question.question];
+    if (typeof answer !== 'string' || answer.trim() === '') return [];
+    const ref = question.question.slice(0, MAX_DECISION_FIELD_CHARS);
+    const decision = recorded.records.find((record) => record.source.kind === 'question' && record.source.ref === ref);
+    const notes = annotations?.[question.question]?.notes?.trim();
+    return [{
+      question: question.question,
+      answer,
+      ...(notes ? { notes } : {}),
+      ...(decision ? { decisionId: decision.id } : {}),
+      ...(decision?.conflicts?.length ? { conflicts: decision.conflicts.map((flag) => flag.id) } : {}),
+      ...(recorded.wordsRecorded?.includes(question.question) ? { wordsOnRecord: true } : {}),
+    }];
+  });
+}
 
 // question-manager.ts takes the design kind only in a design chat, so only a design chat's description names it.
 const previewSchema = Type.Union([
@@ -55,6 +90,8 @@ interface AskUserQuestionOutput {
   questions: unknown;
   answers: Record<string, string>;
   annotations?: QuestionAnnotations;
+  /** In a design chat, what the answers recorded as decisions, for the model. */
+  decisions?: readonly string[];
 }
 
 /**
@@ -63,11 +100,16 @@ interface AskUserQuestionOutput {
  * returns the full SDK `AskUserQuestionOutput` (`{ questions, answers, annotations? }`) as the tool
  * result, so the answered card renders the user's choices and the model receives their notes.
  */
-/** `designPreviews`: a design chat's tool, whose description names the design kind; fixed for the session (PD-17). */
-export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHandler: PermissionHandler, questionDecisions?: QuestionDecisions, designPreviews = false): ToolDefinition {
+/**
+ * `questionDecisions`: a design chat's tool, or its subagent's, whose answers record decisions. `designPreviews`: a tool whose
+ * description names the design kind; fixed for the session (PD-17). `asker`: a subagent's tool.
+ */
+export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHandler: PermissionHandler, questionDecisions?: QuestionDecisions, designPreviews = false, asker?: QuestionAsker): ToolDefinition {
   return pi.defineTool<typeof askSchema, { [DESIGN_DECISIONS_DETAIL_KEY]: DesignDecisionRecord[] } | undefined>({
     name: TOOL_ASK_USER_QUESTION,
     label: 'AskUserQuestion',
+    // In design work pi then runs the whole batch in order, so a preview written earlier in the batch exists when it asks.
+    ...(questionDecisions || designPreviews ? { executionMode: 'sequential' as const } : {}),
     description: [
       'Use this tool only when you are blocked on a decision that is genuinely the user\'s to make: one you cannot resolve from the request, the code, or sensible defaults.',
       '',
@@ -98,7 +140,7 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
       const result = await permissionHandler.canUseTool(
         TOOL_ASK_USER_QUESTION,
         params as Record<string, unknown>,
-        buildCanUseToolContext(toolCallId, signal),
+        buildCanUseToolContext(toolCallId, signal, asker?.parentToolUseId ?? null),
       );
       if (result.behavior === 'deny') {
         // Mirror the SDK: a cancelled question is an error tool result (pi turns the throw into an
@@ -115,9 +157,18 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
         answers: updated?.answers ?? {},
         ...(updated?.annotations ? { annotations: updated.annotations } : {}),
       };
-      const decisions = questionDecisions ? await questionDecisions(params.questions, output.answers) : [];
+      // decisions come from the questions the user was shown, as the question manager validated them
+      const shown = validateQuestions(output.questions, true);
+      const questions = shown.ok ? shown.questions : [];
+      const recorded = questionDecisions ? await questionDecisions.record(questions, output.answers, signal ?? new AbortController().signal, output.annotations) : { records: [], notes: [] };
+      const decisions = recorded.records;
+      asker?.answered?.(answerNotes(questions, output.answers, output.annotations, recorded));
+      const answered: AskUserQuestionOutput = {
+        ...output,
+        ...(decisions.length > 0 || recorded.notes.length > 0 ? { decisions: [...decisions.map((decision) => `Recorded ${decision.id} · ${decision.title}: ${decision.chosen}${decision.replaces?.length ? ` (replaces ${decision.replaces.join(', ')})` : ''}.`), ...recorded.notes] } : {}),
+      };
       return {
-        content: [{ type: 'text', text: JSON.stringify(output) }],
+        content: [{ type: 'text', text: JSON.stringify(answered) }],
         details: decisions.length > 0 ? { [DESIGN_DECISIONS_DETAIL_KEY]: decisions } : undefined,
       };
     },

@@ -28,6 +28,8 @@ export interface McpToolIdentity {
 export interface MatchRuleOptions {
   /** Match under YOLO too, for a call only the user approves (`CanUseToolContext.requiresUser`). */
   ignoreBypass?: true;
+  /** Match the call's own path as written, with no file system call on it, and no allow rule with a path: it may reach a network host (`CallFacts.reachesNetwork`). */
+  pathsAsWritten?: true;
 }
 
 /** `rule` is required whenever `requiresUser` is set, since only that rule tells a deny from an ask. */
@@ -58,6 +60,8 @@ interface CanUseToolContextBase {
   planVersion?: number;
   /** The parent's own design at the version an `ExitPlanMode` call records, shown on its approval prompt. */
   designLink?: PlanApprovalDesignLink;
+  /** The call's file path may reach a network host the chat does not live on: it asks with no rule, and its prompt reads no file. */
+  reachesNetwork?: true;
   /**
    * Whether the gate, deciding this call under the current permission state, would run it unasked
    * (`runsUnasked` in `permission-gate.ts`). Its open prompt is settled as approved when this turns true;

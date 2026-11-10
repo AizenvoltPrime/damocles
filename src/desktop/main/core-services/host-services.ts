@@ -10,7 +10,7 @@ import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type Params, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
 import type { LocalizedText } from '../../../shared/localized-text';
-import type { DesignCapture, DesignJourneyRun, DesignProbeResult } from '../../../shared/types/design';
+import type { DesignCapture, DesignJourneyRun, DesignProbeResult, DesignRender } from '../../../shared/types/design';
 import type { MessageQuestion } from '../message-dialog';
 
 export interface HostTrust {
@@ -138,6 +138,8 @@ export interface HostServicesDeps {
   readonly language: { current(): MirrorTopics['language']['language']; onDidChange(listener: () => void): Disposable };
   // this computer's core only: a live remote chat view its page may name as owner, so the page is a tab of that chat
   readonly foreignOwner?: (viewId: string) => RelayView | undefined;
+  // this computer's core only: browser.servedFileUrl, a root file of a local chat view from main's served root of it
+  readonly servedFile?: (request: CoreRequests['browser.servedFileUrl']['params']) => Promise<CoreRequests['browser.servedFileUrl']['result']>;
   // this computer's core only: each remote authority's forwarded local ports and local-network switch, which its browser
   // context's proxy applies; a change publishes before the forward that caused it is used
   readonly clientNetwork?: { current(): NonNullable<CoreInit['mirrors']['clientNetwork']>; onDidChange(listener: (patch: MirrorTopics['clientNetwork']) => void): Disposable };
@@ -155,9 +157,10 @@ export interface HostServicesDeps {
   readonly showSession: (sessionId: string) => Promise<void>;
   // design.openPreview: the preview tab of a design file in design chat corePanelId (PD-33); it never opens a browser
   readonly openDesignPreview: (corePanelId: string, designId: string, relPath: string) => void;
-  // design.capture, design.probe and design.journey of this core's design, run in main's design runner (PD-41)
+  // design.capture, design.render, design.probe and design.journey of this core's design, run in main's design runner (PD-41)
   readonly designRender: {
     capture(params: Params<CoreRequests, 'design.capture'>, signal: AbortSignal): Promise<DesignCapture>;
+    render(params: Params<CoreRequests, 'design.render'>, signal: AbortSignal): Promise<DesignRender>;
     probe(params: Params<CoreRequests, 'design.probe'>, signal: AbortSignal): Promise<DesignProbeResult>;
     journey(params: Params<CoreRequests, 'design.journey'>, signal: AbortSignal): Promise<DesignJourneyRun>;
     // design.replayJourney: the live preview tab of the screen in design chat panelId, this core's own (PD-33)
@@ -371,6 +374,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('user.voice.speak', ({ viewId, text }) => deps.user.speak(viewId, text));
     endpoint.serve('user.browser.tool', (params, signal) => deps.user.browserTool(params, signal));
     endpoint.serve('user.browser.release', (params) => deps.user.browserRelease(params));
+    endpoint.serve('browser.servedFileUrl', (params) => (deps.servedFile ? deps.servedFile(params) : Promise.reject(new Error('Root files are served only to the local core'))));
     endpoint.serve('user.memory.search', (params) => deps.user.memorySearch(params));
     endpoint.serve('user.memory.profile', () => deps.user.memoryProfile());
     endpoint.serve('user.memory.resolve', ({ ids }) => deps.user.memoryResolve(ids));
@@ -386,6 +390,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('chats.showSession', ({ sessionId }) => deps.showSession(sessionId));
     endpoint.serve('design.openPreview', ({ panelId, designId, relPath }) => deps.openDesignPreview(panelId, designId, relPath));
     endpoint.serve('design.capture', (params, signal) => deps.designRender.capture(params, signal));
+    endpoint.serve('design.render', (params, signal) => deps.designRender.render(params, signal));
     endpoint.serve('design.probe', (params, signal) => deps.designRender.probe(params, signal));
     endpoint.serve('design.journey', (params, signal) => deps.designRender.journey(params, signal));
     endpoint.serve('design.replayJourney', (params, signal) => deps.designRender.replay(params, signal));

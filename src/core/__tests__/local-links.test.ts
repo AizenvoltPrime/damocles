@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from 'vitest';
-import { followsLocalLinksOnly } from '../local-links';
+import { followsLocalLinksOnly, networkHostsOf, reachesNetwork } from '../local-links';
 
 let root: string;
 // the folder every "evil" link really leads to, while its readlink answers a share
@@ -294,5 +294,43 @@ describe.runIf(process.platform === 'win32')('shares and drives (win32)', () => 
     await expect(walk(project, ['mapped', 'a.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT', text: { message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] } });
     await expect(walk(project, ['mapped', 'b.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT' });
     expect(asked).toEqual(['Q:\\']);
+  });
+
+  it('follows a link onto a share of an allowed host, or WSL\'s, only when the walk is given its hosts', async () => {
+    const project = folder('p');
+    junction(path.join(project, 'nas'), marker);
+    fakeTargets.set(identity(path.join(project, 'nas')), '\\\\NAS\\data\\x');
+    junction(path.join(project, 'wsl'), marker);
+    fakeTargets.set(identity(path.join(project, 'wsl')), '\\\\wsl.localhost\\Ubuntu\\home');
+    fakeDisk(new Map([['\\\\nas\\data\\', undefined], ['\\\\nas\\data\\x', undefined], ['\\\\nas\\data\\x\\a.ts', undefined],
+      ['\\\\wsl.localhost\\Ubuntu\\', undefined], ['\\\\wsl.localhost\\Ubuntu\\home', undefined], ['\\\\wsl.localhost\\Ubuntu\\home\\a.ts', undefined]]));
+    expect(await followsLocalLinksOnly(project, ['nas', 'a.ts'])).toBe(false);
+    expect(await followsLocalLinksOnly(project, ['nas', 'a.ts'], { allowedHosts: new Set(['other']) })).toBe(false);
+    expect(await followsLocalLinksOnly(project, ['nas', 'a.ts'], { allowedHosts: new Set(['nas']) })).toBe(true);
+    expect(await followsLocalLinksOnly(project, ['wsl', 'a.ts'])).toBe(false);
+    expect(await followsLocalLinksOnly(project, ['wsl', 'a.ts'], { allowedHosts: new Set() })).toBe(true);
+  });
+
+  it('places a path off this computer\'s drives by its spelling without reaching it, or by a link on its walk', async () => {
+    const project = folder('p');
+    evil(path.join(project, 'unc'));
+    fs.writeFileSync(path.join(project, 'a.ts'), '');
+    // walked from the drive root, which fakeDisk would hide
+    expect(await reachesNetwork(path.join(project, 'unc', 'a.ts'), new Set(['nas']))).toBe(true);
+    expect(await reachesNetwork(path.join(project, 'a.ts'), new Set())).toBe(false);
+    expect(await reachesNetwork(path.join(project, 'missing', 'a.ts'), new Set())).toBe(false);
+    for (const spelled of ['\\\\evil\\s\\x', '//evil/s/x', '\\\\?\\UNC\\evil\\s\\x', '\\\\evil@SSL\\s\\x', '\\\\?\\C:\\x', '\\\\.\\pipe\\x']) {
+      expect(await reachesNetwork(spelled, new Set(['nas']))).toBe(true);
+    }
+    expect(uncCalls).toEqual([]);
+    fakeDisk(new Map([['\\\\nas\\proj\\', undefined], ['\\\\nas\\proj\\a.ts', undefined], ['\\\\wsl$\\Ubuntu\\', undefined], ['\\\\wsl$\\Ubuntu\\a.ts', undefined]]));
+    expect(await reachesNetwork('\\\\nas\\proj\\a.ts', new Set(['nas']))).toBe(false);
+    expect(await reachesNetwork('\\\\wsl$\\Ubuntu\\a.ts', new Set())).toBe(false);
+  });
+
+  it('takes a folder\'s hosts from its spelling and its realpath, as a mapped drive names its share', async () => {
+    fakeDisk(new Map([['M:\\proj', undefined]]), new Map([['M:\\PROJ', '\\\\nas\\data\\proj']]));
+    expect([...await networkHostsOf(['\\\\Files.Corp\\proj', 'M:\\proj', root, path.join(root, 'missing')])].sort()).toEqual(['files.corp', 'nas']);
+    expect([...await networkHostsOf([root], ['//Other/share', 'N:\\x'])]).toEqual(['other']);
   });
 });

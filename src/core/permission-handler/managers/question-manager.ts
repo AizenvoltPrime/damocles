@@ -109,13 +109,19 @@ export function validateQuestions(input: unknown, designPreviews = false): Valid
   return { ok: true, questions };
 }
 
+const unpreviewableBecause: Record<'missing' | 'outside' | 'tooLarge', string> = {
+  missing: 'is not a file of this design yet; write it first.',
+  outside: 'leads outside the design folder through a link, so it cannot be previewed.',
+  tooLarge: `is over the preview size limit of ${MAX_SCREEN_BYTES / (1024 * 1024)} MiB, so it cannot be previewed.`,
+};
+
 /** The first design-kind preview whose file is not a readable screen of `folder`; every path check runs before the read. */
 export async function designPreviewRefusal(questions: readonly Question[], folder: string): Promise<string | undefined> {
   for (const [i, question] of questions.entries()) {
     for (const [j, option] of question.options.entries()) {
       if (option.preview?.kind !== 'design') continue;
       const file = await statDesignFile(folder, option.preview.path, MAX_SCREEN_BYTES);
-      if (file.kind !== 'file') return `questions[${i}].options[${j}].preview.path: ${option.preview.path} is not a screen of this design (${file.kind}); write it first`;
+      if (file.kind !== 'file') return `questions[${i}].options[${j}].preview.path: ${option.preview.path} ${unpreviewableBecause[file.kind]}`;
     }
   }
   return undefined;

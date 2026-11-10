@@ -12,8 +12,9 @@ import { listScreenFiles, updateManifest } from '../design-files';
 import { readDesignFile } from '../design-file-read';
 import { MAX_SCREEN_BYTES } from '../design-paths';
 import { designPreviewInfo, designViewports, journeyViewportsOf } from '../design-preview';
-import { journeyFilesOf, previewJourneySchema, screenContentHash, writeJourneyFiles } from '../journey';
+import { journeyFilesOf, prepareJourneyArguments, previewJourneySchema, screenContentHash, writeJourneyFiles } from '../journey';
 import { journeyToPlaywright } from '../journey-playwright';
+import { renderInputHashes } from '../render-inputs';
 import { designRuleSetById } from '../rule-set';
 import { DesignRenderUnavailableError, recordJourneyCheck, rendered } from '../width-checks';
 import { activeRole, type DesignChatToolDeps } from './design-chat-tools';
@@ -22,7 +23,7 @@ const DEFAULT_STATE = 'default';
 
 const DESCRIPTION = [
   `Run a short scripted journey through one screen in the Damocles app, in a fresh page at each journey width (design.md viewports.journey, by default base and the primary width). At most ${MAX_JOURNEY_STEPS} steps, asserts counted; every fill, select, click or press is followed by an assert of its outcome. A call over the limit runs nothing; split a longer flow into journeys that each start from the screen as it loads, and list the rest in untested.`,
-  'Steps find elements as people and Playwright do, never by CSS: {role, name} (an ARIA role and the exact accessible name), {label} (the exact text of its <label>, aria-label or aria-labelledby), {placeholder} or {text} (the element\'s whole text). Exactly one visible element must match. fill types value in place of the field\'s text; select picks the option whose value or label is value; click clicks it as a user would, so a covering element fails it; press focuses it and presses key (Enter, Escape, Tab, Space or an arrow). assert waits for expect: {visible: true|false}, {textContains} or {valueEquals}.',
+  'Steps find elements as people and Playwright do, never by CSS: {role, name} (an ARIA role and the exact accessible name), {label} (the exact text of its <label>, aria-label or aria-labelledby), {placeholder} or {text} (the element\'s whole text). Add exact: false to match a case-insensitive part of the text instead, as Playwright does, for a name that holds a changing count or summary. Exactly one visible element must match. fill types value in place of the field\'s text; select picks the option whose value or label is value; click clicks it as a user would, so a covering element fails it; press focuses it as Playwright does (an element that takes no focus, such as a dialog, leaves the focus where it was) and presses key (Enter, Escape, Tab, Space or an arrow), which goes to the focused element or the page; scroll brings its target into view, and with to: "end" wheels the target, or with no target the page, to its end, which loads what an infinite list loads there. assert waits for expect: {visible: true|false}, {textContains} or {valueEquals}.',
   'Each step has 5 s; the first failure ends that width\'s run. A target hidden at a width fails there and is reported with the width, never skipped: design the screen so each width can do the journey, or give that width its own.',
   'The journey is saved as screens/<screen>.journey.json and a Playwright test, screens/<screen>.journey.spec.ts, which the implementation replays against the real app, so name controls as the real app will. An interactive design finishes only when every screen with controls has a journey that passed at every journey width against the screen as it is now; an edit to the screen makes it run again.',
 ].join('\n\n');
@@ -55,6 +56,7 @@ function stepLine(step: JourneyStep): string {
     case 'select': return `select ${JSON.stringify(step.value)} in ${what}`;
     case 'click': return `click ${what}`;
     case 'press': return `press ${step.key} in ${what}`;
+    case 'scroll': return step.to === 'end' ? `scroll ${what} to its end` : `scroll ${what} into view`;
     case 'assert': {
       const expected = step.expect!;
       if ('visible' in expected) return `assert ${what} is ${expected.visible ? 'visible' : 'hidden'}`;
@@ -95,6 +97,7 @@ export function createPreviewJourneyTool(pi: PiCodingAgentModule, deps: DesignCh
     executionMode: 'sequential',
     description: DESCRIPTION,
     parameters: previewJourneySchema,
+    prepareArguments: (args) => prepareJourneyArguments(args) as never,
     execute: async (_toolCallId, params, signal) => {
       const role = activeRole(deps, TOOL_PREVIEW_JOURNEY);
       if (!designRuleSetById(role.ruleSet).gate.journeys) throw new Error('PreviewJourney runs only in the Damocles app.');
@@ -124,18 +127,19 @@ export function createPreviewJourneyTool(pi: PiCodingAgentModule, deps: DesignCh
         return read.bytes;
       };
       const contentHash = screenContentHash(await screenBytes());
+      const renderHash = (await renderInputHashes(role.folder, [relPath]))[relPath]!;
       const viewports = journeyViewportsOf(await designViewports(role.folder));
       const widths = viewports.map((viewport) => viewport.width);
       const outline = deps.imageBudget() === 0;
       const answer = await rendered(() => render.journey(role.designId, relPath, widths, state === DEFAULT_STATE ? null : state, steps, outline, signal ?? new AbortController().signal));
       const run = checkedRun(answer, widths, steps.length);
-      // the journey vouches only for the bytes it ran against (PD-21)
-      if (screenContentHash(await screenBytes()) !== contentHash) throw new Error(`${relPath} changed while the journey ran; run PreviewJourney again.`);
+      // the journey vouches only for the render inputs it ran against (PD-21, D86)
+      if ((await renderInputHashes(role.folder, [relPath]))[relPath] !== renderHash) throw new Error(`${relPath} or a file it loads changed while the journey ran; run PreviewJourney again.`);
       const screen = info.screenId ?? path.posix.basename(relPath, '.html');
       const results = run.widths.map(({ width, passed, steps: stepResults }) => ({ width, passed, steps: stepResults }));
       const passed = results.every((result) => result.passed);
       const ranAt = new Date().toISOString();
-      const journey: JourneyFile = { schemaVersion: 1, screen, file: relPath, viewports, state, contentHash, steps, results, untested, passed, ranAt };
+      const journey: JourneyFile = { schemaVersion: 1, screen, file: relPath, viewports, state, contentHash, renderHash, steps, results, untested, passed, ranAt };
       await writeJourneyFiles(role.folder, files, journey, journeyToPlaywright(journey));
       await recordJourneyCheck(role.designId, { id: screen, file: relPath, contentHash }, {
         screenHash: contentHash,

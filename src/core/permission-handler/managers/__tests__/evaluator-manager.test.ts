@@ -787,3 +787,113 @@ describe('a call only the user approves (a design chat\'s MCP call that is not r
     expect(evaluator.decide(tool, {}, 'deny', true)).toBe('deny');
   });
 });
+
+describe('EvaluatorManager.evaluate — WebFetch(domain:<host>) rules', () => {
+  const fetchOf = (url: unknown) => ({ url });
+
+  it('denies, asks for and allows a URL on that exact host, in any ASCII case and with a trailing dot', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:example.com)'], ask: ['WebFetch(domain:Ask.Example.org.)'] });
+    const evaluator = buildEvaluator();
+    for (const url of ['https://example.com/a.png', 'https://EXAMPLE.com/a', 'https://example.com./a', 'http://example.com:8080/x']) {
+      expect(await evaluator.evaluate('WebFetch', fetchOf(url), null), url).toBe('deny');
+    }
+    expect(await evaluator.evaluate('WebFetch', fetchOf('https://ask.example.org/a'), null)).toBe('ask');
+    for (const url of ['https://www.example.com/a', 'https://example.com.evil.org/a', 'https://other.org/a', 'https://example.org/a']) {
+      expect(await evaluator.evaluate('WebFetch', fetchOf(url), null), url).toBe('allow');
+    }
+  });
+
+  it('matches a deny rule when any of urls is on the host, and an allow rule only when all are', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:example.com)'] });
+    expect(await buildEvaluator().evaluate('WebFetch', { urls: ['https://other.org/', 'https://example.com/'] }, null)).toBe('deny');
+    writeSettings(fakeHome, '.damocles', 'settings.json', { allow: ['WebFetch(domain:example.com)'] });
+    expect(await buildEvaluator().matchRule('WebFetch', { urls: ['https://example.com/a', 'https://example.com/b'] }, null)).toBe('allow');
+    expect(await buildEvaluator().matchRule('WebFetch', { urls: ['https://example.com/a', 'https://other.org/b'] }, null)).toBeNull();
+  });
+
+  it('cannot decide a URL that does not parse, so a deny or ask domain rule matches it and an allow rule does not', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:example.com)'] });
+    expect(await buildEvaluator().evaluate('WebFetch', fetchOf('not a url'), null)).toBe('deny');
+    expect(await buildEvaluator().evaluate('WebFetch', fetchOf(42), null)).toBe('deny');
+    writeSettings(fakeHome, '.damocles', 'settings.json', { allow: ['WebFetch(domain:example.com)'] });
+    expect(await buildEvaluator().matchRule('WebFetch', fetchOf('not a url'), null)).toBeNull();
+  });
+
+  it('judges the host a URL parser reads: userinfo is no host, and an IDN rule matches its punycode', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:example.com)', 'WebFetch(domain:bücher.de)'] });
+    const evaluator = buildEvaluator();
+    expect(await evaluator.evaluate('WebFetch', fetchOf('https://example.com@other.org/a'), null)).toBe('allow');
+    expect(await evaluator.evaluate('WebFetch', fetchOf('https://other.org@example.com/a'), null)).toBe('deny');
+    expect(await evaluator.evaluate('WebFetch', fetchOf('https://xn--bcher-kva.de/a'), null)).toBe('deny');
+  });
+
+  it('reads a rule host that is no plain host, a wildcard included, as matching every URL for deny and ask, and none for allow', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { ask: ['WebFetch(domain:user@example.com)'] });
+    expect(await buildEvaluator().evaluate('WebFetch', fetchOf('https://other.org/a'), null)).toBe('ask');
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:*.example.com)'] });
+    expect(await buildEvaluator().evaluate('WebFetch', fetchOf('https://other.org/a'), null)).toBe('deny');
+    writeSettings(fakeHome, '.damocles', 'settings.json', { allow: ['WebFetch(domain:*.example.com)'] });
+    expect(await buildEvaluator().matchRule('WebFetch', fetchOf('https://www.example.com/a'), null)).toBeNull();
+    writeSettings(fakeHome, '.damocles', 'settings.json', { allow: ['WebFetch(domain:example.com/a)'] });
+    expect(await buildEvaluator().matchRule('WebFetch', fetchOf('https://example.com/a'), null)).toBeNull();
+  });
+
+  it('ignores a port in the rule, and compares an IPv6 literal and a percent-encoded host as the URL parser spells them', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:example.com:8443)', 'WebFetch(domain:[2001:DB8::1])', 'WebFetch(domain:b%61d.org)'] });
+    const evaluator = buildEvaluator();
+    for (const url of ['https://example.com/a', 'https://[2001:db8:0::1]:8080/a', 'https://bad.org/a', 'https://B%41D.org/a']) {
+      expect(await evaluator.evaluate('WebFetch', fetchOf(url), null), url).toBe('deny');
+    }
+    expect(await evaluator.evaluate('WebFetch', fetchOf('https://[2001:db8::2]/a'), null)).toBe('allow');
+    writeSettings(fakeHome, '.damocles', 'settings.json', { allow: ['WebFetch(domain:[2001:db8::1])'] });
+    expect(await buildEvaluator().matchRule('WebFetch', fetchOf('https://[2001:db8::1]/a'), null)).toBe('allow');
+  });
+
+  it('reads an IPv4-mapped IPv6 host as its IPv4 address, on the rule and the URL side', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:93.184.215.14)', 'WebFetch(domain:[::ffff:5db8:d70f])'] });
+    const evaluator = buildEvaluator();
+    for (const url of ['https://[::ffff:5db8:d70e]/a', 'https://[::ffff:93.184.215.14]/a', 'https://[0:0:0:0:0:ffff:5db8:d70e]/a', 'https://93.184.215.15/a']) {
+      expect(await evaluator.evaluate('WebFetch', fetchOf(url), null), url).toBe('deny');
+    }
+    expect(await evaluator.evaluate('WebFetch', fetchOf('https://93.184.215.16/a'), null)).toBe('allow');
+  });
+
+  it('reads an empty host, a lone dot and a host still ending in a dot after one is dropped as no plain host', async () => {
+    for (const domain of ['domain:', 'domain:.', 'domain:example.com..']) {
+      writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`WebFetch(${domain})`] });
+      expect(await buildEvaluator().evaluate('WebFetch', fetchOf('https://other.org/a'), null), domain).toBe('deny');
+      writeSettings(fakeHome, '.damocles', 'settings.json', { allow: [`WebFetch(${domain})`] });
+      expect(await buildEvaluator().matchRule('WebFetch', fetchOf('https://example.com/a'), null), domain).toBeNull();
+    }
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:example.com)'] });
+    expect(await buildEvaluator().evaluate('WebFetch', fetchOf('https://example.com../a'), null)).toBe('deny');
+  });
+
+  it('cannot decide a WebFetch specifier other than domain:<host>, so a deny or ask rule matches every call and an allow rule none', async () => {
+    for (const rule of ['WebFetch(example.com)', 'WebFetch(Domain:example.com)']) {
+      writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [rule] });
+      expect(await buildEvaluator().evaluate('WebFetch', fetchOf('https://other.org/a'), null), rule).toBe('deny');
+      writeSettings(fakeHome, '.damocles', 'settings.json', { ask: [rule] });
+      expect(await buildEvaluator().evaluate('WebFetch', fetchOf('https://other.org/a'), null), rule).toBe('ask');
+      writeSettings(fakeHome, '.damocles', 'settings.json', { allow: [rule] });
+      expect(await buildEvaluator().matchRule('WebFetch', fetchOf('https://example.com/a'), null), rule).toBeNull();
+    }
+  });
+});
+
+describe('EvaluatorManager.webHostFilter', () => {
+  it('refuses the hosts a deny or ask WebFetch(domain:…) rule matches, never through an allow or a bare WebFetch rule', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['WebFetch(domain:raw.githubusercontent.com)', 'WebFetch'], ask: ['WebFetch(domain:r.jina.ai)'], allow: ['WebFetch(domain:example.com)'] });
+    const refused = await buildEvaluator().webHostFilter(null);
+    expect(refused('https://raw.githubusercontent.com/a/b/main/x')).toBe(true);
+    expect(refused('https://r.jina.ai/https://example.com/')).toBe(true);
+    expect(refused('https://example.com/')).toBe(false);
+    expect(refused('https://other.org/')).toBe(false);
+  });
+
+  it('refuses every host for a rule it cannot decide, and none under YOLO', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { ask: ['WebFetch(example.com)'] });
+    expect((await buildEvaluator().webHostFilter(null))('https://other.org/')).toBe(true);
+    expect((await buildEvaluator({ dangerouslySkipPermissions: true }).webHostFilter(null))('https://other.org/')).toBe(false);
+  });
+});

@@ -15,8 +15,8 @@ describe('the two design rule sets', () => {
   it('pins FULL: every design chat tool, StartDesign and DesignParity, the gate on widths and journeys, and Open in browser only from the preview', () => {
     const full = designRuleSet({ designPreview: true });
     expect(full.designTools).toEqual([
-      'Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference',
-      'DesignScreenshot', 'PreviewJourney', 'DeclareTweaks',
+      'Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference', 'RemoveDesignFile',
+      'DesignScreenshot', 'PreviewJourney', 'DeclareTweaks', 'OpenPreview',
     ]);
     expect(full.parentTools).toEqual(['StartDesign', 'DesignParity']);
     expect(full.gate).toEqual({ staticCheck: true, widthChecks: true, journeys: true });
@@ -26,7 +26,7 @@ describe('the two design rule sets', () => {
 
   it('pins REDUCED: no preview tools, StartDesign alone, the gate on the static check only, and Open in browser from the chat', () => {
     const reduced = designRuleSet({ designPreview: false });
-    expect(reduced.designTools).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference']);
+    expect(reduced.designTools).toEqual(['Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'MapReference', 'RemoveDesignFile']);
     expect(reduced.parentTools).toEqual(['StartDesign']);
     expect(reduced.gate).toEqual({ staticCheck: true, widthChecks: false, journeys: false });
     expect(reduced.preview).toBe(false);
@@ -34,7 +34,7 @@ describe('the two design rule sets', () => {
   });
 
   it('builds every tool a rule set names, and nothing else', () => {
-    expect([...BUILT_DESIGN_TOOL_NAMES].sort()).toEqual(['DeclareTweaks', 'DesignCheck', 'DesignParity', 'DesignScreenshot', 'ExtractTokens', 'FinishDesign', 'ImportAsset', 'Inventory', 'LoadDesignSkill', 'MapReference', 'PreviewJourney', 'RecordDecision', 'StartDesign']);
+    expect([...BUILT_DESIGN_TOOL_NAMES].sort()).toEqual(['DeclareTweaks', 'DesignCheck', 'DesignParity', 'DesignScreenshot', 'ExtractTokens', 'FinishDesign', 'ImportAsset', 'Inventory', 'LoadDesignSkill', 'MapReference', 'OpenPreview', 'PreviewJourney', 'RecordDecision', 'RemoveDesignFile', 'StartDesign']);
     for (const name of BUILT_DESIGN_TOOL_NAMES) expect(DESIGN_PI_TOOL_NAMES.has(name)).toBe(true);
     expect([...DESIGN_PI_TOOL_NAMES].sort()).toEqual([...BUILT_DESIGN_TOOL_NAMES].sort());
     // DesignParity captures and judges, and writes nothing into a checkpointed folder
@@ -45,7 +45,15 @@ describe('the two design rule sets', () => {
     expect(designRuleSetById('full').designTools).toContain('DesignScreenshot');
     expect(designRuleSetById('reduced').designTools).not.toContain('DesignScreenshot');
     for (const id of ['full', 'reduced'] as const) expect(designRuleSetById(id).designTools).toContain('LoadDesignSkill');
-    expect([...DESIGN_TOOLS_WITHOUT_FOLDER_WRITES].sort()).toEqual(['DeclareTweaks', 'DesignParity', 'LoadDesignSkill', 'StartDesign']);
+    expect([...DESIGN_TOOLS_WITHOUT_FOLDER_WRITES].sort()).toEqual(['DeclareTweaks', 'DesignParity', 'LoadDesignSkill', 'OpenPreview', 'StartDesign']);
+  });
+
+  it('gives both RemoveDesignFile, which waits for the baseline, and only FULL OpenPreview, which does not (D100)', () => {
+    for (const id of ['full', 'reduced'] as const) expect(designRuleSetById(id).designTools).toContain('RemoveDesignFile');
+    expect(DESIGN_TOOLS_WITHOUT_FOLDER_WRITES.has('RemoveDesignFile')).toBe(false);
+    expect(designRuleSetById('full').designTools).toContain('OpenPreview');
+    expect(designRuleSetById('reduced').designTools).not.toContain('OpenPreview');
+    expect(DESIGN_TOOLS_WITHOUT_FOLDER_WRITES.has('OpenPreview')).toBe(true);
   });
 
   it('keeps DeclareTweaks to FULL with no baseline wait, and gives both MapReference, which waits (PD-42)', () => {

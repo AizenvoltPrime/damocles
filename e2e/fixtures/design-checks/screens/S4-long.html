@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" data-ds-screen="S4" data-ds-states="default">
+<head>
+  <meta charset="utf-8">
+  <title>Tasks</title>
+  <style>
+    html, body { margin: 0; background: #ffffff; }
+    section { height: 750px; }
+    #a { background: #fee2e2; }
+    #b { background: #dcfce7; }
+    #c { background: #dbeafe; }
+    #d { background: #fef9c3; }
+    #tasks { margin: 0 16px; padding: 16px; height: 300px; background: #0f766e; }
+    header { height: 60px; background: #111827; }
+    #more-menu { position: absolute; top: 60px; right: 0; width: 200px; height: 160px; background: #c026d3; }
+    #more-menu[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <header><button id="more" type="button" aria-haspopup="menu" aria-expanded="false">More</button></header>
+  <div id="more-menu" role="menu" aria-label="More actions" hidden><div role="menuitem">Archive</div></div>
+  <section id="a"></section>
+  <section id="b"><div id="tasks" aria-label="Tasks">Task cards</div></section>
+  <section id="c"></section>
+  <section id="d" style="height: 690px"></section>
+  <script>
+    const more = document.getElementById('more');
+    more.addEventListener('click', () => {
+      document.getElementById('more-menu').hidden = false;
+      more.setAttribute('aria-expanded', 'true');
+    });
+  </script>
+</body>
+</html>

@@ -6,6 +6,7 @@ import { MAX_INVENTORY_REFS, type DesignInventoryCategoryKey, type InventoryDeta
 import type { ProjectFiles } from './citations';
 import { INVENTORY_FILE } from './design-paths';
 import { writeJsonAtomic } from './design-state';
+import { withDesignWrite } from './design-writes';
 
 export const MAX_INVENTORY_BYTES: number = 1024 * 1024;
 
@@ -95,23 +96,15 @@ export async function readInventory(folder: string): Promise<DesignInventory> {
   return { ...EMPTY, ...(value as Partial<DesignInventory>) } as DesignInventory;
 }
 
-const chains = new Map<string, Promise<unknown>>();
-
-/** Replaces inventory.json with what `change` makes of it, one update of a folder at a time; refuses one past 1 MiB. */
+/** Replaces inventory.json with what `change` makes of it, in the folder's write lane; refuses one past 1 MiB. */
 export function updateInventory(folder: string, change: (current: DesignInventory) => DesignInventory): Promise<DesignInventory> {
-  const run = (chains.get(folder) ?? Promise.resolve()).then(async () => {
+  return withDesignWrite(folder, async () => {
     const next = change(await readInventory(folder));
     const bytes = Buffer.byteLength(JSON.stringify(next, null, 2));
     if (bytes > MAX_INVENTORY_BYTES) throw new Error(`The inventory would be ${bytes} bytes, more than the 1 MiB inventory.json may hold`);
     await writeJsonAtomic(path.join(folder, INVENTORY_FILE), next);
     return next;
   });
-  const settled = run.then(() => undefined, () => undefined);
-  chains.set(folder, settled);
-  void settled.then(() => {
-    if (chains.get(folder) === settled) chains.delete(folder);
-  });
-  return run;
 }
 
 /** Every reason the input's references do not hold in the working folder: a file that exists and a line within it. */

@@ -8,8 +8,9 @@ const props = defineProps<{ step: JourneyStep }>();
 const { t } = useI18n();
 
 const keypath = computed(() => {
-  const { action, value, expect } = props.step;
+  const { action, value, expect, target: stepTarget, to } = props.step;
   if (action === 'fill') return value === '' ? 'design.journey.step.clear' : 'design.journey.step.fill';
+  if (action === 'scroll') return stepTarget ? (to === 'end' ? 'design.journey.step.scrollEnd' : 'design.journey.step.scroll') : 'design.journey.step.scrollPage';
   if (action !== 'assert') return `design.journey.step.${action}`;
   if (expect && 'visible' in expect) return expect.visible ? 'design.journey.step.visible' : 'design.journey.step.hidden';
   if (expect && 'textContains' in expect) return 'design.journey.step.textContains';
@@ -23,12 +24,15 @@ const value = computed(() => {
   return stepValue ?? '';
 });
 
+// an exact: false target reads as a part of the text ("containing"), so the sentence never claims an exact match
 const target = computed(() => {
   const { target: stepTarget } = props.step;
-  if ('role' in stepTarget) return { key: 'design.journey.target.role', role: stepTarget.role, name: stepTarget.name };
-  if ('label' in stepTarget) return { key: 'design.journey.target.label', name: stepTarget.label };
-  if ('placeholder' in stepTarget) return { key: 'design.journey.target.placeholder', name: stepTarget.placeholder };
-  return { key: 'design.journey.target.text', name: stepTarget.text };
+  if (!stepTarget) return { key: 'design.journey.target.text', name: '' };
+  const loose = stepTarget.exact === false ? 'Loose' : '';
+  if ('role' in stepTarget) return { key: `design.journey.target.role${loose}`, role: stepTarget.role, name: stepTarget.name };
+  if ('label' in stepTarget) return { key: `design.journey.target.label${loose}`, name: stepTarget.label };
+  if ('placeholder' in stepTarget) return { key: `design.journey.target.placeholder${loose}`, name: stepTarget.placeholder };
+  return { key: `design.journey.target.text${loose}`, name: stepTarget.text };
 });
 </script>
 

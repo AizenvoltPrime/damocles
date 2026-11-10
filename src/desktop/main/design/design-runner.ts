@@ -3,7 +3,10 @@
 import { randomBytes } from 'node:crypto';
 import { BrowserWindow } from 'electron';
 import {
+  DEFAULT_RENDER_MEDIA,
+  imageSize,
   MAX_CONSOLE_ERRORS,
+  MAX_FULL_PAGE_FRAMES,
   MAX_OVERFLOWING,
   MAX_PROBE_ELEMENTS,
   MAX_PROBE_LINE_CHARS,
@@ -13,17 +16,20 @@ import {
   MAX_RENDER_IMAGE_SIDE,
   MAX_RENDER_WIDTH,
   MIN_RENDER_WIDTH,
+  MAX_QUEUED_RUNS_PER_AUTHORITY,
+  MAX_RENDER_SCALE,
   RENDER_FRAME_HEIGHT,
-  pngSize,
   renderScale,
+  SETTLE_TIMEOUT_MS,
+  STABLE_FRAME_TIMEOUT_MS,
   SWEEP_FROM,
   SWEEP_STEP,
 } from '../../../shared/design-render';
 import { DESIGN_NAME } from '../../../shared/design-paths';
 import { visibleLines, visibleText } from '../../../shared/visible-text';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
-import { MAX_JOURNEY_OUTLINE_CHARS, parseJourneySteps } from '../../../shared/design-journey';
-import type { DesignCapture, DesignJourneyRun, DesignOverflowingElement, DesignProbeElement, DesignProbeResult, DesignProbeWidth, JourneyStep } from '../../../shared/types/design';
+import { describeJourneyTarget, MAX_JOURNEY_OUTLINE_CHARS, parseJourneySteps } from '../../../shared/design-journey';
+import type { DesignCapture, DesignJourneyRun, DesignOverflowingElement, DesignProbeElement, DesignProbeResult, DesignProbeWidth, DesignRender, DesignRenderFrame, DesignRenderMedia, DesignRenderRequest, JourneyStep } from '../../../shared/types/design';
 import { DESIGN_SCHEME } from '../protocol';
 import { registerLockedContents } from '../security';
 import { runJourney, untilAborted, type JourneyCdpMethod } from './design-journey';
@@ -31,12 +37,24 @@ import { DESIGN_PARTITION, type DesignViewTarget } from './design-session';
 
 export const MAX_CONCURRENT_RUNS = 2;
 // a core, a remote one included, queues at most this many runs behind the running ones; one past it is refused
-export const MAX_QUEUED_RUNS_PER_AUTHORITY = 16;
+export { MAX_QUEUED_RUNS_PER_AUTHORITY };
 export const RUN_TIMEOUT_MS = 60_000;
 export const MAX_PROBE_OUTPUT_CHARS: number = 64 * 1024;
 const MAX_ATTRIBUTE_CHARS = 120;
 // a world of the runner's own, apart from Electron's (999) and the preview's (1001)
 const RUNNER_WORLD_ID = 1002;
+
+/** The CDP methods a run sends: a journey's, and the media emulation every run pins. */
+export type RunnerCdpMethod = JourneyCdpMethod | 'Emulation.setEmulatedMedia';
+
+/** A screenshot's clip offset in CSS px of the document, and its encoding; absent, the top left as PNG. */
+export interface ShotOptions {
+  readonly x?: number;
+  readonly y?: number;
+  readonly format?: 'png' | 'jpeg';
+  /** JPEG only, 1 to 100. */
+  readonly quality?: number;
+}
 
 /** One run's page: an offscreen window main drives; every read of it is page-influenced. */
 export interface RunnerPage {
@@ -46,10 +64,10 @@ export interface RunnerPage {
   insertCss(css: string): Promise<void>;
   /** Runs `code` in the runner's isolated world and returns its completion value. */
   evaluate(code: string): Promise<unknown>;
-  /** A PNG of the clip at the top left, `scale` device px per CSS px. */
-  screenshot(width: number, height: number, scale: number): Promise<Uint8Array>;
+  /** An image of the clip, `scale` device px per CSS px; a PNG of the top left unless `options` says otherwise. */
+  screenshot(width: number, height: number, scale: number, options?: ShotOptions): Promise<Uint8Array>;
   /** A CDP command on the page's own webContents, through its debugger; the answer is the page's. */
-  cdp(method: JourneyCdpMethod, params: Record<string, unknown>): Promise<unknown>;
+  cdp(method: RunnerCdpMethod, params: Record<string, unknown>): Promise<unknown>;
   close(): void;
 }
 
@@ -64,6 +82,7 @@ export interface DesignRunnerDeps {
   readonly openPage: (origin: string, width: number, events: RunnerPageEvents) => RunnerPage;
   readonly log: (line: string) => void;
   readonly timeoutMs?: number;
+  readonly stableMs?: number;
 }
 
 export interface CaptureRequest {
@@ -80,6 +99,10 @@ export interface JourneyRequest {
   readonly steps: readonly JourneyStep[];
   // a DOM outline of each page where its run ended, for a model that reads no images
   readonly outline: boolean;
+}
+
+export interface RenderRequest extends DesignRenderRequest {
+  readonly relPath: string;
 }
 
 export interface ProbeRequest {
@@ -145,6 +168,90 @@ const PROBE_SCRIPT = `(() => {
   }
   return JSON.stringify(out);
 })()`;
+
+// Playwright's `animations: 'disabled'`: fonts and images first, then every Web Animation (CSS ones included) finished when
+// it ends, cancelled when it never does, then two frames; each wait shares one bound, so the whole answers within it.
+const SETTLE_SCRIPT = `(async () => {
+  const deadline = Date.now() + ${SETTLE_TIMEOUT_MS};
+  const bounded = (work) => Promise.race([work, new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now())))]);
+  await bounded(document.fonts.ready);
+  await bounded(Promise.all(Array.from(document.images, (image) => image.decode().catch(() => undefined))));
+  for (const animation of document.getAnimations()) {
+    try {
+      const end = animation.effect ? animation.effect.getComputedTiming().endTime : Infinity;
+      if (Number.isFinite(end)) animation.finish();
+      else animation.cancel();
+    } catch {}
+  }
+  const frame = () => bounded(new Promise((resolve) => requestAnimationFrame(() => resolve(true))));
+  await frame();
+  await frame();
+  return true;
+})()`;
+// one animation frame, or 100 ms when the window paints none
+const NEXT_FRAME = 'new Promise((resolve) => { requestAnimationFrame(() => resolve(true)); setTimeout(() => resolve(false), 100); })';
+// the stable-frame comparison's frames, a quarter of a CSS px each, enough to see a moving pixel block and cheap to compare
+const STABLE_SCALE = 0.25;
+// the settle script's own bound, plus what its last frames and the IPC round trip may add
+const SETTLE_ANSWER_MS = SETTLE_TIMEOUT_MS + 1000;
+
+const selectorBoxScript = (selector: string): string => `(() => {
+  let found;
+  try { found = document.querySelectorAll(${JSON.stringify(selector)}); } catch { return 'invalid'; }
+  if (found.length === 0) return 'none';
+  const element = found[0];
+  element.scrollIntoView({ block: 'start', inline: 'nearest' });
+  const box = element.getBoundingClientRect();
+  return [box.left + scrollX, box.top + scrollY, box.width, box.height, scrollY];
+})()`;
+
+/** The media features of `media` as `Emulation.setEmulatedMedia` takes them. */
+export function mediaFeatures(media: DesignRenderMedia): { name: string; value: string }[] {
+  return [
+    { name: 'prefers-color-scheme', value: media.colorScheme },
+    { name: 'prefers-reduced-motion', value: media.reducedMotion },
+    { name: 'forced-colors', value: media.forcedColors },
+    { name: 'prefers-contrast', value: media.contrast },
+    { name: 'prefers-reduced-transparency', value: media.reducedTransparency },
+  ];
+}
+
+/** A clip of the document in CSS px. */
+interface Clip {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** The clip split into frames of at most RENDER_FRAME_HEIGHT CSS px, at most MAX_FULL_PAGE_FRAMES of them. */
+export function framesOf(clip: Clip): Clip[] {
+  const frames: Clip[] = [];
+  for (let top = 0; top < clip.height && frames.length < MAX_FULL_PAGE_FRAMES; top += RENDER_FRAME_HEIGHT) {
+    frames.push({ x: clip.x, y: clip.y + top, width: clip.width, height: Math.min(RENDER_FRAME_HEIGHT, clip.height - top) });
+  }
+  return frames;
+}
+
+/**
+ * The selector box script's answer, parsed as hostile: a clip within the viewport the script scrolled to, in CSS px of the
+ * document (a capture shows nothing outside the viewport), and the box's bottom.
+ */
+function selectorClip(raw: unknown, selector: string, width: number, windowHeight: number): { readonly clip: Clip; readonly bottom: number } {
+  if (raw === 'invalid') throw new Error(`${JSON.stringify(selector)} is not a CSS selector.`);
+  if (raw === 'none') throw new Error(`No element matches the selector ${JSON.stringify(selector)}.`);
+  if (!Array.isArray(raw) || raw.length !== 5) throw new Error('The page returned a malformed box');
+  const [left, top, boxWidth, boxHeight, scrolled] = raw.map((value) => clampNumber(value, -MAX_PROBE_PX, MAX_PROBE_PX)) as [number, number, number, number, number];
+  // every frame's top stays within the answer's bound
+  const viewTop = Math.min(Math.max(0, scrolled), MAX_PROBE_PX - MAX_RENDER_HEIGHT);
+  const x = Math.max(0, Math.min(width - 1, left));
+  const y = Math.max(viewTop, Math.min(viewTop + windowHeight - 1, top));
+  const clip = { x, y, width: Math.min(width - x, boxWidth - (x - left)), height: Math.min(viewTop + windowHeight - y, boxHeight - (y - top)) };
+  if (clip.width < 1 || clip.height < 1) throw new Error(`The element ${JSON.stringify(selector)} matches has no box to capture.`);
+  return { clip, bottom: Math.min(MAX_PROBE_PX, Math.max(0, top + boxHeight)) };
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index]);
 
 const MAX_OUTLINE_NODES = 400;
 // Runs in the runner's own world; a hidden element is listed but not entered, and the answer is bounded here and in main.
@@ -277,9 +384,9 @@ export class DesignRunner {
     const sheet = runSheet(request.state);
     return this.run(target, request.relPath, width, signal, async (page, abort) => {
       await untilAborted(page.insertCss(sheet), abort);
-      const contentHeight = await this.fit(page, width, abort);
+      const { windowHeight, contentHeight } = await this.fit(page, width, abort);
       // a page of fixed-position content alone measures 0 high, and a frame is at least 1 px
-      const cssHeight = Math.max(1, Math.min(RENDER_FRAME_HEIGHT, contentHeight));
+      const cssHeight = Math.max(1, Math.min(RENDER_FRAME_HEIGHT, windowHeight, contentHeight));
       let scale = renderScale(width, cssHeight, request.scale);
       let png = await untilAborted(page.screenshot(width, cssHeight, scale), abort);
       // a busy page can make a PNG too large for one image block, so it is taken again smaller
@@ -288,10 +395,66 @@ export class DesignRunner {
         png = await untilAborted(page.screenshot(width, cssHeight, scale), abort);
       }
       if (base64Length(png) > MAX_IMAGE_BASE64_LENGTH) throw new Error('The capture is too large for one image');
-      const size = pngSize(png);
+      const size = imageSize(png, 'image/png');
       if (size.width > MAX_RENDER_IMAGE_SIDE || size.height > MAX_RENDER_IMAGE_SIDE) throw new Error(`The capture is ${size.width} × ${size.height} px, over ${MAX_RENDER_IMAGE_SIDE} px`);
       return { png, cssWidth: width, cssHeight, contentHeight, scale };
     });
+  }
+
+  /**
+   * A model-facing render (D85): the page at W CSS px with `media` pinned, fit to its content and settled, then `steps` in the
+   * same page (no resize after them, so a menu they open stays open), settled again, then frames until two in a row are
+   * identical (`moving` when none were within STABLE_FRAME_TIMEOUT_MS), then the region's frames, each sized within
+   * `maxSide` and `maxBytes` and encoded as asked.
+   */
+  async render(target: DesignViewTarget, request: RenderRequest, signal: AbortSignal): Promise<DesignRender> {
+    const { width } = request;
+    if (!Number.isInteger(width) || width < MIN_RENDER_WIDTH || width > MAX_RENDER_WIDTH) throw new Error('Not a design width');
+    let steps: JourneyStep[] | undefined;
+    if (request.steps !== undefined) {
+      const parsed = parseJourneySteps(request.steps, { asserts: false });
+      if (!('steps' in parsed)) throw new Error('Not journey steps');
+      steps = parsed.steps;
+    }
+    const sheet = runSheet(request.state);
+    const format = request.format === 'jpeg' ? 'jpeg' : 'png';
+    const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const maxBytes = Math.min(request.maxBytes ?? Infinity, Math.floor(MAX_IMAGE_BASE64_LENGTH / 4) * 3);
+    return this.run(target, request.relPath, width, signal, async (page, abort) => {
+      await untilAborted(page.insertCss(sheet), abort);
+      const { windowHeight } = await this.fit(page, width, abort);
+      if (steps) {
+        const run = await runJourney({ send: (method, params) => untilAborted(page.cdp(method, params), abort) }, steps, { width, signal: abort, afterAction: () => this.settle(page, abort) });
+        const failed = run.steps.findIndex((step) => !step.ok);
+        if (failed >= 0) throw new Error(`The steps stopped at step ${failed + 1} (${steps[failed]!.action} ${describeJourneyTarget(steps[failed]!.target)}): ${run.steps[failed]!.message ?? 'it failed'}`);
+      }
+      await this.settle(page, abort);
+      const contentHeight = parseMeasure(await untilAborted(page.evaluate(MEASURE), abort)).height;
+      const shown = Math.max(1, Math.min(windowHeight, contentHeight));
+      const region = request.region;
+      const box = region === undefined || region === 'fullPage' ? undefined : selectorClip(await untilAborted(page.evaluate(selectorBoxScript(region.selector)), abort), region.selector, width, windowHeight);
+      const clip: Clip = box?.clip ?? (region === 'fullPage' ? { x: 0, y: 0, width, height: shown } : { x: 0, y: 0, width, height: Math.min(RENDER_FRAME_HEIGHT, shown) });
+      const frames = framesOf(clip);
+      const covered = frames.at(-1)!.y + frames.at(-1)!.height - clip.y;
+      const moving = !(await this.stable(page, { ...clip, height: covered }, abort));
+      const tallest = Math.max(...frames.map((frame) => frame.height));
+      let scale = renderScale(clip.width, tallest, MAX_RENDER_SCALE, request.maxSide);
+      const shoot = (frame: Clip, at: number): Promise<Uint8Array> => untilAborted(page.screenshot(frame.width, frame.height, at, { x: frame.x, y: frame.y, format, ...(format === 'jpeg' ? { quality: request.quality } : {}) }), abort);
+      let images = await Promise.all(frames.map((frame) => shoot(frame, scale)));
+      // a busy page can make an image too large for the model's limit, so the frames are taken again smaller
+      for (let retry = 0; retry < MAX_SHRINKS && images.some((image) => image.byteLength > maxBytes); retry++) {
+        scale = Math.floor(scale * 700) / 1000;
+        images = await Promise.all(frames.map((frame) => shoot(frame, scale)));
+      }
+      if (images.some((image) => image.byteLength > maxBytes)) throw new Error(`The capture stays over ${maxBytes} bytes, too large for one image`);
+      const rendered: DesignRenderFrame[] = images.map((image, index) => {
+        const size = imageSize(image, mimeType);
+        if (Math.max(size.width, size.height) > request.maxSide) throw new Error(`The capture is ${size.width} × ${size.height} px, over ${request.maxSide} px`);
+        const frame = frames[index]!;
+        return { image, mimeType, cssWidth: Math.max(1, Math.round(frame.width)), cssHeight: Math.max(1, Math.round(frame.height)), top: Math.round(frame.y) };
+      });
+      return { frames: rendered, contentHeight, scale, moving, ...(box ? { boxBottom: Math.round(box.bottom) } : {}) };
+    }, undefined, request.media);
   }
 
   /** The visible data-ds elements, the overflow and the console errors at each width, and with `sweepTo` the overflow sweep. */
@@ -340,7 +503,8 @@ export class DesignRunner {
       results.push(await this.run(target, request.relPath, width, signal, async (page, abort) => {
         await untilAborted(page.insertCss(sheet), abort);
         await untilAborted(page.resize(width, RENDER_FRAME_HEIGHT), abort);
-        const run = await runJourney({ send: (method, params) => untilAborted(page.cdp(method, params), abort) }, parsed.steps, { width, signal: abort });
+        await this.settle(page, abort);
+        const run = await runJourney({ send: (method, params) => untilAborted(page.cdp(method, params), abort) }, parsed.steps, { width, signal: abort, afterAction: () => this.settle(page, abort) });
         const outline = request.outline ? parseOutline(await untilAborted(page.evaluate(OUTLINE_SCRIPT), abort)) : undefined;
         return { width, passed: run.passed, steps: run.steps, ...(outline !== undefined ? { outline } : {}) };
       }, (text) => {
@@ -358,12 +522,45 @@ export class DesignRunner {
     }
   }
 
-  // The window is W wide and as tall as the content, up to MAX_RENDER_HEIGHT; answers the content height.
-  private async fit(page: RunnerPage, width: number, abort: AbortSignal): Promise<number> {
+  // The window is W wide and as tall as the content measured at RENDER_FRAME_HEIGHT, up to MAX_RENDER_HEIGHT, once the page
+  // settled; content sized by the viewport (100vh, 150vh) then measures past the window, which only `windowHeight` bounds.
+  private async fit(page: RunnerPage, width: number, abort: AbortSignal): Promise<{ readonly windowHeight: number; readonly contentHeight: number }> {
     await untilAborted(page.resize(width, RENDER_FRAME_HEIGHT), abort);
+    await this.settle(page, abort);
     const first = parseMeasure(await untilAborted(page.evaluate(MEASURE), abort));
-    await untilAborted(page.resize(width, runHeight(first.height)), abort);
-    return parseMeasure(await untilAborted(page.evaluate(MEASURE), abort)).height;
+    const windowHeight = runHeight(first.height);
+    await untilAborted(page.resize(width, windowHeight), abort);
+    return { windowHeight, contentHeight: parseMeasure(await untilAborted(page.evaluate(MEASURE), abort)).height };
+  }
+
+  // Fonts, images and Web Animations, within SETTLE_TIMEOUT_MS (the script's own bound); a page that holds its renderer longer
+  // costs only the bound, and the run goes on. Best effort: the evaluate rejects when a step replaced the document, and a
+  // renderer that crashed ends the run through `gone`.
+  private async settle(page: RunnerPage, abort: AbortSignal): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const bound = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SETTLE_ANSWER_MS);
+    });
+    try {
+      await untilAborted(Promise.race([page.evaluate(SETTLE_SCRIPT).then(() => undefined, () => undefined), bound]), abort);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Playwright's toHaveScreenshot wait: small frames of the clip, one animation frame apart, until two in a row are identical;
+  // false when none were within STABLE_FRAME_TIMEOUT_MS.
+  private async stable(page: RunnerPage, clip: Clip, abort: AbortSignal): Promise<boolean> {
+    const deadline = Date.now() + (this.deps.stableMs ?? STABLE_FRAME_TIMEOUT_MS);
+    const frame = (): Promise<Uint8Array> => untilAborted(page.screenshot(clip.width, clip.height, STABLE_SCALE, { x: clip.x, y: clip.y }), abort);
+    let previous = await frame();
+    while (Date.now() < deadline) {
+      await untilAborted(page.evaluate(NEXT_FRAME), abort);
+      const next = await frame();
+      if (sameBytes(previous, next)) return true;
+      previous = next;
+    }
+    return false;
   }
 
   private async run<T>(
@@ -373,6 +570,7 @@ export class DesignRunner {
     signal: AbortSignal,
     body: (page: RunnerPage, abort: AbortSignal) => Promise<T>,
     consoleError: (text: string) => void = () => undefined,
+    media: DesignRenderMedia = DEFAULT_RENDER_MEDIA,
   ): Promise<T> {
     const run: Run = { controller: new AbortController(), page: undefined };
     const abort = run.controller.signal;
@@ -394,6 +592,8 @@ export class DesignRunner {
         consoleError,
         gone: (reason) => run.controller.abort(new Error(`The design's page ended: ${reason}`)),
       });
+      // pinned before the load, so the page's first script and style already see it, never the system's or the app's theme
+      await untilAborted(run.page.cdp('Emulation.setEmulatedMedia', { media: 'screen', features: mediaFeatures(media) }), abort);
       await untilAborted(run.page.load(`${origin}/${relPath.split('/').map(encodeURIComponent).join('/')}`), abort);
       return await untilAborted(body(run.page, abort), abort);
     } finally {
@@ -484,8 +684,13 @@ export function openOffscreenPage(origin: string, width: number, events: RunnerP
   contents.on('did-navigate', (_event, _url, httpResponseCode) => {
     status = httpResponseCode;
   });
+  // A debugger command before the first commit never answers (measured on Electron 45), so a command sent before the design
+  // loads commits about:blank first; what it sets (the media emulation) holds across the design's navigation.
+  let committed: Promise<void> | undefined;
+  const commit = (): Promise<void> => (committed ??= contents.loadURL('about:blank'));
   return {
     load: async (url) => {
+      committed ??= Promise.resolve();
       await contents.loadURL(url);
       if (status !== 200) throw new Error('The design file could not be read');
     },
@@ -496,13 +701,15 @@ export function openOffscreenPage(origin: string, width: number, events: RunnerP
       await contents.insertCSS(css, { cssOrigin: 'user' });
     },
     evaluate: (code) => contents.executeJavaScriptInIsolatedWorld(RUNNER_WORLD_ID, [{ code }]),
-    screenshot: async (w, h, scale) => {
+    screenshot: async (w, h, scale, options = {}) => {
       if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
-      const shot = await contents.debugger.sendCommand('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: w, height: h, scale } }) as { data?: unknown };
+      const format = options.format === 'jpeg' ? 'jpeg' : 'png';
+      const shot = await contents.debugger.sendCommand('Page.captureScreenshot', { format, ...(format === 'jpeg' ? { quality: options.quality ?? 80 } : {}), clip: { x: options.x ?? 0, y: options.y ?? 0, width: w, height: h, scale } }) as { data?: unknown };
       if (typeof shot.data !== 'string') throw new Error('The capture returned no image');
       return Buffer.from(shot.data, 'base64');
     },
-    cdp: (method, params) => {
+    cdp: async (method, params) => {
+      await commit();
       if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
       return contents.debugger.sendCommand(method, params);
     },

@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { lookupMock } = vi.hoisted(() => ({ lookupMock: vi.fn() }));
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }));
 
-import { safeFetch, readBodyCapped } from '../safe-fetch';
+import { safeFetch, readBodyCapped, RedirectRefusedError } from '../safe-fetch';
 
 const PUBLIC = [{ address: '93.184.216.34', family: 4 }];
 
@@ -95,6 +95,22 @@ describe('safeFetch — redirects', () => {
     fetchMock.mockResolvedValue(res(302, 'https://example.com/loop'));
     await expect(safeFetch('https://example.com/', {})).rejects.toThrow(/Too many redirects/);
     expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it('cancels the body of every redirect it leaves, the one past the cap included', async () => {
+    let cancelled = 0;
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(new ReadableStream({ cancel: () => { cancelled++; } }), { status: 302, headers: { location: '/loop' } })));
+    await expect(safeFetch('https://example.com/', {})).rejects.toThrow(/Too many redirects/);
+    expect(cancelled).toBe(6);
+  });
+
+  it('stops at a redirect its caller refuses, naming the target, without contacting it', async () => {
+    fetchMock.mockResolvedValueOnce(res(301, 'https://other.org/x?y=1'));
+    const refused = safeFetch('https://example.com/a', {}, { redirectRefused: (target) => new URL(target).hostname === 'other.org' });
+    await expect(refused).rejects.toBeInstanceOf(RedirectRefusedError);
+    await expect(refused).rejects.toMatchObject({ from: 'https://example.com/a', location: 'https://other.org/x?y=1', status: 301 });
+    expect(lookupMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

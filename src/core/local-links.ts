@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { LocalizedError, type LocalizedText } from '../shared/localized-text';
 import { createFolderProbe } from './folder-probe';
 import { l } from './l10n';
+import { leavesLocalDrives, networkPathHost } from './network-fs';
 
 // Windows follows at most 63 links in one open, each giving a folder one more name, so the walk refuses no chain Windows opens.
 const MAX_NAMES = 64;
@@ -92,6 +93,8 @@ interface Walk {
   readonly startIsReal: boolean;
   // the walk's base, whose roots, its path's and its realpath's, are the shares a reading may lead onto
   readonly owner: string;
+  // hosts whose shares a reading may also lead onto (leavesLocalDrives)
+  readonly allowedHosts: ReadonlySet<string> | undefined;
   readonly seen: Seen;
   readonly parsed: Map<string, Promise<readonly Name[] | false>>;
   // the readings being parsed, in the order they opened; tainted: one reached a reading opened before it, so its result holds
@@ -105,12 +108,13 @@ interface Walk {
  * or its realpath's), decided by lstat and readlink alone (docs/invariants.md "Desktop host", Confinement). Rejects with the
  * error of a missing entry or a loop when every reading meets one, with a LocalizedError coded ELOOP past MAX_LINK_STEPS or
  * MAX_NAMES, and coded ETIMEDOUT when a drive other than base's that a link leads onto does not answer within
- * DRIVE_ANSWER_MS. baseIsReal: base is its own realpath. Always true off win32.
+ * DRIVE_ANSWER_MS. baseIsReal: base is its own realpath; allowedHosts: hosts whose shares, and WSL's, a link may also lead
+ * onto. Always true off win32.
  */
-export async function followsLocalLinksOnly(base: string, segments: readonly string[], options: { readonly baseIsReal?: boolean } = {}): Promise<boolean> {
+export async function followsLocalLinksOnly(base: string, segments: readonly string[], options: { readonly baseIsReal?: boolean; readonly allowedHosts?: ReadonlySet<string> } = {}): Promise<boolean> {
   if (process.platform !== 'win32') return true;
   const seen: Seen = { links: new Map(), realpaths: new Map(), steps: 0 };
-  const walk: Walk = { start: base, startIsReal: options.baseIsReal ?? false, owner: base, seen, parsed: new Map(), parsing: new Map() };
+  const walk: Walk = { start: base, startIsReal: options.baseIsReal ?? false, owner: base, allowedHosts: options.allowedHosts, seen, parsed: new Map(), parsing: new Map() };
   return (await parse(walk, base, [{ path: base, origin: base }], segments)) !== false;
 }
 
@@ -180,7 +184,7 @@ function parseFrom(walk: Walk, reading: Reading): Promise<readonly Name[] | fals
 
 async function parseReading(walk: Walk, reading: Reading): Promise<readonly Name[] | false> {
   const target = reading.path;
-  if (target.startsWith('\\\\') && rootKey(target) !== reading.share && !(await isOwnShare(walk, target))) return false;
+  if (target.startsWith('\\\\') && rootKey(target) !== reading.share && !(await isOwnShare(walk, target)) && !allowedShare(walk, target)) return false;
   const share = reading.share === undefined ? {} : { share: reading.share };
   if (isUnder(walk.start, target)) return parse(walk, walk.start, [{ path: walk.start, origin: walk.start, ...share }], segmentsUnder(walk.start, target));
   const root = rootOf(target);
@@ -259,7 +263,7 @@ function namesOfStart(walk: Walk): Promise<readonly Name[] | false> {
   const root = rootOf(walk.start);
   if (walk.startIsReal) return Promise.resolve([{ path: walk.start, origin: root }]);
   if (walk.startNames === undefined) {
-    const above: Walk = { start: root, startIsReal: false, owner: walk.owner, seen: walk.seen, parsed: new Map(), parsing: new Map() };
+    const above: Walk = { start: root, startIsReal: false, owner: walk.owner, allowedHosts: walk.allowedHosts, seen: walk.seen, parsed: new Map(), parsing: new Map() };
     walk.startNames = parse(above, root, [{ path: root, origin: root }], segmentsUnder(root, walk.start));
   }
   return walk.startNames;
@@ -275,6 +279,10 @@ function climbsAbove(name: Name, target: string): boolean {
     } else if (part !== '' && part !== '.') depth++;
   }
   return false;
+}
+
+function allowedShare(walk: Walk, target: string): boolean {
+  return walk.allowedHosts !== undefined && !leavesLocalDrives(target, walk.allowedHosts);
 }
 
 async function isOwnShare(walk: Walk, target: string): Promise<boolean> {
@@ -306,4 +314,32 @@ function loop(walk: Walk): Error {
 
 function tooManyLinks(walk: Walk): Error {
   return walkError(l('The path under {0} goes through too many links.', walk.owner), 'ELOOP');
+}
+
+/**
+ * The hosts of folders' network spellings (`networkPathHost`), as written and as their realpath names them (a mapped drive's
+ * share), and of `asWritten`'s spellings without a realpath. A realpath that fails leaves out only that spelling's host, which
+ * makes more paths ask, never fewer.
+ */
+export async function networkHostsOf(folders: readonly string[], asWritten: readonly string[] = []): Promise<ReadonlySet<string>> {
+  const spellings = await Promise.all(folders.map(async (folder) => [folder, await fs.realpath(folder).catch(() => folder)]));
+  return new Set([...spellings.flat(), ...asWritten].map(networkPathHost).filter((host): host is string => host !== undefined && host !== ''));
+}
+
+/**
+ * Whether opening target, an absolute path, may reach past this computer's drives on win32: its spelling leaves them
+ * (`leavesLocalDrives`), or a link or junction on its walk leads onto a share or device path off allowedHosts. A missing
+ * segment ends the walk, since nothing past it is followed; rejects as `followsLocalLinksOnly` does otherwise. Always false
+ * off win32.
+ */
+export async function reachesNetwork(target: string, allowedHosts: ReadonlySet<string>): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+  if (leavesLocalDrives(target, allowedHosts)) return true;
+  const root = rootOf(target);
+  try {
+    return !(await followsLocalLinksOnly(root, segmentsUnder(root, target), { allowedHosts }));
+  } catch (err) {
+    if (isMissing(err)) return false;
+    throw err;
+  }
 }

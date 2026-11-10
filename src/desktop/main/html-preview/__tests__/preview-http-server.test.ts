@@ -366,14 +366,38 @@ describe('the preview loopback server', () => {
     [{ 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' }, 403],
     [{ 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' }, 403],
     [{ 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' }, 403],
-    [{ 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }, 200],
+    // a page on another port or site could have planted the cookie, since cookies ignore ports
+    [{ 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }, 403],
+    [{ 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }, 403],
+    [{ 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' }, 403],
     [{ 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' }, 200],
-    [{ 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' }, 200],
     [{ 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }, 200],
     [{}, 200],
   ])('Fetch Metadata %o with the cookie answers %i', async (headers, status) => {
     const jar = await cookie();
     expect((await request('/index.html', { Cookie: jar, ...headers })).status).toBe(status);
+  });
+
+  it('tells a user who followed a link from another site why, and refuses a subresource with no body', async () => {
+    const jar = await cookie();
+    for (const site of ['cross-site', 'same-site']) {
+      const navigation = await request('/index.html', { Cookie: jar, 'Sec-Fetch-Site': site, 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' });
+      expect(navigation.status, site).toBe(403);
+      expect(navigation.body, site).toBe('Open this preview from Damocles.');
+      expect(navigation.headers['content-type'], site).toBe('text/plain; charset=utf-8');
+    }
+    for (const headers of [{ 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' }, { 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' }, { 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' }]) {
+      const subresource = await request('/index.html', { Cookie: jar, 'Sec-Fetch-Site': 'cross-site', ...headers });
+      expect(subresource.status).toBe(403);
+      expect(subresource.body).toBe('');
+    }
+  });
+
+  it('carries the query the opener added into the redirect, and refuses one no URL serializer writes', async () => {
+    const withQuery = (query: string): string => `${openPath('docs/index.html')}&${new URLSearchParams({ q: query }).toString()}`;
+    expect((await request(withQuery('tab=2&x=%20y'))).headers.location).toBe('/docs/index.html?tab=2&x=%20y');
+    expect((await request(openPath('docs/index.html'))).headers.location).toBe('/docs/index.html');
+    for (const query of ['a b', 'a#b', 'a\r\nSet-Cookie: x=1', 'é']) expect((await request(withQuery(query))).status, query).toBe(403);
   });
 
   it('falls to the cookie check when a browser sends no Fetch Metadata, and refuses a cross-site subresource before spending a token', async () => {

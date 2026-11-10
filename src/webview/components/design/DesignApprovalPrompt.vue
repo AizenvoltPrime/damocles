@@ -23,7 +23,7 @@ const emit = defineEmits<{
   (e: 'release-focus'): void;
 }>();
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const store = useDesignStore();
 const { postMessage } = usePlatformBridge();
 const preview = useOpenDesignPreview();
@@ -32,6 +32,13 @@ const browser = useOpenDesignInBrowser();
 const current = computed(() => store.approvalPrompts[0]);
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('approval', cardRef);
+
+// One line per cause; a cause from a newer core than this page reads as the generic one.
+const uncheckedLines = computed(() => (current.value?.uncheckedDecisions ?? []).filter((group) => group.ids.length > 0).map((group) => {
+  const causeKey = `design.approval.uncheckedCause.${group.cause}`;
+  const cause = te(causeKey) ? t(causeKey) : t('design.approval.uncheckedCause.other');
+  return t('design.approval.unchecked', { ids: group.ids.join(', '), cause }, group.ids.length);
+}));
 
 const title = computed(() => t('design.approval.title'));
 const subtitle = computed(() => (current.value?.hasParent ? t('design.approval.subtitle') : t('design.approval.subtitleNoParent')));
@@ -189,6 +196,15 @@ useDockPromptDigits(cardRef, (digit) => {
           </p>
           <DesignWarningList :warnings="current.warnings" />
         </section>
+
+        <p
+          v-for="line in uncheckedLines"
+          :key="line"
+          class="text-pretty text-(--d-warning-text)"
+          data-testid="design-approval-unchecked"
+        >
+          {{ line }}
+        </p>
 
         <section
           v-if="current.decisions.length > 0"

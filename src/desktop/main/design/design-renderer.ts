@@ -127,13 +127,13 @@ export function runDesignRenderer(argv: readonly string[]): void {
         case 'page':
           answer(raw.id, async () => {
             const page = pageOf(raw.page);
-            const [a, b, c] = raw.args as [never, never, never];
+            const [a, b, c, d] = raw.args as [never, never, never, never];
             switch (raw.op) {
               case 'load': return page.load(a);
               case 'resize': return page.resize(a, b);
               case 'insertCss': return page.insertCss(a);
               case 'evaluate': return page.evaluate(a);
-              case 'screenshot': return page.screenshot(a, b, c);
+              case 'screenshot': return page.screenshot(a, b, c, d);
               case 'cdp': return page.cdp(a, b);
               case 'close':
                 pages.delete(raw.page);

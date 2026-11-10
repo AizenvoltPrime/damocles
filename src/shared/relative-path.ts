@@ -11,6 +11,11 @@ export function isRelativeFilePath(value: unknown): value is string {
   return value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
 }
 
+/** The file a decoded URL path below a served root names: '' and a path ending in '/' name that folder's index.html. */
+export function folderIndexPath(path: string): string {
+  return path === '' || path.endsWith('/') ? `${path}index.html` : path;
+}
+
 // VS Code's WINDOWS_FORBIDDEN_NAMES (src/vs/base/common/extpath.ts), plus the superscript digits Windows also reserves.
 const WIN32_RESERVED_NAME = /^(con|prn|aux|clock\$|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
 

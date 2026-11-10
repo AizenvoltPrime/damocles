@@ -45,6 +45,8 @@ import { fetchFeed } from '../../web-access/feed';
 import { parseVideoId, fetchTranscript } from '../../web-access/youtube';
 
 const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+const hostRefused = (url: string): boolean => url.startsWith('https://refused.example/');
+const webHostFilter = vi.fn(async () => hostRefused);
 
 interface PiTool {
   name: string;
@@ -58,7 +60,7 @@ interface PiTool {
 }
 
 function buildTools(): Record<string, PiTool> {
-  const tools = buildWebPiTools({ pi: piStub }) as unknown as PiTool[];
+  const tools = buildWebPiTools({ pi: piStub, webHostFilter }) as unknown as PiTool[];
   return Object.fromEntries(tools.map((t) => [t.name, t]));
 }
 
@@ -88,7 +90,7 @@ beforeEach(() => {
 
 describe('web tools — names + schema', () => {
   it('registers WebSearch / WebFetch / CodeSearch / FeedRead / YouTubeTranscript in order', () => {
-    const tools = buildWebPiTools({ pi: piStub }) as unknown as PiTool[];
+    const tools = buildWebPiTools({ pi: piStub, webHostFilter }) as unknown as PiTool[];
     expect(tools.map((t) => t.name)).toEqual(['WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript']);
     expect([...WEB_PI_TOOL_NAMES]).toEqual(['WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript']);
   });
@@ -142,9 +144,9 @@ describe('web tools — execute routing', () => {
     expect(result.details?.advanced).toBeUndefined();
   });
 
-  it('WebFetch routes a single url to extractUrl with an options object', async () => {
+  it('WebFetch routes a single url to extractUrl with an options object carrying the rules\' refused hosts', async () => {
     const result = await buildTools().WebFetch!.execute('t', { url: 'https://a' });
-    expect(extractUrl).toHaveBeenCalledWith('https://a', undefined, {});
+    expect(extractUrl).toHaveBeenCalledWith('https://a', undefined, { hostRefused });
     expect(extractUrls).not.toHaveBeenCalled();
     expect(result.details?.successful).toBe(1);
     expect(result.content[0]?.text).toContain('fetch-md');
@@ -152,7 +154,7 @@ describe('web tools — execute routing', () => {
 
   it('WebFetch routes multiple urls to extractUrls with an options object', async () => {
     const result = await buildTools().WebFetch!.execute('t', { urls: ['https://a', 'https://b'] });
-    expect(extractUrls).toHaveBeenCalledWith(['https://a', 'https://b'], undefined, {});
+    expect(extractUrls).toHaveBeenCalledWith(['https://a', 'https://b'], undefined, { hostRefused });
     expect(result.details?.urlCount).toBe(2);
     expect(result.details?.successful).toBe(2);
   });
@@ -166,6 +168,7 @@ describe('web tools — execute routing', () => {
       includeImages: false,
     });
     expect(extractUrl).toHaveBeenCalledWith('https://a', undefined, {
+      hostRefused,
       raw: true,
       budget: 5000,
       includeLinks: false,

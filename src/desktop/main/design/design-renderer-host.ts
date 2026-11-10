@@ -116,7 +116,7 @@ export class DesignRendererHost {
       resize: (w, h) => call('resize', [w, h]),
       insertCss: (css) => call('insertCss', [css]),
       evaluate: (code) => call('evaluate', [code]),
-      screenshot: (w, h, scale) => call('screenshot', [w, h, scale]),
+      screenshot: (w, h, scale, options) => call('screenshot', options === undefined ? [w, h, scale] : [w, h, scale, options]),
       cdp: (method, params) => call('cdp', [method, params]),
       // a page that will not close within ANSWER_MS takes the process with it (a hung print dialog, a busy renderer)
       close: () => {

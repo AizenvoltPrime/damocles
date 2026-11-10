@@ -25,6 +25,8 @@ const MAX_FETCH_URLS = 20;
 
 export interface WebPiToolDeps {
   pi: PiCodingAgentModule;
+  /** Per call, whether a deny or ask WebFetch rule covers a URL's host (`PermissionHandler.webHostFilter`), which WebFetch then never contacts on a step of its own. */
+  webHostFilter: () => Promise<(url: string) => boolean>;
 }
 
 function errMsg(err: unknown): string {
@@ -183,7 +185,7 @@ function formatFeed(url: string, result: FeedResult): string {
 
 /** Build the native web tools as pi-native definitions (Phase 7). */
 export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
-  const { pi } = deps;
+  const { pi, webHostFilter } = deps;
 
   return [
     pi.defineTool<typeof webSearchSchema, WebSearchDetails>({
@@ -281,6 +283,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
         const effectiveMaxChars = input.maxChars != null ? clampBudget(input.maxChars) : undefined;
         try {
           const extractOpts = {
+            hostRefused: await webHostFilter(),
             ...(input.raw ? { raw: true } : {}),
             ...(input.maxChars != null ? { budget: input.maxChars } : {}),
             ...(input.includeLinks != null ? { includeLinks: input.includeLinks } : {}),

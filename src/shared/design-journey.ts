@@ -60,7 +60,14 @@ function parseTarget(raw: unknown, problems: string[], at: string): JourneyTarge
     problems.push(`${at}: target must be {role, name}, {label}, {placeholder} or {text}.`);
     return undefined;
   }
-  const keys = Object.keys(raw).sort().join(',');
+  const exact = raw['exact'];
+  if (exact !== undefined && typeof exact !== 'boolean') {
+    problems.push(`${at}: target.exact must be true or false.`);
+    return undefined;
+  }
+  // absent means exact, so only exact: false travels; an app's parser before design.journeyScroll refuses the key
+  const exactness = exact === false ? { exact } : {};
+  const keys = Object.keys(raw).filter((key) => key !== 'exact').sort().join(',');
   if (keys === 'name,role') {
     const role = raw['role'];
     if (typeof role !== 'string' || !JOURNEY_ROLES.has(role)) {
@@ -68,15 +75,15 @@ function parseTarget(raw: unknown, problems: string[], at: string): JourneyTarge
       return undefined;
     }
     const name = targetText(raw['name'], 'the name', problems, at);
-    return name === undefined ? undefined : { role, name };
+    return name === undefined ? undefined : { role, name, ...exactness };
   }
   for (const key of ['label', 'placeholder', 'text'] as const) {
     if (keys !== key) continue;
     const text = targetText(raw[key], `the ${key}`, problems, at);
     if (text === undefined) return undefined;
-    return key === 'label' ? { label: text } : key === 'placeholder' ? { placeholder: text } : { text };
+    return key === 'label' ? { label: text, ...exactness } : key === 'placeholder' ? { placeholder: text, ...exactness } : { text, ...exactness };
   }
-  problems.push(`${at}: target must be exactly one of {role, name}, {label}, {placeholder} or {text}; never a CSS selector.`);
+  problems.push(`${at}: target must be exactly one of {role, name}, {label}, {placeholder} or {text}, with an optional exact; never a CSS selector.`);
   return undefined;
 }
 
@@ -86,6 +93,15 @@ function parseStep(raw: unknown, problems: string[], at: string): JourneyStep | 
     return undefined;
   }
   const action = raw['action'];
+  if (action === 'scroll') {
+    if (!keysWithin(raw, ['action', 'target', 'to'])) problems.push(`${at}: scroll takes a target, to: "end", or both.`);
+    const to = raw['to'];
+    if (to !== undefined && to !== 'end') problems.push(`${at}: to must be "end".`);
+    if (raw['target'] === undefined && to === undefined) problems.push(`${at}: scroll needs a target to scroll into view, to: "end", or both.`);
+    const scrolled = raw['target'] === undefined ? undefined : parseTarget(raw['target'], problems, at);
+    if (raw['target'] !== undefined && !scrolled) return undefined;
+    return { action, ...(scrolled ? { target: scrolled } : {}), ...(to === 'end' ? { to } : {}) };
+  }
   const target = parseTarget(raw['target'], problems, at);
   switch (action) {
     case 'click':
@@ -129,18 +145,21 @@ function parseStep(raw: unknown, problems: string[], at: string): JourneyStep | 
       return undefined;
     }
     default:
-      problems.push(`${at}: action must be fill, select, click, press or assert.`);
+      problems.push(`${at}: action must be fill, select, click, press, scroll or assert.`);
       return undefined;
   }
 }
 
-/** The steps, or every problem found in them, in English for the model; nothing outside the format passes. */
-export function parseJourneySteps(raw: unknown): { readonly steps: JourneyStep[] } | { readonly problems: string[] } {
+/**
+ * The steps, or every problem found in them, in English for the model; nothing outside the format passes. `asserts: false`
+ * (a render's steps, which only bring the page to a state) lets an action stand without an assert after it.
+ */
+export function parseJourneySteps(raw: unknown, options: { readonly asserts?: boolean } = {}): { readonly steps: JourneyStep[] } | { readonly problems: string[] } {
   if (!Array.isArray(raw) || raw.length === 0) return { problems: ['steps must be a list of at least one step.'] };
   if (raw.length > MAX_JOURNEY_STEPS) return { problems: [`A journey has at most ${MAX_JOURNEY_STEPS} steps, asserts counted; this one has ${raw.length}. Split it into shorter journeys, each from the screen as it loads, and report the rest as untested.`] };
   const problems: string[] = [];
   const steps = raw.map((step, index) => parseStep(step, problems, `step ${index + 1}`));
-  raw.forEach((step, index) => {
+  if (options.asserts !== false) raw.forEach((step, index) => {
     const action = isRecord(step) ? step['action'] : undefined;
     const next = raw[index + 1];
     if (action !== 'assert' && (!isRecord(next) || next['action'] !== 'assert')) problems.push(`step ${index + 1}: every action must be followed by an assert of its outcome.`);
@@ -168,10 +187,23 @@ export function parseJourneyUntested(raw: unknown): { readonly untested: string[
   return problems.length > 0 ? { problems } : { untested: raw as string[] };
 }
 
-/** The target as the model and the logs read it: `button "Save"`, `label "Name"`. */
-export function describeJourneyTarget(target: JourneyTarget): string {
-  if ('role' in target) return `${target.role} ${JSON.stringify(target.name)}`;
-  if ('label' in target) return `label ${JSON.stringify(target.label)}`;
-  if ('placeholder' in target) return `placeholder ${JSON.stringify(target.placeholder)}`;
-  return `text ${JSON.stringify(target.text)}`;
+/** The first problem as one sentence for the model, with how many more there are. */
+export function journeyProblemSentence(problems: readonly string[]): string {
+  const first = problems[0] ?? 'steps are malformed.';
+  return problems.length > 1 ? `${first} (${problems.length - 1} more problem${problems.length > 2 ? 's' : ''} after this one.)` : first;
+}
+
+/** Whether `steps` use what an app without `design.journeyScroll` refuses: a scroll step or a target with any `exact` key. */
+export function journeyNeedsScrollFeature(steps: readonly JourneyStep[]): boolean {
+  return steps.some((step) => step.action === 'scroll' || (step.target !== undefined && 'exact' in step.target));
+}
+
+/** The target as the model and the logs read it: `button "Save"`, `label "Name"`, `text ~"save"` for exact: false. */
+export function describeJourneyTarget(target: JourneyTarget | undefined): string {
+  if (!target) return 'the page';
+  const mark = target.exact === false ? '~' : '';
+  if ('role' in target) return `${target.role} ${mark}${JSON.stringify(target.name)}`;
+  if ('label' in target) return `label ${mark}${JSON.stringify(target.label)}`;
+  if ('placeholder' in target) return `placeholder ${mark}${JSON.stringify(target.placeholder)}`;
+  return `text ${mark}${JSON.stringify(target.text)}`;
 }

@@ -28,7 +28,7 @@ export interface DesktopCore {
 }
 
 export interface CoreConnectionDeps
-  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'foreignOwner' | 'clientNetwork' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log' | 'showSession' | 'openDesignPreview' | 'designRender'> {
+  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'foreignOwner' | 'servedFile' | 'clientNetwork' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log' | 'showSession' | 'openDesignPreview' | 'designRender'> {
   // main's platform: what core's proxies reach
   readonly platform: DesktopPlatform;
   readonly trust: TrustStore;

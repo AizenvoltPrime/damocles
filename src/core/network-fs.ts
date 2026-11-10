@@ -19,8 +19,43 @@ const NETWORK_FS = new Map<number, string>([
 
 /** The network file system a folder is on (Linux statfs, or a Windows UNC path), else undefined. */
 export function networkFileSystem(folder: string, type: (folder: string) => number, platform: NodeJS.Platform = process.platform): string | undefined {
-  if (platform === 'win32') return /^(?:[\\/]{2}[^\\/?.]|\\\\\?\\UNC\\)/i.test(folder) ? 'SMB' : undefined;
+  if (platform === 'win32') return networkPathHost(folder) ? 'SMB' : undefined;
   return platform === 'linux' ? NETWORK_FS.get(type(folder)) : undefined;
+}
+
+// A device path naming a UNC host: `\\?\UNC\`, `\\.\UNC\` or `\??\UNC\`, separators in any mix.
+const DEVICE_UNC_PATH = /^(?:[\\/]{2}[?.]|[\\/]\?\?)[\\/]unc[\\/]([^\\/]*)/i;
+// Two leading separators in any mix, not opening a `\\?\` or `\\.\` device path.
+const UNC_PATH = /^[\\/]{2}(?![?.](?:[\\/]|$))([^\\/]*)/;
+// Every path Windows reads as a UNC or device path; `\??\` is the NT namespace, which Win32 passes through unchanged.
+const UNC_OR_DEVICE_PATH = /^(?:[\\/]{2}|[\\/]\?\?[\\/])/;
+// WSL's file server, which Windows reaches through the P9 redirector, never SMB.
+const WSL_HOSTS: ReadonlySet<string> = new Set(['wsl$', 'wsl.localhost']);
+
+/**
+ * The host a Windows network path names, lowercased, with a WebDAV `@SSL` or `@port` suffix dropped: `\\host\share`, its
+ * forward and mixed slash spellings, and its `\\?\UNC\`, `\\.\UNC\` and `\??\UNC\` forms. Empty for two separators with no
+ * host; undefined for any other path.
+ */
+export function networkPathHost(target: string): string | undefined {
+  return uncServer(target)?.split('@', 1)[0];
+}
+
+/** The server component of a UNC path as written, lowercased, `@SSL` or `@port` included. */
+function uncServer(target: string): string | undefined {
+  return (DEVICE_UNC_PATH.exec(target) ?? UNC_PATH.exec(target))?.[1]!.toLowerCase();
+}
+
+/**
+ * Whether opening target on Windows may reach past this computer's drives: a network path whose host is neither in
+ * allowedHosts nor WSL's, and every device path (`\\?\C:\x`, `\\.\pipe\x`, `\??\x`), which this text alone cannot place.
+ */
+export function leavesLocalDrives(target: string, allowedHosts: ReadonlySet<string>): boolean {
+  const server = uncServer(target);
+  if (server === undefined) return UNC_OR_DEVICE_PATH.test(target);
+  const host = server.split('@', 1)[0]!;
+  // A server spelled with `@` goes to the WebDAV redirector, never to WSL's.
+  return host === '' || !(WSL_HOSTS.has(server) || allowedHosts.has(host));
 }
 
 /**

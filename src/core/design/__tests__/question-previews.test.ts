@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DesignPreviewHost } from '../../../platform/design-preview';
-import { DESIGN_RENDER_CLIENT_ABSENT } from '../../../shared/design-render';
+import { DEFAULT_RENDER_MEDIA, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../../shared/design-render';
 import { LocalizedError } from '../../../shared/localized-text';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { createDesignHandlers } from '../../chat-panel/message-router/handlers/design-handlers';
@@ -29,10 +29,16 @@ function designFolder(): string {
   return folder;
 }
 
-function render(): DesignPreviewHost & { captures: unknown[][] } {
+function render(): DesignPreviewHost & { captures: unknown[][]; renders: unknown[][] } {
   const captures: unknown[][] = [];
+  const renders: unknown[][] = [];
   return {
     captures,
+    renders,
+    render: async (...args) => {
+      renders.push(args);
+      return { frames: [{ image: PNG, mimeType: 'image/png', cssWidth: args[2].width, cssHeight: 900, top: 0 }], contentHeight: 900, scale: 1.523, moving: false };
+    },
     open: async () => true,
     changed: () => undefined,
     probe: () => Promise.reject(new Error('unused')),
@@ -67,7 +73,7 @@ describe('design-kind question previews', () => {
     expect(designPreviewPathOf(named('screens/S1.html'), 0, 0)).toBe('screens/S1.html');
   });
 
-  it('captures at the primary width once per content hash, and again after the design changed', async () => {
+  it('renders a PNG with the media pinned at the primary width once per content hash, and again after the design changed', async () => {
     const folder = designFolder();
     const host = render();
     const images = new DesignPreviewImages();
@@ -75,15 +81,24 @@ describe('design-kind question previews', () => {
     const first = await images.image(host, DESIGN, folder, 'variants/a/S1.html', signal);
     expect(first).toEqual({ mimeType: 'image/png', data: Buffer.from(PNG).toString('base64'), width: 1950, height: 1371 });
     await images.image(host, DESIGN, folder, 'variants/a/S1.html', signal);
-    expect(host.captures).toEqual([[DESIGN, 'variants/a/S1.html', 1280, null, 2, signal]]);
+    expect(host.renders).toEqual([[DESIGN, 'variants/a/S1.html', { width: 1280, state: null, media: DEFAULT_RENDER_MEDIA, format: 'png', maxSide: 1950, quality: 80 }, signal]]);
+    expect(host.captures).toEqual([]);
     fs.appendFileSync(path.join(folder, 'variants', 'a', 'S1.html'), '\n');
     await images.image(host, DESIGN, folder, 'variants/a/S1.html', signal);
-    expect(host.captures).toHaveLength(2);
+    expect(host.renders).toHaveLength(2);
+  });
+
+  it('takes the plain capture from an app without design.render', async () => {
+    const folder = designFolder();
+    const older = { ...render(), render: () => Promise.reject(new Error(DESIGN_RENDER_PREDATES)) };
+    const signal = new AbortController().signal;
+    expect(await new DesignPreviewImages().image(older, DESIGN, folder, 'variants/a/S1.html', signal)).toMatchObject({ mimeType: 'image/png', width: 1950 });
+    expect(older.captures).toEqual([[DESIGN, 'variants/a/S1.html', 1280, null, 2, signal]]);
   });
 
   it('names the refusal while no client renders designs, and a file that is not a screen', async () => {
     const folder = designFolder();
-    const absent: DesignPreviewHost = { ...render(), capture: () => Promise.reject(new Error(DESIGN_RENDER_CLIENT_ABSENT)) };
+    const absent: DesignPreviewHost = { ...render(), render: () => Promise.reject(new Error(DESIGN_RENDER_CLIENT_ABSENT)), capture: () => Promise.reject(new Error(DESIGN_RENDER_CLIENT_ABSENT)) };
     const images = new DesignPreviewImages();
     await expect(images.image(absent, DESIGN, folder, 'variants/a/S1.html', new AbortController().signal)).rejects.toThrow(LocalizedError);
     await expect(images.image(render(), DESIGN, folder, 'variants/b/S1.html', new AbortController().signal)).rejects.toThrow(/is not a screen of this design/);

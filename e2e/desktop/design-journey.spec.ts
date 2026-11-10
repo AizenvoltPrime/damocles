@@ -5,7 +5,7 @@ import { expect, selectChatPage, test } from './support/fixtures';
 import { expectNoAxeViolations } from './support/axe';
 import { approveDesign, DESIGN_APP, grounding, startDesignChat } from './support/design';
 import { seedStubModel, REPO_ROOT, type HermeticHome } from './support/hermetic';
-import { call, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
+import { call, lastToolResult, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { openProjectChat, setPageSize } from './support/screenshots';
 import { shellPage } from './support/shell';
 import { awaitTurnEnd } from './support/ui';
@@ -173,6 +173,46 @@ test('an 11-step journey passes at base and xl, gates FinishDesign per screen, a
     // With no pacing the whole replay takes less time than the paced one did.
     const span = (log: Array<{ at: number }>): number => log.at(-1)!.at - log[0]!.at;
     expect(span(instant)).toBeLessThan(span(paced));
+  } finally {
+    await stub.close();
+  }
+});
+
+test('a journey matches a part of a name, presses Escape in a dialog that takes no focus, and scrolls a feed to its next batch', async ({ home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl, ['text', 'image']);
+    fs.cpSync(DESIGN_APP, home.project, { recursive: true });
+    const { app } = await launch();
+    const dialog = { role: 'dialog', name: 'Filters' };
+    const steps = [
+      { action: 'assert', target: { role: 'button', name: 'save', exact: false }, expect: { visible: true } },
+      { action: 'click', target: { role: 'button', name: 'Open filters' } },
+      { action: 'assert', target: dialog, expect: { visible: true } },
+      { action: 'press', target: dialog, key: 'Escape' },
+      { action: 'assert', target: dialog, expect: { visible: false } },
+      { action: 'scroll', to: 'end' },
+      { action: 'assert', target: { text: 'Item 21' }, expect: { visible: true } },
+    ];
+    const { design, folder } = await interactiveDesign(home, stub, app, (designDir) => [
+      call('write', { path: path.join(designDir, 'screens', 'S3-feed.html'), content: screenFile('S3-feed.html') }),
+      call('PreviewJourney', { screen: 'screens/S3-feed.html', steps, untested: ['Loading past the second batch'] }),
+      { chunks: ['The feed journey passed.'] },
+    ]);
+    await setPageSize(design, 900, 6000);
+    await expect.poll(() => stub.replies.length, { timeout: 120_000 }).toBe(0);
+    await awaitTurnEnd(design);
+
+    expect(lastToolResult(stub)).toContain('The journey of S3 passed at 390 px and 1280 px: 7/7 steps.');
+    const card = design.getByTestId('preview-journey-card');
+    await expect(card).toHaveAttribute('data-passed', 'true', { timeout: 30_000 });
+    await expect(card.getByTestId('preview-journey-counter').locator('[aria-hidden="true"]')).toHaveText('7/7');
+    await expect(card.getByTestId('preview-journey-step-text').nth(5)).toHaveText('Scroll the page to its end');
+    const journey = JSON.parse(fs.readFileSync(path.join(folder, 'screens', 'S3-feed.journey.json'), 'utf8')) as JourneyFile;
+    expect(journey.results.map((result) => [result.width, result.passed])).toEqual([[390, true], [1280, true]]);
+    const spec = fs.readFileSync(path.join(folder, 'screens', 'S3-feed.journey.spec.ts'), 'utf8');
+    expect(spec).toContain('page.getByRole("button", { name: "save", exact: false })');
+    expect(spec).toContain('await page.mouse.wheel(0, 100000);');
   } finally {
     await stub.close();
   }

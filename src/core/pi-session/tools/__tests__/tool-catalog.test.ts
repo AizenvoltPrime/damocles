@@ -112,7 +112,7 @@ describe('the design group (PD-42)', () => {
   const design = FULL_TOOL_CATALOG.filter((e) => e.group === 'design').map((e) => e.name);
 
   it('lists the built design tools, toggleable, apart from the module tools and the custom set', () => {
-    expect(design).toEqual(['StartDesign', 'Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'DesignScreenshot', 'PreviewJourney', 'DeclareTweaks', 'MapReference', 'DesignParity']);
+    expect(design).toEqual(['StartDesign', 'Inventory', 'ExtractTokens', 'ImportAsset', 'RecordDecision', 'DesignCheck', 'FinishDesign', 'LoadDesignSkill', 'DesignScreenshot', 'PreviewJourney', 'DeclareTweaks', 'MapReference', 'RemoveDesignFile', 'OpenPreview', 'DesignParity']);
     // the card and the Tools panel name it apart from the browser's BrowserScreenshot (PD-42)
     expect(FULL_TOOL_CATALOG.find((e) => e.name === 'DesignScreenshot')?.label).toBe('Screenshot');
     expect(FULL_TOOL_CATALOG.filter((e) => e.group === 'design').every((e) => e.toggleable)).toBe(true);

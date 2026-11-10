@@ -19,11 +19,12 @@ import type { OpenFolder } from '../../platform/workspace-folders';
 import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
+import type { RelayedServedFile, ServedFile, ServedFileAnswer } from '../../shared/served-file-url';
 import type { UserProfile } from '../../shared/types/memory';
-import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type JourneyStep } from '../../shared/types/design';
+import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
 import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_OUTLINE_CHARS, MAX_JOURNEY_STEPS, parseJourneySteps } from '../../shared/design-journey';
 import { MAX_TWEAK_CONTROLS, MAX_TWEAK_STOPS, MIN_TWEAK_CONTROLS, MIN_TWEAK_STOPS, TWEAK_TOKEN_NAME } from '../../shared/design-tweaks';
-import { MAX_CHANGED_PATHS, MAX_CONSOLE_ERRORS, MAX_OVERFLOWING, MAX_PROBE_ELEMENTS, MAX_PROBE_LINE_CHARS, MAX_PROBE_PX, MAX_PROBE_WIDTHS, MAX_RENDER_SCALE, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH, RENDER_FRAME_HEIGHT } from '../../shared/design-render';
+import { MAX_CHANGED_PATHS, MAX_CONSOLE_ERRORS, MAX_FULL_PAGE_FRAMES, MAX_OVERFLOWING, MAX_PROBE_ELEMENTS, MAX_PROBE_LINE_CHARS, MAX_PROBE_PX, MAX_PROBE_WIDTHS, MAX_RENDER_IMAGE_SIDE, MAX_RENDER_SCALE, MAX_RENDER_SELECTOR_CHARS, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH, RENDER_FRAME_HEIGHT } from '../../shared/design-render';
 import { MAX_DESIGN_ID_CHARS } from '../../shared/design-paths';
 import { MAX_MARKUP_JSON_CHARS } from '../../shared/design-markup';
 import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
@@ -182,8 +183,11 @@ export interface CoreRequests {
   // a daemon's core: speak a chat's final reply on the client that shows the view
   'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
   // a daemon's core: a browser tool of the chat's view, run by the client that shows it in that view's own browser scope
-  // (scope: CHAT_BROWSER_SCOPE for the chat's agent, else a subagent's or team member's scope id)
-  'user.browser.tool': Call<{ readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, BrowserToolAnswer>;
+  // (scope: CHAT_BROWSER_SCOPE for the chat's agent, else a subagent's or team member's scope id); served: BrowserOpen's or
+  // BrowserNavigate's file:// address is the root file the core resolved, which the client serves (user.browser.servedFiles)
+  'user.browser.tool': Call<{ readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown; readonly served?: RelayedServedFile }, BrowserToolAnswer>;
+  // this computer's core: the one-time URL of a root file of the chat view's project or design, from main's served root
+  'browser.servedFileUrl': Call<{ readonly viewId: string } & ServedFile, ServedFileAnswer>;
   // a daemon's core: a subagent's or team member's browser scope of the chat's view ended; the client showing the view
   // disposes that scope, closing its tabs when closeTabs (the agent succeeded)
   // discard: the conversation that handed the scope out ended, so the tabs a failed agent left open close too
@@ -218,6 +222,9 @@ export interface CoreRequests {
   // a render of a design file a chat of this core holds, in a fresh offscreen page of the client (PD-41); main reads its
   // bytes through design.read; state: a declared state, null for the default; scale: an upper bound
   'design.capture': Call<{ readonly designId: string; readonly relPath: string; readonly width: number; readonly state: string | null; readonly scale: number }, DesignCapture>;
+  // a model-facing render (D85): media pinned, settled, still frames, sized and encoded as asked, after optional steps; a client
+  // without it gets design.capture from a call that asks for nothing only this request carries
+  'design.render': Call<{ readonly designId: string; readonly relPath: string } & DesignRenderRequest, DesignRender>;
   // the visible data-ds elements and the overflow at each width, and with sweepTo the overflow sweep from 320 px to it
   'design.probe': Call<{ readonly designId: string; readonly relPath: string; readonly widths: readonly number[]; readonly state: string | null; readonly sweepTo?: number }, DesignProbeResult>;
   // the journey's steps in a fresh offscreen page per width (PD-13, PD-45); outline: each page's DOM outline where its run ended
@@ -1026,11 +1033,29 @@ const journeySteps: Parser<readonly JourneyStep[]> = (raw) => {
   const parsed = parseJourneySteps(raw);
   return 'steps' in parsed ? parsed.steps : INVALID;
 };
+// a render's steps bring the page to a state, so no assert need follow an action
+const renderSteps: Parser<readonly JourneyStep[]> = (raw) => {
+  const parsed = parseJourneySteps(raw, { asserts: false });
+  return 'steps' in parsed ? parsed.steps : INVALID;
+};
+const renderMedia = obj({
+  colorScheme: oneOf(['light', 'dark'] as const),
+  reducedMotion: oneOf(['no-preference', 'reduce'] as const),
+  forcedColors: oneOf(['none', 'active'] as const),
+  contrast: oneOf(['no-preference', 'more', 'less'] as const),
+  reducedTransparency: oneOf(['no-preference', 'reduce'] as const),
+});
+const renderRegion = either(oneOf(['fullPage'] as const), obj({ selector: nonEmpty(MAX_RENDER_SELECTOR_CHARS) }));
+const renderFrame = obj({ image: bytes(MAX_DATA_CHARS), mimeType: oneOf(['image/jpeg', 'image/png'] as const), cssWidth: int(1, MAX_RENDER_WIDTH), cssHeight: int(1, RENDER_FRAME_HEIGHT), top: int(0, MAX_PROBE_PX) });
 const journeyStepResult = obj({ ok: bool, hiddenAt: opt(renderWidth), failure: opt(oneOf(JOURNEY_FAILURES)), message: opt(str(MAX_JOURNEY_MESSAGE_CHARS)) });
 const designJourneyRun: Parser<DesignJourneyRun> = obj({
   widths: arr(obj({ width: renderWidth, passed: bool, steps: arr(journeyStepResult, MAX_JOURNEY_STEPS), outline: opt(str(MAX_JOURNEY_OUTLINE_CHARS)) }), MAX_PROBE_WIDTHS),
   consoleErrors: arr(probeLine, MAX_CONSOLE_ERRORS),
 });
+const projectFile = { kind: oneOf(['project'] as const), relPath: filePath };
+const designFile = { kind: oneOf(['design'] as const), designId, relPath: filePath };
+const relayedServedFile: Parser<RelayedServedFile> = either(obj({ ...projectFile, displayRoot: filePath }), obj({ ...designFile, displayRoot: filePath }));
+const servedFileAnswer: Parser<ServedFileAnswer> = either(obj({ url: message, origin: label }), obj({ refused: message, unavailable: opt(bool) }));
 
 const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'secrets.get': method(obj({ key }), maybe(message)),
@@ -1119,7 +1144,8 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'worktrees.showApplyConflicts': method(obj({ worktreeId: id, files: arr(filePath, MAX_ITEMS) }), done),
   'user.credentials': method(obj({ provider: id, clientId: id }), brokerAnswer),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
-  'user.browser.tool': method(obj({ viewId: id, scope: id, tool: id, input: value }), browserToolAnswer),
+  'user.browser.tool': method(obj({ viewId: id, scope: id, tool: id, input: value, served: opt(relayedServedFile) }), browserToolAnswer),
+  'browser.servedFileUrl': method(either(obj({ viewId: id, ...projectFile }), obj({ viewId: id, ...designFile })), servedFileAnswer),
   'user.browser.release': method(obj({ viewId: id, scope: id, closeTabs: bool, discard: opt(bool) }), done),
   'user.memory.search': method(obj({ clientId: id, query: text, k: searchCount, tiers: memoryTiers, injection: opt(bool), since: opt(memoryTime), until: opt(memoryTime), includeForgotten: opt(bool) }), searchedMemories),
   'user.memory.profile': method(obj({ clientId: id }), clientGlobalProfile),
@@ -1136,6 +1162,10 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'design.capture': method(
     obj({ designId, relPath: filePath, width: renderWidth, state: nullable(id), scale: renderScaleOf }),
     obj({ png: bytes(MAX_DATA_CHARS), cssWidth: renderWidth, cssHeight: int(1, RENDER_FRAME_HEIGHT), contentHeight: int(0, MAX_PROBE_PX), scale: renderScaleOf }),
+  ),
+  'design.render': method(
+    obj({ designId, relPath: filePath, width: renderWidth, state: nullable(id), media: renderMedia, steps: opt(renderSteps), region: opt(renderRegion), format: oneOf(['jpeg', 'png'] as const), maxSide: int(1, MAX_RENDER_IMAGE_SIDE), quality: int(1, 100), maxBytes: opt(int(1, MAX_DATA_CHARS)) }),
+    obj({ frames: arr(renderFrame, MAX_FULL_PAGE_FRAMES, 1), contentHeight: int(0, MAX_PROBE_PX), scale: renderScaleOf, moving: bool, boxBottom: opt(int(0, MAX_PROBE_PX)) }),
   ),
   'design.probe': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), sweepTo: opt(renderWidth) }), designProbeResult),
   'design.journey': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), steps: journeySteps, outline: opt(bool) }), designJourneyRun),

@@ -35,6 +35,8 @@ function controller() {
       return undefined;
     },
     t: (message: string, ...args: string[]) => message.replace(/\{(\d+)\}/g, (_, index: string) => args[Number(index)] ?? ''),
+    servedPorts: () => [],
+    onServedChange: () => ({ dispose: () => undefined }),
     log: () => undefined,
   } as unknown as PortsControllerDeps;
   return { ports: new PortsController(deps), notices };
@@ -77,6 +79,8 @@ function wslController(windowsListeners: () => WindowsListeners, accepted?: (hos
     windowsListeners,
     ...(accepted ? { accepted } : {}),
     t: (message: string) => message,
+    servedPorts: () => [],
+    onServedChange: () => ({ dispose: () => undefined }),
     log: () => undefined,
   } as unknown as PortsControllerDeps;
   const ports = new PortsController(deps);

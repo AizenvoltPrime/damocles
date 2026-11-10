@@ -106,6 +106,11 @@ export interface PromptExtras {
    * a plan should assign to a slice the parent will implement later.
    */
   planMechanismBlock?: string;
+  /**
+   * A design chat's subagent brief (`nestedDesignSection`), set by the caller from the tools the agent resolved. Emitted in both
+   * modes and after the agent's own prompt, since it replaces the designer workflow an append-mode agent inherits.
+   */
+  designBlock?: string;
 }
 
 /**
@@ -162,6 +167,7 @@ Platform: ${env.platform}`;
   const extraSections: string[] = [];
   if (compassBlock) extraSections.push(`\n${compassBlock}`);
   if (extras?.planMechanismBlock) extraSections.push(`\n${extras.planMechanismBlock}`);
+  if (extras?.designBlock) extraSections.push(`\n${extras.designBlock}`);
   if (extras?.skillBlocks?.length) {
     for (const skill of extras.skillBlocks) {
       extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`);

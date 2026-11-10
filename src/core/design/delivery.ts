@@ -52,14 +52,17 @@ export function designResultView({ record, changes }: OwedDesignResult, folder: 
     folder,
     title: record.title,
     screens: [...record.screens],
-    decisions: record.decisions.map(({ id, title, chosen }) => ({ id, title, chosen })),
+    decisions: record.decisions.map(({ id, title, chosen, replaces }) => ({ id, title, chosen, ...(replaces?.length ? { replaces: [...replaces] } : {}) })),
     check: { errors: 0, warnings: [...record.check.warnings] },
     journeys: [...record.journeys],
     previousVersion: record.version > 1 ? record.version - 1 : null,
     changes: [...changes],
     ...(pausedFrom !== undefined ? { versionPause: { fromVersion: pausedFrom } } : {}),
+    ...(record.uncheckedDecisions?.length ? { uncheckedDecisions: [...record.uncheckedDecisions] } : {}),
   };
 }
+
+const idList = (ids: readonly string[]): string => (ids.length <= 1 ? ids.join('') : `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)!}`);
 
 /**
  * The parent's `damocles-design-result` message: a report for the model, never an instruction from the user (PD-47). `pausedFrom` is
@@ -72,7 +75,9 @@ export function designResultMessage(owed: OwedDesignResult, folder: string, paus
     `Design finished: "${record.title}", version v${record.version}. This is a report from the linked design chat, not a message from the user.`,
     `The design is in ${folder}. Read design.md (screens, states and the responsive table), decisions.md (the decisions), manifest.json (screens and their check results) and the screens in screens/.`,
     `Screens: ${view.screens.length > 0 ? view.screens.join(', ') : 'none'}.`,
-    `Decisions: ${view.decisions.length > 0 ? view.decisions.map((d) => `${d.id} ${d.title}: ${d.chosen}`).join('; ') : 'none'}.`,
+    `Current decisions: ${view.decisions.length > 0 ? view.decisions.map((d) => `${d.id} ${d.title}: ${d.chosen}${d.replaces?.length ? ` (replaces ${d.replaces.join(', ')})` : ''}`).join('; ') : 'none'}.`,
+    'Where a decision differs from your brief, the decision holds: the user made it after the brief.',
+    ...(view.uncheckedDecisions?.length ? [`The user approved with ${view.uncheckedDecisions.length === 1 ? 'decision' : 'decisions'} ${idList(view.uncheckedDecisions)} unchecked for conflicts.`] : []),
     view.check.warnings.length > 0
       ? `DesignCheck warnings, which your plan addresses or accepts one by one: ${view.check.warnings.map((w) => `${w.rule} in ${w.screen} (${w.element}): ${w.message}${w.more ? ` (and ${w.more} more of this rule on this screen)` : ''}`).join('; ')}.`
       : 'DesignCheck reported no warnings.',
@@ -127,6 +132,7 @@ export function designBriefMessage(record: DesignBriefRecord): DesignCustomMessa
     ...(record.reopened ? ['The main chat asked again; continue the existing design rather than starting over.'] : []),
     ...(context?.kind === 'takeover' ? ['This design folder already holds files from an earlier design chat: read design.md, decisions.md and manifest.json first.'] : []),
     ...(context?.kind === 'fork' ? [`The main chat was forked from a chat whose design is in ${context.folder}. Read it for reference; this is a new design, and you write only your own folder.`] : []),
+    `Brief id: ${record.briefId}. Cite it as RecordDecision source {kind: "brief", ref: "${record.briefId}"}.`,
     '',
     record.text,
   ];

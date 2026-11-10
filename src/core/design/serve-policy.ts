@@ -10,6 +10,7 @@ const SERVED_TYPES: ReadonlyMap<string, string> = new Map([
   ['json', 'application/json; charset=utf-8'],
   ['png', 'image/png'],
   ['jpg', 'image/jpeg'],
+  ['avif', 'image/avif'],
   ['webp', 'image/webp'],
   ['gif', 'image/gif'],
   ['svg', 'image/svg+xml'],

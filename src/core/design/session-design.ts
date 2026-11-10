@@ -18,7 +18,10 @@ import { sessionLeaseBlocker } from '../pi-session/session-store/session-lease';
 import { PiRuntime, type LiveSessionMutator } from '../pi-session/pi-runtime';
 import { resolveToCwd } from '../pi-session/tools/search-tools';
 import {
+  activeConflicts,
+  currentDecisions,
   decisionsOnBranch,
+  decisionView,
   designEntryMessage,
   designRoleEntryData,
   hasDesignRoleEntry,
@@ -31,12 +34,13 @@ import {
   unansweredVersionPause,
   versionChoiceEntryData,
   versionChoiceMade,
-  type DesignDecisionRecord,
   type DesignLink,
   type DesignRole,
   type DesignVersionPause,
 } from './design-entries';
 import { markDesignEdited, readManifest, syncManifestVersion, writeDecisions } from './design-files';
+import { DecisionRefusedError, DESIGN_CONTINUES_ELSEWHERE, type DecisionLedger } from './decisions';
+import { withDesignWrite } from './design-writes';
 import { designFolderOf, designStateDirOf } from './design-paths';
 import { changesBetween, claimDesignLink, readDesignLink, readLatestVersion, type DesignVersionRecord } from './design-state';
 import { designBriefMessage, designResultMessage, designVersionInstruction, owedBriefs, owedDesignResults, type DesignCustomMessage } from './delivery';
@@ -107,15 +111,14 @@ export class SessionDesign implements Disposable {
   private reconciling: Promise<void> = Promise.resolve();
   private watchers: { key: string; disposables: Disposable[] } | undefined;
   private publishRun = 0;
-  // Decisions a tool made whose result is not on the branch yet.
-  private pendingDecisionList: DesignDecisionRecord[] = [];
   // The design entries of the bound conversation already on screen: the history replay's and those posted live.
   private postedEntries = new Set<string>();
   private disposed = false;
   private handingOver = false;
   // link.json of this chat's design as last read; every send, rewind, compaction, reconcile and decisions write reads it first.
   private linkSeen: { readonly designId: string; readonly holder: string | null } | { readonly designId: string; readonly unreadable: true } | undefined;
-  // The folder writes this chat started (decisions.md, the manifest's fidelity), which a restore waits for.
+  // The folder writes this chat queued (decisions.md, the manifest's fidelity and status), which a restore waits for before it takes
+  // the folder's write lane.
   private folderWrites: Promise<void> = Promise.resolve();
   // A parent whose run a version pause ends at its next turn boundary; its card and prompt land once the run settled (PD-29).
   private pausing: AgentSession | undefined;
@@ -243,9 +246,20 @@ export class SessionDesign implements Disposable {
     };
   }
 
-  /** Resolves once the folder writes this chat started have landed, so a restore never races one. */
+  /** Resolves once the folder writes this chat queued have landed. */
   settledWrites(): Promise<void> {
     return this.folderWrites;
+  }
+
+  /**
+   * Runs a checkpoint restore of a design chat's folder in the folder's write lane (D65), after the writes this chat queued, so no
+   * decision or manifest write lands across it; a write queued meanwhile lands after it. Any other chat's restore runs as it is.
+   */
+  async restoring<T>(restore: () => Promise<T>): Promise<T> {
+    const role = this.role();
+    if (!role) return restore();
+    await this.folderWrites;
+    return withDesignWrite(role.folder, restore);
   }
 
   /**
@@ -423,7 +437,6 @@ export class SessionDesign implements Disposable {
   onBound(): void {
     const session = this.deps.session();
     if (!session) return;
-    this.pendingDecisionList = [];
     // What the branch holds now is the history replay's to show.
     this.postedEntries = new Set(session.sessionManager.getBranch().flatMap((entry) => (designEntryMessage(entry, false) ? [entry.id] : [])));
     this.syncHold();
@@ -449,7 +462,7 @@ export class SessionDesign implements Disposable {
       if (!bound()) return;
       await this.readLinkOf(role);
       if (!bound() || this.standing().kind !== 'current') return;
-      await writeDecisions(role.folder, role.designId, decisionsOnBranch(session.sessionManager.getBranch()));
+      await writeDecisions(role.folder, role.designId, () => decisionsOnBranch(session.sessionManager.getBranch()));
       if (!bound() || !options?.filesRestored) return;
       const latest = await readLatestVersion(designStateDirOf(role.designId));
       if (!bound()) return;
@@ -459,33 +472,34 @@ export class SessionDesign implements Disposable {
     });
   }
 
-  /** The decisions tools made whose results are not on the branch yet. */
-  pendingDecisions(): DesignDecisionRecord[] {
-    const known = new Set(decisionsOnBranch(this.branch()).map((decision) => `${decision.id}\0${decision.title}`));
-    this.pendingDecisionList = this.pendingDecisionList.filter((decision) => !known.has(`${decision.id}\0${decision.title}`));
-    return [...this.pendingDecisionList];
-  }
-
-  /** A tool made `added`, whose result reaches the branch after it returns. */
-  async decisionsChanged(added: readonly DesignDecisionRecord[]): Promise<void> {
+  /**
+   * Where this chat's decisions are recorded (D99): its bound session's branch and its design folder. Each append checks the
+   * session is still the one bound, so a let-go or a switch never takes a decision onto another branch.
+   */
+  decisionLedger(onWriteFailed: (err: unknown) => void): DecisionLedger | undefined {
     const session = this.deps.session();
     const role = this.role();
-    if (!session || !role) return;
-    this.pendingDecisionList.push(...added);
-    // Behind every folder write started before it, so an earlier rebuild never lands over this one; a failure reaches the tool.
-    const write = this.folderWrites.then(() => {
-      if (this.disposed || this.deps.session() !== session) return;
-      return writeDecisions(role.folder, role.designId, [...decisionsOnBranch(session.sessionManager.getBranch()), ...this.pendingDecisions()]);
-    });
-    this.folderWrites = write.then(() => undefined, () => undefined);
-    try {
-      await write;
-    } catch (err) {
-      // A caller that still returns them (AskUserQuestion) puts them on the branch; one that throws never does.
-      this.pendingDecisionList = this.pendingDecisionList.filter((decision) => !added.includes(decision));
-      throw err;
-    }
-    this.publish();
+    if (!session || !role) return undefined;
+    const bound = (): boolean => !this.disposed && this.deps.session() === session;
+    return {
+      folder: role.folder,
+      designId: role.designId,
+      branch: () => session.sessionManager.getBranch(),
+      ensureCurrent: async () => {
+        if (!bound()) throw new DecisionRefusedError('This design chat is no longer open, so nothing was recorded.');
+        if ((await this.readLinkOf(role)).kind !== 'current') throw new DecisionRefusedError(DESIGN_CONTINUES_ELSEWHERE);
+      },
+      append: (customType, data) => {
+        if (!bound()) throw new Error('This design chat is no longer open, so the decision was not recorded.');
+        session.sessionManager.appendCustomEntry(customType, data);
+      },
+      changed: () => {
+        if (!bound()) return;
+        this.deps.platform.designPreview?.changed(role.designId, []);
+        this.publish();
+      },
+      writeFailed: onWriteFailed,
+    };
   }
 
   /** Publishes `designState`: the design chat's state, or the parent's link chip, or neither. */
@@ -548,7 +562,8 @@ export class SessionDesign implements Disposable {
     const session = this.deps.session();
     const role = this.role();
     if (session && role) {
-      const decisions = [...decisionsOnBranch(this.branch()), ...this.pendingDecisions()];
+      const decisions = decisionsOnBranch(this.branch());
+      const current = new Set(currentDecisions(decisions).map((decision) => decision.id));
       const [manifest, link] = await Promise.all([readManifest(role.folder, role.designId), readDesignLink(designStateDirOf(role.designId))]);
       this.noteLinkHolder(role.designId, link?.designSessionId ?? null);
       const supersededBy = link?.designSessionId != null && link.designSessionId !== session.sessionId ? link.designSessionId : null;
@@ -563,7 +578,11 @@ export class SessionDesign implements Disposable {
           status: manifest.status,
           version: manifest.version,
           fidelity: manifest.fidelity,
-          decisions: decisions.map(({ id, title, chosen, rejected, source, supersedes }) => ({ id, title, chosen, rejected, source, ...(supersedes ? { supersedes } : {}) })),
+          decisions: decisions.map((decision) => {
+            const { conflicts: _stored, ...view } = decisionView(decision);
+            const active = activeConflicts(decision, current);
+            return active.length > 0 ? { ...view, conflicts: active } : view;
+          }),
           ruleSet: role.ruleSet,
           enabled: this.enabled(),
           superseded: supersededBy !== null,

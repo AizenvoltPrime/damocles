@@ -15,7 +15,7 @@ import {
 } from '../../shared/design-tweaks';
 import { TOOL_DECLARE_TWEAKS } from '../../shared/tool-names';
 import { DAMOCLES_DESIGN_TWEAK_KEPT } from '../pi-session/session-store/constants';
-import { decisionsOnBranch } from './design-entries';
+import { currentDecisions, decisionsOnBranch } from './design-entries';
 
 // control characters and line or paragraph separators, which a label never holds
 // eslint-disable-next-line no-control-regex
@@ -70,12 +70,12 @@ export function tweakKeptEntryData(userEntryId: string, kept: TweakKept): Record
 }
 
 /**
- * The properties decisions on `branch` settled: a decision whose source is `{kind: 'tweak', ref: <tweakId>}` settles the property
+ * The properties current decisions on `branch` settled: a decision whose source is `{kind: 'tweak', ref: <tweakId>}` settles the property
  * of that tweak's latest kept entry, with its chosen value. A later decision on a property replaces an earlier one.
  */
 export function tweakLocks(branch: readonly unknown[]): Map<string, TweakLock> {
   const locks = new Map<string, TweakLock>();
-  for (const decision of decisionsOnBranch(branch)) {
+  for (const decision of currentDecisions(decisionsOnBranch(branch))) {
     if (decision.source.kind !== 'tweak') continue;
     const kept = latestKeptTweak(branch, decision.source.ref);
     if (kept) locks.set(kept.property, { decisionId: decision.id, value: decision.chosen });

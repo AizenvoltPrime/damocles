@@ -39,11 +39,17 @@ export interface DesignVersionRecord {
   readonly sessionId: string;
   readonly toolCallId: string;
   readonly contentHash: string;
+  /** The current decisions at the finish. */
   readonly decisions: readonly DesignResultDecision[];
+  /** Decisions the user approved while their conflict check could not run; absent when there were none. */
+  readonly uncheckedDecisions?: readonly string[];
   readonly screens: readonly string[];
   /** Each screen's content hash by screen id, which the next version's `changedSinceLast` compares. */
   readonly screenHashes?: Readonly<Record<string, string>>;
-  /** Each screen's `renderInputHashes` entry by screen file, which DesignParity compares; absent from a record that predates it. */
+  /**
+   * Each screen's `renderInputHashes` entry by screen file, which DesignParity compares; absent from a record that predates it,
+   * and without RENDER_HASH_SCHEME in one of an earlier formula, which DesignParity judges by `contentHash`.
+   */
   readonly renderHashes?: Readonly<Record<string, string>>;
   readonly check: { readonly errors: 0; readonly warnings: readonly DesignCheckIssue[] };
   /** Each screen's journey or waiver (PD-21); empty for a static design and on REDUCED. */
@@ -368,7 +374,9 @@ export function changesSince(
   }
   for (const screen of Object.keys(before)) if (screenHashes[screen] === undefined) changes.push({ kind: 'screenRemoved', screen });
   const earlier = new Set(previous.decisions.map((decision) => decision.id));
-  for (const { id, title, chosen } of decisions) if (!earlier.has(id)) changes.push({ kind: 'decisionAdded', id, title, chosen });
+  for (const { id, title, chosen, replaces } of decisions) {
+    if (!earlier.has(id)) changes.push({ kind: 'decisionAdded', id, title, chosen, ...(replaces?.length ? { replaces: [...replaces] } : {}) });
+  }
   return changes;
 }
 
@@ -379,7 +387,7 @@ export function describeChanges(changes: readonly DesignChange[]): string[] {
       case 'screenAdded': return `${change.screen} added`;
       case 'screenChanged': return `${change.screen} changed`;
       case 'screenRemoved': return `${change.screen} removed`;
-      case 'decisionAdded': return `${change.id} ${change.title} · ${change.chosen}`;
+      case 'decisionAdded': return `${change.id} ${change.title} · ${change.chosen}${change.replaces?.length ? ` (replaces ${change.replaces.join(', ')})` : ''}`;
     }
   });
 }
@@ -402,8 +410,11 @@ export async function changesFromPrevious(stateDir: string, record: DesignVersio
   }
 }
 
+const sameReplaces = (a: readonly string[] | undefined, b: readonly string[] | undefined): boolean => (a ?? []).join(' ') === (b ?? []).join(' ');
+
+// Both lists hold current decisions only, so a replacement changes them (D66).
 const sameDecisions = (a: readonly DesignResultDecision[], b: readonly DesignResultDecision[]): boolean =>
-  a.length === b.length && a.every((decision, i) => decision.id === b[i]!.id && decision.title === b[i]!.title && decision.chosen === b[i]!.chosen);
+  a.length === b.length && a.every((decision, i) => decision.id === b[i]!.id && decision.title === b[i]!.title && decision.chosen === b[i]!.chosen && sameReplaces(decision.replaces, b[i]!.replaces));
 
 /** Why a design chat that is not the current one cannot finish its design. */
 export const DESIGN_SUPERSEDED_FINISH = 'This design continues in another design chat, so this one cannot finish it.';
@@ -446,8 +457,8 @@ export function probeDesignVersion(
 ): Promise<DesignVersionProbe> {
   return withDesignStateLock(stateDir, async () => {
     const previous = await writableLatest(stateDir, chat);
-    // A record without render hashes leaves DesignParity unable to compare, so finishing again records a new one.
-    if (previous?.renderHashes && previous.contentHash === contentHash && sameDecisions(previous.decisions, decisions)) return { kind: 'reuse', record: previous };
+    // whatever scheme its render hashes have, or none: DesignParity judges such a record by this same content hash
+    if (previous && previous.contentHash === contentHash && sameDecisions(previous.decisions, decisions)) return { kind: 'reuse', record: previous };
     return { kind: 'new', previous, contentHash };
   });
 }

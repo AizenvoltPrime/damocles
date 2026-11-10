@@ -6,8 +6,10 @@ import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import { TOOL_FINISH_DESIGN } from '../../../shared/tool-names';
 import { issueCount, type DesignCheckSummary, type DesignJourneyRecord, type FinishDesignDetails, type FinishDesignUnapprovedDetails } from '../../../shared/types/design';
 import { l } from '../../l10n';
-import { decisionsOnBranch, type DesignRole } from '../design-entries';
-import { designContentHash, renderInputHashes, updateManifest } from '../design-files';
+import { recheckUncheckedDecisions, uncheckedByCause, type DecisionRecheck } from '../decisions';
+import { currentDecisions, decisionsOnBranch, type DesignRole } from '../design-entries';
+import { designContentHash, updateManifest } from '../design-files';
+import { renderInputHashes } from '../render-inputs';
 import { designStateDirOf } from '../design-paths';
 import { changesSince, commitDesignVersion, describeChanges, DESIGN_SUPERSEDED_FINISH, probeDesignVersion, type DesignVersionRecord } from '../design-state';
 import { DesignRenderUnavailableError } from '../width-checks';
@@ -52,7 +54,7 @@ export function createFinishDesignTool(pi: PiCodingAgentModule, deps: DesignChat
     label: 'FinishDesign',
     // pi then runs the whole batch one call at a time, so the version holds the bytes the check passed.
     executionMode: 'sequential',
-    description: 'Finish this version of the design and hand it to the main chat, which builds from it. DesignCheck runs again first, at the checked widths too where this chat has them, and FinishDesign refuses while it reports any error; warnings travel with the version. Where this chat has PreviewJourney, an interactive design also needs, for every screen with controls, a journey that passed at every journey width against the screen as it is now; a screen with no control needs none. With nothing changed since the last version, it returns that version again. Otherwise it asks the user to approve the version, with your summary, and waits: approved, the version is made and your turn ends; "changes requested" carries the user\'s note, so keep working on it now and call FinishDesign again when it is done; stopped, no version is made and your turn ends.',
+    description: 'Finish this version of the design and hand it to the main chat, which builds from it. DesignCheck runs again first, at the checked widths too where this chat has them, and FinishDesign refuses while it reports any error; warnings travel with the version. Where this chat has PreviewJourney, an interactive design also needs, for every screen with controls, a journey that passed at every journey width against the screen as it is now; a screen with no control needs none. Decisions recorded while their conflict check could not run are checked again first, and a conflict refuses. With nothing changed since the last version, it returns that version again. Otherwise it asks the user to approve the version, with your summary, and waits: approved, the version is made and your turn ends; "changes requested" carries the user\'s note, so keep working on it now and call FinishDesign again when it is done; stopped, no version is made and your turn ends.',
     parameters: finishSchema,
     execute: async (toolCallId, params, signal): Promise<FinishResult> => {
       const role = activeRole(deps, TOOL_FINISH_DESIGN);
@@ -80,9 +82,15 @@ export function createFinishDesignTool(pi: PiCodingAgentModule, deps: DesignChat
           isError: true,
         };
       }
-      const decisions = decisionsOnBranch(branch).map(({ id, title, chosen }) => ({ id, title, chosen }));
+      // the decisions recorded while their conflict check could not run are checked again before the user is asked (D99)
+      const ledger = deps.decisions();
+      const recheck: DecisionRecheck = ledger ? await recheckUncheckedDecisions(ledger, deps.conflictJudge(), runSignal) : { unchecked: [] };
+      if (recheck.refusal !== undefined) return { content: [{ type: 'text', text: recheck.refusal }], details: summary, isError: true };
+      const decisions = currentDecisions(decisionsOnBranch(deps.branch())).map(({ id, title, chosen, replaces }) => ({ id, title, chosen, ...(replaces?.length ? { replaces: [...replaces] } : {}) }));
+      const uncheckedDecisions = recheck.unchecked.map((decision) => decision.id);
       const screenHashes = Object.fromEntries(screens.map((screen) => [screen.id, screen.contentHash]));
-      const warnings = summary.warnings;
+      // a decision the check above cleared no longer warns
+      const warnings = summary.warnings.filter((issue) => issue.rule !== 'decisions.unchecked' || uncheckedDecisions.includes(issue.element));
       // each gated screen's journey passed or was waived, or the check above failed (PD-21)
       const journeys = screens.flatMap((screen): DesignJourneyRecord[] => (!screen.journey ? [] : 'waiver' in screen.journey ? [{ screen: screen.id, waiver: true }] : [{ screen: screen.id, ...screen.journey }]));
       const contentHash = await designContentHash(role.folder);
@@ -101,6 +109,7 @@ export function createFinishDesignTool(pi: PiCodingAgentModule, deps: DesignChat
         decisions,
         screens: screens.map(({ id, file }) => ({ id, file })),
         hasParent: await deps.hasParent(role),
+        ...(recheck.unchecked.length > 0 ? { unchecked: uncheckedByCause(recheck.unchecked) } : {}),
       }, runSignal);
       switch (answer?.choice) {
         case undefined:
@@ -129,6 +138,7 @@ export function createFinishDesignTool(pi: PiCodingAgentModule, deps: DesignChat
         toolCallId,
         contentHash,
         decisions,
+        ...(uncheckedDecisions.length > 0 ? { uncheckedDecisions } : {}),
         screens: screens.map((screen) => screen.id),
         screenHashes,
         renderHashes,

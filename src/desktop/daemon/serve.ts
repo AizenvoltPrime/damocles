@@ -76,6 +76,8 @@ export interface DaemonDeps {
   // a dropped connection's grace and the held-frame bound; shorter only through the e2e hooks (e2eConnectionLimits)
   readonly graceMs?: number;
   readonly maxHeldBytes?: number;
+  // how long the work of a device that is away waits for it; shorter only through the e2e hooks
+  readonly actorIntentExpiryMs?: number;
   // the welcome's serverTime; default Date.now
   readonly now?: () => number;
   // forks Damocles Core; default: dist/core-host.js as a Node child of this thread
@@ -219,6 +221,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     paths,
     git: deps.git,
     e2eHooks: deps.e2eHooks,
+    ...(deps.actorIntentExpiryMs !== undefined ? { actorIntentExpiryMs: deps.actorIntentExpiryMs } : {}),
     state,
     registry,
     fork: deps.forkCore ?? ((entry, args) => forkChild(entry, args, daemonChildEnv('node'))),

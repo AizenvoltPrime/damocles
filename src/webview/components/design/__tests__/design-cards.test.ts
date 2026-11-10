@@ -277,6 +277,37 @@ describe('the design chat header', () => {
     expect(wrapper.get('[data-decision-id="D2"]').text()).toContain('D2');
   });
 
+  it('dims a replaced decision with its replacement, and marks a stored conflict with its reason (D99)', async () => {
+    const wrapper = header({
+      ...DESIGN,
+      decisions: [
+        ...DESIGN.decisions,
+        { id: 'D18', title: 'Accent colour', chosen: 'graphite', rejected: [], source: { kind: 'chat', ref: 'u2' } },
+        { id: 'D23', title: 'Accent', chosen: 'taupe', rejected: [], source: { kind: 'chat', ref: 'u3' }, replaces: ['D18'] },
+        { id: 'D24', title: 'Surfaces', chosen: 'No white', rejected: [], source: { kind: 'question', ref: 'q' }, conflicts: [{ id: 'D1', kind: 'contradicts', reason: 'white vs no white' }] },
+      ],
+    });
+    const replaced = wrapper.get('[data-decision-id="D18"]');
+    expect(replaced.attributes('data-replaced-by')).toBe('D23');
+    expect(replaced.classes()).toContain('opacity-60');
+    // the dashed border is a leaving chip's, which a rewind removes
+    expect(replaced.classes()).not.toContain('border-dashed');
+    expect(replaced.get('[data-testid="design-decision-replaced"]').text()).toBe('replaced by D23');
+    expect(wrapper.get('[data-decision-id="D23"]').attributes('data-replaced-by')).toBeUndefined();
+    const flagged = wrapper.get('[data-decision-id="D24"]');
+    expect(flagged.find('[data-testid="design-decision-conflict"]').exists()).toBe(true);
+    expect(flagged.attributes('tabindex')).toBe('0');
+    expect(flagged.text()).toContain('Contradicts D1: white vs no white');
+  });
+
+  it('reads an older core\'s supersedes as a replacement', () => {
+    const wrapper = header({
+      ...DESIGN,
+      decisions: [...DESIGN.decisions, { id: 'D2', title: 'Fidelity', chosen: 'Static mockup', rejected: [], source: { kind: 'question', ref: 'q' }, supersedes: 'D1' }],
+    });
+    expect(wrapper.get('[data-decision-id="D1"]').attributes('data-replaced-by')).toBe('D2');
+  });
+
   it('opens the main chat from the parent chip, and offers none when the design has no parent', async () => {
     const wrapper = header(DESIGN);
     await wrapper.get('[data-testid="design-header-parent"]').trigger('click');
@@ -460,6 +491,19 @@ describe('the design tool cards', () => {
     expect(card.text()).toContain('resources/js/components/ui/Button.vue:1');
   });
 
+  it('names the source an ImportAsset copies from, and the file RemoveDesignFile and OpenPreview work on', () => {
+    for (const [name, input, title, arg] of [
+      ['ImportAsset', { url: 'https://images.example.com/wallpaper.avif' }, 'Import asset', 'https://images.example.com/wallpaper.avif'],
+      ['ImportAsset', { file: '/home/u/Pictures/wallpaper.avif' }, 'Import asset', '/home/u/Pictures/wallpaper.avif'],
+      ['RemoveDesignFile', { file: 'screens/S0-probe.html' }, 'Remove design file', 'screens/S0-probe.html'],
+      ['OpenPreview', { file: 'variants/accent/b.html' }, 'Open preview', 'variants/accent/b.html'],
+    ] as const) {
+      const card = track(mount(DesignToolCard, { props: { toolCall: { ...call(name, {}), input } }, global: { plugins: [i18n] } }));
+      expect(card.text(), name).toContain(title);
+      expect(card.text(), name).toContain(arg);
+    }
+  });
+
   it('runs a DesignCheck result through the report', () => {
     const card = track(mount(DesignToolCard, {
       props: { toolCall: call(TOOL_DESIGN_CHECK, { errors: [], warnings: [], attributesChecked: 3, tokensChecked: 2, skillHints: 0, widths: [] }) },
@@ -482,6 +526,21 @@ describe('the design tool cards', () => {
     expect(card.text()).toContain('base · 390 px');
     expect(card.text()).toContain('1000 px');
     expect(posted).toEqual([{ type: 'requestToolResultImages', requestId: expect.any(String), toolUseId: 't1', owner: { kind: 'session' } }]);
+  });
+
+  it('captions a variant by its path, and sizes a selector frame by the element\'s own width', async () => {
+    const card = track(mount(DesignToolCard, {
+      props: { toolCall: { ...call(TOOL_DESIGN_SCREENSHOT, { outline: false, screens: [
+        { screen: 'S1', file: 'screens/S1.html', contentHash: 'h', widths: [{ breakpoint: 'base', width: 390, cssHeight: 900 }] },
+        { screen: 'S1', file: 'variants/accent/a.html', contentHash: 'h', widths: [{ breakpoint: 'base', width: 390, cssWidth: 320, cssHeight: 160, top: 1200 }] },
+      ] }), imageCount: 2 } },
+      global: { plugins: [i18n] },
+    }));
+    await nextTick();
+
+    expect(card.text()).toContain('S1 · base · 390 px');
+    expect(card.text()).toContain('variants/accent/a.html · base · 390 px');
+    expect(card.findComponent({ name: 'ToolResultImages' }).props('sizes')).toEqual([{ width: 390, height: 900 }, { width: 320, height: 160 }]);
   });
 
   it('says the model got a text outline instead of screenshots', () => {
@@ -514,6 +573,35 @@ describe('the design tool cards', () => {
     }));
 
     expect(card.get('[data-testid="design-recorded-decisions"]').text()).toContain('From the chat · replaces D1');
+  });
+
+  it('shows what a recorded decision replaces and what holds alongside it, and that it is unchecked', () => {
+    const card = track(mount(DesignToolCard, {
+      props: { toolCall: call(TOOL_RECORD_DECISION, { [DESIGN_DECISIONS_DETAIL_KEY]: [{ id: 'D23', title: 'Accent', chosen: 'taupe', rejected: [], source: { kind: 'chat', ref: 'u3' }, replaces: ['D18', 'D19'], stillHolds: ['D8'], conflictCheck: 'unchecked', uncheckedReason: 'noModel' }] }) },
+      global: { plugins: [i18n] },
+    }));
+
+    expect(card.get('[data-testid="design-recorded-decisions"]').text()).toContain('From the chat · replaces D18, D19 · holds alongside D8 · not checked for conflicts');
+  });
+
+  it('shows a stored flag core no longer publishes as active as resolved, and one it still publishes as a conflict (G1-L4)', async () => {
+    const flagged = { id: 'D24', title: 'Surfaces', chosen: 'No white', rejected: [], source: { kind: 'question' as const, ref: 'q' }, conflicts: [{ id: 'D1', kind: 'contradicts' as const, reason: 'white vs no white' }] };
+    useDesignStore().setState({ ...DESIGN, decisions: [...DESIGN.decisions, flagged] }, null);
+    const card = track(mount(DesignToolCard, { props: { toolCall: call(TOOL_RECORD_DECISION, { [DESIGN_DECISIONS_DETAIL_KEY]: [flagged] }) }, global: { plugins: [i18n] } }));
+    const chip = () => card.get('[data-decision-id="D24"]');
+    expect(chip().attributes('data-conflicts')).toBe('1');
+    expect(chip().find('[data-testid="design-decision-conflict"]').exists()).toBe(true);
+    expect(chip().text()).toContain('Contradicts D1: white vs no white');
+
+    // a later decision resolved it, so core publishes D24 with no active flag
+    const { conflicts: _resolved, ...unflagged } = flagged;
+    useDesignStore().setState({ ...DESIGN, decisions: [...DESIGN.decisions, unflagged] }, null);
+    await nextTick();
+    expect(chip().attributes('data-conflicts')).toBeUndefined();
+    expect(chip().attributes('data-resolved-conflicts')).toBe('1');
+    expect(chip().find('[data-testid="design-decision-conflict"]').exists()).toBe(false);
+    expect(chip().find('[data-testid="design-decision-conflict-resolved"]').exists()).toBe(true);
+    expect(chip().text()).toContain('Contradicted D1, now resolved: white vs no white');
   });
 
   it('reads the parent link for the StartDesign card status and opens the design chat', async () => {

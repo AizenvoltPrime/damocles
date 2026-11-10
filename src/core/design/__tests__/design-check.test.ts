@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { DESIGN_CHECK_SEVERITY, runDesignCheck, type DesignCheckInput, type DesignCheckRule } from '../design-check';
 import type { DesignInventory } from '../inventory';
 import { issueCount } from '../../../shared/types/design';
+import { record } from './decision-kit';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -41,11 +42,36 @@ function designWith(screen: string, doc = 'design.md'): string {
 }
 
 function input(folder: string, overrides: Partial<DesignCheckInput> = {}): DesignCheckInput {
-  return { folder, inventory: INVENTORY, tokenNames: TOKENS, decisionIds: ['D1', 'D2'], fidelity: 'static', skillHints: [], ...overrides };
+  return { folder, inventory: INVENTORY, tokenNames: TOKENS, decisions: [record('D1', 'Fidelity', 'Static mockup'), record('D2', 'Density', 'Compact')], fidelity: 'static', skillHints: [], screenshots: true, ...overrides };
 }
 
 // the static rules; the width rules run on probes (design-check-widths.test.ts)
-const FAILING_RULES = Object.keys(DESIGN_CHECK_SEVERITY).filter((rule) => !['design.frontmatter', 'screen.size', 'layout.overflow', 'ds.hidden-required', 'journey.required'].includes(rule)) as DesignCheckRule[];
+const FAILING_RULES = Object.keys(DESIGN_CHECK_SEVERITY).filter((rule) => !['design.frontmatter', 'screen.size', 'layout.overflow', 'ds.hidden-required', 'journey.required', 'motion.reduced-motion', 'decisions.conflict', 'decisions.unchecked', 'ds.decision-replaced'].includes(rule)) as DesignCheckRule[];
+
+describe('DesignCheck, the decisions (D99)', () => {
+  const answered = record('D3', 'Surfaces', 'No white', { conflicts: [{ id: 'D2', kind: 'contradicts', reason: 'white cards vs no white' }] });
+
+  it('errors on a current question decision whose stored flag names another current decision, until a refinement replaces it (acceptance)', async () => {
+    const folder = designWith('pass.html');
+    const flagged = await runDesignCheck(input(folder, { decisions: [record('D1', 'Fidelity', 'Static mockup'), record('D2', 'Cards', 'White'), answered] }));
+    expect(flagged.summary.errors).toEqual([expect.objectContaining({ rule: 'decisions.conflict', severity: 'error', screen: 'decisions.md', element: 'D3' })]);
+    expect(flagged.summary.errors[0]!.message).toContain('RecordDecision, source {kind: "question", ref: "D3"}, replaces: ["D3", "D2"]');
+    const refined = record('D4', 'Surfaces', 'Warm glass', { kind: 'question', source: { kind: 'question', ref: 'D3' }, replaces: ['D3', 'D2'] });
+    const resolved = await runDesignCheck(input(folder, { decisions: [record('D1', 'Fidelity', 'Static mockup'), record('D2', 'Cards', 'White'), answered, refined] }));
+    expect(resolved.summary.errors.map((issue) => issue.rule)).not.toContain('decisions.conflict');
+  });
+
+  it('warns on a decision recorded unchecked and on a screen that cites a replaced decision (acceptance)', async () => {
+    const decisions = [record('D1', 'Fidelity', 'Static mockup'), record('D2', 'Density', 'Compact', { conflictCheck: 'unchecked', uncheckedReason: 'noModel' }), record('D3', 'Fidelity', 'Static mockup', { replaces: ['D1'] })];
+    const { summary } = await runDesignCheck(input(designWith('pass.html'), { decisions }));
+    expect(summary.errors).toEqual([]);
+    expect(summary.warnings.map((issue) => [issue.rule, issue.screen, issue.element])).toEqual([
+      ['decisions.unchecked', 'decisions.md', 'D2'],
+      ['ds.decision-replaced', 'S1', expect.stringContaining('<button')],
+    ]);
+    expect(summary.warnings[1]!.message).toBe('D1 was replaced by D3; cite the current decision.');
+  });
+});
 
 describe('DesignCheck, static', () => {
   it('passes a screen that uses only inventory components, tokens, decisions and local assets', async () => {
@@ -96,8 +122,53 @@ describe('DesignCheck, static', () => {
     expect(summary.errors.map((issue) => `${issue.rule} ${issue.screen}`)).toEqual(['screen.size S2-big']);
   });
 
-  it('fixes every rule\'s severity in its definition; only ds.hidden-required warns', () => {
-    expect(Object.entries(DESIGN_CHECK_SEVERITY).filter(([, severity]) => severity === 'warning').map(([rule]) => rule)).toEqual(['ds.hidden-required']);
+  it('warns when a script or keyframes move things and nothing checks prefers-reduced-motion, linked files included (acceptance)', async () => {
+    const page = (head: string, body = ''): string => `<!doctype html><html lang="en" data-ds-screen="S1" data-ds-states="default"><head><title>Contacts</title><link rel="stylesheet" href="../tokens.css">${head}</head><body><main>${body}</main></body></html>`;
+    const warnings = async (html: string, files: Record<string, string> = {}): Promise<string[]> => {
+      const folder = designWith('pass.html');
+      fs.writeFileSync(path.join(folder, 'screens', 'S1-contacts.html'), html);
+      for (const [name, text] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true });
+        fs.writeFileSync(path.join(folder, name), text);
+      }
+      const { summary } = await runDesignCheck(input(folder, { fidelity: 'interactive' }));
+      return summary.warnings.filter((issue) => issue.rule === 'motion.reduced-motion').map((issue) => `${issue.severity} ${issue.element}`);
+    };
+    const countUp = '<script>let n = 0; const tick = () => { n += 1; if (n < 100) requestAnimationFrame(tick); }; requestAnimationFrame(tick);</script>';
+    expect(await warnings(page('', countUp))).toEqual(['warning <script>']);
+    expect(await warnings(page('', `<script>if (!matchMedia('(prefers-reduced-motion: reduce)').matches) { setInterval(() => undefined, 100); }</script>`))).toEqual([]);
+    expect(await warnings(page('<style>@keyframes fade { from { opacity: 0 } }</style>'))).toEqual(['warning <style>']);
+    expect(await warnings(page('<style>@keyframes fade { from { opacity: 0 } } @media (prefers-reduced-motion: reduce) { * { animation: none } }</style>'))).toEqual([]);
+    expect(await warnings(page('<script src="count.js"></script>'), { 'screens/count.js': 'el.animate([{ opacity: 0 }, { opacity: 1 }], 300);' })).toEqual(['warning <script src="count.js">']);
+    // a stylesheet's reduced-motion rule cannot stop a script's motion, so each animating script is judged by its own text
+    expect(await warnings(page('<script src="count.js"></script><link rel="stylesheet" href="../motion.css">'), { 'screens/count.js': 'setInterval(step, 16);', 'motion.css': '@media (prefers-reduced-motion: reduce) { .count { transition: none } }' })).toEqual(['warning <script src="count.js">']);
+    expect(await warnings(page('<style>@media (prefers-reduced-motion: reduce) { * { animation: none } }</style>', countUp))).toEqual(['warning <script>']);
+    expect(await warnings(page('<script src="count.js"></script>'), { 'screens/count.js': "if (matchMedia('(prefers-reduced-motion: reduce)').matches) done(); else setInterval(step, 16);" })).toEqual([]);
+  });
+
+  it('words the reduced-motion advice for the rule set: DesignScreenshot only where it exists', async () => {
+    const folder = designWith('pass.html');
+    fs.writeFileSync(path.join(folder, 'screens', 'S1-contacts.html'), '<!doctype html><html lang="en" data-ds-screen="S1" data-ds-states="default"><head><title>Contacts</title></head><body><main><script>setInterval(() => undefined, 16);</script></main></body></html>');
+    const advice = async (screenshots: boolean): Promise<string> => (await runDesignCheck(input(folder, { fidelity: 'interactive', screenshots }))).summary.warnings.find((issue) => issue.rule === 'motion.reduced-motion')!.message;
+    expect(await advice(true)).toContain('check that with DesignScreenshot media { reducedMotion: "reduce" }');
+    const reduced = await advice(false);
+    expect(reduced).not.toContain('DesignScreenshot');
+    expect(reduced).toContain('opening the screen in a browser with reduced motion turned on');
+  });
+
+  it('has a label for every rule in each webview locale, so no card shows a raw rule id', () => {
+    for (const locale of ['en', 'el']) {
+      const messages = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'webview', 'i18n', 'locales', `${locale}.json`), 'utf8')) as { design: { check: { rule: Record<string, Record<string, unknown>> } } };
+      const missing = Object.keys(DESIGN_CHECK_SEVERITY).filter((rule) => {
+        const [group, name] = [rule.slice(0, rule.indexOf('.')), rule.slice(rule.indexOf('.') + 1)];
+        return typeof messages.design.check.rule[group]?.[name] !== 'string';
+      });
+      expect(missing, locale).toEqual([]);
+    }
+  });
+
+  it('fixes every rule\'s severity in its definition; only ds.hidden-required, motion.reduced-motion, decisions.unchecked and ds.decision-replaced warn', () => {
+    expect(Object.entries(DESIGN_CHECK_SEVERITY).filter(([, severity]) => severity === 'warning').map(([rule]) => rule)).toEqual(['ds.hidden-required', 'motion.reduced-motion', 'decisions.unchecked', 'ds.decision-replaced']);
   });
 
   it('refuses a javascript: link at every fidelity, naming a button', async () => {
@@ -251,5 +322,101 @@ describe('DesignCheck, linear time', () => {
     const started = performance.now();
     await runDesignCheck(input(folder));
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('DesignCheck, shared styles and scripts (D64)', () => {
+  const SHELL_CSS = [
+    '@import "../tokens.css";',
+    '.shell { display: grid; gap: calc(var(--spacing) * 4); padding: calc(var(--spacing) * 6); background: var(--color-surface); }',
+    '.shell nav a { color: var(--color-muted-foreground); border-bottom: 1px solid var(--color-border); border-radius: var(--radius-sm); }',
+    '.brand { background: url(../assets/logo.png) no-repeat; }',
+  ].join('\n');
+  const SHELL_JS = 'document.querySelector("[data-menu]")?.addEventListener("click", () => document.body.classList.toggle("menu-open"));';
+  const NAV = '<nav aria-label="Main"><a href="S1-contacts.html">Contacts</a> <a href="S2-companies.html">Companies</a></nav><button type="button" data-menu>Menu</button>';
+  const page = (id: string, head: string, body: string): string =>
+    `<!doctype html><html lang="en" data-ds-screen="${id}" data-ds-states="default"><head><title>${id}</title><link rel="stylesheet" href="../tokens.css">${head}</head><body><div class="shell">${NAV}<main><h1>${id}</h1>${body}</main></div></body></html>`;
+  const SCREENS = ['S1-contacts', 'S2-companies', 'S3-deals', 'S4-tasks', 'S5-notes', 'S6-reports', 'S7-settings'];
+
+  function sevenScreens(shared: boolean, files: Record<string, string> = {}): string {
+    const folder = designWith('pass.html');
+    fs.rmSync(path.join(folder, 'screens', 'S1-contacts.html'));
+    const head = shared ? '<link rel="stylesheet" href="../shared/base.css"><script src="../shared/app.js" defer></script>' : `<style>${SHELL_CSS.replace('@import "../tokens.css";', '')}</style><script>${SHELL_JS}</script>`;
+    SCREENS.forEach((name, index) => fs.writeFileSync(path.join(folder, 'screens', `${name}.html`), page(`S${index + 1}`, head, '<p>Body.</p>')));
+    if (shared) files = { 'shared/base.css': SHELL_CSS, 'shared/app.js': SHELL_JS, ...files };
+    for (const [name, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true });
+      fs.writeFileSync(path.join(folder, name), text);
+    }
+    return folder;
+  }
+
+  it('passes 7 screens that link ../shared/base.css and ../shared/app.js, as it passes the same shell copied into each (acceptance)', async () => {
+    const interactive = { fidelity: 'interactive' as const };
+    const shared = await runDesignCheck(input(sevenScreens(true), interactive));
+    const copied = await runDesignCheck(input(sevenScreens(false), interactive));
+    expect(shared.summary.errors).toEqual([]);
+    expect(shared.summary.warnings).toEqual([]);
+    expect(copied.summary.errors).toEqual([]);
+    expect(shared.screens.map((screen) => screen.id)).toEqual(['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7']);
+  });
+
+  it('reports a literal colour in shared/base.css as tokens.color, naming the file and its line (acceptance)', async () => {
+    const folder = sevenScreens(true, { 'shared/base.css': `${SHELL_CSS}\n.alert { color: #c00; }` });
+    const { summary } = await runDesignCheck(input(folder, { fidelity: 'interactive' }));
+    expect(summary.errors).toEqual([expect.objectContaining({ rule: 'tokens.color', severity: 'error', screen: 'shared/base.css', element: 'line 5 color: #c00' })]);
+  });
+
+  it('applies the token, network and asset rules of a <style> to a shared stylesheet, resolving its refs against shared/', async () => {
+    const css = [
+      '@import url(https://fonts.example/inter.css);',
+      ':root { --color-surface: #fff; }',
+      '.a { margin: 12px; border-radius: 4px; color: var(--color-unknown); }',
+      '.b { background: url(../logo.png); }',
+      '.c { background: url(../assets/ok.png); }',
+    ].join('\n');
+    const folder = sevenScreens(true, { 'shared/base.css': css });
+    const { summary } = await runDesignCheck(input(folder, { fidelity: 'interactive' }));
+    expect(summary.errors.map((issue) => [issue.rule, issue.screen])).toEqual([
+      ['tokens.redefined', 'shared/base.css'], ['tokens.spacing', 'shared/base.css'], ['tokens.radius', 'shared/base.css'], ['tokens.unknown-var', 'shared/base.css'],
+      ['assets.local-only', 'shared/base.css'], ['net.no-external', 'shared/base.css'],
+    ]);
+  });
+
+  it('refuses a static design that links shared/*.js, and the script file itself (acceptance)', async () => {
+    const { summary } = await runDesignCheck(input(sevenScreens(true), { fidelity: 'static' }));
+    const rules = summary.errors.map((issue) => `${issue.rule} ${issue.screen}`);
+    expect(rules).toEqual(expect.arrayContaining(['fidelity.static-no-scripts S1', 'fidelity.static-no-scripts S7', 'fidelity.static-no-scripts shared/app.js']));
+    expect(new Set(summary.errors.map((issue) => issue.rule))).toEqual(new Set(['fidelity.static-no-scripts']));
+  });
+
+  it('warns once on a shared script that animates with no prefers-reduced-motion, on the script, never on the screens that link it', async () => {
+    const folder = sevenScreens(true, { 'shared/app.js': 'const tick = () => requestAnimationFrame(tick); tick();' });
+    const { summary } = await runDesignCheck(input(folder, { fidelity: 'interactive' }));
+    const motion = summary.warnings.filter((issue) => issue.rule === 'motion.reduced-motion').map((issue) => issue.screen);
+    expect(motion).toEqual(['shared/app.js']);
+  });
+
+  it('resolves a page\'s refs against its own folder: shared/ and assets/ below the design, never beside the page or above the design', async () => {
+    for (const [head, rules] of [
+      ['<link rel="stylesheet" href="../shared/base.css">', []],
+      ['<link rel="stylesheet" href="shared/base.css">', ['assets.local-only']],
+      ['<script src="../../shared/app.js"></script>', ['assets.local-only']],
+      ['<link rel="stylesheet" href="/shared/base.css">', ['assets.local-only']],
+      ['<link rel="stylesheet" href="../manifest.json">', ['assets.local-only']],
+      ['<link rel="stylesheet" href="../shared/base.css?v=2#x">', []],
+      // a backslash is a slash to the design scheme, as to Chromium's URL parser
+      ['<link rel="stylesheet" href="..\\shared\\base.css">', []],
+      ['<svg><use href="../assets/icons.svg#add"></use><use href="#local"></use><image href="../assets/a.png"></image></svg>', []],
+      ['<svg><use xlink:href="https://cdn.example/icons.svg#add"></use></svg>', ['net.no-external']],
+      ['<svg><filter><feImage href="../../outside.png"></feImage></filter></svg>', ['assets.local-only']],
+      ['<div style="background-image: image-set(&quot;../assets/a.png&quot; 1x, url(../assets/b.png) 2x)"></div>', []],
+      ['<div style="background-image: image-set(&quot;https://cdn.example/a.png&quot; 1x)"></div>', ['net.no-external']],
+    ] as const) {
+      const folder = screenWith('<p>x</p>', head);
+      fs.mkdirSync(path.join(folder, 'shared'));
+      fs.writeFileSync(path.join(folder, 'shared', 'base.css'), '.a { color: var(--color-surface); }');
+      expect(await rulesOf(folder, { fidelity: 'interactive' }), head).toEqual(rules);
+    }
   });
 });

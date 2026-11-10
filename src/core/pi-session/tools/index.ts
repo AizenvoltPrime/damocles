@@ -23,22 +23,25 @@ import { createBashTool, type ShellOptions } from './bash-tool';
 import { createFindTool, createGrepTool } from './search-tools';
 import { createWriteTool } from './write-tool';
 import { createLsTool } from './ls-tool';
+import { createReadTool } from './read-tool';
 import { resolveRgPath } from '../../chat-panel/ripgrep';
 import { platform } from '../../platform-host';
 import { relayedBrowserTools } from './browser-relay';
+import type { ChatServedFiles } from '../../browser/served-files';
 import { CHAT_BROWSER_SCOPE } from '../../../shared/remote-user';
 import { withPerCallCancel } from './cancellable-shell';
 import type { ShellCancelStore } from './shell-cancel-registry';
 import type { SessionJob } from '../../process-launcher';
 import { createPowerShellTool } from './powershell-tool';
 import { createPlanModeTools } from './plan-mode-tools';
-import { createAskUserQuestionTool, type QuestionDecisions } from './ask-user-question-tool';
-import { createDesignChatTools, type DesignChatToolDeps } from '../../design/tools/design-chat-tools';
+import { createAskUserQuestionTool, type QuestionAsker, type QuestionDecisions } from './ask-user-question-tool';
+import { createDesignChatTools, createDesignCheckTool, type DesignChatToolDeps } from '../../design/tools/design-chat-tools';
 import { createFinishDesignTool } from '../../design/tools/finish-design';
 import { createDesignScreenshotTool } from '../../design/tools/design-screenshot';
 import { createPreviewJourneyTool } from '../../design/tools/preview-journey';
 import { createDeclareTweaksTool } from '../../design/tools/declare-tweaks';
 import { createMapReferenceTool } from '../../design/tools/map-reference';
+import { createDesignFileTools } from '../../design/tools/design-file-tools';
 import { createDesignParityTool, type DesignParityDeps } from '../../design/tools/design-parity';
 import type { DesignRuleSet } from '../../design/rule-set';
 import { createStartDesignTool, type StartDesignDeps } from '../../design/tools/start-design';
@@ -50,7 +53,7 @@ import { createGenerateImageTool, type ImageToolDeps } from './image-tools';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
 import { createBrowserRequestInputTool } from './browser-request-input-tool';
 import { buildWebPiTools } from '../web-access';
-import { buildSubagentTools } from './subagent-tools';
+import { buildSubagentTools, NO_USER_INPUT, type UserInput } from './subagent-tools';
 import { buildTeamMainPiTools, type TeamServiceRef } from './team-tools';
 import type { AgentManager } from '../subagents/agent-manager';
 import { identityFolder } from '../../worktrees/personal-config';
@@ -92,6 +95,8 @@ export interface CustomToolDeps {
   browserChat?: PanelHost;
   /** A daemon's core's relay to the client showing the chat, the session's own `Platform.remote`: its browser calls run there. */
   browserRelay?: RemoteHost;
+  /** The chat's project and design roots, whose file:// addresses its browser serves (local desktop) or relays (a daemon's core). */
+  browserServedFiles?: ChatServedFiles;
   /** The current session id, for the memory tools (mirrors the SDK factory's `getSessionId`). */
   getSessionId: () => string;
   /** The session's deterministic plan path, named in the EnterPlanMode result so a model that enters
@@ -105,6 +110,8 @@ export interface CustomToolDeps {
    * subagent recursion (FR-11).
    */
   subagentManager?: AgentManager;
+  /** What the user queued while the session runs, which ends a GetSubagentResult wait early; passed with `subagentManager`. */
+  userInput?: UserInput;
   /**
    * The panel's team service (US-024d). When present AND `damocles.team.enabled`, the 4 main team tools
    * (create_team/get_team_status/cancel_team/resume_team) are appended. A NESTED subagent's and a TEAM AGENT's
@@ -128,7 +135,7 @@ export interface CustomToolDeps {
   };
   /**
    * The design tools (PD-42), built for the primary session only, while design mode is off too: whether each is active
-   * follows the setting and the chat's role (`fullActiveToolNames`). A nested agent builds none.
+   * follows the setting and the chat's role (`fullActiveToolNames`). A nested agent builds only what `nested.design` grants it.
    */
   design?: {
     chat: DesignChatToolDeps;
@@ -137,8 +144,24 @@ export interface CustomToolDeps {
     questionDecisions: QuestionDecisions;
     /** The design chat's recorded rule set, else the host's; the tool descriptions read it, so it is fixed for the session. */
     ruleSet: DesignRuleSet;
-    /** A design chat's AskUserQuestion takes design-kind previews (PD-18); fixed for the session like the rule set. */
+    /**
+     * A design chat, whose AskUserQuestion takes design-kind previews (PD-18), records decisions and runs its batch in order;
+     * fixed for the session like the rule set.
+     */
     designPreviews: boolean;
+  };
+  /** A subagent's build: who asks its questions, and in a design chat the verification tools it was granted (D99). */
+  nested?: {
+    asker: QuestionAsker;
+    /** Present only in a design chat, so the agent's AskUserQuestion takes design-kind previews as the designer's does. */
+    design?: {
+      chat: DesignChatToolDeps;
+      ruleSet: DesignRuleSet;
+      /** The granted names; only these are built. */
+      tools: readonly string[];
+      /** Records the agent's answers on the design chat's branch. */
+      questionDecisions: QuestionDecisions;
+    };
   };
 }
 
@@ -161,7 +184,7 @@ export interface ModuleToolNameDeps {
  * `CUSTOM_TOOL_NAMES` because `PI_NATIVE_ACTIVE_TOOLS` already carries them, and listing an override
  * in both makes `fullActiveToolNames` name it twice.
  */
-export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find', 'write', 'ls'];
+export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find', 'write', 'ls', 'read'];
 
 /**
  * Names of the Damocles custom tools, in active-set order. Every name MUST also be passed in the
@@ -180,14 +203,16 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
 
 /**
  * Build the per-session Damocles custom tool definitions, each closing over this panel's `cwd` and
- * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, plan, question). The native `read` comes from pi directly. `bash` is pi's own tool, re-registered
+ * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, plan, question). `bash` is pi's own tool, re-registered
  * here under the same name so the panel owns a per-call abort controller for it; `grep` and `find`
  * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd; `write` is
  * re-registered so a write that replaces a file records its patch; `ls` is re-registered with file
- * operations from Damocles' bundle, which treat an `.asar` as a file.
+ * operations from Damocles' bundle, which treat an `.asar` as a file; `read` is re-registered so its
+ * file reads take the file's mutation queue slot.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources, design } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, browserServedFiles, getSessionId, getPlanFilePath, subagentManager, userInput, teamService, imageGeneration, isTeamEnabled, mcpResources, design, nested } = deps;
+  const nestedDesign = nested?.design;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
@@ -202,11 +227,13 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     createFindTool(pi, cwd, rgPath, readRuleFilter),
     createWriteTool(pi, cwd),
     createLsTool(pi, cwd),
+    createReadTool(pi, cwd),
     createEditTool(pi, cwd),
     createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env),
     enterPlan,
     exitPlan,
-    createAskUserQuestionTool(pi, permissionHandler, design?.questionDecisions, design?.designPreviews ?? false),
+    // only a design chat's questions, and its subagents', record decisions
+    createAskUserQuestionTool(pi, permissionHandler, design?.designPreviews ? design.questionDecisions : nestedDesign?.questionDecisions, design?.designPreviews ?? nestedDesign !== undefined, nested?.asker),
   ].map(cancellable);
 
   // Build module tools whenever their service object is present — NOT gated by `.isEnabled`. Built-but-
@@ -223,20 +250,20 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     // human scope with the human; each subagent/team agent passes its own id for tab isolation.
     // Both are idempotent, so a rebuild (per session / per spawn) reuses the scope.
     const scope = browserScopeId !== undefined ? browserService.createAgentScope(browserScopeId, browserChat) : browserService.chatScope(browserChat);
-    const browserTools = buildBrowserPiTools({ pi, scope });
+    const browserTools = buildBrowserPiTools({ pi, scope, ...(browserServedFiles && !browserRelay ? { served: browserServedFiles } : {}) });
     // The interactive form-fill tool (Slice 4) mirrors AskUserQuestion: it drives the permission handler
     // (FormManager) directly through `canUseTool`. It is built HERE (a leaf module) rather than inside
     // `buildBrowserPiTools` to avoid an eval-time import cycle via permission-gate → tool-catalog →
     // browser-tools. `abortableTool` gives it the same turn-abort boundary as the other browser tools.
     browserTools.push(abortableTool(createBrowserRequestInputTool(pi, scope, permissionHandler)));
     // a daemon's core has no browser: the client showing the chat runs each call in the chat's scope there
-    tools.push(...(browserRelay ? relayedBrowserTools(browserTools, browserRelay, browserChat, browserScopeId ?? CHAT_BROWSER_SCOPE).map(abortableTool) : browserTools));
+    tools.push(...(browserRelay ? relayedBrowserTools(browserTools, browserRelay, browserChat, browserScopeId ?? CHAT_BROWSER_SCOPE, browserServedFiles).map(abortableTool) : browserTools));
   }
 
   // Subagent tools only when a manager is wired (the primary session). Nested subagents build their
   // customTools WITHOUT a manager, so they never receive these — no recursion (FR-11).
   if (subagentManager) {
-    tools.push(...buildSubagentTools(pi, subagentManager));
+    tools.push(...buildSubagentTools(pi, subagentManager, userInput ?? NO_USER_INPUT));
   }
 
   // The 4 main team tools only when a team service is wired (the primary session) — subagents and team
@@ -250,7 +277,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   // Web tools are built unconditionally (cheap, inert when not active — same rationale as the module
   // tools). The active-set gate (`isWebSearchEnabled()`) controls availability per turn, and building
   // them up front lets `tools:*` subagents inherit them and the live toggle take effect with no reload.
-  tools.push(...buildWebPiTools({ pi }));
+  tools.push(...buildWebPiTools({ pi, webHostFilter: () => permissionHandler.webHostFilter() }));
 
   // Built while inert, like the web tools, so enabling it mid-conversation activates it live.
   if (imageGeneration) {
@@ -273,11 +300,23 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
       createFinishDesignTool(pi, design.chat),
       createDeclareTweaksTool(pi, design.chat),
       createMapReferenceTool(pi, design.chat),
+      ...createDesignFileTools(pi, design.chat, design.ruleSet),
       // their renders run in the client, so the turn's Stop must not wait on them
       abortableTool(createDesignScreenshotTool(pi, design.chat)),
       abortableTool(createPreviewJourneyTool(pi, design.chat)),
       abortableTool(createDesignParityTool(pi, design.parity)),
     );
+  }
+
+  if (nestedDesign) {
+    const granted = new Set(nestedDesign.tools);
+    const verification = [
+      createDesignCheckTool(pi, nestedDesign.chat, nestedDesign.ruleSet),
+      createDesignScreenshotTool(pi, nestedDesign.chat),
+      createPreviewJourneyTool(pi, nestedDesign.chat),
+    ];
+    // their renders run in the client, so the agent's Stop must not wait on them
+    tools.push(...verification.filter((tool) => granted.has(tool.name)).map(abortableTool));
   }
 
   return tools;

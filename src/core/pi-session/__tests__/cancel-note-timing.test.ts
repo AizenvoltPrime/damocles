@@ -111,7 +111,7 @@ describe('a cancel note against pi', () => {
     expect(seenAtCall).toContain('userMessage');
     expect(emitted).toContainEqual(expect.objectContaining({ type: 'processing', isProcessing: true }));
     // Listed before pi delivered it, so the run's opening user message is reported as the note it is.
-    expect(panel.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(panel.onQueuedInputsDelivered(NOTE)).not.toBeNull();
   });
 
   it('commits after the prompt it annotates, which the prompt call still names as its own entry', async () => {

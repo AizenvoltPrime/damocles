@@ -64,6 +64,8 @@
   "Your cancel note was not sent: the budget limit stopped this turn.": "Your cancel note was not sent: the budget limit stopped this turn.",
   "Your cancel note was not sent: the turn was stopped.": "Your cancel note was not sent: the turn was stopped.",
   "Your cancel note was not sent: this chat cannot run its model now.": "Your cancel note was not sent: this chat cannot run its model now.",
+  "Your cancel note was not sent: this chat cannot start a run now.": "Your cancel note was not sent: this chat cannot start a run now.",
+  "A finish action is running on this chat's worktree, so the chat cannot run until it ends.": "A finish action is running on this chat's worktree, so the chat cannot run until it ends.",
   "Stopping the turn discarded your cancel note before the agent read it.": "Stopping the turn discarded your cancel note before the agent read it.",
   "Could not deliver the results of finished background subagents; they will be retried with your next message.": "Could not deliver the results of finished background subagents; they will be retried with your next message.",
   "Could not record which agents were interrupted; the model will not be told it can resume them.": "Could not record which agents were interrupted; the model will not be told it can resume them.",
@@ -1620,7 +1622,6 @@
   "{0} widths need {1} images, over the {2} one result keeps. Name at most {3} widths.": "{0} widths need {1} images, over the {2} one result keeps. Name at most {3} widths.",
   "The chat's model keeps too few images from one result to show the design beside the app.": "The chat's model keeps too few images from one result to show the design beside the app.",
   "The design changed since v{0}; compare after its next version.": "The design changed since v{0}; compare after its next version.",
-  "v{0} of the design predates the render hashes DesignParity compares. Finish the design again in its design chat, then compare.": "v{0} of the design predates the render hashes DesignParity compares. Finish the design again in its design chat, then compare.",
   "DesignParity captures the app with the Damocles browser, which is off. Turn on the browser in Settings, then call DesignParity again.": "DesignParity captures the app with the Damocles browser, which is off. Turn on the browser in Settings, then call DesignParity again.",
   "DesignParity needs the Damocles browser, which this chat does not have.": "DesignParity needs the Damocles browser, which this chat does not have.",
   "The background model cannot read images. Choose one that can in Settings, Background.": "The background model cannot read images. Choose one that can in Settings, Background.",
@@ -1640,7 +1641,7 @@
   "This chat is moving to another folder. Send again when the move ends.": "This chat is moving to another folder. Send again when the move ends.",
   "Damocles could not record the kept tweak \"{0}\": {1}": "Damocles could not record the kept tweak \"{0}\": {1}",
   "A design chat keeps its conversation. Use Rewind in this chat to go back, or StartDesign in the main chat for a fresh design.": "A design chat keeps its conversation. Use Rewind in this chat to go back, or StartDesign in the main chat for a fresh design.",
-  "Damocles could not update decisions.md: {0}. Your answers were kept, and the file is rebuilt when the turn ends.": "Damocles could not update decisions.md: {0}. Your answers were kept, and the file is rebuilt when the turn ends.",
+  "Damocles could not update decisions.md: {0}. The decisions were recorded, and the file is rebuilt when the turn ends.": "Damocles could not update decisions.md: {0}. The decisions were recorded, and the file is rebuilt when the turn ends.",
   "Open this chat in the Damocles app to run the width checks.": "Open this chat in the Damocles app to run the width checks.",
   "The width checks did not run. They run once this chat is open in the Damocles app.": "The width checks did not run. They run once this chat is open in the Damocles app.",
   "Your notes are on your computer, whose Damocles is too old to list them for a chat on a remote host. Update Damocles there.": "Your notes are on your computer, whose Damocles is too old to list them for a chat on a remote host. Update Damocles there.",
@@ -1654,5 +1655,6 @@
   "Damocles could not open the preview in the browser.": "Damocles could not open the preview in the browser.",
   "This chat shows no design previews.": "This chat shows no design previews.",
   "Opening a design preview needs this computer's Damocles engine, which is not running. Restart the engine, then try again.": "Opening a design preview needs this computer's Damocles engine, which is not running. Restart the engine, then try again.",
-  "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again.": "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again."
+  "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again.": "Opening a design preview needs {0}'s Damocles engine, which is not running. Restart the engine, then try again.",
+  "ImportAsset downloads a URL only while Web search is on, since this chat could not fetch it otherwise. Turn on Web search in Settings, or import the file from a path.": "ImportAsset downloads a URL only while Web search is on, since this chat could not fetch it otherwise. Turn on Web search in Settings, or import the file from a path."
 }

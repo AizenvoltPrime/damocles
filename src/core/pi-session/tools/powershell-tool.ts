@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
 import type { PowerShellOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
@@ -9,6 +10,7 @@ import { resolveTimeoutMs, SHELL_EXIT_OUTPUT_GRACE_MS, waitForShellExit, withCom
 import { withUrlWatch } from './shell-url-watch';
 import { processLauncher, type SessionJob } from '../../process-launcher';
 import { findPwsh, windowsPowerShell } from '../../system-tools';
+import type { PowerShellSearch } from '../proven-shell';
 
 /** Without it PowerShell writes the console codepage and any non-ASCII output decodes as mojibake. */
 const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
@@ -20,6 +22,22 @@ const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encodin
 async function powerShellExecutables(env: NodeJS.ProcessEnv): Promise<string[]> {
   const pwsh = await findPwsh(env);
   return [...(pwsh !== undefined ? [pwsh] : []), ...(process.platform === 'win32' ? [windowsPowerShell()] : [])];
+}
+
+/**
+ * Where the PowerShell this tool starts looks a program up: the PATH and PATHEXT pi's `getShellEnv`
+ * (`dist/utils/shell.js`) gives the tool, its bin folder ahead of `process.env`'s PATH, under `extraEnv`, and pwsh's own folder,
+ * which pwsh puts ahead of PATH. Kept in step with pi's `getShellEnv`.
+ */
+export async function powerShellSearch(pi: Pick<PiCodingAgentModule, 'getAgentDir'>, extraEnv: Readonly<Record<string, string | undefined>> | undefined): Promise<PowerShellSearch> {
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+  const current = process.env[pathKey] ?? '';
+  const binDir = join(pi.getAgentDir(), 'bin');
+  const piPath = current.split(delimiter).filter(Boolean).includes(binDir) ? current : [binDir, current].filter(Boolean).join(delimiter);
+  const env: NodeJS.ProcessEnv = { ...process.env, [pathKey]: piPath, ...extraEnv };
+  const variable = (name: string): string | undefined => env[Object.keys(env).find((key) => key.toLowerCase() === name) ?? name];
+  const pwsh = await findPwsh(env);
+  return { path: variable('path') ?? '', pathext: variable('pathext'), pwshHome: pwsh === undefined ? undefined : dirname(pwsh) };
 }
 
 /**

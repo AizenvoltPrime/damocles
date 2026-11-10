@@ -148,8 +148,10 @@
   "design.changed",
   "chat.designOpenPreview",
   "design.capture",
+  "design.render",
   "design.probe",
   "design.journey",
+  "design.journeyScroll",
   "design.replayJourney",
   "design.markup",
   "design.tweak",
@@ -174,7 +176,12 @@
   "user.memory.listNotesOnly",
   "user.memory.offReason",
   "chats.reveal",
-  "chats.showSession"
+  "chats.showSession",
+  "user.browser.servedFiles",
+  "browser.servedFileUrl",
+  "chat.steeredDesignPrompts",
+  "chat.designDecisionChecks",
+  "browser.servedFileUnavailable"
  ],
  "contracts": {
   "CoreRequests": {
@@ -309,6 +316,88 @@
            "type": "boolean"
           }
          }
+        }
+       }
+      }
+     }
+    },
+    "browser.servedFileUrl": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "variants": "kind",
+         "of": {
+          "\"design\"": {
+           "object": {
+            "designId": {
+             "optional": false,
+             "type": "string"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"design\""
+            },
+            "relPath": {
+             "optional": false,
+             "type": "string"
+            },
+            "viewId": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          "\"project\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"project\""
+            },
+            "relPath": {
+             "optional": false,
+             "type": "string"
+            },
+            "viewId": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "origin": {
+             "optional": false,
+             "type": "string"
+            },
+            "url": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "refused": {
+             "optional": false,
+             "type": "string"
+            },
+            "unavailable": {
+             "optional": true,
+             "type": "boolean"
+            }
+           }
+          }
+         ]
         }
        }
       }
@@ -494,6 +583,7 @@
                  "\"click\"",
                  "\"fill\"",
                  "\"press\"",
+                 "\"scroll\"",
                  "\"select\""
                 ]
                }
@@ -545,11 +635,15 @@
                }
               },
               "target": {
-               "optional": false,
+               "optional": true,
                "type": {
                 "union": [
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "label": {
                     "optional": false,
                     "type": "string"
@@ -558,6 +652,10 @@
                  },
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "name": {
                     "optional": false,
                     "type": "string"
@@ -570,6 +668,10 @@
                  },
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "placeholder": {
                     "optional": false,
                     "type": "string"
@@ -578,6 +680,10 @@
                  },
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "text": {
                     "optional": false,
                     "type": "string"
@@ -586,6 +692,10 @@
                  }
                 ]
                }
+              },
+              "to": {
+               "optional": true,
+               "type": "\"end\""
               },
               "value": {
                "optional": true,
@@ -918,7 +1028,7 @@
       }
      }
     },
-    "design.replayJourney": {
+    "design.render": {
      "optional": false,
      "type": {
       "object": {
@@ -930,13 +1040,95 @@
            "optional": false,
            "type": "string"
           },
-          "panelId": {
+          "format": {
            "optional": false,
-           "type": "string"
+           "type": {
+            "union": [
+             "\"jpeg\"",
+             "\"png\""
+            ]
+           }
           },
-          "reducedMotion": {
+          "maxBytes": {
+           "optional": true,
+           "type": "number"
+          },
+          "maxSide": {
            "optional": false,
-           "type": "boolean"
+           "type": "number"
+          },
+          "media": {
+           "optional": false,
+           "type": {
+            "object": {
+             "colorScheme": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"dark\"",
+                "\"light\""
+               ]
+              }
+             },
+             "contrast": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"less\"",
+                "\"more\"",
+                "\"no-preference\""
+               ]
+              }
+             },
+             "forcedColors": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"active\"",
+                "\"none\""
+               ]
+              }
+             },
+             "reducedMotion": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"no-preference\"",
+                "\"reduce\""
+               ]
+              }
+             },
+             "reducedTransparency": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"no-preference\"",
+                "\"reduce\""
+               ]
+              }
+             }
+            }
+           }
+          },
+          "quality": {
+           "optional": false,
+           "type": "number"
+          },
+          "region": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"fullPage\"",
+             {
+              "object": {
+               "selector": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            ]
+           }
           },
           "relPath": {
            "optional": false,
@@ -952,7 +1144,7 @@
            }
           },
           "steps": {
-           "optional": false,
+           "optional": true,
            "type": {
             "array": {
              "object": {
@@ -964,6 +1156,7 @@
                  "\"click\"",
                  "\"fill\"",
                  "\"press\"",
+                 "\"scroll\"",
                  "\"select\""
                 ]
                }
@@ -1015,11 +1208,15 @@
                }
               },
               "target": {
-               "optional": false,
+               "optional": true,
                "type": {
                 "union": [
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "label": {
                     "optional": false,
                     "type": "string"
@@ -1028,6 +1225,10 @@
                  },
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "name": {
                     "optional": false,
                     "type": "string"
@@ -1040,6 +1241,10 @@
                  },
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "placeholder": {
                     "optional": false,
                     "type": "string"
@@ -1048,6 +1253,10 @@
                  },
                  {
                   "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "text": {
                     "optional": false,
                     "type": "string"
@@ -1056,6 +1265,247 @@
                  }
                 ]
                }
+              },
+              "to": {
+               "optional": true,
+               "type": "\"end\""
+              },
+              "value": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
+          },
+          "width": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "boxBottom": {
+           "optional": true,
+           "type": "number"
+          },
+          "contentHeight": {
+           "optional": false,
+           "type": "number"
+          },
+          "frames": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "cssHeight": {
+               "optional": false,
+               "type": "number"
+              },
+              "cssWidth": {
+               "optional": false,
+               "type": "number"
+              },
+              "image": {
+               "optional": false,
+               "type": {
+                "named": "Uint8Array<ArrayBufferLike>"
+               }
+              },
+              "mimeType": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"image/jpeg\"",
+                 "\"image/png\""
+                ]
+               }
+              },
+              "top": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          },
+          "moving": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "scale": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "design.replayJourney": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "panelId": {
+           "optional": false,
+           "type": "string"
+          },
+          "reducedMotion": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "state": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "steps": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "action": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"assert\"",
+                 "\"click\"",
+                 "\"fill\"",
+                 "\"press\"",
+                 "\"scroll\"",
+                 "\"select\""
+                ]
+               }
+              },
+              "expect": {
+               "optional": true,
+               "type": {
+                "union": [
+                 {
+                  "object": {
+                   "textContains": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "valueEquals": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "visible": {
+                    "optional": false,
+                    "type": "boolean"
+                   }
+                  }
+                 }
+                ]
+               }
+              },
+              "key": {
+               "optional": true,
+               "type": {
+                "union": [
+                 "\"ArrowDown\"",
+                 "\"ArrowLeft\"",
+                 "\"ArrowRight\"",
+                 "\"ArrowUp\"",
+                 "\"Enter\"",
+                 "\"Escape\"",
+                 "\"Space\"",
+                 "\"Tab\""
+                ]
+               }
+              },
+              "target": {
+               "optional": true,
+               "type": {
+                "union": [
+                 {
+                  "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
+                   "label": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
+                   "name": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "role": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
+                   "placeholder": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 },
+                 {
+                  "object": {
+                   "exact": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
+                   "text": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                ]
+               }
+              },
+              "to": {
+               "optional": true,
+               "type": "\"end\""
               },
               "value": {
                "optional": true,
@@ -2331,6 +2781,50 @@
           "scope": {
            "optional": false,
            "type": "string"
+          },
+          "served": {
+           "optional": true,
+           "type": {
+            "variants": "kind",
+            "of": {
+             "\"design\"": {
+              "object": {
+               "designId": {
+                "optional": false,
+                "type": "string"
+               },
+               "displayRoot": {
+                "optional": false,
+                "type": "string"
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"design\""
+               },
+               "relPath": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             },
+             "\"project\"": {
+              "object": {
+               "displayRoot": {
+                "optional": false,
+                "type": "string"
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"project\""
+               },
+               "relPath": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
           },
           "tool": {
            "optional": false,
@@ -21890,6 +22384,12 @@
                 "optional": false,
                 "type": "\"decisionAdded\""
                },
+               "replaces": {
+                "optional": true,
+                "type": {
+                 "array": "string"
+                }
+               },
                "title": {
                 "optional": false,
                 "type": "string"
@@ -21996,6 +22496,12 @@
               "optional": false,
               "type": "string"
              },
+             "replaces": {
+              "optional": true,
+              "type": {
+               "array": "string"
+              }
+             },
              "title": {
               "optional": false,
               "type": "string"
@@ -22084,6 +22590,12 @@
           "optional": false,
           "type": "string"
          },
+         "uncheckedDecisions": {
+          "optional": true,
+          "type": {
+           "array": "string"
+          }
+         },
          "version": {
           "optional": false,
           "type": "number"
@@ -22126,12 +22638,53 @@
                 "optional": false,
                 "type": "string"
                },
+               "conflictCheck": {
+                "optional": true,
+                "type": {
+                 "union": [
+                  "\"checked\"",
+                  "\"unchecked\""
+                 ]
+                }
+               },
+               "conflicts": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "object": {
+                   "id": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "kind": {
+                    "optional": false,
+                    "type": {
+                     "union": [
+                      "\"contradicts\"",
+                      "\"restates\""
+                     ]
+                    }
+                   },
+                   "reason": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                }
+               },
                "id": {
                 "optional": false,
                 "type": "string"
                },
                "rejected": {
                 "optional": false,
+                "type": {
+                 "array": "string"
+                }
+               },
+               "replaces": {
+                "optional": true,
                 "type": {
                  "array": "string"
                 }
@@ -22160,6 +22713,12 @@
                  }
                 }
                },
+               "stillHolds": {
+                "optional": true,
+                "type": {
+                 "array": "string"
+                }
+               },
                "supersedes": {
                 "optional": true,
                 "type": "string"
@@ -22167,6 +22726,18 @@
                "title": {
                 "optional": false,
                 "type": "string"
+               },
+               "uncheckedReason": {
+                "optional": true,
+                "type": {
+                 "union": [
+                  "\"noModel\"",
+                  "\"rejected\"",
+                  "\"stopped\"",
+                  "\"unanswered\"",
+                  "\"unreachable\""
+                 ]
+                }
                }
               }
              }
@@ -29182,6 +29753,103 @@
         }
        }
       },
+      "designMarkup": {
+       "optional": true,
+       "type": {
+        "object": {
+         "feedbackId": {
+          "optional": false,
+          "type": "string"
+         },
+         "markup": {
+          "optional": true,
+          "type": {
+           "object": {
+            "breakpoint": {
+             "optional": false,
+             "type": "string"
+            },
+            "file": {
+             "optional": false,
+             "type": "string"
+            },
+            "marks": {
+             "optional": false,
+             "type": {
+              "array": {
+               "union": [
+                {
+                 "object": {
+                  "element": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "null",
+                     "string"
+                    ]
+                   }
+                  },
+                  "kind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"change\"",
+                     "\"note\""
+                    ]
+                   }
+                  },
+                  "n": {
+                   "optional": false,
+                   "type": "number"
+                  },
+                  "text": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "type": {
+                   "optional": false,
+                   "type": "\"pin\""
+                  }
+                 }
+                },
+                {
+                 "object": {
+                  "elements": {
+                   "optional": false,
+                   "type": {
+                    "array": "string"
+                   }
+                  },
+                  "type": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"arrow\"",
+                     "\"box\"",
+                     "\"pen\""
+                    ]
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "state": {
+             "optional": false,
+             "type": "string"
+            },
+            "width": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
       "messageIds": {
        "optional": false,
        "type": {
@@ -29475,6 +30143,12 @@
              "optional": false,
              "type": "\"decisionAdded\""
             },
+            "replaces": {
+             "optional": true,
+             "type": {
+              "array": "string"
+             }
+            },
             "title": {
              "optional": false,
              "type": "string"
@@ -29515,6 +30189,12 @@
           "id": {
            "optional": false,
            "type": "string"
+          },
+          "replaces": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
           },
           "title": {
            "optional": false,
@@ -29622,6 +30302,33 @@
        "optional": false,
        "type": "\"requestDesignApproval\""
       },
+      "uncheckedDecisions": {
+       "optional": true,
+       "type": {
+        "array": {
+         "object": {
+          "cause": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"noModel\"",
+             "\"rejected\"",
+             "\"stopped\"",
+             "\"unanswered\"",
+             "\"unreachable\""
+            ]
+           }
+          },
+          "ids": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       }
+      },
       "warnings": {
        "optional": false,
        "type": {
@@ -29698,6 +30405,12 @@
             "kind": {
              "optional": false,
              "type": "\"decisionAdded\""
+            },
+            "replaces": {
+             "optional": true,
+             "type": {
+              "array": "string"
+             }
             },
             "title": {
              "optional": false,
@@ -30740,12 +31453,53 @@
                "optional": false,
                "type": "string"
               },
+              "conflictCheck": {
+               "optional": true,
+               "type": {
+                "union": [
+                 "\"checked\"",
+                 "\"unchecked\""
+                ]
+               }
+              },
+              "conflicts": {
+               "optional": true,
+               "type": {
+                "array": {
+                 "object": {
+                  "id": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "kind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"contradicts\"",
+                     "\"restates\""
+                    ]
+                   }
+                  },
+                  "reason": {
+                   "optional": false,
+                   "type": "string"
+                  }
+                 }
+                }
+               }
+              },
               "id": {
                "optional": false,
                "type": "string"
               },
               "rejected": {
                "optional": false,
+               "type": {
+                "array": "string"
+               }
+              },
+              "replaces": {
+               "optional": true,
                "type": {
                 "array": "string"
                }
@@ -30774,6 +31528,12 @@
                 }
                }
               },
+              "stillHolds": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
               "supersedes": {
                "optional": true,
                "type": "string"
@@ -30781,6 +31541,18 @@
               "title": {
                "optional": false,
                "type": "string"
+              },
+              "uncheckedReason": {
+               "optional": true,
+               "type": {
+                "union": [
+                 "\"noModel\"",
+                 "\"rejected\"",
+                 "\"stopped\"",
+                 "\"unanswered\"",
+                 "\"unreachable\""
+                ]
+               }
               }
              }
             }
