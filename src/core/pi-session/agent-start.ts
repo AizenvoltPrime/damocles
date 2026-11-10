@@ -259,6 +259,7 @@ async function buildMemoryContext(
   prompt: string,
   live: LiveInjections,
   promptIndex: number,
+  abortSignal: AbortSignal | undefined,
 ): Promise<InjectionBuildResult | null> {
   const memory = panel.memoryService;
   if (!memory?.isEnabled) return null;
@@ -276,6 +277,7 @@ async function buildMemoryContext(
       prompt: userText,
       live,
       promptIndex,
+      ...(abortSignal ? { abortSignal } : {}),
     });
   } catch (err) {
     log('[PiAgentStart] memory injection failed: %O', err);
@@ -349,6 +351,8 @@ export async function buildAgentStartResult(
   sessionManager: ProjectionReader,
   isLive: () => boolean,
 ): Promise<BeforeAgentStartEventResult | undefined> {
+  // Read before the first await: a Stop during the build ends the send this run belongs to.
+  const stop = panel.startingRunSignal?.();
   const prompt = await buildDamoclesSystemPrompt(event, panel, sessionId, sessionManager);
   const options = event.systemPromptOptions;
   // Returning `systemPrompt` from this handler would set pi's `forceSystemPrompt` and kill every section.
@@ -375,7 +379,7 @@ export async function buildAgentStartResult(
   const promptIndex = cancelNote ? nextPromptIndex(branch) - 1 : nextPromptIndex(branch);
   // A note gets no memory build of its own, as when it is steered into a running run; building one here
   // would overwrite the Injected Context record of the prompt it annotates.
-  const memory = cancelNote ? null : await buildMemoryContext(panel, sessionId, userPrompt, live, promptIndex);
+  const memory = cancelNote ? null : await buildMemoryContext(panel, sessionId, userPrompt, live, promptIndex, stop);
   // A delete during the build detaches every holder first; a write now would recreate the deleted
   // session's injection database.
   if (!isLive()) return result;

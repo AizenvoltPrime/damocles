@@ -162,7 +162,7 @@
       "damocles.memory.rerank.enabled": {
         "type": "boolean",
         "default": true,
-        "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM."
+        "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM. User settings only, since it turns on billed judge calls."
       },
       "damocles.memory.rerank.candidatePool": {
         "type": "integer",
@@ -177,7 +177,7 @@
           "off",
           "blocking"
         ],
-        "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard ~2s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary."
+        "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard 4 s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary. User settings only, since it turns on a billed judge call per prompt."
       },
       "damocles.memory.autoExtract.enabled": {
         "type": "boolean",
@@ -1897,9 +1897,10 @@
         "description": "Token budget per prompt for the memories that pass the relevance gate (excludes mentioned ids, notices, and the pinned, session, preference and profile budgets)"
       },
       "damocles.memory.rerank.enabled": {
-        "type": "boolean",
-        "default": true,
-        "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM."
+        "not": {},
+        "errorMessage": "damocles.memory.rerank.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.memory.rerank.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM. User settings only, since it turns on billed judge calls."
       },
       "damocles.memory.rerank.candidatePool": {
         "type": "integer",
@@ -1908,13 +1909,10 @@
         "description": "How many BM25 candidates to over-fetch before reranking."
       },
       "damocles.memory.rerank.injectMode": {
-        "type": "string",
-        "default": "off",
-        "enum": [
-          "off",
-          "blocking"
-        ],
-        "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard ~2s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary."
+        "not": {},
+        "errorMessage": "damocles.memory.rerank.injectMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.memory.rerank.injectMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it."
       },
       "damocles.memory.autoExtract.enabled": {
         "type": "boolean",

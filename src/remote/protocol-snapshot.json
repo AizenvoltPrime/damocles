@@ -182,7 +182,8 @@
   "chat.steeredDesignPrompts",
   "chat.designDecisionChecks",
   "browser.servedFileUnavailable",
-  "chat.designDecisionReferences"
+  "chat.designDecisionReferences",
+  "settings.memoryInjectRerank"
  ],
  "contracts": {
   "CoreRequests": {
@@ -21101,10 +21102,6 @@
                 "optional": true,
                 "type": "number"
                },
-               "rerankReason": {
-                "optional": true,
-                "type": "string"
-               },
                "rerankRelevance": {
                 "optional": true,
                 "type": {
@@ -27089,10 +27086,6 @@
               "optional": true,
               "type": "number"
              },
-             "rerankReason": {
-              "optional": true,
-              "type": "string"
-             },
              "rerankRelevance": {
               "optional": true,
               "type": {
@@ -33065,6 +33058,10 @@
           }
          },
          "memoryAutoExtract": {
+          "optional": false,
+          "type": "boolean"
+         },
+         "memoryInjectRerank": {
           "optional": false,
           "type": "boolean"
          },
@@ -44354,6 +44351,18 @@
       "type": {
        "optional": false,
        "type": "\"setMemoryAutoExtract\""
+      }
+     }
+    },
+    "\"setMemoryInjectRerank\"": {
+     "object": {
+      "enabled": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setMemoryInjectRerank\""
       }
      }
     },

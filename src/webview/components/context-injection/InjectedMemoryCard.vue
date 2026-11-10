@@ -51,8 +51,8 @@ const tokenCount = computed(() =>
 );
 
 const rerankTooltip = computed(() => {
-  const { rerankRelevance, rerankClassifierScore, rerankReason } = props.memory;
-  if (rerankRelevance === undefined || rerankClassifierScore === undefined) return rerankReason;
+  const { rerankRelevance, rerankClassifierScore } = props.memory;
+  if (rerankRelevance === undefined || rerankClassifierScore === undefined) return undefined;
   return t('contextInjection.rerankClassifier', {
     verdict: t(`contextInjection.rerankVerdict.${rerankRelevance}`),
     score: fmt(rerankClassifierScore),

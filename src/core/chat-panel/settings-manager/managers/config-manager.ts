@@ -24,7 +24,7 @@ import {
 } from "../../../../shared/types/constants";
 import type { TeamRole } from "../../../pi-session/team-model-resolution";
 import { BACKGROUND_EFFORT_SETTING, BACKGROUND_MODEL_SETTING } from "../../../pi-session/subcall-model";
-import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
+import { MEMORY_INJECT_RERANK_SETTING, MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, injectRerankBlocking, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
 import { readExploreSetting } from "../../../pi-session/subagents/cheap-model";
 import type { SettingSource } from "../../../../shared/types/messages";
 import { readContributedConfiguration } from "../../../config/read-contributed-configuration";
@@ -133,6 +133,7 @@ export class ConfigManager {
       assetSourcePrecedence: parseAssetSourcePrecedence(config.get<string>("damocles.assetSourcePrecedence", "claude")),
       memoryAutoExtract: config.get<boolean>("damocles.memory.autoExtract.enabled", true),
       memoryProfile: config.get<boolean>("damocles.memory.profile.enabled", true),
+      memoryInjectRerank: injectRerankBlocking(config.get<unknown>(MEMORY_INJECT_RERANK_SETTING, "off")),
       browserHeadless: config.get<boolean>("damocles.browser.headless", true),
       cacheWarming: parseCacheWarmingMode(config.get("damocles.cacheWarming")),
       checkpointRetentionDays: config.get<number>("damocles.checkpoints.retentionDays", 30),
@@ -375,6 +376,13 @@ export class ConfigManager {
   async handleSetMemoryProfile(enabled: boolean): Promise<SettingWrite> {
     assertBoolean(enabled);
     return updateConfigAtEffectiveScope(this.platform, "damocles.memory.profile.enabled", enabled);
+  }
+
+  /** It turns on a billed judge call per prompt, so it is user-level only (application scope), as the Memory judge is. */
+  async handleSetMemoryInjectRerank(enabled: boolean): Promise<SettingWrite> {
+    assertBoolean(enabled);
+    await this.platform.settings.update(MEMORY_INJECT_RERANK_SETTING, enabled ? "blocking" : "off", "user");
+    return { key: MEMORY_INJECT_RERANK_SETTING, home: "user" };
   }
 
   async handleSetBrowserHeadless(headless: boolean): Promise<SettingWrite> {

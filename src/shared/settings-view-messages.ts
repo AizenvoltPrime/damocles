@@ -92,6 +92,7 @@ export const SETTINGS_VIEW_REQUESTS = [
   "setAssetSourcePrecedence",
   "setMemoryAutoExtract",
   "setMemoryProfile",
+  "setMemoryInjectRerank",
   "setBrowserHeadless",
   "setPermissionMode",
   "setDefaultPermissionMode",

@@ -4,11 +4,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ClassifierAnswer } from '@earendil-works/pi-ai';
-import { createTestMemoryDb } from './test-helpers';
+import { createTestMemoryDb, listwiseAnswer } from './test-helpers';
 import { subCallSpy } from './subcall-spy';
 import {
   CONTRADICTION_THRESHOLDS,
-  LLM_RERANK_MIN_MS,
   RERANK_BATCH_SIZE,
   RERANK_CRITERIA,
   buildRerankBatches,
@@ -24,9 +23,10 @@ import { RetrievalManager } from '../managers/retrieval-manager';
 import { setInjectionDbDirForTests } from '../injection-database';
 import { MemoryWriteQueue } from '../write-queue';
 import { normalizedContentHash, type DatabaseInstance, type MemoryRow } from '../types';
-import type { MemoryClassifyRequest, MemorySubCallResult, MemorySubCallRunner } from '../subcall-runner';
+import type { MemoryClassifyRequest, MemorySubCallRequest, MemorySubCallResult, MemorySubCallRunner } from '../subcall-runner';
 import { readLiveInjections } from '../../pi-session/live-injections';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { LLM_RERANK_MIN_MS } from '../rerank';
 
 vi.mock('../query-expansion', () => ({
   expandQuery: vi.fn(async () => [] as string[]),
@@ -207,7 +207,7 @@ describe('reranks on Jev', () => {
     return injection.buildInjection({ sessionId: 's', workspace: WORKSPACE, activeFile: null, prompt, live: readLiveInjections([]), promptIndex: 0 });
   }
 
-  it('injection: orders by Jev, demotes unrelated to compact, and records the score instead of a reason', async () => {
+  it('injection: orders by Jev, demotes unrelated to compact, and records the score', async () => {
     const first = seed(db, 'rollup bundling notes for the webview build');
     const second = seed(db, 'rollup bundling notes for the extension host');
     const { runner, run, classify } = jevRunner(scoring({ [first.content]: 0.2, [second.content]: 1.64 }));
@@ -216,22 +216,31 @@ describe('reranks on Jev', () => {
     expect(run).not.toHaveBeenCalled();
     expect(classify.mock.calls[0]![0]).toMatchObject({ purpose: 'rerank', timeoutMs: 2000 });
     expect(r.display.rerankApplied).toBe(true);
-    expect(r.display.added.map((a) => [a.id, a.tier, a.rerankRelevance, a.rerankClassifierScore, a.rerankReason])).toEqual([
-      [second.id, 'full', 'high', 0.82, undefined],
-      [first.id, 'compact', 'low', 0.1, undefined],
+    expect(r.display.added.map((a) => [a.id, a.tier, a.rerankRelevance, a.rerankClassifierScore])).toEqual([
+      [second.id, 'full', 'high', 0.82],
+      [first.id, 'compact', 'low', 0.1],
     ]);
   });
 
-  it('injection: a failed Jev call falls back to the LLM within the same cap', async () => {
+  it('injection: a failed Jev call falls back to the LLM in what is left of the 4 s cap', async () => {
     const first = seed(db, 'rollup bundling notes for the webview build');
     seed(db, 'rollup bundling notes for the extension host');
-    const { runner, run } = jevRunner(async () => null);
-    run.mockImplementation(async () => ({ value: { results: [{ id: first.id, relevance: 'high', reason: 'webview' }] } }));
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { runner, run } = jevRunner(async () => {
+      now += 1500;
+      return null;
+    });
+    run.mockImplementation(async (req: MemorySubCallRequest) => ({ value: listwiseAnswer(req.prompt, (s) => (s.includes('webview') ? 'high' : 'low')) }));
 
     const r = await inject(runner, 'rollup bundling');
+    vi.restoreAllMocks();
     expect(run).toHaveBeenCalledOnce();
-    expect(run.mock.calls[0]![0].timeoutMs).toBeLessThanOrEqual(2000);
-    expect(r.display.added[0]).toMatchObject({ id: first.id, rerankRelevance: 'high', rerankReason: 'webview' });
+    expect(run.mock.calls[0]![0].timeoutMs).toBe(2500);
+    expect(r.display.added.map((a) => [a.id, a.rerankRelevance, a.rerankClassifierScore])).toEqual([
+      [first.id, 'high', undefined],
+      [expect.any(String), 'low', undefined],
+    ]);
   });
 
   it('search: orders by Jev with a model-facing verdict as the reason, in batches', async () => {
@@ -244,7 +253,7 @@ describe('reranks on Jev', () => {
     const results = await new RetrievalManager(db, createFakePlatform().settings, runner).search({ query: 'extension bundled esbuild', allWorkspaces: true });
 
     expect(run).not.toHaveBeenCalled();
-    expect(classify.mock.calls.map((c) => [c[0].timeoutMs, Object.keys(c[0].questions).length])).toEqual([[8000, 10], [8000, 2]]);
+    expect(classify.mock.calls.map((c) => [c[0].timeoutMs, Object.keys(c[0].questions).length])).toEqual([[6000, 10], [6000, 2]]);
     expect(results[0]).toMatchObject({ rerankRelevance: 'high', reason: 'Classifier: directly relevant (1.00)', rerankClassifierScore: 1 });
     expect(results[0]!.snippet).toContain('note 11');
   });
@@ -276,10 +285,10 @@ describe('reranks on Jev', () => {
   it('injection: skips the LLM when Jev used the cap down to less than the LLM needs', async () => {
     seed(db, 'rollup bundling notes for the webview build');
     seed(db, 'rollup bundling notes for the extension host');
-    let now = Date.now();
-    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
     const { runner, run, classify } = jevRunner(async () => {
-      now += 2000 - LLM_RERANK_MIN_MS + 1;
+      now += 4000 - LLM_RERANK_MIN_MS + 1;
       return null;
     });
 
@@ -292,8 +301,8 @@ describe('reranks on Jev', () => {
 
   it('search: skips the LLM when Jev used the cap down to less than the LLM needs', async () => {
     for (let i = 0; i < 3; i++) seed(db, `the extension is bundled with esbuild, note ${i}`);
-    let now = Date.now();
-    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
     const { runner, run, classify } = jevRunner(async () => {
       now += 8000 - LLM_RERANK_MIN_MS + 1;
       return null;

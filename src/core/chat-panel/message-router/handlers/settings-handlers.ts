@@ -434,6 +434,13 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
+    setMemoryInjectRerank: async (msg, ctx) => {
+      if (msg.type !== "setMemoryInjectRerank") return;
+      await writeSetting(deps, ctx, "damocles.memory.rerank.injectMode", (detail) => l("Failed to save the memory ranking setting: {0}", detail), () =>
+        settingsManager.handleSetMemoryInjectRerank(msg.enabled));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
     setBrowserHeadless: async (msg, ctx) => {
       if (msg.type !== "setBrowserHeadless") return;
       await writeSetting(deps, ctx, "damocles.browser.headless", (detail) => l("Failed to save the headless browser setting: {0}", detail), () =>

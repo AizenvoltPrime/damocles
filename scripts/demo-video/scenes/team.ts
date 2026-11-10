@@ -6,10 +6,18 @@ const TEAM_ID = '5b8d7c2e-9f10-4a3b-8c21-0e6f4d9a7b13';
 const CREATE = 'toolu_create_team';
 const RESUME = 'toolu_resume_team';
 const TITLE = 'Redis session store';
+const IMPLEMENTOR_SPAWN = {
+  description: 'Build the Redis store',
+  task: 'Implement RedisSessionStore in src/sessions/redis-store.ts behind the existing SessionStore interface and wire it in src/sessions/index.ts. Done when the session tests pass.',
+};
+const REVIEWER_SPAWN = {
+  description: 'Review the Redis store',
+  task: 'Review src/sessions/redis-store.ts against the brief: same sessions API, TTLs kept, tests green. Approve or request changes.',
+};
 const MEMBERS: MemberSpec[] = [
   { agentId: 'c1d2e3f4-0a1b-4c2d-9e3f-5a6b7c8d9e0f', name: 'Lead', role: 'lead', model: 'claude-opus-5-5' },
-  { agentId: 'd2e3f4a5-1b2c-4d3e-8f4a-6b7c8d9e0f1a', name: 'Implementor', role: 'specialist', model: 'claude-sonnet-5-5' },
-  { agentId: 'e3f4a5b6-2c3d-4e4f-9a5b-7c8d9e0f1a2b', name: 'Reviewer', role: 'specialist', model: 'gpt-6.1-sol' },
+  { agentId: 'd2e3f4a5-1b2c-4d3e-8f4a-6b7c8d9e0f1a', name: 'Implementor', role: 'specialist', model: 'claude-sonnet-5-5', spawn: IMPLEMENTOR_SPAWN },
+  { agentId: 'e3f4a5b6-2c3d-4e4f-9a5b-7c8d9e0f1a2b', name: 'Reviewer', role: 'specialist', model: 'gpt-6.1-sol', spawn: REVIEWER_SPAWN },
 ];
 const INPUT = {
   title: TITLE,
@@ -42,7 +50,7 @@ export const team: Scene = {
     await t.status('Lead', 'running');
     await t.phase('working');
     await stage.focus(agentCard(stage, TITLE), { maxZoom: 1.4 });
-    await t.work('Lead', 'Implementor builds the Redis store; Reviewer checks it against the brief.', { name: 'team_spawn_specialist', input: { name: 'Implementor', task: 'Implement RedisSessionStore behind the existing sessions API.' }, result: 'Spawned Implementor.' });
+    await t.work('Lead', 'Implementor builds the Redis store; Reviewer checks it against the brief.', { name: 'team_spawn_specialist', input: { name: 'Implementor', ...IMPLEMENTOR_SPAWN, kind: 'implementor' }, result: `Specialist 'Implementor' spawned (id: ${MEMBERS[1]!.agentId})` });
     await t.scratchpad('Lead', 'plan', '1. RedisSessionStore with the same interface\n2. Wire it in src/sessions/index.ts\n3. Review, then run the tests');
     await t.status('Implementor', 'running');
     await t.work('Implementor', 'Writing the store against the existing interface.', { name: 'Write', input: { file_path: 'c:/dev/acme-api/src/sessions/redis-store.ts', content: 'export class RedisSessionStore implements SessionStore { /* ... */ }' }, result: 'File created successfully', ms: 700 });

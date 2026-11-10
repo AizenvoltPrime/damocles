@@ -58,3 +58,30 @@ export function assertContentHashInvariant(db: DatabaseInstance): string[] {
     .filter((r) => r.content_hash !== normalizedContentHash(r.content))
     .map((r) => r.id);
 }
+
+/** The query and numbered candidates of a listwise rerank prompt; the candidates' JSON holds no raw newline, so the last marker is theirs. */
+export function rerankPrompt(prompt: string): { query: string; candidates: Array<{ n: number; title: string | null; snippet: string }> } {
+  const marker = '\n\nCandidates:\n';
+  const at = prompt.lastIndexOf(marker);
+  return {
+    query: prompt.slice('Query: '.length, at),
+    candidates: JSON.parse(prompt.slice(at + marker.length)) as Array<{ n: number; title: string | null; snippet: string }>,
+  };
+}
+
+/** The numbered candidates of a listwise rerank prompt. */
+export function rerankCandidates(prompt: string): Array<{ n: number; title: string | null; snippet: string }> {
+  return rerankPrompt(prompt).candidates;
+}
+
+/** The listwise rerank's answer to `prompt`, grading each numbered candidate by its snippet; `low` leaves it unlisted. */
+export function listwiseAnswer(
+  prompt: string,
+  gradeOf: (snippet: string) => 'high' | 'medium' | 'low',
+): { direct: number[]; partial: number[] } {
+  const items = rerankCandidates(prompt);
+  return {
+    direct: items.filter((item) => gradeOf(item.snippet) === 'high').map((item) => item.n),
+    partial: items.filter((item) => gradeOf(item.snippet) === 'medium').map((item) => item.n),
+  };
+}

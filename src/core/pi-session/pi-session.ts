@@ -1375,6 +1375,7 @@ export class PiSession implements ChatSession {
         return descriptor ? { server: descriptor.serverName, tool: descriptor.rawToolName } : undefined;
       },
       deferrableTools: () => this.deferrableToolsSnapshot(),
+      startingRunSignal: () => this.startingSendSignal(),
       mcpResourceReach: (server) => this.mcpResourceReach(server),
       activateDeferredTools: (names) => this.activateDeferredTools(names),
       ...this.checkpointBaselineField(),
@@ -1735,6 +1736,15 @@ export class PiSession implements ChatSession {
     }
     this.currentSend = null;
     this.processingFlag = false;
+  }
+
+  /**
+   * The signal of the send pi is starting a run for: pi runs `before_agent_start` before its preflight accepts the prompt,
+   * and `stopSends` aborts the send but leaves it in `outgoingSends` until it ends. The oldest one, since pi takes them in order.
+   */
+  private startingSendSignal(): AbortSignal | undefined {
+    for (const outgoing of this.outgoingSends) if (outgoing.inPi && !outgoing.accepted) return outgoing.signal;
+    return undefined;
   }
 
   /** Whether a Stop, a replacement or a disposal overtook `outgoing` before `prompt()`; it already went back to the composer. */

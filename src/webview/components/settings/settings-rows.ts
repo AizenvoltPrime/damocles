@@ -113,6 +113,7 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('integrations', 'damocles.memory.enabled', 'memory', ['damocles.memory.enabled']),
   row('integrations', 'damocles.memory.autoExtract.enabled', 'memoryAutoExtract', ['damocles.memory.autoExtract.enabled']),
   row('integrations', 'damocles.memory.profile.enabled', 'memoryProfile', ['damocles.memory.profile.enabled']),
+  row('integrations', 'damocles.memory.rerank.injectMode', 'memoryInjectRerank', ['damocles.memory.rerank.injectMode']),
   row('integrations', 'damocles.compass.enabled', 'compass', ['damocles.compass.enabled']),
   row('integrations', 'damocles.browser.enabled', 'browser', ['damocles.browser.enabled']),
   row('integrations', 'damocles.browser.headless', 'browserHeadless', ['damocles.browser.headless']),

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { createTestDbPath, createTestMemoryDb } from './test-helpers';
+import { createTestDbPath, createTestMemoryDb, listwiseAnswer, rerankCandidates } from './test-helpers';
 import type { DatabaseInstance } from '../types';
-import type { MemorySubCallRunner, MemorySubCallResult } from '../subcall-runner';
+import type { MemorySubCallRequest, MemorySubCallRunner, MemorySubCallResult } from '../subcall-runner';
 
 // expandQuery reaches PiRuntime directly (not via the fake runner), so mock it out. Default to no
 // synonyms so every non-expansion test in this file sees original-only behavior; the expansion suite
@@ -76,13 +76,18 @@ function seed(db: DatabaseInstance, row: SeedRow): void {
   );
 }
 
-function gradingRunner(grades: Record<string, 'high' | 'medium' | 'low'>): MemorySubCallRunner {
+/** Answers the listwise rerank with `answer` applied to the prompt. */
+function gradingRunner(answer: (prompt: string) => { direct: number[]; partial: number[] }): MemorySubCallRunner {
   return {
-    async run<T>(): Promise<MemorySubCallResult<T>> {
-      const results = Object.entries(grades).map(([id, relevance]) => ({ id, relevance }));
-      return { value: { results } as unknown as T };
+    async run<T>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> {
+      return { value: answer(req.prompt) as unknown as T };
     },
   };
+}
+
+/** The candidate number of the row whose snippet contains `word`. */
+function numberOf(prompt: string, word: string): number {
+  return rerankCandidates(prompt).find((c) => c.snippet.includes(word))!.n;
 }
 
 const QUERY = 'how is the extension bundled';
@@ -104,7 +109,7 @@ describe('RetrievalManager.search', () => {
     seed(db, { id: 'F', content: 'the build uses esbuild for the extension' });
     seed(db, { id: 'N', content: 'the extension activates on startup' });
 
-    const manager = new RetrievalManager(db, createFakePlatform().settings, gradingRunner({ F: 'high', N: 'low' }));
+    const manager = new RetrievalManager(db, createFakePlatform().settings, gradingRunner(p => listwiseAnswer(p, s => (s.includes('esbuild') ? 'high' : 'low'))));
     const results = await manager.search({ query: QUERY, ...ALL });
 
     const ids = results.map(r => r.id);
@@ -114,28 +119,27 @@ describe('RetrievalManager.search', () => {
     expect(results.find(r => r.id === 'F')?.rerankRelevance).toBe('high');
   });
 
-  it('keeps an ungraded row above an explicitly-low row on a partial grade', async () => {
-    seed(db, { id: 'EL', content: 'the extension is bundled with esbuild at build time' });
-    seed(db, { id: 'UG', content: 'the extension activates on startup' });
+  it("orders a grade by the model's list and an unlisted row last as low", async () => {
+    seed(db, { id: 'A', content: 'the extension is bundled with esbuild, alpha' });
+    seed(db, { id: 'B', content: 'the extension is bundled with esbuild, beta' });
+    seed(db, { id: 'C', content: 'the extension is bundled with esbuild, gamma' });
 
-    const manager = new RetrievalManager(db, createFakePlatform().settings, gradingRunner({ EL: 'low' }));
-    const results = await manager.search({ query: QUERY, ...ALL });
+    const runner = gradingRunner(p => ({ direct: [numberOf(p, 'beta'), numberOf(p, 'alpha')], partial: [] }));
+    const results = await new RetrievalManager(db, createFakePlatform().settings, runner).search({ query: QUERY, ...ALL });
 
-    const ids = results.map(r => r.id);
-    expect(ids.indexOf('UG')).toBeLessThan(ids.indexOf('EL'));
-    expect(results.find(r => r.id === 'UG')?.rerankRelevance).toBeUndefined();
+    expect(results.map(r => [r.id, r.rerankRelevance])).toEqual([['B', 'high'], ['A', 'high'], ['C', 'low']]);
   });
 
-  it('preserves BM25 order when the reranker grades nothing', async () => {
+  it('keeps BM25 order among rows the model lists in neither list', async () => {
     seed(db, { id: 'TOP', content: 'the extension is bundled with esbuild at build time' });
     seed(db, { id: 'BOT', content: 'the extension activates on startup' });
 
-    const manager = new RetrievalManager(db, createFakePlatform().settings, gradingRunner({}));
+    const manager = new RetrievalManager(db, createFakePlatform().settings, gradingRunner(() => ({ direct: [], partial: [] })));
     const results = await manager.search({ query: QUERY, ...ALL });
 
     const ids = results.map(r => r.id);
     expect(ids.indexOf('TOP')).toBeLessThan(ids.indexOf('BOT'));
-    expect(results.every(r => r.rerankRelevance === undefined)).toBe(true);
+    expect(results.every(r => r.rerankRelevance === 'low')).toBe(true);
   });
 
   it('degrades to BM25 order without a runner and does not throw', async () => {

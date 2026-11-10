@@ -54,7 +54,9 @@
         "damocles.compass.enabled",
         "damocles.imageGeneration.enabled",
         "damocles.imageGeneration.model",
-        "damocles.design.enabled"
+        "damocles.design.enabled",
+        "damocles.memory.rerank.enabled",
+        "damocles.memory.rerank.injectMode"
       ]
     }
   },
@@ -372,7 +374,8 @@
         "damocles.memory.rerank.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM."
+          "scope": "application",
+          "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM. User settings only, since it turns on billed judge calls."
         },
         "damocles.memory.rerank.candidatePool": {
           "type": "integer",
@@ -383,11 +386,12 @@
         "damocles.memory.rerank.injectMode": {
           "type": "string",
           "default": "off",
+          "scope": "application",
           "enum": [
             "off",
             "blocking"
           ],
-          "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard ~2s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary."
+          "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard 4 s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary. User settings only, since it turns on a billed judge call per prompt."
         },
         "damocles.memory.autoExtract.enabled": {
           "type": "boolean",
@@ -1363,11 +1367,12 @@
     "watch:extension": "node esbuild.config.ts --watch",
     "watch:webview": "vite build --watch",
     "dev": "npm run watch",
-    "typecheck": "tsc --noEmit && npm run typecheck:core && npm run typecheck:desktop && npm run typecheck:e2e && npm run typecheck:scripts && npm run typecheck:tests && npm run typecheck:webview",
+    "typecheck": "tsc --noEmit && npm run typecheck:core && npm run typecheck:desktop && npm run typecheck:e2e && npm run typecheck:scripts && npm run typecheck:demo && npm run typecheck:tests && npm run typecheck:webview",
     "typecheck:core": "tsc -p tsconfig.core.json",
     "typecheck:desktop": "tsc -p tsconfig.desktop.json && tsc -p tsconfig.desktop-preload.json",
     "typecheck:e2e": "tsc -p e2e/desktop/tsconfig.json && tsc -p e2e/remote/tsconfig.json",
     "typecheck:scripts": "tsc -p scripts/tsconfig.json",
+    "typecheck:demo": "tsc -p scripts/demo-video/tsconfig.json",
     "typecheck:tests": "tsc -p tsconfig.tests.json && tsc -p tsconfig.tests.dom.json",
     "typecheck:webview": "vue-tsc -p tsconfig.webview.json --noEmit",
     "sync:vscodeignore": "node scripts/sync-vscodeignore.ts",

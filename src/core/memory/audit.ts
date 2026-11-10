@@ -33,6 +33,7 @@ import {
   PROFILE_SYSTEM_PROMPT,
   STATIC_CHAR_CAP,
   isUserProfileShape,
+  profileFromAnswer,
   truncateAtBoundary,
   type ProfileManager,
   type ProfileScope,
@@ -645,10 +646,10 @@ export async function runAudit(
           abortSignal: signal,
           timeoutMs: AUDIT_CALL_TIMEOUT_MS,
         }),
-      (value): MemoryAuditProfileText | null =>
-        isUserProfileShape(value)
-          ? { static: truncateAtBoundary(value.static, STATIC_CHAR_CAP), dynamic: truncateAtBoundary(value.dynamic, DYNAMIC_CHAR_CAP) }
-          : null,
+      (value): MemoryAuditProfileText | null => {
+        const next = profileFromAnswer(value);
+        return next && { static: truncateAtBoundary(next.static, STATIC_CHAR_CAP), dynamic: truncateAtBoundary(next.dynamic, DYNAMIC_CHAR_CAP) };
+      },
     );
     await settle(result, 1, () => {
       if (result.kind !== 'ok') return;

@@ -69,6 +69,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   assetSourcePrecedence: 'claude',
   memoryAutoExtract: true,
   memoryProfile: true,
+  memoryInjectRerank: false,
   browserHeadless: true,
   cacheWarming: DEFAULT_CACHE_WARMING,
   dangerouslySkipPermissions: false,

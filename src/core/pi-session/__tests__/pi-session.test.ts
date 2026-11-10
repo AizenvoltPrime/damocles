@@ -2701,6 +2701,37 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       await session.dispose();
     });
 
+    it("gives a starting run the signal of the send pi holds, which Stop aborts, and none once pi accepted it", async () => {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      let start: (() => void) | undefined;
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementation((_text: string, options: { preflightResult?: (d: string) => void }) =>
+        new Promise<void>((resolve) => { start = () => { options.preflightResult?.('started'); resolve(); }; }));
+      const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+      expect(gate.startingRunSignal!()).toBeUndefined();
+
+      const first = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+      await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(1));
+      const signal = gate.startingRunSignal!()!;
+      expect(signal.aborted).toBe(false);
+      await session.interrupt();
+      expect(signal.aborted).toBe(true);
+      expect(gate.startingRunSignal!()).toBe(signal);
+      start!();
+      await first;
+      expect(gate.startingRunSignal!()).toBeUndefined();
+
+      const second = session.sendMessage('again', undefined, 'c2', { content: 'again' });
+      await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledTimes(2));
+      expect(gate.startingRunSignal!()!.aborted).toBe(false);
+      start!();
+      expect(gate.startingRunSignal!()).toBeUndefined();
+      await session.interrupt();
+      await second;
+      await session.dispose();
+    });
+
     it('reports the latest prompt on the branch between turns', async () => {
       const session = new PiSession(makeOptions([]));
       await session.initializeEarly();

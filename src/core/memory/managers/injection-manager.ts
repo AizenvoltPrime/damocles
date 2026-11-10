@@ -31,7 +31,9 @@ import {
 import { estimateTokens, truncateToChars } from '../token-estimate';
 import type { ProfileManager } from './profile-manager';
 import type { MemorySubCallRunner } from '../subcall-runner';
-import { LLM_RERANK_MIN_MS, RERANK_QUERY_CHARS, classifierRerank } from '../classifier-judges';
+import type { RerankRelevance } from '../classifier-judges';
+import { MEMORY_INJECT_RERANK_SETTING, injectRerankBlocking } from '../../../shared/memory-judge';
+import { RERANK_SNIPPET_CHARS, RERANK_SORT_WEIGHT, judgeRerank, type RerankGrade } from '../rerank';
 import type { ContextInjectionDetailsV1, LiveInjections, LiveMemory } from '../injection/details';
 import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
 import { isStaleMemory } from '@shared/memory-staleness';
@@ -66,66 +68,6 @@ import {
   type NoticeRender,
   type RenderableMemory,
 } from '../injection/render';
-
-type RerankRelevance = 'high' | 'medium' | 'low';
-
-const RELEVANCE_RANK: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 1 };
-
-/** Ungraded entries sort between medium and low, so an entry the model skipped keeps its standing. */
-const RERANK_SORT_WEIGHT: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 0 };
-const UNGRADED_SORT_WEIGHT = 1;
-function rerankSortWeight(relevance: RerankRelevance | undefined): number {
-  return relevance === undefined ? UNGRADED_SORT_WEIGHT : RERANK_SORT_WEIGHT[relevance];
-}
-
-interface InjectRerankResult {
-  results: Array<{ id: string; relevance: RerankRelevance; reason?: string }>;
-}
-
-/** `reason` comes from the LLM rerank, `classifierScore` (0..1) from the classifier. */
-interface RerankGrade {
-  relevance: RerankRelevance;
-  reason?: string;
-  classifierScore?: number;
-}
-
-/** The runner's `T` is an unvalidated cast; a hallucinated shape would throw at `value.results`. */
-function isInjectRerankResult(v: unknown): v is InjectRerankResult {
-  return (
-    !!v &&
-    typeof v === 'object' &&
-    Array.isArray((v as { results?: unknown }).results) &&
-    (v as { results: unknown[] }).results.every(
-      (r) => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string',
-    )
-  );
-}
-
-const INJECT_RERANK_SCHEMA = {
-  type: 'object',
-  properties: {
-    results: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          relevance: { enum: ['high', 'medium', 'low'] },
-          reason: { type: 'string' },
-        },
-        required: ['id', 'relevance'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['results'],
-  additionalProperties: false,
-} satisfies Record<string, unknown>;
-
-const INJECT_RERANK_SYSTEM_PROMPT =
-  'Grade how relevant each candidate memory is to the user query. ' +
-  'Return every candidate id exactly once with a relevance of high, medium, or low ' +
-  'and a brief reason. Judge by semantic relevance, not keyword overlap.';
 
 function getConfig<T>(settings: SettingsStore, key: string, fallback: T): T {
   return settings.get<T>(`damocles.memory.${key}`, fallback) ?? fallback;
@@ -176,7 +118,7 @@ function readConfig(settings: SettingsStore): InjectionConfig {
     pinnedTokenBudget: readNumberSetting(settings, n.pinnedTokenBudget),
     profileTokenBudget: readNumberSetting(settings, n.profileTokenBudget),
     profileEnabled: getConfig(settings, 'profile.enabled', true),
-    rerankBlocking: getConfig<'off' | 'blocking'>(settings, 'rerank.injectMode', 'off') === 'blocking',
+    rerankBlocking: injectRerankBlocking(settings.get<unknown>(MEMORY_INJECT_RERANK_SETTING, 'off')),
   };
 }
 
@@ -207,26 +149,37 @@ export function mergeTargetOf(db: DatabaseInstance, row: MemoryRow): MemoryRow |
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const RERANK_CANDIDATE_CAP = 30;
-// The rerank's cap, which also bounds each call to a client's global memory while a prompt's injection waits on it.
-const RERANK_TIMEOUT_MS = 2000;
-const RERANK_SNIPPET_CHARS = 160;
+/** The blocking rerank's cap; see docs/invariants.md "Reranks stay inside their caps". The setting's descriptions name it. */
+export const INJECT_RERANK_CAP_MS = 4000;
+// Bounds each call to a client's global memory while a prompt's injection waits on it.
+const CLIENT_ASK_TIMEOUT_MS = 2000;
 
 const LATE = Symbol('late');
+const STOPPED = Symbol('stopped');
 
-/** A client's answer within RERANK_TIMEOUT_MS; a failure or a later answer is logged and that client is away for this prompt. */
-async function clientAsk<T>(what: string, ask: () => Promise<T>, away: T): Promise<T> {
+/**
+ * A client's answer within CLIENT_ASK_TIMEOUT_MS; a failure or a later answer is logged and that client is away for this prompt,
+ * as it is once `abortSignal` fires.
+ */
+async function clientAsk<T>(what: string, ask: () => Promise<T>, away: T, abortSignal: AbortSignal | undefined): Promise<T> {
+  if (abortSignal?.aborted) return away;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<typeof LATE>((resolve) => {
-    timer = setTimeout(() => resolve(LATE), RERANK_TIMEOUT_MS);
+  let onAbort: (() => void) | undefined;
+  const late = new Promise<typeof LATE | typeof STOPPED>((resolve) => {
+    timer = setTimeout(() => resolve(LATE), CLIENT_ASK_TIMEOUT_MS);
+    onAbort = () => resolve(STOPPED);
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
   });
   try {
     const answer = await Promise.race([ask(), late]);
+    if (answer === STOPPED) return away;
     if (answer !== LATE) return answer;
-    log('[InjectionManager] the client\'s global memory %s took over %d ms; the client is away for this prompt', what, RERANK_TIMEOUT_MS);
+    log('[InjectionManager] the client\'s global memory %s took over %d ms; the client is away for this prompt', what, CLIENT_ASK_TIMEOUT_MS);
   } catch (err) {
     log('[InjectionManager] the client\'s global memory %s failed; the client is away for this prompt: %O', what, err);
   } finally {
     clearTimeout(timer);
+    abortSignal?.removeEventListener('abort', onAbort!);
   }
   return away;
 }
@@ -283,6 +236,8 @@ export interface BuildInjectionArgs {
   prompt: string;
   live: LiveInjections;
   promptIndex: number;
+  /** Aborted by a Stop of the run this prompt starts: the rerank keeps the lexical order and a client still asked is away. */
+  abortSignal?: AbortSignal;
 }
 
 export interface InjectionBuildResult {
@@ -333,7 +288,6 @@ interface Selected {
   /** A forgotten memory rendered because the prompt names it; not tracked as in context. */
   forgottenMention: boolean;
   rerankRelevance?: RerankRelevance;
-  rerankReason?: string;
   rerankClassifierScore?: number;
 }
 
@@ -346,7 +300,6 @@ interface GatedCandidate {
   breakdown: MemoryScoreBreakdown;
   fullAllowed: boolean;
   rerankRelevance?: RerankRelevance;
-  rerankReason?: string;
   rerankClassifierScore?: number;
 }
 
@@ -455,7 +408,6 @@ function toInjectedMemory(s: Selected): InjectedMemory {
     sourceCount: e.sourceCount ?? 1,
     ...(s.forgottenMention ? { isForgotten: true } : {}),
     ...(s.rerankRelevance ? { rerankRelevance: s.rerankRelevance } : {}),
-    ...(s.rerankReason ? { rerankReason: s.rerankReason } : {}),
     ...(s.rerankClassifierScore !== undefined ? { rerankClassifierScore: s.rerankClassifierScore } : {}),
   };
 }
@@ -854,10 +806,10 @@ export class InjectionManager {
     // both asks of the client run at once, each bounded; a failed or late one treats the client as away for this prompt
     const globals = this.globals;
     const resolving = globals && unresolvedGlobals.size > 0
-      ? clientAsk('resolve', () => globals.resolve([...unresolvedGlobals]), new Map<string, GlobalMemoryResolution>())
+      ? clientAsk('resolve', () => globals.resolve([...unresolvedGlobals]), new Map<string, GlobalMemoryResolution>(), args.abortSignal)
       : Promise.resolve(new Map<string, GlobalMemoryResolution>());
     const searching = globals && args.prompt
-      ? clientAsk('search', () => globals.injectable(args.prompt, cfg.fullLimit + cfg.compactLimit), [] as SearchedGlobalMemory[])
+      ? clientAsk('search', () => globals.injectable(args.prompt, cfg.fullLimit + cfg.compactLimit), [] as SearchedGlobalMemory[], args.abortSignal)
       : Promise.resolve([] as SearchedGlobalMemory[]);
     if (unresolvedGlobals.size > 0) {
       // a live global its client pins shares the pinned budget, as a pinned row of this store does
@@ -1106,7 +1058,7 @@ export class InjectionManager {
     let rerankApplied = false;
     let ranked = gated;
     if (cfg.rerankBlocking && args.prompt && gated.length >= 2) {
-      const reranked = await this.rerank(args.prompt, gated);
+      const reranked = await this.rerank(args.prompt, gated, args.abortSignal);
       if (reranked) {
         ranked = reranked;
         rerankApplied = true;
@@ -1156,7 +1108,6 @@ export class InjectionManager {
         tokens: estimateTokens(tier === 'full' ? r.full.text : r.compact),
         forgottenMention: false,
         ...(g.rerankRelevance ? { rerankRelevance: g.rerankRelevance } : {}),
-        ...(g.rerankReason ? { rerankReason: g.rerankReason } : {}),
         ...(g.rerankClassifierScore !== undefined ? { rerankClassifierScore: g.rerankClassifierScore } : {}),
       };
       taken.add(id);
@@ -1247,77 +1198,38 @@ export class InjectionManager {
   }
 
   /**
-   * Reorder the gated set with one hard-capped (~2s) blocking rerank over its top entries: the classifier when the
-   * Memory judge has one, else (or when it fails) the LLM in the time left. A `low` grade demotes
-   * to compact. On timeout, null or failure the lexical order stands.
+   * Reorder the gated set's top entries with one blocking rerank capped at INJECT_RERANK_CAP_MS (`judgeRerank`).
+   * A `low` grade demotes to compact. On null the lexical order stands.
    */
-  private async rerank(userPrompt: string, gated: GatedCandidate[]): Promise<GatedCandidate[] | null> {
+  private async rerank(userPrompt: string, gated: GatedCandidate[], abortSignal: AbortSignal | undefined): Promise<GatedCandidate[] | null> {
     const pool = gated.slice(0, RERANK_CANDIDATE_CAP);
     const items = pool.map(g => ({
       id: g.loaded.row.id,
       title: g.loaded.entry.title ?? null,
       snippet: truncateToChars(g.loaded.entry.content, RERANK_SNIPPET_CHARS),
     }));
-
-    let llmTimeoutMs = RERANK_TIMEOUT_MS;
-    if (this.runner.hasClassifier?.()) {
-      const started = Date.now();
-      const jev = await classifierRerank(this.runner, userPrompt, items, RERANK_TIMEOUT_MS);
-      if (jev) {
-        const graded = new Map<string, RerankGrade>();
-        for (const [id, g] of jev) graded.set(id, { relevance: g.relevance, classifierScore: g.score });
-        return this.applyRerankGrades(pool, gated, graded);
-      }
-      llmTimeoutMs -= Date.now() - started;
-      if (llmTimeoutMs < LLM_RERANK_MIN_MS) return null;
-    }
-
-    const prompt = `Query: ${truncateToChars(userPrompt, RERANK_QUERY_CHARS)}\n\nCandidates:\n${JSON.stringify(items)}`;
-    let value: InjectRerankResult | null;
-    try {
-      const result = await this.runner.run<InjectRerankResult>({
-        purpose: 'rerank',
-        systemPrompt: INJECT_RERANK_SYSTEM_PROMPT,
-        prompt,
-        schema: INJECT_RERANK_SCHEMA,
-        timeoutMs: llmTimeoutMs,
-      });
-      value = result.value;
-    } catch (err) {
-      log('[InjectionManager] Inject-rerank failed, keeping lexical order: %O', err);
-      value = null;
-    }
-    if (!isInjectRerankResult(value)) return null;
-
-    const graded = new Map<string, RerankGrade>();
-    for (const item of value.results) {
-      if (!Object.hasOwn(RELEVANCE_RANK, item.relevance)) continue;
-      const reason = typeof item.reason === 'string' && item.reason ? item.reason : undefined;
-      const existing = graded.get(item.id);
-      if (!existing || RELEVANCE_RANK[item.relevance] > RELEVANCE_RANK[existing.relevance]) {
-        graded.set(item.id, { relevance: item.relevance, ...(reason ? { reason } : {}) });
-      }
-    }
-    if (graded.size === 0) return null;
-    return this.applyRerankGrades(pool, gated, graded);
+    const graded = await judgeRerank(this.runner, userPrompt, items, INJECT_RERANK_CAP_MS, abortSignal);
+    return graded ? this.applyRerankGrades(pool, gated, graded) : null;
   }
 
+  /** `graded` holds every entry of `pool`; within a grade, the LLM's order where it gave one, else the lexical one. */
   private applyRerankGrades(pool: GatedCandidate[], gated: GatedCandidate[], graded: ReadonlyMap<string, RerankGrade>): GatedCandidate[] {
     const reordered = pool
       .map((g, index) => {
-        const grade = graded.get(g.loaded.row.id);
-        const entry: GatedCandidate = grade
-          ? {
-              ...g,
-              rerankRelevance: grade.relevance,
-              ...(grade.reason ? { rerankReason: grade.reason } : {}),
-              ...(grade.classifierScore !== undefined ? { rerankClassifierScore: grade.classifierScore } : {}),
-              fullAllowed: g.fullAllowed && grade.relevance !== 'low',
-            }
-          : g;
-        return { entry, index };
+        const grade = graded.get(g.loaded.row.id)!;
+        const entry: GatedCandidate = {
+          ...g,
+          rerankRelevance: grade.relevance,
+          ...(grade.classifier ? { rerankClassifierScore: grade.classifier.score } : {}),
+          fullAllowed: g.fullAllowed && grade.relevance !== 'low',
+        };
+        return { entry, grade, index };
       })
-      .sort((a, b) => rerankSortWeight(b.entry.rerankRelevance) - rerankSortWeight(a.entry.rerankRelevance) || a.index - b.index)
+      .sort(
+        (a, b) =>
+          RERANK_SORT_WEIGHT[b.grade.relevance] - RERANK_SORT_WEIGHT[a.grade.relevance] ||
+          (a.grade.position ?? a.index) - (b.grade.position ?? b.index),
+      )
       .map(x => x.entry);
     return [...reordered, ...gated.slice(RERANK_CANDIDATE_CAP)];
   }

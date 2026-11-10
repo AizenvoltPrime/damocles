@@ -43,7 +43,7 @@ export function settings(permissionMode: PermissionMode = 'default', yolo = fals
     maxBudgetUsd: null, taskBudget: null, permissionMode, defaultPermissionMode: 'default',
     checkpointRetentionDays: 30, autoCompact: { enabled: false, triggerPercent: 80 },
     subagentsMaxConcurrent: 4, showCacheMissNotices: false, showThinkingDroppedNotices: true, assetSourcePrecedence: 'claude',
-    memoryAutoExtract: true, memoryProfile: true, browserHeadless: true,
+    memoryAutoExtract: true, memoryProfile: true, memoryInjectRerank: false, browserHeadless: true,
     cacheWarming: 'off', dangerouslySkipPermissions: yolo, defaultDangerouslySkipPermissions: false,
     ideContextEnabled: true, pinnedHeaderHidden: false,
     team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },

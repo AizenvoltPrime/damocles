@@ -4,8 +4,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { createTestMemoryDb } from './test-helpers';
-import { INJECTION_NUMBER_SETTINGS, InjectionManager, type InjectionBuildResult } from '../managers/injection-manager';
+import { RERANK_QUERY_CHARS } from '../classifier-judges';
+import { createTestMemoryDb, listwiseAnswer, rerankCandidates, rerankPrompt } from './test-helpers';
+import { INJECTION_NUMBER_SETTINGS, INJECT_RERANK_CAP_MS, InjectionManager, type InjectionBuildResult } from '../managers/injection-manager';
 import { setInjectionDbDirForTests } from '../injection-database';
 import { ProfileManager } from '../managers/profile-manager';
 import { MemoryWriteQueue } from '../write-queue';
@@ -83,7 +84,7 @@ interface Harness {
   run: SubCallSpy;
   sm: SessionManager;
   /** Build this prompt's injection against the projection, then append it as pi would. */
-  prompt(text: string, over?: { activeFile?: string }): Promise<InjectionBuildResult & { entryId: string | null }>;
+  prompt(text: string, over?: { activeFile?: string; abortSignal?: AbortSignal }): Promise<InjectionBuildResult & { entryId: string | null }>;
 }
 
 const managers: InjectionManager[] = [];
@@ -113,6 +114,7 @@ function harness(db: DatabaseInstance, sm: SessionManager = SessionManager.inMem
         prompt: text,
         live,
         promptIndex: promptIndex++,
+        ...(over.abortSignal ? { abortSignal: over.abortSignal } : {}),
       });
       sm.appendMessage({ role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() });
       const entryId = result.text
@@ -620,7 +622,7 @@ describe('InjectionManager.buildInjection', () => {
     const h = harness(db);
     h.run.mockImplementation(async (req: MemorySubCallRequest) => {
       if (req.purpose !== 'rerank') return { value: null };
-      return { value: { results: [{ id: first, relevance: 'low' }, { id: second, relevance: 'high', reason: 'host' }] } };
+      return { value: listwiseAnswer(req.prompt, s => (s.includes('extension host') ? 'high' : 'low')) };
     });
     await settings.update('damocles.memory.rerank.injectMode', 'blocking', 'user');
 
@@ -630,22 +632,72 @@ describe('InjectionManager.buildInjection', () => {
       [second, 'full', 'high'],
       [first, 'compact', 'low'],
     ]);
-    expect(r.display.added[0]!.rerankReason).toBe('host');
   });
 
-  it('sends the rerank a bounded query and ignores grades that are not relevance levels', async () => {
+  it("with blocking rerank, orders a grade by the model's list rather than the lexical order", async () => {
+    const idOf: Record<string, string> = {};
+    for (const word of ['alpha', 'beta', 'gamma']) idOf[`rollup bundling notes ${word}`] = seed(db, { content: `rollup bundling notes ${word}` });
+    const h = harness(db);
+    let lexical: Array<{ n: number; snippet: string }> = [];
+    let listed: Array<{ n: number; snippet: string }> = [];
+    h.run.mockImplementation(async (req: MemorySubCallRequest) => {
+      if (req.purpose !== 'rerank') return { value: null };
+      lexical = rerankCandidates(req.prompt);
+      listed = lexical.filter(c => !c.snippet.includes('beta')).reverse();
+      return { value: { direct: listed.map(c => c.n), partial: [] } };
+    });
+    await settings.update('damocles.memory.rerank.injectMode', 'blocking', 'user');
+
+    const r = await h.prompt('rollup bundling notes');
+    expect(lexical).toHaveLength(3);
+    const beta = lexical.find(c => c.snippet.includes('beta'))!;
+    expect(r.display.added.map(a => [a.id, a.tier, a.rerankRelevance])).toEqual([
+      ...listed.map(c => [idOf[c.snippet], 'full', 'high']),
+      [idOf[beta.snippet], 'compact', 'low'],
+    ]);
+  });
+
+  it('sends the rerank a bounded query and keeps the lexical order on an answer that names no candidate number', async () => {
     seed(db, { content: 'rollup bundling notes one' });
     seed(db, { content: 'rollup bundling notes two' });
     const h = harness(db);
     const prompts: string[] = [];
     h.run.mockImplementation(async (req: MemorySubCallRequest) => {
       prompts.push(req.prompt);
-      return { value: { results: [{ id: 'x', relevance: 'constructor' }, { id: 'y', relevance: 'toString', reason: 7 }] } };
+      return { value: { direct: ['x'], partial: [] } };
     });
     await settings.update('damocles.memory.rerank.injectMode', 'blocking', 'user');
     const r = await h.prompt(`rollup bundling ${'pasted '.repeat(20_000)}`);
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]!.length).toBeLessThan(10_000);
+    expect(rerankPrompt(prompts[0]!).query).toHaveLength(RERANK_QUERY_CHARS);
+    expect(r.display.rerankApplied).toBe(false);
+  });
+
+  it('ends a blocking rerank at a Stop and keeps the lexical order', async () => {
+    seed(db, { content: 'rollup bundling notes one' });
+    seed(db, { content: 'rollup bundling notes two' });
+    const h = harness(db);
+    const stop = new AbortController();
+    h.run.mockImplementation(async (req: MemorySubCallRequest) => {
+      await new Promise((resolve) => req.abortSignal!.addEventListener('abort', resolve, { once: true }));
+      return { value: null, failure: 'unreachable' };
+    });
+    await settings.update('damocles.memory.rerank.injectMode', 'blocking', 'user');
+    const pending = h.prompt('rollup bundling', { abortSignal: stop.signal });
+    await vi.waitFor(() => expect(h.run).toHaveBeenCalledOnce());
+    stop.abort();
+    const r = await pending;
+    expect(r.display.rerankApplied).toBe(false);
+    expect(r.display.added).toHaveLength(2);
+  });
+
+  it('starts no rerank for a prompt whose run was already stopped', async () => {
+    seed(db, { content: 'rollup bundling notes one' });
+    seed(db, { content: 'rollup bundling notes two' });
+    const h = harness(db);
+    await settings.update('damocles.memory.rerank.injectMode', 'blocking', 'user');
+    const r = await h.prompt('rollup bundling', { abortSignal: AbortSignal.abort() });
+    expect(h.run).not.toHaveBeenCalled();
     expect(r.display.rerankApplied).toBe(false);
   });
 
@@ -675,6 +727,16 @@ describe('InjectionManager.buildInjection', () => {
         expect(d, s.key).toBeDefined();
         expect([d!.type, d!.default, d!.minimum, d!.maximum], s.key).toEqual([s.integer ? 'integer' : 'number', s.fallback, s.min, s.max]);
       }
+    });
+
+    it("names the blocking rerank's cap in the setting's descriptions", () => {
+      const read = (file: string) => fs.readFileSync(path.resolve(process.cwd(), file), 'utf8');
+      const seconds = INJECT_RERANK_CAP_MS / 1000;
+      const pkg = JSON.parse(read('package.json')) as { contributes: { configuration: { properties: Record<string, { markdownDescription?: string }> } } };
+      expect(pkg.contributes.configuration.properties['damocles.memory.rerank.injectMode']!.markdownDescription).toContain(`hard ${seconds} s cap`);
+      const row = (locale: string) => (JSON.parse(read(`src/webview/i18n/locales/${locale}.json`)) as { settingsModal: { rows: { memoryInjectRerank: { description: string } } } }).settingsModal.rows.memoryInjectRerank.description;
+      expect(row('en')).toContain(`up to ${seconds} seconds`);
+      expect(row('el')).toContain(`έως ${seconds} δευτερόλεπτα`);
     });
 
     it('clamps out-of-range and fractional values to the declared range', async () => {

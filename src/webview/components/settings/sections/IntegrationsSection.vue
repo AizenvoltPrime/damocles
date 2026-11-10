@@ -48,6 +48,13 @@ function setMemoryProfile(enabled: boolean): void {
   });
 }
 
+function setMemoryInjectRerank(enabled: boolean): void {
+  write('damocles.memory.rerank.injectMode', { type: 'setMemoryInjectRerank', enabled }, {
+    apply: () => settingsStore.setSetting('memoryInjectRerank', enabled),
+    revert: () => settingsStore.setSetting('memoryInjectRerank', !enabled),
+  });
+}
+
 function setBrowserHeadless(headless: boolean): void {
   write('damocles.browser.headless', { type: 'setBrowserHeadless', headless }, {
     apply: () => settingsStore.setSetting('browserHeadless', headless),
@@ -120,6 +127,13 @@ function setImageModel(model: string): void {
           :model-value="currentSettings.memoryProfile"
           :label="t('settingsModal.rows.memoryProfile.label')"
           @update:model-value="setMemoryProfile"
+        />
+      </SettingsRow>
+      <SettingsRow id="damocles.memory.rerank.injectMode">
+        <SettingSwitch
+          :model-value="currentSettings.memoryInjectRerank"
+          :label="t('settingsModal.rows.memoryInjectRerank.label')"
+          @update:model-value="setMemoryInjectRerank"
         />
       </SettingsRow>
     </template>

@@ -52,9 +52,9 @@ function requestClose(): void {
 const { t, te, locale } = useI18n();
 
 const scoreFormat = computed(() => new Intl.NumberFormat(locale.value, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-/** A classifier grade renders as a localized verdict; `reason` is model-facing English. */
+/** A classifier grade renders as a localized verdict; `reason` is model-facing English and never shown. */
 function searchReason(result: SearchResult): string | undefined {
-  if (result.rerankRelevance === undefined || result.rerankClassifierScore === undefined) return result.reason;
+  if (result.rerankRelevance === undefined || result.rerankClassifierScore === undefined) return undefined;
   return t('contextInjection.rerankClassifier', {
     verdict: t(`contextInjection.rerankVerdict.${result.rerankRelevance}`),
     score: scoreFormat.value.format(result.rerankClassifierScore),

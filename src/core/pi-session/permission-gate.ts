@@ -115,6 +115,11 @@ export interface PanelGateContext {
   /** This panel's deferrable universe for `ToolSearch`; absent for subagents (no deferral). */
   deferrableTools?: () => DeferrableSnapshot;
   /**
+   * The signal of the user send whose run pi is starting, which a Stop, a replacement or a disposal aborts; undefined for a
+   * run no send started. pi gives `before_agent_start` no abort signal of its own. Absent for nested agents.
+   */
+  startingRunSignal?: () => AbortSignal | undefined;
+  /**
    * How `read_mcp_resource` reaches this panel's agent now, for a resource link in a result from `server`.
    * The folder's MCP tools serve every panel in it and ask this per call; absent for nested agents, whose
    * frozen toolset answers itself.

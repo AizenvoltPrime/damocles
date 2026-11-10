@@ -56,11 +56,16 @@ describe('InjectedMemoryCard', () => {
     const plain = mountCard(injected());
     for (const badge of ['upgraded', 'truncated', 'rerank']) expect(plain.find(`[data-badge="${badge}"]`).exists()).toBe(false);
 
-    const wrapper = mountCard(injected({ upgradedFromCompact: true, truncated: true, rerankRelevance: 'high', rerankReason: 'names the test runner' }));
+    const wrapper = mountCard(injected({ upgradedFromCompact: true, truncated: true, rerankRelevance: 'high' }));
     expect(wrapper.find('[data-badge="upgraded"]').text()).toBe('now in full');
     expect(wrapper.find('[data-badge="truncated"]').text()).toBe('truncated');
     expect(wrapper.find('[data-badge="rerank"]').text()).toBe('high relevance');
-    expect(wrapper.find('[data-badge="rerank"]').attributes('title')).toBe('names the test runner');
+    expect(wrapper.find('[data-badge="rerank"]').attributes('title')).toBeUndefined();
+  });
+
+  it('shows no model reason from a record saved before reranks dropped it', () => {
+    const legacy = { ...injected({ rerankRelevance: 'high' }), rerankReason: 'names the test runner' } as InjectedMemory;
+    expect(mountCard(legacy).find('[data-badge="rerank"]').attributes('title')).toBeUndefined();
   });
 
   it("renders a classifier grade as the locale's verdict template", () => {

@@ -7,7 +7,9 @@ import { InMemoryModelsStore, isRetryableAssistantError, type Api, type Classifi
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createDatabaseWrapper } from '../database';
 import { CONTRADICTION_THRESHOLDS, contradictionRequest } from '../classifier-judges';
+import { INJECT_RERANK_CAP_MS } from '../managers/injection-manager';
 import { RetrievalManager } from '../managers/retrieval-manager';
+import { LLM_RERANK_MIN_MS } from '../rerank';
 import { buildFtsMatchQuery } from '../text-tokenize';
 import { runStructuredCompletion } from '../../pi-session/structured-completion';
 import { pickClassifierModel } from '../../pi-session/classifier-model';
@@ -30,13 +32,16 @@ vi.mock('../query-expansion', () => ({
  * DAMOCLES_JEV_EVAL_OUT to write the report, including sampled negative pairs for hand review, to a file.
  * Contradiction positives are `UPDATES`/`SUPERSEDES` edges; negatives are same-scope FTS neighbours
  * with no edge between them. The chosen thresholds and batching are pinned in `classifier-judges.test.ts`.
+ * The listwise LLM rerank grades every row (one it leaves out is low), so rerank agreement counts every row,
+ * which reports from before it did not.
  */
 const ENABLED = process.env['DAMOCLES_JEV_EVAL'] === '1';
 const STORE = process.env['DAMOCLES_JEV_EVAL_STORE'] ?? path.join(os.userInfo().homedir, '.damocles', 'memory.v3.db');
 const N = Number(process.env['DAMOCLES_JEV_EVAL_N'] ?? 40);
 const LLM = process.env['DAMOCLES_JEV_EVAL_LLM'];
 const REPORT = process.env['DAMOCLES_JEV_EVAL_OUT'];
-const INJECTION_CAP_MS = 2000;
+/** The classifier's share of the injection rerank's cap. */
+const CLASSIFIER_BUDGET_MS = INJECT_RERANK_CAP_MS - LLM_RERANK_MIN_MS;
 
 function copyStore(): { db: DatabaseInstance; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-jev-eval-'));
@@ -176,10 +181,10 @@ describe.skipIf(!ENABLED)('Jev memory judges against the real store', () => {
     }
     const rerankLatencies = latencies.slice(contradictionCalls);
     lines.push(`rerank: ${queries.length} queries, ${rerankLatencies.length} Jev requests; agreement with ${LLM ?? '(no DAMOCLES_JEV_EVAL_LLM)'}: ${compared ? `${(agreed / compared).toFixed(3)} (${agreed}/${compared})` : 'n/a'}`);
-    lines.push(`latency ms: contradiction p50 ${percentile(latencies.slice(0, contradictionCalls), 50).toFixed(0)} p95 ${percentile(latencies.slice(0, contradictionCalls), 95).toFixed(0)}; rerank request p50 ${percentile(rerankLatencies, 50).toFixed(0)} p95 ${percentile(rerankLatencies, 95).toFixed(0)} (injection cap ${INJECTION_CAP_MS})`);
+    lines.push(`latency ms: contradiction p50 ${percentile(latencies.slice(0, contradictionCalls), 50).toFixed(0)} p95 ${percentile(latencies.slice(0, contradictionCalls), 95).toFixed(0)}; rerank request p50 ${percentile(rerankLatencies, 50).toFixed(0)} p95 ${percentile(rerankLatencies, 95).toFixed(0)} (injection classifier budget ${CLASSIFIER_BUDGET_MS})`);
     lines.push(`cost per call: mean $${(costs.reduce((a, b) => a + b, 0) / Math.max(1, costs.length)).toFixed(8)} over ${costs.length} calls`);
 
     expect(scored.length).toBeGreaterThan(0);
-    expect(percentile(rerankLatencies, 95)).toBeLessThan(INJECTION_CAP_MS);
+    expect(percentile(rerankLatencies, 95)).toBeLessThan(CLASSIFIER_BUDGET_MS);
   }, 30 * 60_000);
 });

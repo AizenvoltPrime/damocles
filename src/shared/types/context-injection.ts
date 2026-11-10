@@ -44,7 +44,6 @@ export interface InjectedMemory {
   /** True for a mentioned memory the user has forgotten; it is shown but not tracked as in context. */
   isForgotten?: boolean;
   rerankRelevance?: 'high' | 'medium' | 'low';
-  rerankReason?: string;
   /** Set when a classifier graded the entry: its relevance score, 0 to 1. The card renders a localized verdict from it. */
   rerankClassifierScore?: number;
 }

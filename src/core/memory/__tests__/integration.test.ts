@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import * as crypto from 'crypto';
-import { createTestMemoryDb } from './test-helpers';
+import { createTestMemoryDb, listwiseAnswer } from './test-helpers';
 import { MemoryWriteQueue } from '../write-queue';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import type { MemorySubCallRequest, MemorySubCallResult, MemorySubCallRunner } from '../subcall-runner';
@@ -26,12 +26,6 @@ interface ExtractedMemorySeed {
   scope: string;
   tags?: string[];
   forget_after?: number;
-}
-
-interface RerankItem {
-  id: string;
-  title: string | null;
-  snippet: string;
 }
 
 function seedCandidate(
@@ -80,13 +74,6 @@ function countConsumedCandidates(db: DatabaseInstance): number {
   return row.count;
 }
 
-function parseRerankItems(prompt: string): RerankItem[] {
-  const marker = 'Candidates:\n';
-  const index = prompt.indexOf(marker);
-  if (index < 0) return [];
-  return JSON.parse(prompt.slice(index + marker.length)) as RerankItem[];
-}
-
 interface RunnerHandle {
   runner: MemorySubCallRunner;
   run: SubCallSpy;
@@ -95,20 +82,16 @@ interface RunnerHandle {
 
 /**
  * Mock runner: extract returns the supplied list, merge/conflict report none, profile returns fixed
- * sections, rerank grades by the supplied relevance map (default `low`). Exposes onNoModel.
+ * sections, rerank grades each candidate's snippet with `gradeOf` (default `low`). Exposes onNoModel.
  */
 function makeRunner(
   extractMemories: ExtractedMemorySeed[],
-  relevanceById: Record<string, 'high' | 'medium' | 'low'> = {},
+  gradeOf: (snippet: string) => 'high' | 'medium' | 'low' = () => 'low',
 ): RunnerHandle {
   const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
     if (req.purpose === 'extract') return { value: { memories: extractMemories } as T };
     if (req.purpose === 'profile') return { value: { static: 'durable facts', dynamic: 'recent focus' } as T };
-    if (req.purpose === 'rerank') {
-      const items = parseRerankItems(req.prompt);
-      const results = items.map(item => ({ id: item.id, relevance: relevanceById[item.id] ?? 'low' }));
-      return { value: { results } as T };
-    }
+    if (req.purpose === 'rerank') return { value: listwiseAnswer(req.prompt, gradeOf) as T };
     return { value: { contradicts: false, merged_ids: [], content: '' } as T };
   });
   const onNoModel = vi.fn<() => void>();
@@ -251,7 +234,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
       createdAt: Date.now(),
     });
 
-    const rerankHandle = makeRunner([], { [esbuildId]: 'high', [noiseRow.id]: 'low' });
+    const rerankHandle = makeRunner([], snippet => (snippet.includes('esbuild') ? 'high' : 'low'));
     const retrieval = new RetrievalManager(db, createFakePlatform().settings, rerankHandle.runner);
     const results = await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE });
 
@@ -284,7 +267,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
         if (req.purpose === 'extract') return { value: { memories: [newFact] } as T };
         if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
         if (req.purpose === 'merge') return { value: { contradicts: true, merged_ids: [] } as T };
-        if (req.purpose === 'rerank') return { value: { results: [] } as T };
+        if (req.purpose === 'rerank') return { value: { direct: [], partial: [] } as T };
         return { value: null };
       }),
       runner: { run: subCallSpy(async () => ({ value: null })) },

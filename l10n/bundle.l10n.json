@@ -1144,6 +1144,7 @@
   "Failed to save the skill and command source setting: {0}": "Failed to save the skill and command source setting: {0}",
   "Failed to save the memory extraction setting: {0}": "Failed to save the memory extraction setting: {0}",
   "Failed to save the user profile setting: {0}": "Failed to save the user profile setting: {0}",
+  "Failed to save the memory ranking setting: {0}": "Failed to save the memory ranking setting: {0}",
   "Failed to save the headless browser setting: {0}": "Failed to save the headless browser setting: {0}",
   "A switch setting must be true or false": "A switch setting must be true or false",
   "Local daemon": "Local daemon",

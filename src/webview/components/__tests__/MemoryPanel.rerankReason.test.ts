@@ -52,8 +52,8 @@ describe('MemoryPanel search result reason', () => {
     expect(badgeText()).toContain('χαμηλή συνάφεια');
   });
 
-  it('keeps an LLM rerank reason as written', async () => {
+  it('shows no reason for an LLM grade, even one an older result carries', async () => {
     const wrapper = await searchShowing([result({ rerankRelevance: 'medium', reason: 'mentions the deploy target' })]);
-    expect(wrapper.find('[data-testid="search-result-reason"]').text()).toBe('mentions the deploy target');
+    expect(wrapper.find('[data-testid="search-result-reason"]').exists()).toBe(false);
   });
 });

@@ -2910,6 +2910,10 @@
         "label": "User profile",
         "description": "Keep a short profile of you, built from your memories, and add it to each conversation."
       },
+      "memoryInjectRerank": {
+        "label": "Rank memories with the judge",
+        "description": "When two or more memories match a prompt, the Memory judge ranks them before it is sent. Adds up to 4 seconds and one or more judge requests to that prompt."
+      },
       "compass": {
         "label": "Compass",
         "description": "Index the code so the agent can search symbols and trace their impact."

@@ -116,6 +116,7 @@ export type WebviewToExtensionMessage =
   | { type: "setAssetSourcePrecedence"; precedence: AssetSourcePrecedence }
   | { type: "setMemoryAutoExtract"; enabled: boolean }
   | { type: "setMemoryProfile"; enabled: boolean }
+  | { type: "setMemoryInjectRerank"; enabled: boolean }
   | { type: "setBrowserHeadless"; headless: boolean }
   /** Whole days, 0 keeps checkpoints forever. */
   | { type: "setCheckpointRetentionDays"; days: number }

@@ -1144,6 +1144,7 @@
   "Failed to save the skill and command source setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης πηγής skills και εντολών: {0}",
   "Failed to save the memory extraction setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης εξαγωγής μνημών: {0}",
   "Failed to save the user profile setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης προφίλ χρήστη: {0}",
+  "Failed to save the memory ranking setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης κατάταξης μνημών: {0}",
   "Failed to save the headless browser setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης περιήγησης χωρίς παράθυρο: {0}",
   "A switch setting must be true or false": "Μια ρύθμιση διακόπτη πρέπει να είναι true ή false",
   "Local daemon": "Τοπικός daemon",

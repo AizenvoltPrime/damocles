@@ -443,6 +443,10 @@ export class SettingsManager {
     return this.configManager.handleSetMemoryProfile(enabled);
   }
 
+  async handleSetMemoryInjectRerank(enabled: boolean): Promise<SettingWrite> {
+    return this.configManager.handleSetMemoryInjectRerank(enabled);
+  }
+
   async handleSetBrowserHeadless(headless: boolean): Promise<SettingWrite> {
     return this.configManager.handleSetBrowserHeadless(headless);
   }

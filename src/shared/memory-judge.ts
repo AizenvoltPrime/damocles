@@ -3,6 +3,12 @@ import { DEFAULT_MODELS } from './types/constants';
 
 export const MEMORY_JUDGE_SETTING = 'damocles.memory.judge';
 export const MEMORY_JUDGE_EFFORT_SETTING = 'damocles.memory.judgeEffort';
+export const MEMORY_INJECT_RERANK_SETTING = 'damocles.memory.rerank.injectMode';
+
+/** Whether a `damocles.memory.rerank.injectMode` value turns the injection rerank on; any other value, a typo included, is off. */
+export function injectRerankBlocking(value: unknown): boolean {
+  return value === 'blocking';
+}
 
 /**
  * The classifier choices of `damocles.memory.judge`, in Automatic's order. Each value must differ from every

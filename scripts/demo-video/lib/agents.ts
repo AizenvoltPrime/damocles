@@ -138,15 +138,24 @@ export interface MemberSpec {
   name: string;
   role: 'lead' | 'specialist';
   model: string;
+  /** A specialist's card label and task, which the lead's `team_spawn_specialist` gives it. */
+  spawn?: { description: string; task: string };
+}
+
+/** As `team-runner.ts` labels a member: the lead from the start, a specialist once spawned. */
+function labelsOf(m: MemberSpec, status: TeamAgentStatus, title: string): Pick<TeamAgent, 'description' | 'task'> {
+  if (m.role === 'lead') return { description: `Lead: ${title}`, task: null };
+  const spawned = status === 'pending' ? undefined : m.spawn;
+  return { description: spawned?.description ?? null, task: spawned?.task ?? null };
 }
 
 const zeroUsage = (): AgentUsageTotals => ({ totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
 
 const TERMINAL: ReadonlySet<TeamAgentStatus> = new Set(['completed', 'failed', 'cancelled']);
 
-function teamAgent(m: MemberSpec, status: TeamAgentStatus, stopwatch: Stopwatch): TeamAgent {
+function teamAgent(m: MemberSpec, status: TeamAgentStatus, stopwatch: Stopwatch, title: string): TeamAgent {
   return {
-    agentId: m.agentId, name: m.name, role: m.role, specialization: '', model: m.model, profileId: null, attempt: 0, status,
+    agentId: m.agentId, name: m.name, role: m.role, ...labelsOf(m, status, title), model: m.model, profileId: null, attempt: 0, status,
     ...stopwatch, toolCount: 0, lastToolName: null, totalInputTokens: 0, totalOutputTokens: 0,
     cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: false, effort: null, progressSummary: null, result: null, logFilePath: null,
   };
@@ -187,7 +196,7 @@ export function team(stage: Stage, opts: { teamId: string; toolUseId: string; ti
     state(runs: TeamRunSummary[], status: TeamState['status'], agentStatus: (m: MemberSpec) => TeamAgentStatus): TeamState {
       return {
         teamId, toolUseId: opts.toolUseId, title: opts.title, status, phase: status === 'running' ? 'working' : 'initializing',
-        agents: opts.members.map((m) => teamAgent(m, agentStatus(m), tick(m, agentStatus(m)))), messages: [], scratchpad: [], result: null,
+        agents: opts.members.map((m) => teamAgent(m, agentStatus(m), tick(m, agentStatus(m)), opts.title)), messages: [], scratchpad: [], result: null,
         startTime, endTime: null, totalToolCount: 0, runs,
       };
     },
@@ -198,7 +207,7 @@ export function team(stage: Stage, opts: { teamId: string; toolUseId: string; ti
 
     async status(name: string, status: TeamAgentStatus, progressSummary?: string): Promise<void> {
       const m = member(name);
-      await stage.send({ type: 'teamAgentStatusUpdate', teamId, agentId: m.agentId, status, model: m.model, ...(progressSummary ? { progressSummary } : {}), stopwatch: tick(m, status) });
+      await stage.send({ type: 'teamAgentStatusUpdate', teamId, agentId: m.agentId, status, ...labelsOf(m, status, opts.title), model: m.model, ...(progressSummary ? { progressSummary } : {}), stopwatch: tick(m, status) });
     },
 
     async phase(phase: TeamState['phase']): Promise<void> {

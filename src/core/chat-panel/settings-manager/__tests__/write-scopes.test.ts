@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import { readContributedConfiguration } from '../../../config/read-contributed-configuration';
 import { ConfigManager } from '../managers/config-manager';
 import { ExploreManager } from '../managers/explore-manager';
 import { writeSetting } from '../../message-router/setting-write';
@@ -117,10 +120,12 @@ describe('subagent, notice, source, memory and browser setters', () => {
     await manager.handleSetAssetSourcePrecedence('codex');
     await manager.handleSetMemoryAutoExtract(false);
     await manager.handleSetMemoryProfile(false);
+    await manager.handleSetMemoryInjectRerank(true);
     await manager.handleSetBrowserHeadless(false);
     expect(platform.settings.inspect('damocles.assetSourcePrecedence')).toStrictEqual({ userValue: 'codex' });
     expect(platform.settings.inspect('damocles.memory.autoExtract.enabled')).toStrictEqual({ userValue: false });
     expect(platform.settings.inspect('damocles.memory.profile.enabled')).toStrictEqual({ userValue: false });
+    expect(platform.settings.inspect('damocles.memory.rerank.injectMode')).toStrictEqual({ userValue: 'blocking' });
     expect(platform.settings.inspect('damocles.browser.headless')).toStrictEqual({ userValue: false });
   });
 
@@ -132,6 +137,36 @@ describe('subagent, notice, source, memory and browser setters', () => {
     expect(platform.settings.inspect('damocles.checkpoints.retentionDays')).toMatchObject({ userValue: 3, projectValue: 7 });
   });
 
+  it('writes the injection rerank switch as blocking or off in user settings, even where a project file holds it', async () => {
+    const { platform, manager } = setup({}, { 'damocles.memory.rerank.injectMode': 'Blocking' });
+    expect(await manager.handleSetMemoryInjectRerank(true)).toStrictEqual({ key: 'damocles.memory.rerank.injectMode', home: 'user' });
+    expect(platform.settings.inspect('damocles.memory.rerank.injectMode')).toMatchObject({ userValue: 'blocking', projectValue: 'Blocking' });
+    await manager.handleSetMemoryInjectRerank(false);
+    expect(platform.settings.inspect('damocles.memory.rerank.injectMode')).toMatchObject({ userValue: 'off' });
+  });
+
+  it('shows the injection rerank on only for a stored blocking', async () => {
+    for (const [stored, shown] of [['blocking', true], ['off', false], ['Blocking', false], ['on', false], [true, false]] as const) {
+      const { platform, manager, posted } = setup();
+      await platform.settings.update('damocles.memory.rerank.injectMode', stored, 'user');
+      await manager.sendCurrentSettings({} as never, permissionHandler, undefined);
+      const update = posted.find((m) => m.type === 'settingsUpdate');
+      expect(update?.type === 'settingsUpdate' && update.settings.memoryInjectRerank, String(stored)).toBe(shown);
+    }
+  });
+
+  it('keeps both rerank switches user-only, so a repository cannot turn on billed judge calls', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as {
+      capabilities: { untrustedWorkspaces: { restrictedConfigurations: string[] } };
+      contributes: { configuration: { properties: Record<string, { scope?: string }> } };
+    };
+    for (const key of ['damocles.memory.rerank.injectMode', 'damocles.memory.rerank.enabled']) {
+      expect(manifest.contributes.configuration.properties[key]?.scope, key).toBe('application');
+      expect(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations, key).toContain(key);
+      expect(readContributedConfiguration(process.cwd()).userOnlyKeys, key).toContain(key);
+    }
+  });
+
   it('refuses a switch value that is not a boolean and writes nothing', async () => {
     const { platform, manager } = setup();
     const switches: [string, (value: never) => Promise<unknown>][] = [
@@ -139,6 +174,7 @@ describe('subagent, notice, source, memory and browser setters', () => {
       ['damocles.showThinkingDroppedNotices', (v) => manager.handleSetShowThinkingDroppedNotices(v, folderA)],
       ['damocles.memory.autoExtract.enabled', (v) => manager.handleSetMemoryAutoExtract(v)],
       ['damocles.memory.profile.enabled', (v) => manager.handleSetMemoryProfile(v)],
+      ['damocles.memory.rerank.injectMode', (v) => manager.handleSetMemoryInjectRerank(v)],
       ['damocles.browser.headless', (v) => manager.handleSetBrowserHeadless(v)],
       ['damocles.dangerouslySkipPermissions', (v) => manager.handleSetDefaultDangerouslySkipPermissions(v, folderA)],
       ['damocles.thinkingDisabled', (v) => manager.handleSetDefaultThinkingDisabled(v, folderA)],
@@ -165,8 +201,8 @@ describe('subagent, notice, source, memory and browser setters', () => {
       await manager.sendCurrentSettings({} as never, permissionHandler, folderA);
       const update = posted.find((m) => m.type === 'settingsUpdate');
       if (update?.type !== 'settingsUpdate') throw new Error('no settingsUpdate posted');
-      const { subagentsMaxConcurrent, showCacheMissNotices, showThinkingDroppedNotices, assetSourcePrecedence, memoryAutoExtract, memoryProfile, browserHeadless } = update.settings;
-      return { subagentsMaxConcurrent, showCacheMissNotices, showThinkingDroppedNotices, assetSourcePrecedence, memoryAutoExtract, memoryProfile, browserHeadless };
+      const { subagentsMaxConcurrent, showCacheMissNotices, showThinkingDroppedNotices, assetSourcePrecedence, memoryAutoExtract, memoryProfile, memoryInjectRerank, browserHeadless } = update.settings;
+      return { subagentsMaxConcurrent, showCacheMissNotices, showThinkingDroppedNotices, assetSourcePrecedence, memoryAutoExtract, memoryProfile, memoryInjectRerank, browserHeadless };
     };
     expect(await sent({})).toStrictEqual({
       subagentsMaxConcurrent: 4,
@@ -175,6 +211,7 @@ describe('subagent, notice, source, memory and browser setters', () => {
       assetSourcePrecedence: 'claude',
       memoryAutoExtract: true,
       memoryProfile: true,
+      memoryInjectRerank: false,
       browserHeadless: true,
     });
     expect(await sent({ [A]: { local: { 'damocles.subagents.maxConcurrent': 9, 'damocles.showCacheMissNotices': true } } })).toMatchObject({

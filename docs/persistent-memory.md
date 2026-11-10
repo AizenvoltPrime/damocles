@@ -64,6 +64,8 @@ Each queued turn records the files its tool calls touched. When a project memory
 
 A short auto-maintained summary of you: a static section plus a recent-activity dynamic section, per project and global scope, regenerated during consolidation and injected once per context, and again after compaction. Edit it inline in the Memory Panel; set its budget via `damocles.memory.profile.tokenBudget`.
 
+The Background model writes each section from the scope's prior profile and its recent facts and episodes. The query selects those memories by scope, and the prompt says so, because without that line the model dropped a project's memories that named the project differently from its folder. A section with nothing that passes is `null` (the schema's type is `["string", "null"]`), stored as empty and left out of the injection. Asked for an empty string instead, Haiku 5.5 typed `""` or `(empty)` into the section. With no inputs it wrote a sentence about what was missing, so a scope with no prior profile and no memories makes no call.
+
 ## Pinned memories
 
 User-designated memories injected in full once per context, bypassing the relevance gate. Pin and unpin via the overlay UI. The budget is configurable (default 500 tokens).
@@ -111,7 +113,7 @@ Each prompt has a "View injected context" pill that opens an overlay showing wha
 
 ## Reranking and the memory judge
 
-`search_memories` reranks its BM25 hits with a cheap LLM (ungraded hits keep their BM25 standing); the injected memories can optionally be reranked too under a hard 2 s cap (`damocles.memory.rerank.injectMode`), where a `low` grade demotes a memory to a one-line summary.
+`search_memories` reranks its BM25 hits with a cheap LLM; the injected memories can optionally be reranked too under a hard 4 s cap (`damocles.memory.rerank.injectMode`, Settings › Tools & integrations › Rank memories with the judge, shown while Memory is on), where a `low` grade demotes a memory to a one-line summary. The LLM answers with the numbers of the directly relevant (high) and partially relevant (medium) memories, each most relevant first; a memory in neither list is low. It writes no per-memory reason, which keeps a 30-memory rerank on Haiku 5.5 at about 2 s.
 
 Reranks and the contradiction judge that decides whether a new fact supersedes an old one follow **Memory judge** (Settings › Models & accounts › Background work, `damocles.memory.judge`).
 

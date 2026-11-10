@@ -13,7 +13,9 @@ import { deriveTier, escapeLike, rowToEntry } from '../types';
 import { buildFtsMatchQuery } from '../text-tokenize';
 import { expandQuery } from '../query-expansion';
 import type { MemorySubCallRunner } from '../subcall-runner';
-import { LLM_RERANK_MIN_MS, classifierReason, classifierRerank } from '../classifier-judges';
+import { classifierReason } from '../classifier-judges';
+import { RERANK_SNIPPET_CHARS, RERANK_SORT_WEIGHT, judgeRerank, type RerankGrade } from '../rerank';
+import { truncateToChars } from '../token-estimate';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { userScopeRemote } from '../../user-scope';
 
@@ -31,15 +33,6 @@ function normalizeEntryFilePaths(entry: MemoryEntry): MemoryEntry {
   };
 }
 
-const RELEVANCE_RANK: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 1 };
-
-/**
- * Ungraded rows sort at a neutral position (between medium and low) so a high-BM25 row the LLM
- * didn't grade keeps its standing instead of sinking below explicitly-low grades. Distinct from
- * {@link RELEVANCE_RANK}, which only dedups grades.
- */
-const RERANK_SORT_WEIGHT: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 0 };
-const UNGRADED_SORT_WEIGHT = 1;
 
 /** Max time interactive search waits on LLM query expansion before falling back to BM25-only. */
 const EXPANSION_DEADLINE_MS = 400;
@@ -51,75 +44,19 @@ function raceDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
     new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
   ]);
 }
-function rerankSortWeight(relevance: RerankRelevance | undefined): number {
-  return relevance === undefined ? UNGRADED_SORT_WEIGHT : RERANK_SORT_WEIGHT[relevance];
-}
-
 const DEFAULT_CANDIDATE_POOL = 30;
 const DEFAULT_RESULT_LIMIT = 20;
 const SNIPPET_CHARS = 120;
-const RERANK_SNIPPET_CHARS = 160;
 
-/**
- * Search-path rerank is user-blocking, so it may run longer than the 2s injection budget but must
- * stay bounded rather than inheriting the 12s runner default and hanging an interactive query.
- */
-const SEARCH_RERANK_TIMEOUT_MS = 8000;
-
-type RerankRelevance = 'high' | 'medium' | 'low';
+/** Bounds the search rerank, which the model's `search_memories` call waits on; see docs/invariants.md "Reranks stay inside their caps". */
+const SEARCH_RERANK_CAP_MS = 8000;
 
 type CandidateRow = MemoryRow & { rank: number };
 
 interface RankedCandidate {
   row: CandidateRow;
-  relevance?: RerankRelevance;
-  reason?: string;
-  classifierScore?: number;
+  grade?: RerankGrade;
 }
-
-type RerankGrade = Omit<RankedCandidate, 'row' | 'relevance'> & { relevance: RerankRelevance };
-
-interface RerankResult {
-  results: Array<{ id: string; relevance: RerankRelevance; reason?: string }>;
-}
-
-/** The runner's `T` is an unvalidated cast; a hallucinated shape would throw at `value.results`. */
-function isRerankResult(v: unknown): v is RerankResult {
-  return (
-    !!v &&
-    typeof v === 'object' &&
-    Array.isArray((v as { results?: unknown }).results) &&
-    (v as { results: unknown[] }).results.every(
-      (r) => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string',
-    )
-  );
-}
-
-const RERANK_SCHEMA = {
-  type: 'object',
-  properties: {
-    results: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          relevance: { enum: ['high', 'medium', 'low'] },
-          reason: { type: 'string' },
-        },
-        required: ['id', 'relevance'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['results'],
-  additionalProperties: false,
-} satisfies Record<string, unknown>;
-
-const RERANK_SYSTEM_PROMPT =
-  'Grade how relevant each candidate memory is to the user query. ' +
-  'Return every candidate id exactly once with a relevance of high, medium, or low ' +
-  'and a brief reason. Judge by semantic relevance, not keyword overlap.';
 
 function tierPredicate(tier: MemoryTier, column: string): { clause: string; params: unknown[] } {
   if (tier === 'note') return { clause: `${column}kind = 'note'`, params: [] };
@@ -136,7 +73,7 @@ function buildTierFilter(tiers: MemoryTier[], column: string): { clause: string;
   };
 }
 
-function rowToSearchResult({ row, relevance, reason, classifierScore }: RankedCandidate, index: number): SearchResult {
+function rowToSearchResult({ row, grade }: RankedCandidate, index: number): SearchResult {
   return {
     id: row.id,
     tier: deriveTier(row.scope as MemoryScope, row.kind as MemoryKind),
@@ -145,9 +82,8 @@ function rowToSearchResult({ row, relevance, reason, classifierScore }: RankedCa
     rank: index + 1,
     timestamp: row.created_at,
     ...(row.observation_type ? { observationType: row.observation_type as ObservationType } : {}),
-    ...(relevance ? { rerankRelevance: relevance } : {}),
-    ...(reason ? { reason } : {}),
-    ...(classifierScore !== undefined ? { rerankClassifierScore: classifierScore } : {}),
+    ...(grade ? { rerankRelevance: grade.relevance } : {}),
+    ...(grade?.classifier ? { reason: classifierReason(grade.classifier), rerankClassifierScore: grade.classifier.score } : {}),
   };
 }
 
@@ -318,69 +254,28 @@ export class RetrievalManager {
     return { clause: ` AND ${clauses.join(' AND ')}`, params };
   }
 
-  /** The classifier when the Memory judge has one, else (or when it fails) the LLM in the time left, else BM25 order. */
+  /** One rerank capped at SEARCH_RERANK_CAP_MS (`judgeRerank`); on null, BM25 order. */
   private async rerank(query: string, candidates: CandidateRow[]): Promise<RankedCandidate[]> {
-    const runner = this.runner!;
-    let llmTimeoutMs = SEARCH_RERANK_TIMEOUT_MS;
-    if (runner.hasClassifier?.()) {
-      const started = Date.now();
-      const items = candidates.map(row => ({ id: row.id, title: row.title, snippet: row.content.slice(0, RERANK_SNIPPET_CHARS) }));
-      const jev = await classifierRerank(runner, query, items, SEARCH_RERANK_TIMEOUT_MS);
-      if (jev) {
-        const graded = new Map<string, RerankGrade>();
-        for (const [id, g] of jev) graded.set(id, { relevance: g.relevance, reason: classifierReason(g), classifierScore: g.score });
-        return this.orderByGrades(candidates, graded);
-      }
-      llmTimeoutMs -= Date.now() - started;
-      if (llmTimeoutMs < LLM_RERANK_MIN_MS) return candidates.map(row => ({ row }));
-    }
-
-    const prompt = this.buildRerankPrompt(query, candidates);
-    const { value } = await runner.run<RerankResult>({
-      purpose: 'rerank',
-      systemPrompt: RERANK_SYSTEM_PROMPT,
-      prompt,
-      schema: RERANK_SCHEMA,
-      timeoutMs: llmTimeoutMs,
-    });
-
-    if (!isRerankResult(value)) return candidates.map(row => ({ row }));
-
-    const graded = new Map<string, RerankGrade>();
-    for (const item of value.results) {
-      if (!(item.relevance in RELEVANCE_RANK)) continue;
-      const existing = graded.get(item.id);
-      if (!existing || RELEVANCE_RANK[item.relevance] > RELEVANCE_RANK[existing.relevance]) {
-        graded.set(item.id, { relevance: item.relevance, ...(item.reason ? { reason: item.reason } : {}) });
-      }
-    }
-
-    if (graded.size === 0) return candidates.map(row => ({ row }));
-    return this.orderByGrades(candidates, graded);
+    const items = candidates.map(row => ({ id: row.id, title: row.title, snippet: truncateToChars(row.content, RERANK_SNIPPET_CHARS) }));
+    const graded = await judgeRerank(this.runner!, query, items, SEARCH_RERANK_CAP_MS);
+    return graded ? this.orderByGrades(candidates, graded) : candidates.map(row => ({ row }));
   }
 
+  /** `graded` holds every candidate. Within a grade: the LLM's order where it gave one, else source count, then BM25 order. */
   private orderByGrades(
     candidates: CandidateRow[],
     graded: ReadonlyMap<string, RerankGrade>,
   ): RankedCandidate[] {
     return candidates
-      .map((row, bm25Index) => ({ row, bm25Index, grade: graded.get(row.id) }))
+      .map((row, bm25Index) => ({ row, bm25Index, grade: graded.get(row.id)! }))
       .sort(
         (a, b) =>
-          rerankSortWeight(b.grade?.relevance) - rerankSortWeight(a.grade?.relevance) ||
+          RERANK_SORT_WEIGHT[b.grade.relevance] - RERANK_SORT_WEIGHT[a.grade.relevance] ||
+          (a.grade.position ?? 0) - (b.grade.position ?? 0) ||
           b.row.source_count - a.row.source_count ||
           a.bm25Index - b.bm25Index,
       )
-      .map(({ row, grade }) => ({ row, ...grade }));
-  }
-
-  private buildRerankPrompt(query: string, candidates: CandidateRow[]): string {
-    const items = candidates.map(row => ({
-      id: row.id,
-      title: row.title,
-      snippet: row.content.slice(0, RERANK_SNIPPET_CHARS),
-    }));
-    return `Query: ${query}\n\nCandidates:\n${JSON.stringify(items)}`;
+      .map(({ row, grade }) => ({ row, grade }));
   }
 
   /** Pure read of full entries by id; the access-count bump lives in `MemoryService.getMemoryDetails`. */

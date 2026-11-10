@@ -55,9 +55,9 @@ Most `damocles.*` settings apply to the whole window; the ones a chat reads for 
 | `damocles.memory.catalogTokenBudget` | Token budget per prompt for the memories that pass the relevance gate | `2000` |
 | `damocles.memory.autoExtract.enabled` | Auto-extract durable memories from conversations during consolidation | `true` |
 | `damocles.memory.autoExtract.idleSeconds` | Seconds of inactivity before an idle consolidation pass runs | `180` |
-| `damocles.memory.rerank.enabled` | Rerank `search_memories` BM25 candidates with an LLM | `true` |
+| `damocles.memory.rerank.enabled` | Rerank `search_memories` BM25 candidates with the Memory judge. User settings only | `true` |
 | `damocles.memory.rerank.candidatePool` | BM25 candidates to over-fetch before reranking | `30` |
-| `damocles.memory.rerank.injectMode` | Injection ranking: `off` (lexical only) or `blocking` (rerank the gated memories, 2 s cap) | `off` |
+| `damocles.memory.rerank.injectMode` | Injection ranking: `off` (lexical only) or `blocking` (rerank the gated memories, 4 s cap). User settings only; set by Settings › Tools & integrations › Rank memories with the judge | `off` |
 | `damocles.imageGeneration.enabled` | Offer the `GenerateImage` tool, which spends on your OpenRouter key or sign-in. User settings only | `false` |
 | `damocles.imageGeneration.model` | OpenRouter image model for `GenerateImage`, picked in Settings | `""` |
 | `damocles.memory.profile.enabled` | Maintain and inject an auto-generated user profile; when off, neither consolidation nor the quality audit makes a profile model call | `true` |

@@ -752,6 +752,17 @@ describe('buildAgentStartResult — injection (US-005)', () => {
     expect(args.workspace).toBe('/project');
   });
 
+  it("hands the memory build the starting send's signal, read before the prompt is built", async () => {
+    const { panel, build } = makePanel({ memoryEnabled: true });
+    const stop = new AbortController();
+    let current: AbortSignal | undefined = stop.signal;
+    panel.startingRunSignal = () => current;
+    const pending = runAgentStart(event({ prompt: 'what does this do?' }), panel, 'sess-1');
+    current = undefined;
+    await pending;
+    expect((build.mock.calls[0]![0] as { abortSignal?: AbortSignal }).abortSignal).toBe(stop.signal);
+  });
+
   it('queries memory with the user text only and feeds the IDE block file to the file gate as the editor', async () => {
     const { panel, build } = makePanel({ memoryEnabled: true });
     const filePath = 'c:\\GameDev\\iemis\\app\\Scopes\\OrganizationScope.php';

@@ -145,6 +145,12 @@ test('the subagent and notice rows save for the project folder, the source, memo
   await expect(profile.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
   await profile.getByRole('switch').click();
   await expect.poll(() => readUserSettings(home)['damocles.memory.profile.enabled']).toBe(false);
+  const rank = settingsRow(overlay, 'damocles.memory.rerank.injectMode');
+  await expect(rank.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+  await rank.getByRole('switch').click();
+  await expect.poll(() => readUserSettings(home)['damocles.memory.rerank.injectMode']).toBe('blocking');
+  await rank.getByRole('switch').click();
+  await expect.poll(() => readUserSettings(home)['damocles.memory.rerank.injectMode']).toBe('off');
   // The browser is off by default, so its headless row is hidden until it is turned on.
   await expect(settingsRow(overlay, 'damocles.browser.headless')).toHaveCount(0);
   await settingsRow(overlay, 'damocles.browser.enabled').getByRole('switch').click();

@@ -31,9 +31,6 @@ export const RERANK_BATCH_SIZE = 10;
 /** The query length both rerank paths send, the classifier and the LLM. */
 export const RERANK_QUERY_CHARS = 2000;
 
-/** Below this much of the rerank cap, the LLM fallback cannot finish, so it is not started (and not billed). */
-export const LLM_RERANK_MIN_MS = 300;
-
 export type RerankRelevance = 'high' | 'medium' | 'low';
 
 export interface RerankItem {
@@ -139,13 +136,15 @@ export async function classifierRerank(
   query: string,
   items: readonly RerankItem[],
   timeoutMs: number,
+  abortSignal?: AbortSignal,
 ): Promise<Map<string, ClassifierGrade> | null> {
   const classify = runner.classify;
   if (!classify || !runner.hasClassifier?.() || items.length === 0) return null;
   const failed = new AbortController();
   const firstFailure = new Promise<null>((resolve) => failed.signal.addEventListener('abort', () => resolve(null), { once: true }));
+  const batchSignal = abortSignal ? AbortSignal.any([failed.signal, abortSignal]) : failed.signal;
   const batches = buildRerankBatches(query, items).map(async (b) => {
-    const answers = await classify.call(runner, { purpose: 'rerank', state: b.state, questions: b.questions, timeoutMs, abortSignal: failed.signal });
+    const answers = await classify.call(runner, { purpose: 'rerank', state: b.state, questions: b.questions, timeoutMs, abortSignal: batchSignal });
     const grades = gradeBatch(b, answers);
     if (!grades) failed.abort();
     return grades;

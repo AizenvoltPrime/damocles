@@ -722,12 +722,14 @@ describe('integration sub-rows', () => {
     await open(NO_HOST_SETTINGS, 'integrations');
     expect(row('damocles.memory.autoExtract.enabled')).not.toBeNull();
     expect(row('damocles.memory.profile.enabled')).not.toBeNull();
+    expect(row('damocles.memory.rerank.injectMode')).not.toBeNull();
     expect(row('damocles.browser.headless')).toBeNull();
 
     groups(false, true);
     await nextTick();
     expect(row('damocles.memory.autoExtract.enabled')).toBeNull();
     expect(row('damocles.memory.profile.enabled')).toBeNull();
+    expect(row('damocles.memory.rerank.injectMode')).toBeNull();
     expect(row('damocles.browser.headless')).not.toBeNull();
   });
 
@@ -736,9 +738,11 @@ describe('integration sub-rows', () => {
     await open(NO_HOST_SETTINGS, 'integrations');
     row('damocles.memory.autoExtract.enabled')!.querySelector<HTMLElement>('[role="switch"]')!.click();
     row('damocles.memory.profile.enabled')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    row('damocles.memory.rerank.injectMode')!.querySelector<HTMLElement>('[role="switch"]')!.click();
     row('damocles.browser.headless')!.querySelector<HTMLElement>('[role="switch"]')!.click();
     expect(posted).toContainEqual({ type: 'setMemoryAutoExtract', enabled: false });
     expect(posted).toContainEqual({ type: 'setMemoryProfile', enabled: false });
+    expect(posted).toContainEqual({ type: 'setMemoryInjectRerank', enabled: true });
     expect(posted).toContainEqual({ type: 'setBrowserHeadless', headless: false });
   });
 

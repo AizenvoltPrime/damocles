@@ -32,32 +32,42 @@ export const PROFILE_SYSTEM_PROMPT: string = `Maintain a concise profile for one
 'static' holds only identity and environment facts that change how an agent works in this scope: who the user is, the machine, toolchains, services, and conventions of the codebase. A project profile holds only facts about that project. A global profile holds only facts that apply across projects.
 'dynamic' is the current focus in this scope: what the user is working on now and what comes next, so a new conversation can pick up the thread.
 
+The listed memories are already stored under this scope, so they belong to it even when they name the project differently from its folder.
 Never restate a preference listed under "Preferences already injected verbatim". Those reach the agent word for word, so repeating them wastes tokens and drifts from the source.
 Drop any prior-profile line that fails the usefulness test below or belongs to another scope; do not carry it forward.
 
 ${USEFULNESS_RUBRIC}
 
-Keep 'static' under ~1200 characters and 'dynamic' under ~600 characters. Every statement must derive from the prior profile or the listed memories; never invent facts about the user.`;
+Keep 'static' under ~1200 characters and 'dynamic' under ~600 characters. Every statement must derive from the prior profile or the listed memories; never invent facts about the user.
+A section that has nothing that passes is null. Never write placeholder text, quotes, or a note that something is missing, unknown or not yet recorded.`;
 
+// An empty section is null, not '': asked for an empty string, models type `""` or `(empty)` into it
+// (docs/persistent-memory.md "User profile"). Null in a required union is how strict structured outputs spell optional.
 export const PROFILE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    static: { type: 'string' },
-    dynamic: { type: 'string' },
+    static: { type: ['string', 'null'] },
+    dynamic: { type: ['string', 'null'] },
   },
   required: ['static', 'dynamic'],
   additionalProperties: false,
 };
 
-/**
- * Shape guard for the `profile` sub-call output: the runner's `T` is an unvalidated cast, so a
- * hallucinated shape (missing or non-string sections) would reach `value.static.slice(...)` and
- * throw. Narrows to a real {@link UserProfile}; an invalid shape is a logged no-op skip at the call site.
- */
+/** Shape guard for a stored profile; the runner's `T` is an unvalidated cast, so callers check before reading sections. */
 export function isUserProfileShape(v: unknown): v is UserProfile {
   if (!v || typeof v !== 'object') return false;
   const p = v as { static?: unknown; dynamic?: unknown };
   return typeof p.static === 'string' && typeof p.dynamic === 'string';
+}
+
+/** A {@link PROFILE_SCHEMA} answer as a profile, a null section read as empty; null for any other shape. */
+export function profileFromAnswer(v: unknown): UserProfile | null {
+  if (!v || typeof v !== 'object') return null;
+  const p = v as { static?: unknown; dynamic?: unknown };
+  const section = (s: unknown): string | undefined => (s === null ? '' : typeof s === 'string' ? s : undefined);
+  const staticText = section(p.static);
+  const dynamicText = section(p.dynamic);
+  return staticText === undefined || dynamicText === undefined ? null : { static: staticText, dynamic: dynamicText };
 }
 
 /** How far back from the hard cut to look for a natural boundary. */
@@ -162,13 +172,15 @@ export class ProfileManager {
     if (!this.isEnabled()) return;
     if (scope === 'global' && userScopeRemote()) return;
     const prior = this.getProfile(scope, workspace);
+    // Every statement must derive from these two, so with neither there is nothing a call could add.
+    if (!prior.static.trim() && !prior.dynamic.trim() && this.recentMemories(scope, workspace).length === 0) return;
 
     // CAS: snapshot each section's updated_at before the ~45s LLM call. A concurrent user edit bumps
     // it; we re-compare inside the post-LLM transaction and skip the moved section so the edit wins.
     const beforeStatic = this.sectionUpdatedAt(scope, workspace, 'static');
     const beforeDynamic = this.sectionUpdatedAt(scope, workspace, 'dynamic');
 
-    const { value } = await this.runner.run<UserProfile>({
+    const { value } = await this.runner.run<unknown>({
       purpose: 'profile',
       systemPrompt: PROFILE_SYSTEM_PROMPT,
       prompt: this.buildUpdatePrompt(scope, workspace, prior),
@@ -176,13 +188,14 @@ export class ProfileManager {
     });
 
     if (value === null) return;
-    if (!isUserProfileShape(value)) {
+    const next = profileFromAnswer(value);
+    if (!next) {
       log('[ProfileManager] profile sub-call returned an invalid shape; skipping profile update (no-op): %o', value);
       return;
     }
 
-    const nextStatic = truncateAtBoundary(value.static, STATIC_CHAR_CAP);
-    const nextDynamic = truncateAtBoundary(value.dynamic, DYNAMIC_CHAR_CAP);
+    const nextStatic = truncateAtBoundary(next.static, STATIC_CHAR_CAP);
+    const nextDynamic = truncateAtBoundary(next.dynamic, DYNAMIC_CHAR_CAP);
 
     // CAS commit: re-read updated_at inside the transaction and upsert only if unchanged since the
     // snapshot. Re-read + upsert share one transaction, so there's no TOCTOU window.

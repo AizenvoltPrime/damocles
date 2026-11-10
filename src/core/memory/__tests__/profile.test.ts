@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { createTestDbPath, createTestMemoryDb } from './test-helpers';
-import { ProfileManager, PROFILE_SYSTEM_PROMPT, isUserProfileShape, truncateAtBoundary } from '../managers/profile-manager';
+import { ProfileManager, PROFILE_SCHEMA, PROFILE_SYSTEM_PROMPT, isUserProfileShape, profileFromAnswer, truncateAtBoundary } from '../managers/profile-manager';
 import { USEFULNESS_RUBRIC } from '../rubric';
 import { estimateTokens } from '../token-estimate';
 import { MemoryWriteQueue } from '../write-queue';
@@ -136,7 +136,43 @@ describe('ProfileManager', () => {
     expect(PROFILE_SYSTEM_PROMPT).toContain('Never restate a preference');
   });
 
+  // Measured on Haiku 5.5: without the scope line it dropped a project's facts named differently from its folder,
+  // and asked for an empty string it typed `""` or "(empty)" into the section.
+  it('the system prompt keeps the listed memories in scope and asks for null, never placeholder text, for an empty section', () => {
+    expect(PROFILE_SYSTEM_PROMPT).toContain('The listed memories are already stored under this scope');
+    expect(PROFILE_SYSTEM_PROMPT).toContain('A section that has nothing that passes is null.');
+    expect(PROFILE_SCHEMA).toMatchObject({ properties: { static: { type: ['string', 'null'] }, dynamic: { type: ['string', 'null'] } }, required: ['static', 'dynamic'] });
+  });
+
+  it('updateProfile stores a null section as empty and injects no tag for it', async () => {
+    seedFact(db, 'f1', 'Uses esbuild for bundling', WORKSPACE);
+    const manager = new ProfileManager(db, new MemoryWriteQueue(), hostileRunner({ static: 'Uses esbuild.', dynamic: null }), createFakePlatform().settings);
+
+    await manager.updateProfile('project', WORKSPACE);
+
+    expect(manager.getProfile('project', WORKSPACE)).toEqual({ static: 'Uses esbuild.', dynamic: '' });
+    expect(manager.buildProfileInjection(WORKSPACE, 400)).not.toContain('<dynamic>');
+  });
+
+  it('updateProfile makes no model call while the scope has neither a prior profile nor memories', async () => {
+    const run = vi.fn(async () => ({ value: PROFILE_VALUE }));
+    const manager = new ProfileManager(db, new MemoryWriteQueue(), { run } as unknown as MemorySubCallRunner, createFakePlatform().settings);
+    db.prepare(
+      `INSERT INTO memories (id, kind, scope, content, content_hash, workspace, is_latest, forgotten, created_at, updated_at)
+       VALUES ('p1', 'preference', 'global', 'Reply tersely', 'p1', NULL, 1, 0, 0, 0)`,
+    ).run();
+
+    await manager.updateProfile('project', WORKSPACE);
+    await manager.updateProfile('global', '');
+    expect(run).not.toHaveBeenCalled();
+
+    await manager.setProfileSection('global', '', 'static', 'Uses Windows 11.');
+    await manager.updateProfile('global', '');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('buildProfileInjection wraps content and includes seeded static text', async () => {
+    seedFact(db, 'f1', 'Uses esbuild for bundling', WORKSPACE);
     const manager = new ProfileManager(db, new MemoryWriteQueue(), fixedRunner(PROFILE_VALUE), createFakePlatform().settings);
     await manager.updateProfile('project', WORKSPACE);
 
@@ -160,6 +196,11 @@ describe('ProfileManager', () => {
   });
 
   it('buildProfileInjection trims dynamic first under a tiny token budget', async () => {
+    seedFact(db, 'f1', 'Uses esbuild for bundling', WORKSPACE);
+    db.prepare(
+      `INSERT INTO memories (id, kind, scope, content, content_hash, workspace, is_latest, forgotten, created_at, updated_at)
+       VALUES ('g1', 'fact', 'global', 'Develops on Windows 11', 'g1', NULL, 1, 0, 0, 0)`,
+    ).run();
     const manager = new ProfileManager(db, new MemoryWriteQueue(), fixedRunner(PROFILE_VALUE), createFakePlatform().settings);
     await manager.updateProfile('project', WORKSPACE);
     await manager.updateProfile('global', '');
@@ -226,6 +267,15 @@ describe('ProfileManager', () => {
     expect(isUserProfileShape({ static: 'a' })).toBe(false); // missing dynamic
     expect(isUserProfileShape({ static: 1, dynamic: 'b' })).toBe(false); // static not a string
     expect(isUserProfileShape({ static: 'a', dynamic: [] })).toBe(false); // dynamic not a string
+  });
+
+  it('profileFromAnswer reads a null section as empty and rejects a missing or non-string one', () => {
+    expect(profileFromAnswer({ static: 'a', dynamic: null })).toEqual({ static: 'a', dynamic: '' });
+    expect(profileFromAnswer({ static: null, dynamic: null })).toEqual({ static: '', dynamic: '' });
+    expect(profileFromAnswer({ static: 'a', dynamic: 'b' })).toEqual({ static: 'a', dynamic: 'b' });
+    expect(profileFromAnswer({ static: 'a' })).toBeNull();
+    expect(profileFromAnswer({ static: 1, dynamic: null })).toBeNull();
+    expect(profileFromAnswer(null)).toBeNull();
   });
 
   const hostileProfileShapes: Array<{ name: string; value: unknown }> = [

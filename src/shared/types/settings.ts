@@ -55,6 +55,8 @@ export interface ExtensionSettings {
   memoryAutoExtract: boolean;
   /** `damocles.memory.profile.enabled` */
   memoryProfile: boolean;
+  /** `damocles.memory.rerank.injectMode` is `blocking` */
+  memoryInjectRerank: boolean;
   /** `damocles.browser.headless` */
   browserHeadless: boolean;
   cacheWarming: CacheWarmingMode;

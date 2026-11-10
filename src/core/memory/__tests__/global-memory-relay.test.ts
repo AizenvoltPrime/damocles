@@ -247,7 +247,28 @@ describe('a client\'s global memory in a prompt\'s injection, failing or slow', 
     expect(result!.display.notices).toEqual([]);
   });
 
-  it('asks the client to resolve and to search at once, and waits for neither past the rerank\'s cap', async () => {
+  it('stops waiting on the client at a Stop of the run, treating it as away', async () => {
+    await service.saveMemory({ content: 'kiwi releases are tagged by hand', kind: 'fact', scope: 'project', workspace: WORKSPACE });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      vi.mocked(fake.remote.memorySearch).mockImplementation(() => new Promise(() => undefined));
+      const stop = new AbortController();
+      const pending = service.buildInjectionContext({
+        sessionId: null, workspace: WORKSPACE, activeFile: null, prompt: 'how are kiwi releases tagged', live: emptyLiveInjections(), promptIndex: 1, abortSignal: stop.signal,
+      });
+      for (const start = Date.now(); vi.mocked(fake.remote.memorySearch).mock.calls.length === 0;) {
+        if (Date.now() - start > 5_000) throw new Error('the client was never asked');
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      stop.abort();
+      const result = await pending;
+      expect(result!.text).toContain('kiwi releases are tagged by hand');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks the client to resolve and to search at once, and waits for neither past the 2 s client-ask cap', async () => {
     await service.saveMemory({ content: 'kiwi releases are tagged by hand', kind: 'fact', scope: 'project', workspace: WORKSPACE });
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
