@@ -160,6 +160,11 @@ const H = vi.hoisted(() => {
     // routed through `applyOverrides` is therefore invisible to the getter pi's CacheWarmer calls.
     const globalSettings: { cacheWarming?: string; compaction?: { enabled?: boolean } } = {};
     let effectiveSettings: Record<string, unknown> = {};
+    const ANTHROPIC_PROVIDER = {
+      id: 'anthropic',
+      auth: { oauth: {}, apiKey: {} },
+      getModels: () => [{ id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
+    };
     return {
       cwd: '/cwd',
       agentDir: '/fake/agent',
@@ -191,6 +196,12 @@ const H = vi.hoisted(() => {
           : undefined),
         hasConfiguredAuth: () => true,
         getModels: () => [{ id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
+        // the reads a daemon's core composes with each device's credentials
+        isUsingOAuth: () => false,
+        getProviderAuthStatus: () => ({ configured: true, source: 'environment' }),
+        getProviders: () => [ANTHROPIC_PROVIDER],
+        getProvider: (id: string) => (id === 'anthropic' ? ANTHROPIC_PROVIDER : undefined),
+        getAvailable: async () => ANTHROPIC_PROVIDER.getModels(),
         refresh: vi.fn(),
         // a daemon's core registers its anthropic transport at init
         registerProvider: vi.fn(),
@@ -563,22 +574,6 @@ function piRuns(opts: unknown, getBranchMock: unknown, committed: readonly unkno
   getBranch.mockReturnValue(branch);
 }
 
-/**
- * A daemon's core refreshing pi's availability snapshot for a new acting client: `clientSnapshotSettling` is one promise
- * until `settle`, which nulls it before its waiters run, as `PiRuntime._settleClientRefreshes` does.
- */
-function pendingClientRefresh(): { settle: () => void; awaited: () => boolean } {
-  let settle!: () => void;
-  let pending: Promise<void> | null = new Promise<void>((resolve) => {
-    settle = () => {
-      pending = null;
-      resolve();
-    };
-  });
-  const read = vi.spyOn(PiRuntime.get(), 'clientSnapshotSettling').mockImplementation(() => pending);
-  return { settle, awaited: () => read.mock.results.some((result) => result.value !== null) };
-}
-
 /** A SecretStorage stand-in. Without it `start()` skips the provider sync entirely, which is why the
  *  whole custom-provider fallback path was unreachable from this suite. */
 const FAKE_SECRETS = {
@@ -628,31 +623,16 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
     await panel.dispose();
   });
 
-  // A fresh attach re-publishes an equal clientAuth, which starts no credential refresh, so only the acting-client refresh
-  // brings the device's sign-in back into pi's availability snapshot, and it settles after the device's queued send arrived.
-  it("a send that arrives with a signed-in device's fresh attach runs once pi's snapshot holds that device again, never refused for its sign-in", async () => {
+  // A fresh attach re-publishes an equal clientAuth, which changes no provider; the device's sign-in counts from its clientAuth at each read.
+  it("a send that arrives with a signed-in device's fresh attach runs on that device's sign-in, with no refresh of pi's snapshot", async () => {
     const host = createFakeRemoteHost();
     const signedIn = { providers: { anthropic: { type: 'oauth' as const, expires: Date.now() + 3_600_000, hasKey: false, flatFee: false } } };
     host.set('clientAuth', 'client-a', signedIn);
     host.setActing('client-a');
     Object.assign(testPlatform, { remote: host.remote });
-    const modelRuntime = H.getServices().modelRuntime as unknown as { hasConfiguredAuth: (provider: string) => boolean; refresh: ReturnType<typeof vi.fn> };
-    // pi's availability snapshot: what the acting client held when its last refresh finished
-    let snapshot = new Set(['anthropic']);
-    const refreshes: Array<() => void> = [];
-    modelRuntime.hasConfiguredAuth = (provider) => snapshot.has(provider);
-    modelRuntime.refresh.mockImplementation(() => new Promise((resolve) => refreshes.push(() => {
-      const acting = host.remote.clients.acting();
-      const held = acting === undefined ? undefined : host.remote.clients.auth(acting);
-      snapshot = new Set(Object.entries(held?.providers ?? {}).filter(([, entry]) => entry.type !== 'none').map(([provider]) => provider));
-      resolve({ errors: new Map() });
-    })));
-    const finishRefreshes = async (): Promise<void> => {
-      for (let pass = 0; pass < 5; pass++) {
-        while (refreshes.length > 0) refreshes.shift()!();
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-    };
+    const modelRuntime = H.getServices().modelRuntime as unknown as { hasConfiguredAuth: (provider: string) => boolean; refresh: () => Promise<unknown> };
+    // pi's availability snapshot: the host holds no credential of its own
+    modelRuntime.hasConfiguredAuth = () => false;
     // pi's own prompt, before a daemon's core wraps it to pin the run
     let piPrompt!: ReturnType<typeof vi.fn>;
     H.setSessionSetup((built) => {
@@ -661,24 +641,19 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const panel = new PiSession(makeOptions(messages, { panelId: 'panel-1' }));
     await panel.initializeEarly();
-    await finishRefreshes();
+    const refresh = vi.spyOn(modelRuntime, 'refresh');
 
     // the device is lost: its connection goes, and no client acts
     host.set('clientAuth', 'client-a', undefined);
     host.setActing(undefined);
-    await finishRefreshes();
-    expect(snapshot.has('anthropic')).toBe(false);
-
     // a fresh attach: the same clientAuth and the device acting again, then the message it queued offline
     host.set('clientAuth', 'client-a', signedIn);
     host.setActing('client-a');
-    const sent = panel.sendMessage('queued offline', undefined, 'c1', { content: 'queued offline' });
-    await new Promise((resolve) => setImmediate(resolve));
-    await finishRefreshes();
 
-    await sent;
-    expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([]);
+    await panel.sendMessage('queued offline', undefined, 'c1', { content: 'queued offline' });
+    expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel' || m.type === 'error')).toEqual([]);
     expect(piPrompt).toHaveBeenCalledWith('queued offline', expect.anything());
+    expect(refresh).not.toHaveBeenCalled();
     await panel.dispose();
   });
 
@@ -2318,29 +2293,6 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       expect(messages.filter((m) => m.type === 'btwError')).toEqual([
         { type: 'btwError', btwId: 'b1', message: { message: 'Sign in to {0} to use {1}', args: ['Anthropic', 'Opus 5.5'] }, authFailure: { account: 'anthropic', reason: 'missing' } },
       ]);
-      await session.dispose();
-    });
-
-    // pi's snapshot can still hold the previous client's sign-ins during a fresh attach, as for a send.
-    it("judges the aside's model once a client refresh settled, never refusing it for the previous client's sign-ins", async () => {
-      const messages: ExtensionToWebviewMessage[] = [];
-      const session = new PiSession(makeOptions(messages));
-      await session.initializeEarly();
-      const create = vi.spyOn(cwdFolder()!, 'createSubagentSession').mockResolvedValue(asideSession(async () => undefined) as never);
-      vi.spyOn(cwdFolder()!, 'forgetSubagentSession').mockImplementation(() => undefined);
-      const auth = H.getServices().modelRuntime as { hasConfiguredAuth: (provider: string) => boolean };
-      auth.hasConfiguredAuth = () => false;
-      const refresh = pendingClientRefresh();
-
-      const asking = session.sendBtw('b1', 'what is this?');
-      await vi.waitFor(() => expect(refresh.awaited()).toBe(true));
-      // the refresh brings the asking device's sign-in into pi's snapshot
-      auth.hasConfiguredAuth = () => true;
-      refresh.settle();
-      await asking;
-
-      expect(messages.filter((m) => m.type === 'btwError' && m.authFailure)).toEqual([]);
-      expect(create).toHaveBeenCalledOnce();
       await session.dispose();
     });
 
@@ -10739,85 +10691,6 @@ describe('the chat model is what pi adopted, published after every switch attemp
     await session.dispose();
   });
 
-  /**
-   * A follow-up pi queued, which a re-steer takes out of pi's queue while a client refresh starts, so its re-queue waits for
-   * that refresh before `prompt()`. `followUpPrompts` counts the follow-up's hand-offs to pi.
-   */
-  async function followUpWaitingForRefresh(messages: ExtensionToWebviewMessage[]) {
-    const { session, live, followUps, endRun } = await queuedWhileRunEnds(messages);
-    const prompt = live.prompt as ReturnType<typeof vi.fn>;
-    prompt.mockImplementation(async (text: string, opts: { preflightResult?: (d: string) => void }) => {
-      followUps.push(text);
-      opts.preflightResult?.('queued');
-    });
-    const withdrawn = vi.fn();
-    await session.sendMessage('also look at this', undefined, 'c1', { content: 'also look at this' }, withdrawn);
-    let refresh: ReturnType<typeof pendingClientRefresh> | undefined;
-    (live.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      // an acting client change lands as the re-steer clears pi's queue to put it back
-      refresh ??= pendingClientRefresh();
-      return { steering: [], followUp: followUps.splice(0) };
-    });
-    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
-    endRun();
-    await vi.waitFor(() => expect(refresh?.awaited()).toBe(true));
-    const followUpPrompts = (): number => prompt.mock.calls.filter(([text]) => text === 'also look at this').length;
-    expect(followUpPrompts()).toBe(1);
-    return { session, live, withdrawn, refresh: refresh!, followUpPrompts };
-  }
-
-  it('gives a follow-up back whole on a Stop while its re-queue waits for a client refresh, and never hands it to pi', async () => {
-    const messages: ExtensionToWebviewMessage[] = [];
-    const { session, withdrawn, refresh, followUpPrompts } = await followUpWaitingForRefresh(messages);
-
-    await session.interrupt();
-    expect(withdrawn).toHaveBeenCalledOnce();
-    expect(messages).toContainEqual({ type: 'queueCancelled', messageId: 'c1', returnToInput: true });
-    refresh.settle();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(followUpPrompts()).toBe(1);
-    await session.dispose();
-  });
-
-  it('a new chat while a follow-up waits for a client refresh returns it and never commits it to either conversation', async () => {
-    const messages: ExtensionToWebviewMessage[] = [];
-    const { session, withdrawn, refresh, followUpPrompts } = await followUpWaitingForRefresh(messages);
-
-    session.reset();
-    refresh.settle();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(withdrawn).toHaveBeenCalledOnce();
-    expect(followUpPrompts()).toBe(1);
-    await session.dispose();
-  });
-
-  it('adopts no model under a run that opened while a re-steer waited for a client refresh', async () => {
-    // a key provider's model is absent from pi's registry until its key is applied, so pi starts on the fallback model
-    const runtime = H.getServices().modelRuntime as { getModel: (provider: string, id: string) => unknown };
-    const lookup = runtime.getModel;
-    let registered = false;
-    runtime.getModel = (provider, id) => (provider === 'deepseek' ? (registered ? DEEPSEEK(id) : undefined) : lookup(provider, id));
-    const messages: ExtensionToWebviewMessage[] = [];
-    const { session, live, endRun } = await queuedWhileRunEnds(messages, { model: 'deepseek-flash' });
-    expect(live.model).toMatchObject({ provider: 'anthropic' });
-    // its key arrived, so a batch that opens a run adopts the shown model first
-    registered = true;
-    const refresh = pendingClientRefresh();
-    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
-    endRun();
-    await vi.waitFor(() => expect(refresh.awaited()).toBe(true));
-
-    // a run another extension opened meanwhile
-    (live as { isStreaming: boolean }).isStreaming = true;
-    refresh.settle();
-
-    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledWith('and the logs', expect.objectContaining({ streamingBehavior: 'steer' })));
-    expect(live.setModel).not.toHaveBeenCalled();
-    await session.dispose();
-  });
-
   // The sending view starts its clock as it posts the send (`App.vue` `handleSendMessage`), before any pre-dispatch wait.
   it("times a joining view's turn from the send's claim, so it shows the time the sending view shows", async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -10829,13 +10702,14 @@ describe('the chat model is what pi adopted, published after every switch attemp
       // what a view joining while pi holds the prompt is told
       let joinedAt: number | undefined;
       (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { joinedAt = session.liveConversation()?.snapshot.turnStartedAt; });
-      const refresh = pendingClientRefresh();
+      let release!: () => void;
+      const mcpWait = vi.spyOn(session, 'waitForAlwaysLoadedMcp').mockReturnValueOnce(new Promise<void>((resolve) => { release = resolve; }));
       const claimedAt = Date.now();
 
       const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
-      await vi.waitFor(() => expect(refresh.awaited()).toBe(true));
+      await vi.waitFor(() => expect(mcpWait).toHaveBeenCalled());
       vi.setSystemTime(claimedAt + 5_000);
-      refresh.settle();
+      release();
       await sending;
 
       expect(joinedAt).toBe(claimedAt);

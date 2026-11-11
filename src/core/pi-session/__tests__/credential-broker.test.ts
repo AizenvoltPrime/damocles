@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFauxCore, fauxAssistantMessage, type Credential } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform/remote-host';
@@ -12,9 +12,10 @@ import { runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
 import { installPlatform } from '../../platform-host';
 import { installLogSink } from '../../logger';
 import { initPiLoader } from '../pi-loader';
-import { BrokeredCredentialStore, MIN_VALIDITY_MS, oauthAnswerOf, pinRunStarts, STATUS_ONLY_KEY } from '../credential-broker';
+import { BrokeredCredentialStore, MIN_VALIDITY_MS, oauthAnswerOf, pinRunStarts, STATUS_ONLY_KEY, statusCredentialOf } from '../credential-broker';
 import { sessionNoteDelivery } from '../note-delivery';
 import { PiRuntime } from '../pi-runtime';
+import { resolveEnabledModels } from '../subagents/enabled-models';
 import { withSettingsPolicy } from '../settings-policy';
 
 const HOUR = 60 * 60 * 1000;
@@ -265,42 +266,48 @@ describe('BrokeredCredentialStore', () => {
 });
 
 describe('status reads outside a run', () => {
-  it('answer from the client clientAuth entry without a secret, and never ask the client', async () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('answer as no device and list no device\'s credential, and never ask the client', async () => {
     const host = remoteHost(async () => oauth('SECRET', HOUR));
     host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: 42, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false }, xai: { type: 'none', hasKey: false, flatFee: false } } });
     const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
-    expect(await broker.read('anthropic')).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42 });
-    expect(await broker.read('openai')).toEqual({ type: 'api_key', key: STATUS_ONLY_KEY });
-    expect(await broker.read('xai')).toBeUndefined();
-    expect(await broker.modify('anthropic', vi.fn())).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42 });
+    expect(await broker.read('anthropic')).toBeUndefined();
+    expect(await broker.read('openai')).toBeUndefined();
+    expect(await broker.modify('anthropic', vi.fn())).toBeUndefined();
+    expect(await broker.list()).toEqual([]);
+    expect(await runPinnedTurn(host.remote, 'p1', () => broker.list())).toEqual([{ providerId: 'anthropic', type: 'oauth' }, { providerId: 'openai', type: 'api_key' }]);
     expect(host.credentials).not.toHaveBeenCalled();
     expect(host.runProviders).not.toHaveBeenCalled();
   });
 
-  // pi's Copilot provider filters its available list by the credential's own list, which the status answer must carry.
-  it('pass a sign-in\'s plan model list on, with no secret', async () => {
-    const host = remoteHost(async () => oauth('SECRET', HOUR));
-    host.setAuth('client-a', { providers: { 'github-copilot': { type: 'oauth', expires: 42, hasKey: false, flatFee: false, availableModelIds: ['gpt-6-luna'] } } });
-    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
-    expect(await broker.read('github-copilot')).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42, availableModelIds: ['gpt-6-luna'] });
-    expect(host.credentials).not.toHaveBeenCalled();
-  });
-
-  it('pi availability check of every provider asks nothing, and a turn asks once, for its provider only', async () => {
+  it('pi availability check of every provider asks nothing and counts no device\'s credential, and a turn asks once, for its provider only', async () => {
+    for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_OAUTH_TOKEN', 'OPENAI_API_KEY']) vi.stubEnv(name, '');
     const host = remoteHost(async (provider) => (provider === 'openai' ? { type: 'api_key', key: 'sk-turn' } : oauth('SECRET', HOUR)));
     host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
     const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
     const runtime = await ModelRuntime.create({ credentials: broker, modelsPath: null });
     await runtime.getAvailable();
     expect(host.credentials).not.toHaveBeenCalled();
-    expect(runtime.hasConfiguredAuth('anthropic')).toBe(true);
-    expect(runtime.hasConfiguredAuth('openai')).toBe(true);
+    expect(runtime.hasConfiguredAuth('anthropic')).toBe(false);
+    expect(runtime.hasConfiguredAuth('openai')).toBe(false);
     const auth = await runPinnedTurn(host.remote, 'p1', async () => {
       await runtime.getAuth('openai');
       return runtime.getAuth('openai');
     });
     expect(auth?.auth.apiKey).toBe('sk-turn');
     expect(host.credentials.mock.calls).toEqual([['openai', 'client-a']]);
+  });
+});
+
+describe('statusCredentialOf', () => {
+  // pi's Copilot provider filters its available list by the credential's own list, which this credential must carry.
+  it('gives a sign-in with its plan model list, a placeholder key, or none, with no secret', () => {
+    expect(statusCredentialOf({ type: 'oauth', expires: 42, hasKey: false, flatFee: false, availableModelIds: ['gpt-6-luna'] })).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42, availableModelIds: ['gpt-6-luna'] });
+    expect(statusCredentialOf({ type: 'api_key', hasKey: true, flatFee: false })).toEqual({ type: 'api_key', key: STATUS_ONLY_KEY });
+    expect(statusCredentialOf({ type: 'none', hasKey: false, flatFee: false })).toBeUndefined();
   });
 });
 
@@ -334,11 +341,37 @@ describe('pi\'s availability refresh inside a turn', () => {
     return dir;
   };
 
+  // the host's own credentials are only what a test gives it
+  beforeEach(() => {
+    for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_OAUTH_TOKEN', 'OPENAI_API_KEY', 'XAI_API_KEY']) vi.stubEnv(name, '');
+  });
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await PiRuntime.disposeInstance();
     installPlatform(createFakePlatform());
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  async function remoteRuntime(host: ReturnType<typeof createFakeRemoteHost>) {
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    const runtime = PiRuntime.get(tempDir('damocles-broker-agent-'));
+    await runtime.init();
+    return { runtime, modelRuntime: runtime.modelRuntime! };
+  }
+
+  /** Reads inside a turn pinned to `clientId`, with client-a acting by the time it reads. */
+  async function inTurnOf<T>(host: ReturnType<typeof createFakeRemoteHost>, clientId: string, read: () => T): Promise<T> {
+    host.setActing(clientId);
+    let release!: () => void;
+    const turn = runPinnedTurn(host.remote, 'p1', async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return read();
+    });
+    host.setActing('client-a');
+    release();
+    return turn;
+  }
 
   it('asks the client nothing when a folder or a subagent is built inside a turn\'s pin', async () => {
     const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
@@ -370,6 +403,100 @@ describe('pi\'s availability refresh inside a turn', () => {
     expect(refresh).toHaveBeenCalledTimes(2);
     await Promise.all(refresh.mock.results.map((result) => result.value));
     expect(host.remote.credentials).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('asks the client nothing for the pass getAvailable runs inside a turn\'s pin, and keeps its credential out of the host\'s snapshot', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    const runtime = PiRuntime.get(tempDir('damocles-broker-agent-'));
+    await runtime.init();
+    const models = await runPinnedTurn(host.remote, 'p1', () => runtime.modelRuntime!.getAvailable());
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+    expect(models.some((model) => model.provider === 'anthropic')).toBe(true);
+    expect(runtime.hostHasOwnAuth('anthropic')).toBe(false);
+  }, 60_000);
+
+  // A subagent spawned by a turn that kept running after its app closed resolves its model through these reads.
+  it('answers a turn\'s availability reads for its pinned client after that client detached and no client acts', async () => {
+    const host = createFakeRemoteHost(async () => oauth('of-client-a', HOUR));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } } });
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    const lookup = runtime.modelLookup!;
+    const opus = modelRuntime.getModels('anthropic')[0]!;
+    expect(modelRuntime.hasConfiguredAuth('anthropic')).toBe(true);
+
+    let detached!: () => void;
+    const turn = runPinnedTurn(host.remote, 'p1', async () => {
+      await new Promise<void>((resolve) => { detached = resolve; });
+      return {
+        configured: [modelRuntime.hasConfiguredAuth('anthropic'), lookup.hasConfiguredAuth('anthropic')],
+        oauth: modelRuntime.isUsingOAuth('anthropic'),
+        status: modelRuntime.getProviderAuthStatus('anthropic'),
+        available: modelRuntime.getAvailableSnapshot().some((model) => model.provider === 'anthropic'),
+        enabled: resolveEnabledModels([`anthropic/${opus.id}`], modelRuntime),
+      };
+    });
+    try {
+      host.set('clientAuth', 'client-a', undefined);
+      host.setActing(undefined);
+
+      expect(modelRuntime.hasConfiguredAuth('anthropic')).toBe(false);
+      expect(runtime.hostHasOwnAuth('anthropic')).toBe(false);
+    } finally {
+      detached();
+    }
+    expect(await turn).toEqual({
+      configured: [true, true],
+      oauth: true,
+      status: { configured: true, source: 'stored' },
+      available: true,
+      enabled: new Set([`anthropic/${opus.id}`.toLowerCase()]),
+    });
+  }, 60_000);
+
+  it('lists a Copilot sign-in\'s models as its plan names them', async () => {
+    const host = createFakeRemoteHost();
+    const { modelRuntime } = await remoteRuntime(host);
+    const copilot = modelRuntime.getModels('github-copilot');
+    expect(copilot.length).toBeGreaterThan(1);
+    const planned = copilot[1]!.id;
+    host.set('clientAuth', 'client-a', { providers: { 'github-copilot': { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: true, availableModelIds: [planned] } } });
+
+    const listed = await runPinnedTurn(host.remote, 'p1', async () => modelRuntime.getAvailableSnapshot().filter((model) => model.provider === 'github-copilot').map((model) => model.id));
+    expect(listed).toEqual([planned]);
+  }, 60_000);
+
+  it('counts the host\'s own credential inside a turn whose client holds none for the provider', async () => {
+    const host = createFakeRemoteHost();
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    modelRuntime.registerProvider('xai', { baseUrl: 'https://api.x.ai/v1', api: 'openai-completions', apiKey: 'host-own-key', models: [] } as never);
+    await modelRuntime.refresh({ allowNetwork: false });
+
+    expect(runtime.hostHasOwnAuth('xai')).toBe(true);
+    expect(await runPinnedTurn(host.remote, 'p1', async () => modelRuntime.hasConfiguredAuth('xai'))).toBe(true);
+    expect(await runPinnedTurn(host.remote, 'p1', async () => modelRuntime.hasConfiguredAuth('anthropic'))).toBe(false);
+  }, 60_000);
+
+  it('counts the host\'s own credential for a turn whose client holds none while the acting client holds one', async () => {
+    const host = createFakeRemoteHost();
+    host.set('clientAuth', 'client-a', { providers: { xai: { type: 'none', hasKey: true, flatFee: false } } });
+    host.set('clientAuth', 'client-b', { providers: {} });
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    modelRuntime.registerProvider('xai', { baseUrl: 'https://api.x.ai/v1', api: 'openai-completions', apiKey: 'host-own-key', models: [] } as never);
+    await modelRuntime.refresh({ allowNetwork: false });
+
+    expect(await inTurnOf(host, 'client-b', () => [modelRuntime.hasConfiguredAuth('xai'), runtime.hostHasOwnAuth('xai')])).toEqual([true, true]);
+  }, 60_000);
+
+  it('counts no credential for a turn whose client holds none when only the acting client holds one', async () => {
+    const host = createFakeRemoteHost();
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    host.set('clientAuth', 'client-b', { providers: {} });
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+
+    expect(await inTurnOf(host, 'client-b', () => modelRuntime.hasConfiguredAuth('anthropic'))).toBe(false);
+    expect(runtime.hostHasOwnAuth('anthropic')).toBe(false);
   }, 60_000);
 });
 
@@ -428,14 +555,7 @@ describe('a disposed runtime\'s token broker', () => {
 
   it('ends a delta\'s handling that was under way when the runtime was disposed, with no sync, publication or failure', async () => {
     const { host, runtime, logged } = await remoteRuntime();
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const refresh = vi.spyOn(runtime.modelRuntime!, 'refresh').mockImplementation((async () => {
-      await held;
-      return { errors: new Map(), aborted: false };
-    }) as never);
+    const credentialsChanged = vi.spyOn(runtime, 'credentialsChanged');
     const work = [
       vi.spyOn(runtime as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow'),
       vi.spyOn(runtime, 'syncCustomProviders'),
@@ -445,9 +565,8 @@ describe('a disposed runtime\'s token broker', () => {
     const stops = [PiRuntime.onMemoryJudgeChange(() => void published++), PiRuntime.onAuthFileChange(() => void published++), PiRuntime.onClientAuthChange(() => void published++)];
     try {
       host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
-      await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+      expect(credentialsChanged).toHaveBeenCalledOnce();
       await PiRuntime.disposeInstance();
-      release();
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect([...work.map((spy) => spy.mock.calls.length), published]).toEqual([0, 0, 0, 0]);
@@ -515,23 +634,13 @@ describe('a disposed runtime\'s token broker', () => {
     }
   }, 60_000);
 
-  it('republishes nothing for an acting client change whose refresh was running when the runtime was disposed', async () => {
-    const { host, runtime } = await remoteRuntime();
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const refresh = vi.spyOn(runtime.modelRuntime!, 'refresh').mockImplementation((async () => {
-      await held;
-      return { errors: new Map(), aborted: false };
-    }) as never);
+  it('republishes nothing for an acting client change once the runtime is disposed', async () => {
+    const { host } = await remoteRuntime();
     let published = 0;
-    const stops = [PiRuntime.onActingClientRefreshed(() => void published++), PiRuntime.onClientAuthChange(() => void published++)];
+    const stops = [PiRuntime.onActingClientChanged(() => void published++), PiRuntime.onClientAuthChange(() => void published++)];
     try {
-      host.setActing('client-b');
-      await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
       await PiRuntime.disposeInstance();
-      release();
+      host.setActing('client-b');
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(published).toBe(0);

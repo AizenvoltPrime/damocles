@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe('an acting client change on a daemon\'s core', () => {
-  it('republishes once, after the latest change\'s refresh, never from a refresh a newer change overtook', async () => {
+  it('republishes at once for each change and refreshes nothing of pi\'s', async () => {
     const host = createFakeRemoteHost();
     host.set('clientAuth', 'client-b', { providers: {} });
     installPlatform({ ...createFakePlatform(), remote: host.remote });
@@ -24,19 +24,17 @@ describe('an acting client change on a daemon\'s core', () => {
     dirs.push(dir);
     const runtime = PiRuntime.get(dir);
     await runtime.init();
-    const refreshes: Array<() => void> = [];
-    vi.spyOn(runtime.modelRuntime!, 'refresh').mockImplementation(() => new Promise((resolve) => refreshes.push(() => resolve({ errors: new Map() } as never))));
+    const refresh = vi.spyOn(runtime.modelRuntime!, 'refresh');
     const republished = vi.fn();
-    const stop = PiRuntime.onActingClientRefreshed(republished);
+    const stop = PiRuntime.onActingClientChanged(republished);
     try {
       host.setActing('client-b');
-      host.setActing('client-a');
-      expect(refreshes).toHaveLength(2);
-      refreshes[1]!();
-      await vi.waitFor(() => expect(republished).toHaveBeenCalledTimes(1));
-      refreshes[0]!();
-      await new Promise((resolve) => setImmediate(resolve));
       expect(republished).toHaveBeenCalledTimes(1);
+      host.setActing('client-a');
+      expect(republished).toHaveBeenCalledTimes(2);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(republished).toHaveBeenCalledTimes(2);
+      expect(refresh).not.toHaveBeenCalled();
     } finally {
       stop();
     }

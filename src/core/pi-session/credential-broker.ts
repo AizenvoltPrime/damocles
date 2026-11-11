@@ -4,8 +4,8 @@ import type { Credential, CredentialInfo, CredentialStore } from '@earendil-work
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { Disposable } from '../../platform/disposable';
 import type { RemoteHost } from '../../platform/remote-host';
-import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth } from '../../shared/remote-user';
-import { clientCredentialProviders, currentPin, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, type ClientPin, type SignInPrompts } from '../client-snapshots';
+import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
+import { clientCredentialProviders, entryHoldsCredential, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, type ClientPin, type SignInPrompts } from '../client-snapshots';
 import { DAMOCLES_CREDENTIAL_SOURCE_ENTRY } from './session-store/constants';
 import { l } from '../l10n';
 import { LocalizedError } from '../../shared/localized-text';
@@ -44,8 +44,7 @@ export function credentialOf(answer: BrokerAnswer, now: number): Credential | un
 /**
  * Pins each run the session starts outside every pin (a cancel note or an extension's triggerTurn on an idle session) as a
  * turn of the client acting at its start, and holds the turn's pin while a run started inside it (a subagent's) runs: pi
- * starts every run in prompt or sendCustomMessage, and a run outside a pin would read the status-only placeholder as its
- * credential.
+ * starts every run in prompt or sendCustomMessage, and a run outside a pin would read no device's credential.
  */
 export function pinRunStarts(session: AgentSession, remote: RemoteHost, run: string, signIn: SignInPrompts): void {
   const prompt = session.prompt.bind(session);
@@ -53,6 +52,16 @@ export function pinRunStarts(session: AgentSession, remote: RemoteHost, run: str
   const pinned = (start: () => Promise<void>): Promise<void> => runInTurnPin(remote, run, start, signIn);
   session.prompt = (text, options) => pinned(() => prompt(text, options));
   session.sendCustomMessage = (message, options) => pinned(() => sendCustomMessage(message, options));
+}
+
+/** A clientAuth entry as a credential with no secret, for pi's model filters: a sign-in with its plan, a placeholder key, or none. */
+export function statusCredentialOf(entry: HeldAuthEntry | undefined): Credential | undefined {
+  if (entry?.type === 'oauth') {
+    const plan = entry.availableModelIds ? { availableModelIds: [...entry.availableModelIds] } : {};
+    return { type: 'oauth', access: '', refresh: '', expires: entry.expires ?? 0, ...plan };
+  }
+  if (entry?.hasKey) return { type: 'api_key', key: STATUS_ONLY_KEY };
+  return undefined;
 }
 
 /**
@@ -173,10 +182,14 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
     return (await this.serve(providerId, false, options?.signal)).credential;
   }
 
+  // outside a run it lists no device's, as a status read answers
   async list(): Promise<readonly CredentialInfo[]> {
-    const clientId = currentPin(this.deps.remote).clientId;
+    const clientId = runPin()?.clientId;
     const auth = clientId === undefined ? undefined : this.deps.remote.clients.auth(clientId);
-    return Object.entries(auth?.providers ?? {}).flatMap(([providerId, entry]) => (entry.type === 'none' ? [] : [{ providerId, type: entry.type }]));
+    return Object.entries(auth?.providers ?? {}).flatMap(([providerId, entry]) => {
+      const credential = statusCredentialOf(entry);
+      return credential ? [{ providerId, type: credential.type }] : [];
+    });
   }
 
   // pi's refresh path: fn would refresh with the empty refresh token, so the broker asks the client instead and never calls it
@@ -214,22 +227,10 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
     return credential?.type !== 'oauth' || credential.expires > this.now() + MIN_VALIDITY_MS;
   }
 
-  // pi's status reads (availability checks of every provider) run outside a run: they get the client's clientAuth entry
-  // without a secret, never cached, and only a turn or sub-call asks the client
-  private statusOnly(providerId: string): Cached {
-    const clientId = currentPin(this.deps.remote).clientId;
-    const entry = clientId === undefined ? undefined : this.deps.remote.clients.auth(clientId)?.providers[providerId];
-    if (entry?.type === 'oauth') {
-      const plan = entry.availableModelIds ? { availableModelIds: [...entry.availableModelIds] } : {};
-      return { credential: { type: 'oauth', access: '', refresh: '', expires: entry.expires ?? 0, ...plan } };
-    }
-    if (entry?.hasKey) return { credential: { type: 'api_key', key: STATUS_ONLY_KEY } };
-    return { credential: undefined };
-  }
-
   private async serve(providerId: string, refresh: boolean, signal: AbortSignal | undefined): Promise<Cached> {
     const pin = runPin();
-    if (pin === undefined) return this.statusOnly(providerId);
+    // pi's status reads run outside a run and answer as no device, so its availability snapshot holds only the host's own credentials
+    if (pin === undefined) return { credential: undefined };
     if (this.disposed) throw brokerStopped(providerId);
     if (pin.run !== undefined && !this.used.get(pin.run)?.has(providerId)) {
       const used = this.used.get(pin.run) ?? new Set<string>();
@@ -243,15 +244,10 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
     } catch (err) {
       if (!(err instanceof ClientAbsent)) throw err;
       // the device's last clientAuth holds nothing for the provider, so pi uses the target's own, as it would with the device attached
-      if (!this.holdsCredential(pin.clientId, providerId)) return { credential: undefined };
+      if (!entryHoldsCredential(this.deps.remote.clients.auth(pin.clientId)?.providers[providerId])) return { credential: undefined };
       if (pin.kind !== 'turn' || pin.signIn === undefined) throw this.absent(providerId, pin.kind);
       return this.waitForSignIn(pin, pin.signIn, providerId, signal);
     }
-  }
-
-  private holdsCredential(clientId: string, providerId: string): boolean {
-    const entry = this.deps.remote.clients.auth(clientId)?.providers[providerId];
-    return entry?.type === 'oauth' || entry?.hasKey === true;
   }
 
   // the cached credential while valid, else the one answer in flight for this client and provider, else a new ask

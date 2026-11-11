@@ -1367,12 +1367,11 @@ describe("account state on a daemon's core chat two devices show", () => {
     expect(panel.session.publishAccountInfo).toHaveBeenCalledTimes(1);
   }, 60_000);
 
-  it("with the runtime started, a device's key saved whose availability refresh fails still posts each device's rows, judge status and account state once", async () => {
+  it("with the runtime started, a device's key saved posts each device's rows, judge status and account state once", async () => {
     const { host, view, provider } = twoDevices();
     const runtime = PiRuntime.get();
     await runtime.init();
     await settled();
-    vi.spyOn(runtime.modelRuntime!, "refresh").mockRejectedValueOnce(new Error("models.json could not be read"));
     const posts = devicePosts(view, panelOf(provider));
 
     host.set("clientAuth", "device-a", withTypesafeKey(host));
@@ -1573,11 +1572,20 @@ describe("account state on a daemon's core chat two devices show", () => {
     expect([[...new Set(openai("view-a"))], [...new Set(openai("view-b"))]]).toEqual([[true], [false]]);
   });
 
-  it("reads each device's classifier credentials from its own account once pi holds the acting device's", () => {
+  it("reads each device's classifier credentials from its own account, never the acting device's", () => {
     const { host } = twoDevices();
     const runtime = PiRuntime.get();
-    // pi's availability snapshot holds the acting device's credentials
-    (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = { hasConfiguredAuth: (provider: string) => provider === "openai" };
+    // pi's availability snapshot: the host holds none of its own; adopted as init adopts pi's
+    const modelRuntime = {
+      hasConfiguredAuth: () => false,
+      isUsingOAuth: () => false,
+      getProviderAuthStatus: () => ({ configured: false }),
+      getProviders: () => [],
+      getProvider: (id: string) => ({ id, auth: { oauth: {}, apiKey: {} } }),
+      getAvailableSnapshot: () => [],
+      getAvailable: async () => [],
+    };
+    (runtime as unknown as { _adoptModelRuntime: (modelRuntime: unknown) => void })._adoptModelRuntime(modelRuntime);
 
     const openai = (clientId: string) => asClient(host.remote, clientId, () => runtime.classifierCredentials().openai);
 

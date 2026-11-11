@@ -94,9 +94,10 @@ import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 import { fetchSubscriptionUsage } from './subscription-usage';
 import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
 import { BrokeredCredentialStore, oauthAnswerOf } from './credential-broker';
+import { installClientAvailability } from './client-availability';
 import { allowanceProvider, builtinAnthropicTransport, clientClaudeAuthStatus, loadAllowanceTransport, subscriptionPluginDir } from './allowance-transport';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
-import { clientHasAuth, clientHasCredential, clientHasKey, clientPrefersApiKey, credentialSourceOf, outsidePins, runPinnedSubcall } from '../client-snapshots';
+import { clientHasCredential, clientHasKey, clientPrefersApiKey, credentialSourceOf, outsidePins, runPinnedSubcall } from '../client-snapshots';
 import { MODEL_PICKER_SETTING, MODEL_VENDORS, vendorPiProviders, type ModelVendor } from '../../shared/model-vendor';
 import { planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
 
@@ -488,13 +489,10 @@ export class PiRuntime {
   /** The one sync queued behind the running one, which every call made meanwhile shares; it reads with the newest call's resolver. */
   private _customProviderSyncFollowUp: { getSecret: SecretResolver; outcome: Promise<CustomProviderSyncOutcome> } | null = null;
   private _secretsListener: Disposable | null = null;
-  /** A daemon's core: a new acting client refreshes pi's availability snapshot. */
+  /** A daemon's core: a new acting client republishes the account state. */
   private _clientsListener: Disposable | null = null;
-  /** The availability refreshes client changes started, each until it settled (`clientSnapshotSettling`). */
-  private readonly _clientRefreshes = new Set<Promise<void>>();
-  private _clientSnapshotSettled: Promise<void> | null = null;
-  /** Bumped by each acting client change, so only the latest one's refresh republishes. */
-  private _actingChanges = 0;
+  /** A daemon's core: whether the host has a credential of its own for a provider (`hostHasOwnAuth`); null on a local core. */
+  private _hostOwnAuth: ((provider: string) => boolean) | null = null;
   /** A daemon's core: the bundled subscription plugin did not load, so an allowance client's Claude requests bill extra usage. */
   private _allowanceUnavailable = false;
   /** Granting trust admits a folder's project layer, which needs a reload to reach its loader. */
@@ -719,11 +717,8 @@ export class PiRuntime {
     };
   }
 
-  /**
-   * A daemon's core: fires once pi's availability snapshot holds the acting client's credentials after the acting client
-   * changed, only for the latest change, which is when its account state is republished. Subscribing does not create the singleton.
-   */
-  static onActingClientRefreshed(listener: () => void): () => void {
+  /** A daemon's core: fires at each acting client change, as the account state is republished. Subscribing does not create the singleton. */
+  static onActingClientChanged(listener: () => void): () => void {
     actingClientListeners.add(listener);
     return () => {
       actingClientListeners.delete(listener);
@@ -1218,15 +1213,6 @@ export class PiRuntime {
       notifyUnsyncedAccountChange();
       return;
     }
-    const modelRuntime = this._modelRuntime!;
-    try {
-      // pi's availability snapshot reads the broker's status answers again, outside any turn
-      const refreshed = await this._trackClientRefresh(outsidePins(() => modelRuntime.refresh({ allowNetwork: false })));
-      for (const [provider, err] of refreshed.errors) log('[PiRuntime] clientAuth refresh: provider %s failed: %s', provider, describeAuthError(err));
-    } catch (err) {
-      log('[PiRuntime] availability refresh after a clientAuth change failed: %s', describeAuthError(err));
-    }
-    if (this._disposed) return;
     await this._resyncOpenAI('a clientAuth change', true);
     // its end publishes the account state and the judge status, and its listeners every key provider's status, read from clientAuth
     this._accountChangeUnpublished = true;
@@ -1235,56 +1221,13 @@ export class PiRuntime {
     notifyAuthFileListeners(true);
   }
 
-  /** Outside a run, pi's availability snapshot reads the acting client's credentials, so a new acting client refreshes it and republishes the account state. */
+  /** Outside a run, pi's availability reads add the acting client's credentials on each call, so a new acting client republishes the account state at once. */
   private _watchClients(remote: RemoteHost): Disposable {
     return remote.clients.onDidChange((change) => {
-      if (change.topic !== 'actingClient') return;
-      const generation = ++this._actingChanges;
-      // a refresh a newer acting change overtook holds the older client's snapshot, so it republishes nothing
-      const republish = (): void => {
-        if (generation !== this._actingChanges || this._disposed) return;
-        notifyClientAuthListeners();
-        notifyActingClientListeners();
-      };
-      const modelRuntime = this._modelRuntime;
-      if (!modelRuntime) {
-        republish();
-        return;
-      }
-      void this._trackClientRefresh(outsidePins(() => modelRuntime.refresh({ allowNetwork: false }))).then(
-        (refreshed) => {
-          for (const [provider, err] of refreshed.errors) log('[PiRuntime] acting client refresh: provider %s failed: %s', provider, describeAuthError(err));
-          republish();
-        },
-        (err: unknown) => {
-          log('[PiRuntime] acting client refresh failed: %s', describeAuthError(err));
-          republish();
-        },
-      );
+      if (change.topic !== 'actingClient' || this._disposed) return;
+      notifyClientAuthListeners();
+      notifyActingClientListeners();
     });
-  }
-
-  /** Holds the client snapshot unsettled until `refresh` settles; returns `refresh`. */
-  private _trackClientRefresh<T>(refresh: Promise<T>): Promise<T> {
-    const settled = refresh.then(() => undefined, () => undefined);
-    this._clientRefreshes.add(settled);
-    void settled.then(() => this._clientRefreshes.delete(settled));
-    this._clientSnapshotSettled ??= this._settleClientRefreshes();
-    return refresh;
-  }
-
-  private async _settleClientRefreshes(): Promise<void> {
-    // a refresh a newer client change started meanwhile is waited for too
-    while (this._clientRefreshes.size > 0) await Promise.all(this._clientRefreshes);
-    this._clientSnapshotSettled = null;
-  }
-
-  /**
-   * A daemon's core: settles once every availability refresh a client change started has settled, so pi's snapshot holds
-   * the acting client's credentials; null while none runs, and always on a local core. One promise while pending, so waiters keep their order.
-   */
-  clientSnapshotSettling(): Promise<void> | null {
-    return this._clientSnapshotSettled;
   }
 
   private _publishAccountInfoToSessions(): void {
@@ -1329,6 +1272,13 @@ export class PiRuntime {
     if (this._disposed) throw new Error('PiRuntime has been disposed');
   }
 
+  /** Makes `modelRuntime` the runtime's; on a daemon's core its availability reads answer for the pinned (else acting) client beside the host's own credentials. */
+  private _adoptModelRuntime(modelRuntime: ModelRuntime): void {
+    const remote = this._platform.remote;
+    this._modelRuntime = modelRuntime;
+    this._hostOwnAuth = remote ? installClientAvailability(modelRuntime, remote) : null;
+  }
+
   private async _doInit(): Promise<void> {
     const pi = await initPiLoader();
     this._throwIfDisposed();
@@ -1360,8 +1310,8 @@ export class PiRuntime {
       modelRuntime.registerProvider('anthropic', allowanceProvider(remote, await builtinAnthropicTransport(), shaped));
     }
     this._throwIfDisposed();
-    this._modelRuntime = modelRuntime;
-    for (const resolve of this._modelRuntimeWaiters) resolve(this._modelRuntime);
+    this._adoptModelRuntime(modelRuntime);
+    for (const resolve of this._modelRuntimeWaiters) resolve(modelRuntime);
     this._modelRuntimeWaiters.clear();
     const userSettings = withSettingsPolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
     this._userSettings = userSettings;
@@ -2344,15 +2294,9 @@ export class PiRuntime {
     return { ...status, hostKey: true };
   }
 
-  /**
-   * Whether a daemon's core has a credential of its own for a provider, which only pi's snapshot knows. That snapshot also
-   * counts the acting client's credentials, so a provider the acting client holds reads as the client's, never the host's.
-   */
+  /** Whether a daemon's core has a credential of its own for a provider: pi's availability snapshot, which holds only the host's. */
   hostHasOwnAuth(provider: string): boolean {
-    const remote = this._platform.remote;
-    const registry = this._modelRuntime;
-    if (!remote || !registry) return false;
-    return registry.hasConfiguredAuth(provider) && !clientHasAuth(remote, provider, remote.clients.acting());
+    return this._hostOwnAuth?.(provider) ?? false;
   }
 
   /** A sub-call's ledger attribution, with the host as payer when a daemon's core billed the host's own credential. */
@@ -2838,26 +2782,14 @@ export class PiRuntime {
   private _classifierCredential(provider: ClassifierProvider, openai: OpenAIAuthInputs): ClassifierCredential {
     const registry = this._modelRuntime;
     if (!registry) return 'no-key';
-    return classifierCredential(provider, this._hasCredential(registry), openai);
+    return classifierCredential(provider, (id) => registry.hasConfiguredAuth(id), openai);
   }
 
-  /**
-   * Whether a provider has a credential. On a daemon's core it is the pinned (else acting) client's, read from its
-   * clientAuth at once, or the target's own, which only pi's snapshot knows; that snapshot also counts the acting client's
-   * credentials (its status reads), so a provider that client holds counts only for its own views.
-   */
-  private _hasCredential(registry: ModelRuntime): (provider: string) => boolean {
-    const remote = this._platform.remote;
-    return remote
-      ? (provider) => clientHasAuth(remote, provider) || this.hostHasOwnAuth(provider)
-      : (provider) => registry.hasConfiguredAuth(provider);
-  }
-
-  /** The vendors the chat's model picker lists: each one the setting names, else each with a credential (`_hasCredential`); undefined before the model runtime exists. */
+  /** The vendors the chat's model picker lists: each one the setting names, else each with a credential (`hasConfiguredAuth`); undefined before the model runtime exists. */
   pickerProviders(): ModelVendor[] | undefined {
     const registry = this._modelRuntime;
     if (!registry) return undefined;
-    const configured = this._hasCredential(registry);
+    const configured = (provider: string): boolean => registry.hasConfiguredAuth(provider);
     const stored = this._platform.settings.get<unknown>(MODEL_PICKER_SETTING, {});
     const explicit = typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {};
     return MODEL_VENDORS.filter((vendor) => {
@@ -3045,6 +2977,7 @@ export class PiRuntime {
       log('[PiRuntime] Removing saved MCP outputs failed: %O', err);
     }
     this._modelRuntime = null;
+    this._hostOwnAuth = null;
     this._userSettings = null;
     this._initPromise = null;
   }

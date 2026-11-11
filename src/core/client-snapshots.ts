@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Disposable } from '../platform/disposable';
 import type { Platform } from '../platform/platform';
 import type { RemoteHost } from '../platform/remote-host';
-import type { ClientPolicy, ClientUser } from '../shared/remote-user';
+import type { ClientPolicy, ClientUser, HeldAuthEntry } from '../shared/remote-user';
 import type { PermissionMode } from '../shared/types/settings';
 
 /** The chat a turn runs in, as the token broker raises its Sign-in needed prompt there; continueWith re-pins the turn to the device that clicked. */
@@ -146,17 +146,16 @@ export function clientKeySaved(remote: RemoteHost, providerId: string): boolean 
   return (entry?.keySaved ?? entry?.hasKey) === true;
 }
 
-/** Whether a client, by default the pinned (else acting) one, holds any credential for a provider, from its clientAuth; never reads one. */
-export function clientHasAuth(remote: RemoteHost, providerId: string, clientId: string | undefined = currentPin(remote).clientId): boolean {
-  const entry = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers[providerId];
-  return entry !== undefined && (entry.type !== 'none' || entry.hasKey);
+/** Whether a clientAuth entry holds a credential the broker serves: a sign-in or a key; never reads one. */
+export function entryHoldsCredential(entry: HeldAuthEntry | undefined): entry is HeldAuthEntry {
+  return entry?.type === 'oauth' || entry?.hasKey === true;
 }
 
 /** The providers the pinned (else acting) client holds a credential for, from its clientAuth; never reads one. */
 export function clientCredentialProviders(remote: RemoteHost): string[] {
   const clientId = currentPin(remote).clientId;
   const providers = clientId === undefined ? {} : remote.clients.auth(clientId)?.providers ?? {};
-  return Object.keys(providers).filter((id) => providers[id]?.type === 'oauth' || providers[id]?.hasKey === true).sort();
+  return Object.keys(providers).filter((id) => entryHoldsCredential(providers[id])).sort();
 }
 
 /** Whether the pinned (else acting) client holds a credential for a provider; without one the broker answers none and pi uses the host's own. */

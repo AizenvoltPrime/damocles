@@ -9,13 +9,20 @@ import { PiRuntime } from '../pi-runtime';
 import { MODEL_PICKER_SETTING, MODEL_VENDORS } from '../../../shared/model-vendor';
 import type { HeldAuthEntry } from '../../../shared/remote-user';
 
+// configured: pi's availability snapshot, on a daemon's core the host's own credentials; adopted as init adopts pi's
 function runtimeWith(configured: string[]): PiRuntime {
   const runtime = PiRuntime.get();
-  (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = {
+  const modelRuntime = {
     hasConfiguredAuth: (provider: string) => configured.includes(provider),
-    // a daemon's core refreshes pi's availability snapshot when the acting client changes
-    refresh: () => Promise.resolve({ errors: new Map() }),
+    isUsingOAuth: () => false,
+    getProviderAuthStatus: (provider: string) => (configured.includes(provider) ? { configured: true, source: 'environment' } : { configured: false }),
+    getProviders: () => [],
+    // every provider takes a sign-in and a key
+    getProvider: (id: string) => ({ id, auth: { oauth: {}, apiKey: {} } }),
+    getAvailableSnapshot: () => [],
+    getAvailable: async () => [],
   };
+  (runtime as unknown as { _adoptModelRuntime: (modelRuntime: unknown) => void })._adoptModelRuntime(modelRuntime);
   return runtime;
 }
 
@@ -51,14 +58,14 @@ describe('PiRuntime.pickerProviders', () => {
     expect(runtimeWith(['openai']).pickerProviders()).toEqual(['openai']);
   });
 
-  it('on a daemon\'s core follows the pinned client\'s auth, and never lists another client\'s credential from pi\'s snapshot', () => {
+  it('on a daemon\'s core follows the pinned client\'s auth, and never lists another client\'s credential', () => {
     const host = createFakeRemoteHost();
     installPlatform({ ...createFakePlatform({ settings: { user: { [MODEL_PICKER_SETTING]: { xai: true } } } }), remote: host.remote });
     const entry = (type: HeldAuthEntry['type'], hasKey: boolean): HeldAuthEntry => ({ type, hasKey, flatFee: false });
     host.set('clientAuth', 'client-a', { providers: { anthropic: entry('oauth', false), deepseek: entry('none', true), stepfun: entry('none', false) } });
     host.set('clientAuth', 'client-b', { providers: { 'openai-codex': entry('oauth', false) } });
-    // pi's snapshot as its refresh outside every pin leaves it while client a acts: a's credentials, the target holding none
-    const runtime = runtimeWith(['anthropic', 'deepseek']);
+    // the target holds none of its own
+    const runtime = runtimeWith([]);
     host.setActing('client-a');
     expect(runtime.pickerProviders()).toEqual(['anthropic', 'deepseek', 'xai']);
     // client b's view, read under b's pin while a still acts
@@ -73,8 +80,8 @@ describe('PiRuntime.pickerProviders', () => {
       providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false } },
     });
     host.setActing('client-a');
-    // the snapshot counts client a's Claude sign-in and the target's OPENAI_API_KEY
-    const runtime = runtimeWith(['anthropic', 'openai']);
+    // the target's own OPENAI_API_KEY
+    const runtime = runtimeWith(['openai']);
     expect(runtime.pickerProviders()).toEqual(['anthropic', 'openai']);
     expect(asClient(host.remote, 'client-b', () => runtime.pickerProviders())).toEqual(['anthropic', 'openai']);
   });

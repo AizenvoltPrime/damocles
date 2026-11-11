@@ -1135,20 +1135,19 @@ describe('subscription plugin migration', () => {
       expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
     });
 
-    // the runtime refreshes pi's availability snapshot, which reads the acting client's sign-ins, and only then tells
-    // ChatPanelProvider, which republishes every panel (onActingClientRefreshed)
-    it('bills the account state a view reads as the acting client chose, and refreshes pi\'s availability snapshot', async () => {
+    // pi's availability snapshot holds no client's sign-ins, so the runtime tells ChatPanelProvider at once, which republishes every panel (onActingClientChanged)
+    it('bills the account state a view reads as the acting client chose, and republishes with no refresh of pi\'s availability snapshot', () => {
       const { h, remote } = remoteSetup(SUBSCRIPTION, [], ['A']);
-      const refreshed = vi.fn();
-      const stop = PiRuntime.onActingClientRefreshed(refreshed);
+      const changed = vi.fn();
+      const stop = PiRuntime.onActingClientChanged(changed);
       remote.set('clientAuth', 'client-b', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
       const refreshes = h.calls.filter((c) => c === 'refresh').length;
 
       remote.setActing('client-b');
 
       expect(billing(h)).toEqual({ dollarBilled: true, subscription: undefined });
-      await vi.waitFor(() => expect(refreshed).toHaveBeenCalledTimes(1));
-      expect(h.calls.filter((c) => c === 'refresh')).toHaveLength(refreshes + 1);
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(h.calls.filter((c) => c === 'refresh')).toHaveLength(refreshes);
       stop();
     });
   });

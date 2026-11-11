@@ -183,7 +183,7 @@ export class ChatPanelProvider {
       this.subscriptions.push(remote.clients.onDidChange((change) => {
         // once the runtime observes clientAuth, its credentialsChanged publishes each delta that changes a provider, and one that changes none changes no row
         if (change.topic === "clientAuth" && !PiRuntime.observesClientAuth) this.accountInputsChanged("nothing");
-        // once the runtime observes it, an acting client change republishes when pi's snapshot holds that client's credentials
+        // once the runtime observes it, it republishes each acting client change (`onActingClientChanged`)
         if (change.topic === "actingClient" && !PiRuntime.observesActingClient) this.accountInputsChanged("nothing");
         // a host's Allow YOLO switch changed on that client: its views show or hide the YOLO control at once
         if (change.topic === "clientPolicy" && change.clientId !== undefined) {
@@ -196,7 +196,7 @@ export class ChatPanelProvider {
           }
         }
       }));
-      const stopActing = PiRuntime.onActingClientRefreshed(() => this.accountInputsChanged("nothing"));
+      const stopActing = PiRuntime.onActingClientChanged(() => this.accountInputsChanged("nothing"));
       this.subscriptions.push({ dispose: stopActing });
     }
     // Before pi starts, the judge and the Anthropic row read auth.json directly; the runtime shares this watch once it exists.

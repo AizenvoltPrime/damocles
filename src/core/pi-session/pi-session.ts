@@ -1806,17 +1806,9 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * A daemon's core: pi's availability refresh after a client change (a new acting client, a clientAuth delta), which
-   * every judge of the shown model waits for, since until it settles pi's snapshot holds the client from before; else null.
-   */
-  private clientSnapshotSettling(): Promise<void> | null {
-    return PiRuntime.exists ? PiRuntime.get().clientSnapshotSettling() : null;
-  }
-
-  /**
    * Why the chat may not start a model call now, or null: the model it shows is checked against today's credentials and
    * plan at every call, so a key removed or a plan narrowed since it was adopted refuses too. With no model runtime (one
-   * retired at shutdown) nothing can be checked, so every call is refused. A caller waits for `clientSnapshotSettling` first.
+   * retired at shutdown) nothing can be checked, so every call is refused.
    */
   private modelRefusal(): ModelRefusal | null {
     const piRuntime = PiRuntime.exists ? PiRuntime.get() : null;
@@ -1838,7 +1830,7 @@ export class PiSession implements ChatSession {
    * Why no run may start on the chat now, asked by every path that starts one: a send (`promptPi`, with `purpose` `send`) and
    * a design delivery (`delivery`). A finish action holding the worktree (D33), a hand-off in flight (D61), a read-only or
    * superseded chat, design mode off for a design chat or a design's result run (PD-25), and the budget refuse; the model too
-   * when `model`, which a caller judges after `clientSnapshotSettling`.
+   * when `model`, which a caller judges after adopting the shown model.
    */
   private runStartRefusal(model: boolean, purpose: "send" | "delivery"): RunStartRefusal | undefined {
     if (this.worktree.finishing() !== undefined) return { kind: "worktreeFinishing" };
@@ -1952,11 +1944,6 @@ export class PiSession implements ChatSession {
     const refused = this.runStartRefusal(false, "send");
     if (refused) return this.refuseSend(refused, prompt, userBroadcast, correlationId);
     if (isPrompt) {
-      const refreshing = this.clientSnapshotSettling();
-      if (refreshing) {
-        await refreshing;
-        if (this.sendOvertaken(outgoing, session)) return "withdrawn";
-      }
       const adopting = this.adoptShownModelIfRunnable();
       if (adopting) {
         await adopting;
@@ -2003,7 +1990,7 @@ export class PiSession implements ChatSession {
     // Only the UserPromptSubmit hook and a settle wait await between this check and `prompt()`, and each checks again after it: past `prompt()` a Stop stops the run pi opens instead of returning the message.
     if (this.sendOvertaken(outgoing, session)) return "withdrawn";
     // After the last wait: a finish action (D33) holds the chat's worktree only while the chat is idle, which `beginTurn` ends.
-    // The model was judged after `clientSnapshotSettling`, which a check here would not wait for.
+    // The model was judged once its adoption above settled.
     const late = this.runStartRefusal(false, "send");
     if (late) return this.refuseSend(late, prompt, userBroadcast, correlationId);
     // A turn run on the committed model means the user went on without the model that asked for sign-in.
@@ -2752,12 +2739,6 @@ export class PiSession implements ChatSession {
   /** `runOpeningRefusal` once a shown model that can run is the one pi runs, adopted first as a send adopts it; never mid-run. */
   private async whenShownModelRuns(session: AgentSession): Promise<RunStartRefusal | undefined> {
     if (this.runOf(session)?.streaming) return undefined;
-    const refreshing = this.clientSnapshotSettling();
-    if (refreshing) {
-      await refreshing;
-      // the adoption must read the run state in its own step: a run opened during the wait keeps its model
-      if (this.runOf(session)?.streaming) return undefined;
-    }
     const adopting = this.adoptShownModelIfRunnable();
     if (adopting) await adopting;
     return this.runOpeningRefusal(session);
@@ -2851,15 +2832,7 @@ export class PiSession implements ChatSession {
    */
   private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp, report: (refusal: RunStartRefusal) => void = this.runRefusalReport()): void {
     if (queued.withdrawn()) return;
-    // one that opens a run is judged as a send is; the refresh is one promise, so deferred follow-ups keep their order
-    const refreshing = this.runOf(session)?.streaming ? null : this.clientSnapshotSettling();
-    if (refreshing) {
-      void refreshing.then(() => {
-        if (this.runtime?.session === session) this.requeueFollowUp(session, queued, report);
-        else queued.giveBack();
-      });
-      return;
-    }
+    // one that opens a run is judged as a send is
     const refusal = this.runOpeningRefusal(session);
     if (refusal) {
       queued.refuse((prompt, broadcast, correlationId) => this.refuseRequeued(refusal, prompt, broadcast, correlationId, report));
@@ -3412,8 +3385,7 @@ export class PiSession implements ChatSession {
         this.emit({ type: "error", message: readOnly });
         return;
       }
-      const refreshing = this.clientSnapshotSettling();
-      const adopting = refreshing ? refreshing.then(() => this.adoptShownModelIfRunnable() ?? undefined) : this.adoptShownModelIfRunnable();
+      const adopting = this.adoptShownModelIfRunnable();
       if (adopting) {
         await adopting;
         if (beforePi.signal.aborted) {
@@ -6375,9 +6347,6 @@ export class PiSession implements ChatSession {
       post({ type: "btwError", btwId, message: l("pi failed to start: {0}", errorTextOf(err)) });
       return;
     }
-    // pi's availability snapshot holds the asking device's sign-ins only once the client refresh settled
-    const refreshing = this.clientSnapshotSettling();
-    if (refreshing) await refreshing;
     const piRuntime = PiRuntime.get();
     const modelRuntime = piRuntime.modelLookup;
     const folder = this.folder;
