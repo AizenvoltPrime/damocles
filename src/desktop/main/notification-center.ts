@@ -83,6 +83,8 @@ export interface NotificationCenterDeps {
   readonly viewedChat: () => ChatKey | undefined;
   // flashes the taskbar button, or stops it
   readonly flash: (on: boolean) => void;
+  // whether main holds the chat's entry; a prompt of a chat it does not hold is noticed once it does
+  readonly chatHeld: (corePanelId: string) => boolean;
   // undefined when the panel is no loaded chat
   readonly describeChat: (corePanelId: string) => Promise<ChatRef | undefined>;
   // writes a link request's URL to the clipboard
@@ -301,6 +303,7 @@ export class NotificationCenter {
       pending?.delete(promptId);
       this.withdraw(entryId);
     }
+    if (!this.deps.chatHeld(corePanelId)) return;
     for (const prompt of activity.pendingPrompts) {
       let notified = this.notifiedPrompts.get(corePanelId);
       if (notified?.has(prompt.id)) continue;

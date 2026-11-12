@@ -3,11 +3,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FEATURES } from '../../../../remote/protocol-version';
-import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type HeldAuth } from '../../../../shared/remote-user';
+import { MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type HeldAuth } from '../../../../shared/remote-user';
 import { fileURLToPath } from 'node:url';
 import { readContributedConfiguration } from '../../../../core/config/read-contributed-configuration';
 import { PREFER_API_KEY_SETTINGS } from '../../../../core/pi-session/provider-auth';
-import { brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, relayedUserSettingKeys, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
+import { BROKER_ENV_FEATURE, brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, relayedUserSettingKeys, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
 
 const KNOWN: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } };
 
@@ -39,6 +39,17 @@ describe('brokerAnswerOf', () => {
     expect(() => brokerAnswerOf({ type: 'api_key', key: 'k'.repeat(64 * 1024 + 1) })).toThrow('bounded');
     expect(() => brokerAnswerOf({ type: 'oauth', access: 'a', expiresIn: 1, refresh: '', clientId: 7 })).toThrow('clientId');
     expect(() => brokerAnswerOf({ type: 'oauth', access: 'a', expiresIn: 1, refresh: '', scopes: Array.from({ length: 600 }, () => 's') })).toThrow('scopes');
+  });
+
+  it('keeps an API key\'s env only for a daemon that takes it, and refuses one brokerEnvOf would not keep', () => {
+    const env = { CLOUDFLARE_ACCOUNT_ID: 'acct', CLOUDFLARE_GATEWAY_ID: 'gw' };
+    expect(brokerAnswerOf({ type: 'api_key', key: 'cf', env }, true)).toEqual({ type: 'api_key', key: 'cf', env });
+    expect(brokerAnswerOf({ type: 'api_key', key: 'cf', env })).toEqual({ type: 'api_key', key: 'cf' });
+    expect(brokerAnswerOf({ type: 'api_key', key: 'cf' }, true)).toEqual({ type: 'api_key', key: 'cf' });
+    const tooMany = Object.fromEntries(Array.from({ length: MAX_BROKER_ENV_VARS + 1 }, (_, i) => [`VAR_${i}`, 'v']));
+    for (const bad of [tooMany, { lower: 'v' }, { LONG: 'v'.repeat(MAX_BROKER_ENV_VALUE_CHARS + 1) }, { NUMBER: 7 }, 'A=b']) {
+      expect(() => brokerAnswerOf({ type: 'api_key', key: 'cf', env: bad }, true)).toThrow('env');
+    }
   });
 
   // One rule with every other reader and sender of the list, so its bounds can move in one place.
@@ -190,6 +201,14 @@ describe('UserRelays', () => {
     loaded!(KNOWN);
     await startup;
     await expect(asked).resolves.toEqual({ type: 'oauth', access: 'a', expiresIn: 60_000, refresh: '' });
+  });
+
+  it('sends an API key\'s env only to a daemon whose welcome lists the feature', async () => {
+    const env = { CLOUDFLARE_ACCOUNT_ID: 'acct' };
+    const { relays: user } = await relays({ resolveCredential: async () => ({ type: 'api_key', key: 'cf', env }) });
+    await expect(user.credentials('ssh+h1', 'openai', [BROKER_ENV_FEATURE])).resolves.toEqual({ type: 'api_key', key: 'cf', env });
+    await expect(user.credentials('ssh+h1', 'openai', [])).resolves.toEqual({ type: 'api_key', key: 'cf' });
+    expect(FEATURES).toContain(BROKER_ENV_FEATURE);
   });
 
   it('refuses an answer the local core sent with a refresh token', async () => {

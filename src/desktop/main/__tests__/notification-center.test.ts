@@ -48,6 +48,7 @@ function center(overrides: Partial<NotificationCenterDeps> = {}): NotificationCe
     chatSelected: (corePanelId) => corePanelId === selected,
     viewedChat: () => viewed,
     flash: (on) => flashes.push(on),
+    chatHeld: () => true,
     describeChat: async () => CHAT,
     copyText: (text) => copied.push(text),
     popups: () => (popupReady ? { show: (toast) => shown.push(toast), dismiss: (id) => dismissed.push(id) } : undefined),
@@ -188,6 +189,21 @@ describe('notification center: prompts', () => {
     await settle();
     expect(notifications.state().entries).toHaveLength(1);
     expect(shown).toEqual([]);
+  });
+
+  // a remote host reports every chat's activity when main attaches, before main rejoins the chats it shows
+  it('raises a prompt of a chat main does not hold once it holds the chat', async () => {
+    let held = false;
+    const notifications = center({ chatHeld: () => held });
+    notifications.activity('host-1', activity(prompt('p1', 'question')));
+    await settle();
+    expect(notifications.state().entries).toEqual([]);
+
+    held = true;
+    notifications.activity('host-1', activity(prompt('p1', 'question')));
+    await settle();
+    expect(notifications.state().entries).toHaveLength(1);
+    expect(shown).toHaveLength(1);
   });
 
   it('withdraws a closed chat\'s prompt popups and their flash, keeps their entries and forgets the chat\'s prompt ids', async () => {

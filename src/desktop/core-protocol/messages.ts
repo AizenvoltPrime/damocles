@@ -18,7 +18,7 @@ import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
-import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
+import { brokerEnvOf, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { RelayedServedFile, ServedFile, ServedFileAnswer } from '../../shared/served-file-url';
 import type { UserProfile } from '../../shared/types/memory';
 import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
@@ -919,6 +919,12 @@ const callArgs = arr(value, MAX_CALL_ARGS);
 const strings = arr(label, MAX_ITEMS);
 // accepts exactly what planModelIdsOf accepts, so a list a sender keeps never closes the channel
 const planModelIds = arr(nonEmpty(MAX_PLAN_MODEL_ID_CHARS), MAX_PLAN_MODEL_IDS);
+const envRecord = dict(str(MAX_BROKER_ENV_VALUE_CHARS), MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VARS);
+// accepts exactly what brokerEnvOf keeps, as the sender sends it
+const brokerEnv: Parser<Readonly<Record<string, string>>> = (raw) => {
+  const env = envRecord(raw);
+  return env !== INVALID && brokerEnvOf(env) !== undefined ? env : INVALID;
+};
 const brokerAnswer: Parser<BrokerAnswer> = either(
   obj({
     type: oneOf(['oauth'] as const),
@@ -931,7 +937,7 @@ const brokerAnswer: Parser<BrokerAnswer> = either(
     accountId: opt(label),
     availableModelIds: opt(planModelIds),
   }),
-  either(obj({ type: oneOf(['api_key'] as const), key: nonEmpty(MAX_MESSAGE_CHARS) }), obj({ type: oneOf(['none'] as const) })),
+  either(obj({ type: oneOf(['api_key'] as const), key: nonEmpty(MAX_MESSAGE_CHARS), env: opt(brokerEnv) }), obj({ type: oneOf(['none'] as const) })),
 );
 // a pushed token's bounds (security's credential-wire): a provider id as pi names one, extras at most 2048 characters
 const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;

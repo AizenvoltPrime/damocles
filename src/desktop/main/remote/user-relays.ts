@@ -1,6 +1,7 @@
 // This computer's user scope as a remote core reaches it (docs/invariants.md "Remote daemon and wire"): the broker's
 // credentials, which the local core resolves and main checks, and the clientAuth, clientUser and clientPolicy mirrors each
-// attach publishes. Nothing here ever carries a refresh token, env, apiKeyHelper, hooks or a stored secret.
+// attach publishes. Nothing here ever carries a refresh token, this computer's environment, a settings file's env,
+// apiKeyHelper, hooks or a stored secret.
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { ContributedConfiguration } from '../../../core/config/contributed-configuration';
@@ -8,7 +9,7 @@ import { parseSettingsText, type SettingsObject } from '../../../core/config/set
 import { PREFER_API_KEY_SETTINGS } from '../../../core/pi-session/provider-auth';
 import type { Disposable } from '../../../platform/disposable';
 import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
-import { carriesAnyTag, GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, listedAfter, listedMemoryBytes, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
+import { brokerEnvOf, carriesAnyTag, GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, listedAfter, listedMemoryBytes, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
 
 // an access token or API key; pi's JWTs are a few KB
 export const MAX_SECRET_CHARS: number = 64 * 1024;
@@ -22,6 +23,8 @@ export const MAX_RULES: number = 2000;
 export const AUTH_REREAD_MS: number = 5000;
 // a daemon whose welcome does not list it closes the connection on a clientMcp mirror as a violation
 export const CLIENT_MCP_FEATURE = 'clientMcp';
+// a daemon whose welcome does not list it parses no env in an API key answer
+export const BROKER_ENV_FEATURE = 'user.credentials.env';
 
 /** A user settings file read for its permission rules, and the folder it is in. */
 export interface UserRulesFile {
@@ -58,16 +61,22 @@ export function checkProvider(provider: string, known: HeldAuth): void {
 
 /**
  * The answer main sends a daemon, built field by field from the local core's: one of the three types, bounded strings, a
- * bounded non-negative expiresIn (clamped to MAX_BROKER_EXPIRES_IN_MS), and an empty refresh; anything else throws.
+ * bounded non-negative expiresIn (clamped to MAX_BROKER_EXPIRES_IN_MS), and an empty refresh; anything else throws. An API
+ * key's env (`brokerEnvOf`) goes only with withEnv, the daemon listing BROKER_ENV_FEATURE.
  */
-export function brokerAnswerOf(raw: unknown): BrokerAnswer {
+export function brokerAnswerOf(raw: unknown, withEnv = false): BrokerAnswer {
   const answer = raw as Record<string, unknown> | null;
   if (typeof answer !== 'object' || answer === null) throw new Error('The credential answer is not an object');
   switch (answer['type']) {
     case 'none':
       return { type: 'none' };
-    case 'api_key':
-      return { type: 'api_key', key: boundedString(answer['key'], MAX_SECRET_CHARS, 'key') };
+    case 'api_key': {
+      const key = boundedString(answer['key'], MAX_SECRET_CHARS, 'key');
+      if (answer['env'] === undefined) return { type: 'api_key', key };
+      const env = brokerEnvOf(answer['env']);
+      if (!env) throw new Error("The credential answer's env is not a bounded set of variables");
+      return withEnv ? { type: 'api_key', key, env } : { type: 'api_key', key };
+    }
     case 'oauth': {
       if (answer['refresh'] !== '') throw new Error('The credential answer carries a refresh token');
       const expiresIn = answer['expiresIn'];
@@ -423,15 +432,15 @@ export class UserRelays implements Disposable {
     for (const publish of this.attached.keys()) publish('clientUser', next);
   }
 
-  /** A remote core's broker asks for a provider's credential: always this computer's, checked before it leaves. */
-  async credentials(authority: string, provider: string): Promise<BrokerAnswer> {
+  /** A remote core's broker asks for a provider's credential: always this computer's, checked before it leaves. features: the daemon's welcome.features. */
+  async credentials(authority: string, provider: string, features: readonly string[] = []): Promise<BrokerAnswer> {
     // a read under way (the one each local core start makes) lands before an ask is judged against the snapshot
     await this.authRefresh;
     // a provider signed in since the last snapshot is listed once it is re-read; an id that cannot be one never asks
     if (PROVIDER_ID_PATTERN.test(provider) && !Object.hasOwn(this.auth.providers, provider) && Date.now() - this.lastAuthRead >= AUTH_REREAD_MS) await this.authChanged();
     checkProvider(provider, this.auth);
     this.deps.log(`[remote] user.credentials ${provider} for ${authority}`);
-    return brokerAnswerOf(await this.deps.resolveCredential(provider));
+    return brokerAnswerOf(await this.deps.resolveCredential(provider), features.includes(BROKER_ENV_FEATURE));
   }
 
   dispose(): void {

@@ -4,8 +4,8 @@ import type { Credential, CredentialInfo, CredentialStore } from '@earendil-work
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { Disposable } from '../../platform/disposable';
 import type { RemoteHost } from '../../platform/remote-host';
-import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
-import { clientCredentialProviders, entryHoldsCredential, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, type ClientPin, type SignInPrompts } from '../client-snapshots';
+import { brokerEnvOf, CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
+import { clientCredentialProviders, credentialOwner, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, type ClientPin, type SignInPrompts } from '../client-snapshots';
 import { DAMOCLES_CREDENTIAL_SOURCE_ENTRY } from './session-store/constants';
 import { l } from '../l10n';
 import { LocalizedError } from '../../shared/localized-text';
@@ -36,7 +36,7 @@ const brokerStopped = (provider: string): LocalizedError =>
 /** An answer as the credential pi reads; expires is set after the extras, on this host's clock. */
 export function credentialOf(answer: BrokerAnswer, now: number): Credential | undefined {
   if (answer.type === 'none') return undefined;
-  if (answer.type === 'api_key') return { type: 'api_key', key: answer.key };
+  if (answer.type === 'api_key') return { type: 'api_key', key: answer.key, ...(answer.env ? { env: { ...answer.env } } : {}) };
   const { type: _type, expiresIn, ...extras } = answer;
   return { ...extras, type: 'oauth', refresh: '', access: answer.access, expires: now + expiresIn };
 }
@@ -103,6 +103,22 @@ export function oauthAnswerOf(stored: Record<string, unknown>, now: number): Bro
     ...(typeof stored['accountId'] === 'string' ? { accountId: stored['accountId'] } : {}),
     ...(plan ? { availableModelIds: plan } : {}),
   };
+}
+
+/** The refusal of a credential for a run whose device is not attached, and of pi's auth check under a pin that names no device. */
+export function clientNotConnected(providerId: string): LocalizedError {
+  return new LocalizedError(l('The computer that started this chat is not connected, so this host has no sign-in for {0}. Reconnect from that computer to continue.', providerId), { cause: 'credential' });
+}
+
+/**
+ * The API key answer for the credential pi's request auth reads (its runtime key, else the stored credential): the key with
+ * that credential's own env, or undefined for any other credential, a key-less one (a Bedrock AWS profile or credential
+ * chain) included, since a machine-local reference never crosses machines.
+ */
+export function apiKeyAnswerOf(credential: Credential | undefined): (BrokerAnswer & { readonly type: 'api_key' }) | undefined {
+  if (credential?.type !== 'api_key' || !credential.key) return undefined;
+  const env = brokerEnvOf(credential.env);
+  return env ? { type: 'api_key', key: credential.key, env } : { type: 'api_key', key: credential.key };
 }
 
 // an OAuth entry's expiry is stamped as its snapshot arrives, so a delta may count an unchanged one as changed
@@ -238,13 +254,14 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
       this.used.set(pin.run, used);
       this.deps.remote.runProviders(pin.run, [...used]);
     }
-    if (pin.clientId === undefined) throw this.absent(providerId, pin.kind);
+    const owner = credentialOwner(this.deps.remote, providerId, pin);
+    if (owner.kind === 'noDevice') throw this.absent(providerId, pin.kind);
     try {
-      return await this.fetch(pin.clientId, providerId, refresh);
+      return await this.fetch(owner.clientId, providerId, refresh);
     } catch (err) {
       if (!(err instanceof ClientAbsent)) throw err;
       // the device's last clientAuth holds nothing for the provider, so pi uses the target's own, as it would with the device attached
-      if (!entryHoldsCredential(this.deps.remote.clients.auth(pin.clientId)?.providers[providerId])) return { credential: undefined };
+      if (credentialOwner(this.deps.remote, providerId, pin).kind === 'host') return { credential: undefined };
       if (pin.kind !== 'turn' || pin.signIn === undefined) throw this.absent(providerId, pin.kind);
       return this.waitForSignIn(pin, pin.signIn, providerId, signal);
     }
@@ -368,6 +385,6 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   // a turn and a sub-call both fail at once, with the cause pi reads as a credential failure
   private absent(providerId: string, kind: 'turn' | 'subcall'): Error {
     log('[credential-broker] %s: the %s\'s client is not attached', providerId, kind);
-    return new LocalizedError(l('The computer that started this chat is not connected, so this host has no sign-in for {0}. Reconnect from that computer to continue.', providerId), { cause: 'credential' });
+    return clientNotConnected(providerId);
   }
 }

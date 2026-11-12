@@ -8,6 +8,7 @@ import { git, initRepo } from './support/git';
 import { writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT, systemChrome } from './support/browser';
 import { openInEditor } from './support/editor';
+import { chatRow, projectRow } from './support/shell-ui';
 import { attachDaemonLogs, credentialRequests, filesHolding, mergeJson, newLoopbackChat, sendPrompt, servedProviders, startLoopbackStub, systemPrompts, targetAgentDir, targetDamoclesDir, witnessCommand, witnessed, WITNESS } from './support/loopback-agent';
 import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
@@ -194,7 +195,7 @@ test('a loopback chat\'s bash, Write, Read and Edit run in the daemon\'s core wi
   }
 });
 
-test('a loopback turn keeps running across an app quit; the relaunched view rejoins it through views.join and streams to the end with no gap and no duplicate', { tag: LOOPBACK_TAG }, async ({ home, launch }, testInfo) => {
+test('a loopback turn keeps running across an app quit; the relaunched view rejoins it through views.join, shows it running in the sidebar and streams to the end with no gap and no duplicate', { tag: LOOPBACK_TAG }, async ({ home, launch }, testInfo) => {
   test.setTimeout(360_000);
   const stub = await startLoopbackStub(home);
   const folder = remoteFolder(home);
@@ -265,6 +266,14 @@ test('a loopback turn keeps running across an app quit; the relaunched view rejo
       if (state.chatViewShown) expect(state.chatId).toBeDefined();
     }
     expect(seen.titles).not.toContain('New chat');
+    // the turn that ran while no app was attached shows as running on its project's row and its chat's row
+    const after = await shellState(second.app);
+    expect(after.selected.projectKey).toBe(key);
+    const chatId = after.selected.chatId;
+    expect(chatId).toBeDefined();
+    const shell = await shellPage(second.app);
+    await expect(projectRow(shell, key).getByTestId('activity-badge')).toHaveText('1 running');
+    await expect(chatRow(shell, chatId!)).toHaveAttribute('data-status', 'running');
     await expect(rejoined.getByText('part four,')).toHaveCount(0);
     afterRejoin.open();
     const whole = PARTS.join('');

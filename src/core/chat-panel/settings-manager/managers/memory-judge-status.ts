@@ -2,7 +2,7 @@ import type { Platform } from "../../../../platform/platform";
 import { PROVIDER_SECRET_KEYS } from "../../../pi-session/explore-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { keyProviderOfSecret, providerKeyStored, TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
-import { clientHasKey, clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
+import { clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
 import { readProviderSignIns } from "../../../pi-session/provider-auth";
 import { CLASSIFIER_ENV_KEYS, CLASSIFIER_MODELS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";
 import { OPENAI_API_KEY_SECRET, openaiAuthStatus, readOpenAIAuthFromDisk, readPreferOpenAIApiKey } from "../../../pi-session/openai-auth";
@@ -26,7 +26,7 @@ export async function memoryJudgeStatus(platform: Platform): Promise<Extract<Ext
     // a daemon's core: the key is the client's, known from its clientAuth, never read
     if (platform.remote) {
       const provider = keyProviderOfSecret(key);
-      return provider ? clientKeySaved(platform.remote, provider) : clientHasKey(platform.remote, key === OPENAI_API_KEY_SECRET ? "openai" : key);
+      return clientKeySaved(platform.remote, provider ?? (key === OPENAI_API_KEY_SECRET ? "openai" : key));
     }
     const stored = await providerKeyStored((k) => platform.secrets.get(k), key);
     if (stored === undefined) throw new Error(`the secret store did not answer for ${key}`);

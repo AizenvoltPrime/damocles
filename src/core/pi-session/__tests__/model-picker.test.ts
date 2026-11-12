@@ -21,6 +21,7 @@ function runtimeWith(configured: string[]): PiRuntime {
     getProvider: (id: string) => ({ id, auth: { oauth: {}, apiKey: {} } }),
     getAvailableSnapshot: () => [],
     getAvailable: async () => [],
+    checkAuth: async (provider: string) => (configured.includes(provider) ? { type: 'api_key' } : undefined),
   };
   (runtime as unknown as { _adoptModelRuntime: (modelRuntime: unknown) => void })._adoptModelRuntime(modelRuntime);
   return runtime;

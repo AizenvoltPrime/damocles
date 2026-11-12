@@ -2,14 +2,15 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { RemoteHost } from '../../platform/remote-host';
 import type { HeldAuthEntry } from '../../shared/remote-user';
-import { currentPin, entryHoldsCredential, outsidePins } from '../client-snapshots';
-import { statusCredentialOf } from './credential-broker';
+import { credentialOwner, outsidePins } from '../client-snapshots';
+import { clientNotConnected, statusCredentialOf } from './credential-broker';
 
-type AvailabilityReads = Pick<ModelRuntime, 'getProviders' | 'getProvider' | 'getAvailableSnapshot' | 'getAvailable' | 'isUsingOAuth' | 'getProviderAuthStatus' | 'hasConfiguredAuth'>;
+type AvailabilityReads = Pick<ModelRuntime, 'getProviders' | 'getProvider' | 'getAvailableSnapshot' | 'getAvailable' | 'checkAuth' | 'isUsingOAuth' | 'getProviderAuthStatus' | 'hasConfiguredAuth'>;
 
 /**
  * A daemon's core: replaces pi's availability reads on `modelRuntime`, whose snapshot holds only the host's own credentials,
- * with ones that add the pinned (else acting) client's from its clientAuth; returns the host's own check.
+ * with ones that add the pinned (else acting) client's from its clientAuth, and under a pin that names no device report
+ * none, with checkAuth refusing as the broker does; returns the host's own check.
  */
 export function installClientAvailability(modelRuntime: AvailabilityReads, remote: RemoteHost): (provider: string) => boolean {
   const hostHasAuth = modelRuntime.hasConfiguredAuth.bind(modelRuntime);
@@ -17,13 +18,10 @@ export function installClientAvailability(modelRuntime: AvailabilityReads, remot
   const hostAuthStatus = modelRuntime.getProviderAuthStatus.bind(modelRuntime);
   const hostSnapshot = modelRuntime.getAvailableSnapshot.bind(modelRuntime);
   const hostAvailable = modelRuntime.getAvailable.bind(modelRuntime);
+  const hostCheckAuth = modelRuntime.checkAuth.bind(modelRuntime);
 
   // a credential the client holds owns its provider, so the host's own for that provider is not consulted (pi-ai auth/resolve.js)
-  const held = (providerId: string): HeldAuthEntry | undefined => {
-    const clientId = currentPin(remote).clientId;
-    const entry = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers[providerId];
-    return entryHoldsCredential(entry) ? entry : undefined;
-  };
+  const ownerOf = (providerId: string) => credentialOwner(remote, providerId);
   // pi-ai resolves a stored credential only through the provider's handler of its type
   const accepts = (providerId: string, entry: HeldAuthEntry): boolean => {
     const auth = modelRuntime.getProvider(providerId)?.auth;
@@ -37,27 +35,42 @@ export function installClientAvailability(modelRuntime: AvailabilityReads, remot
       else hostByProvider.set(model.provider, [model]);
     }
     return modelRuntime.getProviders().flatMap((provider) => {
-      const entry = held(provider.id);
-      if (!entry) return hostByProvider.get(provider.id) ?? [];
-      if (!accepts(provider.id, entry)) return [];
+      const owner = ownerOf(provider.id);
+      if (owner.kind === 'noDevice') return [];
+      if (owner.kind === 'host') return hostByProvider.get(provider.id) ?? [];
+      if (!accepts(provider.id, owner.entry)) return [];
       const models = provider.getModels();
-      return [...(provider.filterModels?.(models, statusCredentialOf(entry)) ?? models)];
+      return [...(provider.filterModels?.(models, statusCredentialOf(owner.entry)) ?? models)];
     });
   };
 
   modelRuntime.hasConfiguredAuth = (providerId) => {
-    const entry = held(providerId);
-    return entry ? accepts(providerId, entry) : hostHasAuth(providerId);
+    const owner = ownerOf(providerId);
+    if (owner.kind === 'noDevice') return false;
+    return owner.kind === 'client' ? accepts(providerId, owner.entry) : hostHasAuth(providerId);
   };
   modelRuntime.isUsingOAuth = (providerId) => {
-    const entry = held(providerId);
-    return entry ? entry.type === 'oauth' && accepts(providerId, entry) : hostUsesOAuth(providerId);
+    const owner = ownerOf(providerId);
+    if (owner.kind === 'noDevice') return false;
+    return owner.kind === 'client' ? owner.entry.type === 'oauth' && accepts(providerId, owner.entry) : hostUsesOAuth(providerId);
   };
   // pi's order: a runtime key, then a stored credential, then config and environment
   modelRuntime.getProviderAuthStatus = (providerId) => {
     const status = hostAuthStatus(providerId);
     if (status.source === 'runtime') return status;
-    return held(providerId) ? { configured: true, source: 'stored' } : status;
+    const owner = ownerOf(providerId);
+    if (owner.kind === 'noDevice') return { configured: false };
+    return owner.kind === 'client' ? { configured: true, source: 'stored' } : status;
+  };
+  // pi's own check reads the broker, which answers none outside a pin and asks the client inside one
+  modelRuntime.checkAuth = async (providerId, options) => {
+    options?.signal?.throwIfAborted();
+    const owner = ownerOf(providerId);
+    // pi's preflight and setModel then fail with the broker's own reason, not a missing key
+    if (owner.kind === 'noDevice') throw clientNotConnected(providerId);
+    if (owner.kind === 'host') return outsidePins(() => hostCheckAuth(providerId, options));
+    if (!accepts(providerId, owner.entry)) return undefined;
+    return owner.entry.type === 'oauth' ? { source: 'OAuth', type: 'oauth' } : { source: 'stored credential', type: 'api_key' };
   };
   modelRuntime.getAvailableSnapshot = () => composed(hostSnapshot());
   // pi's pass runs in its caller's context, and inside a pin its reads would ask that client for real credentials

@@ -1584,6 +1584,7 @@ describe("account state on a daemon's core chat two devices show", () => {
       getProvider: (id: string) => ({ id, auth: { oauth: {}, apiKey: {} } }),
       getAvailableSnapshot: () => [],
       getAvailable: async () => [],
+      checkAuth: async () => undefined,
     };
     (runtime as unknown as { _adoptModelRuntime: (modelRuntime: unknown) => void })._adoptModelRuntime(modelRuntime);
 

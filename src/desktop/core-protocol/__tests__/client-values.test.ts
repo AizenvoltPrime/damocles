@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { INVALID } from '../schema';
-import { MAIN_TO_CORE, parseClientValues } from '../messages';
-import { MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, planModelIdsOf } from '../../../shared/remote-user';
+import { CORE_TO_MAIN, MAIN_TO_CORE, parseClientValues } from '../messages';
+import { brokerEnvOf, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, planModelIdsOf } from '../../../shared/remote-user';
 
 describe('the clientAuth snapshot', () => {
   it('carries no secret field and no absolute time: the wire parser keeps only the named non-secret fields', () => {
@@ -73,6 +73,19 @@ describe('a broker answer from this computer\'s core', () => {
     const tooMany = Array.from({ length: MAX_PLAN_MODEL_IDS + 1 }, (_, i) => `m${i}`);
     for (const list of [['gpt-6-luna'], ['x'.repeat(MAX_PLAN_MODEL_ID_CHARS)], tooMany, ['x'.repeat(MAX_PLAN_MODEL_ID_CHARS + 1)], [''], ['ok', 7]]) {
       expect(parse({ ...answer, availableModelIds: list }) !== INVALID, JSON.stringify(list).slice(0, 40)).toBe(planModelIdsOf(list) !== undefined);
+    }
+  });
+
+  it('takes an API key\'s env exactly when brokerEnvOf keeps it, toward main and toward a daemon\'s core', () => {
+    const relayed = (value: unknown) => CORE_TO_MAIN.requests['user.credentials'].result(value);
+    const key = { type: 'api_key', key: 'cf-key' };
+    const fits = Object.fromEntries(Array.from({ length: MAX_BROKER_ENV_VARS }, (_, i) => [`VAR_${i}`.padEnd(MAX_BROKER_ENV_NAME_CHARS, 'X'), 'v'.repeat(MAX_BROKER_ENV_VALUE_CHARS)]));
+    expect(parse({ ...key, env: { CLOUDFLARE_ACCOUNT_ID: 'acct' } })).toEqual({ ...key, env: { CLOUDFLARE_ACCOUNT_ID: 'acct' } });
+    expect(parse(key)).toEqual(key);
+    for (const env of [fits, { ...fits, ONE_MORE: 'v' }, { lower_case: 'v' }, { '1LEADING': 'v' }, { ['X'.repeat(MAX_BROKER_ENV_NAME_CHARS + 1)]: 'v' }, { LONG: 'v'.repeat(MAX_BROKER_ENV_VALUE_CHARS + 1) }, { NUMBER: 7 }, ['A'], 'A=b', {}]) {
+      const label = JSON.stringify(env).slice(0, 40);
+      expect(parse({ ...key, env }) !== INVALID, label).toBe(brokerEnvOf(env) !== undefined);
+      expect(relayed({ ...key, env }) !== INVALID, label).toBe(brokerEnvOf(env) !== undefined);
     }
   });
 });

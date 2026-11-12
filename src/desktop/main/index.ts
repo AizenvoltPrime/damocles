@@ -800,6 +800,7 @@ class DesktopApp {
     },
     viewedChat: () => this.viewedChat(),
     flash: (on) => this.flash('notifications', on),
+    chatHeld: (corePanelId) => this.panelOfCore(corePanelId) !== undefined,
     describeChat: (corePanelId) => this.describeChat(corePanelId),
     // Only while the main window exists, so the popup window never keeps the app running; from its closed event on it reports destroyed.
     popups: () => (this.window && !this.window.isDestroyed() ? this.notifier.sink() : undefined),
@@ -5313,7 +5314,7 @@ class DesktopApp {
       ui: { ask: deps.ui.ask, askpass: deps.ui.askpass, worktrees: this.worktreesOf(authority).ui() },
       notices: this.hostNotices(authority),
       user: {
-        credentials: (provider) => this.requireUserRelays().credentials(authority, provider),
+        credentials: (provider) => this.requireUserRelays().credentials(authority, provider, this.authorities?.connection(authority)?.features ?? []),
         speak: (viewId, text) => this.foreignViews.speak(authority, viewId, text),
         gitCredential: (request, signal) => this.gitCredentialClient().handle(this.hostIdOf(authority), request, signal),
         browserTool: (request, signal) => relayBrowserTool({

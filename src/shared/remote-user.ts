@@ -26,14 +26,34 @@ export type BrokerAnswer =
       readonly accountId?: string;
       readonly availableModelIds?: readonly string[];
     }
-  | { readonly type: 'api_key'; readonly key: string }
+  // env: the credential's own stored env (a Cloudflare account and gateway), never the sender's environment
+  | { readonly type: 'api_key'; readonly key: string; readonly env?: Readonly<Record<string, string>> }
   | { readonly type: 'none' };
 
+/** The most variables an API key answer's env carries, and the longest name and value. */
+export const MAX_BROKER_ENV_VARS = 16;
+export const MAX_BROKER_ENV_NAME_CHARS = 128;
+export const MAX_BROKER_ENV_VALUE_CHARS = 4096;
+const BROKER_ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
 /**
- * One provider's credential state on the client as it crosses machines, never a token or a key. hasKey: pi holds an API
- * key for the provider (Damocles' runtime key or a stored `api_key`; for OpenAI also the saved key), which the broker
- * answers and whose change drops its cached credential; keySaved: a key provider's key is saved in Damocles, applied or
- * outranked by a sign-in (absent before the client's first key sync); flatFee: the applied key bills a flat subscription;
+ * A stored credential's env as every sender and parser of a broker answer takes it: the whole record when it has 1 to
+ * MAX_BROKER_ENV_VARS variables, each named by BROKER_ENV_NAME within the bounds with a string value, else none.
+ */
+export function brokerEnvOf(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value);
+  if (entries.length === 0 || entries.length > MAX_BROKER_ENV_VARS) return undefined;
+  const fits = entries.every(([name, text]) => name.length <= MAX_BROKER_ENV_NAME_CHARS && BROKER_ENV_NAME.test(name) && typeof text === 'string' && text.length <= MAX_BROKER_ENV_VALUE_CHARS);
+  return fits ? Object.fromEntries(entries) as Record<string, string> : undefined;
+}
+
+/**
+ * One provider's credential state on the client as it crosses machines, never a token or a key. hasKey: the broker answers
+ * the provider with an API key (`apiKeyAnswerOf` of pi's runtime key, else its stored `api_key` credential, which a key-less
+ * one such as a Bedrock AWS profile is not), and its change drops the cached credential; keySaved: OpenAI's or a key
+ * provider's key is saved in Damocles, applied or outranked by a sign-in (absent before the client's first key read);
+ * flatFee: the applied key bills a flat subscription;
  * allowance: the client bills this OAuth sign-in to its subscription's included allowance (Claude's allowance plugin is
  * active there); availableModelIds: the models the OAuth sign-in lists for the user's plan (GitHub Copilot); preferApiKey:
  * the client prefers its key saved in Damocles over a sign-in for OpenAI or a key provider (absent: it does not).

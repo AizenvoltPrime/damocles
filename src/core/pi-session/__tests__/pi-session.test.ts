@@ -202,6 +202,7 @@ const H = vi.hoisted(() => {
         getProviders: () => [ANTHROPIC_PROVIDER],
         getProvider: (id: string) => (id === 'anthropic' ? ANTHROPIC_PROVIDER : undefined),
         getAvailable: async () => ANTHROPIC_PROVIDER.getModels(),
+        checkAuth: async () => ({ type: 'api_key', source: 'ANTHROPIC_API_KEY' }),
         refresh: vi.fn(),
         // a daemon's core registers its anthropic transport at init
         registerProvider: vi.fn(),

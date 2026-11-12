@@ -194,7 +194,7 @@ export type CoreEventRoute = 'allClients' | 'actingClient' | 'attachmentClient' 
 export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute>> = {
   'window.openAppSettings': 'actingClient',
   'window.toggleTerminal': 'actingClient',
-  // the run registry reads these two as well
+  // the run registry reads these two as well; the router also replays chat.activity (the attach snapshot, publishChat)
   'chat.activity': 'allClients',
   'chat.turnSettled': 'allClients',
   'chat.changes': 'allClients',
@@ -545,6 +545,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   let nextViewKey = 0;
   const keys = createViewKeys();
   const chats = new Map<string, ChatEntry>();
+  // each panel's latest chat.activity while its chats entry stands: core sends one only at a change or a session bind
+  const activities = new Map<string, CoreEvents['chat.activity']>();
   // core's view id -> the panel's title, which listRuns reports
   const titles = new Map<string, string>();
   let folderTargets: CoreMirrorTopics['folderTargets'] | undefined;
@@ -642,8 +644,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     const entry = chats.get(panelId);
     const viewer = entry === undefined ? undefined : viewerOf(session, entry.viewId);
     if (entry !== undefined && viewer !== undefined) {
+      const added = !session.chats.has(panelId);
       session.chats.add(panelId);
       deliver(session, (endpoint) => endpoint.publish('chats', { panelId, entry: { ...entry, viewId: viewer.viewId } }));
+      // after the entry: main drops the activity of a panel whose entry it does not hold
+      const activity = activities.get(panelId);
+      if (added && activity !== undefined) deliver(session, (endpoint) => endpoint.emit('chat.activity', activity));
     } else if (session.chats.delete(panelId)) {
       deliver(session, (endpoint) => endpoint.publish('chats', { panelId }));
     }
@@ -937,7 +943,10 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   };
   disposables.push(
     // a turn pins the client whose work started it, else the acting client (runPinnedTurn)
-    core.onEvent('chat.activity', ({ panelId, activity }) => deps.registry.panelActivity(runOf(panelId), activity, processActor.current() ?? actingPresent()?.client.clientId)),
+    core.onEvent('chat.activity', (payload) => {
+      if (chats.has(payload.panelId)) activities.set(payload.panelId, payload);
+      deps.registry.panelActivity(runOf(payload.panelId), payload.activity, processActor.current() ?? actingPresent()?.client.clientId);
+    }),
     core.onEvent('chat.turnSettled', ({ panelId }) => deps.registry.panelSettled(panelId)),
     core.onEvent('chat.providers', ({ panelId, providers }) => deps.registry.panelProviders(panelId, providers)),
     core.onEvent('ports.urlSeen', (hit) => deps.agentShellUrl(hit)),
@@ -971,6 +980,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       const before = chats.get(patch.panelId);
       if (patch.entry === undefined) {
         chats.delete(patch.panelId);
+        activities.delete(patch.panelId);
         deps.registry.removePanel(patch.panelId);
       } else {
         chats.set(patch.panelId, patch.entry);
@@ -1087,6 +1097,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     if (worktrees) endpoint.publish('worktrees', worktrees);
     if (heldMemory) endpoint.publish('heldMemory', heldMemory);
     for (const panelId of chats.keys()) publishChat(session, panelId);
+    for (const payload of activities.values()) endpoint.emit('chat.activity', payload);
     for (const map of [scmViews, scmRepositories, scmStates, scmDecorations]) for (const patch of map.values()) endpoint.publish('scm', patch);
     if (scmClone) endpoint.publish('scm', scmClone);
   });

@@ -886,6 +886,27 @@ describe('core routes', () => {
     expect(h.registry.isEmpty()).toBe(true);
   });
 
+  // core sends chat.activity only at a change, so a client that was away (an app relaunched while a turn ran) learns it here
+  it('give an attaching client each open panel\'s latest chat.activity, sent while no client was attached', async () => {
+    const h = setUp();
+    const running = { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } as const;
+    const idle = { state: 'idle', pendingKinds: [], pendingPrompts: [], background: false } as const;
+    for (const n of [1, 2, 3]) h.core.publish('chats', { panelId: `panel-${n}`, entry: entry(`panel-${n}`, `view-${n}`) });
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: idle, sessionId: 'S1' });
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: running, sessionId: 'S1' });
+    h.core.emit('chat.activity', { panelId: 'panel-2', activity: idle });
+    h.core.emit('chat.activity', { panelId: 'panel-3', activity: running });
+    h.core.publish('chats', { panelId: 'panel-3' });
+    // core's last report of a closed panel follows its entry's removal
+    h.core.emit('chat.activity', { panelId: 'panel-3', activity: idle });
+    await flush();
+
+    const seen: unknown[] = [];
+    h.client('c1', { before: (main) => main.onEvent('chat.activity', (payload) => seen.push(payload)) });
+    await flush();
+    expect(seen).toEqual([{ panelId: 'panel-1', activity: running, sessionId: 'S1' }, { panelId: 'panel-2', activity: idle }]);
+  });
+
   it('give a run to the client whose work started it, else to the acting client', async () => {
     const h = setUp();
     h.client('connection-1', { clientId: 'device-a' });
@@ -965,6 +986,38 @@ describe('core routes', () => {
     again.main.postPanel('view-2', 'message', { message: { type: 'x' } });
     expect(messages.at(-1)).toEqual(['view-1', 'message']);
     await flush();
+  });
+
+  // main keeps a panel's activity only while it holds the panel's entry, so an activity it got before the join may be gone by then
+  it('follow the entry of a panel a client starts showing with the panel\'s latest chat.activity', async () => {
+    const h = setUp();
+    const running = { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } as const;
+    const client = h.client('c1');
+    h.core.serve('chats.restore', () => undefined);
+    await client.main.request('chats.restore', { viewId: 'view-1' });
+    client.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: running, sessionId: 'S1' });
+    client.detach();
+
+    h.core.serve('views.join', () => ({ panelId: 'panel-1' }));
+    const seen: unknown[] = [];
+    const again = h.client('c1', {
+      before: (main) => {
+        main.onMirror('chats', (patch) => seen.push(['chats', patch.panelId]));
+        main.onEvent('chat.activity', (payload) => seen.push(['activity', payload]));
+      },
+    });
+    await flush();
+    seen.length = 0;
+    await again.main.request('views.join', { viewId: 'view-2', viewKey: 'token-1' });
+    await flush();
+    expect(seen).toEqual([['chats', 'panel-1'], ['activity', { panelId: 'panel-1', activity: running, sessionId: 'S1' }]]);
+    // a later entry change of a panel it already shows brings none
+    seen.length = 0;
+    h.core.publish('chats', { panelId: 'panel-1', entry: { ...entry('panel-1', 'view-1'), hasConversation: false } });
+    await flush();
+    expect(seen).toEqual([['chats', 'panel-1']]);
   });
 
   it('map settings attachments per client', async () => {

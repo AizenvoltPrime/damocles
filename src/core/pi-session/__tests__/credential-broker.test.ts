@@ -333,7 +333,7 @@ describe('oauthAnswerOf', () => {
   });
 });
 
-describe('pi\'s availability refresh inside a turn', () => {
+describe('pi\'s availability reads on a daemon\'s core', () => {
   const dirs: string[] = [];
   const tempDir = (prefix: string): string => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -343,7 +343,7 @@ describe('pi\'s availability refresh inside a turn', () => {
 
   // the host's own credentials are only what a test gives it
   beforeEach(() => {
-    for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_OAUTH_TOKEN', 'OPENAI_API_KEY', 'XAI_API_KEY']) vi.stubEnv(name, '');
+    for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_TOKEN', 'ANTHROPIC_FEDERATION_RULE_ID', 'OPENAI_API_KEY', 'XAI_API_KEY']) vi.stubEnv(name, '');
   });
 
   afterEach(async () => {
@@ -432,6 +432,7 @@ describe('pi\'s availability refresh inside a turn', () => {
       return {
         configured: [modelRuntime.hasConfiguredAuth('anthropic'), lookup.hasConfiguredAuth('anthropic')],
         oauth: modelRuntime.isUsingOAuth('anthropic'),
+        checkAuth: await modelRuntime.checkAuth('anthropic'),
         status: modelRuntime.getProviderAuthStatus('anthropic'),
         available: modelRuntime.getAvailableSnapshot().some((model) => model.provider === 'anthropic'),
         enabled: resolveEnabledModels([`anthropic/${opus.id}`], modelRuntime),
@@ -449,10 +450,47 @@ describe('pi\'s availability refresh inside a turn', () => {
     expect(await turn).toEqual({
       configured: [true, true],
       oauth: true,
+      checkAuth: { type: 'oauth', source: 'OAuth' },
       status: { configured: true, source: 'stored' },
       available: true,
       enabled: new Set([`anthropic/${opus.id}`.toLowerCase()]),
     });
+  }, 60_000);
+
+  it('switches a session\'s model on the acting client\'s sign-in outside every run, asking it nothing', async () => {
+    const host = createFakeRemoteHost(async () => oauth('of-client-a', HOUR));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } } });
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    const folder = await runtime.folder(tempDir('damocles-broker-ws-'));
+    const session = await folder.createSubagentSession({ cwd: folder.cwd, systemPrompt: 'probe', tools: [], customTools: [], extensionFactory: () => {}, store: { kind: 'memory' } });
+    try {
+      const [first, second] = modelRuntime.getModels('anthropic');
+      await session.setModel(first!);
+      await session.setModel(second!);
+      expect(session.model?.id).toBe(second!.id);
+      expect(host.remote.credentials).not.toHaveBeenCalled();
+    } finally {
+      folder.forgetSubagentSession(session);
+    }
+  }, 60_000);
+
+  it('checks auth for a turn\'s client, else the host\'s own, asking no client', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: {
+      anthropic: { type: 'api_key', hasKey: true, flatFee: false },
+      groq: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false },
+    } });
+    host.set('clientAuth', 'client-b', { providers: {} });
+    vi.stubEnv('GROQ_API_KEY', 'host-own-key');
+    const { modelRuntime } = await remoteRuntime(host);
+    modelRuntime.registerProvider('xai', { baseUrl: 'https://api.x.ai/v1', api: 'openai-completions', apiKey: 'host-own-key', models: [] } as never);
+    await modelRuntime.refresh({ allowNetwork: false });
+
+    expect(await modelRuntime.checkAuth('anthropic')).toMatchObject({ type: 'api_key' });
+    // a sign-in the provider has no handler for owns it all the same, so the host's own key does not count
+    expect(await modelRuntime.checkAuth('groq')).toBeUndefined();
+    expect(await inTurnOf(host, 'client-b', () => Promise.all([modelRuntime.checkAuth('anthropic'), modelRuntime.checkAuth('xai')]))).toEqual([undefined, expect.objectContaining({ type: 'api_key' })]);
+    expect(host.remote.credentials).not.toHaveBeenCalled();
   }, 60_000);
 
   it('lists a Copilot sign-in\'s models as its plan names them', async () => {
@@ -498,6 +536,77 @@ describe('pi\'s availability refresh inside a turn', () => {
     expect(await inTurnOf(host, 'client-b', () => modelRuntime.hasConfiguredAuth('anthropic'))).toBe(false);
     expect(runtime.hostHasOwnAuth('anthropic')).toBe(false);
   }, 60_000);
+
+  // pi's reads, the model switch and prompt preflight included, refuse up front what the broker would refuse at the request
+  it('reports no credential for any provider under a pin that names no device, inside a run or outside one, and its check refuses as the broker does', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    vi.stubEnv('GROQ_API_KEY', 'host-own-key');
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    await modelRuntime.refresh({ allowNetwork: false });
+    const reads = async () => ({
+      configured: [modelRuntime.hasConfiguredAuth('anthropic'), modelRuntime.hasConfiguredAuth('groq')],
+      oauth: modelRuntime.isUsingOAuth('anthropic'),
+      status: [modelRuntime.getProviderAuthStatus('anthropic'), modelRuntime.getProviderAuthStatus('groq')],
+      checkAuth: await Promise.all(['anthropic', 'groq'].map((provider) => modelRuntime.checkAuth(provider).catch((err: unknown) => (err as Error).message))),
+      snapshot: [...new Set(modelRuntime.getAvailableSnapshot().map((model) => model.provider))].sort(),
+      available: [...new Set((await modelRuntime.getAvailable()).map((model) => model.provider))].sort(),
+    });
+
+    expect(await reads()).toMatchObject({
+      configured: [true, true],
+      status: [{ configured: true, source: 'stored' }, { configured: true, source: 'environment' }],
+      checkAuth: [{ type: 'api_key' }, { type: 'api_key' }],
+      snapshot: ['anthropic', 'groq'],
+      available: ['anthropic', 'groq'],
+    });
+
+    host.setActing(undefined);
+    const notConnected = (provider: string) => `The computer that started this chat is not connected, so this host has no sign-in for ${provider}. Reconnect from that computer to continue.`;
+    const none = { configured: [false, false], oauth: false, status: [{ configured: false }, { configured: false }], checkAuth: [notConnected('anthropic'), notConnected('groq')], snapshot: [], available: [] };
+    expect(await reads()).toEqual(none);
+    expect(await runPinnedTurn(host.remote, 'p1', reads)).toEqual(none);
+    expect(runtime.hostHasOwnAuth('groq')).toBe(true);
+    await expect(runPinnedTurn(host.remote, 'p1', () => modelRuntime.getAuth('anthropic'))).rejects.toMatchObject({ cause: { cause: 'credential' } });
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('fails a prompt started with no device with the broker\'s not-connected text, asking no client', async () => {
+    const host = createFakeRemoteHost(async () => oauth('of-client-a', HOUR));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } } });
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    const folder = await runtime.folder(tempDir('damocles-broker-ws-'));
+    const session = await folder.createSubagentSession({ cwd: folder.cwd, systemPrompt: 'probe', tools: [], customTools: [], extensionFactory: () => {}, store: { kind: 'memory' } });
+    try {
+      await session.setModel(modelRuntime.getModels('anthropic')[0]!);
+      host.setActing(undefined);
+      await expect(session.prompt('hello')).rejects.toThrow('The computer that started this chat is not connected, so this host has no sign-in for anthropic.');
+      expect(host.remote.credentials).not.toHaveBeenCalled();
+    } finally {
+      folder.forgetSubagentSession(session);
+    }
+  }, 60_000);
+});
+
+describe('an API key answer\'s env', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('reaches pi beside the key, so the provider resolves the account and gateway the client\'s sign-in stored, never the host\'s', async () => {
+    vi.stubEnv('CLOUDFLARE_API_KEY', '');
+    vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'host-account');
+    vi.stubEnv('CLOUDFLARE_GATEWAY_ID', 'host-gateway');
+    const env = { CLOUDFLARE_ACCOUNT_ID: 'client-account', CLOUDFLARE_GATEWAY_ID: 'client-gateway' };
+    const host = remoteHost(async () => ({ type: 'api_key', key: 'cf-key', env }));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    expect(await runPinnedTurn(host.remote, 'p1', () => broker.read('cloudflare-ai-gateway'))).toEqual({ type: 'api_key', key: 'cf-key', env });
+
+    const runtime = await ModelRuntime.create({ credentials: broker, modelsPath: null });
+    const auth = await runPinnedTurn(host.remote, 'p2', () => runtime.getAuth('cloudflare-ai-gateway'));
+    expect(auth?.env).toEqual(env);
+    expect(auth?.auth.headers).toMatchObject({ 'cf-aig-authorization': 'Bearer cf-key' });
+  });
 });
 
 describe('a disposed runtime\'s token broker', () => {

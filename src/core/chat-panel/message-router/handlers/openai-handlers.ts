@@ -16,7 +16,7 @@ import {
   type OpenAIAuthStatus,
 } from "../../../pi-session/openai-auth";
 import { describeAuthError } from "../../../pi-session/describe-error";
-import { clientHasKey, clientPrefersApiKey } from "../../../client-snapshots";
+import { clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
 import { buildAuthInteraction } from "./auth-interaction";
 import { deviceHost } from "../../device-hosts";
 import type { PanelHost } from "../../../../platform/window-service";
@@ -103,7 +103,7 @@ function toSnapshot(status: OpenAIAuthStatus): OpenAIAuthSnapshot {
 async function readStatus(platform: Platform): Promise<OpenAIAuthStatus> {
   if (PiRuntime.exists && PiRuntime.get().openaiStatusReady) return PiRuntime.get().getOpenAIAuthStatus();
   // a daemon's core: the key is the client's, known from its clientAuth, never read
-  if (platform.remote) return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), clientHasKey(platform.remote, "openai"));
+  if (platform.remote) return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), clientKeySaved(platform.remote, "openai"));
   const secret = await platform.secrets.get(OPENAI_API_KEY_SECRET);
   return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), secret !== undefined && secret !== "");
 }

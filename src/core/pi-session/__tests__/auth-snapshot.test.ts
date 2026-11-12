@@ -206,6 +206,54 @@ describe('this computer\'s clientAuth snapshot', () => {
     expect((await runtime.clientAuthSnapshot()).providers['anthropic']).toEqual({ type: 'oauth', expires: 1, hasKey: false, flatFee: false, allowance: true });
   }, 60_000);
 
+  it('sends a saved OpenAI key a ChatGPT sign-in outranks as keySaved, and hasKey only once the key is what the broker answers', async () => {
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), JSON.stringify({ openai: { type: 'oauth', access: 'chatgpt', refresh: 'r', expires: 9_999_999_999_999 } }));
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+    await runtime.setOpenAIApiKey('sk-outranked');
+    expect((await runtime.clientAuthSnapshot()).providers['openai']).toMatchObject({ type: 'oauth', hasKey: false, keySaved: true });
+    expect(await runtime.resolveCredentialForBroker('openai')).toMatchObject({ type: 'oauth', access: 'chatgpt' });
+    await runtime.setOpenAIPreferApiKey(true);
+    expect((await runtime.clientAuthSnapshot()).providers['openai']).toMatchObject({ type: 'oauth', hasKey: true, keySaved: true });
+    expect(await runtime.resolveCredentialForBroker('openai')).toEqual({ type: 'api_key', key: 'sk-outranked' });
+  }, 60_000);
+
+  // the host then uses its own AWS chain, and every reader there says so: availability, the broker and billing
+  it.each([
+    ['an AWS profile', { type: 'api_key', env: { AWS_PROFILE: 'dev' } }],
+    ['the credential chain', { type: 'api_key' }],
+  ])('counts a Bedrock sign-in by %s as no key and answers the broker none, since a machine-local reference never crosses', async (_label, stored) => {
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), JSON.stringify({ 'amazon-bedrock': stored }));
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+    expect((await runtime.clientAuthSnapshot()).providers['amazon-bedrock']).toMatchObject({ type: 'api_key', hasKey: false });
+    expect(await runtime.resolveCredentialForBroker('amazon-bedrock')).toEqual({ type: 'none' });
+  }, 60_000);
+
+  it('answers the broker a Cloudflare key with the env its sign-in stored, AI Gateway included, and none of this computer\'s environment', async () => {
+    vi.stubEnv('CLOUDFLARE_API_KEY', '');
+    vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'ambient-account');
+    vi.stubEnv('CLOUDFLARE_GATEWAY_ID', 'ambient-gateway');
+    const gatewayEnv = { CLOUDFLARE_ACCOUNT_ID: 'stored-account', CLOUDFLARE_GATEWAY_ID: 'stored-gateway' };
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), JSON.stringify({
+      'cloudflare-workers-ai': { type: 'api_key', key: 'cf-workers-key' },
+      'cloudflare-ai-gateway': { type: 'api_key', key: 'cf-gateway-key', env: gatewayEnv },
+    }));
+    try {
+      const runtime = PiRuntime.get(agentDir);
+      await runtime.init();
+      expect(await runtime.resolveCredentialForBroker('cloudflare-workers-ai')).toEqual({ type: 'api_key', key: 'cf-workers-key' });
+      expect(await runtime.resolveCredentialForBroker('cloudflare-ai-gateway')).toEqual({ type: 'api_key', key: 'cf-gateway-key', env: gatewayEnv });
+      const snapshot = await runtime.clientAuthSnapshot();
+      expect([snapshot.providers['cloudflare-workers-ai']?.hasKey, snapshot.providers['cloudflare-ai-gateway']?.hasKey]).toEqual([true, true]);
+      // pi's runtime key comes before the stored credential, and carries no env
+      await runtime.modelRuntime!.setRuntimeApiKey('cloudflare-ai-gateway', 'runtime-key');
+      expect(await runtime.resolveCredentialForBroker('cloudflare-ai-gateway')).toEqual({ type: 'api_key', key: 'runtime-key' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }, 60_000);
+
   it('signals a clientAuth change for a credential change, never for a judge-only change', async () => {
     const runtime = PiRuntime.get(agentDir);
     await runtime.init();

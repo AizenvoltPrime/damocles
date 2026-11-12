@@ -1,5 +1,5 @@
 import type { ModelRuntime, PackageManager, PackageSource, SettingsManager } from '@earendil-works/pi-coding-agent';
-import type { Api, AuthInteraction, ClassifierAnswer, ClassifierApi, ClassifierModel, ClassifierQuestion, JsonObject, Model, ModelThinkingLevel } from '@earendil-works/pi-ai';
+import type { Api, AuthInteraction, ClassifierAnswer, ClassifierApi, ClassifierModel, ClassifierQuestion, Credential, CredentialStore, JsonObject, Model, ModelThinkingLevel } from '@earendil-works/pi-ai';
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import * as os from 'os';
@@ -93,11 +93,11 @@ import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watche
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 import { fetchSubscriptionUsage } from './subscription-usage';
 import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
-import { BrokeredCredentialStore, oauthAnswerOf } from './credential-broker';
+import { apiKeyAnswerOf, BrokeredCredentialStore, oauthAnswerOf } from './credential-broker';
 import { installClientAvailability } from './client-availability';
 import { allowanceProvider, builtinAnthropicTransport, clientClaudeAuthStatus, loadAllowanceTransport, subscriptionPluginDir } from './allowance-transport';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
-import { clientHasCredential, clientHasKey, clientPrefersApiKey, credentialSourceOf, outsidePins, runPinnedSubcall } from '../client-snapshots';
+import { clientKeySaved, clientPrefersApiKey, credentialOwner, credentialSourceOf, outsidePins, runPinnedSubcall } from '../client-snapshots';
 import { MODEL_PICKER_SETTING, MODEL_VENDORS, vendorPiProviders, type ModelVendor } from '../../shared/model-vendor';
 import { planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
 
@@ -2211,9 +2211,11 @@ export class PiRuntime {
   }
 
   /**
-   * This computer's core: the credential a daemon's token broker asked for (`user.resolveCredential`), resolved by this
-   * runtime, so an expiring OAuth token is refreshed under pi's lock first, and any OAuth token with `force` (Keep
-   * running). A provider this computer has only from its environment answers none, and the target then uses its own.
+   * This computer's core: the credential a daemon's token broker asked for (`user.resolveCredential`), the one pi's request
+   * auth reads. An API key goes as pi holds it, with its credential's own env (`apiKeyAnswerOf`), for the target's pi to
+   * resolve as this one would; an OAuth token is resolved by this runtime, so an expiring one is refreshed under pi's lock
+   * first, and any with `force` (Keep running). A provider this computer has only from its environment, or from a key-less
+   * credential, answers none, and the target then uses its own.
    */
   async resolveCredentialForBroker(provider: string, force = false): Promise<BrokerAnswer> {
     // a daemon's core holds only what its pinned client sent, and answers no other core
@@ -2221,19 +2223,29 @@ export class PiRuntime {
     await this.init();
     const runtime = this._modelRuntime!;
     if (!runtime.getProvider(provider)) throw new Error(`pi knows no provider ${provider}`);
-    if (!(await runtime.listCredentials()).some((credential) => credential.providerId === provider)) return { type: 'none' };
+    const credential = await this._brokeredCredential(provider);
+    if (credential?.type !== 'oauth') return apiKeyAnswerOf(credential) ?? { type: 'none' };
     const held = force ? readAuthFile(this._agentDir)?.[provider] as { type?: unknown; expires?: unknown } | undefined : undefined;
     // asking for more validity than the stored token has makes pi refresh it under its lock
     const resolved = await runtime.getAuth(provider, held?.type === 'oauth' && typeof held.expires === 'number' ? { minOAuthValidityMs: Math.max(held.expires - Date.now() + 1, 0) } : {});
-    if (!resolved) return { type: 'none' };
-    if (resolved.source === 'OAuth') {
-      // pi's refresh persisted the credential before releasing its lock
-      const stored = readAuthFile(this._agentDir)?.[provider];
-      if (typeof stored !== 'object' || stored === null) throw new Error(`The ${provider} sign-in changed while it was read`);
-      return oauthAnswerOf(stored as Record<string, unknown>, Date.now());
-    }
-    const key = resolved.auth.apiKey;
-    return key ? { type: 'api_key', key } : { type: 'none' };
+    if (resolved?.source !== 'OAuth') return { type: 'none' };
+    // pi's refresh persisted the credential before releasing its lock
+    const stored = readAuthFile(this._agentDir)?.[provider];
+    if (typeof stored !== 'object' || stored === null) throw new Error(`The ${provider} sign-in changed while it was read`);
+    return oauthAnswerOf(stored as Record<string, unknown>, Date.now());
+  }
+
+  /**
+   * The credential pi's request auth reads for a provider whose type it has a handler for: its runtime key, else the stored
+   * credential (`RuntimeCredentials.read`, a private field of pi's model runtime). The broker's answer and `hasKey` both read it.
+   */
+  private async _brokeredCredential(provider: string): Promise<Credential | undefined> {
+    const runtime = this._modelRuntime!;
+    const credentials = (runtime as unknown as { credentials?: Pick<CredentialStore, 'read'> }).credentials;
+    if (typeof credentials?.read !== 'function') throw new Error('pi\'s model runtime has no credential store to read');
+    const credential = await credentials.read(provider);
+    const auth = runtime.getProvider(provider)?.auth;
+    return (credential?.type === 'oauth' ? auth?.oauth : auth?.apiKey) !== undefined ? credential : undefined;
   }
 
   /** A daemon's core: an access token the client `actor` pushed for itself, which only that client's turns read. */
@@ -2264,8 +2276,8 @@ export class PiRuntime {
       const stored = file?.[id] as { type?: unknown; expires?: unknown; availableModelIds?: unknown } | undefined;
       const plan = stored?.type === 'oauth' ? planModelIdsOf(stored.availableModelIds) : undefined;
       const type = stored?.type === 'oauth' ? 'oauth' : (listed.get(id) ?? 'none');
-      const hasKey = listed.get(id) === 'api_key' || stored?.type === 'api_key' || (id === OPENAI_API_PROVIDER && this._openaiKeyPresent);
-      const keySaved = this._providerKeySaved.get(id as KeyProviderId);
+      const hasKey = listed.has(id) && apiKeyAnswerOf(await this._brokeredCredential(id)) !== undefined;
+      const keySaved = id === OPENAI_API_PROVIDER ? (this._openaiStatusReady ? this._openaiKeyPresent : undefined) : this._providerKeySaved.get(id as KeyProviderId);
       const preferApiKey = id === OPENAI_API_PROVIDER ? readPreferOpenAIApiKey(this._platform.settings) : isKeyProviderId(id) && readPreferProviderApiKey(this._platform.settings, id);
       providers[id] = {
         type,
@@ -2289,8 +2301,8 @@ export class PiRuntime {
   getOpenAIAuthStatus(): OpenAIAuthStatus {
     const remote = this._platform.remote;
     // a daemon's core reads the pinned (else acting) client's key, never the one its last sync saw
-    const status = openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), remote ? clientHasKey(remote, OPENAI_API_PROVIDER) : this._openaiKeyPresent);
-    if (!remote || clientHasCredential(remote, OPENAI_API_PROVIDER) || !this.hostHasOwnAuth(OPENAI_API_PROVIDER)) return status;
+    const status = openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), remote ? clientKeySaved(remote, OPENAI_API_PROVIDER) : this._openaiKeyPresent);
+    if (!remote || credentialOwner(remote, OPENAI_API_PROVIDER).kind !== 'host' || !this.hostHasOwnAuth(OPENAI_API_PROVIDER)) return status;
     return { ...status, hostKey: true };
   }
 

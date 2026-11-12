@@ -126,19 +126,13 @@ export function currentPin(remote: RemoteHost): ClientPin {
   return pins.getStore() ?? actingPin(remote, 'subcall');
 }
 
-/** Whether pi on the pinned (else acting) client holds an API key for a provider (`ClientAuthEntry.hasKey`); never reads a key. */
-export function clientHasKey(remote: RemoteHost, providerId: string): boolean {
-  const clientId = currentPin(remote).clientId;
-  return clientId !== undefined && remote.clients.auth(clientId)?.providers[providerId]?.hasKey === true;
-}
-
 /** Whether the pinned (else acting) client prefers its key saved in Damocles over a sign-in for OpenAI or a key provider. */
 export function clientPrefersApiKey(remote: RemoteHost, providerId: string): boolean {
   const clientId = currentPin(remote).clientId;
   return clientId !== undefined && remote.clients.auth(clientId)?.providers[providerId]?.preferApiKey === true;
 }
 
-/** Whether the pinned (else acting) client saved a key provider's key in Damocles, even one its sign-in outranks; never reads a key. */
+/** Whether the pinned (else acting) client saved OpenAI's or a key provider's key in Damocles, even one its sign-in outranks; never reads a key. */
 export function clientKeySaved(remote: RemoteHost, providerId: string): boolean {
   const clientId = currentPin(remote).clientId;
   const entry = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers[providerId];
@@ -149,6 +143,20 @@ export function clientKeySaved(remote: RemoteHost, providerId: string): boolean 
 /** Whether a clientAuth entry holds a credential the broker serves: a sign-in or a key; never reads one. */
 export function entryHoldsCredential(entry: HeldAuthEntry | undefined): entry is HeldAuthEntry {
   return entry?.type === 'oauth' || entry?.hasKey === true;
+}
+
+/** Whose credential a provider's request uses under a pin: its device's clientAuth entry, the host's own, or none for a pin that names no device. */
+export type CredentialOwner =
+  | { readonly kind: 'client'; readonly clientId: string; readonly entry: HeldAuthEntry }
+  | { readonly kind: 'host'; readonly clientId: string }
+  | { readonly kind: 'noDevice' };
+
+/** The one decision the token broker and pi's availability reads on a daemon's core share, for `pin`, else the pinned (else acting) client's. */
+export function credentialOwner(remote: RemoteHost, providerId: string, pin: ClientPin = currentPin(remote)): CredentialOwner {
+  const clientId = pin.clientId;
+  if (clientId === undefined) return { kind: 'noDevice' };
+  const entry = remote.clients.auth(clientId)?.providers[providerId];
+  return entryHoldsCredential(entry) ? { kind: 'client', clientId, entry } : { kind: 'host', clientId };
 }
 
 /** The providers the pinned (else acting) client holds a credential for, from its clientAuth; never reads one. */

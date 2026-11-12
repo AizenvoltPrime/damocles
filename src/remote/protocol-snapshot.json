@@ -183,7 +183,8 @@
   "chat.designDecisionChecks",
   "browser.servedFileUnavailable",
   "chat.designDecisionReferences",
-  "settings.memoryInjectRerank"
+  "settings.memoryInjectRerank",
+  "user.credentials.env"
  ],
  "contracts": {
   "CoreRequests": {
@@ -2917,6 +2918,18 @@
          "of": {
           "\"api_key\"": {
            "object": {
+            "env": {
+             "optional": true,
+             "type": {
+              "object": {},
+              "index": [
+               {
+                "key": "string",
+                "value": "string"
+               }
+              ]
+             }
+            },
             "key": {
              "optional": false,
              "type": "string"
@@ -7801,6 +7814,18 @@
          "of": {
           "\"api_key\"": {
            "object": {
+            "env": {
+             "optional": true,
+             "type": {
+              "object": {},
+              "index": [
+               {
+                "key": "string",
+                "value": "string"
+               }
+              ]
+             }
+            },
             "key": {
              "optional": false,
              "type": "string"

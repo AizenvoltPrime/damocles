@@ -7,7 +7,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import { CREDENTIAL_CLIENT_ABSENT, type BrokerAnswer, type HeldAuth } from '../../../shared/remote-user';
-import { clientHasCredential, clientHasKey, runPinnedTurn } from '../../client-snapshots';
+import { clientHasCredential, clientKeySaved, runPinnedTurn } from '../../client-snapshots';
 import { installPlatform } from '../../platform-host';
 import { BrokeredCredentialStore } from '../credential-broker';
 import { OPENAI_API_KEY_SECRET } from '../openai-auth';
@@ -127,7 +127,7 @@ describe('per-device credentials', () => {
     const { host } = twoDevices(account);
     const runtime = await remoteRuntime(host);
     host.setActing('client-a');
-    expect(clientHasKey(host.remote, 'openai')).toBe(true);
+    expect(clientKeySaved(host.remote, 'openai')).toBe(true);
     expect(runtime.getOpenAIAuthStatus()).toMatchObject({ apiKey: true });
     expect(host.remote.credentials).not.toHaveBeenCalled();
   }, 60_000);
