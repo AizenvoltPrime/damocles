@@ -536,6 +536,7 @@ export class RemoteHosts implements ConnectActions {
           keyInstalledByDamocles: ssh?.installedKeyFingerprint !== undefined,
           lingerEnabledByDamocles: ssh?.lingerEnabledByDamocles === true,
           alwaysCredentialHosts: record.alwaysCredentialHosts ?? [],
+          alwaysForgeAccounts: record.alwaysForgeAccounts ?? [],
         },
         heldMemoryQueues: this.heldQueuesOf(record.id),
       };
@@ -595,6 +596,12 @@ export class RemoteHosts implements ConnectActions {
   async revokeCredentialHost(hostId: string, credentialHost: string): Promise<void> {
     this.record(hostId);
     await this.deps.store.revokeCredentialHost(hostId, credentialHost);
+  }
+
+  /** Revoke: this host's git asks again before it uses the account. */
+  async revokeForgeAccount(hostId: string, accountId: string): Promise<void> {
+    this.record(hostId);
+    await this.deps.store.revokeForgeAccount(hostId, accountId);
   }
 
   /** Set up passwordless login: generate, install, verify. A call while the host's setup runs joins it. */

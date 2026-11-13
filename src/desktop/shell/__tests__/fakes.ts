@@ -7,6 +7,12 @@ import type { DamoclesTerminalApi, TerminalData, TerminalPickShells, TerminalPro
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
 import type { DamoclesScmApi, ScmArtifacts, ScmArtifactsChanged, ScmArtifactsRequest, ScmArtifactsResult, ScmCloneState, ScmCommitDetailsResult, ScmCommitInput, ScmHistoryResult, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
 import type { SettingsTarget } from '../../../shared/settings-sections';
+import type { ChooseAccountRows, CiChanged, CloneAccountsView, ClonePasteAnswer, CloneSearchAnswer, CloneStartAnswer, DamoclesForgeShellApi, ForgeChanged, JobLogUpdate } from '../../preload/forge-channels';
+import type { HostDefaultsView, RepoAccountsView } from '../../../shared/forge/bindings';
+import type { CiStatusView, CommitStatusView, JobLogView } from '../../../shared/forge/ci';
+import type { AuthorAvatars, ContainingChange, HistoryAuthor, HistoryForgeContext } from '../../../shared/forge/history';
+import type { FlowStart, ForkState, PublishOwnersAnswer, PublishState } from '../../../shared/forge/publish';
+import type { BranchNameCheck, ProtectedPushState } from '../../../shared/forge/protected-push';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 // VS Code's search.* defaults, as main publishes them.
@@ -243,6 +249,7 @@ export function fakeScmApi(state: Omit<ScmShellState, 'capabilities'> & Partial<
 export type FakeShellApi = DamoclesShellApi & {
   terminal: FakeTerminalApi;
   scm: FakeScmApi;
+  forge: FakeForgeShellApi;
   push: (state: ShellState) => void;
   chatsChanged: (projectKey: string) => void;
   // main's ShownFolder push for one project
@@ -293,7 +300,73 @@ export function emitter<T>(): { listen: (listener: (value: T) => void) => () => 
 
 export const DISABLED_UPDATE: UpdateSnapshot = { state: { kind: 'disabled' }, lastCheckedAt: null, platform: 'win32' };
 
-export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partial<Omit<DamoclesShellApi, 'terminal' | 'scm'>> = {}): FakeShellApi {
+// What repoAccounts answers per repository (absent: null, no chip), and main's changed push.
+export type FakeForgeShellApi = DamoclesForgeShellApi & {
+  views: Map<string, RepoAccountsView>;
+  changed: (changed: ForgeChanged) => void;
+  // what ciStatus answers per repository (absent: null, no chip), commitStatus per sha (absent: null), jobLog per tab
+  ci: Map<string, CiStatusView>;
+  commits: Map<string, CommitStatusView>;
+  jobLogs: Map<string, JobLogView>;
+  // what historyContext answers per repository (absent: null, no registered server), the avatar key per lower-cased email
+  // authorAvatars finds, and containingChange per sha (absent: null)
+  contexts: Map<string, HistoryForgeContext>;
+  avatarKeys: Map<string, string>;
+  containing: Map<string, ContainingChange>;
+  ciChanged: (changed: CiChanged) => void;
+  jobLogUpdate: (update: JobLogUpdate) => void;
+};
+
+export function fakeForgeShellApi(): FakeForgeShellApi {
+  const changed = emitter<ForgeChanged>();
+  const ciChanged = emitter<CiChanged>();
+  const jobLogUpdate = emitter<JobLogUpdate>();
+  const views = new Map<string, RepoAccountsView>();
+  const ci = new Map<string, CiStatusView>();
+  const commits = new Map<string, CommitStatusView>();
+  const jobLogs = new Map<string, JobLogView>();
+  const contexts = new Map<string, HistoryForgeContext>();
+  const avatarKeys = new Map<string, string>();
+  const containing = new Map<string, ContainingChange>();
+  return {
+    repoAccounts: vi.fn(async (repoId: string) => views.get(repoId) ?? null),
+    chooseAccount: vi.fn(async () => true),
+    openAccounts: vi.fn(async () => undefined),
+    onChanged: vi.fn(changed.listen),
+    ciStatus: vi.fn(async (repoId: string) => ci.get(repoId) ?? null),
+    ciWatch: vi.fn(async () => undefined),
+    showPipeline: vi.fn(async () => undefined),
+    jobLogOpen: vi.fn(async () => undefined),
+    jobAction: vi.fn(async () => true),
+    openOnServer: vi.fn(async () => 'gitlab.indigital.gr'),
+    link: vi.fn(async () => undefined),
+    commitStatus: vi.fn(async (_repoId: string, sha: string) => commits.get(sha) ?? null),
+    onCiChanged: vi.fn(ciChanged.listen),
+    jobLog: vi.fn(async (tabId: string) => jobLogs.get(tabId) ?? { status: 'loading' as const }),
+    jobLogRead: vi.fn(async () => undefined),
+    onJobLog: vi.fn(jobLogUpdate.listen),
+    jobLogVisible: vi.fn(),
+    historyContext: vi.fn(async (repoId: string) => contexts.get(repoId) ?? null),
+    authorAvatars: vi.fn(async (_repoId: string, authors: readonly HistoryAuthor[]): Promise<AuthorAvatars> =>
+      Object.fromEntries(authors.flatMap((author) => {
+        const key = avatarKeys.get(author.email.toLowerCase());
+        return key === undefined ? [] : [[author.email.toLowerCase(), key]];
+      }))),
+    containingChange: vi.fn(async (_repoId: string, sha: string) => containing.get(sha) ?? null),
+    views,
+    changed: changed.emit,
+    ci,
+    commits,
+    jobLogs,
+    contexts,
+    avatarKeys,
+    containing,
+    ciChanged: ciChanged.emit,
+    jobLogUpdate: jobLogUpdate.emit,
+  };
+}
+
+export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partial<Omit<DamoclesShellApi, 'terminal' | 'scm' | 'forge'>> = {}): FakeShellApi {
   const stateListeners = new Set<(s: ShellState) => void>();
   const changedListeners = new Set<(key: string) => void>();
   const focusListeners = new Set<(part: ShellFocusPart) => void>();
@@ -473,6 +546,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     previewReplace: vi.fn(async () => ({ ok: true as const })),
     terminal: fakeTerminalApi(),
     scm: fakeScmApi(),
+    forge: fakeForgeShellApi(),
     ports: fakePortsApi(),
     review: {
       fileDiff: vi.fn(async () => ({ kind: 'missing' as const })),
@@ -567,6 +641,18 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   settingsAway: (away: Exclude<OverlaySettingsAway, 'switchOffered'> | OverlaySettingsAwayState | null) => void;
   // main's live rows while a closeRemote request is open
   closeRemoteRows: (rows: readonly CloseRemoteRow[]) => void;
+  // what forgeHostDefaults answers per authority key (absent: loading), and main's pushes
+  forge: { defaults: Map<string, HostDefaultsView> };
+  forgeChanged: (changed: ForgeChanged) => void;
+  forgeRows: (rows: ChooseAccountRows) => void;
+  // what forgePipeline answers per repository (absent: null), and main's CI pushes while a pipeline request is open
+  pipelines: Map<string, CiStatusView>;
+  forgeCiChanged: (changed: CiChanged) => void;
+  // main's state pushes while a forgePublish or forgeFork request is open
+  forgePublishState: (state: PublishState) => void;
+  forgeForkState: (state: ForkState) => void;
+  // main's state pushes while a forgeProtectedBranch request is open
+  forgeProtectedState: (state: ProtectedPushState) => void;
 };
 
 // A control's name from its content as assistive technology computes it: text and img names outside aria-hidden, parts apart.
@@ -615,6 +701,14 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const connectHosts = emitter<readonly HostCardInfo[]>();
   const connectDistros = emitter<readonly WslDistroInfo[]>();
   const closeRemoteRows = emitter<readonly CloseRemoteRow[]>();
+  const forgeChanged = emitter<ForgeChanged>();
+  const forgeRows = emitter<ChooseAccountRows>();
+  const forge: FakeOverlayApi['forge'] = { defaults: new Map() };
+  const forgeCiChanged = emitter<CiChanged>();
+  const pipelines = new Map<string, CiStatusView>();
+  const forgePublishState = emitter<PublishState>();
+  const forgeForkState = emitter<ForkState>();
+  const forgeProtectedState = emitter<ProtectedPushState>();
   const hostEntries = emitter<readonly RemoteHostEntry[]>();
   const operationsChanged = emitter<HostOperations>();
   const hostOperations = new Map<string, HostOperations>();
@@ -699,9 +793,40 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onConnectDistros: vi.fn(connectDistros.listen),
     allowBackgroundWork: vi.fn(async (): Promise<PopupAnswer<LingerResult>> => opened({ result: 'enabled' })),
     onCloseRemoteRows: vi.fn(closeRemoteRows.listen),
+    forgeHostDefaults: vi.fn(async (authorityKey: string) => opened(forge.defaults.get(authorityKey) ?? { state: 'loading' as const })),
+    setForgeHostDefault: vi.fn(async () => opened(true)),
+    openForgeAccounts: vi.fn(async () => opened(undefined)),
+    onForgeChanged: vi.fn(forgeChanged.listen),
+    onForgeChooseAccountRows: vi.fn(forgeRows.listen),
+    forge,
+    forgeChanged: forgeChanged.emit,
+    forgeRows: forgeRows.emit,
+    forgePipeline: vi.fn(async (repoId: string) => opened(pipelines.get(repoId) ?? null)),
+    forgeJobAction: vi.fn(async () => opened(true)),
+    forgeJobLogOpen: vi.fn(async () => opened(undefined)),
+    forgeOpenOnServer: vi.fn(async () => opened<string | null>('gitlab.indigital.gr')),
+    forgeCloneAccounts: vi.fn(async () => opened<CloneAccountsView>({ empty: 'noAccount' })),
+    forgeCloneSearch: vi.fn(async (accountId: string, _query: string, requestId: number) => opened<CloneSearchAnswer>({ requestId, accountId, rows: [] })),
+    forgeClonePaste: vi.fn(async () => opened<ClonePasteAnswer>({ row: null })),
+    forgeCloneStart: vi.fn(async () => opened<CloneStartAnswer>({ kind: 'started' })),
+    onForgeCiChanged: vi.fn(forgeCiChanged.listen),
+    pipelines,
+    forgeCiChanged: forgeCiChanged.emit,
+    forgePublishSubmit: vi.fn(async () => opened<FlowStart>('started')),
+    forgeForkStart: vi.fn(async () => opened<FlowStart>('started')),
+    onForgePublishState: vi.fn(forgePublishState.listen),
+    onForgeForkState: vi.fn(forgeForkState.listen),
+    forgePublishState: forgePublishState.emit,
+    forgeForkState: forgeForkState.emit,
+    forgePublishOwners: vi.fn(async () => opened<PublishOwnersAnswer>({ status: 'loaded', owners: [], truncated: false })),
+    forgeProtectedCheckName: vi.fn(async (_requestId: string, name: string) => opened<BranchNameCheck>({ name })),
+    forgeProtectedPush: vi.fn(async () => opened<FlowStart>('started')),
+    onForgeProtectedState: vi.fn(forgeProtectedState.listen),
+    forgeProtectedState: forgeProtectedState.emit,
     listRemoteHosts: vi.fn(async () => opened(remoteHosts.list)),
     setHostSetting: vi.fn(async () => opened(undefined)),
     revokeCredentialHost: vi.fn(async () => opened(undefined)),
+    revokeForgeAccount: vi.fn(async () => opened(undefined)),
     deliverHeldMemory: vi.fn(async (): Promise<PopupAnswer<HeldMemoryResult>> => opened({ ok: true as const })),
     discardHeldMemory: vi.fn(async (): Promise<PopupAnswer<HeldMemoryResult>> => opened({ ok: true as const })),
     setUpPasswordless: vi.fn(async () => opened({ ok: true as const })),

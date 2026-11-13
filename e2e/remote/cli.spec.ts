@@ -1,6 +1,6 @@
 import type { ElectronApplication, Page } from '@playwright/test';
 import { runLocalCli } from '../desktop/support/cli';
-import { activeTab, codeEditor, editorShows, replaceText, saveWithKeyboard } from '../desktop/support/editor';
+import { activeTab, codeEditor, editorShows, editorTab, replaceText, saveWithKeyboard } from '../desktop/support/editor';
 import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { lastToolResultRequest } from '../desktop/support/openai-stub';
@@ -75,7 +75,8 @@ test('in a remote terminal, damocles opens a file at its line, opens a file outs
   await expect.poll(() => codeEditor(shell).locator('.view-overlays .current-line').first().evaluate((highlight) => (highlight.parentElement as HTMLElement).style.top)).toBe(lineTop);
 
   expect(await exitOf(shell, 'damocles /etc/hosts')).toBe(0);
-  await expect.poll(async () => activeTab(app)).toMatchObject({ kind: 'code', title: 'billing-prod: hosts', readOnly: false, displayPath: '/etc/hosts' });
+  await expect.poll(async () => activeTab(app)).toMatchObject({ kind: 'code', title: 'hosts', host: `ssh+${hostId}`, readOnly: false, displayPath: '/etc/hosts' });
+  await expect(editorTab(shell, 'hosts')).toHaveAttribute('title', 'billing-prod: /etc/hosts');
   await editorShows(shell, 'localhost');
 
   expect(await exitOf(shell, 'damocles new.txt')).toBe(0);

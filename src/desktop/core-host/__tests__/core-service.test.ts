@@ -16,6 +16,8 @@ const H = vi.hoisted(() => ({
   permissions: [] as Array<(panelId: string) => void>,
   restored: [] as unknown[][],
   foreignDispatched: [] as unknown[][],
+  foreignViews: [] as unknown[][],
+  forgeCalls: [] as unknown[][],
   clientAuthListeners: [] as Array<() => void>,
   relayedMcpListeners: [] as Array<() => void>,
   // each relayed MCP request this core ran, with the signal it got
@@ -130,6 +132,16 @@ vi.mock('../../../core/chat-panel', () => {
       };
       restorePanel = async (...args: unknown[]) => void H.restored.push(args);
       dispatchForeign = async (...args: unknown[]) => void H.foreignDispatched.push(args);
+      foreignViewAttached = (...args: unknown[]) => void H.foreignViews.push(['attached', ...args]);
+      foreignViewDetached = (...args: unknown[]) => void H.foreignViews.push(['detached', ...args]);
+      relayedForgeTool = async (params: unknown) => {
+        H.forgeCalls.push(['tool', params]);
+        return { text: 'framed' };
+      };
+      relayedForgeDescribe = async (params: unknown) => {
+        H.forgeCalls.push(['describe', params]);
+        return { ok: true, project: 'gitlab.com/grp/app', target: { serverId: 'gitlab.com', repoPath: 'grp/app', accountId: 'a' } };
+      };
       dispose = () => {
         H.order.push('provider.dispose');
         return H.disposeProvider();
@@ -164,6 +176,8 @@ afterEach(() => {
   H.permissions.length = 0;
   H.restored.length = 0;
   H.foreignDispatched.length = 0;
+  H.foreignViews.length = 0;
+  H.forgeCalls.length = 0;
   H.clientAuthListeners.length = 0;
   H.relayedMcpListeners.length = 0;
   H.relayedRuns.length = 0;
@@ -188,7 +202,11 @@ function start(teardown: () => Promise<void> = async () => void H.order.push('te
   const authorities = new Map<string, string>();
   const platform = {
     endpoint: core,
-    panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0], foreign: (viewId: string) => foreign.get(viewId), foreignAuthority: (viewId: string) => authorities.get(viewId) },
+    panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0], foreign: (viewId: string) => foreign.get(viewId), foreignAuthority: (viewId: string) => authorities.get(viewId), attachForeign: (_authority: string, viewId: string) => {
+      const proxy = {} as PanelHost;
+      foreign.set(viewId, proxy);
+      return proxy;
+    }, detachForeign: (viewId: string) => void foreign.delete(viewId) },
     init: { git: { available: true }, e2eHooks: false, mirrors: clientNetwork ? { clientNetwork } : {}, ...(initRemote ? { remote: initRemote } : {}) },
     secrets: {},
     settings: { get: <T>(_key: string, fallback: T) => fallback, onDidChange: () => ({ dispose: () => void H.order.push('subscription disposed') }) },
@@ -202,6 +220,7 @@ function start(teardown: () => Promise<void> = async () => void H.order.push('te
     teardown,
     flushLogs: async () => void H.order.push('flushLogs'),
     setPlatform: () => undefined,
+    forgeRepositories: async () => ({ ok: false, text: 'no repository' }),
   });
   return {
     main,
@@ -405,7 +424,20 @@ describe('panels.foreignMessage', () => {
       await expect(main.request('panels.foreignMessage', { viewId: 'remote-view', message })).rejects.toThrow('Only voice, user-setting and user-scope messages reach this computer from a remote chat');
     }
     await expect(main.request('panels.foreignMessage', { viewId: 'other-view', message: { type: 'startVoiceRecording' } })).rejects.toThrow('The remote chat view is not attached');
-    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }], [proxy, { type: 'setPinnedHeaderHidden', hidden: true }], [proxy, { type: 'requestSubscriptionUsage' }]]);
+    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }, 'remote-view'], [proxy, { type: 'setPinnedHeaderHidden', hidden: true }, 'remote-view'], [proxy, { type: 'requestSubscriptionUsage' }, 'remote-view']]);
+  });
+});
+
+describe('user.forge', () => {
+  it("serves a remote chat's GitHub and GitLab calls with this computer's provider, and tells it of each remote view's proxy", async () => {
+    const { main } = start();
+    const request = { tool: 'ForgePipelines', input: {}, authorityKey: 'ssh+prod-1', projectKey: 'ssh+prod-1|/srv/app', project: 'app', endpoints: [] };
+    await expect(main.request('user.forge.tool', { request, viewId: 'remote-view', toolCallId: 'call-1' })).resolves.toEqual({ text: 'framed' });
+    await expect(main.request('user.forge.describe', { request, toolCallId: 'call-1', approval: false })).resolves.toEqual({ ok: true, project: 'gitlab.com/grp/app', target: { serverId: 'gitlab.com', repoPath: 'grp/app', accountId: 'a' } });
+    expect(H.forgeCalls).toEqual([['tool', { request, viewId: 'remote-view', toolCallId: 'call-1' }], ['describe', { request, toolCallId: 'call-1', approval: false }]]);
+    await main.request('panels.attachForeign', { authority: 'ssh+prod-1', viewId: 'remote-view' });
+    await main.request('panels.detachForeign', { viewId: 'remote-view' });
+    expect(H.foreignViews.map((entry) => entry.slice(0, 2))).toEqual([['attached', 'remote-view'], ['detached', 'remote-view']]);
   });
 });
 

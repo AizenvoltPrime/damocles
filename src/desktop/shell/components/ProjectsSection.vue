@@ -603,7 +603,7 @@ async function onPointerUp(event: PointerEvent): Promise<void> {
 const sectionScope = getCurrentScope();
 function settleOnNextState(current: Drag): void {
   sectionScope?.run(() => {
-    const stop = watch(() => [props.projects, props.groups], () => {
+    const stop = watch([() => props.projects, () => props.groups], () => {
       stop();
       if (drag.value === current) slideBack(current);
     }, { flush: 'post' });

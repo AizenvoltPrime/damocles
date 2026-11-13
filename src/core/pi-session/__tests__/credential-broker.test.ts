@@ -39,7 +39,9 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
     terminal: () => undefined,
     language: () => undefined,
     mcp: () => undefined,
+    mcpPending: () => undefined,
     mcpClients: () => [],
+    forges: () => undefined,
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => listeners.delete(cb) };
@@ -49,7 +51,7 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
   const runProviders = vi.fn();
   const remote: RemoteHost = {
     hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders, browserTool: vi.fn(), browserRelease: vi.fn(), browserDiscard: vi.fn(), shellOutput: () => ({ write: () => undefined, end: () => undefined }),
-    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), memoryList: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(),
+    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), memoryList: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(), forgeTool: vi.fn(), forgeDescribe: vi.fn(),
   };
   return {
     remote,
@@ -569,6 +571,51 @@ describe('pi\'s availability reads on a daemon\'s core', () => {
     expect(runtime.hostHasOwnAuth('groq')).toBe(true);
     await expect(runPinnedTurn(host.remote, 'p1', () => modelRuntime.getAuth('anthropic'))).rejects.toMatchObject({ cause: { cause: 'credential' } });
     expect(host.remote.credentials).not.toHaveBeenCalled();
+  }, 60_000);
+
+  // sign-ins not read yet are not none: the host's own credential never stands in for them
+  it('reports no credential, never the host\'s own, while the device\'s sign-ins are pending, and its check outside a turn that can wait refuses with the reason', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: {}, pending: 'engineStopped' });
+    vi.stubEnv('GROQ_API_KEY', 'host-own-key');
+    const { runtime, modelRuntime } = await remoteRuntime(host);
+    await modelRuntime.refresh({ allowNetwork: false });
+    const reads = async () => ({
+      configured: modelRuntime.hasConfiguredAuth('groq'),
+      status: modelRuntime.getProviderAuthStatus('groq'),
+      checkAuth: await modelRuntime.checkAuth('groq').catch((err: unknown) => (err as Error).message),
+      snapshot: modelRuntime.getAvailableSnapshot().map((model) => model.provider),
+    });
+    const pending = { configured: false, status: { configured: false }, checkAuth: 'The engine on the computer that started this chat is stopped, so this host has no sign-in for groq. Restart the engine on that computer to continue.', snapshot: [] };
+    expect(await reads()).toEqual(pending);
+    expect(await runPinnedTurn(host.remote, 'p1', reads)).toEqual(pending);
+    expect(runtime.hostHasOwnAuth('groq')).toBe(true);
+    host.set('clientAuth', 'client-a', { providers: {} });
+    expect(await reads()).toMatchObject({ configured: true, checkAuth: { type: 'api_key' } });
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+  }, 60_000);
+
+  // pi's preflight and model switch inside a turn wait as the broker's read does, then judge on the values known
+  it('waits in a turn\'s check behind Sign-in needed with the reason while the device\'s sign-ins are pending, then answers for the device', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: {}, pending: 'reading' });
+    vi.stubEnv('GROQ_API_KEY', 'host-own-key');
+    const { modelRuntime } = await remoteRuntime(host);
+    await modelRuntime.refresh({ allowNetwork: false });
+    const reasons: unknown[] = [];
+    const check = runPinnedTurn(host.remote, 'p1', () => modelRuntime.checkAuth('groq'), {
+      raise: (_provider, _actions, reason) => {
+        reasons.push(reason);
+        return { dispose: () => undefined };
+      },
+    });
+    await vi.waitFor(() => expect(reasons).toHaveLength(1));
+    expect(reasons[0]).toMatchObject({ message: expect.stringContaining('still reading'), args: ['groq'] });
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+
+    host.set('clientAuth', 'client-a', { providers: { groq: { type: 'api_key', hasKey: true, flatFee: false } } });
+    expect(await check).toEqual({ source: 'stored credential', type: 'api_key' });
+    expect(host.remote.credentials).toHaveBeenCalledWith('groq', 'client-a');
   }, 60_000);
 
   it('fails a prompt started with no device with the broker\'s not-connected text, asking no client', async () => {

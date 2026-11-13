@@ -697,3 +697,58 @@ describe('shell commands: the damocles command on PATH', () => {
     expect(cliCommand.uninstall).toHaveBeenCalledOnce();
   });
 });
+
+describe('Source Control: Show Pipeline', () => {
+  const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 } };
+  const listed = (context: MenuState): boolean => palette().list(context).some((entry) => entry.id === MENU_IDS.forgeShowPipeline);
+
+  it('is listed only while the selected repository\'s CI chip shows a pipeline, and asks the shell to open its job list', () => {
+    expect(listed(CHAT)).toBe(false);
+    expect(listed(OPEN)).toBe(false);
+    const shown: MenuState = { ...OPEN, scm: { ...OPEN.scm, pipelineShown: true } };
+    expect(listed(shown)).toBe(true);
+    expect(palette().list(shown).find((entry) => entry.id === MENU_IDS.forgeShowPipeline)?.label).toBe('Source Control: Show Pipeline');
+    palette().run(MENU_IDS.forgeShowPipeline, shown);
+    expect(calls).toEqual(['forgeShowPipeline']);
+  });
+});
+
+describe('Git hosting links, accounts and the clone picker', () => {
+  const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 } };
+  const FILE: MenuState = { ...EDITOR, scm: OPEN.scm, editorKind: 'code', editorGit: 'file' };
+  const label = (context: MenuState, id: string): string | undefined => palette().list(context).find((entry) => entry.id === id)?.label;
+
+  it('lists Copy Permalink and Open File on Server for a file of an open repository, and runs them as editor commands', () => {
+    expect(label(FILE, MENU_IDS.gitCopyPermalink)).toBe('Git: Copy Permalink');
+    expect(label(FILE, MENU_IDS.gitOpenFileOnServer)).toBe('Git: Open File on Server');
+    for (const context of [OPEN, { ...FILE, editorGit: null }, { ...FILE, scm: NO_SCM_MENU_STATE }]) {
+      expect(label(context, MENU_IDS.gitCopyPermalink)).toBeUndefined();
+      expect(label(context, MENU_IDS.gitOpenFileOnServer)).toBeUndefined();
+    }
+    calls.length = 0;
+    palette().run(MENU_IDS.gitCopyPermalink, FILE);
+    palette().run(MENU_IDS.gitOpenFileOnServer, FILE);
+    expect(calls).toEqual(['editorCommand:copyPermalink', 'editorCommand:openFileOnServer']);
+  });
+
+  it('lists Open Commit on Server and Choose Account... while a repository is open', () => {
+    expect(label(OPEN, MENU_IDS.gitOpenCommitOnServer)).toBe('Git: Open Commit on Server');
+    expect(label(OPEN, MENU_IDS.forgeChooseAccount)).toBe('Source Control: Choose Account...');
+    const closed: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true } };
+    expect(label(closed, MENU_IDS.gitOpenCommitOnServer)).toBeUndefined();
+    expect(label(closed, MENU_IDS.forgeChooseAccount)).toBeUndefined();
+    calls.length = 0;
+    palette().run(MENU_IDS.gitOpenCommitOnServer, OPEN);
+    palette().run(MENU_IDS.forgeChooseAccount, OPEN);
+    expect(calls).toEqual(['forgeOpenCommitOnServer', 'forgeChooseAccount']);
+  });
+
+  it('lists Clone from Your Repositories... wherever git is found, an untrusted project included', () => {
+    expect(label(CHAT, MENU_IDS.forgeCloneFromAccount)).toBeUndefined();
+    const gitOnly: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, gitFound: true } };
+    expect(label(gitOnly, MENU_IDS.forgeCloneFromAccount)).toBe('Git: Clone from Your Repositories...');
+    calls.length = 0;
+    palette().run(MENU_IDS.forgeCloneFromAccount, gitOnly);
+    expect(calls).toEqual(['cloneFromAccount']);
+  });
+});

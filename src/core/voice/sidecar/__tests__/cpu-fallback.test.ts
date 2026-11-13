@@ -8,10 +8,12 @@ class FakeChild implements LaunchedProcess {
   readonly pid: Promise<number> = Promise.resolve(4242);
   readonly exited: Promise<ProcessExit>;
   readonly closed: Promise<void>;
+  readonly leftRunning: Promise<boolean>;
   private finish!: (exit: ProcessExit) => void;
   constructor() {
     this.exited = new Promise((resolve) => (this.finish = resolve));
     this.closed = this.exited.then(() => undefined);
+    this.leftRunning = this.closed.then(() => false);
   }
   onData(): void {}
   write(): Promise<void> {

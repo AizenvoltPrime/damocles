@@ -64,6 +64,11 @@ export interface PanelOptions {
   readonly parent?: PanelHost;
 }
 
+export interface AppSettingsForgeTarget {
+  readonly server: string;
+  readonly account?: string;
+}
+
 export interface WindowService {
   // Each chat panel owns its browser pages, which the host shows with navigation chrome of its own (desktop: editor tabs of
   // the chat), so every chat gets its own browser scope and a page omits its own toolbar. False: one browser scope shared by
@@ -75,7 +80,8 @@ export interface WindowService {
   // Shows the settings modal outside the chat pages (desktop: the overlay). Only a host whose capabilities say
   // settingsInPanel false is asked; one that shows the modal inside the chat page has nowhere else to show it.
   // scope 'machine': a remote chat's settings open on its host's tab, whichever tab the open modal shows
-  openAppSettings(section: SettingsSectionId | undefined, account?: SettingsAccountId, scope?: 'machine'): void;
+  // forge: Accounts > Git hosting at a server's row, with an account's Manage open (ids as ForgeService names them)
+  openAppSettings(section: SettingsSectionId | undefined, account?: SettingsAccountId, scope?: 'machine', forge?: AppSettingsForgeTarget): void;
   // Shows or hides the window's terminal pane as the Toggle Terminal command does; only a host whose capabilities say
   // windowLayout true is asked.
   toggleTerminal(): void;

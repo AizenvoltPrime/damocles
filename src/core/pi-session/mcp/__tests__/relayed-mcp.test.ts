@@ -169,8 +169,8 @@ describe('the relayed transport on a daemon\'s core', () => {
   it('takes relayed tools out of the loadable snapshot while the device they come from is out of reach', () => {
     setRelayedToolNames('test', new Map([['mcp__notes__search', { server: 'notes', tool: 'search' }]]));
     expect(relayedToolNames()).toEqual(['mcp__notes__search']);
-    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, relayedTool: () => true }, false)).toEqual(['mcp__notes__search', 'mcp__local__x']);
-    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, relayedTool: () => false }, false)).toEqual(['mcp__local__x']);
+    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, forge: true, relayedTool: () => true }, false)).toEqual(['mcp__notes__search', 'mcp__local__x']);
+    expect(loadableToolNames(['mcp__notes__search', 'mcp__local__x'], { browser: true, forge: true, relayedTool: () => false }, false)).toEqual(['mcp__local__x']);
   });
 });
 

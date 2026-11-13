@@ -5,6 +5,7 @@ import { EXTENSION_BUNDLE_FILES } from './scripts/extension-bundles.ts';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.ts';
 import { originalFs } from './scripts/esbuild-original-fs.ts';
 import { isEntryPoint } from './scripts/entry-point.ts';
+import { forgeOAuthBuild } from './scripts/forge-oauth-build.ts';
 
 const isWatch = process.argv.includes('--watch');
 // --desktop builds the Electron main and preload plus the workers they spawn, and never the extension bundle.
@@ -166,6 +167,8 @@ const coreHostOptions: BundleOptions = {
   entryPoints: ['src/desktop/core-host/index.ts'],
   // Forked from inside app.asar (coreHostEntryPath), so its externals resolve from app.asar/node_modules as main's do.
   outfile: 'dist/core-host.js',
+  // the built-in Git hosting OAuth apps, in this bundle only (src/desktop/core-host/forge.ts): none, unless desktopBuildBundles adds the build's
+  define: { __DAMOCLES_FORGE_OAUTH__: '{}' },
 };
 
 const daemonOptions: BundleOptions = {
@@ -275,8 +278,7 @@ export function copyAskpassScripts(dir = 'dist/askpass'): void {
   }
 }
 
-// A daemon's core gives git dist/git-credential/git-credential-relay.sh, or the .cmd on a Windows target, as its credential
-// helper (src/core/scm/askpass/credential-relay.ts); git runs the .sh, so its mode comes from here.
+// git's credential helper dist/git-credential/git-credential-relay.sh, or the .cmd on Windows, which the desktop app (unpacked from app.asar) and a daemon's core give git (src/core/scm/askpass/credential-config.ts, and credential-relay.ts relayHelperConfig on a target); git runs the .sh, so its mode comes from here.
 export const CREDENTIAL_RELAY_SCRIPTS = ['git-credential-relay.sh', 'git-credential-relay.cmd'];
 export function copyCredentialRelayScripts(dir = 'dist/git-credential'): void {
   mkdirSync(dir, { recursive: true });
@@ -389,8 +391,14 @@ export async function writeCheckoutBrowserHelper(dir = CHECKOUT_SERVER_BIN, arch
   writeFileSync(`${dir}/helpers/browser.exe`, await compileBrowserHelper({ arch, checkout: true }));
 }
 
+/** DESKTOP_BUNDLES with the Git hosting OAuth apps `env` names in Damocles Core's bundle; only the desktop build reads them. */
+export function desktopBuildBundles(env: Readonly<Record<string, string | undefined>>): BundleOptions[] {
+  const forgeOAuth = JSON.stringify(forgeOAuthBuild(env));
+  return DESKTOP_BUNDLES.map((options) => (options === coreHostOptions ? { ...options, define: { ...options.define, __DAMOCLES_FORGE_OAUTH__: forgeOAuth } } : options));
+}
+
 async function buildDesktop() {
-  await Promise.all(DESKTOP_BUNDLES.map((options) => esbuild.build(options)));
+  await Promise.all(desktopBuildBundles(process.env).map((options) => esbuild.build(options)));
   writeDistScope();
   // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
   copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');

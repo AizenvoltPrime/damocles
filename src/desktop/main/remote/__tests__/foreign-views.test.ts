@@ -99,6 +99,16 @@ describe('foreign views (main side)', () => {
     expect(calls).toEqual([['refused', 'loopback', 'remote-view'], ['attach', 'loopback', 'remote-view']]);
   });
 
+  it('answers false for a view a remote core named when its attach is refused, logging why, never failing the call', async () => {
+    const { relay, local, logged } = fake();
+    local.attachForeign = async () => {
+      throw new Error('the local core restarted');
+    };
+    await expect(relay.attachIfShown('remote-view', 'loopback')).resolves.toBe(false);
+    expect(logged).toContain('[foreign-view] attaching a chat view of loopback failed, so the call goes on without it: the local core restarted');
+    await expect(relay.attachIfShown('local-view', 'local')).resolves.toBe(false);
+  });
+
   it('leaves a local chat\'s voice to its own core and takes nothing from an unknown view', async () => {
     const { relay, calls } = fake();
     expect(relay.fromView('local-view', { type: 'startVoiceRecording' })).toBe(false);
@@ -549,5 +559,48 @@ describe("a remote chat view's notes and global memories (main side)", () => {
     for (const section of [undefined, 'project', '<b>', 3]) {
       expect(await failureOf({ type: 'setUserProfileSection', section, content: 'c' })).toEqual({ type: 'userMemoryError', request: 'setUserProfileSection', message: notRunning });
     }
+  });
+});
+
+describe("a remote chat's refused notice for a GitHub or GitLab tool (main side)", () => {
+  it("sends the notice's actions to this computer's core in the view's order, also while the host is away", async () => {
+    const { relay, calls, attached } = fake();
+    attached.delete('loopback');
+    expect(relay.fromView('remote-view', { type: 'forgeRefusedBind', toolCallId: 'call-1', accountId: 'gitlab.com|2001' })).toBe(true);
+    expect(relay.fromView('remote-view', { type: 'forgeRefusedOrgAction', toolCallId: 'call-2' })).toBe(true);
+    expect(relay.fromView('local-view', { type: 'forgeRefusedBind', toolCallId: 'call-1', accountId: 'a' })).toBe(false);
+    await settle();
+    expect(calls).toEqual([
+      ['attach', 'loopback', 'remote-view'],
+      ['message', 'remote-view', { type: 'forgeRefusedBind', toolCallId: 'call-1', accountId: 'gitlab.com|2001' }],
+      ['message', 'remote-view', { type: 'forgeRefusedOrgAction', toolCallId: 'call-2' }],
+    ]);
+  });
+
+  it("answers a bind this computer's core never took as not saved, echoing only bounded ids", async () => {
+    const { relay, local, posted } = fake();
+    local.foreignMessage = async () => {
+      throw new CoreNotRunningError();
+    };
+    relay.fromView('remote-view', { type: 'forgeRefusedBind', toolCallId: 'call-1', accountId: 'gitlab.com|2001' });
+    relay.fromView('remote-view', { type: 'forgeRefusedBind', toolCallId: 'x'.repeat(2000), accountId: 'a' });
+    relay.fromView('remote-view', { type: 'forgeRefusedOpenSettings', toolCallId: 'call-1' });
+    await settle();
+    await settle();
+    expect(posted).toEqual([['remote-view', JSON.stringify({ type: 'forgeRefusedBindResult', toolCallId: 'call-1', accountId: 'gitlab.com|2001', ok: false })]]);
+  });
+
+  it("delivers this computer's accounts and the bind result to a live remote view while its host is away", async () => {
+    const { relay, posted, attached } = fake();
+    relay.fromView('remote-view', { type: 'forgeRefusedOpenSettings', toolCallId: 'call-1' });
+    await settle();
+    attached.delete('loopback');
+    relay.foreignPost('remote-view', { type: 'forgeAccountsChanged', state: { status: 'ready' } });
+    relay.foreignPost('remote-view', { type: 'forgeRefusedBindResult', toolCallId: 'call-1', accountId: 'a', ok: true });
+    relay.foreignPost('local-view', { type: 'forgeAccountsChanged', state: { status: 'ready' } });
+    expect(posted.map(([view, json]) => [view, (JSON.parse(json) as { type: string }).type])).toEqual([
+      ['remote-view', 'forgeAccountsChanged'],
+      ['remote-view', 'forgeRefusedBindResult'],
+    ]);
   });
 });

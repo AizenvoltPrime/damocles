@@ -17,6 +17,16 @@ describe('the clientAuth snapshot', () => {
     expect(MAIN_TO_CORE.requests['user.clientAuth'].result({ providers: { anthropic: { ...entry, expires: 9 } } })).toEqual({ providers: { anthropic: { ...entry, expires: 9 } } });
   });
 
+  // A daemon's core reads sign-ins and user rules the app has not read yet as not known, never as none.
+  it('carries why the sign-ins and user rules are not known yet, and refuses a reason outside the list', () => {
+    for (const pending of ['reading', 'engineStopped', 'readFailed']) {
+      expect(parseClientValues.clientAuth({ providers: {}, pending })).toEqual({ providers: {}, pending });
+      expect(parseClientValues.clientUser({ settings: {}, permissionRules: [], pending })).toEqual({ settings: {}, permissionRules: [], pending });
+    }
+    expect(parseClientValues.clientAuth({ providers: {}, pending: 'later' })).toBe(INVALID);
+    expect(parseClientValues.clientUser({ settings: {}, permissionRules: [], pending: true })).toBe(INVALID);
+  });
+
   // A remote chat's key status counts a key the client saved even while its sign-in outranks it, which hasKey does not say.
   it('carries whether a key provider key is saved, optionally, in both snapshots, and refuses a value that is not a boolean', () => {
     const entry = { type: 'oauth', hasKey: false, flatFee: false };
@@ -90,6 +100,35 @@ describe('a broker answer from this computer\'s core', () => {
   });
 });
 
+// A daemon's core builds git config from these entries, so the parser refuses what the takeover cannot name, which closes the
+// connection that sent it, as every other parser failure does.
+describe('the managed git servers a client publishes', () => {
+  const forges = MAIN_TO_CORE.mirrors.clientForges;
+  const server = { id: 'example.com/gl', webUrl: 'https://example.com/gl', gitHosts: ['git.example.com', 'git.example.com:8443'], hasAccount: true };
+
+  it('take a canonical https web URL and git hosts the takeover can name', () => {
+    expect(forges({ value: { servers: [server] } })).toEqual({ value: { servers: [server] } });
+  });
+
+  it('carry whether the client has not read them yet, as a boolean', () => {
+    expect(forges({ value: { servers: [], pending: true } })).toEqual({ value: { servers: [], pending: true } });
+    expect(forges({ value: { servers: [], pending: 'reading' } })).toBe(INVALID);
+  });
+
+  it.each([
+    ['plain http', { webUrl: 'http://example.com' }],
+    ['a trailing slash', { webUrl: 'https://example.com/gl/' }],
+    ['an upper-case host', { webUrl: 'https://Example.com' }],
+    ['a user', { webUrl: 'https://user@example.com' }],
+    ['a line break', { webUrl: 'https://example.com/gl\n' }],
+    ['a git host with a path', { gitHosts: ['git.example.com/x'] }],
+    ['an upper-case git host', { gitHosts: ['Git.example.com'] }],
+    ['a git host with a line break', { gitHosts: ['git.example.com\nhelper=!evil'] }],
+  ])('refuse %s', (_name, change) => {
+    expect(forges({ value: { servers: [{ ...server, ...change }] } })).toBe(INVALID);
+  });
+});
+
 describe('the relayed MCP servers a client publishes', () => {
   const server = { name: 'notes', tools: [{ name: 'search', exposure: 'direct' }], resources: false, timeoutMs: 600_000 };
 
@@ -99,5 +138,11 @@ describe('the relayed MCP servers a client publishes', () => {
     expect(servers([{ ...server, tools: [{ name: 'search', exposure: 'hidden' }] }])).toBe(INVALID);
     expect(servers([{ ...server, timeoutMs: 0 }])).toBe(INVALID);
     expect(servers([{ ...server, timeoutMs: 2_147_483_648 }])).toBe(INVALID);
+  });
+
+  it('carry why the client has not read them yet, and refuse a reason outside the list', () => {
+    const mirror = MAIN_TO_CORE.mirrors.clientMcp;
+    for (const pending of ['reading', 'engineStopped', 'readFailed']) expect(mirror({ value: { servers: [], pending } })).toEqual({ value: { servers: [], pending } });
+    expect(mirror({ value: { servers: [], pending: true } })).toBe(INVALID);
   });
 });

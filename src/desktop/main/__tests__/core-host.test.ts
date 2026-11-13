@@ -562,6 +562,17 @@ describe('CoreHost with a core that ends before it is ready', () => {
     expect(await run).toBe(2);
   });
 
+  it('gives a request made once its ready rejected, as main\'s first reads for remote hosts are, the core the crash path starts', async () => {
+    const { coreHost, started } = startingHost();
+    const first = coreHost.start();
+    const read = first.ready.catch(() => undefined).then(() => coreHost.run('Reading the sign-ins for remote chats', (core) => core.id));
+    started[0]!.endBeforeReady((core) => void coreHost.restart(core));
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    expect(await outcome(read)).toBe('pending');
+    started[1]!.becomeReady();
+    expect(await read).toBe(2);
+  });
+
   it('refuses a request waiting on it when no core replaces it', async () => {
     const { coreHost, started } = startingHost();
     coreHost.start();

@@ -226,6 +226,11 @@ describe('HostStore', () => {
     await store.addAlwaysCredentialHost(id, 'github.com');
     await store.addAlwaysCredentialHost(id, 'git.example.com:8443');
     await store.revokeCredentialHost(id, 'github.com');
+    await store.addAlwaysForgeAccount(id, { serverId: 'gitlab.com', accountId: 'gitlab.com|2001' });
+    await store.addAlwaysForgeAccount(id, { serverId: 'example.com/gl', accountId: 'example.com/gl|7' });
+    await store.addAlwaysForgeAccount(id, { serverId: 'gitlab.com', accountId: 'gitlab.com|2001' });
+    await store.revokeForgeAccount(id, 'example.com/gl|7');
+    await expect(store.addAlwaysForgeAccount(id, { serverId: 'gitlab.com', accountId: 'github.com|1' })).rejects.toThrow('Not a Git hosting account');
     const host = (await HostStore.open(userData, () => undefined)).host(id)!;
     expect(host).toMatchObject({
       color: 'danger',
@@ -235,6 +240,8 @@ describe('HostStore', () => {
       installedKeyFile: '/home/dev/.ssh/authorized_keys',
       lingerEnabledByDamocles: true,
       alwaysCredentialHosts: ['git.example.com:8443'],
+      // the account consent's Always is its own list, never a credential host
+      alwaysForgeAccounts: [{ serverId: 'gitlab.com', accountId: 'gitlab.com|2001' }],
     });
     await store.setHostSetting(id, { key: 'allowBypass', value: false });
     await store.setHostSetting(id, { key: 'color', value: null });
@@ -255,7 +262,7 @@ describe('HostStore', () => {
       authorities: {},
       hosts: {
         a: { ...ssh('a', '#ff0000'), settings: { allowBypass: 'yes', defaultPermissionMode: 'bypassPermissions' } },
-        b: { ...ssh('b', 'success'), alwaysCredentialHosts: ['github.com', 'evil/host'] },
+        b: { ...ssh('b', 'success'), alwaysCredentialHosts: ['github.com', 'evil/host'], alwaysForgeAccounts: [{ serverId: 'gitlab.com', accountId: 'gitlab.com|1' }, { serverId: 'gitlab.com', accountId: 'github.com|1' }, 'gitlab.com', { serverId: 'gitlab.com', accountId: 'gitlab.com|1' }] },
         c: ssh('c', '#00808099'),
         d: ssh('d', '#00ff00ff;background:url(x)'),
         e: ssh('e', '#00A0A099'),
@@ -272,6 +279,7 @@ describe('HostStore', () => {
     expect(store.host('a')?.settings).toEqual({});
     expect(store.host('b')?.color).toBe('success');
     expect(store.host('b')?.alwaysCredentialHosts).toEqual(['github.com']);
+    expect(store.host('b')?.alwaysForgeAccounts).toEqual([{ serverId: 'gitlab.com', accountId: 'gitlab.com|1' }]);
     expect(['c', 'd', 'e', 'f', 'g', 'u', 'v', 'k', 'm'].map((id) => store.host(id)?.color)).toEqual(['#00808099', undefined, '#00a0a099', undefined, '#00a0a0ff', '#00808099', undefined, '#00808099', undefined]);
     for (const id of ['d', 'v', 'm']) expect(log).toHaveBeenCalledWith(`[hosts] dropping the color of ${id}: not a palette tone or #rrggbbaa color`);
     expect(log).toHaveBeenCalledWith('[hosts] dropping the color of f: #00a0a000 has zero opacity, which reads as no color');

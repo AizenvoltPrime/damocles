@@ -4,7 +4,8 @@
 import { constants, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildSshConfigQueryArgs, isSafeAlias } from './ssh-args';
+import { isSafeAlias } from '../../../../shared/ssh-alias';
+import { buildSshConfigQueryArgs } from './ssh-args';
 import { parseJumpList, type JumpHost, type SshDestination } from './ssh-command-parse';
 
 // ssh's READCONF_MAX_DEPTH

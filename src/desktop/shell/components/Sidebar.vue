@@ -411,6 +411,7 @@ defineExpose({
       :view-mode="layout.scm.viewMode"
       :sort-key="layout.scm.sortKey"
       :collapsed="layout.sections.scm.collapsed"
+      :sidebar-shown="state.layout.sidebarVisible"
       :body-size="bodySize('scm')"
       @toggle="toggleSection('scm')"
       @expand="expand('scm')"

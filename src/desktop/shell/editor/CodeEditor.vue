@@ -149,7 +149,23 @@ async function show(tab: ShellEditorTab): Promise<void> {
   if (store.takeFocus(tab.id)) current.focus();
 }
 
+// Monaco's alternative version id of the shown model when main last called its tab clean (a load, a save, a reload from
+// disk): a buffer that moved from it, by an edit main may not have heard of yet, holds text its file lacks.
+let cleanVersion: { readonly model: MonacoEditor.ITextModel; readonly id: number } | undefined;
+function noteClean(): void {
+  const model = editor.value?.getModel();
+  if (model && !props.tab.dirty) cleanVersion = { model, id: model.getAlternativeVersionId() };
+}
+// runs after a change from main (a reload from disk) has replaced the buffer's text, so that text counts as clean
+watch([() => props.tab.dirty, () => (props.tab.documentId !== undefined ? store.contents.value.get(props.tab.documentId) : undefined)], noteClean);
+
+function bufferModified(): boolean {
+  const model = editor.value?.getModel();
+  return props.tab.dirty || !model || cleanVersion?.model !== model || cleanVersion.id !== model.getAlternativeVersionId();
+}
+
 function bindGit(tab: ShellEditorTab, model: MonacoEditor.ITextModel | null): void {
+  noteClean();
   git?.bind(tab, model);
   lens?.setEnabled(LENS_KINDS.has(tab.kind) && !tab.readOnly);
   stopCommands?.();
@@ -203,6 +219,8 @@ onMounted(async () => {
       hasGoToProvider: module.hasGoToProvider,
       // runCommand formats the active tab, which is the one this editor shows
       formatDocument: { available: () => !props.tab.readOnly && FORMATTED_KINDS.has(props.tab.kind), run: () => store.runCommand('formatDocument') },
+      // the shown tab's file in an open repository with a remote on a server with an account
+      links: { available: () => props.tab.git !== undefined && git?.hasForge() === true, run: async (command) => { await git?.run(command); } },
     }),
     { dispose: store.onDidReplaceModel((_documentId, previous, next) => takeModel(previous, next)) },
   );
@@ -221,15 +239,16 @@ onMounted(async () => {
     onBlameEnabled: (enabled) => {
       inlineBlame.value = enabled ? 'on' : 'off';
     },
+    modified: bufferModified,
   });
   lens = attachConflictLens(created, monaco, { t: (key, named) => (named ? t(key, named) : t(key)), appContext, sideTints: true });
   disposables.push(git, lens, addEditorGitKeybindings(created, monaco, gitKeyLabels(t), (command) => void store.runCommand(command)));
   await show(props.tab);
 });
 
-watch(() => [props.tab.id, props.tab.documentId, props.tab.readOnly] as const, () => void show(props.tab));
+watch([() => props.tab.id, () => props.tab.documentId, () => props.tab.readOnly], () => void show(props.tab));
 // main gives or drops the tab's git resource as repositories open, close or trust changes
-watch(() => [props.tab.git?.repoId, props.tab.git?.path] as const, () => {
+watch([() => props.tab.git?.repoId, () => props.tab.git?.path], () => {
   if (shownTabId.value === props.tab.id) bindGit(props.tab, editor.value?.getModel() ?? null);
 });
 watch(() => store.settings.value, (settings) => editor.value?.updateOptions(optionsFrom(settings)), { deep: true });

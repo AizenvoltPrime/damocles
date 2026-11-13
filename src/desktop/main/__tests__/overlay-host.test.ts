@@ -1105,6 +1105,39 @@ describe('overlay message dialogs (D41)', () => {
     expect(returnFocus.focus).toHaveBeenCalledTimes(1);
   });
 
+  it('give account rows to the ask-once dialog they name, under another one or held while the page loads', () => {
+    const choose = (requestId: string): OverlayRequest => ({
+      kind: 'forgeChooseAccount',
+      dialog: { requestId, project: 'damocles', serverId: 'gitlab.com', server: 'gitlab.com', kind: 'gitlab', repoPath: 'grp/proj', operation: 'push', accounts: [], checking: true },
+    });
+    const rowsSent = (): unknown[] => view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.forgeChooseAccountRows).map(([, rows]) => rows);
+    loaded();
+    host.request(choose('ask-1'), undefined).catch(() => undefined);
+    onScreen();
+    host.request(choose('ask-2'), undefined).catch(() => undefined);
+    const upperId = lastRequestId();
+    const lower = { requestId: 'ask-1', accounts: [], checking: false };
+    host.updateForgeChooseAccount(lower);
+    expect(rowsSent()).toEqual([lower]);
+    // the upper dialog is not shown yet, so its rows wait for it, and none goes to another dialog
+    const upper = { requestId: 'ask-2', accounts: [], checking: false };
+    host.updateForgeChooseAccount(upper);
+    host.updateForgeChooseAccount({ requestId: 'ask-9', accounts: [], checking: false });
+    expect(rowsSent()).toEqual([lower]);
+    emit(OVERLAY_CHANNELS.ack, own(), upperId);
+    emit(OVERLAY_CHANNELS.shown, own(), upperId);
+    expect(rowsSent()).toEqual([lower, upper]);
+
+    host.load();
+    host.request(choose('ask-3'), undefined).catch(() => undefined);
+    const held = { requestId: 'ask-3', accounts: [], checking: false };
+    host.updateForgeChooseAccount(held);
+    view().webContents.emit('did-finish-load');
+    expect(rowsSent()).toEqual([lower, upper]);
+    onScreen();
+    expect(rowsSent()).toEqual([lower, upper, held]);
+  });
+
   it('hold Allow YOLO above the settings modal that asked, and take a malformed answer as a dismissal', async () => {
     loaded();
     const settings = host.request(SETTINGS, returnFocus as never);

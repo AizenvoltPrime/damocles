@@ -45,7 +45,7 @@ watch(() => props.tab.id, () => {
   refused.value = false;
   pending.value = null;
 });
-watch(() => [props.tab.id, page.value.url, page.value.loading] as const, ([tabId, url, loading]) => {
+watch([() => props.tab.id, () => page.value.url, () => page.value.loading], ([tabId, url, loading]) => {
   const sent = pending.value;
   if (sent) {
     const settledInPlace = sent.sawLoading && !loading;

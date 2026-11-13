@@ -11,6 +11,7 @@ import { DAMOCLES_HOME_DIR, SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { PI_AGENT_DIR } from '../../core/pi-session/agent-dir';
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher } from '../../core/process-launcher';
 import { spawnCredentialVariables, type CredentialRelay, type RelayIdentity } from '../../core/scm/askpass/credential-relay';
+import { asConfigParams, managedEntries } from '../../core/scm/askpass/credential-config';
 import type { HostFacts } from '../../remote/handshake';
 import { DesktopFileWatcherFactory } from '../local-services/file-watcher-factory';
 import { createDesktopLogSinkFactory } from '../local-services/log-sink';
@@ -194,8 +195,15 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     terminals,
     hub,
     cli,
-    // read per terminal: the daemon's credential relay, and the asking client's agent socket while that client forwards its agent
-    terminalCredentials: (base, clientId) => spawnCredentialVariables(base, relay && daemonCredentialRelay(relay.identity(), root), { socket: agentProxy.socketFor(clientId) }),
+    // read per terminal: the daemon's credential relay, the asking client's agent socket while that client forwards its agent,
+    // and that client's takeover of its managed git servers, whose helper is the relay's (its nonce answers as a terminal)
+    terminalCredentials: (base, clientId) => {
+      const credentialRelay = relay && daemonCredentialRelay(relay.identity(), root);
+      const variables = spawnCredentialVariables(base, credentialRelay, { socket: agentProxy.socketFor(clientId) });
+      const managed = (core.clientForges(clientId)?.servers ?? []).filter((server) => server.hasAccount);
+      const params = credentialRelay && managed.length > 0 ? asConfigParams(managedEntries(managed, credentialRelay.helper), base['GIT_CONFIG_PARAMETERS']) : undefined;
+      return params === undefined ? variables : { ...variables, GIT_CONFIG_PARAMETERS: params };
+    },
     watchLimits: {
       roots: () => watchers.watchLimitedRoots(),
       onReached: (listener) => watchers.onDidReachWatchLimit(listener),

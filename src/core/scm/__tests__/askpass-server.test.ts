@@ -80,6 +80,30 @@ describe('the askpass server', () => {
     expect(prompts).toEqual([{ kind: 'password', text: "Password for 'https://example.com':" }]);
   });
 
+  it('answers each credential registration by its own origin, never prompts on one, and never answers a credential on a prompt nonce', async () => {
+    const credential = vi.fn<NonNullable<AskpassServerDeps['credential']>>(async (_request, origin) => ({ kind: 'refused', message: origin.kind }));
+    const { server, prompts, log } = start(async () => SECRET, { credential });
+    const engine = await server.registerCredential({ kind: 'engine', projectKey: '/p', interactive: false });
+    const shell = await server.registerCredential({ kind: 'agentShell', panelId: 'p1', sessionId: 's1' });
+    const prompt = await server.register('interactive', 'push');
+    expect(engine.env['DAMOCLES_CREDENTIAL_NONCE']).toMatch(/^[0-9a-f]{64}$/);
+    expect(engine.env['DAMOCLES_CREDENTIAL_NONCE']).not.toBe(shell.env['DAMOCLES_CREDENTIAL_NONCE']);
+    expect(Object.values(shell.env).every((value) => value !== '')).toBe(true);
+    const handle = shell.env['DAMOCLES_ASKPASS_HANDLE']!;
+    const ask = (nonce: string | undefined) => exchange(handle, line({ nonce, kind: 'credential', op: 'get', cwd: '/w', fields: { protocol: 'https', host: 'gitlab.com' } }));
+    await expect(ask(shell.env['DAMOCLES_CREDENTIAL_NONCE'])).resolves.toEqual({ reply: `${JSON.stringify({ kind: 'refused', message: 'agentShell' })}\n` });
+    await expect(ask(engine.env['DAMOCLES_CREDENTIAL_NONCE'])).resolves.toEqual({ reply: `${JSON.stringify({ kind: 'refused', message: 'engine' })}\n` });
+    await expect(ask(prompt.env['DAMOCLES_ASKPASS_NONCE'])).resolves.toEqual({ reply: '' });
+    await expect(exchange(handle, line({ nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'askpass', argv: ['Password: '] }))).resolves.toEqual({ reply: '' });
+    expect(prompts).toEqual([]);
+    expect(credential).toHaveBeenCalledTimes(2);
+    expect(log).toContain('[askpass] dropped a helper connection: a credential request without a credential nonce');
+    shell.dispose();
+    await expect(ask(shell.env['DAMOCLES_CREDENTIAL_NONCE'])).resolves.toEqual({ reply: '' });
+    // a server answering no credentials registers none
+    await expect(start().server.registerCredential({ kind: 'terminal' })).rejects.toThrow('answers no credentials');
+  });
+
   it('drops a connection with an unknown nonce, malformed or oversized request, or bytes after the request, prompting nothing', async () => {
     const { server, prompts, log } = start();
     const registration = await server.register('interactive', 'push');

@@ -7,7 +7,7 @@ import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import type { ShownFolder } from '../../preload/shell-channels';
 import { FILE_DRAG_MIME, FILES_ROW_DRAG_MIME } from '@shared/file-drag';
-import { FakeResizeObserver, fakeShellApi, type FakeShellApi } from './fakes';
+import { EDITOR_STATE, FakeResizeObserver, fakeShellApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 
@@ -908,5 +908,32 @@ describe('Files transfer row in the section', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('Files auto-reveal of the active editor', () => {
+  it('leaves keyboard focus on the row the user moved to across a push of the same active tab', async () => {
+    const shown = { id: 't', kind: 'code' as const, documentId: 'd-t', title: 'notes.txt', projectKey: 'home', relativePath: 'notes.txt', displayPath: 'C:\\home\\notes.txt', dirty: false, readOnly: false, conflict: false };
+    const api = fakeShellApi([], {
+      listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'notes.txt', kind: 'file' as const }, { name: 'todo.md', kind: 'file' as const }] })),
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [shown], activeTabId: 't' })),
+    });
+    const editor = createEditorStore(api);
+    await editor.start();
+    const wrapper = mount(FilesSection, {
+      props: { api, projectKey: 'home', projectName: 'Home', platform: 'win32', projectPlatform: 'win32', trash: true, collapsed: false },
+      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: editor, [SCM_STORE]: createScmStore(api.scm) } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    (row(wrapper, 'notes.txt').element as HTMLElement).focus();
+    await row(wrapper, 'notes.txt').trigger('keydown', { key: 'ArrowDown' });
+    await flushPromises();
+    expect(document.activeElement).toBe(row(wrapper, 'todo.md').element);
+
+    api.pushEditorState({ ...EDITOR_STATE, tabs: [{ ...shown }], activeTabId: 't' });
+    await flushPromises();
+    expect(document.activeElement).toBe(row(wrapper, 'todo.md').element);
   });
 });

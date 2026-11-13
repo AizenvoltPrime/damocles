@@ -33,6 +33,7 @@ function fakeChild(): { child: LaunchedProcess; stdin: Buffer[]; kills: Array<Ki
       },
       exited,
       closed: exited.then(() => undefined),
+      leftRunning: exited.then(() => false),
       kill: (options) => {
         kills.push(options);
         finish({ code: null, signal: 'SIGTERM' });

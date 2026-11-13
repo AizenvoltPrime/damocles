@@ -333,10 +333,12 @@ describe('proxied services', () => {
     expect(await core.notifications.warn({ message: 'careful' }, [{ message: 'One' }, { message: 'Two' }])).toBe(1);
     expect(await core.notifications.error({ message: 'broken' }, [{ message: 'Retry' }], { modal: true })).toBeUndefined();
     await core.notifications.info({ message: 'plain' });
+    await core.notifications.warn({ message: 'refused' }, [{ message: 'Choose' }], { unlessFocused: true });
     expect(main.notifications.calls).toEqual([
       { level: 'warn', message: 'careful', text: { message: 'careful' }, actions: ['One', 'Two'] },
       { level: 'error', message: 'broken', text: { message: 'broken' }, options: { modal: true, signal: expect.any(AbortSignal) }, actions: ['Retry'] },
       { level: 'info', message: 'plain', text: { message: 'plain' }, actions: [] },
+      { level: 'warn', message: 'refused', text: { message: 'refused' }, options: { unlessFocused: true }, actions: ['Choose'] },
     ]);
   });
 

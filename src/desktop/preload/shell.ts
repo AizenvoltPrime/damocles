@@ -79,6 +79,9 @@ import {
   type ScmView,
 } from './scm-channels';
 import { PORTS_CHANNELS, type DamoclesPortsApi, type PortsView } from './ports-channels';
+import { FORGE_CHANNELS, type AuthorAvatars, type CiChanged, type CiStatusView, type CommitStatusView, type ContainingChange, type DamoclesForgeShellApi, type ForgeChanged, type HistoryForgeContext, type JobLogUpdate, type JobLogView } from './forge-channels';
+import type { RepoAccountsView } from '../../shared/forge/bindings';
+import { plainCiTarget } from '../../shared/forge/ci';
 import { REVIEW_CHANNELS, type ChatReviewFileDiffResult, type ChatReviewSendResult, type DamoclesReviewApi } from './review-channels';
 import {
   TERMINAL_CHANNELS,
@@ -279,6 +282,41 @@ const ports: DamoclesPortsApi = {
   openInBrowser: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.openInBrowser, { projectKey, key }) as Promise<void>,
   copyAddress: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.copyAddress, { projectKey, key }) as Promise<void>,
   undoFallback: (projectKey) => ipcRenderer.invoke(PORTS_CHANNELS.undoFallback, { projectKey }) as Promise<void>,
+};
+
+const forge: DamoclesForgeShellApi = {
+  repoAccounts: (repoId, recheck) => ipcRenderer.invoke(FORGE_CHANNELS.repoAccounts, recheck === true ? { repoId, recheck: true } : { repoId }) as Promise<RepoAccountsView | null>,
+  chooseAccount: (repoId, serverId, accountId) => ipcRenderer.invoke(FORGE_CHANNELS.chooseAccount, { repoId, serverId, accountId }) as Promise<boolean>,
+  openAccounts: (target) => ipcRenderer.invoke(FORGE_CHANNELS.openAccounts, { ...(target.serverId !== undefined ? { serverId: target.serverId } : {}), ...(target.signIn === true ? { signIn: true } : {}) }) as Promise<void>,
+  onChanged: (listener) => subscribe<ForgeChanged>(FORGE_CHANNELS.changed, listener),
+  ciStatus: (repoId) => ipcRenderer.invoke(FORGE_CHANNELS.ciStatus, { repoId }) as Promise<CiStatusView | null>,
+  ciWatch: (repoId, visible) => ipcRenderer.invoke(FORGE_CHANNELS.ciWatch, { repoId, visible }) as Promise<void>,
+  showPipeline: (repoId, anchor) => ipcRenderer.invoke(FORGE_CHANNELS.showPipeline, { repoId, anchor: { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height } }) as Promise<void>,
+  jobLogOpen: (repoId, jobId) => ipcRenderer.invoke(FORGE_CHANNELS.jobLogOpen, { repoId, jobId }) as Promise<void>,
+  jobAction: (repoId, target, action) => ipcRenderer.invoke(FORGE_CHANNELS.jobAction, { repoId, target: plainCiTarget(target), action }) as Promise<boolean>,
+  openOnServer: (repoId, target) => ipcRenderer.invoke(FORGE_CHANNELS.openOnServer, { repoId, target: plainCiTarget(target) }) as Promise<string | null>,
+  commitStatus: (repoId, sha, retry) => ipcRenderer.invoke(FORGE_CHANNELS.commitStatus, retry === true ? { repoId, sha, retry: true } : { repoId, sha }) as Promise<CommitStatusView | null>,
+  historyContext: (repoId) => ipcRenderer.invoke(FORGE_CHANNELS.historyContext, { repoId }) as Promise<HistoryForgeContext | null>,
+  authorAvatars: (repoId, authors) => ipcRenderer.invoke(FORGE_CHANNELS.authorAvatars, {
+    repoId,
+    authors: authors.map((author) => ({ sha: author.sha, email: author.email, name: author.name })),
+  }) as Promise<AuthorAvatars>,
+  containingChange: (repoId, sha) => ipcRenderer.invoke(FORGE_CHANNELS.containingChange, { repoId, sha }) as Promise<ContainingChange | null>,
+  onCiChanged: (listener) => subscribe<CiChanged>(FORGE_CHANNELS.ciChanged, listener),
+  jobLog: (tabId) => ipcRenderer.invoke(FORGE_CHANNELS.jobLog, { tabId }) as Promise<JobLogView>,
+  jobLogRead: (tabId) => ipcRenderer.invoke(FORGE_CHANNELS.jobLogRead, { tabId }) as Promise<void>,
+  onJobLog: (listener) => subscribe<JobLogUpdate>(FORGE_CHANNELS.jobLogUpdate, listener),
+  jobLogVisible: (tabId, visible) => ipcRenderer.send(FORGE_CHANNELS.jobLogVisible, { tabId, visible }),
+  // rebuilt field by field, so no other property of the shell's object crosses
+  link: (request) => ipcRenderer.invoke(FORGE_CHANNELS.link, {
+    action: request.action,
+    repoId: request.repoId,
+    ...(request.path !== undefined ? { path: request.path } : {}),
+    ...(request.sha !== undefined ? { sha: request.sha } : {}),
+    ...(request.startLine !== undefined ? { startLine: request.startLine } : {}),
+    ...(request.endLine !== undefined ? { endLine: request.endLine } : {}),
+    ...(request.reference !== undefined ? { reference: { sigil: request.reference.sigil, number: request.reference.number, ...(request.reference.path !== undefined ? { path: request.reference.path } : {}) } } : {}),
+  }) as Promise<void>,
 };
 
 const api: DamoclesShellApi = {
@@ -507,6 +545,7 @@ const api: DamoclesShellApi = {
   scm,
   review,
   ports,
+  forge,
 };
 
 contextBridge.exposeInMainWorld('damoclesShell', api);

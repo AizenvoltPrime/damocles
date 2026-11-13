@@ -1,9 +1,9 @@
-import { inject, provide, shallowRef, watch, type InjectionKey, type Ref, type ShallowRef } from 'vue';
+import { inject, provide, shallowRef, watch, type Component, type InjectionKey, type Ref, type ShallowRef } from 'vue';
 import type { SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { SettingsFileScope } from '@shared/types/messages';
 import type { HostColor } from '@shared/host-colors';
 import type { ViewRect } from '@/utils/visible-rect';
-import type { SettingsRowMeta } from './settings-rows';
+import type { HostRowsGroup, SettingsRowMeta } from './settings-rows';
 
 /** Rows enter staggered by this many ms each, for the first STAGGERED_ROWS rows of a page only (M4). */
 export const ROW_STAGGER_MS = 25;
@@ -80,6 +80,17 @@ export function highlightParts(text: string, query: string): { text: string; mat
   }
   if (from < text.length) parts.push({ text: text.slice(from), match: false });
   return parts;
+}
+
+/** The host's row components a shared group renders after its own rows (HostSettingsRows.group). */
+const HOST_GROUP_ROWS: InjectionKey<(group: HostRowsGroup) => readonly Component[]> = Symbol('hostGroupRows');
+
+export function provideHostGroupRows(rows: (group: HostRowsGroup) => readonly Component[]): void {
+  provide(HOST_GROUP_ROWS, rows);
+}
+
+export function useHostGroupRows(): (group: HostRowsGroup) => readonly Component[] {
+  return inject(HOST_GROUP_ROWS, () => []);
 }
 
 /** An inline notice at the top of the modal's content, such as the Language row's restart offer (M9). */

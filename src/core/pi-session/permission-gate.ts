@@ -3,12 +3,12 @@ import { fileURLToPath } from 'url';
 import type { ToolCallEvent, ToolCallEventResult, AgentBeforeSettleEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
 import type { McpToolIdentity } from '../permission-handler/types';
-import type { PermissionBehavior } from '../../shared/types/permissions';
+import type { PermissionBehavior, PermissionDetail, PermissionUpdate } from '../../shared/types/permissions';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_AGENT, TOOL_GENERATE_IMAGE, TOOL_GLOB, TOOL_GREP, TOOL_IMPORT_ASSET, TOOL_LS, TOOL_READ, TOOL_WEB_FETCH, LIVE_OUTPUT_TOOLS, SHELL_TOOLS, WRITE_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
+import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_AGENT, TOOL_GENERATE_IMAGE, TOOL_GLOB, TOOL_GREP, TOOL_IMPORT_ASSET, TOOL_LS, TOOL_READ, TOOL_WEB_FETCH, LIVE_OUTPUT_TOOLS, SHELL_TOOLS, WRITE_TOOLS, FORGE_WRITE_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
 import { reachesNetwork } from '../local-links';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
@@ -21,7 +21,10 @@ import { DESIGN_PI_TOOL_NAMES, DESIGN_TOOLS_WITHOUT_FOLDER_WRITES } from '../des
 import { designFilesWriteBlock, designShellRefusal, designWriteBlock, type DesignScope } from '../design/design-write-rule';
 import { log } from '../logger';
 import { userScopeToolNames } from './tools/deferred-tools';
-import { browserClosedReason, relayedMcpUnreachableReason, userScopeReach } from '../user-scope';
+import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, userScopeReach } from '../user-scope';
+import { isForgeTool, type ForgeToolsPort } from './tools/forge-tools';
+import type { ForgeApprovalAnswer } from '../../shared/forge/tools';
+import { DESIGN_CHAT_FORGE_REFUSAL } from './tools/forge-tool-specs';
 import { relayedServerOfTool } from './mcp/relayed-tool-names';
 import { englishText } from '../../shared/localized-text';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
@@ -141,6 +144,8 @@ export interface PanelGateContext {
   worktreeIsolation?: () => WorktreeIsolation | undefined;
   /** A design chat's posture (PD-4, PD-25), for it and every agent it starts; read per call. */
   designScope?: () => DesignScope | undefined;
+  /** The chat's GitHub and GitLab tools: their target before rules match, a write's card before it asks. Absent: none run. */
+  forgeTools?: ForgeToolsPort;
   /** The design sections' inputs (a design chat's folder and rule set, a parent's own link), read per turn. */
   designPrompt?: () => DesignPromptInputs;
   /**
@@ -191,7 +196,7 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope' | 'machine'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope' | 'machine' | 'forgeTools'> & {
   /**
    * Apply plan mode's shell rule to this caller in every mode: a command `provenReadOnlyShell` proves
    * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
@@ -230,7 +235,7 @@ export function waitsForCheckpointBaseline(piToolName: string, input: Record<str
   const category = toolCategory(damoclesName);
   if (category === 'read') return false;
   if (damoclesName.startsWith('mcp__')) return !(isMcpReadOnly?.(damoclesName) ?? false);
-  if (GATE_ALLOW_ALWAYS.has(damoclesName) || GATEABLE_MODULE_NAMES.has(damoclesName)) return false;
+  if (GATE_ALLOW_ALWAYS.has(damoclesName) || GATEABLE_MODULE_NAMES.has(damoclesName) || isForgeTool(damoclesName)) return false;
   if (category === 'shell') return shellVerdict?.readOnly !== true;
   return true;
 }
@@ -434,7 +439,7 @@ async function decideToolCall(
   // a tool whose user-scope service this core cannot reach never runs, in any mode, before any hook
   if (userScopeToolNames(userScopeReach()).has(event.toolName)) {
     const relayedServer = relayedServerOfTool(event.toolName);
-    const reason = relayedServer === undefined ? browserClosedReason() : relayedMcpUnreachableReason(relayedServer);
+    const reason = relayedServer !== undefined ? relayedMcpUnreachableReason(relayedServer) : isForgeTool(event.toolName) ? forgeUnreachableReason() : browserClosedReason();
     return { block: true, reason: formatPolicyBlockReason(englishText(reason)) };
   }
 
@@ -488,15 +493,53 @@ async function decideToolCall(
   const decidedAs = permissionCallOf(damoclesName, input);
   if ('undecidable' in decidedAs) return { block: true, reason: formatPolicyBlockReason(decidedAs.undecidable) };
 
+  // A GitHub or GitLab call: blocks no rule can lift come first, then its target, which project-scoped rules name.
+  const forge = isForgeTool(damoclesName) ? panel.forgeTools : undefined;
+  let forgeProject: string | undefined;
+  if (isForgeTool(damoclesName)) {
+    if (!forge) return { block: true, reason: formatPolicyBlockReason('The GitHub and GitLab tools are not available to this agent.') };
+    const fixed = gateVerdict({ name: damoclesName, input, mcpReadOnly: false, rule: null }, panel);
+    if (fixed.kind === 'block') return { block: true, reason: formatPolicyBlockReason(fixed.reason) };
+    let target: Awaited<ReturnType<ForgeToolsPort['target']>>;
+    try {
+      target = await forge.target({ tool: damoclesName, input, toolCallId: event.toolCallId }, callSignal ?? NEVER_ABORT);
+    } catch (err) {
+      if (callSignal?.aborted) return abortedWhileWaiting();
+      throw err;
+    }
+    if (callSignal?.aborted) return abortedWhileWaiting();
+    if (!target.ok) return { block: true, reason: formatPolicyBlockReason(target.answer.text) };
+    forgeProject = target.project;
+  }
+
   // The full approval flow: the prompt for gating tools and unknown tools, and for any call an ask rule names.
   const askUser = async (call: GatedCall, requiresUser: boolean): Promise<ToolCallEventResult | undefined> => {
     const stopped = stoppedByUser();
     if (stopped) return stopped;
+    // a forge write's card names server, project and account, resolved before the prompt shows; YOLO, allow and deny rules skip it
+    let forgeCard: { readonly permissionDetail: PermissionDetail; readonly suggestions: PermissionUpdate[] } | undefined;
+    if (forge && FORGE_WRITE_TOOLS.has(damoclesName)) {
+      const decided = panel.permissionHandler.decide(call.name, call.input, call.rule, requiresUser, call.reachesNetwork === true);
+      if (decided === 'deny') return { block: true, reason: formatPolicyBlockReason(SETTINGS_RULE_DENY) };
+      if (decided !== 'allow') {
+        let approval: ForgeApprovalAnswer;
+        try {
+          approval = await forge.approval({ tool: damoclesName, input, toolCallId: event.toolCallId }, callSignal ?? NEVER_ABORT);
+        } catch (err) {
+          if (callSignal?.aborted) return abortedWhileWaiting();
+          throw err;
+        }
+        if (callSignal?.aborted) return abortedWhileWaiting();
+        if (!approval.ok) return { block: true, reason: formatPolicyBlockReason(approval.answer.text) };
+        forgeCard = { permissionDetail: approval.detail, suggestions: [approval.suggestion] };
+      }
+    }
     const result = await panel.permissionHandler.canUseTool(
       damoclesName,
       input,
       {
         ...buildCanUseToolContext(event.toolCallId, callSignal, parentToolUseId, mcpTool),
+        ...(forgeCard ?? {}),
         runsUnasked: () => runsUnasked(call, panel),
         ...(requiresUser ? { requiresUser: true as const, rule: call.rule } : { rule: call.rule }),
         ...(call.reachesNetwork ? { reachesNetwork: true as const } : {}),
@@ -523,12 +566,12 @@ async function decideToolCall(
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return proceed();
 
   const { shellVerdict, reachesNetwork: networkPath } = await callFacts();
-  const asWritten = networkPath ? { pathsAsWritten: true as const } : {};
+  const ruleOptions = { ...(networkPath ? { pathsAsWritten: true as const } : {}), ...(forgeProject !== undefined ? { forgeProject } : {}) };
   let rule = onlyUserApproves
     ? await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, { ignoreBypass: true })
-    : await panel.permissionHandler.matchRule(decidedAs.name, decidedAs.input, mcpTool, asWritten);
+    : await panel.permissionHandler.matchRule(decidedAs.name, decidedAs.input, mcpTool, ruleOptions);
   // A call decided as another tool's keeps its own tool's rule too, and the stricter of the two decides (D101).
-  if (decidedAs.name !== damoclesName) rule = stricterRule(rule, await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, asWritten));
+  if (decidedAs.name !== damoclesName) rule = stricterRule(rule, await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, ruleOptions));
   const call: GatedCall = { name: decidedAs.name, input: decidedAs.input, mcpReadOnly, rule, ...(shellVerdict ? { shellVerdict } : {}), ...(networkPath ? { reachesNetwork: true as const } : {}) };
   const verdict = gateVerdict(call, panel);
   if (verdict.kind === 'block') return { block: true, reason: formatPolicyBlockReason(verdict.reason) };
@@ -615,6 +658,7 @@ export function gateVerdict(call: GatedCall, panel: GatePermissionContext): Gate
 
   // A design chat (PD-4, PD-25); `designWriteBlock` already refused writes outside its folder and unproven shell commands.
   if (panel.designScope?.()) {
+    if (isForgeTool(name)) return { kind: 'block', reason: DESIGN_CHAT_FORGE_REFUSAL };
     if (SHELL_TOOLS.has(name)) {
       const verdict = call.shellVerdict ?? UNPROVEN;
       return verdict.readOnly ? byRule() : { kind: 'block', reason: designShellRefusal(verdict) };

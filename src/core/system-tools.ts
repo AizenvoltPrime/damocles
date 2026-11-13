@@ -129,6 +129,22 @@ export function resolveSshExecutable(env: Env = process.env, platform: NodeJS.Pl
   return openSshTool('ssh', env, platform);
 }
 
+/**
+ * The shell git runs GIT_SSH_COMMAND and core.sshCommand through (its SHELL_PATH): /bin/sh, or on Windows Git for Windows'
+ * own sh.exe under the install root above git.exe (`cmd\`, `bin\` or `mingw64\bin\`).
+ */
+export async function resolveGitShell(git: string | undefined, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
+  if (platform !== 'win32') return (await isFileAsync('/bin/sh')) ? '/bin/sh' : undefined;
+  if (git === undefined) return undefined;
+  let dir = path.win32.dirname(git);
+  for (let up = 0; up < 3; up++) {
+    const found = await firstFile([path.win32.join(dir, 'usr', 'bin', 'sh.exe'), path.win32.join(dir, 'bin', 'sh.exe')]);
+    if (found !== undefined) return found;
+    dir = path.win32.dirname(dir);
+  }
+  return undefined;
+}
+
 /** OpenSSH's ssh-keygen as an absolute path (openSshTool). */
 export function resolveSshKeygenExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
   return openSshTool('ssh-keygen', env, platform);

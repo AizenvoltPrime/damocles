@@ -34,6 +34,7 @@ import {
   type ShellHtmlPreview,
   type ShellPatchSide,
   type ShellPatchTab,
+  type ShellJobLogTab,
   type ShellTimelineTab,
 } from '../preload/shell-channels';
 import type { ScmChangesTab, ScmMergeInputsResult } from '../preload/scm-channels';
@@ -96,7 +97,7 @@ export const FORMAT_FLUSH_MS_PER_DOCUMENT: number = 2 * EDITOR_FORMAT_TIMEOUT_MS
 type FileTabKind = Exclude<EditorTabKind, 'browser' | 'designPreview' | 'terminal'>;
 
 // Tabs that are no file, whatever document they hold.
-const NO_PATH_TAB_KINDS: ReadonlySet<EditorTabKind> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
+const NO_PATH_TAB_KINDS: ReadonlySet<EditorTabKind> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge', 'jobLog']);
 
 // A side main never sends as text (a git blob that is missing, too large or binary), shown as its reason only.
 export interface NotShownSide {
@@ -177,6 +178,8 @@ interface Tab {
   textAuthority?: string;
   // an htmlPreview tab's file, which it shows through its HtmlPreviews view and no document
   htmlPreview?: FileRef;
+  // a CI job's log, which main/forge/job-log-tabs.ts feeds and keeps current
+  jobLog?: ShellJobLogTab;
 }
 
 // What the active tab is to source control (MenuState.editorGit).
@@ -208,6 +211,7 @@ const EDITS_TEXT: Readonly<Record<EditorTabKind, boolean>> = {
   browser: false,
   designPreview: false,
   terminal: false,
+  jobLog: false,
 };
 
 // A persisted tab names its file; ids are issued again on restore.
@@ -650,7 +654,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   /**
-   * Closes the changes and diff tabs of a repository source control no longer has. A diff whose editable side holds unsaved
+   * Closes the changes, diff, timeline, merge and job log tabs of a repository source control no longer has (a local engine
+   * restart gives every local repository a new id, so its tabs close too). A diff whose editable side holds unsaved
    * edits becomes that file's own tab in its place, keeping the document, as VS Code replaces a diff whose original is gone;
    * when the file already has its own tab, the edits stay there and the diff closes.
    */
@@ -663,7 +668,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       this.replaceWithFileTab(tab, edited);
     }
     const mergeOf = (tab: Tab): boolean => tab.merge !== undefined && 'repoId' in tab.merge && tab.merge.repoId === repoId;
-    const ofRepo = (tab: Tab): boolean => tab.changes?.changes.repoId === repoId || tab.timeline?.repoId === repoId || mergeOf(tab) || repoDiff(tab);
+    const ofRepo = (tab: Tab): boolean => tab.changes?.changes.repoId === repoId || tab.timeline?.repoId === repoId || tab.jobLog?.repoId === repoId || mergeOf(tab) || repoDiff(tab);
     for (const tab of this.tabs.filter(mergeOf)) {
       const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
       if (document && isDocumentDirty(document) && !this.tabs.some((other) => other.kind === 'code' && other.documentId === document.id)) this.showDocument(document);
@@ -735,6 +740,27 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'timeline', timeline: { ...timeline, title } });
     this.afterOpen(tab, opts);
     return tab.id;
+  }
+
+  /** A CI job's log tab, one per (repoId, jobId); focused for a user action. */
+  showJobLog(jobLog: ShellJobLogTab, opts: { readonly focus: boolean }): string {
+    const existing = this.tabs.find((tab) => tab.jobLog?.repoId === jobLog.repoId && tab.jobLog.jobId === jobLog.jobId);
+    const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'jobLog', jobLog });
+    this.afterOpen(tab, opts);
+    return tab.id;
+  }
+
+  /** The open job log tab of tabId, for its owner. */
+  jobLogTab(tabId: string): ShellJobLogTab | undefined {
+    return this.tabs.find((tab) => tab.id === tabId)?.jobLog;
+  }
+
+  /** A job log tab's descriptor changed: its job's state, or the job a retry started in its place. */
+  updateJobLog(tabId: string, jobLog: ShellJobLogTab): void {
+    const tab = this.tabs.find((candidate) => candidate.id === tabId);
+    if (!tab?.jobLog || JSON.stringify(tab.jobLog) === JSON.stringify(jobLog)) return;
+    tab.jobLog = jobLog;
+    this.stateChanged(false);
   }
 
   /** A conflicted file's merge editor tab over its own document (the Result), reused for the same file. */
@@ -1976,7 +2002,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   // preview tab only once a publish told it.
   private projectKeyOf(tab: Tab): string | undefined {
     if (tab.htmlPreview) return tab.htmlPreview.projectKey;
-    if (tab.changes || tab.patch || tab.review || tab.timeline) return undefined;
+    if (tab.changes || tab.patch || tab.review || tab.timeline || tab.jobLog) return undefined;
     if (tab.diff) return 'place' in tab.diff.subject ? tab.diff.subject.place.projectKey : projectKeyOfDocument(this.deps.documents.get(tab.diff.subject.documentId));
     return projectKeyOfDocument(tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined);
   }
@@ -2015,6 +2041,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     }
     if (tab.review) {
       return { id: tab.id, kind: 'review', title: tab.review.title, displayPath: tab.review.title, dirty: false, readOnly: true, conflict: false, review: tab.review };
+    }
+    if (tab.jobLog) {
+      const { jobName, pipelineNumber, workflow } = tab.jobLog;
+      const displayPath = pipelineNumber !== undefined ? `${jobName} #${pipelineNumber}` : workflow !== undefined ? `${workflow} / ${jobName}` : jobName;
+      return { id: tab.id, kind: 'jobLog', title: jobName, displayPath, dirty: false, readOnly: true, conflict: false, jobLog: tab.jobLog };
     }
     if (tab.timeline) {
       const { repoId, path: file, title } = tab.timeline;
@@ -2157,8 +2188,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return { kind: 'searchEditor', ...(projectKey !== undefined ? { projectKey } : {}), config: document.searchEditor.config, ...withBackup };
     }
     if (tab.kind === 'settings') return document.kind === 'text' && document.settingsScope !== undefined ? { kind: 'settings', scope: document.settingsScope, ...withBackup } : undefined;
-    // review and timeline tabs name ids of this run, and a merge tab is never restored (AD8)
-    if (tab.kind === 'diff' || tab.kind === 'changes' || tab.kind === 'review' || tab.kind === 'timeline' || tab.kind === 'merge') return undefined;
+    // review, timeline and jobLog tabs name ids of this run, and a merge tab is never restored (AD8)
+    if (tab.kind === 'diff' || tab.kind === 'changes' || tab.kind === 'review' || tab.kind === 'timeline' || tab.kind === 'merge' || tab.kind === 'jobLog') return undefined;
     const file = fileRefOf(document);
     if (file) return { kind: tab.kind, file, ...withBackup };
     const location = document.location;

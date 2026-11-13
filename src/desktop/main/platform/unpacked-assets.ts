@@ -20,6 +20,8 @@ export const ASAR_UNPACK: readonly string[] = [
   // git and ssh execute the askpass scripts, which run the helper under the app's binary as Node.
   'dist/askpass-main.js',
   'dist/askpass/**',
+  // git runs the credential helper scripts of the Git hosting accounts as files (src/core/scm/askpass/credential-config.ts).
+  'dist/git-credential/**',
   // resources/bin/damocles runs it under the app's binary as Node from outside the app (docs/invariants.md "The damocles command").
   'dist/cli.js',
   'resources/grammars/**',

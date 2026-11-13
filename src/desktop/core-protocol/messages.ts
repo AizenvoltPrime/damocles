@@ -10,15 +10,48 @@ import type { EndedLeaseHolder } from '../../core/pi-session/session-store/sessi
 import type { SessionFileWrite } from '../../core/pi-session/session-store/session-file-write';
 import type { AskpassPaths } from '../../core/scm/askpass/askpass-server';
 import type { CommitFailure } from '../../core/scm/repository';
+import type { ForgeMirror } from '../../core/forge';
+import { FORGE_AVATAR_MAX_BYTES } from '../../shared/forge/accounts';
+import { MAX_FORGE_TOOL_TEXT_CHARS, type ForgeDescribeAnswer, type ForgeToolAnswer, type ForgeToolRequest, type RelayedForgeRequest } from '../../shared/forge/tools';
+import type { PermissionDetail, PermissionUpdate } from '../../shared/types/permissions';
+import type { AvatarMime } from '../../core/forge/avatars';
+import type { ForgeServerOverride } from '../../core/forge/types';
+import { isCanonicalWebUrl } from '../../core/forge/server-url';
+import type { BindingsChange, PrepareGitOperationInput, PrepareGitOperationResult, RepoAccountsInput } from '../../core/forge';
+import type { CiChangedEvent, CiCommitStatus, CiLog, CiRepo, CiStatus } from '../../core/forge/ci-watch';
+import type { CloneSearchOutcome, CloneTarget } from '../../core/forge/clone-picker';
+import type { CreateRepositoryOutcome, ForkOutcome, MergeRequestPage, PublishAccountsView, PushAccessOutcome, PushedRepo } from '../../core/forge/publish';
+import type { PushProtection } from '../../core/forge/branch-protection';
+import { MAX_OWNER_VALUE_CHARS, MAX_REPOSITORY_NAME_CHARS, MAX_TEMPLATE_CHARS, PUBLISH_VISIBILITIES, type PublishOwnersAnswerOf, type PublishVisibility } from '../../shared/forge/publish';
+import { CLONE_EMPTY_REASONS, CLONE_PILLS, CLONE_PROTOCOLS, CLONE_SEARCH_ERRORS, CLONE_VISIBILITIES, MAX_CLONE_PASTE_CHARS, MAX_CLONE_QUERY_CHARS, type CloneAccount, type CloneAccountsView, type ClonePasteAnswer, type CloneRow, type CloneSource } from '../../shared/forge/clone';
+import type { ForgeLinkTarget } from '../../shared/forge/links';
+import { MAX_REFERENCE_NUMBER } from '../../shared/forge/references';
+import { MAX_AUTHOR_EMAIL_CHARS, MAX_AUTHOR_KEYS, MAX_AUTHOR_NAME_CHARS, MAX_HISTORY_AUTHORS, type AuthorAvatars, type ContainingChange, type HistoryAuthor, type HistoryForgeContext } from '../../shared/forge/history';
+import { MAX_PROTECTED_REMOTES, MAX_PROTECTION_PATTERN_CHARS, MAX_PROTECTION_PATTERNS, MAX_PROTECTION_RULES, type RemoteBranchProtection } from '../../shared/forge/branch-protection';
+import { CI_STATES, MAX_JOB_LOG_BYTES, type CiAction, type CiJobView, type CiPipelineView, type CiStepView, type CiTarget } from '../../shared/forge/ci';
+import {
+  FORGE_GIT_OPERATIONS,
+  RESOLVE_HOWS,
+  type ChooseAccountAnswer,
+  type ChooseAccountRequest,
+  type ChooseAccountRows,
+  type HostDefaultsView,
+  type RemoteEndpoint,
+  type RemoteLocation,
+  type RepoAccountOption,
+  type RepoAccountsView,
+  type RepoServerAccounts,
+  type ResolveHow,
+} from '../../shared/forge/bindings';
 import type { RemoteOp, RemoteOutcome, RemoteOutcomeKind } from '../../core/scm/scm-service';
 import type { WorkerName } from '../../platform/app-paths';
 import type { PickFileOptions, PickFolderOptions, InputBoxOptions } from '../../platform/dialog-service';
 import type { ActiveEditorContext, DiffSide, OpenFileOptions } from '../../platform/editor-service';
 import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
-import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
+import { GIT_HOST, parseCredentialFields, parseCredentialOrigin, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, MAX_REFUSED_MESSAGE_CHARS, PASSWORD_HASH, type GitCredentialAnswer, type GitCredentialFields, type ClientForges, type GitCredentialOrigin, type GitCredentialRequest } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
-import { brokerEnvOf, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
+import { brokerEnvOf, CLIENT_PENDING_REASONS, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientMcp, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { RelayedServedFile, ServedFile, ServedFileAnswer } from '../../shared/served-file-url';
 import type { UserProfile } from '../../shared/types/memory';
 import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
@@ -47,6 +80,8 @@ export const MAX_MESSAGE_CHARS: number = 1024 * 1024;
 export const MAX_DATA_CHARS: number = 64 * 1024 * 1024;
 export const MAX_ITEMS = 100_000;
 export const MAX_ACTIONS = 64;
+// a repository's remotes, which the forge calls carry whole
+export const MAX_REMOTE_ENDPOINTS = 512;
 
 // The browser page messages main parses out of a core post to persist the page's state (views.ts).
 export const PAGE_STATE_TYPES: ReadonlySet<string> = new Set(['urlChanged', 'navigationState', 'pickingStateChanged']);
@@ -133,7 +168,7 @@ export interface CoreRequests {
   'secrets.keys': Call<object, readonly string[]>;
   // main renders the text in its own language; the answer is the chosen action's index
   'notifications.show': Call<
-    { readonly severity: 'info' | 'warn' | 'error'; readonly message: LocalizedText; readonly modal?: boolean; readonly actions: readonly LocalizedText[] },
+    { readonly severity: 'info' | 'warn' | 'error'; readonly message: LocalizedText; readonly modal?: boolean; readonly unlessFocused?: boolean; readonly actions: readonly LocalizedText[] },
     number | undefined
   >;
   'dialogs.pickFolder': Call<PickFolderOptions, string | undefined>;
@@ -165,8 +200,13 @@ export interface CoreRequests {
   // a git or ssh credential prompt (core/scm/askpass); the answer is a credential and is never logged
   'askpass.prompt': Call<{ readonly kind: CredentialKind; readonly text: string }, { readonly answer?: string; readonly cancelled: boolean }>;
   // a daemon's core: the git credential relay's get or erase, answered by the acting client; targetHelper: the target's
-  // git has a credential helper of its own for the URL. The answer is a credential and is never logged.
-  'askpass.credential': Call<{ readonly op: 'get' | 'erase'; readonly fields: GitCredentialFields; readonly targetHelper: boolean }, GitCredentialAnswer>;
+  // git has a credential helper of its own for the URL. The answer is a credential and is never logged. origin and cwd
+  // (feature askpass.credential.origin): a request of a managed server's takeover, which main answers from the bound
+  // account; without them, this computer's `git credential fill` after consent.
+  'askpass.credential': Call<{ readonly op: 'get' | 'erase'; readonly fields: GitCredentialFields; readonly targetHelper: boolean; readonly origin?: GitCredentialOrigin; readonly cwd?: string; readonly passwordHash?: string }, GitCredentialAnswer>;
+  // this computer's core: the Choose account dialog, which account a project uses on a server, asked before the user's own git operation; main adds
+  // the where-line's host badge and shows its overlay dialog. Rows change through forge.chooseAccountRows.
+  'forge.chooseAccount': Call<ChooseAccountRequest, ChooseAccountAnswer>;
   // Commit to a New Branch's name input for the commit main passed this token with (scm.commit)
   'scm.branchName': Call<{ readonly token: string }, string | undefined>;
   // the worktree UI main keeps (core/worktrees/host.ts WorktreeHostServices)
@@ -208,6 +248,11 @@ export interface CoreRequests {
   'user.mcp.call': Call<{ readonly clientId: string; readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
   'user.mcp.resources': Call<{ readonly clientId: string; readonly server: string; readonly kind: 'resources' | 'templates'; readonly cursor?: string }, unknown>;
   'user.mcp.readResource': Call<{ readonly clientId: string; readonly server: string; readonly uri: string }, unknown>;
+  // a daemon's core: a chat's GitHub or GitLab tool, run by exactly the client clientId names with its own accounts, after
+  // its main checked folder against this host's projects; viewId: the chat's view, which shows the refused notice; describe answers
+  // the call's target, and a write's approval card when approval is set; only bounded, masked text comes back
+  'user.forge.tool': Call<{ readonly clientId: string; readonly viewId?: string } & RelayedForgeRequest, ForgeToolAnswer>;
+  'user.forge.describe': Call<{ readonly clientId: string; readonly viewId?: string; readonly approval: boolean } & RelayedForgeRequest, ForgeDescribeAnswer>;
   // answers once what core posted to the view before is within the flow window of the host's queue toward the page; with
   // viewKey, of that one view's page only, else of every view's
   'views.drained': Call<{ readonly viewId: string; readonly viewKey?: string }, void>;
@@ -237,6 +282,23 @@ export type { BrokerAnswer, BrowserToolAnswer, ClientAuth, ClientPolicy, ClientU
 
 /** A fresh OAuth access token main pushes to a daemon's core; a key is never pushed, since a cached one never expires. */
 export type PushedCredential = Extract<BrokerAnswer, { readonly type: 'oauth' }>;
+
+/** Whose credential it is and how it was settled; canPush only with how 'access'. */
+export interface ForgeCredentialAccount {
+  readonly serverId: string;
+  readonly accountId: string;
+  readonly login: string;
+  readonly how: ResolveHow;
+  readonly canPush?: boolean;
+}
+
+/**
+ * forge.gitCredential's answer: what the helper gets, and with a credential whose it is and how it was settled; or, for a
+ * target's automatic resolution, the account the user must consent to before any token is read.
+ */
+export type ForgeGitCredentialResult =
+  | { readonly answer: GitCredentialAnswer; readonly account?: ForgeCredentialAccount }
+  | { readonly consent: ForgeCredentialAccount };
 
 export type CredentialKind = 'username' | 'password' | 'passphrase' | 'confirm' | 'notice';
 
@@ -343,12 +405,82 @@ export interface MainRequests {
   'views.join': Call<{ readonly viewId: string; readonly viewKey: string; readonly sessionId?: string; readonly joining?: string }, { readonly panelId: string } | null>;
   // core's ScmService (scm-calls.ts): a method of SCM_CALLS with its arguments, answered with its result
   'scm.call': Call<{ readonly method: ScmCall; readonly args: readonly unknown[] }, unknown>;
-  // ScmService.commit; branchName names the token core asks scm.branchName with, saved the documents saved just before
-  'scm.commit': Call<{ readonly repoId: string; readonly message: string; readonly variant: unknown; readonly saved: readonly string[]; readonly branchName?: string }, ScmCommitOutcome>;
+  // ScmService.commit; branchName names the token core asks scm.branchName with, saved the documents saved just before,
+  // protectedBranches the server rules this computer's core held (feature scm.commit.protectedBranches; an older core drops it)
+  'scm.commit': Call<{ readonly repoId: string; readonly message: string; readonly variant: unknown; readonly saved: readonly string[]; readonly branchName?: string; readonly protectedBranches?: readonly RemoteBranchProtection[] }, ScmCommitOutcome>;
   'scm.ignoredIn': Call<{ readonly projectKey: string; readonly relativeDir: string; readonly entries: readonly { readonly name: string; readonly dir: boolean }[] }, readonly string[]>;
   'scm.commitBlob': Call<{ readonly repoId: string; readonly commit: string; readonly path: string }, Uint8Array | 'tooLarge' | undefined>;
   // a file of a design a chat of this core holds (its role or own link), never another folder; nothing: not held, missing or outside
   'design.read': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewFile | 'tooLarge' | undefined>;
+  // this computer's core: the account picture of an avatar key the forge mirror lists; nothing: no such key, avatars off, or
+  // not a PNG, JPEG, GIF or WebP image
+  'forge.avatar': Call<{ readonly key: string }, { readonly bytes: Uint8Array; readonly mime: AvatarMime } | undefined>;
+  // this computer's core, Git hosting accounts of projects (docs/invariants.md "GitHub and GitLab accounts", resolution): the
+  // chip's view (nothing until the forge files are read), the chip's choice, host defaults, the ask before the user's own git
+  // operation, and the forget hooks. A false answer: bindings.json does not parse, so nothing was saved.
+  'forge.repoAccounts': Call<RepoAccountsInput, RepoAccountsView | undefined>;
+  'forge.bindAccount': Call<{ readonly projectKey: string; readonly serverId: string; readonly accountId: string | null }, boolean>;
+  'forge.hostDefaults': Call<{ readonly authorityKey: string }, HostDefaultsView>;
+  'forge.setHostDefault': Call<{ readonly authorityKey: string; readonly serverId: string; readonly accountId: string | null }, boolean>;
+  'forge.prepareGitOperation': Call<PrepareGitOperationInput, PrepareGitOperationResult>;
+  'forge.forgetProject': Call<{ readonly projectKey: string }, void>;
+  'forge.forgetHost': Call<{ readonly authorityKey: string }, void>;
+  // the remote authorities this computer still holds, sent at each local core start: core drops the bindings and host defaults
+  // of every other, which a Forget host made while the engine was halted left
+  'forge.keepHosts': Call<{ readonly authorityKeys: readonly string[] }, void>;
+  // this computer's core: a git credential request of a terminal's helper (authorityKey 'local') or of a target's takeover
+  // relayed through main; account: whose credential it is and how it was settled. consentedAccountId: the account the user let
+  // the target use in main's consent dialog, never taken from the target. Never logged.
+  'forge.gitCredential': Call<{ readonly request: GitCredentialRequest; readonly origin: GitCredentialOrigin; readonly authorityKey: string; readonly projectKey?: string; readonly consentedAccountId?: string }, ForgeGitCredentialResult>;
+  // this computer's core, CI (core/forge/ci-watch.ts, feature forge.ci): a status watch by main's id, defined with repo and shown
+  // while active (without repo: only shown or hidden, a log watch too), answered with its view and followed on forge.ci.changed;
+  // null: no chip
+  'forge.ci.watch': Call<{ readonly id: string; readonly repo?: CiRepo; readonly active: boolean }, CiStatus | null>;
+  'forge.ci.unwatch': Call<{ readonly id: string }, void>;
+  // the status watch read now
+  'forge.ci.jobs': Call<{ readonly id: string }, CiStatus | null>;
+  // a log watch of one job, shown: its whole log so far (reset), then appends on forge.ci.changed
+  'forge.ci.jobLog': Call<{ readonly id: string; readonly repo: CiRepo; readonly jobId: number }, CiLog>;
+  // jobId: the job a retry started in jobId's place
+  'forge.ci.jobAction': Call<{ readonly repo: CiRepo; readonly target: CiTarget; readonly action: CiAction }, { readonly ok: boolean; readonly jobId?: number }>;
+  'forge.ci.commitStatus': Call<{ readonly repo: CiRepo; readonly sha: string; readonly retry: boolean }, CiCommitStatus | null>;
+  // the server's page of a pipeline, run, job or commit's checks, built from the server's web URL, the repository path and the
+  // id or commit; main opens it
+  'forge.ci.webUrl': Call<{ readonly repo: CiRepo; readonly target: CiTarget }, { readonly url: string; readonly serverName: string } | null>;
+  // this computer's core, links (core/forge/links.ts, feature forge.links): a file or commit address on the managed server a
+  // remote of repo points at, which main opens or copies and never passes to a renderer
+  'forge.link': Call<{ readonly repo: CiRepo; readonly target: ForgeLinkTarget }, { readonly url: string; readonly serverName: string; readonly remote: string } | { readonly unavailable: LocalizedText }>;
+  // this computer's core, history details (core/forge/history.ts, feature forge.history): the repository's server (null: none
+  // with an account), one history page's author picture keys by lower-cased email (published on forgeAuthorAvatars before
+  // the answer), and the merged pull or merge request containing a commit
+  'forge.history.context': Call<{ readonly repo: CiRepo }, HistoryForgeContext | null>;
+  'forge.history.avatars': Call<{ readonly repo: CiRepo; readonly authors: readonly HistoryAuthor[] }, AuthorAvatars>;
+  'forge.history.containing': Call<{ readonly repo: CiRepo; readonly sha: string }, ContainingChange | null>;
+  // this computer's core, branch protection (core/forge/branch-protection.ts, feature forge.branchProtection): the rules it
+  // holds for each remote of the repository, answered at once; a missing or stale entry is read in the background
+  'forge.branchProtection': Call<{ readonly repo: CiRepo }, readonly RemoteBranchProtection[]>;
+  // a push refused on branch of remote (feature forge.protectedPush): whether the server protects it for the push's account,
+  // from rules read in the last 30 minutes, else read now
+  'forge.pushProtection': Call<{ readonly repo: PushedRepo; readonly remote: string; readonly branch: string }, PushProtection>;
+  // the managed servers once the forge files were read or failed to (feature forge.servers): a remote attach's clientForges
+  'forge.servers': Call<object, ClientForges>;
+  // this computer's core, the clone picker (core/forge/clone-picker.ts, feature forge.clone): the accounts, one account's
+  // listing with opaque row keys, a pasted address's row, and the clone address a key or paste stands for (main only)
+  'forge.clone.accounts': Call<object, CloneAccountsView>;
+  'forge.clone.search': Call<{ readonly accountId: string; readonly query: string }, CloneSearchOutcome>;
+  'forge.clone.paste': Call<{ readonly text: string }, ClonePasteAnswer>;
+  'forge.clone.target': Call<{ readonly source: CloneSource }, CloneTarget>;
+  // this computer's core, publish and fork on a denied push (core/forge/publish.ts, features forge.publish and
+  // forge.publishOwners): every signed-in account with its own namespace, one account's organizations or groups (the Owner
+  // values a create accepts for it), a create by such a value, the server's access check of a refused push, a fork polled until
+  // copied, the create page of a merge or pull request (main opens it), and an organization's page
+  'forge.publishAccounts': Call<object, PublishAccountsView>;
+  'forge.publishOwners': Call<{ readonly accountId: string }, PublishOwnersAnswerOf<LocalizedText>>;
+  'forge.createRepository': Call<{ readonly owner: string; readonly name: string; readonly visibility: PublishVisibility }, CreateRepositoryOutcome>;
+  'forge.pushAccess': Call<{ readonly repo: PushedRepo; readonly remote: string }, PushAccessOutcome>;
+  'forge.fork': Call<{ readonly serverId: string; readonly accountId: string; readonly path: string }, ForkOutcome>;
+  'forge.openMergeRequest': Call<{ readonly serverId: string; readonly accountId: string; readonly upstreamPath: string; readonly forkPath: string; readonly branch: string; readonly targetBranch?: string; readonly template?: string }, MergeRequestPage>;
+  'forge.openOrgAccess': Call<{ readonly accountId: string; readonly org: string }, boolean>;
   // a held design's widths and one screen's declared states; nothing: not held, or the screen cannot be read
   'design.info': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewInfo | undefined>;
   // a preview's markup (PD-12) to design chat panelId: png is base64 with no data: prefix, json the shell's MarkupJsonInput,
@@ -420,6 +552,10 @@ export interface MainRequests {
   'user.mcp.call': Call<{ readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
   'user.mcp.resources': Call<{ readonly server: string; readonly kind: 'resources' | 'templates'; readonly cursor?: string }, unknown>;
   'user.mcp.readResource': Call<{ readonly server: string; readonly uri: string }, unknown>;
+  // this computer's core: a remote chat's GitHub or GitLab tool on the host project main mapped its folder to; viewId: the
+  // remote chat's view, under whose proxy a refusal is recorded for its notice's actions
+  'user.forge.tool': Call<{ readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string }, ForgeToolAnswer>;
+  'user.forge.describe': Call<{ readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string; readonly approval: boolean }, ForgeDescribeAnswer>;
   // this computer's core: a proxy for a remote chat's view, which only FOREIGN_VIEW_MESSAGES reach
   'panels.attachForeign': Call<{ readonly authority: string; readonly viewId: string }, void>;
   'panels.detachForeign': Call<{ readonly viewId: string }, void>;
@@ -437,7 +573,8 @@ export type SettingsViewScope = 'user' | 'machine' | 'project';
 export type MentionTargetData = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
 
 export interface CoreEvents {
-  'window.openAppSettings': { readonly section?: SettingsSectionId; readonly account?: SettingsAccountId; readonly scope?: 'machine' };
+  // forgeServer and forgeAccount: only this computer's core, which runs the Git hosting accounts, sends them
+  'window.openAppSettings': { readonly section?: SettingsSectionId; readonly account?: SettingsAccountId; readonly scope?: 'machine'; readonly forgeServer?: string; readonly forgeAccount?: string };
   'window.toggleTerminal': object;
   // after the chats mirror shows the change; sessionId: the stored session the chat is on, which lets a client that does not
   // view the chat (another device) show it running in its chat list
@@ -468,6 +605,12 @@ export interface CoreEvents {
   'ports.urlSeen': { readonly host: 'localhost' | '127.0.0.1' | '0.0.0.0'; readonly port: number };
   // files of a held design a Write or Edit changed, debounced; '/' separated below the design folder
   'design.changed': { readonly designId: string; readonly paths: readonly string[] };
+  // this computer's core: the Choose account dialog's rows while its access check runs, for the open forge.chooseAccount with that requestId
+  'forge.chooseAccountRows': ChooseAccountRows;
+  // this computer's core: a project binding or host default changed; chosen once, right after the Choose account dialog's answer was bound
+  'forge.bindingsChanged': BindingsChange;
+  // this computer's core: a CI watch's new view, or a log watch's appended text and state
+  'forge.ci.changed': CiChangedEvent;
 }
 
 export interface MainEvents {
@@ -489,6 +632,11 @@ export interface CoreMirrorTopics {
   scm: ScmMirrorPatch;
   // a daemon's core: the outboxes it holds for devices long away, whole on every change
   heldMemory: { readonly queues: readonly HeldMemoryQueue[] };
+  // this computer's core: the Git hosting servers, whether each has an account, and the avatar keys main may serve; never a
+  // login or a token, whole on every change
+  forge: ForgeMirror;
+  // this computer's core: the commit authors' avatar keys main may serve besides the forge mirror's, whole on every change
+  forgeAuthorAvatars: { readonly keys: readonly string[] };
 }
 
 /** The facts main reads off an open repository; the paths and kind it acts on are parsed field by field, the snapshot as data. */
@@ -545,7 +693,9 @@ export interface MirrorTopics {
   // the daemon's: each client's language patches under its id, value undefined when it detached; a client's is dropped
   clientLanguage: ClientDelta<MirrorTopics['language']>;
   // per client, as clientUser: the personal MCP servers it marked available on remote hosts, names and schemas only
-  clientMcp: ClientDelta<{ readonly servers: readonly RelayedMcpServer[] }>;
+  clientMcp: ClientDelta<ClientMcp>;
+  // a client's managed git servers (feature clientForges), whose takeover this core's spawns apply for that client
+  clientForges: ClientDelta<ClientForges>;
   // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
   actingClient: { readonly clientId?: string };
   // the daemon's, after a removed socket folder was made again: its agent folder (CoreInit.remote.agentFolder) and the git
@@ -604,6 +754,8 @@ export interface CoreInit {
   readonly chatBrowserPane: boolean;
   // core serves the e2e.* requests (unpackaged, DAMOCLES_E2E_HOOKS=1)
   readonly e2eHooks: boolean;
+  // this computer's core, e2e hooks only: DAMOCLES_E2E_FORGE_SERVERS as main read it (main/forge/e2e-forge-servers.ts)
+  readonly e2eForgeServers?: Readonly<Partial<Record<'github.com' | 'gitlab.com', ForgeServerOverride>>>;
   // main's startup probe of git, which checkpoints follow instead of probing per session and source control runs
   readonly git: { readonly available: boolean; readonly reason?: string; readonly path?: string; readonly version?: { readonly major: number; readonly minor: number; readonly patch: number } };
   // main's app paths (main/platform/app-paths.ts), which core has no way to compute
@@ -614,12 +766,16 @@ export interface CoreInit {
     readonly watchWorker: string;
     // this computer's core: <userData>/remote, holding each host's session mirror, which /stats indexes
     readonly remoteMirrors?: string;
+    // this computer's core: <userData>/forge, holding the Git hosting servers, accounts and bindings; never a daemon's core
+    readonly forge?: string;
     readonly askpass: AskpassPaths;
   };
   // <userData>/logs, and whether a sink mirrors its lines to stdout (the unpackaged app)
   readonly logs: { readonly dir: string; readonly echo: boolean };
   // the cores that crashed in this app run and when they ended (epoch ms), whose session leases no live process holds
   readonly endedCores: readonly EndedLeaseHolder[];
+  // another core ran before this one in this app or daemon run, so git's credential requests failed while none answered
+  readonly restarted?: boolean;
   // the worktree records main last read from a core, which the registry serves while registry.json does not parse
   readonly worktreeRecords: readonly unknown[];
   // set only for a daemon's core: it deletes permanently where it would trash and refuses every user-scope write
@@ -642,7 +798,8 @@ export interface CoreInit {
     readonly clientEditor?: Readonly<Record<string, EditorMirror>>;
     readonly clientTerminal?: Readonly<Record<string, TerminalToggle>>;
     readonly clientLanguage?: Readonly<Record<string, MirrorTopics['language']>>;
-    readonly clientMcp?: Readonly<Record<string, { readonly servers: readonly RelayedMcpServer[] }>>;
+    readonly clientMcp?: Readonly<Record<string, ClientMcp>>;
+    readonly clientForges?: Readonly<Record<string, ClientForges>>;
     // this computer's core: each remote authority's, by authority
     readonly clientNetwork?: Readonly<Record<string, { readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean }>>;
   };
@@ -758,7 +915,11 @@ const relayedMcpServer: Parser<RelayedMcpServer> = obj({
   resources: bool,
   timeoutMs: opt(int(1, MAX_RELAYED_MCP_TIMEOUT_MS)),
 });
-const mcpServers = obj({ servers: arr(relayedMcpServer, MAX_ITEMS) });
+// a daemon's core builds git config from these, so a web URL must be canonical and a git host one the takeover can name
+const forgeWebUrl: Parser<string> = (raw) => (typeof raw === 'string' && raw.length <= MAX_LABEL_CHARS && isCanonicalWebUrl(raw) ? raw : INVALID);
+const forgeGitHost: Parser<string> = (raw) => (typeof raw === 'string' && raw.length <= MAX_LABEL_CHARS && GIT_HOST.test(raw) ? raw : INVALID);
+const clientForges: Parser<ClientForges> = obj({ servers: arr(obj({ id: label, webUrl: forgeWebUrl, gitHosts: arr(forgeGitHost, MAX_ITEMS), hasAccount: bool }), MAX_ITEMS), pending: opt(bool) });
+const forgeServers: Parser<ClientForges> = obj({ servers: arr(obj({ id: label, webUrl: label, gitHosts: arr(label, MAX_ITEMS), hasAccount: bool }), MAX_ITEMS) });
 const mcpResourceKind = oneOf(['resources', 'templates'] as const);
 const mcpArgs = dict(value, MAX_KEY_CHARS, MAX_ITEMS);
 
@@ -956,8 +1117,11 @@ const pushedCredential: Parser<PushedCredential> = obj({
   availableModelIds: opt(planModelIds),
 });
 const authType = oneOf(['oauth', 'api_key', 'none'] as const);
+const clientPending = opt(oneOf(CLIENT_PENDING_REASONS));
+const clientMcp: Parser<ClientMcp> = obj({ servers: arr(relayedMcpServer, MAX_ITEMS), pending: clientPending });
 const clientAuth: Parser<ClientAuth> = obj({
   providers: dict(obj({ type: authType, expiresIn: opt(int(0, Number.MAX_SAFE_INTEGER)), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds), preferApiKey: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
+  pending: clientPending,
 });
 const heldAuth: Parser<HeldAuth> = obj({
   providers: dict(obj({ type: authType, expires: opt(num), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds), preferApiKey: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
@@ -965,6 +1129,7 @@ const heldAuth: Parser<HeldAuth> = obj({
 const clientUser: Parser<ClientUser> = obj({
   settings: dict(value, MAX_KEY_CHARS, MAX_ITEMS),
   permissionRules: arr(obj({ allow: strings, ask: strings, deny: strings, dir: oneOf(['.damocles', '.claude'] as const) }), MAX_ACTIONS),
+  pending: clientPending,
 });
 const clientPolicy: Parser<ClientPolicy> = obj({
   voice: bool,
@@ -975,12 +1140,29 @@ const clientPolicy: Parser<ClientPolicy> = obj({
 });
 const credentialFields: Parser<GitCredentialFields> = (raw) => parseCredentialFields(raw) ?? INVALID;
 const credentialAnswer: Parser<GitCredentialAnswer> = either(
-  obj({ kind: oneOf(['none', 'notConnected'] as const) }),
+  either(
+    obj({ kind: oneOf(['none', 'notConnected', 'delegate'] as const) }),
+    obj({ kind: oneOf(['refused'] as const), message: (raw) => (isCredentialValue(raw, MAX_REFUSED_MESSAGE_CHARS) && raw !== '' ? raw : INVALID) }),
+  ),
   obj({
     kind: oneOf(['credential'] as const),
     username: (raw) => (isCredentialValue(raw, MAX_CREDENTIAL_USERNAME_CHARS) ? raw : INVALID),
     password: (raw) => (isCredentialValue(raw, MAX_CREDENTIAL_PASSWORD_CHARS) && raw !== '' ? raw : INVALID),
   }),
+);
+const credentialOrigin: Parser<GitCredentialOrigin> = (raw) => parseCredentialOrigin(raw) ?? INVALID;
+const passwordHash: Parser<string> = (raw) => (typeof raw === 'string' && PASSWORD_HASH.test(raw) ? raw : INVALID);
+const gitCredentialRequest: Parser<GitCredentialRequest> = obj({
+  op: oneOf(['get', 'store', 'erase'] as const),
+  cwd: filePath,
+  fields: (raw) => parseCredentialFields(raw) ?? INVALID,
+  password: opt((raw) => (isCredentialValue(raw, MAX_CREDENTIAL_PASSWORD_CHARS) && raw !== '' ? raw : INVALID)),
+  passwordHash: opt(passwordHash),
+});
+const forgeCredentialAccount = obj({ serverId: label, accountId: label, login: label, how: oneOf(RESOLVE_HOWS), canPush: opt(bool) });
+const forgeGitCredentialResult: Parser<ForgeGitCredentialResult> = either(
+  obj({ answer: credentialAnswer, account: opt(forgeCredentialAccount) }),
+  obj({ consent: forgeCredentialAccount }),
 );
 const credentialNonce: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
 const clientDelta = <T>(parser: Parser<T>) => obj({ clientId: opt(id), value: opt(parser) });
@@ -992,6 +1174,218 @@ const pageSpec: Parser<PageSpec> = either(
 
 const designWidth = int(1, 100_000);
 const designId = nonEmpty(MAX_DESIGN_ID_CHARS);
+// a forge avatar key: SHA-256 hex (core/forge/avatars.ts avatarKey)
+const forgeServerOverride: Parser<ForgeServerOverride> = obj({
+  webUrl: message,
+  apiUrl: opt(message),
+  oauth: opt(obj({ clientId: label, clientSecret: opt(label) })),
+});
+const avatarKeyParser: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
+const forgeKind = oneOf(['github', 'gitlab'] as const);
+const forgeOperation = oneOf(FORGE_GIT_OPERATIONS);
+const forgeAccountId = nullable(label);
+const remoteLocation: Parser<RemoteLocation> = obj({ protocol: oneOf(['https', 'ssh'] as const), host: label, port: opt(int(1, 65535)), path: message, usernameHint: opt(label), aliasResolved: bool });
+const remoteEndpoint: Parser<RemoteEndpoint> = obj({ remote: label, fetch: opt(remoteLocation), push: opt(remoteLocation) });
+const remoteEndpoints = arr(remoteEndpoint, MAX_REMOTE_ENDPOINTS);
+const ciId = int(1, Number.MAX_SAFE_INTEGER);
+const ciCount = int(0, Number.MAX_SAFE_INTEGER);
+const ciState = oneOf(CI_STATES);
+const gitSha: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(raw) ? raw : INVALID);
+const ciRepo: Parser<CiRepo> = obj({ projectKey: opt(filePath), authorityKey: label, project: label, pushRemote: opt(label), endpoints: remoteEndpoints, branch: opt(label), sha: opt(gitSha) });
+const protectionPatterns = arr(nonEmpty(MAX_PROTECTION_PATTERN_CHARS), MAX_PROTECTION_PATTERNS);
+const remoteBranchProtection: Parser<RemoteBranchProtection> = obj({
+  remote: label,
+  rules: arr(obj({ include: protectionPatterns, exclude: protectionPatterns, syntax: oneOf(['fnmatch', 'gitlab'] as const) }), MAX_PROTECTION_RULES),
+});
+const protectedBranches = arr(remoteBranchProtection, MAX_PROTECTED_REMOTES);
+const lineNumber = int(1, 10_000_000);
+const forgeLinkTarget: Parser<ForgeLinkTarget> = either<ForgeLinkTarget, ForgeLinkTarget>(
+  obj({ kind: oneOf(['file'] as const), sha: gitSha, path: filePath, range: opt(obj({ start: lineNumber, end: lineNumber })) }),
+  either<ForgeLinkTarget, ForgeLinkTarget>(
+    obj({ kind: oneOf(['commit'] as const), sha: gitSha }),
+    obj({ kind: oneOf(['reference'] as const), reference: obj({ sigil: oneOf(['#', '!'] as const), number: int(1, MAX_REFERENCE_NUMBER), path: opt(label) }) }),
+  ),
+);
+const historyAuthor: Parser<HistoryAuthor> = obj({ sha: gitSha, email: str(MAX_AUTHOR_EMAIL_CHARS), name: str(MAX_AUTHOR_NAME_CHARS) });
+const cloneAccount: Parser<CloneAccount> = obj({ accountId: label, login: label, serverId: label, serverName: label, kind: forgeKind, avatarKey: opt(avatarKeyParser), needsSignIn: bool });
+const cloneRow: Parser<CloneRow> = obj({
+  key: label,
+  namespace: message,
+  name: label,
+  description: opt(message),
+  visibility: oneOf(CLONE_VISIBILITIES),
+  pill: opt(oneOf(CLONE_PILLS)),
+  updatedAt: opt(label),
+});
+const publishNamespace = obj({ value: str(MAX_OWNER_VALUE_CHARS), kind: oneOf(['personal', 'org', 'group'] as const), path: message, internal: bool });
+const publishAccount = obj({ accountId: label, serverName: label, login: label, kind: forgeKind, personal: publishNamespace });
+const pushedRepo: Parser<PushedRepo> = obj({ projectKey: opt(filePath), authorityKey: label, endpoints: remoteEndpoints });
+const ciTarget: Parser<CiTarget> = either<CiTarget, CiTarget>(
+  either<CiTarget, CiTarget>(obj({ jobId: ciId }), obj({ pipelineId: ciId })),
+  either<CiTarget, CiTarget>(obj({ runId: ciId }), obj({ sha: gitSha })),
+);
+const ciStep: Parser<CiStepView> = obj({ number: ciCount, name: label, state: ciState });
+const ciJob: Parser<CiJobView> = obj({
+  id: ciId,
+  name: label,
+  stage: label,
+  state: ciState,
+  kind: oneOf(['job', 'bridge', 'external'] as const),
+  runId: opt(ciId),
+  allowedFailure: opt(bool),
+  durationSeconds: opt(ciCount),
+  startedAt: opt(label),
+  finishedAt: opt(label),
+  runner: opt(label),
+  canRetry: bool,
+  canCancel: bool,
+  hasLog: bool,
+  steps: opt(arr(ciStep, 1000)),
+});
+const ciPipeline: Parser<CiPipelineView> = obj({
+  serverId: label,
+  serverName: label,
+  kind: forgeKind,
+  id: ciCount,
+  number: ciCount,
+  state: ciState,
+  ref: opt(label),
+  sha: opt(label),
+  durationSeconds: opt(ciCount),
+  startedAt: opt(label),
+  jobsDone: ciCount,
+  jobsTotal: ciCount,
+  failedCount: ciCount,
+  canRetry: bool,
+  canCancel: bool,
+  jobs: arr(ciJob, MAX_ITEMS),
+  runs: opt(arr(obj({ id: ciId, stage: label, canRetry: bool, canCancel: bool }), MAX_ITEMS)),
+  truncated: opt(bool),
+});
+const ciError = obj({ status: oneOf(['error'] as const), message: localizedMessage });
+const ciStatus: Parser<CiStatus> = either<CiStatus, CiStatus>(
+  either<CiStatus, CiStatus>(obj({ status: oneOf(['loading', 'none'] as const) }), obj({ status: oneOf(['ready'] as const), pipeline: ciPipeline, head: opt(label) })),
+  ciError,
+);
+const ciLog: Parser<CiLog> = either<CiLog, CiLog>(
+  either<CiLog, CiLog>(
+    obj({ status: oneOf(['loading'] as const) }),
+    obj({
+      status: oneOf(['ready'] as const),
+      job: ciJob,
+      pipeline: obj({ id: ciId, number: ciId, ref: opt(label) }),
+      serverName: label,
+      kind: forgeKind,
+      reset: bool,
+      text: str(MAX_JOB_LOG_BYTES),
+      truncated: bool,
+      live: bool,
+    }),
+  ),
+  either<CiLog, CiLog>(
+    obj({ status: oneOf(['githubRunning'] as const), job: ciJob, serverName: label }),
+    obj({ status: oneOf(['error'] as const), message: localizedMessage, job: opt(ciJob), serverName: opt(label) }),
+  ),
+);
+const ciCommitStatus: Parser<CiCommitStatus> = either<CiCommitStatus, CiCommitStatus>(
+  either<CiCommitStatus, CiCommitStatus>(obj({ status: oneOf(['loading', 'none'] as const) }), obj({ status: oneOf(['ready'] as const), pipeline: obj({ id: ciCount, number: ciCount, state: ciState, serverName: label, kind: forgeKind }) })),
+  ciError,
+);
+const forgeToolInput = dict(value, MAX_KEY_CHARS, MAX_ITEMS);
+const forgeTarget = obj({ serverId: label, repoPath: label, accountId: label, sourceBranch: opt(label), targetBranch: opt(label), sourceRepoPath: opt(label), contentHash: opt(sha256Hex) });
+const relayedForgeShape = { toolCallId: id, folder: filePath, endpoints: remoteEndpoints, pushRemote: opt(label), branch: opt(label), tool: label, input: forgeToolInput, expected: opt(forgeTarget) };
+const forgeToolRequest: Parser<ForgeToolRequest> = obj({ tool: label, input: forgeToolInput, authorityKey: label, projectKey: opt(filePath), project: label, endpoints: remoteEndpoints, pushRemote: opt(label), branch: opt(label), expected: opt(forgeTarget) });
+const forgeToolAnswer: Parser<ForgeToolAnswer> = obj({
+  text: str(MAX_FORGE_TOOL_TEXT_CHARS),
+  isError: opt(yes),
+  refusal: opt(obj({
+    serverId: label,
+    serverLabel: label,
+    project: label,
+    account: nullable(obj({ id: label, login: label, avatarKey: opt(avatarKeyParser) })),
+    reason: oneOf(['noAccount', 'orgAccess'] as const),
+    org: opt(obj({ name: label, kind: oneOf(['sso', 'approval'] as const) })),
+  })),
+});
+const permissionDetailShape = obj({
+  title: opt(localizedLabel),
+  subtitle: opt(localizedLabel),
+  facts: opt(arr(obj({ label: localizedLabel, value: label, detail: opt(label), avatar: opt(obj({ key: opt(avatarKeyParser) })), note: opt(localizedLabel) }), MAX_ACTIONS)),
+  content: opt(obj({ label: localizedLabel, text: str(MAX_FORGE_TOOL_TEXT_CHARS) })),
+  alwaysAllowLabel: opt(localizedLabel),
+  approvedStatus: opt(localizedLabel),
+});
+const permissionDetail: Parser<PermissionDetail> = (raw) => {
+  const parsed = permissionDetailShape(raw);
+  if (parsed === INVALID) return INVALID;
+  const { facts, ...rest } = parsed;
+  return { ...rest, ...(facts ? { facts: [...facts] } : {}) };
+};
+const forgeSuggestionShape = obj({
+  type: oneOf(['addRules'] as const),
+  rules: arr(obj({ toolName: label, ruleContent: opt(label) }), 1),
+  behavior: oneOf(['allow'] as const),
+  destination: oneOf(['localSettings'] as const),
+});
+const forgeSuggestion: Parser<PermissionUpdate> = (raw) => {
+  const parsed = forgeSuggestionShape(raw);
+  return parsed === INVALID ? INVALID : { ...parsed, rules: [...parsed.rules] };
+};
+const forgeDescribeAnswer: Parser<ForgeDescribeAnswer> = either(
+  obj({ ok: (raw): true | typeof INVALID => (raw === true ? true : INVALID), project: label, target: forgeTarget, detail: opt(permissionDetail), suggestion: opt(forgeSuggestion) }),
+  obj({ ok: (raw): false | typeof INVALID => (raw === false ? false : INVALID), answer: forgeToolAnswer }),
+);
+const repoAccountOption: Parser<RepoAccountOption> = obj({
+  id: label,
+  login: label,
+  name: opt(label),
+  avatarKey: opt(avatarKeyParser),
+  needsSignIn: bool,
+  checking: opt(bool),
+  canPush: opt(bool),
+  owner: opt(bool),
+  ssoRequired: opt(bool),
+  appNotApproved: opt(bool),
+});
+const repoServerFacts = {
+  serverId: label,
+  server: label,
+  kind: forgeKind,
+  remotes: arr(label, MAX_REMOTE_ENDPOINTS),
+  isPush: bool,
+  repoPath: message,
+  accounts: arr(repoAccountOption, MAX_ACTIONS),
+  checkFailed: opt(bool),
+};
+const repoServerAccounts: Parser<RepoServerAccounts> = either(
+  obj({ ...repoServerFacts, state: oneOf(['auto', 'chosen', 'signInAgain'] as const), how: oneOf(RESOLVE_HOWS), account: repoAccountOption }),
+  obj({ ...repoServerFacts, state: oneOf(['choose', 'ownCredentials', 'signIn'] as const) }),
+);
+const repoAccountsView: Parser<RepoAccountsView> = obj({
+  projectKey: filePath,
+  project: label,
+  servers: arr(repoServerAccounts, MAX_ACTIONS),
+});
+const hostDefaultsView: Parser<HostDefaultsView> = either(
+  obj({ state: oneOf(['loading', 'error'] as const) }),
+  obj({
+    state: oneOf(['ready'] as const),
+    servers: arr(obj({
+      serverId: label,
+      server: label,
+      kind: forgeKind,
+      gitHosts: arr(label, MAX_ACTIONS),
+      accounts: arr(obj({ id: label, login: label, avatarKey: opt(avatarKeyParser) }), MAX_ACTIONS),
+      defaultAccountId: opt(label),
+    }), MAX_ACTIONS),
+  }),
+);
+const chooseAccountRowsShape = { requestId: id, accounts: arr(repoAccountOption, MAX_ACTIONS), checking: bool, preselectId: opt(label) };
+const chooseAccountAnswer: Parser<ChooseAccountAnswer> = either(
+  obj({ kind: oneOf(['account'] as const), accountId: forgeAccountId }),
+  obj({ kind: oneOf(['cancelled', 'signInAnother'] as const) }),
+);
+const chosenBinding = obj({ projectKey: filePath, serverId: label, accountId: forgeAccountId, operation: opt(forgeOperation) });
 const tokenName: Parser<string> = (raw) => (typeof raw === 'string' && TWEAK_TOKEN_NAME.test(raw) ? raw : INVALID);
 const designPreviewInfo: Parser<DesignPreviewInfo> = obj({
   path: filePath,
@@ -1069,7 +1463,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'secrets.delete': method(obj({ key }), done),
   'secrets.keys': method(obj({}), arr(key, MAX_ITEMS)),
   'notifications.show': method(
-    obj({ severity: oneOf(['info', 'warn', 'error'] as const), message: localizedMessage, modal: opt(bool), actions: arr(localizedLabel, MAX_ACTIONS) }),
+    obj({ severity: oneOf(['info', 'warn', 'error'] as const), message: localizedMessage, modal: opt(bool), unlessFocused: opt(bool), actions: arr(localizedLabel, MAX_ACTIONS) }),
     maybe(actionIndex),
   ),
   'dialogs.pickFolder': method(obj({ title: opt(localizedLabel), defaultPath: opt(filePath), buttonLabel: opt(localizedLabel) }), maybe(filePath)),
@@ -1133,7 +1527,11 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
     obj({ kind: oneOf(['username', 'password', 'passphrase', 'confirm', 'notice'] as const), text: message }),
     obj({ answer: opt(message), cancelled: bool }),
   ),
-  'askpass.credential': method(obj({ op: oneOf(['get', 'erase'] as const), fields: credentialFields, targetHelper: bool }), credentialAnswer),
+  'askpass.credential': method(obj({ op: oneOf(['get', 'erase'] as const), fields: credentialFields, targetHelper: bool, origin: opt(credentialOrigin), cwd: opt(filePath), passwordHash: opt(passwordHash) }), credentialAnswer),
+  'forge.chooseAccount': method(
+    obj({ ...chooseAccountRowsShape, projectKey: opt(filePath), project: label, serverId: label, server: label, kind: forgeKind, repoPath: message, operation: forgeOperation }),
+    chooseAccountAnswer,
+  ),
   'scm.branchName': method(obj({ token: id }), maybe(label)),
   'worktrees.reviewSetup': method(obj({ projectPath: filePath, projectName: label, commands: arr(text, MAX_ITEMS) }), oneOf(['run', 'skip'] as const)),
   'worktrees.runSetup': method(
@@ -1161,6 +1559,8 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.mcp.call': method(obj({ clientId: id, server: label, tool: label, args: mcpArgs }), value),
   'user.mcp.resources': method(obj({ clientId: id, server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
   'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
+  'user.forge.tool': method(obj({ clientId: id, viewId: opt(id), ...relayedForgeShape }), forgeToolAnswer),
+  'user.forge.describe': method(obj({ clientId: id, viewId: opt(id), approval: bool, ...relayedForgeShape }), forgeDescribeAnswer),
   'views.drained': method(obj({ viewId: id, viewKey }), done),
   'chats.reveal': method(obj({ viewId: id, column }), bool),
   'chats.showSession': method(obj({ sessionId: id }), done),
@@ -1194,7 +1594,8 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   clientEditor: clientDelta(editorMirror),
   clientTerminal: clientDelta(terminalMirror),
   clientLanguage: clientDelta(obj({ language: oneOf(['en', 'el'] as const) })),
-  clientMcp: clientDelta(mcpServers),
+  clientMcp: clientDelta(clientMcp),
+  clientForges: clientDelta(clientForges),
   clientNetwork: obj({ authority: filePath, ...clientNetworkShape }),
 };
 
@@ -1247,10 +1648,93 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'settingsView.detach': method(attachmentRef, done),
   'views.join': method(obj({ viewId: id, viewKey: key, sessionId: opt(id), joining: viewKey }), either(obj({ panelId: id }), nul)),
   'scm.call': method(obj({ method: oneOf(SCM_CALLS), args: callArgs }), value),
-  'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id) }), commitOutcome),
+  'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id), protectedBranches: opt(protectedBranches) }), commitOutcome),
   'scm.ignoredIn': method(obj({ projectKey: filePath, relativeDir: str(MAX_PATH_CHARS), entries: arr(obj({ name: filePath, dir: bool }), MAX_ITEMS) }), arr(filePath, MAX_ITEMS)),
   'scm.commitBlob': method(obj({ repoId: id, commit: label, path: filePath }), maybe(either(oneOf(['tooLarge'] as const), bytes(MAX_DATA_CHARS)))),
   'design.read': method(obj({ designId, relPath: filePath }), maybe(either(oneOf(['tooLarge'] as const), obj({ bytes: bytes(MAX_DATA_CHARS), fidelity: nullable(oneOf(['static', 'interactive'] as const)) })))),
+  'forge.avatar': method(obj({ key: avatarKeyParser }), maybe(obj({ bytes: bytes(FORGE_AVATAR_MAX_BYTES), mime: oneOf(['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const) }))),
+  'forge.repoAccounts': method(obj({ projectKey: filePath, authorityKey: label, project: label, pushRemote: opt(label), endpoints: remoteEndpoints, recheck: opt(bool) }), maybe(repoAccountsView)),
+  'forge.bindAccount': method(obj({ projectKey: filePath, serverId: label, accountId: forgeAccountId }), bool),
+  'forge.hostDefaults': method(obj({ authorityKey: label }), hostDefaultsView),
+  'forge.setHostDefault': method(obj({ authorityKey: label, serverId: label, accountId: forgeAccountId }), bool),
+  'forge.prepareGitOperation': method(
+    obj({ operation: forgeOperation, projectKey: opt(filePath), authorityKey: label, project: label, remotes: arr(label, MAX_REMOTE_ENDPOINTS), endpoints: remoteEndpoints }),
+    obj({ proceed: bool, signInServerId: opt(label), bind: opt(obj({ serverId: label, accountId: forgeAccountId })) }),
+  ),
+  'forge.forgetProject': method(obj({ projectKey: filePath }), done),
+  'forge.forgetHost': method(obj({ authorityKey: label }), done),
+  'forge.keepHosts': method(obj({ authorityKeys: arr(label, MAX_ITEMS) }), done),
+  'forge.gitCredential': method(obj({ request: gitCredentialRequest, origin: credentialOrigin, authorityKey: label, projectKey: opt(filePath), consentedAccountId: opt(label) }), forgeGitCredentialResult),
+  'forge.ci.watch': method(obj({ id, repo: opt(ciRepo), active: bool }), nullable(ciStatus)),
+  'forge.ci.unwatch': method(obj({ id }), done),
+  'forge.ci.jobs': method(obj({ id }), nullable(ciStatus)),
+  'forge.ci.jobLog': method(obj({ id, repo: ciRepo, jobId: ciId }), ciLog),
+  'forge.ci.jobAction': method(obj({ repo: ciRepo, target: ciTarget, action: oneOf(['retry', 'cancel'] as const) }), obj({ ok: bool, jobId: opt(ciId) })),
+  'forge.ci.commitStatus': method(obj({ repo: ciRepo, sha: gitSha, retry: bool }), nullable(ciCommitStatus)),
+  'forge.ci.webUrl': method(obj({ repo: ciRepo, target: ciTarget }), nullable(obj({ url: message, serverName: label }))),
+  'forge.link': method(obj({ repo: ciRepo, target: forgeLinkTarget }), either(obj({ url: message, serverName: label, remote: label }), obj({ unavailable: localizedMessage }))),
+  'forge.history.context': method(obj({ repo: ciRepo }), nullable(obj({ kind: forgeKind, serverName: label, showAvatars: bool }))),
+  'forge.history.avatars': method(obj({ repo: ciRepo, authors: arr(historyAuthor, MAX_HISTORY_AUTHORS) }), dict(avatarKeyParser, MAX_AUTHOR_EMAIL_CHARS, MAX_HISTORY_AUTHORS)),
+  'forge.history.containing': method(obj({ repo: ciRepo, sha: gitSha }), nullable(obj({ kind: oneOf(['pullRequest', 'mergeRequest'] as const), number: ciId, serverName: label }))),
+  'forge.branchProtection': method(obj({ repo: ciRepo }), protectedBranches),
+  'forge.pushProtection': method(
+    obj({ repo: pushedRepo, remote: label, branch: label }),
+    either<PushProtection, PushProtection>(
+      obj({ protection: oneOf(['unprotected', 'unknown'] as const) }),
+      obj({ protection: oneOf(['protected'] as const), serverId: label, serverName: label, kind: forgeKind, accountId: label, login: label, path: message }),
+    ),
+  ),
+  'forge.servers': method(obj({}), forgeServers),
+  'forge.clone.accounts': method(obj({}), either(obj({ accounts: arr(cloneAccount, MAX_ITEMS), protocol: oneOf(CLONE_PROTOCOLS) }), obj({ empty: oneOf(CLONE_EMPTY_REASONS) }))),
+  'forge.clone.search': method(obj({ accountId: label, query: str(MAX_CLONE_QUERY_CHARS) }), either(obj({ rows: arr(cloneRow, MAX_ITEMS) }), obj({ error: oneOf(CLONE_SEARCH_ERRORS) }))),
+  'forge.clone.paste': method(obj({ text: str(MAX_CLONE_PASTE_CHARS) }), obj({ row: nullable(obj({ displayPath: message, protocol: opt(oneOf(CLONE_PROTOCOLS)), serverName: opt(label), login: opt(label) })) })),
+  'forge.clone.target': method(
+    obj({ source: either<CloneSource, CloneSource>(obj({ accountId: label, key: label }), obj({ pasteText: str(MAX_CLONE_PASTE_CHARS) })) }),
+    either<CloneTarget, CloneTarget>(obj({ ok: yes, url: message, account: opt(obj({ serverId: label, accountId: label })), status: localizedMessage }), obj({ ok: no, reason: localizedMessage })),
+  ),
+  'forge.publishAccounts': method(obj({}), obj({ accounts: arr(publishAccount, MAX_ITEMS) })),
+  'forge.publishOwners': method(
+    obj({ accountId: label }),
+    either<PublishOwnersAnswerOf<LocalizedText>, PublishOwnersAnswerOf<LocalizedText>>(
+      either<PublishOwnersAnswerOf<LocalizedText>, PublishOwnersAnswerOf<LocalizedText>>(
+        obj({ status: oneOf(['loaded'] as const), owners: arr(publishNamespace, MAX_ITEMS), truncated: bool }),
+        obj({ status: oneOf(['error'] as const), message: localizedMessage }),
+      ),
+      obj({ status: oneOf(['cancelled'] as const) }),
+    ),
+  ),
+  'forge.createRepository': method(
+    obj({ owner: str(MAX_OWNER_VALUE_CHARS), name: str(MAX_REPOSITORY_NAME_CHARS * 4), visibility: oneOf(PUBLISH_VISIBILITIES) }),
+    either<CreateRepositoryOutcome, CreateRepositoryOutcome>(
+      either<CreateRepositoryOutcome, CreateRepositoryOutcome>(
+        obj({ kind: oneOf(['created'] as const), url: message, serverId: label, accountId: label, serverName: label, login: label, path: message }),
+        obj({ kind: oneOf(['createdUnusable'] as const), serverName: label, path: message, reason: localizedMessage }),
+      ),
+      obj({ kind: oneOf(['refused', 'failed'] as const), reason: localizedMessage }),
+    ),
+  ),
+  'forge.pushAccess': method(
+    obj({ repo: pushedRepo, remote: label }),
+    either<PushAccessOutcome, PushAccessOutcome>(
+      either<PushAccessOutcome, PushAccessOutcome>(
+        obj({ access: oneOf(['canPush', 'unknown'] as const) }),
+        obj({ access: oneOf(['denied'] as const), serverId: label, serverName: label, kind: forgeKind, accountId: label, login: label, path: message }),
+      ),
+      obj({ access: oneOf(['orgAccess'] as const), accountId: label, org: label, text: localizedMessage, action: localizedMessage }),
+    ),
+  ),
+  'forge.fork': method(
+    obj({ serverId: label, accountId: label, path: message }),
+    either<ForkOutcome, ForkOutcome>(
+      either<ForkOutcome, ForkOutcome>(obj({ kind: oneOf(['forked'] as const), url: message, path: message }), obj({ kind: oneOf(['cancelled'] as const), path: message })),
+      obj({ kind: oneOf(['failed'] as const), reason: localizedMessage }),
+    ),
+  ),
+  'forge.openMergeRequest': method(
+    obj({ serverId: label, accountId: label, upstreamPath: message, forkPath: message, branch: label, targetBranch: opt(label), template: opt(str(MAX_TEMPLATE_CHARS)) }),
+    either<MergeRequestPage, MergeRequestPage>(obj({ url: message, serverName: label }), obj({ unavailable: localizedMessage })),
+  ),
+  'forge.openOrgAccess': method(obj({ accountId: label, org: label }), bool),
   'design.info': method(obj({ designId, relPath: filePath }), maybe(designPreviewInfo)),
   'design.markup': method(obj({ panelId: id, png: str(MAX_IMAGE_BASE64_LENGTH), json: data(MAX_MARKUP_JSON_CHARS) }), either(obj({ feedbackId: id }), obj({ refused: localizedMessage }))),
   'design.tweak': method(obj({ panelId: id, tweakId: id, value: tokenName }), either(obj({ kept: yes }), obj({ refused: localizedMessage }))),
@@ -1289,6 +1773,8 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'user.mcp.call': method(obj({ server: label, tool: label, args: mcpArgs }), value),
   'user.mcp.resources': method(obj({ server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
   'user.mcp.readResource': method(obj({ server: label, uri: message }), value),
+  'user.forge.tool': method(obj({ request: forgeToolRequest, viewId: opt(id), toolCallId: id }), forgeToolAnswer),
+  'user.forge.describe': method(obj({ request: forgeToolRequest, viewId: opt(id), toolCallId: id, approval: bool }), forgeDescribeAnswer),
   'panels.attachForeign': method(obj({ authority: filePath, viewId: id }), done),
   'panels.detachForeign': method(viewRef, done),
   'panels.foreignMessage': method(obj({ viewId: id, message: value }), done),
@@ -1297,7 +1783,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
 export const CORE_TO_MAIN: Tables<CoreToMain> = {
   requests: CORE_REQUESTS,
   events: {
-    'window.openAppSettings': obj({ section: opt(section), account: opt(account), scope: opt(oneOf(['machine'] as const)) }),
+    'window.openAppSettings': obj({ section: opt(section), account: opt(account), scope: opt(oneOf(['machine'] as const)), forgeServer: opt(label), forgeAccount: opt(label) }),
     'window.toggleTerminal': nothing,
     'chat.activity': obj({ panelId: id, activity: chatActivity, sessionId: opt(id) }),
     'chat.turnSettled': obj({ panelId: id, outcome: turnOutcome }),
@@ -1318,6 +1804,9 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'user.mcpChanged': nothing,
     'ports.urlSeen': obj({ host: oneOf(['localhost', '127.0.0.1', '0.0.0.0'] as const), port: int(1, 65535) }),
     'design.changed': obj({ designId, paths: arr(filePath, MAX_CHANGED_PATHS) }),
+    'forge.chooseAccountRows': obj(chooseAccountRowsShape),
+    'forge.bindingsChanged': obj({ projectKeys: opt(arr(filePath, MAX_ITEMS)), chosen: opt(chosenBinding) }),
+    'forge.ci.changed': either<CiChangedEvent, CiChangedEvent>(obj({ id, status: nullable(ciStatus) }), obj({ id, log: ciLog })),
   },
   mirrors: {
     chats: obj({ panelId: id, entry: opt(chatEntry) }),
@@ -1328,6 +1817,11 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
       either(obj({ kind: oneOf(['decorations'] as const), projectKey: filePath, files: value }), obj({ kind: oneOf(['clone'] as const), state: value })),
     ),
     heldMemory: obj({ queues: arr(obj({ queueId: memoryId, count: int(1, Number.MAX_SAFE_INTEGER), lastSeen: memoryTime }), MAX_HELD_MEMORY_QUEUES) }),
+    forge: obj({
+      servers: arr(obj({ id: label, kind: oneOf(['github', 'gitlab'] as const), webUrl: message, gitHosts: arr(label, MAX_ACTIONS), hasAccount: bool }), MAX_ITEMS),
+      avatarKeys: arr(avatarKeyParser, MAX_ITEMS),
+    }),
+    forgeAuthorAvatars: obj({ keys: arr(avatarKeyParser, MAX_AUTHOR_KEYS) }),
   },
   panelOps: {
     create: panelCreate,
@@ -1363,6 +1857,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
   secretsPersistent: bool,
   chatBrowserPane: bool,
   e2eHooks: bool,
+  e2eForgeServers: opt(obj({ 'github.com': opt(forgeServerOverride), 'gitlab.com': opt(forgeServerOverride) })),
   git: obj({ available: bool, reason: opt(message), path: opt(filePath), version: opt(obj({ major: int(0, 1_000_000), minor: int(0, 1_000_000), patch: int(0, 1_000_000) })) }),
   paths: obj({
     resourceRoot: filePath,
@@ -1378,10 +1873,12 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     }),
     watchWorker: filePath,
     remoteMirrors: opt(filePath),
+    forge: opt(filePath),
     askpass: obj({ askpass: filePath, sshAskpass: filePath, node: filePath, main: filePath, credentialRelay: opt(obj({ helper: filePath, handle: filePath, nonce: credentialNonce })) }),
   }),
   logs: obj({ dir: filePath, echo: bool }),
   endedCores: arr(obj({ pid: int(1, 2 ** 32), endedAt: int(0, Number.MAX_SAFE_INTEGER) }), MAX_ITEMS),
+  restarted: opt(bool),
   worktreeRecords: rows,
   remote: opt(obj({ hostId: id, agentFolder: opt(filePath) })),
   mirrors: obj({
@@ -1398,7 +1895,8 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     clientEditor: opt(dict(editorMirror, MAX_ID_CHARS, MAX_ITEMS)),
     clientTerminal: opt(dict(terminalMirror, MAX_ID_CHARS, MAX_ITEMS)),
     clientLanguage: opt(dict(MIRROR_TOPICS.language, MAX_ID_CHARS, MAX_ITEMS)),
-    clientMcp: opt(dict(mcpServers, MAX_ID_CHARS, MAX_ITEMS)),
+    clientMcp: opt(dict(clientMcp, MAX_ID_CHARS, MAX_ITEMS)),
+    clientForges: opt(dict(clientForges, MAX_ID_CHARS, MAX_ITEMS)),
     clientNetwork: opt(dict(obj(clientNetworkShape), MAX_PATH_CHARS, MAX_ITEMS)),
   }),
 });

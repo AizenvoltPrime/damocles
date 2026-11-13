@@ -85,7 +85,7 @@ function getLineIndicator(type: DiffLine['type']): string {
 }
 
 watch(
-  () => [props.diff, props.fileName, settingsStore.hostCapabilities.damoclesTheme],
+  [() => props.diff, () => props.fileName, () => settingsStore.hostCapabilities.damoclesTheme],
   highlightLines,
   { immediate: true }
 );

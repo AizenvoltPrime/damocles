@@ -23,6 +23,7 @@ import { useDesignStore } from "./stores/useDesignStore";
 import { provideSendPrompt } from "./composables/useSendPrompt";
 import { useConnectionStore } from "./stores/useConnectionStore";
 import { chatOffline, useChatHost } from "./composables/useChatHost";
+import { renderText } from "./composables/useLocalizedText";
 import { useMcpPanelWrites } from "./composables/useMcpPanelWrites";
 import { CloudOff, LoaderCircle, Users } from "lucide-vue-next";
 import { branchLeaf } from "@/utils/branch-leaf";
@@ -43,6 +44,7 @@ import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
 import AuthFailureBanner from "./components/AuthFailureBanner.vue";
+import ForgeRefusedNotice from "./components/ForgeRefusedNotice.vue";
 import AllowanceUnavailableBanner from "./components/AllowanceUnavailableBanner.vue";
 import McpRenamedRulesBanner from "./components/McpRenamedRulesBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
@@ -121,6 +123,7 @@ import {
 } from "./stores";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useBindPlanStore } from "./stores/useBindPlanStore";
+import { transcriptHasCard, useForgeRefusalStore } from "./stores/useForgeRefusalStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useSubscriptionUsageStore } from "./stores/useSubscriptionUsageStore";
@@ -224,10 +227,17 @@ const {
   pendingPlanApproval,
   isPlanOverlayVisible,
   pendingSkillApproval,
+  approvedStatus,
 } = storeToRefs(permissionStore);
 
 const streamingStore = useStreamingStore();
 const { messages, streamingMessageId } = storeToRefs(streamingStore);
+const forgeRefusalStore = useForgeRefusalStore();
+// A refusal whose shell card this transcript lacks (a nested agent's shell, or none) shows in the dock instead.
+const dockForgeRefusals = computed(() => {
+  if (forgeRefusalStore.refusals.size === 0) return [];
+  return forgeRefusalStore.docked(transcriptHasCard(messages.value));
+});
 const { tool: expandedTool, owner: expandedToolOwner } = useExpandedTool();
 
 const subagentStore = useSubagentStore();
@@ -470,6 +480,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
   if (tryInterceptLocalCommand(content)) return;
 
   postMessage({ type: "sendMessage", content, sessionId: sessionStore.sendTargetSessionId, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
+  permissionStore.clearApprovedStatus();
   followTranscript();
   // Main holds a send while the host is away; no turn starts until it reconnects.
   if (!connectionStore.away) uiStore.setProcessing(true);
@@ -773,6 +784,7 @@ function handlePermissionApproval(
     ? (JSON.parse(JSON.stringify(options.updatedPermissions)) as PermissionUpdate[])
     : undefined;
 
+  const allowedOnce = approved && !updatedPermissions ? permissionStore.pendingPermissions[toolUseId]?.approvedStatus : undefined;
   postMessage({
     type: "approveEdit",
     toolUseId,
@@ -781,6 +793,7 @@ function handlePermissionApproval(
     ...(updatedPermissions ? { updatedPermissions } : {}),
   });
   permissionStore.removePermission(toolUseId);
+  if (allowedOnce) permissionStore.showApprovedStatus(allowedOnce);
 }
 
 function handleQuestionSubmit(answers: Record<string, string>, annotations?: import("@shared/types/permissions").QuestionAnnotations) {
@@ -1102,6 +1115,13 @@ provideSendPrompt(handleSuggestion);
             @open-account="handleOpenAccount"
             @dismiss="uiStore.dismissAuthFailure"
           />
+          <ForgeRefusedNotice
+            v-for="docked in dockForgeRefusals"
+            :key="`forge-refused-${docked.refusal.refused.serverId}-${docked.refusal.refused.reason}`"
+            :refusal="docked.refusal"
+            dismissible
+            @dismiss="forgeRefusalStore.dismiss(docked.toolCallIds)"
+          />
           <McpRenamedRulesBanner
             v-if="mcpRenamedToolRules.length > 0"
             key="mcp-renamed"
@@ -1152,11 +1172,25 @@ provideSendPrompt(handleSuggestion);
               :suggestions="currentPermission.suggestions"
               :blocked-path="currentPermission.blockedPath"
               :decision-reason="currentPermission.decisionReason"
+              :title="currentPermission.title"
+              :subtitle="currentPermission.subtitle"
+              :facts="currentPermission.facts"
+              :content="currentPermission.content"
+              :always-allow-label="currentPermission.alwaysAllowLabel"
               :queue-position="1"
               :queue-total="pendingPermissionCount"
               @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
             />
           </Transition>
+
+          <p
+            v-if="approvedStatus && !currentPermission"
+            role="status"
+            class="rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2 text-xs text-(--d-muted)"
+            data-testid="permission-approved-status"
+          >
+            {{ renderText(approvedStatus) }}
+          </p>
 
           <!-- Question Prompt for AskUserQuestion tool -->
           <Transition name="t-up">

@@ -49,7 +49,8 @@ test('this computer\'s /stats counts a remote chat\'s turns from the session mir
     // the stub model, which runs on prod-1's environment since this computer holds no OpenAI credential
     await tab.getByTestId('composer-model').click();
     const menu = tab.getByTestId('composer-model-menu');
-    await menu.getByTestId('composer-model-option').filter({ hasText: 'GPT-6 Luna' }).click();
+    // under prod-1's environment: this computer's list also names GPT-6 Luna through GitHub Copilot
+    await menu.getByRole('group', { name: "prod-1's environment", exact: true }).getByTestId('composer-model-option').filter({ hasText: 'GPT-6 Luna' }).click();
     await expect(menu).toBeHidden();
     await sendPrompt(tab, 'Count this turn');
     await expect(tab.getByText('Echo: Count this turn', { exact: true })).toBeVisible({ timeout: 60_000 });

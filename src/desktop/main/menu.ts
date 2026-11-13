@@ -252,6 +252,16 @@ export interface MenuActions {
   scmActiveFile(op: ScmActiveFileOp): void;
   // a commit command: the shell commits its draft for the selected repository with the variant
   scmCommit(variant: ScmCommitVariant): void;
+  // Source Control: Choose Account...: the shell opens the selected repository's account chip menu
+  forgeChooseAccount(): void;
+  // Source Control: Show Pipeline: the shell opens the selected repository's CI job list
+  forgeShowPipeline(): void;
+  // Settings: Git Hosting Accounts
+  forgeOpenAccounts(): void;
+  // Git: Open Commit on Server: the selected repository's HEAD on its Git hosting server
+  forgeOpenCommitOnServer(): void;
+  // Git: Clone from Your Repositories...: the clone picker
+  cloneFromAccount(): void;
   // an editor-scoped command the shell runs on the active tab (a Monaco keybinding's palette entry)
   editorCommand(command: EditorCommand): void;
   // Git: Toggle Inline Blame: flips damocles.desktop.git.blame.editorDecoration.enabled in user settings
@@ -345,6 +355,12 @@ export function installApplicationMenu(
       item(MENU_IDS.disconnectHost),
       item(MENU_IDS.forwardPort),
       ...(actions.loopback ? [item(MENU_IDS.openFolderThroughLocalDaemon), item(MENU_IDS.showLocalDaemonLog)] : []),
+      { type: 'separator' },
+      // the Git hosting accounts the selected project uses
+      item(MENU_IDS.forgeChooseAccount),
+      item(MENU_IDS.forgeShowPipeline),
+      item(MENU_IDS.forgeOpenAccounts),
+      item(MENU_IDS.forgeCloneFromAccount),
       { type: 'separator' },
       ...(mac ? [] : [settingsItem, { type: 'separator' as const }]),
       item(MENU_IDS.closeEditor),

@@ -9,9 +9,10 @@ import { startGitHttpServer, type GitHttpServer } from './git-http-server';
 import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer, type CredentialPrompt } from '../askpass/askpass-server';
 import { createGitRunner, GitQueueDisposedError, type GitCall } from '../git-runner';
 import { parseGitVersion } from '../git-version';
-import { GitError, gitErrorText, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../errors';
+import { GitError, gitErrorText, GitUntrustedError, pushFailureKind, RemoteCancelledError, StashKeptError, SyncBranchChangedError, SyncPushError } from '../errors';
 import { PLAIN_VARIANT } from '../scm-service';
 import { SCM_SETTING_KEYS } from '../settings-keys';
+import type { RemoteBranchProtection } from '../../../shared/forge/branch-protection';
 import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, unremovable, useGitSandbox, viewOf, waitFor, write, type Harness } from './git-harness';
 
 /** Remotes, fetch, pull, push, sync and clone against bare repositories and a local git http-backend, with real git. */
@@ -79,6 +80,19 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     await h.service.removeRemote(repoId, 'origin');
     expect((await freshStatus(h, repoId)).remotes).toEqual([]);
     await expect(h.service.removeRemote(repoId, '-x')).rejects.toThrow();
+    h.service.dispose();
+  });
+
+  it('renames a remote with its tracking branch and upstream, and refuses a name that is an option', async () => {
+    const { work } = tracked('rename');
+    const { h, repoId } = await open(work);
+    await h.service.renameRemote(repoId, 'origin', 'upstream-2');
+    expect((await freshStatus(h, repoId)).upstream).toMatchObject({ remote: 'upstream-2', branch: 'main' });
+    expect(git(['for-each-ref', '--format=%(refname)', 'refs/remotes/'], work).split('\n').filter(Boolean)).toContain('refs/remotes/upstream-2/main');
+    await expect(h.service.renameRemote(repoId, 'upstream-2', '--progress')).rejects.toThrow();
+    await expect(h.service.renameRemote(repoId, '-x', 'origin')).rejects.toThrow();
+    await h.service.renameRemote(repoId, 'upstream-2', 'origin');
+    expect((await freshStatus(h, repoId)).remotes).toEqual(['origin']);
     h.service.dispose();
   });
 
@@ -222,6 +236,46 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     h.service.dispose();
   });
 
+  it('asks by the server rules of the upstream remote merged with the setting; rules of another remote and a branch with no upstream ask nothing', async () => {
+    const { work } = tracked('server-protection');
+    const { h, repoId } = await open(work);
+    const QUESTION = 'You are trying to commit to a protected branch. How would you like to proceed?';
+    const server = (remote: string, include: string[], exclude: string[] = []): RemoteBranchProtection[] => [{ remote, rules: [{ include, exclude, syntax: 'fnmatch' }] }];
+    const commit = async (message: string, protectedBranches: readonly RemoteBranchProtection[]): Promise<number> => {
+      write(path.join(work, 'a.txt'), `${message}\n`);
+      git(['add', 'a.txt'], work);
+      const asked = h.questions.length;
+      h.answers.push(1);
+      expect(await h.service.commit(repoId, message, PLAIN_VARIANT, { branchName: async () => undefined, protectedBranches })).toEqual({ ok: true });
+      const questions = h.questions.slice(asked).filter((question) => question.message === QUESTION).length;
+      // an unasked question leaves its answer queued
+      if (questions === 0) h.answers.pop();
+      return questions;
+    };
+
+    expect(await commit('origin protects main', server('origin', ['main']))).toBe(1);
+    expect(await commit('every branch but main', server('origin', ['**/*'], ['main']))).toBe(0);
+    expect(await commit('another remote', server('upstream', ['main']))).toBe(0);
+    expect(await commit('nothing held', [])).toBe(0);
+    h.settings.values.set(SCM_SETTING_KEYS.branchProtection, ['main']);
+    expect(await commit('the setting alone', server('origin', ['release/*']))).toBe(1);
+    h.settings.values.set(SCM_SETTING_KEYS.branchProtection, []);
+
+    // the server protects its own branch name, the upstream's; the setting's globs read the local name
+    git(['checkout', '--quiet', '-b', 'feature', '--track', 'origin/main'], work);
+    await freshStatus(h, repoId);
+    expect(await commit('feature tracks main', server('origin', ['main']))).toBe(1);
+    expect(await commit('the local name on the server', server('origin', ['feature']))).toBe(0);
+    h.settings.values.set(SCM_SETTING_KEYS.branchProtection, ['feature']);
+    expect(await commit('the local name in the setting', [])).toBe(1);
+    h.settings.values.set(SCM_SETTING_KEYS.branchProtection, []);
+
+    git(['checkout', '--quiet', '-b', 'local-only'], work);
+    await freshStatus(h, repoId);
+    expect(await commit('no upstream', server('origin', ['**/*']))).toBe(0);
+    h.service.dispose();
+  });
+
   it('pulls the upstream of the branch checked out when the pull runs, and Sync refuses once the branch is not the one confirmed', async () => {
     const { work, origin } = tracked('fresh-target');
     git(['push', '--quiet', 'origin', 'main:other'], work);
@@ -274,8 +328,10 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     git(['add', '.'], work);
     git(['commit', '--quiet', '-m', 'mine'], work);
     await freshStatus(h, repoId);
-    // git's own push refuses an upstream whose name differs from the branch's (push.default simple)
-    await expect(h.service.sync(repoId, false)).rejects.toBeInstanceOf(GitError);
+    // git's own push refuses an upstream whose name differs from the branch's (push.default simple); Sync names the push stage
+    const failed = await h.service.sync(repoId, false).then(() => undefined, (err: unknown) => err);
+    expect(failed).toBeInstanceOf(SyncPushError);
+    expect((failed as SyncPushError).cause).toBeInstanceOf(GitError);
     expect(h.log.some((line) => /^> git push \[/.test(line))).toBe(true);
     expect(git(['for-each-ref', '--format=%(refname)', 'refs/heads/refs/'], origin).trim()).toBe('');
     h.service.dispose();
@@ -288,7 +344,7 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     const version = parseGitVersion(git(['--version'], sandbox))!;
     const base = createGitRunner({ git: { path: GIT_PATH!, version }, log: { appendLine: () => undefined }, isTrusted: () => true });
     const recording = { ...base, run: (call: GitCall) => (calls.push(call), base.run(call)) };
-    const broken: AskpassServer = { register: () => Promise.reject(new Error('listen ENAMETOOLONG')), relay: async () => undefined, moveRelay: async () => undefined, dispose: async () => undefined };
+    const broken: AskpassServer = { register: () => Promise.reject(new Error('listen ENAMETOOLONG')), registerCredential: () => Promise.reject(new Error('listen ENAMETOOLONG')), relay: async () => undefined, moveRelay: async () => undefined, dispose: async () => undefined };
     const { h, repoId } = await open(work, { runner: recording, askpass: broken });
     await h.service.fetch(repoId, {});
     expect((await freshStatus(h, repoId)).upstream).toMatchObject({ behind: 1 });
@@ -868,6 +924,83 @@ describe.skipIf(!HAS_GIT)('remote operations over http with askpass', { timeout:
     expect(fs.readFileSync(path.join(target, 'child', 'a.txt'), 'utf8')).toBe('one\n');
     expect(h.log.some((line) => line.includes('> git clone --recurse-submodules --'))).toBe(true);
     expect(h.log.every((line) => !line.includes('protocol.file.allow'))).toBe(true);
+    h.service.dispose();
+  });
+});
+
+describe.skipIf(!HAS_GIT)('a new branch pushed only as new', { timeout: 120_000 }, () => {
+  it('creates the branch at HEAD, pushes it with upstream, leaves the local branch as it was, and never updates a branch the remote already has', async () => {
+    const { work, origin } = tracked('create-only');
+    // someone else's branch at the first commit, which a plain push from a later commit would fast-forward
+    git(['push', '--quiet', 'origin', 'main:alex/main'], work);
+    git(['update-ref', '-d', 'refs/remotes/origin/alex/main'], work);
+    write(path.join(work, 'b.txt'), 'b\n');
+    git(['add', 'b.txt'], work);
+    git(['commit', '--quiet', '-m', 'local'], work);
+    const main = git(['rev-parse', 'main'], work).trim();
+    const theirs = git(['rev-parse', 'refs/heads/alex/main'], origin).trim();
+    const { h, repoId } = await open(work);
+    await h.service.createBranch(repoId, 'alex/main', 'HEAD');
+    await expect(h.service.push(repoId, { remote: 'origin', branch: 'alex/main', setUpstream: true, followTags: false, force: false, createOnly: true })).rejects.toThrow(GitError);
+    expect(git(['rev-parse', 'refs/heads/alex/main'], origin).trim()).toBe(theirs);
+
+    await h.service.createBranch(repoId, 'alex/main-2', 'HEAD');
+    await h.service.push(repoId, { remote: 'origin', branch: 'alex/main-2', setUpstream: true, followTags: false, force: false, createOnly: true });
+    expect(git(['rev-parse', 'refs/heads/alex/main-2'], origin).trim()).toBe(main);
+    expect(git(['rev-parse', '--abbrev-ref', 'alex/main-2@{upstream}'], work).trim()).toBe('origin/alex/main-2');
+    expect(git(['rev-parse', 'main'], work).trim()).toBe(main);
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], work).trim()).toBe('alex/main-2');
+    h.service.dispose();
+  });
+
+  it('counts the commits HEAD has that no branch of the named remote holds, whatever the upstream is', async () => {
+    const { work } = tracked('unpushed');
+    const fork = bare('unpushed-fork');
+    git(['remote', 'add', 'fork', fork], work);
+    for (const name of ['b', 'c']) {
+      write(path.join(work, `${name}.txt`), `${name}\n`);
+      git(['add', `${name}.txt`], work);
+      git(['commit', '--quiet', '-m', name], work);
+    }
+    // the fork holds one of the two local commits on another branch; main's upstream stays origin/main
+    git(['push', '--quiet', 'fork', 'HEAD~1:refs/heads/side'], work);
+    const { h, repoId } = await open(work);
+    const repo = h.service.repository(repoId)!.repo;
+    expect(await repo.unpushedCount('origin')).toBe(2);
+    expect(await repo.unpushedCount('fork')).toBe(1);
+    expect(() => repo.unpushedCount('--all')).toThrow('Refused a remote name');
+    h.service.dispose();
+  });
+
+  it('reads core.ignorecase as the repository sets it', async () => {
+    const { work } = tracked('ignorecase');
+    git(['config', 'core.ignorecase', 'true'], work);
+    const { h, repoId } = await open(work);
+    const repo = h.service.repository(repoId)!.repo;
+    expect(await repo.ignoresCase()).toBe(true);
+    git(['config', 'core.ignorecase', 'false'], work);
+    expect(await repo.ignoresCase()).toBe(false);
+    git(['config', '--unset', 'core.ignorecase'], work);
+    expect(await repo.ignoresCase()).toBe(false);
+    h.service.dispose();
+  });
+});
+
+describe.skipIf(!HAS_GIT)('a push a server hook declines', { timeout: 120_000 }, () => {
+  // GitHub's protected-branch refusal (GH006) reaches git as `(protected branch hook declined)`, which only GitHub's own
+  // receive-pack reports; a local pre-receive hook's `(pre-receive hook declined)` is any other hook's refusal
+  it('is read from real git\'s ref status as no protection, never as authorization or a non-fast-forward', async () => {
+    const { work, origin } = tracked('declined');
+    write(path.join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\necho "error: GH006: Protected branch update failed for refs/heads/main." >&2\nexit 1\n');
+    fs.chmodSync(path.join(origin, 'hooks', 'pre-receive'), 0o755);
+    write(path.join(work, 'c.txt'), 'c\n');
+    git(['add', 'c.txt'], work);
+    git(['commit', '--quiet', '-m', 'local'], work);
+    const { h, repoId } = await open(work);
+    const failure = await h.service.push(repoId, { remote: 'origin', branch: 'main', setUpstream: false, followTags: false, force: false }).then(() => undefined, (err: unknown) => err);
+    expect(failure).toBeInstanceOf(GitError);
+    expect((failure as GitError).stderr).toMatch(/! \[remote rejected\] main -> main \(pre-receive hook declined\)/);
+    expect(pushFailureKind(failure)).toBe('other');
     h.service.dispose();
   });
 });

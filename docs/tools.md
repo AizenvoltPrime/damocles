@@ -1,6 +1,6 @@
 # Tools
 
-This page covers the optional tool groups that are not covered elsewhere (web tools and image generation), how deferred tool loading keeps unused tools out of the prompt, and the Tools panel.
+This page covers the optional tool groups that are not covered elsewhere (web tools, image generation, and GitHub and GitLab), how deferred tool loading keeps unused tools out of the prompt, and the Tools panel.
 
 The browser, Compass and MCP tools have their own pages: [Browser](browser.md), [Compass](compass.md) and [MCP servers](mcp.md).
 
@@ -34,9 +34,31 @@ An opt-in `GenerateImage` tool (`damocles.imageGeneration.enabled`, off by defau
 
 It goes through the same permission gate as Write: it asks with the path, the prompt and the model in Default mode, runs without asking in Accept Edits, is blocked in Plan mode, never overwrites a file, and a rewind removes the image. The image appears at its path only once it is complete: any program reading the path sees no file or the whole image, never part of one. The cost OpenRouter billed counts in the status bar, the budget and `/stats`, under the image model. The generated image shows in the tool's overlay. Subagents and team agents do not get the tool.
 
+## GitHub and GitLab (desktop)
+
+With a GitHub or GitLab account signed in (Settings › Models & accounts › Git hosting, see [Git hosting accounts](git-hosting.md)), the agent can read and act on the chat project's repository through that account, instead of `gh`, `glab` or `curl` with git credentials:
+
+| Tool | What it does |
+| --- | --- |
+| ForgePipelines | Lists the newest CI pipelines (GitHub: workflow runs) of the current branch, or of `branch` |
+| ForgeJobs | Lists a pipeline's jobs, the latest attempt of each, up to 10 pages, saying when the list is cut |
+| ForgeJobLog | Reads the last lines of a job's log, 200 at most, colors removed; `section` keeps only the sections whose name holds it. A GitHub job still running answers that its log is published when the job completes |
+| ForgeMergeRequest, ForgeMergeRequests | Read one merge request (GitHub: pull request) with its latest comments (on GitHub its conversation comments, review comments not included), or list them |
+| ForgeIssue, ForgeIssues | Read one issue with its latest comments, or list them |
+| ForgeJobAction | Retries or cancels a job (on GitHub, cancel stops the whole workflow run, and a retry answers the new attempt, or that the rerun was requested while GitHub does not list it yet); asks first |
+| ForgeOpenMergeRequest | Opens a merge or pull request from a pushed branch; asks first. When the remote pushes to your fork on the same server, it opens one from the fork into the repository the remote fetches |
+| ForgeComment | Comments on a merge request, pull request or issue; asks first |
+
+- The group is called `forge`, and the agent loads it with ToolSearch when it needs it. It can be loaded only while an account exists, never in a design chat or by the agents a design chat starts. `damocles.desktop.forge.agentTools` (on by default) switches it off. The Explore and Plan subagents get the read tools; team reviewers and read-only agents get no writes. A subagent or team member started while no account exists has none of the tools.
+- The tools always act on the chat's own repository: its git remotes give the server and the project, and the project's account answers. A remote's fetch address names the project; when that address is on no server Damocles knows, its push address does.
+- A write runs only on what its card showed: when the repository, the account, a branch or the text to send changed after you approved it, nothing is sent and the agent is told to call the tool again. A tool takes at most a remote name (`origin`, `upstream`), numbers and text, never a server address. With `damocles.desktop.forge.agentReadAnyRepository` on (off by default), the read tools may name another repository on the same server; the writes never can.
+- What the server returns is treated as data: secrets in it are redacted, your live tokens masked, hidden characters removed, and the text is marked as coming from the server. A result over 20 KB is cut; in a chat on this computer the full text is in a temporary file the agent can read.
+- When the project has no account on its server, the call fails and the chat shows a notice with Choose account. When a GitHub organization requires single sign-on, or has not approved Damocles, the notice offers to authorize Damocles or to request approval.
+- In a chat on a remote host the tools run on your computer with your accounts, only for that host's projects, and only text comes back: no token reaches the host. They are unavailable while your computer is not connected or while the group is off on it.
+
 ## Deferred tool loading
 
-The browser, Compass, web and MCP tools, and the MCP resource tools (group `mcp_resources`), start registered but **inactive**, so their schemas are not in the prompt on turn one. A conversation that never touches them never pays for them. The resource tools are the one exception to deferral: when a resource server is set to Always loaded, all three are declared from the first turn.
+The browser, Compass, web, GitHub and GitLab, and MCP tools, and the MCP resource tools (group `mcp_resources`), start registered but **inactive**, so their schemas are not in the prompt on turn one. A conversation that never touches them never pays for them. The resource tools are the one exception to deferral: when a resource server is set to Always loaded, all three are declared from the first turn.
 
 The agent loads a group on demand with the always-active `ToolSearch` tool, and the tools are callable from its next step. The menu it reads is built from live workspace configuration, so a subsystem you disable mid-session drops out of it rather than staying advertised.
 
@@ -44,4 +66,4 @@ What this saves depends on your provider: a tool never loaded always costs nothi
 
 ## Tools panel
 
-A status panel lists every agent tool grouped by subsystem (core, memory, compass, browser, web, design), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; memory, compass, browser, web and design tools toggle. It opens from the Tools button in the chat header (in its More menu when the panel is narrow).
+A status panel lists every agent tool grouped by subsystem (core, memory, compass, browser, web, image, GitHub and GitLab on desktop, design), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; the other groups' tools toggle. The GitHub and GitLab group shows as unavailable until an account is signed in; in a chat on a remote host, while Damocles is still reading the accounts of your computer, it says so instead. It opens from the Tools button in the chat header (in its More menu when the panel is narrow).

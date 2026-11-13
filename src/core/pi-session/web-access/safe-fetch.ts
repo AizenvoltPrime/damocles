@@ -2,20 +2,18 @@
  * SSRF-hardened fetch for `WebFetch` (Phase 7, US-028.2). The model — or a fetched page — picks the
  * URLs, so a naive `fetch` is a readable SSRF: a URL pointing at loopback, the LAN, or the cloud
  * metadata endpoint (`169.254.169.254`) would have its body returned to the model. This wrapper applies
- * the OWASP SSRF controls: reject non-http(s) schemes, resolve the host via DNS and reject any answer in
- * a private/loopback/link-local/ULA range (checking the resolved IP, not the literal, so a public
- * hostname that points inward is still caught), and follow redirects manually so every hop is
- * re-validated (a public URL cannot 302 into internal space). `readBodyCapped` enforces the size limit
- * on the body stream itself, since a `Content-Length` header can be absent or lie.
- *
- * Residual gap: between the DNS check and the kernel's own resolution inside `fetch`, a rebinding TTL=0
- * record could flip to a private IP. Pinning the resolved IP would need a custom undici dispatcher;
- * resolve-and-validate is the standard mitigation for the realistic threat here (the model fetching an
- * internal address directly, or a page linking to one).
+ * the OWASP SSRF controls: reject non-http(s) schemes, reject an IP literal in a private/loopback/link-local/ULA
+ * range, resolve a name inside the connection's own lookup and reject it when any answer is in such a range,
+ * connect only to the answers that lookup checked (the hostname stays the Host header, the SNI name and the
+ * certificate's subject), and follow redirects manually so every hop is checked again. `readBodyCapped` enforces
+ * the size limit on the body stream itself, since a `Content-Length` header can be absent or lie.
  */
 
+import type { LookupAddress, LookupOptions } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
+import { Agent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
+import type { AddressResolver, ResolvedAddress } from '../../browser/client-network-policy';
 
 const MAX_REDIRECTS = 5;
 
@@ -72,38 +70,137 @@ export function isBlockedIp(ip: string): boolean {
   return BLOCKED_RANGES.check(ip, version === 6 ? 'ipv6' : 'ipv4');
 }
 
-/**
- * Reject `url` unless it is an http(s) URL whose host resolves only to public addresses. IP literals are
- * checked directly; hostnames are resolved (all records) so a name pointing at a private IP is caught.
- * DNS failure is surfaced (recoverable upstream → Jina); a blocked address throws a `Blocked` error.
- */
-export async function assertPublicUrl(url: URL): Promise<void> {
+// both A and AAAA: every answer is checked
+const resolveAll: AddressResolver = (hostname) => lookup(hostname, { all: true, family: 0 });
+
+/** Refuses a scheme other than http(s) and a blocked IP literal; answers the host without IPv6 brackets. */
+function checkedLiteral(url: URL): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new FetchRefusedError(`Blocked URL scheme: ${url.protocol}`);
   }
-  const host = url.hostname.replace(/^\[/, '').replace(/\]$/, ''); // strip IPv6 brackets
-  if (isIP(host)) {
-    if (isBlockedIp(host)) throw new FetchRefusedError(`Blocked private address: ${host}`);
-    return;
+  const host = url.hostname.replace(/^\[/, '').replace(/\]$/, '');
+  if (isIP(host) && isBlockedIp(host)) throw new FetchRefusedError(`Blocked private address: ${host}`);
+  return host;
+}
+
+/** The answers for `hostname` when none is blocked, in the family asked for; throws a `Blocked` refusal otherwise. */
+function publicAnswers(hostname: string, answers: readonly ResolvedAddress[], family: number): readonly ResolvedAddress[] {
+  if (answers.length === 0) throw new Error(`DNS resolution failed for ${hostname}`);
+  for (const { address } of answers) {
+    if (isBlockedIp(address)) throw new FetchRefusedError(`Blocked private address: ${hostname} → ${address}`);
   }
-  const addresses = await lookup(host, { all: true, family: 0 }); // both A and AAAA — validate every answer
-  if (addresses.length === 0) throw new Error(`DNS resolution failed for ${host}`);
-  for (const { address } of addresses) {
-    if (isBlockedIp(address)) throw new FetchRefusedError(`Blocked private address: ${host} → ${address}`);
-  }
+  const wanted = family === 4 || family === 6 ? answers.filter((answer) => answer.family === family) : answers;
+  if (wanted.length === 0) throw Object.assign(new Error(`DNS resolution found no IPv${family} address for ${hostname}`), { code: 'ENOTFOUND' });
+  return wanted;
 }
 
 /**
- * SSRF-guarded `fetch` that follows redirects manually, re-validating each hop against the private-range
- * blocklist. Validation errors are `FetchRefusedError`s prefixed `Blocked`, so the caller can treat them as non-recoverable.
+ * Reject `url` unless it is an http(s) URL whose host resolves only to public addresses. IP literals are
+ * checked directly; hostnames are resolved (all records) so a name pointing at a private IP is caught.
+ * This checks a name before another party resolves it (a reader service, a proxy); a connection Damocles
+ * makes itself checks at connect time instead (`guardedLookup`).
+ */
+export async function assertPublicUrl(url: URL, resolve: AddressResolver = resolveAll): Promise<void> {
+  const host = checkedLiteral(url);
+  if (isIP(host)) return;
+  publicAnswers(host, await resolve(host), 0);
+}
+
+type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void;
+
+/**
+ * A socket's own lookup: the name resolves once, any blocked answer refuses it, and the socket connects only to the
+ * answers checked here, so a DNS answer that changes between a check and the connection reaches nothing.
+ */
+export function guardedLookup(resolve: AddressResolver = resolveAll): (hostname: string, options: LookupOptions, callback: LookupCallback) => void {
+  return (hostname, options, callback) => {
+    const family = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : (options.family ?? 0);
+    resolve(hostname).then((answers) => publicAnswers(hostname, answers, family)).then(
+      (answers) => {
+        if (options.all === true) callback(null, answers.map(({ address, family: version }) => ({ address, family: version })));
+        else callback(null, answers[0]!.address, answers[0]!.family);
+      },
+      (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), ''),
+    );
+  };
+}
+
+/** How the process reaches an origin through a proxy, or undefined where it connects directly. */
+export type ProxyRoute = (origin: string) => Promise<Dispatcher | undefined>;
+
+let proxyRoute: ProxyRoute | undefined;
+
+/**
+ * Sends the guarded fetch through the process's proxy for an origin that has one; answers the undo. Through a proxy the
+ * guard checks the URL's literal and this computer's DNS answers for its name before the request, but the proxy resolves
+ * the name again itself, so the address it connects to (an intranet or split-horizon answer included) goes unchecked.
+ */
+export function routeGuardedFetchThroughProxies(route: ProxyRoute): () => void {
+  proxyRoute = route;
+  return () => {
+    if (proxyRoute === route) proxyRoute = undefined;
+  };
+}
+
+/** A fetch the host's own network stack makes, with its own proxy resolution. */
+export type HostFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+let hostFetch: HostFetch | undefined;
+
+/**
+ * Sends every guarded fetch through the host's own fetch (VS Code's, which resolves system, PAC and `http.proxy` proxies
+ * and offers extensions no per-URL proxy lookup); answers the undo. The guard then checks the URL's literal and this
+ * computer's DNS answers before each hop, and the host's connection resolves the name again, so it cannot pin the address.
+ */
+export function connectGuardedFetchThroughHost(fetch: HostFetch): () => void {
+  hostFetch = fetch;
+  return () => {
+    if (hostFetch === fetch) hostFetch = undefined;
+  };
+}
+
+/** The guard's refusal behind a failed fetch (undici wraps a connect error as `cause`), else undefined. */
+function refusalIn(err: unknown): FetchRefusedError | undefined {
+  for (let current: unknown = err, depth = 0; current instanceof Error && depth < 4; current = current.cause, depth++) {
+    if (current instanceof FetchRefusedError) return current;
+  }
+  return undefined;
+}
+
+export type GuardedFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+/** A fetch of one hop that connects only to public addresses: the literal is checked first, a name in `guardedLookup`. */
+export function createGuardedFetch(resolve: AddressResolver = resolveAll): GuardedFetch {
+  const direct = new Agent({ connect: { lookup: guardedLookup(resolve) } });
+  return async (url, init) => {
+    const target = new URL(url);
+    checkedLiteral(target);
+    if (hostFetch) {
+      await assertPublicUrl(target, resolve);
+      return hostFetch(url, init);
+    }
+    const proxy = await proxyRoute?.(target.origin);
+    if (proxy) await assertPublicUrl(target, resolve);
+    try {
+      return (await undiciFetch(url, { ...(init as unknown as UndiciRequestInit), dispatcher: proxy ?? direct })) as unknown as Response;
+    } catch (err) {
+      throw refusalIn(err) ?? err;
+    }
+  };
+}
+
+export const guardedFetch: GuardedFetch = createGuardedFetch();
+
+/**
+ * SSRF-guarded `fetch` that follows redirects manually, checking each hop through `guardedFetch`. Validation errors are
+ * `FetchRefusedError`s prefixed `Blocked`, so the caller can treat them as non-recoverable.
  */
 export async function safeFetch(initialUrl: string, init: RequestInit, options: SafeFetchOptions = {}): Promise<Response> {
   let current = initialUrl;
   for (let hop = 0; ; hop++) {
     const url = new URL(current);
     if (options.httpsOnly && url.protocol !== 'https:') throw new FetchRefusedError(`Blocked URL scheme: ${url.protocol} (only https is fetched)`);
-    await assertPublicUrl(url);
-    const response = await fetch(current, { ...init, redirect: 'manual' });
+    const response = await guardedFetch(current, { ...init, redirect: 'manual' });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (!location) return response;

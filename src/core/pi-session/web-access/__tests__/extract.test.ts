@@ -14,6 +14,7 @@ vi.mock('unpdf', () => ({ getDocumentProxy: getDocumentProxyMock }));
 
 // Keep the SSRF guard's DNS resolution hermetic and per-test controllable.
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }));
+vi.mock('undici', async (importOriginal) => (await import('./support/undici-through-global-fetch')).undiciThroughGlobalFetch(await importOriginal()));
 
 import { extractUrl, extractUrls } from '../extract';
 

@@ -19,6 +19,7 @@ import { englishText } from '../../../shared/localized-text';
 let host: OverlayHost | undefined;
 let lines: string[];
 let notices: Array<[string, string, readonly string[]]>;
+let windowFocused: boolean;
 const parent = { id: 'window' };
 
 function newHost(): OverlayHost {
@@ -64,6 +65,7 @@ function service(): ReturnType<typeof createDesktopNotificationService> {
     ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
     t: (message) => message,
     log: () => undefined,
+    windowFocused: () => windowFocused,
   });
 }
 
@@ -72,6 +74,7 @@ beforeEach(() => {
   host = newHost();
   lines = [];
   notices = [];
+  windowFocused = false;
   H.showMessageBox.mockReset();
 });
 
@@ -85,6 +88,15 @@ describe('desktop notifications', () => {
     await expect(service().warn('Reload?', 'Reload', 'Later')).resolves.toBe('Reload');
     expect(notices).toEqual([['warning', 'Reload?', ['Reload', 'Later']]]);
     expect(H.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('raises an unlessFocused notice only while the main window is unfocused, answering undefined at once while it is focused', async () => {
+    windowFocused = true;
+    await expect(service().warn("The agent's git was refused.", { unlessFocused: true }, 'Choose account')).resolves.toBeUndefined();
+    expect(notices).toEqual([]);
+    windowFocused = false;
+    await expect(service().warn("The agent's git was refused.", { unlessFocused: true }, 'Choose account')).resolves.toBe('Choose account');
+    expect(notices).toEqual([['warning', "The agent's git was refused.", ['Choose account']]]);
   });
 
   it('answers a notice with actions from its popup while the main window is focused, and the overlay page never gets it', async () => {
@@ -115,6 +127,7 @@ describe('desktop notifications', () => {
       ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
       t: (message) => message,
       log: () => undefined,
+      windowFocused: () => false,
     });
     const answer = notifications.warn('Reload the window to apply the change?', 'Reload', 'Later');
     expect(popup.map((toast) => toast.body)).toEqual([{ kind: 'notice', severity: 'warning', message: 'Reload the window to apply the change?', actions: ['Reload', 'Later'] }]);
@@ -152,6 +165,7 @@ describe('desktop notifications', () => {
       ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
       t: (message) => message,
       log: () => undefined,
+      windowFocused: () => false,
     });
     // two English labels that share one translation in main's language
     const core = localizedNotifications(notifications, (text) => (text.message === 'Open' || text.message === 'Show' ? 'Άνοιγμα' : text.message));

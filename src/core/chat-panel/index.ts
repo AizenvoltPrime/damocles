@@ -4,6 +4,8 @@ import type { PanelHost } from "../../platform/window-service";
 import type { ChatPermissions } from "../permission-handler";
 import type { DesignPanels } from "../design/tools/start-design";
 import * as path from "path";
+import { randomUUID } from "node:crypto";
+import { foreignRefusalKey, openRefusalOrgPage, raiseForgeRefusal, type ForgeShellRefused } from "./message-router/handlers/forge-refused-handlers";
 import { PanelManager } from "./panel-manager";
 import { onListingChange, StorageManager } from "./storage-manager";
 import { createSessionCatalog, type SessionCatalog } from "./session-catalog";
@@ -50,13 +52,19 @@ import { allJsonConfigWritesSettled } from "../config/json-config-write";
 import { installWorktreeProjectLookup } from "../worktrees/personal-config";
 import { openAppSettingsFor } from "./open-app-settings";
 import { openTranscriptView } from "./transcript-view";
-import { asClient, clientPrefersApiKey } from "../client-snapshots";
+import { asClient, clientPrefersApiKey, currentPin } from "../client-snapshots";
 import { deviceHost, forEachDevice, hostForChange } from "./device-hosts";
 import { relayedServerDescriptors, remoteAvailableNames, runRelayedMcpRequest, type RelayedMcpExposure, type RelayedMcpRequest } from "../pi-session/mcp/relayed-mcp";
 import { MCP_REMOTE_AVAILABLE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, RELAYABLE_SOURCES } from "../../shared/types/mcp";
 import { toolExposureLayers } from "../pi-session/mcp/exposure";
 import type { RelayedMcpServer } from "../../shared/remote-user";
 import type { SettingsChange } from "../../platform/settings-store";
+import type { ForgeService, RecordedRefusal } from "../forge";
+import type { ChatRepository, ForgeDescribeAnswer, ForgeToolAnswer, ForgeToolRequest } from "../../shared/forge/tools";
+import type { ForgeCall, ForgeToolsPort } from "../pi-session/tools/forge-tools";
+import { relayedForgeTools } from "../pi-session/tools/forge-relay";
+import { localForgeTools } from "./forge-tools-port";
+import { setLocalForgeAccounts, userScopeReach } from "../user-scope";
 import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING } from "../../shared/types/tools";
 import { IMAGE_MODEL_SETTING, IMAGE_SETTINGS_SECTION } from "../pi-session/tools/image-tool-specs";
 
@@ -72,14 +80,40 @@ export function flushCoreWrites(): Promise<void> {
   return allJsonConfigWritesSettled();
 }
 
+/** The refused notice a GitHub or GitLab tool's answer carries, under that call's card; canBind: the refusal recorded a project. */
+function forgeRefusedMessage(call: ForgeCall, answer: ForgeToolAnswer & { readonly refusal: NonNullable<ForgeToolAnswer["refusal"]> }, canBind: boolean): ForgeShellRefused {
+  const { refusal } = answer;
+  return {
+    type: "forgeShellRefused",
+    toolCallId: call.toolCallId,
+    serverId: refusal.serverId,
+    serverLabel: refusal.serverLabel,
+    project: refusal.project,
+    canBind,
+    account: refusal.account,
+    reason: refusal.reason,
+    tool: call.tool,
+    ...(refusal.org ? { org: refusal.org } : {}),
+  };
+}
+
 /** What the host supplies beyond the platform. */
 export interface ChatPanelHostDeps {
   /** Disposed when the extension deactivates. */
   subscriptions: Disposable[];
   createCompassViews: (options: CompassViewsOptions) => CompassViewsHandle;
+  /** Git hosting accounts: only this computer's desktop core runs them. */
+  forge?: ForgeService;
+  /** A desktop core's reader of a chat's repository for the GitHub and GitLab tools; absent: chats have none. */
+  forgeRepositories?: (folder: string) => Promise<ChatRepository>;
 }
 
 export class ChatPanelProvider {
+  private readonly hostDeps: ChatPanelHostDeps;
+  // the remote chat views this core holds a proxy for, which hear this computer's Git hosting accounts
+  private readonly foreignViews = new Map<string, PanelHost>();
+  // whether the GitHub and GitLab group was loadable at the last account change on this computer's core
+  private forgeLoadable = false;
   private readonly panelManager: PanelManager;
   private readonly storageManager: StorageManager;
   private readonly sessionCatalog: SessionCatalog;
@@ -107,6 +141,7 @@ export class ChatPanelProvider {
   private readonly accountReads = new Map<string, number>();
 
   constructor(platform: PlatformWithWorktrees, hostDeps: ChatPanelHostDeps) {
+    this.hostDeps = hostDeps;
     this.subscriptions = hostDeps.subscriptions;
     this.platform = platform;
     this.folderRegistry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace, platform.fileWatchers);
@@ -185,6 +220,8 @@ export class ChatPanelProvider {
         if (change.topic === "clientAuth" && !PiRuntime.observesClientAuth) this.accountInputsChanged("nothing");
         // once the runtime observes it, it republishes each acting client change (`onActingClientChanged`)
         if (change.topic === "actingClient" && !PiRuntime.observesActingClient) this.accountInputsChanged("nothing");
+        // the GitHub and GitLab group is loadable only while the device the chat's tools run on has an account
+        if (change.topic === "clientForges") this.forgeAccountsChanged();
         // a host's Allow YOLO switch changed on that client: its views show or hide the YOLO control at once
         if (change.topic === "clientPolicy" && change.clientId !== undefined) {
           const clientId = change.clientId;
@@ -229,6 +266,40 @@ export class ChatPanelProvider {
     this.subscriptions.push({ dispose: stopSyncUpdates });
     // The one publisher of a tool switch change, whichever writer made it: a chat, Settings, a hand edit, another window.
     this.subscriptions.push(platform.settings.onDidChange("damocles", (change) => this.toolSettingsChanged(change)));
+    // the Tools panel's status follows the Git hosting accounts too
+    if (hostDeps.forge) this.subscriptions.push(hostDeps.forge.onChange(() => this.forgeAccountsChanged()));
+    // a remote chat's refused notice lists this computer's accounts, so its view hears them as a local chat does
+    if (hostDeps.forge) {
+      this.subscriptions.push(hostDeps.forge.onMessage((message) => {
+        if (message.type !== "forgeAccountsChanged") return;
+        for (const host of this.foreignViews.values()) void host.postMessage(message);
+      }));
+    }
+    // the refused notice, in the chat whose agent shell git ran in
+    if (hostDeps.forge) {
+      const forge = hostDeps.forge;
+      setLocalForgeAccounts(() => forge.hasAccount());
+      this.subscriptions.push(forge.onShellRefused((refusal) => {
+        const instance = this.panelManager.getPanels().get(refusal.origin.panelId);
+        if (!instance) {
+          log(`[forge] an agent shell's refusal for ${refusal.server.id} names a chat that is gone`);
+          return;
+        }
+        const toolCallId = refusal.origin.toolCallId ?? `forge-refused-${randomUUID()}`;
+        const state = forge.state();
+        const summary = refusal.account ? state.accounts.find((account) => account.id === refusal.account!.id) : undefined;
+        this.showForgeRefusal(forge, refusal.origin.panelId, {
+          type: "forgeShellRefused",
+          toolCallId,
+          serverId: refusal.server.id,
+          serverLabel: refusal.server.id,
+          project: refusal.projectLabel,
+          canBind: refusal.projectKey !== undefined,
+          account: refusal.account ? { id: refusal.account.id, login: refusal.account.login, ...(summary?.avatarKey !== undefined && state.showAvatars ? { avatarKey: summary.avatarKey } : {}) } : null,
+          reason: refusal.reason,
+        }, { serverId: refusal.server.id, ...(refusal.projectKey !== undefined ? { projectKey: refusal.projectKey } : {}), ...(refusal.account ? { accountId: refusal.account.id } : {}) });
+      }));
+    }
     // the judge status reads no picker setting, so this tells it nothing
     this.subscriptions.push(platform.settings.onDidChange(MODEL_PICKER_SETTING, (change) => publishPanelsAccountInfo(() => this.panelManager.getPanels(), change.clientId)));
     this.subscriptions.push(platform.settings.onDidChange("damocles.memory", (change) => {
@@ -312,6 +383,7 @@ export class ChatPanelProvider {
       getRawBrowserService: () => this.browserService,
       getCompassService: (folderKey) => this.startCompassFor(folderKey),
       onAssistantTextFinal: (text, panelId) => this.dispatchTtsForReply(text, panelId),
+      forgeTools: (panelId, host) => this.forgeToolsFor(panelId, host),
       platform: this.platform,
     });
 
@@ -347,6 +419,7 @@ export class ChatPanelProvider {
       withViewGate: (host, joining, run) => this.panelManager.withViewGate(host, joining, run),
       worktrees: () => this.panelManager.worktrees,
       broadcastAccountState: (what, row, read) => this.broadcastAccountState(what, row, read),
+      ...(hostDeps.forge ? { forge: hostDeps.forge } : {}),
     });
 
     this.panelManager = new PanelManager({
@@ -691,6 +764,74 @@ export class ChatPanelProvider {
     }
   }
 
+  /** Records a refusal for its notice's actions, gives the chat the accounts its menu lists, posts it and raises its toast. */
+  private showForgeRefusal(forge: ForgeService, panelId: string, refused: ForgeShellRefused, recorded: RecordedRefusal): void {
+    const instance = this.panelManager.getPanels().get(panelId);
+    if (!instance) {
+      log(`[forge] a refusal for ${refused.serverId} names a chat that is gone`);
+      return;
+    }
+    forge.recordRefusal(panelId, refused.toolCallId, recorded, new Set(this.panelManager.getPanels().keys()));
+    // the notice's menu reads the accounts, which a chat view may not hold yet
+    forge.publish((message) => this.panelManager.postMessage(instance.host, message));
+    this.panelManager.postMessage(instance.host, refused);
+    void raiseForgeRefusal(this.platform, (host, message) => this.panelManager.postMessage(host, message), instance.host, refused, () => openRefusalOrgPage(forge, recorded));
+  }
+
+  /**
+   * A chat's GitHub and GitLab tools: this computer's core runs them with its own accounts; a daemon's core relays them to the
+   * device the turn is pinned to. Undefined without a desktop core's repository reader, or on this computer without accounts.
+   */
+  private forgeToolsFor(panelId: string, host: PanelHost): ((folder: () => string) => ForgeToolsPort) | undefined {
+    const repository = this.hostDeps.forgeRepositories;
+    if (!repository) return undefined;
+    const remote = this.platform.remote;
+    if (remote) {
+      return (folder) => relayedForgeTools({
+        remote,
+        chat: host,
+        folder,
+        repository,
+        refused: (call, answer) => {
+          // the refusal names the pinned device's account, so only that device's views show it; that device's main maps the
+          // folder to one of the host's projects before its core runs the call, so its core records a project to bind
+          if (answer.refusal) this.panelManager.postMessage(deviceHost(host, currentPin(remote).clientId), forgeRefusedMessage(call, { ...answer, refusal: answer.refusal }, true));
+        },
+      });
+    }
+    const forge = this.hostDeps.forge;
+    if (!forge) return undefined;
+    return (folder) => localForgeTools({
+      forge,
+      repository,
+      refused: (call, answer, projectKey) => {
+        const refusal = answer.refusal;
+        if (!refusal) return;
+        this.showForgeRefusal(forge, panelId, forgeRefusedMessage(call, { ...answer, refusal }, projectKey !== undefined), {
+          serverId: refusal.serverId,
+          ...(projectKey !== undefined ? { projectKey } : {}),
+          ...(refusal.account ? { accountId: refusal.account.id } : {}),
+          ...(refusal.org ? { org: refusal.org.name } : {}),
+        });
+      },
+    }, folder);
+  }
+
+  /**
+   * The Git hosting accounts changed: every panel gets one `toolStatus`, and when the GitHub and GitLab group became
+   * loadable or stopped being so its tools are applied again, which republishes the ToolSearch menu. On a daemon's core
+   * whether it is loadable depends on each turn's pinned device, so every clientForges change applies them again.
+   */
+  private forgeAccountsChanged(): void {
+    const loadable = userScopeReach().forge;
+    const reapply = this.platform.remote !== undefined || loadable !== this.forgeLoadable;
+    this.forgeLoadable = loadable;
+    for (const [, instance] of this.panelManager.getPanels()) {
+      if (reapply) instance.session.refreshActiveTools();
+      this.settingsManager.sendToolStatus(instance.session, instance.host);
+    }
+  }
+
   /** clientId: on a daemon's core, the one device whose views alone need it. */
   private broadcastMemoryJudge(clientId?: string): void {
     void this.broadcastAccountState("the memory judge status", "memoryJudge", () => memoryJudgeStatus(this.platform), clientId);
@@ -788,9 +929,67 @@ export class ChatPanelProvider {
     await this.voiceService.speakReply(trimmed, viewId);
   }
 
-  /** A remote chat view's voice message, run on this computer's voice service with replies posted to its foreign proxy. */
-  dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage): Promise<void> {
-    return this.messageRouter.dispatchForeign(host, message);
+  /** A remote chat view's message (FOREIGN_VIEW_MESSAGES), run on this computer's core with replies posted to its foreign proxy. */
+  dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage, viewId: string): Promise<void> {
+    return this.messageRouter.dispatchForeign(host, message, viewId);
+  }
+
+  /** A remote chat's view now has a proxy here: it gets this computer's Git hosting accounts, which its refused notice lists. */
+  foreignViewAttached(viewId: string, host: PanelHost): void {
+    const forge = this.hostDeps.forge;
+    if (!forge) return;
+    this.foreignViews.set(viewId, host);
+    forge.publish((message) => void host.postMessage(message));
+  }
+
+  foreignViewDetached(viewId: string): void {
+    this.foreignViews.delete(viewId);
+  }
+
+  /**
+   * A remote chat's GitHub or GitLab call on this computer's accounts (user.forge.*, after main checked its folder). A refusal
+   * is recorded under the chat's view, whose notice's actions reach this core as foreign view messages.
+   */
+  async relayedForgeTool(params: { readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string }, signal: AbortSignal): Promise<ForgeToolAnswer> {
+    const forge = this.requireForge();
+    const answer = await forge.agentTool(params.request, signal);
+    this.recordForeignRefusal(forge, params, answer);
+    return answer;
+  }
+
+  async relayedForgeDescribe(params: { readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string; readonly approval: boolean }, signal: AbortSignal): Promise<ForgeDescribeAnswer> {
+    const forge = this.requireForge();
+    if (params.approval) {
+      const approval = await forge.agentToolApproval(params.request, signal);
+      if (!approval.ok) {
+        this.recordForeignRefusal(forge, params, approval.answer);
+        return approval;
+      }
+      return { ok: true, project: approval.project, target: approval.target, detail: approval.detail, suggestion: approval.suggestion };
+    }
+    const target = await forge.agentToolTarget(params.request, signal);
+    if (!target.ok) this.recordForeignRefusal(forge, params, target.answer);
+    return target;
+  }
+
+  private requireForge(): ForgeService {
+    const forge = this.hostDeps.forge;
+    if (!forge) throw new Error("GitHub and GitLab tools run only in this computer's desktop core");
+    return forge;
+  }
+
+  private recordForeignRefusal(forge: ForgeService, params: { readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string }, answer: ForgeToolAnswer): void {
+    const refusal = answer.refusal;
+    if (!refusal || params.viewId === undefined) return;
+    const live = new Set([...this.panelManager.getPanels().keys(), ...[...this.foreignViews.keys()].map(foreignRefusalKey)]);
+    forge.recordRefusal(foreignRefusalKey(params.viewId), params.toolCallId, {
+      serverId: refusal.serverId,
+      ...(params.request.projectKey !== undefined ? { projectKey: params.request.projectKey } : {}),
+      ...(refusal.account ? { accountId: refusal.account.id } : {}),
+      ...(refusal.org ? { org: refusal.org.name } : {}),
+    }, live);
+    const host = this.foreignViews.get(params.viewId);
+    if (host) forge.publish((message) => void host.postMessage(message));
   }
 
   private noticeReplyNotSpoken(reason: LocalizedText, panelId: string): void {

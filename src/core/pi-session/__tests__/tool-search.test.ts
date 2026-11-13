@@ -22,6 +22,8 @@ import { COMPASS_PI_TOOL_NAMES, COMPASS_TOOL_CATALOG } from '../tools/compass-to
 // this file's universe is built from the identical source the shipped group composes.
 import { WEB_PI_TOOL_NAMES, WEB_TOOL_CATALOG } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES, IMAGE_TOOL_CATALOG } from '../tools/image-tool-specs';
+import { FORGE_PI_TOOL_NAMES, FORGE_TOOL_GUIDANCE } from '../tools/forge-tool-specs';
+import { setLocalForgeAccounts } from '../../user-scope';
 import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 /** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
@@ -280,12 +282,13 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
     expect(byGroup.compass).toEqual(COMPASS_PI_TOOL_NAMES);
     expect(byGroup.web).toEqual(WEB_PI_TOOL_NAMES);
     expect(byGroup.image).toEqual(IMAGE_PI_TOOL_NAMES);
+    expect(byGroup.forge).toEqual(FORGE_PI_TOOL_NAMES);
     expect(byGroup.mcp_resources).toEqual(MCP_RESOURCE_TOOL_NAMES);
     // Pinned because it is the order the model reads. The claim is narrow: `web` comes after `browser`,
     // `image` after `web`, and `mcp_resources` comes last. NOT "mirrors `FULL_TOOL_CATALOG`" — that runs
     // compass → browser → web → image and already disagrees. A new group needs a deliberate position and
     // a deliberate edit here.
-    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web', 'image', 'mcp_resources']);
+    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web', 'image', 'forge', 'mcp_resources']);
   });
 
   it('defers the resource tools only when the caller passes them, since an Always-loaded resource server makes them direct', () => {
@@ -415,6 +418,13 @@ describe('deferred-tools.ts import discipline', () => {
     for (const spec of imports) expect(spec, `${spec} is not a leaf name module`).toMatch(LEAF_NAME_MODULE);
   });
 
+  it('forge-tool-specs.ts imports only typebox, types and the leaf tool-names module, never the tool bodies', async () => {
+    const { readFile } = await import('fs/promises');
+    const source = await readFile(new URL('../tools/forge-tool-specs.ts', import.meta.url), 'utf8');
+    const runtime = [...source.matchAll(/^import (?!type )[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]!);
+    expect(runtime.sort()).toEqual(['../../../shared/tool-names', 'typebox']);
+  });
+
   it('still REJECTS the web-access barrel — the widening admits declaration leaves, not convenience', () => {
     // A guard that admits everything is a retired guard, and the widening above is precisely the kind of
     // edit that retires one by accident. So the rejection is asserted directly rather than left implied
@@ -428,7 +438,7 @@ describe('deferred-tools.ts import discipline', () => {
     // specs leaf. Neither buys it anything, so it must fail exactly as the barrel does.
     expect('../web-access/web-tools').not.toMatch(LEAF_NAME_MODULE);
     // …while the specifiers the module legitimately uses all pass.
-    for (const spec of ['./browser-tools', './compass-tools', '../web-access/web-tool-specs', './image-tool-specs', '../../../shared/tool-names']) {
+    for (const spec of ['./browser-tools', './compass-tools', '../web-access/web-tool-specs', './image-tool-specs', './forge-tool-specs', '../../../shared/tool-names']) {
       expect(spec, spec).toMatch(LEAF_NAME_MODULE);
     }
   });
@@ -496,6 +506,23 @@ describe('createToolSearchTool — execute', () => {
     expect([...activate.mock.calls[0]![1]].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
     expect(activate.mock.calls[0]![0]).toBe('sess-1');
     expect(result.details?.matches).toHaveLength(BROWSER_PI_TOOL_NAMES.length);
+  });
+
+  it('names the design-chat rule for the GitHub and GitLab tools in a design chat, with an account or without', async () => {
+    const design = (): DeferrableSnapshot => snapshot({ names: ALL_DEFERRABLE.filter((name) => !FORGE_PI_TOOL_NAMES.includes(name)), design: true });
+    for (const hasAccount of [false, true]) {
+      setLocalForgeAccounts(() => hasAccount);
+      try {
+        const { text, activate } = await run(['forge', 'ForgeIssues'], design());
+        expect(text, String(hasAccount)).toContain('Not available: forge, ForgeIssues. A design chat cannot use the GitHub and GitLab tools.');
+        expect(text).not.toContain('No GitHub or GitLab account');
+        expect(text).not.toContain('Not available in this session');
+        expect(text).not.toContain('Unknown entries');
+        expect(activate).not.toHaveBeenCalled();
+      } finally {
+        setLocalForgeAccounts(() => false);
+      }
+    }
   });
 
   it('activates exactly one tool for an exact name', async () => {
@@ -675,6 +702,13 @@ describe('createToolSearchTool — the description is a live getter, not a captu
     expect(preserved.description).toContain('mcp__ctx7__docs');
   });
 
+  it('the forge group line carries its guidance verbatim, and no other line does', () => {
+    const description = createToolSearchTool(inventoryPort(() => ({ names: [...FORGE_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES] }))).description;
+    expect(description).toContain(`forge (${FORGE_PI_TOOL_NAMES.length}) — GitHub and GitLab through your signed-in accounts: CI pipelines and job logs, merge and pull requests, issues for this project. Use these instead of gh, glab or curl with git credentials. Never run gh auth login or glab auth login.: ${FORGE_PI_TOOL_NAMES.join(', ')}`);
+    expect(description.split(FORGE_TOOL_GUIDANCE)).toHaveLength(2);
+    expect(description).toContain(`browser (${BROWSER_PI_TOOL_NAMES.length}): `);
+  });
+
   it('lists every built-in group when the port reports no inventory', () => {
     // Fail-open: an over-broad menu is recoverable (`execute` reports an unloadable group as inert),
     // while hiding a tool the model can then never discover is not.
@@ -768,7 +802,7 @@ describe('ToolSearch tool definition — shape', () => {
     // becoming "derived into unreadable prose".
     const blurb = (tool.parameters as unknown as { properties: { tools: { description: string } } }).properties.tools.description;
     for (const g of BUILTIN_DEFERRED_GROUPS) expect(blurb, g.group).toContain(g.group);
-    expect(blurb).toBe('Group names (browser, compass, web, image, mcp_resources, an MCP server name listed in the description) and/or exact tool names to load.');
+    expect(blurb).toBe('Group names (browser, compass, web, image, forge, mcp_resources, an MCP server name listed in the description) and/or exact tool names to load.');
   });
 
   /**

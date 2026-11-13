@@ -18,6 +18,8 @@ const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'";
 const PANEL_PAGE = /^\/panel\/([A-Za-z0-9-]+)\/index\.html$/;
 const PANEL_ID = /^[A-Za-z0-9-]+$/;
 const SHELL_PAGE = '/shell/index.html';
+// an account picture of this computer's core (main/forge/avatar-cache.ts); the key is core's SHA-256 hex
+const FORGE_AVATAR = /^\/forge\/avatar\/([0-9a-f]{64})$/;
 const OVERLAY_PAGE = '/overlay/index.html';
 
 // The window's own page; main generates it per request with a fresh script nonce.
@@ -53,13 +55,16 @@ export type AppRequestTarget =
   | { readonly kind: 'panel'; readonly panelId: string }
   | { readonly kind: 'shell' }
   | { readonly kind: 'overlay' }
-  | { readonly kind: 'notifier' };
+  | { readonly kind: 'notifier' }
+  | { readonly kind: 'forgeAvatar'; readonly key: string };
 
 export interface AppPages {
   panel(panelId: string): string | undefined;
   shell(): string;
   overlay(): string;
   notifier(): string;
+  /** A Git hosting account picture; undefined for a key this computer's core does not list. */
+  forgeAvatar(key: string): Promise<{ readonly bytes: Uint8Array; readonly mime: string } | undefined>;
 }
 
 export function isPanelId(panelId: string): boolean {
@@ -96,6 +101,8 @@ export function resolveAppRequest(url: string, resourceRoot: string): AppRequest
   if (pathname === SHELL_PAGE) return { kind: 'shell' };
   if (pathname === OVERLAY_PAGE) return { kind: 'overlay' };
   if (pathname === NOTIFIER_PAGE_PATH) return { kind: 'notifier' };
+  const avatar = FORGE_AVATAR.exec(pathname);
+  if (avatar?.[1] !== undefined) return { kind: 'forgeAvatar', key: avatar[1] };
 
   const file = SERVED_FILES.get(pathname);
   if (file) return { kind: 'file', root: resourceRoot, filePath: path.join(resourceRoot, ...file) };
@@ -159,6 +166,21 @@ function htmlPage(html: string): Response {
   return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' } });
 }
 
+async function serveAvatar(pages: AppPages, key: string): Promise<Response> {
+  let image: { readonly bytes: Uint8Array; readonly mime: string } | undefined;
+  try {
+    image = await pages.forgeAvatar(key);
+  } catch {
+    // core logged the failed fetch; the renderer keeps showing the initial
+    return notFound();
+  }
+  if (!image) return notFound();
+  return new Response(new Uint8Array(image.bytes), {
+    status: 200,
+    headers: { 'content-type': image.mime, 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'", 'cache-control': 'no-store' },
+  });
+}
+
 export function handleAppProtocol(resourceRoot: string, pages: AppPages): void {
   protocol.handle(APP_SCHEME, async (request) => {
     if (request.method !== 'GET') return notFound();
@@ -167,6 +189,7 @@ export function handleAppProtocol(resourceRoot: string, pages: AppPages): void {
     if (target.kind === 'shell') return htmlPage(pages.shell());
     if (target.kind === 'overlay') return htmlPage(pages.overlay());
     if (target.kind === 'notifier') return htmlPage(pages.notifier());
+    if (target.kind === 'forgeAvatar') return serveAvatar(pages, target.key);
     if (target.kind === 'panel') {
       const html = pages.panel(target.panelId);
       return html === undefined ? notFound() : htmlPage(html);

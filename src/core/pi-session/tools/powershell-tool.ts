@@ -11,6 +11,8 @@ import { withUrlWatch } from './shell-url-watch';
 import { processLauncher, type SessionJob } from '../../process-launcher';
 import { findPwsh, windowsPowerShell } from '../../system-tools';
 import type { PowerShellSearch } from '../proven-shell';
+import { withEnvOverrides } from '../../../shared/env-spellings';
+import { currentShellLease, withShellCredentials, type ShellCredentialLease, type ShellCredentials } from './shell-credentials';
 
 /** Without it PowerShell writes the console codepage and any non-ASCII output decodes as mojibake. */
 const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
@@ -59,6 +61,7 @@ interface ExecOnceOptions {
   timeout: number | undefined;
   timeoutMs: number | undefined;
   env: NodeJS.ProcessEnv;
+  lease: ShellCredentialLease | undefined;
 }
 
 /**
@@ -72,7 +75,7 @@ async function execOnce(
   options: ExecOnceOptions,
   shellJob: SessionJob | undefined,
 ): Promise<{ exitCode: number | null } | { startError: Error }> {
-  const { onData, signal, timeout, timeoutMs, env } = options;
+  const { onData, signal, timeout, timeoutMs, env, lease } = options;
   const shell = processLauncher().launch({
     file: exe,
     args: [...POWERSHELL_ARGS, command],
@@ -83,10 +86,15 @@ async function execOnce(
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
     exitOutputIdleMs: SHELL_EXIT_OUTPUT_GRACE_MS,
+    ...(lease ? { reportsLeftRunning: true } : {}),
     ...(shellJob ? { job: shellJob.id } : {}),
   });
 
   const started = shell.pid.then(() => true, () => false);
+  // only a started shell takes the lease over: one that never started leaves it to the next candidate
+  void started.then((ok) => {
+    if (ok) lease?.heldBy(shell);
+  });
   let timedOut = false;
   let timeoutHandle: NodeJS.Timeout | undefined;
   // Once the shell has exited, a tree kill would reach the jobs it deliberately left running.
@@ -142,8 +150,8 @@ async function execOnce(
 export function createTrackedPowerShellOperations(shellJob: SessionJob | undefined, extraEnv: () => Readonly<Record<string, string | undefined>> | undefined = () => undefined): PowerShellOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env: piEnv }) => {
-      const extra = extraEnv();
-      const env = piEnv !== undefined && extra !== undefined ? { ...piEnv, ...extra } : piEnv;
+      const lease = currentShellLease();
+      const env = piEnv === undefined ? undefined : withEnvOverrides<string | undefined>(withEnvOverrides(piEnv, extraEnv() ?? {}, process.platform), lease?.env ?? {}, process.platform);
       const timeoutMs = resolveTimeoutMs(timeout);
       if (signal?.aborted) throw new Error('aborted');
       // Omitting it makes spawn inherit the extension host environment, which holds provider credentials.
@@ -157,7 +165,7 @@ export function createTrackedPowerShellOperations(shellJob: SessionJob | undefin
       for (const exe of await powerShellExecutables(env)) {
         // An abort raised while the first executable failed must stop the fallback from starting a shell.
         if (signal?.aborted) throw new Error('aborted');
-        const result = await execOnce(exe, `${UTF8_OUTPUT_PREFIX}${command}`, cwd, { onData, signal, timeout, timeoutMs, env }, shellJob);
+        const result = await execOnce(exe, `${UTF8_OUTPUT_PREFIX}${command}`, cwd, { onData, signal, timeout, timeoutMs, env, lease }, shellJob);
         if (!('startError' in result)) return result;
         failures.push(`${exe}: ${result.startError.message}`);
       }
@@ -175,8 +183,14 @@ export function createTrackedPowerShellOperations(shellJob: SessionJob | undefin
  * built-in, and `mapPiToolName`, the permission gate and the read-only-shell classifier all key off
  * the exact spelling. `pi-session.test.ts` pins that the two never converge.
  */
-export function createPowerShellTool(pi: PiCodingAgentModule, cwd: string, shellJob: SessionJob | undefined, extraEnv?: () => Readonly<Record<string, string | undefined>> | undefined): ToolDefinition {
+export function createPowerShellTool(pi: PiCodingAgentModule, cwd: string, shellJob: SessionJob | undefined, extraEnv?: () => Readonly<Record<string, string | undefined>> | undefined, credentials?: ShellCredentials): ToolDefinition {
   const operations = createTrackedPowerShellOperations(shellJob, extraEnv);
   const definition: AnyToolDefinition = pi.createPowerShellToolDefinition(cwd, { operations });
-  return { ...definition, name: TOOL_POWERSHELL, label: 'PowerShell', parameters: withCommandDescription(definition.parameters) };
+  return {
+    ...definition,
+    name: TOOL_POWERSHELL,
+    label: 'PowerShell',
+    parameters: withCommandDescription(definition.parameters),
+    execute: (toolCallId, params, signal, onUpdate, ctx) => withShellCredentials(credentials, toolCallId, () => definition.execute(toolCallId, params, signal, onUpdate, ctx)),
+  };
 }

@@ -20,6 +20,8 @@ import { startClientNetworkProxy } from '../../core/browser/client-network-proxy
 import { createRemoteBrowsers } from './browser-relay';
 import { signInStubOAuth } from '../../core/pi-session/e2e-stub-oauth';
 import type { ChatActivity } from '../../core/pi-session/session-state';
+import type { ForgeService } from '../../core/forge';
+import type { ChatRepository } from '../../shared/forge/tools';
 import { setupAutoDisable } from '../../core/voice/auto-disable';
 import { e2eVoiceRecorder, fakeVoiceForE2e } from '../../core/voice/recorder';
 import { settingsFolderOf, type FolderTarget } from '../../core/workspace-folders/folder-registry';
@@ -61,6 +63,10 @@ export interface CoreServiceOptions {
   readonly flushLogs: () => Promise<void>;
   // e2e.setPlatform: the platform core's capabilities read; undefined reads process.platform
   readonly setPlatform: (platform: NodeJS.Platform | undefined) => void;
+  // this computer's core: the Git hosting accounts (core-host/forge.ts)
+  readonly forge?: ForgeService;
+  // a chat's repository for the GitHub and GitLab tools, read by this core's source control (core-host/forge-repository.ts)
+  readonly forgeRepositories: (folder: string) => Promise<ChatRepository>;
 }
 
 export interface CoreService {
@@ -86,7 +92,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   setCheckpointGitAvailability(platform.init.git.available ? { available: true } : { available: false, reason: platform.init.git.reason ?? '' });
   setMcpSecretStorage(platform.secrets);
 
-  const provider = new ChatPanelProvider(platform, { subscriptions, createCompassViews: () => NO_COMPASS_VIEWS });
+  const provider = new ChatPanelProvider(platform, { subscriptions, createCompassViews: () => NO_COMPASS_VIEWS, ...(options.forge ? { forge: options.forge } : {}), forgeRepositories: options.forgeRepositories });
   // e2e only: names the proxies resolve to fixed answers, each lookup taking the next one
   const fixedAnswers = new Map<string, { readonly answers: readonly (readonly string[])[]; next: number }>();
   const resolveForProxy: AddressResolver = (name) => {
@@ -454,9 +460,15 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('user.mcp.readResource', ({ server, uri }, signal) => provider.runRelayedMcp({ kind: 'read', server, uri }, signal));
   endpoint.serve('user.voice.speak', ({ viewId, text }) => provider.speakForeign(viewId, text));
   endpoint.serve('panels.attachForeign', ({ authority, viewId }) => {
-    panels.attachForeign(authority, viewId);
+    provider.foreignViewAttached(viewId, panels.attachForeign(authority, viewId));
   });
-  endpoint.serve('panels.detachForeign', ({ viewId }) => panels.detachForeign(viewId));
+  endpoint.serve('panels.detachForeign', ({ viewId }) => {
+    provider.foreignViewDetached(viewId);
+    panels.detachForeign(viewId);
+  });
+  // a remote chat's GitHub and GitLab tools on this computer's accounts, after main checked the chat's folder
+  endpoint.serve('user.forge.tool', (params, signal) => provider.relayedForgeTool(params, signal));
+  endpoint.serve('user.forge.describe', (params, signal) => provider.relayedForgeDescribe(params, signal));
   // main sends only FOREIGN_VIEW_MESSAGES of a view it attached; checked again here
   endpoint.serve('panels.foreignMessage', async ({ viewId, message }) => {
     const host = panels.foreign(viewId);
@@ -465,7 +477,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     if (typeof type !== 'string' || !FOREIGN_VIEW_MESSAGES.has(type)) {
       throw new Error('Only voice, user-setting and user-scope messages reach this computer from a remote chat');
     }
-    await provider.dispatchForeign(host, message as WebviewToExtensionMessage);
+    await provider.dispatchForeign(host, message as WebviewToExtensionMessage, viewId);
   });
   endpoint.serve('worktree.retrySetup', ({ worktreeId }) => panelManager.retrySetup(worktreeId));
   endpoint.serve('worktree.beginFinish', ({ worktreeId, action }) => {

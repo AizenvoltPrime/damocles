@@ -1,7 +1,7 @@
 // This computer's user scope as a remote core reaches it (docs/invariants.md "Remote daemon and wire"): the broker's
-// credentials, which the local core resolves and main checks, and the clientAuth, clientUser and clientPolicy mirrors each
-// attach publishes. Nothing here ever carries a refresh token, this computer's environment, a settings file's env,
-// apiKeyHelper, hooks or a stored secret.
+// credentials, which the local core resolves and main checks, and the clientAuth, clientUser, clientPolicy, clientMcp and
+// clientForges mirrors each attach publishes. Nothing here ever carries a refresh token, this computer's environment, a
+// settings file's env, apiKeyHelper, hooks or a stored secret.
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { ContributedConfiguration } from '../../../core/config/contributed-configuration';
@@ -9,7 +9,8 @@ import { parseSettingsText, type SettingsObject } from '../../../core/config/set
 import { PREFER_API_KEY_SETTINGS } from '../../../core/pi-session/provider-auth';
 import type { Disposable } from '../../../platform/disposable';
 import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
-import { brokerEnvOf, carriesAnyTag, GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, listedAfter, listedMemoryBytes, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
+import { CLIENT_FORGES_FEATURE, GIT_HOST, type ClientForges, type ClientForgeServer } from '../../../shared/git-credential';
+import { brokerEnvOf, carriesAnyTag, GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, listedAfter, listedMemoryBytes, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientMcp, type ClientPending, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
 
 // an access token or API key; pi's JWTs are a few KB
 export const MAX_SECRET_CHARS: number = 64 * 1024;
@@ -25,6 +26,8 @@ export const AUTH_REREAD_MS: number = 5000;
 export const CLIENT_MCP_FEATURE = 'clientMcp';
 // a daemon whose welcome does not list it parses no env in an API key answer
 export const BROKER_ENV_FEATURE = 'user.credentials.env';
+// a daemon whose welcome does not list it drops `pending` and reads the empty values as none, so its attach waits for the reads
+export const CLIENT_PENDING_FEATURE = 'client.pending';
 
 /** A user settings file read for its permission rules, and the folder it is in. */
 export interface UserRulesFile {
@@ -152,9 +155,18 @@ export interface ClientMirrorValues {
   readonly clientPolicy: ClientPolicy;
 }
 
-/** The mirrors an attach publishes: the three it starts from, then the relayed MCP servers right after it. */
+/** The mirrors an attach publishes: the three it starts from, then the relayed MCP servers and the managed git servers right after it. */
 export interface PublishedMirrors extends ClientMirrorValues {
-  readonly clientMcp: { readonly servers: readonly RelayedMcpServer[] };
+  readonly clientMcp: ClientMcp;
+  readonly clientForges: ClientForges;
+}
+
+/**
+ * The clientForges a daemon gets, rebuilt field by field: each server's id, URL, the git hosts the takeover can name and whether
+ * an account exists. The daemon's parser refuses any other git host, which would close the connection.
+ */
+export function clientForgesOf(servers: readonly ClientForgeServer[]): ClientForges {
+  return { servers: servers.map(({ id, webUrl, gitHosts, hasAccount }) => ({ id, webUrl, gitHosts: gitHosts.filter((host) => GIT_HOST.test(host)), hasAccount })) };
 }
 
 /** The local core's global memory and personal MCP servers, which a remote core reaches only through these checks. */
@@ -245,7 +257,13 @@ export interface UserRelaysDeps {
   readonly userValue: (key: string) => unknown;
   // the authority's configured policy from this computer's host store: YOLO, the default mode and agent forwarding
   readonly hostPolicy: (authorityKey: string) => Pick<ClientPolicy, 'allowBypass' | 'defaultPermissionMode' | 'agentForwarding'>;
+  // the host store has a record for the authority; the git relay answers nothing to one without
+  readonly savedHost: (authorityKey: string) => boolean;
   readonly local: LocalUserScope;
+  // the local core's managed servers once it read its forge files or failed to: never a login or a token
+  readonly forges: () => Promise<readonly ClientForgeServer[]>;
+  // this computer's engine is halted, so no read of its sign-ins lands before Restart Engine
+  readonly engineHalted: () => boolean;
   readonly log: (line: string) => void;
 }
 
@@ -260,11 +278,21 @@ export class UserRelays implements Disposable {
   // expiries on this computer's clock; each send turns them into the ms left
   private auth: HeldAuth = { providers: {} };
   private user: ClientUser = { settings: {}, permissionRules: [] };
-  // each attach's publish, by the authority it attached; mcp: its daemon lists CLIENT_MCP_FEATURE
-  private readonly attached = new Map<Publish, { readonly authorityKey: string; readonly sharedLoopback: boolean; readonly mcp: boolean; policy: string }>();
+  // why each is not known yet; undefined once a read of it landed
+  private authPending: ClientPending | undefined = 'reading';
+  private userPending: ClientPending | undefined = 'reading';
+  // each attach's publish, by the authority it attached; pending: its daemon lists CLIENT_PENDING_FEATURE; mcp: its daemon
+  // lists CLIENT_MCP_FEATURE; forges: its daemon lists CLIENT_FORGES_FEATURE and the authority is a saved host
+  private readonly attached = new Map<Publish, { readonly authorityKey: string; readonly sharedLoopback: boolean; readonly pending: boolean; readonly mcp: boolean; readonly forges: boolean; policy: string }>();
+  // the managed servers as last published, and whether a read of them landed
+  private forges: ClientForges = { servers: [] };
+  private forgesKnown = false;
+  private forgesRefresh: Promise<void> = Promise.resolve();
   private lastAuthRead = Number.NEGATIVE_INFINITY;
   // the personal MCP servers marked available on remote hosts, as last published; each relayed request is checked against them
   private mcp: readonly RelayedMcpServer[] = [];
+  // why they are not known yet; undefined once a read of them landed
+  private mcpPending: ClientPending | undefined = 'reading';
   private mcpRefresh: Promise<void> = Promise.resolve();
   // settles once the first read of them landed or failed, which a relayed request waits for
   private readonly mcpRead: Promise<void>;
@@ -272,23 +300,88 @@ export class UserRelays implements Disposable {
   // one refresh of each mirror at a time, so the last to publish read after every earlier one
   private authRefresh: Promise<void> = Promise.resolve();
   private userRefresh: Promise<void> = Promise.resolve();
+  // settle once the first read of each landed or failed, which an older daemon's attach waits for
+  private readonly authRead: Promise<void>;
+  private authReadSettled!: () => void;
+  private readonly userRead: Promise<void>;
+  private userReadSettled!: () => void;
+  private readonly forgesRead: Promise<void>;
+  private forgesReadSettled!: () => void;
 
   constructor(deps: UserRelaysDeps) {
     this.deps = deps;
+    this.forgesRead = new Promise((resolve) => (this.forgesReadSettled = resolve));
     this.mcpRead = new Promise((resolve) => (this.mcpReadSettled = resolve));
+    this.authRead = new Promise((resolve) => (this.authReadSettled = resolve));
+    this.userRead = new Promise((resolve) => (this.userReadSettled = resolve));
   }
 
   /**
-   * The values an attach of authorityKey starts from; its publish hears every later change until disposed. sharedLoopback:
-   * ClientPolicy's. features: the daemon's welcome.features, which decide the topics it hears.
+   * The values an attach of authorityKey starts from; its publish hears every later change until disposed. A daemon listing
+   * CLIENT_PENDING_FEATURE starts at once, with the sign-ins and user files marked pending until read, and hears the personal
+   * MCP servers and managed servers marked pending, then once read. Any other daemon would read those empty values as none, so its attach waits
+   * until the first read of each of the four settled. sharedLoopback: ClientPolicy's. features: the daemon's
+   * welcome.features, which decide the topics it hears.
    */
-  attach(publish: Publish, authorityKey: string, sharedLoopback: boolean, features: readonly string[]): { readonly mirrors: ClientMirrorValues; readonly subscription: Disposable } {
-    const clientPolicy = this.policyOf(authorityKey, sharedLoopback);
+  attach(publish: Publish, authorityKey: string, sharedLoopback: boolean, features: readonly string[]): { readonly mirrors: Promise<ClientMirrorValues>; readonly subscription: Disposable } {
+    let disposed = false;
+    const subscription = {
+      dispose: () => {
+        disposed = true;
+        this.attached.delete(publish);
+      },
+    };
+    if (features.includes(CLIENT_PENDING_FEATURE)) return { mirrors: Promise.resolve(this.register(publish, authorityKey, sharedLoopback, features, true)), subscription };
+    const mirrors = Promise.all([this.authRead, this.userRead, this.mcpRead, this.forgesRead])
+      .then(() => (disposed ? this.valuesOf(authorityKey, sharedLoopback, false) : this.register(publish, authorityKey, sharedLoopback, features, false)));
+    return { mirrors, subscription };
+  }
+
+  /** The engine halted or started: sign-ins whose last read failed are pending for the reason that holds now; a read under way stays reading. */
+  engineHaltedChanged(): void {
+    if (this.authPending === undefined || this.authPending === 'reading') return;
+    this.authPendingBecause(this.deps.engineHalted() ? 'engineStopped' : 'readFailed');
+  }
+
+  private valuesOf(authorityKey: string, sharedLoopback: boolean, pending: boolean): ClientMirrorValues {
+    return {
+      clientAuth: pending && this.authPending !== undefined ? { providers: {}, pending: this.authPending } : sentClientAuth(this.auth, Date.now()),
+      clientUser: pending && this.userPending !== undefined ? { settings: {}, permissionRules: [], pending: this.userPending } : this.user,
+      clientPolicy: this.policyOf(authorityKey, sharedLoopback),
+    };
+  }
+
+  // registered with the values it starts from, so no delta reaches it before them
+  private register(publish: Publish, authorityKey: string, sharedLoopback: boolean, features: readonly string[], pending: boolean): ClientMirrorValues {
+    const values = this.valuesOf(authorityKey, sharedLoopback, pending);
     const mcp = features.includes(CLIENT_MCP_FEATURE);
-    this.attached.set(publish, { authorityKey, sharedLoopback, mcp, policy: JSON.stringify(clientPolicy) });
-    // an empty list included: a core keeps a detached client's last list, which a reattach must replace
-    if (mcp) publish('clientMcp', { servers: this.mcp });
-    return { mirrors: { clientAuth: sentClientAuth(this.auth, Date.now()), clientUser: this.user, clientPolicy }, subscription: { dispose: () => this.attached.delete(publish) } };
+    // a takeover there could never be answered, so its git keeps the user's own helpers
+    const forges = features.includes(CLIENT_FORGES_FEATURE) && this.deps.savedHost(authorityKey);
+    this.attached.set(publish, { authorityKey, sharedLoopback, pending, mcp, forges, policy: JSON.stringify(values.clientPolicy) });
+    // an empty list included: a core keeps a detached client's last list, which a reattach must replace; each is marked
+    // pending until its first read lands
+    if (mcp) publish('clientMcp', pending && this.mcpPending !== undefined ? { servers: [], pending: this.mcpPending } : { servers: this.mcp });
+    if (forges) publish('clientForges', !pending || this.forgesKnown ? this.forges : { servers: [], pending: true });
+    return values;
+  }
+
+  // a pending value reaches only the attaches whose daemon reads it
+  private authPendingBecause(reason: ClientPending): void {
+    if (this.authPending === undefined || this.authPending === reason) return;
+    this.authPending = reason;
+    for (const [publish, attach] of this.attached) if (attach.pending) publish('clientAuth', { providers: {}, pending: reason });
+  }
+
+  private userPendingBecause(reason: ClientPending): void {
+    if (this.userPending === undefined || this.userPending === reason) return;
+    this.userPending = reason;
+    for (const [publish, attach] of this.attached) if (attach.pending) publish('clientUser', { settings: {}, permissionRules: [], pending: reason });
+  }
+
+  private mcpPendingBecause(reason: ClientPending): void {
+    if (this.mcpPending === undefined || this.mcpPending === reason) return;
+    this.mcpPending = reason;
+    for (const [publish, attach] of this.attached) if (attach.pending && attach.mcp) publish('clientMcp', { servers: [], pending: reason });
   }
 
   /** The authority's host settings changed: each attach of it whose clientPolicy differs hears the new one. */
@@ -316,14 +409,14 @@ export class UserRelays implements Disposable {
 
   /** The local core's credentials changed (or it started): re-reads its snapshot and publishes it where it differs. */
   authChanged(): Promise<void> {
-    const refresh = this.authRefresh.then(() => this.refreshAuth());
+    const refresh = this.authRefresh.then(() => this.refreshAuth()).finally(() => this.authReadSettled());
     this.authRefresh = refresh.catch(() => undefined);
     return refresh;
   }
 
   /** The user files or settings changed: re-reads the allowlist and publishes it where it differs. */
   userChanged(): Promise<void> {
-    const refresh = this.userRefresh.then(() => this.refreshUser());
+    const refresh = this.userRefresh.then(() => this.refreshUser()).finally(() => this.userReadSettled());
     this.userRefresh = refresh.catch(() => undefined);
     return refresh;
   }
@@ -331,12 +424,35 @@ export class UserRelays implements Disposable {
   /** The marked personal servers or their tools changed (or the local core started): re-reads and publishes them where they differ. */
   mcpChanged(): Promise<void> {
     const refresh = this.mcpRefresh.then(async () => {
-      const next = relayedServersOf(await this.deps.local.mcpServers());
-      if (JSON.stringify(next) === JSON.stringify(this.mcp)) return;
+      this.mcpPendingBecause('reading');
+      let next: RelayedMcpServer[];
+      try {
+        next = relayedServersOf(await this.deps.local.mcpServers());
+      } catch (err) {
+        this.mcpPendingBecause('readFailed');
+        throw err;
+      }
+      const first = this.mcpPending !== undefined;
+      this.mcpPending = undefined;
+      if (!first && JSON.stringify(next) === JSON.stringify(this.mcp)) return;
       this.mcp = next;
       for (const [publish, attach] of this.attached) if (attach.mcp) publish('clientMcp', { servers: next });
     }).finally(() => this.mcpReadSettled());
     this.mcpRefresh = refresh.catch(() => undefined);
+    return refresh;
+  }
+
+  /** The local core's forge mirror changed (or it started): re-reads the servers, and each attach whose daemon lists clientForges hears them where they differ. */
+  forgesChanged(): Promise<void> {
+    const refresh = this.forgesRefresh.then(async () => {
+      const next = clientForgesOf(await this.deps.forges());
+      const first = !this.forgesKnown;
+      this.forgesKnown = true;
+      if (!first && JSON.stringify(next) === JSON.stringify(this.forges)) return;
+      this.forges = next;
+      for (const [publish, attach] of this.attached) if (attach.forges) publish('clientForges', next);
+    }).finally(() => this.forgesReadSettled());
+    this.forgesRefresh = refresh.catch(() => undefined);
     return refresh;
   }
 
@@ -411,25 +527,46 @@ export class UserRelays implements Disposable {
     return mcpResultOf(await this.deps.local.mcpReadResource(server, uri, signal), `MCP server ${server}`);
   }
 
+  // a failed read keeps a pending value pending, with why, until a read lands; a known value stays as last read
   private async refreshAuth(): Promise<void> {
     this.lastAuthRead = Date.now();
-    const next = clientAuthOf(await this.deps.clientAuth());
-    if (JSON.stringify(next) === JSON.stringify(this.auth)) return;
+    this.authPendingBecause('reading');
+    let next: HeldAuth;
+    try {
+      next = clientAuthOf(await this.deps.clientAuth());
+    } catch (err) {
+      this.authPendingBecause(this.deps.engineHalted() ? 'engineStopped' : 'readFailed');
+      throw err;
+    }
+    const wasPending = this.authPending !== undefined;
+    this.authPending = undefined;
+    const changed = JSON.stringify(next) !== JSON.stringify(this.auth);
+    if (!changed && !wasPending) return;
     this.auth = next;
     const sent = sentClientAuth(next, Date.now());
-    for (const publish of this.attached.keys()) publish('clientAuth', sent);
+    for (const [publish, attach] of this.attached) if (changed || attach.pending) publish('clientAuth', sent);
   }
 
   private async refreshUser(): Promise<void> {
-    const files = await Promise.all(userPermissionFiles(this.deps.homedir).map(async ({ dir, file }) => {
-      const settings = await this.readSettingsFile(file);
-      return settings ? [{ dir, settings }] : [];
-    }));
-    const values = new Map(this.deps.userSettingKeys().map((key) => [key, this.deps.userValue(key)] as const));
-    const next = clientUserOf(files.flat(), values);
-    if (JSON.stringify(next) === JSON.stringify(this.user)) return;
+    this.userPendingBecause('reading');
+    let next: ClientUser;
+    try {
+      const files = await Promise.all(userPermissionFiles(this.deps.homedir).map(async ({ dir, file }) => {
+        const settings = await this.readSettingsFile(file);
+        return settings ? [{ dir, settings }] : [];
+      }));
+      const values = new Map(this.deps.userSettingKeys().map((key) => [key, this.deps.userValue(key)] as const));
+      next = clientUserOf(files.flat(), values);
+    } catch (err) {
+      this.userPendingBecause('readFailed');
+      throw err;
+    }
+    const wasPending = this.userPending !== undefined;
+    this.userPending = undefined;
+    const changed = JSON.stringify(next) !== JSON.stringify(this.user);
+    if (!changed && !wasPending) return;
     this.user = next;
-    for (const publish of this.attached.keys()) publish('clientUser', next);
+    for (const [publish, attach] of this.attached) if (changed || attach.pending) publish('clientUser', next);
   }
 
   /** A remote core's broker asks for a provider's credential: always this computer's, checked before it leaves. features: the daemon's welcome.features. */

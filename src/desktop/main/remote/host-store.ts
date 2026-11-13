@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
 import type { ShellPlatform } from '../../preload/shell-channels';
-import { HOST_SWITCH_KEYS, MAX_HOST_NAME_LENGTH, MAX_OVERLAY_ID_LENGTH, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
+import { HOST_SWITCH_KEYS, isAlwaysForgeAccount, MAX_HOST_NAME_LENGTH, MAX_OVERLAY_ID_LENGTH, type AlwaysForgeAccount, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
 import { HOST_ID } from '../../daemon/control-messages';
 import { authorityKeyOfProject, pathFor } from '../../../shared/project-location';
 import { canonicalHostColor, isHostTone, type HostColor } from '../../../shared/host-colors';
@@ -80,6 +80,8 @@ export interface SshHostRecord {
   readonly lingerEnabledByDamocles?: boolean;
   // credential hosts (git over https) this host may use without asking
   readonly alwaysCredentialHosts?: readonly string[];
+  // Git hosting accounts this host's git may use without asking, apart from the credential hosts
+  readonly alwaysForgeAccounts?: readonly AlwaysForgeAccount[];
   // the host's port attributes, its output-only fallback, and the forwards each of its projects restores
   readonly ports?: HostPorts;
 }
@@ -96,6 +98,7 @@ export interface WslHostRecord {
   readonly settings: SshHostSettings;
   readonly previousInstallFolder?: string | null;
   readonly alwaysCredentialHosts?: readonly string[];
+  readonly alwaysForgeAccounts?: readonly AlwaysForgeAccount[];
   readonly ports?: HostPorts;
 }
 
@@ -132,6 +135,7 @@ export interface ContainerHostRecord {
   readonly settings: SshHostSettings;
   readonly previousInstallFolder?: string | null;
   readonly alwaysCredentialHosts?: readonly string[];
+  readonly alwaysForgeAccounts?: readonly AlwaysForgeAccount[];
   readonly ports?: HostPorts;
 }
 
@@ -225,6 +229,14 @@ const TARGET_OSES: readonly unknown[] = ['win32', 'darwin', 'linux'] satisfies r
 // a credential host as git names it in a credential request: host[:port]
 const CREDENTIAL_HOST = /^[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?$/;
 export const isCredentialHost = (value: unknown): value is string => typeof value === 'string' && CREDENTIAL_HOST.test(value);
+
+/** The stored account Always list: each well-formed entry once, others dropped. */
+function parseAlwaysAccounts(value: unknown): readonly AlwaysForgeAccount[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const kept = new Map<string, AlwaysForgeAccount>();
+  for (const entry of value) if (isAlwaysForgeAccount(entry)) kept.set(entry.accountId, { serverId: entry.serverId, accountId: entry.accountId });
+  return [...kept.values()];
+}
 const FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/;
 export const KEY_ENTRY: RegExp = /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}$/;
 // a host file path as the daemon reported it: absolute on POSIX or Windows, one line
@@ -484,6 +496,7 @@ function parseWslHost(id: string, value: Record<string, unknown>, log: (line: st
   const recent = own(value, 'recentFolders');
   const previous = own(value, 'previousInstallFolder');
   const always = own(value, 'alwaysCredentialHosts');
+  const alwaysAccounts = parseAlwaysAccounts(own(value, 'alwaysForgeAccounts'));
   const ports = parsePorts(id, wslAuthorityKey(distro), own(value, 'ports'), log);
   return {
     id,
@@ -496,6 +509,7 @@ function parseWslHost(id: string, value: Record<string, unknown>, log: (line: st
     settings: parseSettings(id, own(value, 'settings'), log),
     ...(previous === null || isText(previous) ? { previousInstallFolder: previous } : {}),
     ...(Array.isArray(always) ? { alwaysCredentialHosts: [...new Set(always.filter(isCredentialHost))] } : {}),
+    ...(alwaysAccounts ? { alwaysForgeAccounts: alwaysAccounts } : {}),
     ...(ports ? { ports } : {}),
   };
 }
@@ -525,6 +539,7 @@ function parseContainerHost(id: string, value: Record<string, unknown>, log: (li
   const recent = own(value, 'recentFolders');
   const previous = own(value, 'previousInstallFolder');
   const always = own(value, 'alwaysCredentialHosts');
+  const alwaysAccounts = parseAlwaysAccounts(own(value, 'alwaysForgeAccounts'));
   const ports = parsePorts(id, containerAuthorityKey(key), own(value, 'ports'), log);
   return {
     id,
@@ -548,6 +563,7 @@ function parseContainerHost(id: string, value: Record<string, unknown>, log: (li
     settings: parseSettings(id, own(value, 'settings'), log),
     ...(previous === null || isText(previous) ? { previousInstallFolder: previous } : {}),
     ...(Array.isArray(always) ? { alwaysCredentialHosts: [...new Set(always.filter(isCredentialHost))] } : {}),
+    ...(alwaysAccounts ? { alwaysForgeAccounts: alwaysAccounts } : {}),
     ...(ports ? { ports } : {}),
   };
 }
@@ -572,6 +588,7 @@ function parseHost(id: string, value: unknown, log: (line: string) => void): Unn
   const keyFile = own(value, 'installedKeyFile');
   const installed = typeof fingerprint === 'string' && FINGERPRINT.test(fingerprint) && typeof keyEntry === 'string' && KEY_ENTRY.test(keyEntry) && typeof keyFile === 'string' && HOST_FILE.test(keyFile);
   const always = own(value, 'alwaysCredentialHosts');
+  const alwaysAccounts = parseAlwaysAccounts(own(value, 'alwaysForgeAccounts'));
   const ports = parsePorts(id, sshAuthorityKey(id), own(value, 'ports'), log);
   return {
     id,
@@ -589,6 +606,7 @@ function parseHost(id: string, value: unknown, log: (line: string) => void): Unn
     ...(installed ? { installedKeyFingerprint: fingerprint, installedKeyEntry: keyEntry, installedKeyFile: keyFile } : {}),
     ...(own(value, 'lingerEnabledByDamocles') === true ? { lingerEnabledByDamocles: true } : {}),
     ...(Array.isArray(always) ? { alwaysCredentialHosts: [...new Set(always.filter(isCredentialHost))] } : {}),
+    ...(alwaysAccounts ? { alwaysForgeAccounts: alwaysAccounts } : {}),
     ...(ports ? { ports } : {}),
   };
 }
@@ -1078,6 +1096,23 @@ export class HostStore {
     await this.updateHost(hostId, (record) => {
       const listed = record.alwaysCredentialHosts ?? [];
       return listed.includes(credentialHost) ? { ...record, alwaysCredentialHosts: listed.filter((other) => other !== credentialHost) } : record;
+    });
+  }
+
+  /** An account consent's "Always for <host>": this host's git may use the account without asking. */
+  async addAlwaysForgeAccount(hostId: string, account: AlwaysForgeAccount): Promise<void> {
+    if (!isAlwaysForgeAccount(account)) throw new Error('Not a Git hosting account');
+    await this.updateHost(hostId, (record) => {
+      const listed = record.alwaysForgeAccounts ?? [];
+      return listed.some((held) => held.accountId === account.accountId) ? record : { ...record, alwaysForgeAccounts: [...listed, { serverId: account.serverId, accountId: account.accountId }] };
+    });
+  }
+
+  /** Revoke: this host's git asks again before it uses the account. */
+  async revokeForgeAccount(hostId: string, accountId: string): Promise<void> {
+    await this.updateHost(hostId, (record) => {
+      const listed = record.alwaysForgeAccounts ?? [];
+      return listed.some((held) => held.accountId === accountId) ? { ...record, alwaysForgeAccounts: listed.filter((held) => held.accountId !== accountId) } : record;
     });
   }
 

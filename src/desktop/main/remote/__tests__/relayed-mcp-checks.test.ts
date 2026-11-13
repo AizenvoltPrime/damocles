@@ -5,6 +5,9 @@ import { MCP_REMOTE_AVAILABLE_SETTING } from '../../../../shared/types/mcp';
 import { MCP_REMOTE_AVAILABLE_SETTING as DESKTOP_SETTING } from '../../../local-services/desktop-configuration';
 import type { RelayedMcpServer } from '../../../../shared/remote-user';
 
+// the relayed MCP servers alone: a daemon listing clientForges also hears that mirror at each attach
+const MCP_ONLY = FEATURES.filter((feature) => feature !== 'clientForges');
+
 const notes = (): RelayedMcpServer => ({ name: 'notes', tools: [{ name: 'search', description: 'search it', inputSchema: { type: 'object' } }], resources: true });
 
 describe('the relayed servers main publishes', () => {
@@ -26,12 +29,15 @@ describe('the relayed servers main publishes', () => {
 describe('main\'s checks of a relayed request', () => {
   const relays = (local: Partial<LocalUserScope>) => new UserRelays({
     resolveCredential: async () => ({ type: 'none' }),
+    forges: async () => [],
     clientAuth: async () => ({ providers: {} }),
     voice: false,
     homedir: '/home/u',
     userSettingKeys: () => [],
     userValue: () => undefined,
     hostPolicy: () => ({ allowBypass: false }),
+    savedHost: () => true,
+    engineHalted: () => false,
     local: { mcpServers: async () => [notes()], mcpCall: vi.fn(async () => ({ content: [] })), ...local } as LocalUserScope,
     log: () => undefined,
   });
@@ -77,34 +83,40 @@ describe('main\'s checks of a relayed request', () => {
     expect(mcpCall).toHaveBeenCalledTimes(1);
   });
 
+  // the reads main makes at startup, which an attach waits for
+  const started = async (user: UserRelays): Promise<UserRelays> => {
+    await Promise.all([user.authChanged(), user.userChanged(), user.forgesChanged()]);
+    return user;
+  };
+
   it('publishes the opted-in servers to every attach', async () => {
-    const user = relays({});
+    const user = await started(relays({}));
     await user.mcpChanged();
     const published: unknown[] = [];
-    user.attach((topic, value) => published.push([topic, value]), 'ssh+h', false, FEATURES);
+    await user.attach((topic, value) => published.push([topic, value]), 'ssh+h', false, MCP_ONLY).mirrors;
     expect(published).toEqual([['clientMcp', { servers: [notes()] }]]);
   });
 
   it('publishes an empty list at an attach too, so a reattach replaces the list the core kept from before', async () => {
     let servers: RelayedMcpServer[] = [notes()];
-    const user = relays({ mcpServers: async () => servers });
+    const user = await started(relays({ mcpServers: async () => servers }));
     await user.mcpChanged();
     servers = [];
     await user.mcpChanged();
     const published: unknown[] = [];
-    user.attach((topic, value) => published.push([topic, value]), 'ssh+h', false, FEATURES);
+    await user.attach((topic, value) => published.push([topic, value]), 'ssh+h', false, MCP_ONLY).mirrors;
     expect(published).toEqual([['clientMcp', { servers: [] }]]);
   });
 
   // an older daemon's core channel closes the connection on a topic it does not know
   it('publishes nothing of clientMcp, at the attach or after a change, to a daemon whose welcome does not list it', async () => {
     let servers: RelayedMcpServer[] = [];
-    const user = relays({ mcpServers: async () => servers });
+    const user = await started(relays({ mcpServers: async () => servers }));
     await user.mcpChanged();
     const older: unknown[] = [];
     const current: unknown[] = [];
-    user.attach((topic, value) => older.push([topic, value]), 'ssh+old', false, FEATURES.filter((feature) => feature !== CLIENT_MCP_FEATURE));
-    user.attach((topic, value) => current.push([topic, value]), 'ssh+new', false, FEATURES);
+    await user.attach((topic, value) => older.push([topic, value]), 'ssh+old', false, MCP_ONLY.filter((feature) => feature !== CLIENT_MCP_FEATURE)).mirrors;
+    await user.attach((topic, value) => current.push([topic, value]), 'ssh+new', false, MCP_ONLY).mirrors;
     servers = [notes()];
     await user.mcpChanged();
     expect(older).toEqual([]);
@@ -117,12 +129,15 @@ describe('main\'s checks of a global profile answer', () => {
   const memory = (kind: 'fact' | 'preference' | 'note') => ({ id: 'm1', kind, content: 'c', contentHash: 'h', createdAt: 1, updatedAt: 1 });
   const relaysWith = (answer: unknown) => new UserRelays({
     resolveCredential: async () => ({ type: 'none' }),
+    forges: async () => [],
     clientAuth: async () => ({ providers: {} }),
     voice: false,
     homedir: '/home/u',
     userSettingKeys: () => [],
     userValue: () => undefined,
     hostPolicy: () => ({ allowBypass: false }),
+    savedHost: () => true,
+    engineHalted: () => false,
     local: { memoryProfile: async () => answer } as unknown as LocalUserScope,
     log: () => undefined,
   });
@@ -138,12 +153,15 @@ describe('main\'s checks of a global profile answer', () => {
 describe('main\'s relay of a global memory apply and search', () => {
   const relaysWith = (local: Partial<LocalUserScope>) => new UserRelays({
     resolveCredential: async () => ({ type: 'none' }),
+    forges: async () => [],
     clientAuth: async () => ({ providers: {} }),
     voice: false,
     homedir: '/home/u',
     userSettingKeys: () => [],
     userValue: () => undefined,
     hostPolicy: () => ({ allowBypass: false }),
+    savedHost: () => true,
+    engineHalted: () => false,
     local: local as LocalUserScope,
     log: () => undefined,
   });

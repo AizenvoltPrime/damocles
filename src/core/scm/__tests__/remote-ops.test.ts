@@ -3,7 +3,7 @@ import { INPUT_VALIDATIONS, inputProblem } from '../../../shared/input-validatio
 import { autofetchPeriodSeconds, Autofetcher, type AutofetchTarget } from '../autofetch';
 import { cloneArgs, cloneFolderName, isCloneFolderName } from '../clone';
 import { GitError, gitErrorText } from '../errors';
-import { isRemoteName, isRemoteUrl, parseRemoteBranches, parseRemoteNames, parseRemotes, parseUpstream } from '../remotes';
+import { isRemoteName, parseRemoteBranches, parseRemoteNames, parseRemotes, parseUpstream } from '../remotes';
 import { keptStashOutcome } from '../scm-service';
 import { fetchArgs, needsStashAroundPull, pullArgs, pullTarget, pushArgs } from '../sync';
 
@@ -22,13 +22,6 @@ describe('remote names and URLs', () => {
     expect(INPUT_VALIDATIONS).toContain('remoteName');
     const names = ['origin', 'up-stream', 'fork_2', 'a.b', '9lives', 'x'.repeat(100), 'x'.repeat(101), '', '-x', '--upload-pack=x', '+main', '.hidden', '_a', 'a..b', 'a.', 'x.lock', 'a b', 'a/b', 'a:b', 'ä', 'a\tb', 'a\u0007', 'A.lock.b'];
     for (const name of names) expect(isRemoteName(name), name).toBe(inputProblem('remoteName', name, { windows: false }) === undefined);
-  });
-
-  it('accepts a URL or path, a local path with spaces included, never a leading dash, a control character, a remote helper or whitespace in a URL', () => {
-    const accepted = ['https://example.com/a.git', 'git@example.com:a/b.git', 'ssh://example.com/a', '../local.git', 'C:/repos/a.git', 'C:\\Users\\John Doe\\repo', '/home/john doe/r', '\\\\srv\\share\\a b', '../my repo.git'];
-    for (const url of accepted) expect(isRemoteUrl(url), url).toBe(true);
-    const refused = ['', '-uhttps://x', '--upload-pack=touch', '-x', ' -oProxyCommand=x:p', ' /home/x', '\u00a0../x', 'ext::sh -c x', 'EXT::a b', 'ext::x', 'fd::17', 'fd::0', 'a+b.c::x', 'https://a b', 'https://h/a b', 'host:a b', 'https://a\tb', 'https://a\u0007b', 'a\nb', 'a\rb', 'a\tb', 'a\u0085b', '/a\u2028b', 'x'.repeat(2049)];
-    for (const url of refused) expect(isRemoteUrl(url), JSON.stringify(url)).toBe(false);
   });
 
   it('reads remote names and URLs, a partial clone\'s filtered fetch line included, leaving out a name the engine refuses', () => {
@@ -82,6 +75,13 @@ describe('fetch, pull and push argv', () => {
     expect(pushArgs({ setUpstream: false, followTags: true, force: true }, V2_43)).toEqual(['push', '--force-with-lease', '--force-if-includes', '--follow-tags']);
     expect(pushArgs({ setUpstream: false, followTags: false, force: true }, V2_29)).toEqual(['push', '--force-with-lease']);
     expect(pushArgs({ setUpstream: false, followTags: false, force: true }, V2_43)).not.toContain('--force');
+  });
+
+  it('pushes a new branch with an empty lease, so the server refuses it when the branch exists there, and never forced', () => {
+    expect(pushArgs({ remote: 'origin', branch: 'alexios-s/main', setUpstream: true, followTags: false, force: false, createOnly: true }, V2_43))
+      .toEqual(['push', '--force-with-lease=refs/heads/alexios-s/main:', '-u', '--end-of-options', 'origin', 'refs/heads/alexios-s/main:refs/heads/alexios-s/main']);
+    expect(() => pushArgs({ remote: 'origin', branch: 'x', setUpstream: true, followTags: false, force: true, createOnly: true }, V2_43)).toThrow('never forced');
+    expect(() => pushArgs({ setUpstream: false, followTags: false, force: false, createOnly: true }, V2_43)).toThrow('names its remote');
   });
 
   it('stashes around a pull itself only with a git before 2.27 and autoStash on', () => {

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { createRequire } from 'module';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Args unit test for the real launcher: verifies that when launching headless we drop Playwright's
@@ -114,6 +118,30 @@ describe('launchBrowserContext — DevTools debugging port (S6)', () => {
       expect(withoutPort.args.length).toBeGreaterThan(3);
     });
   }
+});
+
+/** The features Playwright's own chromiumSwitches disables, read from the bundled patchright-core. */
+function playwrightDisabledFeatures(): string[] {
+  const bundle = readFileSync(join(dirname(require.resolve('patchright-core/package.json')), 'lib', 'coreBundle.js'), 'utf8');
+  const list = /disabledFeatures = \[([\s\S]*?)\]\.filter\(Boolean\)/.exec(bundle)?.[1];
+  if (list === undefined) throw new Error("patchright-core's disabledFeatures list was not found");
+  return [...list.replace(/\/\/.*$/gm, '').matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+}
+
+describe('launchBrowserContext — disabled Chromium features', () => {
+  beforeEach(() => launchPersistentContext.mockClear());
+
+  // Chrome keeps only the last --disable-features switch, which replaces Playwright's own.
+  it("passes one --disable-features that keeps every feature Playwright disables, and Chrome's HTTPS-First mode off", async () => {
+    await launchBrowserContext({ ...baseOpts, headless: true });
+    const switches = capturedOpts().args.filter((arg) => arg.startsWith('--disable-features='));
+    expect(switches).toHaveLength(1);
+    const disabled = switches[0]!.slice('--disable-features='.length).split(',');
+    const playwright = playwrightDisabledFeatures();
+    expect(playwright).toContain('HttpsUpgrades');
+    expect(disabled).toEqual(expect.arrayContaining([...playwright, 'HttpsFirstBalancedModeAutoEnable', 'ThirdPartyCookiePhaseout', 'FedCm']));
+    expect(new Set(disabled).size).toBe(disabled.length);
+  });
 });
 
 describe('launchBrowserContext — Chromium sandbox failures', () => {

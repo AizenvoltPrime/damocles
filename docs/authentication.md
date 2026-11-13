@@ -59,6 +59,10 @@ GitHub Copilot has a sign-in and no key field. Click **Sign in with GitHub** in 
 - **Billing.** Copilot requests count against your plan's premium requests, not dollars, so Damocles bills them as a flat fee, a template `model:` pin on a Copilot model outside this list included: costs show as estimates and `damocles.maxBudgetUsd` does not apply. `/stats` shows Copilot spend at API-equivalent prices, and settings lists and `/stats` name a Copilot model whose name another provider's model has as, for example, "Opus 5.5 (GitHub Copilot)". `/usage` shows no Copilot limits.
 - **Risk.** pi's sign-in identifies itself with a Copilot editor's client id, as other third-party clients do. GitHub can change or end access for such clients at any time, and a sign-in that works today may stop working.
 
+## GitHub and GitLab accounts
+
+The desktop app also signs in to GitHub and GitLab servers in Settings › Models & accounts › Git hosting, for your repositories rather than for a model. These accounts are separate from the GitHub Copilot sign-in above: signing in to one never signs you in to the other. Their tokens are kept in this computer's Damocles Core and secret store and go only to their own server. Refresh tokens and client secrets never leave this computer; git on a remote host gets an access token for one request at a time, and the host's Damocles server keeps it in memory for 8 hours after that answer so it can mask it. [Git hosting accounts](git-hosting.md) covers servers, the browser, device code and token routes, sign-out and registering an OAuth app on your own server.
+
 ## Sign-ins and keys
 
 Every provider above with a key follows the same rule as OpenAI. A sign-in, made in Damocles (xAI, Kimi Code, Meta and OpenRouter) or with the pi CLI (`pi login <provider>` with `PI_CODING_AGENT_DIR=~/.damocles/pi/agent`), beats the key saved in Damocles, unless you turn on **Prefer API key over sign-in** in that provider's panel (`damocles.<provider>.preferApiKey`, kept on this computer like OpenAI's); the switch shows while both a saved key and a sign-in exist.

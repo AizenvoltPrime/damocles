@@ -1,5 +1,5 @@
 import type { Platform } from "../../platform/platform";
-import type { PanelHost } from "../../platform/window-service";
+import type { AppSettingsForgeTarget, PanelHost } from "../../platform/window-service";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { SettingsAccountId, SettingsSectionId } from "../../shared/settings-sections";
 
@@ -15,9 +15,10 @@ export function openAppSettingsFor(
   section?: SettingsSectionId,
   account?: SettingsAccountId,
   scope?: 'machine',
+  forge?: AppSettingsForgeTarget,
 ): void {
   if (!platform.capabilities.settingsInPanel) {
-    platform.window.openAppSettings(section, account, scope);
+    platform.window.openAppSettings(section, account, scope, forge);
     return;
   }
   if (host === undefined) return;

@@ -37,6 +37,18 @@ export const REMOTE_AUTO_FORWARD_PORTS_FALLBACK_SETTING = 'damocles.desktop.remo
 export const REMOTE_CONTAINER_ENGINE_SETTING = 'damocles.desktop.remote.containerEngine';
 // equals MCP_REMOTE_AVAILABLE_SETTING in shared/types/mcp.ts, which core reads (this file takes no imports)
 export const MCP_REMOTE_AVAILABLE_SETTING = 'damocles.desktop.mcp.remoteAvailable';
+// equals FORGE_SHOW_AVATARS_SETTING in core/forge/types.ts, which core reads (this file takes no imports)
+export const FORGE_SHOW_AVATARS_SETTING = 'damocles.desktop.forge.showAvatars';
+// equals TOOL_GROUP_SETTINGS.forge in shared/types/tools.ts
+export const FORGE_AGENT_TOOLS_SETTING = 'damocles.desktop.forge.agentTools';
+// equals FORGE_AGENT_READ_ANY_REPOSITORY_SETTING in core/forge/types.ts
+export const FORGE_AGENT_READ_ANY_REPOSITORY_SETTING = 'damocles.desktop.forge.agentReadAnyRepository';
+// equals FORGE_CI_STATUS_SETTING in core/forge/types.ts, which core reads
+export const FORGE_CI_STATUS_SETTING = 'damocles.desktop.forge.ciStatus';
+// equals FORGE_BRANCH_PROTECTION_SETTING in core/forge/types.ts, which core reads
+export const FORGE_BRANCH_PROTECTION_SETTING = 'damocles.desktop.forge.branchProtection';
+// equals FORGE_CLONE_PROTOCOL_SETTING in core/forge/types.ts, which core reads
+export const FORGE_CLONE_PROTOCOL_SETTING = 'damocles.desktop.forge.cloneProtocol';
 export const FILES_EXCLUDE_SETTING = 'damocles.desktop.files.exclude';
 export const FILES_CONFIRM_DRAG_AND_DROP_SETTING = 'damocles.desktop.files.confirmDragAndDrop';
 export const FILES_CONFIRM_PASTE_NATIVE_SETTING = 'damocles.desktop.files.confirmPasteNative';
@@ -382,6 +394,44 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: [],
     scope: 'application',
     description: 'The personal MCP servers (from ~/.damocles/mcp.json and the Claude Code, Codex and pi user files) that chats on remote hosts may use. They run on this computer; a remote host gets their names and tool and resource schemas, never their environment or headers.',
+  },
+  [FORGE_SHOW_AVATARS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Show GitHub and GitLab account pictures. Off: Damocles shows the account initial and fetches no picture, so no picture host (such as Gravatar) learns of it.',
+  },
+  [FORGE_AGENT_TOOLS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: "The agent's GitHub and GitLab tools: CI pipelines and job logs, merge and pull requests, and issues of the chat's project, through your signed-in account. The agent loads them when it needs them, and only while an account exists. Writes ask you first, except in YOLO mode.",
+  },
+  [FORGE_CI_STATUS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: "Show the CI chip by the branch in Source Control, its job list and the pipeline status in commit details, read through your GitHub or GitLab account. Off: Damocles reads no CI and polls nothing.",
+  },
+  [FORGE_BRANCH_PROTECTION_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: "Ask before a commit to a branch your GitHub or GitLab server protects, as the Protected branches setting does, and offer to push to a new branch when the server refuses a push to one. Damocles reads the server's rules through your signed-in account in the background and never makes a commit wait for them. Off: only Protected branches asks, and a refused push is not checked against the server's rules.",
+  },
+  [FORGE_CLONE_PROTOCOL_SETTING]: {
+    type: 'string',
+    enum: ['https', 'ssh'],
+    enumDescriptions: ['Clone and publish over https with the account the repository was listed under or published as.', 'Clone and publish over ssh with your own ssh keys.'],
+    default: 'https',
+    scope: 'application',
+    description: 'How Clone from Your Repositories and Publish reach the server: the address they give the new remote.',
+  },
+  [FORGE_AGENT_READ_ANY_REPOSITORY_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: "Let the agent's GitHub and GitLab read tools name any repository your account can see on the project's server. Off: they read only the project's own repositories. Writes always stay on the project's repositories.",
   },
   [REMOTE_AUTO_FORWARD_PORTS_FALLBACK_SETTING]: {
     type: 'integer',

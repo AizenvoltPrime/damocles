@@ -735,6 +735,34 @@
       "remoteHostActions": {
         "label": "Host actions",
         "description": "Passwordless login, the host's log, removing the Damocles server and forgetting the host."
+      },
+      "remoteHostForgeDefaults": {
+        "label": "Default accounts",
+        "description": "Projects on the host use these accounts unless you choose another in Source Control."
+      },
+      "forgeAgentTools": {
+        "label": "Agent's GitHub and GitLab tools",
+        "description": "CI pipelines and job logs, merge and pull requests, and issues of the chat's project, through your account. The agent loads them only while an account exists, and their writes ask you first, except in YOLO mode."
+      },
+      "forgeAgentReadAnyRepository": {
+        "label": "Agent reads any repository",
+        "description": "Lets the agent's read tools target any repository your account can see on the project's server. Writes stay limited to the project's own repositories. Off by default."
+      },
+      "forgeCiStatus": {
+        "label": "CI status",
+        "description": "Show the CI chip by the branch in Source Control, its job list and the pipeline status in commit details. Off: Damocles reads no CI and polls nothing."
+      },
+      "forgeBranchProtection": {
+        "label": "Server branch protection",
+        "description": "Ask before a commit to a branch your GitHub or GitLab server protects, as the Protected branches setting under Source control does, and offer to push to a new branch when the server refuses a push to one. Damocles reads the rules in the background and never makes a commit wait for them. Off: only Protected branches asks, and a refused push is not checked against the server's rules."
+      },
+      "forgeCloneProtocol": {
+        "label": "Clone and publish over",
+        "description": "The address Clone from Your Repositories and Publish give the new remote. HTTPS: git signs in with the account the repository was listed under or published as. SSH: git uses your own SSH keys."
+      },
+      "forgeShowAvatars": {
+        "label": "Account pictures",
+        "description": "Show GitHub and GitLab account pictures in the Graph, blame and menus. Off: Damocles shows the initial and fetches no picture, so no picture host (such as Gravatar) learns of it."
       }
     },
     "restoreDefaults": "Restore defaults",
@@ -1063,7 +1091,9 @@
       "cut": "Cut",
       "copy": "Copy",
       "paste": "Paste",
-      "commandPalette": "Command Palette..."
+      "commandPalette": "Command Palette...",
+      "copyPermalink": "Copy Permalink",
+      "openFileOnServer": "Open File on Server"
     },
     "readOnly": {
       "encoding": "Read-only: this file is not valid UTF-8, so saving could change its bytes.",
@@ -1614,6 +1644,8 @@
       "none": "No results",
       "count": "{count} result | {count} results",
       "position": "{index} of {count}",
+      "countOver": "{count}+ results",
+      "positionOver": "{index} of {count}+",
       "invalid": "Invalid regular expression"
     },
     "pick": {
@@ -1916,7 +1948,8 @@
       "explainCommit": "Explain Changes",
       "deleteBranchRef": "Delete Branch",
       "deleteRemoteBranchRef": "Delete Remote Branch",
-      "deleteTagRef": "Delete Tag"
+      "deleteTagRef": "Delete Tag",
+      "openCommitOnServer": "Open Commit on Server"
     },
     "group": {
       "merge": "Merge Changes",
@@ -2180,7 +2213,8 @@
     "cardLabel": "Commit by {author}",
     "openCommit": "Open Commit",
     "copyCommitId": "Copy Commit ID",
-    "openTimeline": "Open Timeline"
+    "openTimeline": "Open Timeline",
+    "openOnServer": "Open Commit on Server"
   },
   "conflict": {
     "acceptCurrent": "Accept Current Change",
@@ -2512,6 +2546,13 @@
       "selected": "{n} selected",
       "failed": "Some references could not be loaded.",
       "omitted": "{n} more reference not shown | {n} more references not shown"
+    },
+    "status": {
+      "loading": "Checking CI and merge requests…",
+      "pipeline": "{name} {state}",
+      "readFailed": "Damocles could not read this commit's CI status.",
+      "openFailed": "Damocles could not open the pipeline.",
+      "merged": "Merged in {ref}"
     }
   },
   "remote": {
@@ -3178,10 +3219,25 @@
     "credentialsNone": "None yet. Choosing \"Always for {name}\" when git on {name} asks for your credentials adds a host here.",
     "revoke": "Revoke",
     "revokeHost": "Revoke {host}",
+    "forgeAccountAlways": "{login} on {server}",
+    "revokeForgeAccount": "Revoke {login} on {server}",
     "revokeFailed": "It could not be revoked.",
     "changeFolder": "Change...",
     "cancelFolder": "Cancel",
-    "logFailed": "The log of {name} could not be opened."
+    "logFailed": "The log of {name} could not be opened.",
+    "forgeDefaults": {
+      "label": "Default accounts on {name}",
+      "description": "Projects on {name} use these accounts unless you choose another in Source Control. Git on {name} may use a default account without asking.",
+      "none": "No default",
+      "select": "Default account on {server}",
+      "saved": "Saved",
+      "loading": "Loading accounts",
+      "readFailed": "Damocles could not read your GitHub and GitLab accounts.",
+      "retry": "Try again",
+      "empty": "You have no GitHub or GitLab account on this computer yet.",
+      "openAccounts": "Open Accounts",
+      "asDefault": "as {login}, the default"
+    }
   },
   "gitConsent": {
     "title": "{host} wants to use your saved credentials for {credentialHost}",
@@ -3189,7 +3245,18 @@
     "helperWarning": "{host} has a git credential helper of its own, so git will also save this credential on {host}.",
     "once": "Allow once",
     "always": "Always for {host}",
-    "deny": "Deny"
+    "deny": "Deny",
+    "forgeTitle": "Let {host} sign in to {server} as {login}?",
+    "forgeAsked": "Git on {host} asked for {server}.",
+    "forgeReason": {
+      "onlyAccount": "Damocles chose {login} automatically because it is your only account on {server}.",
+      "usernameHint": "Damocles chose {login} automatically because the repository's remote URL names it.",
+      "access": "Damocles chose {login} automatically because it is your only account on {server} that can push to this repository.",
+      "accessRepo": "Damocles chose {login} automatically because it is your only account there that can push to {repo}.",
+      "accessRead": "Damocles chose {login} automatically because none of your accounts on {server} can push to this repository and it is the only one that can read it.",
+      "accessReadRepo": "Damocles chose {login} automatically because none of your accounts there can push to {repo} and it is the only one that can read it."
+    },
+    "forgeStop": "To stop being asked, choose the account in Source Control or set a default for {host} in Settings, Remote hosts."
   },
   "clientCertificate": {
     "title": "Choose a certificate for {site}",
@@ -3249,5 +3316,386 @@
       "quoted": "“{text}”",
       "empty": "(empty)"
     }
+  },
+  "forge": {
+    "chip": {
+      "aria": "Accounts: {summary}",
+      "auto": "auto",
+      "choose": "Choose account",
+      "signInAgain": "· sign in again",
+      "ownCredentials": "Git's own credentials",
+      "signIn": "Sign in",
+      "signInAria": "Sign in to {server}",
+      "signInTitle": "No {server} account. Git's own credentials answer.",
+      "loading": "Checking accounts"
+    },
+    "summary": {
+      "auto": "{login} on {server}, chosen automatically",
+      "chosen": "{login} on {server}, chosen by you",
+      "signInAgain": "{login} on {server}, sign in again",
+      "choose": "{server}, no account chosen",
+      "ownCredentials": "{server}, Git's own credentials",
+      "signIn": "{server}, no account"
+    },
+    "serverHint": {
+      "auto": "{login} · chosen automatically",
+      "chosen": "{login} · chosen by you",
+      "signInAgain": "{login} · sign in again",
+      "choose": "No account chosen",
+      "ownCredentials": "Git's own credentials",
+      "signIn": "No account"
+    },
+    "hint": {
+      "auto": "Chosen automatically",
+      "canPush": "can push",
+      "cannotPush": "cannot push",
+      "ssoRequired": "SSO required",
+      "notApproved": "not approved by the organization",
+      "signInAgain": "sign in again"
+    },
+    "menu": {
+      "label": "Accounts for {project}",
+      "caption": "{project} · {server}",
+      "captionMany": "{project} · {n} servers",
+      "ownCredentials": "Use Git's own credentials",
+      "ownCredentialsHides": "Hides this for the project",
+      "signInTo": "Sign in to {server}…",
+      "signIn": "Sign in…",
+      "settings": "Open Git hosting settings"
+    },
+    "announce": {
+      "account": "{project} now uses {login} on {server}.",
+      "ownCredentials": "{project} now uses Git's own credentials on {server}.",
+      "saveFailed": "Damocles could not save this choice. Try again."
+    },
+    "operation": {
+      "push": "Pushing…",
+      "pull": "Pulling…",
+      "fetch": "Fetching…",
+      "clone": "Cloning…",
+      "publish": "Publishing…"
+    },
+    "notice": {
+      "checkFailed": "Damocles could not reach {server} to check your accounts. Push still uses the account you chose.",
+      "readFailed": "Damocles could not read this project's accounts.",
+      "retry": "Try again",
+      "checkFailedChoose": "Damocles could not reach {server} to check which of your accounts can push here.",
+      "checkFailedAuto": "Damocles could not reach {server} to check your accounts. Push still uses {login}."
+    },
+    "ci": {
+      "state": {
+        "running": "running",
+        "passed": "passed",
+        "failed": "failed",
+        "canceled": "canceled",
+        "skipped": "skipped",
+        "created": "created",
+        "pending": "pending",
+        "scheduled": "scheduled",
+        "manual": "manual"
+      },
+      "duration": {
+        "seconds": "{s}s",
+        "minutes": "{m}m {s}s",
+        "hours": "{h}h {m}m"
+      },
+      "readFailed": "Damocles could not read CI for this repository.",
+      "tryAgain": "Try again",
+      "chip": {
+        "loading": "Checking CI",
+        "error": "CI status unavailable",
+        "running": "{name} {state}, {done} of {total} jobs done",
+        "failed": "{name} {state}, {count} job failed | {name} {state}, {count} jobs failed",
+        "state": "{name} {state}",
+        "title": "{name}. Show jobs",
+        "titleOther": "{name}, of commit {sha}, not the current one. Show jobs"
+      },
+      "pipeline": {
+        "name": "Pipeline #{n}",
+        "unknown": "Pipeline",
+        "progress": "{done} of {total} jobs done",
+        "cancel": "Cancel pipeline",
+        "retry": "Retry pipeline",
+        "openOn": "Open pipeline on {server}",
+        "none": "No pipeline runs for this branch.",
+        "truncated": "{server} lists more jobs than Damocles reads, so this list is cut."
+      },
+      "checks": {
+        "name": "Checks",
+        "openOn": "Open checks on {server}"
+      },
+      "stage": {
+        "other": "Other checks"
+      },
+      "run": {
+        "retry": "Retry failed jobs of {run}",
+        "cancel": "Cancel {run}"
+      },
+      "job": {
+        "cancel": "Cancel {job}",
+        "retry": "Retry {job}",
+        "openLog": "Open log: {job}",
+        "allowedFailure": "failed, allowed to fail"
+      },
+      "announce": {
+        "jobFinished": "{job} {state}. {done} of {total} jobs done.",
+        "jobRestarted": "{job} restarted.",
+        "pipelineFinished": "{name} {state}."
+      },
+      "actionFailed": {
+        "cancel": "Damocles could not cancel {name}.",
+        "retry": "Damocles could not retry {name}."
+      },
+      "openLogFailed": "Damocles could not open the {job} log.",
+      "openFailed": "Damocles could not open this on its server.",
+      "opened": "Opened {thing} on {server} in your browser.",
+      "otherCommit": "Shows commit {sha}, not the current one"
+    },
+    "log": {
+      "label": "{job} log",
+      "toolbar": "Log",
+      "fold": "Fold {title}",
+      "unfold": "Unfold {title}",
+      "foldedLines": "{n} line | {n} lines",
+      "running": "Running. New output appears every few seconds.",
+      "newOutput": "New output",
+      "find": "Find in log",
+      "follow": "Follow",
+      "followTitle": "Follow the end of the log",
+      "timestamps": "Timestamps",
+      "foldAll": "Fold all sections",
+      "foldAllShort": "Fold all",
+      "cancel": "Cancel job",
+      "retry": "Retry job",
+      "openOn": "Open on {server}",
+      "truncated": "Showing the last 16 MiB",
+      "loading": "Loading the {job} log",
+      "errorTitle": "Damocles could not read this log",
+      "readFailed": "Damocles could not ask for this log.",
+      "finished": "{job} {state}.",
+      "tail": {
+        "passed": "Passed.",
+        "passedIn": "Passed in {duration}.",
+        "failed": "Failed.",
+        "failedIn": "Failed in {duration}.",
+        "canceled": "Canceled.",
+        "canceledIn": "Canceled after {duration}.",
+        "finished": "Finished.",
+        "finishedIn": "Finished in {duration}."
+      },
+      "githubRunning": {
+        "title": "GitHub shows this log when the job finishes",
+        "text": "Until then, here are its steps. The log opens here by itself once {job} finishes.",
+        "steps": "Steps of {job}",
+        "open": "Open on GitHub"
+      },
+      "runner": "runner {runner}",
+      "level": {
+        "error": "Error:",
+        "warning": "Warning:",
+        "notice": "Notice:"
+      },
+      "directionControl": "Text direction character {name}, {code}",
+      "stale": "Could not read new output."
+    }
+  },
+  "forgeAsk": {
+    "title": "Which {server} account should {project} use?",
+    "on": "on",
+    "message": "You have one {server} account. Damocles remembers your choice for this project. You can change it later from the account chip in Source Control. | You have {n} {server} accounts. Damocles remembers your choice for this project. You can change it later from the account chip in Source Control.",
+    "messageChecking": "You have one {server} account. Damocles is checking whether it can push here; you can choose now. | You have {n} {server} accounts. Damocles is checking which of them can push here; you can choose now.",
+    "listLabel": "Account for {server}",
+    "use": "Use {login}",
+    "useOwn": "Use Git's own credentials",
+    "signIn": "Sign in…",
+    "cancel": "Cancel",
+    "signInAnother": "Sign in with another account…",
+    "ownHint": "Your credential manager answers, as before",
+    "signInHint": "Opens Settings › Models & accounts › Git hosting",
+    "owner": "owner",
+    "admin": "admin",
+    "access": {
+      "checking": "checking access",
+      "canPush": "can push",
+      "readOnly": "read only",
+      "ssoRequired": "SSO required",
+      "notApproved": "not approved by the organization",
+      "signInAgain": "sign in again"
+    }
+  },
+  "clonePicker": {
+    "dialog": "Clone a repository",
+    "label": "Repository",
+    "placeholder": "Search your repositories, or paste a URL",
+    "hint": "Repositories from your account. The clone uses the account it was listed under. | Repositories from your {n} accounts. The clone uses the account it was listed under.",
+    "hintSsh": "Repositories from your account. The clone uses your SSH keys, and the new project uses the account it was listed under. | Repositories from your {n} accounts. The clone uses your SSH keys, and the new project uses the account it was listed under.",
+    "listLabel": "Repositories",
+    "accountOn": "{login} on {server}",
+    "option": "{path}, {visibility}, {account}",
+    "searching": "Searching {server}…",
+    "unreachable": "{server} did not answer.",
+    "retry": "Try again",
+    "signInAgain": "Sign in again to {server}",
+    "visibility": {
+      "public": "public",
+      "private": "private",
+      "internal": "internal"
+    },
+    "pill": {
+      "archived": "archived",
+      "fork": "fork",
+      "mirror": "mirror"
+    },
+    "fromUrl": "Clone from URL",
+    "pasteAccount": "as {login} on {server}",
+    "pasteAccountSsh": "with your SSH keys, for {login} on {server}",
+    "notUrl": "Damocles cannot clone this address. Paste a repository URL (https://, ssh://, git@host:path) or the full path of a local folder.",
+    "noResults": "No repository matched \"{query}\" in your account. | No repository matched \"{query}\" in your {n} accounts.",
+    "noRepositories": "No repositories",
+    "clear": "Clear the search",
+    "emptyTitle": "No GitHub or GitLab account yet.",
+    "emptyBody": "Sign in to pick from your repositories, or paste a repository URL above.",
+    "notLoadedTitle": "Damocles could not read your GitHub and GitLab accounts.",
+    "notLoadedBody": "Try again, or paste a repository URL above.",
+    "openAccounts": "Open Git hosting settings",
+    "count": "{n} repository | {n} repositories",
+    "loadFailed": "Damocles could not list your accounts.",
+    "startFailed": "Damocles could not start this clone.",
+    "keys": {
+      "choose": "choose",
+      "clone": "clone",
+      "close": "close"
+    },
+    "refused": "{server} refused to list the repositories of {login}."
+  },
+  "forgeFlow": {
+    "label": "Progress",
+    "steps": "Steps",
+    "progress": "{done} of {total} steps done",
+    "failedAt": "Failed at {step}",
+    "activeStep": "Step {index} of {total}: {step}",
+    "withState": ", {state}",
+    "state": {
+      "pending": "not started",
+      "active": "in progress",
+      "done": "done",
+      "failed": "failed"
+    }
+  },
+  "forgePublish": {
+    "title": "Publish {project}",
+    "titleRunning": "Publishing {path}",
+    "titleDone": "Published {path}",
+    "message": "Damocles creates the repository, adds it as {origin} and pushes {branch} with the account you pick. This project then uses that account.",
+    "owner": "Owner",
+    "accountOn": "{login} on {server}",
+    "you": "{login} (you)",
+    "hint": {
+      "personal": "Your own namespace on {server}.",
+      "group": "Groups where {login} can create projects.",
+      "org": "Organizations {login} belongs to on {server}."
+    },
+    "name": "Name",
+    "nameHint": "Letters, digits, dots, dashes and underscores. Spaces become dashes.",
+    "nameRule": "Use letters, digits, dots, dashes or underscores.",
+    "submitFailed": "Damocles could not start this publish.",
+    "visibilityLabel": "Visibility",
+    "visibility": {
+      "private": "Private",
+      "internal": "Internal",
+      "public": "Public"
+    },
+    "publish": "Publish",
+    "cancel": "Cancel",
+    "close": "Close",
+    "step": {
+      "create": "Create {path} on {server}",
+      "origin": "Add it as origin",
+      "push": "Push {branch} as {login}"
+    },
+    "done": "Published {server}/{path}. This project now uses {login} on {server}.",
+    "owners": {
+      "loadingOption": {
+        "groups": "Loading groups…",
+        "orgs": "Loading organizations…"
+      },
+      "loading": {
+        "groups": "Listing the groups of {login} on {server}…",
+        "orgs": "Listing the organizations of {login} on {server}…"
+      },
+      "loaded": {
+        "groups": "Listed no groups for {login} on {server}. | Listed 1 group for {login} on {server}. | Listed {count} groups for {login} on {server}.",
+        "orgs": "Listed no organizations for {login} on {server}. | Listed 1 organization for {login} on {server}. | Listed {count} organizations for {login} on {server}."
+      },
+      "truncated": {
+        "groups": "Only the first {count} groups of {login} on {server} are listed. The server has more.",
+        "orgs": "Only the first {count} organizations of {login} on {server} are listed. The server has more."
+      },
+      "askFailed": "Damocles could not ask where {login} on {server} can publish.",
+      "tryAgain": "Try again",
+      "tryAgainFor": "Try again for {login} on {server}"
+    }
+  },
+  "forgeFork": {
+    "title": "You can't push to {path}",
+    "titleRunning": "Forking {path}",
+    "titleDone": "Pushed to your fork",
+    "messageGitlab": "{login} can read {path} on {server} but not push to it. Fork it to {login}, push {branch} there, then open a merge request.",
+    "messageGithub": "{login} can read {path} on {server} but not push to it. Fork it to {login}, push {branch} there, then open a pull request.",
+    "upstreamExists": "This repository already has a remote named {taken}. Damocles names the original {upstream} and leaves yours as it is.",
+    "forkAndPush": "Fork and Push",
+    "cancel": "Cancel",
+    "close": "Close",
+    "openMergeRequest": "Open Merge Request",
+    "openPullRequest": "Open Pull Request",
+    "step": {
+      "fork": "Fork {path} to {login}",
+      "rename": "Rename {remote} to {upstream}",
+      "origin": "Add your fork as origin",
+      "push": "Push {branch}"
+    },
+    "waiting": "Waiting for {server} to copy the repository",
+    "remotes": "Remotes",
+    "restored": "Nothing changed on your remotes.",
+    "keptLayout": "origin is now your fork, and {upstream} is {server}/{path}.",
+    "pushed": "Pushed {branch} to your fork.",
+    "startFailed": "Damocles could not start Fork and Push."
+  },
+  "forgeProtected": {
+    "title": {
+      "ask": "{branch} is protected on {server}",
+      "name": "Push to a new branch",
+      "running": "Pushing {name}",
+      "failed": "{name} was not pushed",
+      "done": "Pushed {name}"
+    },
+    "messageGithub": "{server} accepts changes to {branch} only through a pull request, so {login} cannot push to it. Push your commits to a new branch, then open a pull request.",
+    "messageGitlab": "{server} accepts changes to {branch} only through a merge request, so {login} cannot push to it. Push your commits to a new branch, then open a merge request.",
+    "unpushed": "{localBranch} has {count} commit that {remote} does not have. It goes on the new branch too, and {localBranch} stays as it is. | {localBranch} has {count} commits that {remote} does not have. They go on the new branch too, and {localBranch} stays as it is.",
+    "pushToNewBranch": "Push to a New Branch",
+    "cancel": "Cancel",
+    "close": "Close",
+    "nameMessage": "Damocles creates the branch at your latest commit, switches to it and pushes it to {remote}. {localBranch} stays as it is.",
+    "nameLabel": "Branch name",
+    "nameHint": "Git's branch name rules apply, and the name must be new here and on {remote}.",
+    "push": "Create and Push",
+    "problem": {
+      "empty": "Type a name for the new branch.",
+      "invalid": "Git does not accept this as a branch name. Leave out spaces and ~ ^ : ? * [, and do not start with - or end with . or /.",
+      "existsLocally": "A local branch named {name} exists already.",
+      "existsOnRemote": "{remote} has a branch named {name} already.",
+      "conflicts": "{name} clashes with an existing branch: one branch name cannot be a folder of another."
+    },
+    "checkFailed": "Damocles could not check this name. It checks it again when you push.",
+    "startFailed": "Damocles could not start the push.",
+    "step": {
+      "branch": "Create {name} and switch to it",
+      "push": "Push {name} to {remote}"
+    },
+    "failedOnBranch": "You are on {name} now. {localBranch} is as it was.",
+    "failedBefore": "No branch was created and nothing was pushed.",
+    "done": "Pushed {name} to {remote}. {localBranch} is unchanged.",
+    "openPullRequest": "Open Pull Request",
+    "openMergeRequest": "Open Merge Request"
   }
 }

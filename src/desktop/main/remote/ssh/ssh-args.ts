@@ -2,8 +2,9 @@
 // users as `-l`'s value, all refused when they start with `-`, and only allowlisted options are passed, each as one
 // `-o Name="value"`.
 import * as path from 'node:path';
+import { isSafeAlias, SSH_UNSAFE } from '../../../../shared/ssh-alias';
 import type { ControlMasterPlan } from './control-master';
-import { isAllowedSshOption, isSafeHost, isSafeUser, UNSAFE, type SshDestination } from './ssh-command-parse';
+import { isAllowedSshOption, isSafeHost, isSafeUser, type SshDestination } from './ssh-command-parse';
 
 // ssh keeps the first value it reads for an option, and these come before the saved options and win over them and the user's
 // config: RemoteCommand=none, and the keepalive and timeout that decide drop detection.
@@ -18,16 +19,8 @@ export const FIXED_SSH_OPTIONS: readonly string[] = [
   '-o', 'ClearAllForwardings=yes',
 ];
 
-// at most 255 characters, a DNS name's bound
-const ALIAS = /^[^\s-][^\s]{0,254}$/;
-
 export class SshArgumentError extends Error {
   override readonly name = 'SshArgumentError';
-}
-
-/** A Host alias ssh takes as written: no option, no `user@` or `ssh://` it would reinterpret, no pattern. */
-export function isSafeAlias(alias: string): boolean {
-  return ALIAS.test(alias) && !UNSAFE.test(alias) && !/[*?!@]/.test(alias) && !alias.startsWith('ssh://');
 }
 
 /**
@@ -36,7 +29,7 @@ export function isSafeAlias(alias: string): boolean {
  * `\\` as one backslash; elsewhere a backslash, and anywhere a double quote, is refused.
  */
 export function optionArg(name: string, value: string, platform: NodeJS.Platform = process.platform): string {
-  if (value.includes('"') || UNSAFE.test(value) || (platform !== 'win32' && value.includes('\\'))) throw new SshArgumentError(`The ${name} value holds a character ssh would not read back as written.`);
+  if (value.includes('"') || SSH_UNSAFE.test(value) || (platform !== 'win32' && value.includes('\\'))) throw new SshArgumentError(`The ${name} value holds a character ssh would not read back as written.`);
   return `${name}="${platform === 'win32' ? value.replaceAll('\\', '/') : value}"`;
 }
 

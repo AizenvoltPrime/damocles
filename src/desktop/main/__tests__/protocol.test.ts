@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() } }));
 
 import { protocol } from 'electron';
-import { appResourceUri, handleAppProtocol, mimeTypeFor, NOTIFIER_PAGE_URL, panelPageUrl, registerAppScheme, resolveAppRequest } from '../protocol';
+import { appResourceUri, handleAppProtocol, mimeTypeFor, NOTIFIER_PAGE_URL, panelPageUrl, registerAppScheme, resolveAppRequest, type AppPages } from '../protocol';
 
 let root: string;
 
@@ -139,9 +139,9 @@ describe('mimeTypeFor', () => {
 
 describe('handleAppProtocol', () => {
   // Monaco's workers load by URL from dist/webview/assets, and a worker served with a non-script type fails under nosniff.
-  async function fetchApp(url: string): Promise<Response> {
+  async function fetchApp(url: string, forgeAvatar: AppPages['forgeAvatar'] = () => Promise.resolve(undefined)): Promise<Response> {
     vi.mocked(protocol.handle).mockClear();
-    handleAppProtocol(root, { panel: () => undefined, shell: () => '', overlay: () => '', notifier: () => '' });
+    handleAppProtocol(root, { panel: () => undefined, shell: () => '', overlay: () => '', notifier: () => '', forgeAvatar });
     const handler = vi.mocked(protocol.handle).mock.calls[0]?.[1];
     if (!handler) throw new Error('no app:// handler registered');
     return handler(new Request(url)) as Promise<Response>;
@@ -164,6 +164,35 @@ describe('handleAppProtocol', () => {
     expect(script.headers.get('content-security-policy')).toBe("default-src 'none'; script-src app://damocles");
     const style = await fetchApp('app://damocles/webview/assets/monaco-editor-Ef56.css');
     expect(style.headers.get('content-security-policy')).toBeNull();
+  });
+
+  const AVATAR_KEY = 'a'.repeat(64);
+
+  it('serves a forge account picture core gave, as its sniffed type under nosniff and a no-content policy', async () => {
+    const asked: string[] = [];
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const response = await fetchApp(`app://damocles/forge/avatar/${AVATAR_KEY}`, (key) => {
+      asked.push(key);
+      return Promise.resolve({ bytes: png, mime: 'image/png' });
+    });
+    expect(asked).toEqual([AVATAR_KEY]);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response.headers.get('content-security-policy')).toBe("default-src 'none'");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(png);
+  });
+
+  it('answers 404 for an avatar key core does not list, a malformed key, and a failed fetch', async () => {
+    expect((await fetchApp(`app://damocles/forge/avatar/${AVATAR_KEY}`)).status).toBe(404);
+    const asked: string[] = [];
+    const record: AppPages['forgeAvatar'] = (key) => {
+      asked.push(key);
+      return Promise.resolve(undefined);
+    };
+    for (const key of ['ABC', `${AVATAR_KEY}0`, `../${AVATAR_KEY}`, 'g'.repeat(64)]) expect((await fetchApp(`app://damocles/forge/avatar/${key}`, record)).status).toBe(404);
+    expect(asked).toEqual([]);
+    expect((await fetchApp(`app://damocles/forge/avatar/${AVATAR_KEY}`, () => Promise.reject(new Error('core could not fetch it')))).status).toBe(404);
   });
 
   it('serves an SVG under a policy that runs no script if it is ever opened as a document', async () => {

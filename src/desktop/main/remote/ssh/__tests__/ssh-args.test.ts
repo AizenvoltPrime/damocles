@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildSshArgs, buildSshConfigQueryArgs, buildSshControlArgs, buildSshVerifyArgs, FIXED_SSH_OPTIONS, identityArgs, isSafeAlias, optionArg, SshArgumentError,
+  buildSshArgs, buildSshConfigQueryArgs, buildSshControlArgs, buildSshVerifyArgs, FIXED_SSH_OPTIONS, identityArgs, optionArg, SshArgumentError,
 } from '../ssh-args';
 import type { SshDestination } from '../ssh-command-parse';
 
@@ -82,13 +82,6 @@ describe('identityArgs', () => {
     expect(identityArgs(percent)[3]).toBe(`IdentityFile="${percent.replaceAll('\\', '/')}"`);
     expect(() => identityArgs('relative/key')).toThrow(SshArgumentError);
     expect(() => identityArgs(`${KEY}\n-oProxyCommand=calc`)).toThrow(SshArgumentError);
-  });
-});
-
-describe('isSafeAlias', () => {
-  it('takes an alias ssh reads as written and refuses an option, a user, a URI, a pattern or a control character', () => {
-    for (const alias of ['prod-1', 'build.example.com', 'a'.repeat(255), 'prod_2']) expect(isSafeAlias(alias), alias).toBe(true);
-    for (const alias of ['', '-oProxyCommand=x', 'a b', ' a', 'a*', 'a?', '!a', 'a\u0001', 'a\u200B', 'a'.repeat(256), 'bob@prod', 'ssh://prod:2200']) expect(isSafeAlias(alias), JSON.stringify(alias)).toBe(false);
   });
 });
 

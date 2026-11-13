@@ -175,9 +175,9 @@ describe('the Graph menus', () => {
   const english = (key: string): string => shellI18n.global.t(`scm.${key}`, 1, { locale: 'en' });
 
   it('builds the commit menu in the plan\'s order, Compare with Remote and Compare with Merge Base off without an upstream or a base', () => {
-    const items = toOverlayMenu(graphCommitMenu({ hasUpstream: false, hasBase: false, operation: null }), english);
+    const items = toOverlayMenu(graphCommitMenu({ hasUpstream: false, hasBase: false, operation: null, hasForge: true }), english);
     expect(items.map((item) => (item.kind === 'separator' ? '-' : item.label))).toEqual([
-      'Open Changes', '-', 'Checkout (Detached)', 'Create Branch...', 'Create Tag...', 'Cherry Pick', '-',
+      'Open Changes', 'Open Commit on Server', '-', 'Checkout (Detached)', 'Create Branch...', 'Create Tag...', 'Cherry Pick', '-',
       'Compare with...', 'Compare with Remote', 'Compare with Merge Base', '-', 'Copy Commit ID', 'Copy Commit Message', '-',
       'Add to Chat', 'Explain Changes',
     ]);
@@ -186,12 +186,19 @@ describe('the Graph menus', () => {
     expect(items.slice(-2).some((item) => item.kind === 'item' && item.disabled)).toBe(false);
     const off = Object.fromEntries(items.flatMap((item) => (item.kind === 'item' ? [[item.id, item.disabledReason ?? null]] : [])));
     expect(off).toMatchObject({ compareWithRemote: 'No upstream', compareWithMergeBase: 'No base', compareCommit: null });
-    const on = toOverlayMenu(graphCommitMenu({ hasUpstream: true, hasBase: true, operation: null }), english);
+    const on = toOverlayMenu(graphCommitMenu({ hasUpstream: true, hasBase: true, operation: null, hasForge: true }), english);
     expect(on.some((item) => item.kind === 'item' && item.disabled)).toBe(false);
     // git cannot cherry-pick while a merge, rebase or cherry-pick is in progress, as the palette command says
-    const picking = toOverlayMenu(graphCommitMenu({ hasUpstream: true, hasBase: true, operation: 'cherryPick' }), english);
+    const picking = toOverlayMenu(graphCommitMenu({ hasUpstream: true, hasBase: true, operation: 'cherryPick', hasForge: true }), english);
     expect(picking.find((item) => item.kind === 'item' && item.id === 'cherryPick')).toMatchObject({ disabled: true, disabledReason: 'Cherry pick in progress' });
     expect(picking.filter((item) => item.kind === 'item' && item.disabled)).toHaveLength(1);
+  });
+
+  it('offers Open Commit on Server only while a remote is on a server with an account', () => {
+    const ids = (hasForge: boolean): string[] => toOverlayMenu(graphCommitMenu({ hasUpstream: true, hasBase: true, operation: null, hasForge }), english).flatMap((item) => (item.kind === 'item' ? [item.id] : []));
+    expect(ids(true)).toContain('openCommitOnServer');
+    expect(ids(false)).not.toContain('openCommitOnServer');
+    expect(ids(false)[0]).toBe('openCommit');
   });
 
   it('sends each commit action with the full hash, and the copies as main\'s commitId and commitMessage kinds', () => {
@@ -384,6 +391,16 @@ describe('the Graph section', () => {
     await tree.trigger('keydown', { key: 'F10', shiftKey: true });
     await flushPromises();
     expect(vi.mocked(shell.requestOverlay)).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends Open Commit on Server for the row\'s full hash to main, which opens it and says so', async () => {
+    const scm = scmWith(page(MERGED));
+    const shell = fakeShellApi();
+    shell.answerNext({ kind: 'menu', itemId: 'openCommitOnServer' });
+    const { wrapper } = await mountGraph(scm, {}, shell);
+    await graphRows(wrapper)[1]!.trigger('contextmenu');
+    await flushPromises();
+    expect(shell.forge.link).toHaveBeenCalledWith({ action: 'openCommit', repoId: 'r1', sha: hash(2) });
   });
 
   it('opens the ref menu from a focused badge with Shift+F10, and runs Delete Branch through the slice 11b flow', async () => {
@@ -590,5 +607,104 @@ describe('the ref picker', () => {
     await filter.trigger('keydown', { key: ' ' });
     await filter.trigger('keydown', { key: 'Enter' });
     expect(wrapper.emitted('answer')).toEqual([[{ kind: 'refPicker', choice: 'auto' }]]);
+  });
+});
+
+describe('the commit details CI status row', () => {
+  const details = { hash: hash(2), parents: [hash(3), hash(4)], message: 'Merge', messageTruncated: false, author: 'Ada', email: 'a@x', authorDate: NOW, files: [], filesTruncated: false };
+  const statusRow = (wrapper: VueWrapper) => wrapper.find('[data-testid="graph-detail"][data-kind="status"]');
+
+  async function expandWith(answer: (shell: FakeShellApi) => void): Promise<{ wrapper: VueWrapper; shell: FakeShellApi }> {
+    const scm = scmWith(page(MERGED));
+    vi.mocked(scm.commitDetails).mockResolvedValue({ ok: true, details });
+    const shell = fakeShellApi();
+    // a remote on a server with an account: CI is read only then
+    shell.forge.contexts.set('r1', { kind: 'gitlab', serverName: 'gitlab.indigital.gr', showAvatars: false });
+    answer(shell);
+    const { wrapper } = await mountGraph(scm, {}, shell);
+    await graphRows(wrapper)[1]!.trigger('click');
+    await flushPromises();
+    return { wrapper, shell };
+  }
+
+  it('says Checking CI and merge requests… while the status is read, then links the pipeline under the message', async () => {
+    let settle!: (status: Awaited<ReturnType<FakeShellApi['forge']['commitStatus']>>) => void;
+    const { wrapper, shell } = await expandWith((api) => vi.mocked(api.forge.commitStatus).mockImplementation(() => new Promise((resolve) => (settle = resolve))));
+    expect(shell.forge.commitStatus).toHaveBeenCalledWith('r1', hash(2), false);
+    expect(statusRow(wrapper).attributes('aria-busy')).toBe('true');
+    expect(statusRow(wrapper).text()).toBe('Checking CI and merge requests…');
+
+    settle({ status: 'ready', pipeline: { id: 99_001, number: 4312, state: 'passed', serverName: 'gitlab.indigital.gr', kind: 'gitlab' } });
+    await flushPromises();
+    const kinds = wrapper.findAll('[data-testid="graph-detail"]').map((row) => row.attributes('data-kind'));
+    expect(kinds.slice(0, 3)).toEqual(['meta', 'message', 'status']);
+    const link = statusRow(wrapper).get('[role="link"]');
+    expect(link.text()).toBe('Pipeline #4312 passed');
+
+    await link.trigger('click');
+    await flushPromises();
+    expect(shell.forge.openOnServer).toHaveBeenCalledWith('r1', { pipelineId: 99_001 });
+    const opened = wrapper.get('[data-testid="graph-ci-opened"]');
+    expect(opened.attributes('aria-live')).toBe('polite');
+    expect(opened.text()).toBe('Opened Pipeline #4312 on gitlab.indigital.gr in your browser.');
+  });
+
+  it('names a GitHub commit\'s status its checks, and opens the commit\'s checks page', async () => {
+    const { wrapper, shell } = await expandWith((api) => vi.mocked(api.forge.commitStatus).mockResolvedValue({ status: 'ready', pipeline: { id: 0, number: 0, state: 'failed', serverName: 'github.com', kind: 'github' } }));
+    const link = statusRow(wrapper).get('[role="link"]');
+    expect(link.text()).toBe('Checks failed');
+    await link.trigger('click');
+    await flushPromises();
+    expect(shell.forge.openOnServer).toHaveBeenCalledWith('r1', { sha: hash(2) });
+  });
+
+  it('says why the status could not be read, and Try again asks again', async () => {
+    const { wrapper, shell } = await expandWith((api) => vi.mocked(api.forge.commitStatus).mockResolvedValueOnce({ status: 'error', message: 'gitlab.indigital.gr did not answer. CI status and merge request are not shown.' }));
+    expect(statusRow(wrapper).text()).toContain('gitlab.indigital.gr did not answer. CI status and merge request are not shown.');
+    vi.mocked(shell.forge.commitStatus).mockResolvedValueOnce({ status: 'ready', pipeline: { id: 1, number: 4312, state: 'failed', serverName: 'gitlab.indigital.gr', kind: 'gitlab' } });
+    await statusRow(wrapper).get('[data-testid="graph-ci-retry"]').trigger('click');
+    await flushPromises();
+    expect(shell.forge.commitStatus).toHaveBeenLastCalledWith('r1', hash(2), true);
+    expect(statusRow(wrapper).get('[role="link"]').text()).toBe('Pipeline #4312 failed');
+  });
+
+  it('says in an alert when the pipeline could not be opened', async () => {
+    const { wrapper, shell } = await expandWith((api) => vi.mocked(api.forge.commitStatus).mockResolvedValue({ status: 'ready', pipeline: { id: 1, number: 4312, state: 'passed', serverName: 'gitlab.indigital.gr', kind: 'gitlab' } }));
+    vi.mocked(shell.forge.openOnServer).mockResolvedValueOnce(null);
+    await statusRow(wrapper).get('[role="link"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('[data-testid="graph-ci-open-failed"]').attributes('role')).toBe('alert');
+    expect(wrapper.get('[data-testid="graph-ci-open-failed"]').text()).toBe('Damocles could not open the pipeline.');
+    expect(wrapper.get('[data-testid="graph-ci-opened"]').text()).toBe('');
+  });
+
+  it('drops the open\'s alert when another repository shows', async () => {
+    const other = { ...ROOT, repoId: 'r2', label: 'other', root: '/w/other' };
+    const scm = fakeScmApi({ views: [view({ repos: [ROOT, other] })], snapshots: [snapshot, { ...snapshot, repoId: 'r2' }], decorations: [], settings: SCM_SETTINGS, clone: NO_CLONE });
+    vi.mocked(scm.history).mockResolvedValue(page(MERGED));
+    vi.mocked(scm.commitDetails).mockResolvedValue({ ok: true, details });
+    const shell = fakeShellApi();
+    shell.forge.contexts.set('r1', { kind: 'gitlab', serverName: 'gitlab.indigital.gr', showAvatars: false });
+    vi.mocked(shell.forge.commitStatus).mockResolvedValue({ status: 'ready', pipeline: { id: 1, number: 4312, state: 'passed', serverName: 'gitlab.indigital.gr', kind: 'gitlab' } });
+    vi.mocked(shell.forge.openOnServer).mockResolvedValueOnce(null);
+    const { wrapper } = await mountGraph(scm, {}, shell);
+    await graphRows(wrapper)[1]!.trigger('click');
+    await flushPromises();
+    await statusRow(wrapper).get('[role="link"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="graph-ci-open-failed"]').exists()).toBe(true);
+    scm.pushView(view({ repos: [ROOT, other], selectedRepoId: 'r2' }));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="graph-ci-open-failed"]').exists()).toBe(false);
+  });
+
+  it('has no row without an account for the server, or without a pipeline', async () => {
+    const none = await expandWith(() => undefined);
+    expect(statusRow(none.wrapper).exists()).toBe(false);
+    const noServer = await expandWith((api) => api.forge.contexts.delete('r1'));
+    expect(noServer.shell.forge.commitStatus).not.toHaveBeenCalled();
+    expect(statusRow(noServer.wrapper).exists()).toBe(false);
+    const noPipeline = await expandWith((api) => vi.mocked(api.forge.commitStatus).mockResolvedValue({ status: 'none' }));
+    expect(statusRow(noPipeline.wrapper).exists()).toBe(false);
   });
 });

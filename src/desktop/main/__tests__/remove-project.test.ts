@@ -48,6 +48,9 @@ function setup(world: Partial<World> = {}) {
     remove: vi.fn(async () => {
       w.trail.push('remove');
     }),
+    forgetAccounts: vi.fn(async () => {
+      w.trail.push('forgetAccounts');
+    }),
     t,
   };
   return { w, deps };
@@ -59,14 +62,14 @@ describe('removeProject', () => {
     expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
     expect(deps.ask).not.toHaveBeenCalled();
     expect(w.killAsked).toEqual([['term-1']]);
-    expect(w.trail).toEqual(['remove']);
+    expect(w.trail).toEqual(['remove', 'forgetAccounts']);
   });
 
   it('asks nothing and removes a project with no waiting message and no terminal', async () => {
     const { w, deps } = setup();
     expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
     expect(deps.ask).not.toHaveBeenCalled();
-    expect(w.trail).toEqual(['remove']);
+    expect(w.trail).toEqual(['remove', 'forgetAccounts']);
   });
 
   it('asks one question naming the project and its waiting chats, and Cancel changes nothing', async () => {
@@ -90,7 +93,7 @@ describe('removeProject', () => {
     const { w, deps } = setup({ waiting: [held('p1', 'Fix the login page', { worktreeId: 'wt-1' })] });
     expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
     expect(w.asked[0]!.message).toBe('acme has a chat whose first message is waiting for its worktree. Do you want to remove the project?');
-    expect(w.trail).toEqual(['discard:p1', 'remove']);
+    expect(w.trail).toEqual(['discard:p1', 'remove', 'forgetAccounts']);
   });
 
   it('merges the terminal question into the one question, counting no Setup terminal of a waiting chat', async () => {
@@ -103,7 +106,7 @@ describe('removeProject', () => {
     expect(w.asked).toHaveLength(1);
     expect(w.asked[0]!.detail).toBe('Removing it discards the message and the worktree being prepared for it. It also terminates an active terminal session.');
     expect(deps.terminals.confirmKill).not.toHaveBeenCalled();
-    expect(w.trail).toEqual(['discard:p1', 'remove']);
+    expect(w.trail).toEqual(['discard:p1', 'remove', 'forgetAccounts']);
   });
 
   it('asks again, listing it, when another chat starts holding its first message while the terminal question is open', async () => {
@@ -115,7 +118,7 @@ describe('removeProject', () => {
     expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
     expect(w.killAsked).toHaveLength(1);
     expect(w.asked.map((question) => question.preview)).toEqual([['Late prompt']]);
-    expect(w.trail).toEqual(['discard:p1', 'remove']);
+    expect(w.trail).toEqual(['discard:p1', 'remove', 'forgetAccounts']);
   });
 
   it('refuses while a conversation runs, before and after the question', async () => {

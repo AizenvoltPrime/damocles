@@ -112,10 +112,13 @@ import { accountOfModel, accountOfProvider, failureCard, failureText } from "./p
 import { failedCallError } from "./nested-call-failures";
 import type { SettingsAccountId } from "../../shared/settings-sections";
 import type { OpenAIAuthStatus } from "./openai-auth";
-import { agentSocketPath, asClient, clientHasCredential, credentialSourceOf, currentPin, runPinnedTurn, type SignInPrompts } from "../client-snapshots";
-import { installedCredentialRelay, spawnCredentialVariables } from "../scm/askpass/credential-relay";
+import { agentSocketPath, asClient, clientHasCredential, clientPending, credentialSourceOf, currentPin, runPin, runPinnedTurn, type SignInPrompts } from "../client-snapshots";
+import { CREDENTIAL_NONCE_VARIABLE, installedCredentialRelay, spawnCredentialVariables } from "../scm/askpass/credential-relay";
+import { asConfigParams, installedCredentialHelper } from "../scm/askpass/credential-config";
+import type { CredentialRegistration } from "../scm/askpass/askpass-server";
 import { pinRunStarts, recordCredentialSources } from "./credential-broker";
 import { clientProviderEndpoints } from "./custom-providers";
+import type { ForgeToolsPort } from "./tools/forge-tools";
 import { buildCustomTools, type CustomToolDeps } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import type { UserInput } from "./tools/subagent-tools";
@@ -123,6 +126,8 @@ import { processLauncher } from "../process-launcher";
 import { UnpersistedToolImages } from "./unpersisted-tool-images";
 import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
 import type { ShellOptions } from "./tools/bash-tool";
+import type { ShellCredentialLease } from "./tools/shell-credentials";
+import type { GitCredentialOrigin } from "../../shared/git-credential";
 import type { WorktreeIsolation } from "./worktree-isolation";
 import type { ChatMachine } from "./proven-shell";
 import { powerShellSearch } from "./tools/powershell-tool";
@@ -223,7 +228,7 @@ import { NO_RESOURCE_READ, type ResourceReadReach } from "./mcp/content";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext, type AgentUiAttribution } from "./extension-ui-context";
 import type { CheckpointBaselineGate, PanelGateContext, SystemPromptEnv } from "./permission-gate";
-import type { ToolsSnapshot } from "../../shared/types/tools";
+import { TOOL_GROUP_SETTINGS, type ToolsSnapshot } from "../../shared/types/tools";
 import {
   extractText,
   extractImages,
@@ -263,11 +268,12 @@ import {
   mcpDeferrableNames,
   type ToolStatusDeps,
 } from "./tool-status";
-import { deferredToolNames, loadableToolNames } from "./tools/deferred-tools";
-import { userScopeReach } from "../user-scope";
+import { deferredToolNames, loadableToolNames, nestedAgentToolNames } from "./tools/deferred-tools";
+import { forgeGroupUnavailable, userScopeReach } from "../user-scope";
 import { resourceToolsExposure } from "./mcp/exposure";
 import { restoredDeferredTools } from "./tools/restored-tools";
-import { waitForPendingDirectServers } from "./mcp/startup-wait";
+import { MCP_STARTUP_WAIT_MS, waitForPendingDirectServers } from "./mcp/startup-wait";
+import { relayedMcpRead, relayedMcpState, type RelayedMcpRead } from "./mcp/relayed-mcp";
 import { mcpGroupsOf, mcpToolSearchGroup, type DeferrableSnapshot, type McpToolMenuEntry } from "./tools/tool-search-tool";
 
 const WORKING_FOLDER_NOTE = "damocles.workingFolderNote";
@@ -631,6 +637,8 @@ export class PiSession implements ChatSession {
   /** In-flight abort (interrupt/cancel → session.abort() → waitForIdle); a following sendMessage awaits
    * it so a new turn never races a still-winding-down one ("Agent is already processing"). */
   private abortPromise: Promise<void> | null = null;
+  /** Aborted and replaced by each `stopSends`; a turn pin keeps the one current when it was made (`signInPrompts`). */
+  private pinStop = new AbortController();
   /** In-flight MCP-driven `session.reload()` (orphan recovery); serialized with reset/newSession. */
   private mcpReloadPromise: Promise<void> | null = null;
   /** A tools-changed arrived mid-reload: single-flight coalescing (one trailing reload, not N). */
@@ -649,6 +657,10 @@ export class PiSession implements ChatSession {
   private _lastPermissionNotifyKey: string | null = null;
   /** The latest MCP scope fed to this panel; applied once the folder runtime exists. */
   private mcpScope: McpScope | undefined;
+  /** Settles once the managers took the scope last applied. */
+  private mcpScopeApplied: Promise<void> = Promise.resolve();
+  /** Called after each scope fed to this panel. */
+  private readonly mcpScopeListeners = new Set<() => void>();
   /** Pushes fresh MCP runtime status to this panel's webview on every connect/disconnect (no manual refresh). */
   private _mcpStatusListener: (() => void) | null = null;
   /** Per-session checkpoint engine driver, registered alongside the panel gate context (US-013b). */
@@ -859,6 +871,10 @@ export class PiSession implements ChatSession {
    *  carries the delivery of the context that opened it, so a note still reaches the conversation
    *  that ran the command and not the one that replaced it. */
   private readonly shellCancel = new ShellCancelStore();
+  /** A desktop chat's GitHub and GitLab tools, for it and every agent it starts. */
+  private readonly forgeTools: ForgeToolsPort | undefined;
+  // the credential registrations of shell calls that left a job running, ended with the session job that kills those jobs
+  private readonly backgroundShellCredentials = new Set<CredentialRegistration>();
   // Panel-scoped, not conversation-scoped: reset() and clear() swap the pi session but keep this instance, so a
   // process the user deliberately backgrounded survives a /clear and dies only when the panel is disposed.
   private readonly shellJob = processLauncher().createSessionJob();
@@ -874,6 +890,7 @@ export class PiSession implements ChatSession {
   constructor(options: SessionOptions) {
     this.options = options;
     this.cwd = options.cwd;
+    this.forgeTools = options.forgeTools?.(() => this.cwd);
     this.mcpScope = options.mcpScope;
     this.modelValue = options.model ?? DEFAULT_FALLBACK_MODEL;
     this.modelIsFactoryDefault = options.model === undefined;
@@ -1055,6 +1072,8 @@ export class PiSession implements ChatSession {
       syncSpan.end({ timedOut: syncTimedOut });
       this.throwIfDisposedDuringStart();
     }
+    await piRuntime.reloadChangedModelsConfig();
+    this.throwIfDisposedDuringStart();
 
     this.resolveInitialModel();
     if (syncTimedOut) this.warnProviderUnreached(piRuntime, notWiredProviders);
@@ -1093,6 +1112,7 @@ export class PiSession implements ChatSession {
         ...(this.options.browserChat ? { browserChat: this.options.browserChat } : {}),
         ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
         browserServedFiles: this.browserServedFiles(),
+        ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
         getSessionId: () => this.memorySessionId,
         getPlanFilePath: () => this.getPlanFilePath(),
         ...(this.subagentManager ? { subagentManager: this.subagentManager, userInput: this.userInput } : {}),
@@ -1103,6 +1123,7 @@ export class PiSession implements ChatSession {
         },
         isTeamEnabled: () => this.teamToolEligible(),
         getShellOptions: () => this.shellOptions(),
+        shellCredentials: (toolCallId) => this.shellCredentials(toolCallId),
         shellCancel: this.shellCancel,
         deliverUserNote: this.noteDeliveryForMain(() => bound.session),
         shellJob: this.shellJob,
@@ -1383,6 +1404,7 @@ export class PiSession implements ChatSession {
       worktreeIsolation: () => this.worktreeIsolation(),
       designScope: () => this.design.scope(),
       machine: this.chatMachine(),
+      ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       designPrompt: () => this.design.promptInputs(),
     };
     folder.registerPanel(sessionId, gate);
@@ -1730,6 +1752,8 @@ export class PiSession implements ChatSession {
   /** Stop every send; one pi holds is left to pi's verdict unless the conversation is `leaving` the screen. */
   private stopSends(leaving: boolean): void {
     this.compactionBeforePi?.abort();
+    this.pinStop.abort();
+    this.pinStop = new AbortController();
     for (const outgoing of this.outgoingSends) {
       outgoing.stop();
       if (!outgoing.accepted && (!outgoing.inPi || leaving)) outgoing.returnUnsent();
@@ -1800,9 +1824,23 @@ export class PiSession implements ChatSession {
   private adoptShownModelIfRunnable(after?: Promise<void>): Promise<void> | null {
     const pending = this.modelSwitch;
     if (pending && pending !== after) return pending.then(() => this.adoptShownModelIfRunnable(pending) ?? undefined);
-    const target = this.runnableModel(this.modelValue);
+    const target = this.runnableModel(this.modelValue) ?? this.unjudgedModel(this.modelValue);
     if (!target || (this.desiredModel && samePiModel(this.desiredModel, target))) return null;
     return this.setModel(this.modelValue);
+  }
+
+  /** On a daemon's core, whether the pinned (else acting) device's sign-ins or user rules are not known yet, so no model is judged runnable or not. */
+  private clientValuesPending(): boolean {
+    const remote = this.options.platform.remote;
+    return remote !== undefined && clientPending(remote) !== undefined;
+  }
+
+  /** A model value's pi model while the device's sign-ins are not known yet, which pi's auth check in a turn judges once they are. */
+  private unjudgedModel(value: string): Model<Api> | undefined {
+    if (!this.clientValuesPending()) return undefined;
+    const piRuntime = PiRuntime.get();
+    const registry = piRuntime.modelLookup;
+    return registry ? resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey()).model : undefined;
   }
 
   /**
@@ -1817,7 +1855,8 @@ export class PiSession implements ChatSession {
     const openai = piRuntime.getOpenAIAuthStatus();
     const resolve = (value: string): ModelResolution => resolvePiModel(value, registry, openai, this.preferOpenAIApiKey());
     const shown = resolve(this.modelValue);
-    if (shown.authed && shown.model && this.desiredModel && samePiModel(this.desiredModel, shown.model)) return null;
+    // while the device's sign-ins are not known yet, pi's auth check in the run waits for them and judges then
+    if (shown.model && this.desiredModel && samePiModel(this.desiredModel, shown.model) && (shown.authed || this.clientValuesPending())) return null;
     const unavailable = this.unavailableModel(this.modelValue, shown, openai);
     const account = unavailable.signIn ? { account: unavailable.signIn } : {};
     if (!this.supportedModelsCache.some((info) => resolve(info.value).authed)) return { reason: "modelSignInRequired", ...account };
@@ -3530,6 +3569,51 @@ export class PiSession implements ChatSession {
   }
 
   /**
+   * One shell call's git credential takeover (docs/invariants.md "GitHub and GitLab accounts"): one non-empty
+   * GIT_CONFIG_PARAMETERS from the managed set, and the helper variables of a registration for that call's shell alone,
+   * naming its tool call and, on a daemon's core, the client its turn is pinned to. A failed registration leaves a nonce no
+   * server accepts, so a managed server's git fails rather than reach the user's own helpers past the agent-shell switch.
+   */
+  private async shellCredentials(toolCallId: string): Promise<ShellCredentialLease | undefined> {
+    const takeover = installedCredentialHelper();
+    const panelId = this.options.panelId;
+    if (!takeover || panelId === undefined || this._disposed) return undefined;
+    const clientId = this.options.platform.remote ? runPin()?.clientId : undefined;
+    const origin: GitCredentialOrigin = { kind: "agentShell", panelId, sessionId: this.currentSessionId ?? panelId, toolCallId, ...(clientId !== undefined ? { clientId } : {}) };
+    const inherited = process.env["GIT_CONFIG_PARAMETERS"];
+    const params = asConfigParams(takeover.entries(origin), inherited);
+    const configParams: Record<string, string> = params !== undefined && params !== inherited ? { GIT_CONFIG_PARAMETERS: params } : {};
+    // on a daemon's core the relay's helper answers every URL: the call's own nonce replaces the relay's terminal one there,
+    // whatever the managed set, so its git always asks as an agent shell
+    if (configParams["GIT_CONFIG_PARAMETERS"] === undefined && !installedCredentialRelay()) return undefined;
+    let registration: CredentialRegistration;
+    try {
+      registration = await takeover.register(origin);
+    } catch (err) {
+      log(`[git-credential] an agent shell's credential registration failed, so its git gets no managed server's credentials: ${err instanceof Error ? err.message : String(err)}`);
+      return { env: { [CREDENTIAL_NONCE_VARIABLE]: "pending", ...configParams }, heldBy: () => undefined, release: () => undefined };
+    }
+    let held = false;
+    return {
+      env: { ...registration.env, ...configParams },
+      heldBy: (shell) => {
+        held = true;
+        shell.leftRunning.then((left) => {
+          // a job the shell left keeps asking until the session job closes, which kills it
+          if (left && !this._disposed) this.backgroundShellCredentials.add(registration);
+          else registration.dispose();
+        }, (err: unknown) => {
+          log(`[git-credential] an agent shell ended without closing, so its credential registration ends: ${err instanceof Error ? err.message : String(err)}`);
+          registration.dispose();
+        });
+      },
+      release: () => {
+        if (!held) registration.dispose();
+      },
+    };
+  }
+
+  /**
    * D62's isolation for this chat and its agents, with the prefix and shell pi's bash tool runs from `shellOptions()`, and
    * the environment both shell tools start with: `process.env`, then PATH and pi's session variables, which pi's
    * `resolveSpawnContext` sets per call and so are left without a value, then the worktree's variables. Built per call,
@@ -3689,6 +3773,8 @@ export class PiSession implements ChatSession {
     // After the job, so a still-registered call's process is already on its way to being killed; a tool whose promise
     // never settles would otherwise leave this session reachable through the entry's delivery closure.
     this.shellCancel.clear();
+    for (const registration of this.backgroundShellCredentials) registration.dispose();
+    this.backgroundShellCredentials.clear();
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.unpersistedImages.clear();
@@ -3970,7 +4056,8 @@ export class PiSession implements ChatSession {
     }
     const openaiAuth = piRuntime.getOpenAIAuthStatus();
     const resolution = resolvePiModel(model, modelRuntime, openaiAuth, this.preferOpenAIApiKey());
-    const target = resolution.authed ? resolution.model : undefined;
+    const unjudged = !resolution.authed && this.clientValuesPending();
+    const target = resolution.authed || unjudged ? resolution.model : undefined;
     if (!target) {
       this.refuseModel(model, resolution, openaiAuth, epoch);
       this.publishModel();
@@ -3983,8 +4070,10 @@ export class PiSession implements ChatSession {
       this.publishModel();
       return;
     }
-    // pi's setModel rejects when its own auth check fails, and has then not adopted the model.
-    const adopted = piRuns || await session.setModel(target).then(
+    // pi's setModel rejects when its own auth check fails, and has then not adopted the model; in a turn pin an unjudged
+    // model's check waits behind Sign-in needed until the device's sign-ins are known, or a Stop ends it.
+    const stopped = this.pinStop.signal;
+    const adopted = piRuns || await (unjudged ? this.pinned(() => session.setModel(target)) : session.setModel(target)).then(
       () => true,
       (err: unknown) => {
         log("[PiSession] pi refused model %s: %O", model, err);
@@ -4001,7 +4090,7 @@ export class PiSession implements ChatSession {
       // pi's setModel applied its own default level for the model, recorded in the session file.
       session.setThinkingLevel(this.resolveThinkingLevel());
       this.publishAccountInfo();
-    } else {
+    } else if (!(unjudged && stopped.aborted)) {
       this.notifyModelRefused(l("Sign in to {0} to use {1}", providerDisplayName(this.getModelInfo(model)), this.modelDisplayName(model)));
     }
     this.publishModel();
@@ -4107,7 +4196,8 @@ export class PiSession implements ChatSession {
 
   /** Where the token broker raises Sign-in needed for this chat's turns: this panel's `PermissionState`, published only by `publishSessionState`. */
   private readonly signInPrompts: SignInPrompts = {
-    raise: (provider, actions) => this.options.permissionHandler.raiseSignIn(provider, actions),
+    raise: (provider, actions, reason) => this.options.permissionHandler.raiseSignIn(provider, actions, reason),
+    stopSignal: () => this.pinStop.signal,
   };
 
   /** Every pi session this panel builds: on a daemon's core, a run it starts outside every pin is pinned at its start and records whose credentials it bills. */
@@ -4862,6 +4952,9 @@ export class PiSession implements ChatSession {
       browserEnabled: this.isBrowserEnabled(),
       imageEnabled: this.options.platform.settings.get<boolean>(IMAGE_ENABLED_SETTING, false),
       imageAvailability: imageAvailability(this.imageModelId(), this.imageRuntime()),
+      forgeAvailable: this.forgeTools !== undefined,
+      forgeEnabled: this.options.platform.settings.get<boolean>(TOOL_GROUP_SETTINGS.forge, true),
+      forgeUnavailable: forgeGroupUnavailable(),
       mcpEnabled: this.isMcpEnabled(),
       mcpToolNames: this.mcpToolNames(),
       mcpDeferrableToolNames: this.mcpClientManager()?.deferrableToolNames() ?? [],
@@ -4943,6 +5036,7 @@ export class PiSession implements ChatSession {
       ...(directMcpGroups.size ? { directMcpGroups } : {}),
       ...(pendingMcpServers.length ? { pendingMcpServers } : {}),
       ...(mcpDescriptions.size ? { mcpDescriptions } : {}),
+      ...(deps.designRole ? { design: true } : {}),
     };
   }
 
@@ -4952,22 +5046,41 @@ export class PiSession implements ChatSession {
    * Other servers never hold a prompt. A tool whose server connects later is active from the next turn.
    * The folder's own tools-changed listener registers and activates the tools before this wait sees
    * the change, because it subscribed to the view first. `signal` is the waiting send's, which a Stop,
-   * New chat, resume switch or disposal aborts.
+   * New chat, resume switch or disposal aborts. On a daemon's core the same wait first waits while the
+   * send's device has not read its personal MCP servers yet, until they arrived and this panel's managers
+   * took them; a failed read of them is said once and the wait goes on for the other servers.
    */
   async waitForAlwaysLoadedMcp(sessionId: string, signal: AbortSignal): Promise<void> {
     if (this.mcpStartupWaitedSessionId === sessionId) return;
     this.mcpStartupWaitedSessionId = sessionId;
     const source = this.mcpClientManager();
     if (!source || !this.isMcpEnabled()) return;
+    const relayed = this.relayedMcpArrival();
+    const arrival = relayed.arrival;
+    let read = relayed.state;
     const pending = source.pendingDirectServers();
-    if (pending.length === 0) return;
+    if (read === "failed") this.noticeRelayedMcpUnread();
+    if (!arrival && pending.length === 0) return;
     this.emit({
       type: "notification",
       notificationType: "info",
-      message: pending.length === 1 ? l("Waiting for MCP server {0}", pending[0]!) : l("Waiting for MCP servers {0}", pending.join(", ")),
+      message: arrival
+        ? l("Reading the MCP servers of your computer")
+        : pending.length === 1 ? l("Waiting for MCP server {0}", pending[0]!) : l("Waiting for MCP servers {0}", pending.join(", ")),
     });
-    const outcome = await waitForPendingDirectServers(source, signal);
+    const outcome = await waitForPendingDirectServers(source, signal, MCP_STARTUP_WAIT_MS, arrival && (async (ended) => {
+      read = await arrival(ended);
+      if (read === "failed") this.noticeRelayedMcpUnread();
+    }));
     log("[PiSession] Always-loaded MCP wait ended: %s", outcome);
+    if (outcome === "timeout" && read === "reading") {
+      this.emit({
+        type: "notification",
+        notificationType: "info",
+        message: l("Damocles has not read the MCP servers of your computer yet. Their Always-loaded tools join from the next turn after they arrive."),
+      });
+      return;
+    }
     const late = outcome === "timeout" ? source.pendingDirectServers() : [];
     if (late.length > 0) {
       this.emit({
@@ -4978,6 +5091,49 @@ export class PiSession implements ChatSession {
           : l("MCP servers {0} are still connecting. Their Always-loaded tools join from the next turn after they connect.", late.join(", ")),
       });
     }
+  }
+
+  private noticeRelayedMcpUnread(): void {
+    log("[PiSession] the send's device could not read its personal MCP servers; this prompt goes without them");
+    this.emit({
+      type: "notification",
+      notificationType: "warning",
+      message: l("Damocles could not read the MCP servers of your computer, so this prompt goes without their tools."),
+    });
+  }
+
+  /**
+   * A daemon's core: how the send's device (its actor, else the acting client) stands with its personal MCP servers, and
+   * while it reads them, a step that settles with the read's state once they arrived and this panel's managers took them.
+   */
+  private relayedMcpArrival(): { readonly state: RelayedMcpRead; readonly arrival?: (ended: AbortSignal) => Promise<RelayedMcpRead> } {
+    const remote = this.options.platform.remote;
+    const clientId = remote ? currentPin(remote).clientId : undefined;
+    if (!remote || clientId === undefined) return { state: "known" };
+    const state = relayedMcpState(remote, clientId);
+    if (state !== "reading") return { state };
+    return { state, arrival: async (ended) => {
+      const read = await relayedMcpRead(remote, clientId, ended);
+      if (read !== "known") return read;
+      // the delta path feeds a scope built from the arrived servers, then reconciles the managers to it
+      const fed = (): boolean => (remote.clients.mcp(clientId) ?? []).every((server) => this.mcpScope?.relayed?.includes(server.name) === true);
+      if (!ended.aborted && !fed()) {
+        await new Promise<void>((resolve) => {
+          const done = (): void => {
+            this.mcpScopeListeners.delete(check);
+            ended.removeEventListener("abort", done);
+            resolve();
+          };
+          const check = (): void => {
+            if (fed()) done();
+          };
+          this.mcpScopeListeners.add(check);
+          ended.addEventListener("abort", done, { once: true });
+        });
+      }
+      await this.mcpScopeApplied;
+      return "known";
+    } };
   }
 
   /** Load deferred tools into the live active set. Synchronous, so pi's before/after active-set diff
@@ -5228,6 +5384,7 @@ export class PiSession implements ChatSession {
       designScope: () => this.design.scope(),
       machine: this.chatMachine(),
       nestedDesign: () => this.nestedDesignGrant(),
+      ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
       postMessage: (m) => this.emit(m),
       getParentSystemPrompt: () => this.parentPromptForAgents(),
@@ -5441,8 +5598,10 @@ export class PiSession implements ChatSession {
       ...(this.options.browserChat ? { browserChat: this.options.browserChat } : {}),
       ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
       browserServedFiles: this.browserServedFiles(),
+      ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       getSessionId: () => this.memorySessionId,
       getShellOptions: () => this.shellOptions(),
+      shellCredentials: (toolCallId) => this.shellCredentials(toolCallId),
       shellCancel: this.shellCancel,
       deliverUserNote,
       shellJob: this.shellJob,
@@ -5612,14 +5771,14 @@ export class PiSession implements ChatSession {
   setMcpServers(scope: McpScope): void {
     this.mcpScope = scope;
     if (this.folder) this.applyMcpScope(scope);
+    for (const listener of [...this.mcpScopeListeners]) listener();
   }
 
   private applyMcpScope(scope: McpScope): void {
     const userMcp = PiRuntime.get().getUserMcp();
     const folder = this.folder;
     if (!userMcp || !folder) return;
-    void userMcp.reconcile(scope.userUnion);
-    void folder.reconcileFolder(scope.folder, scope.userVisible);
+    this.mcpScopeApplied = Promise.all([userMcp.reconcile(scope.userUnion), folder.reconcileFolder(scope.folder, scope.userVisible)]).then(() => undefined);
     this.refreshActiveTools();
   }
 
@@ -6535,7 +6694,7 @@ export class PiSession implements ChatSession {
           agent: { agentId: ctx.agentId, agentName: ctx.agentName, teamId: ctx.teamId },
         });
         const isWrite = (name: string): boolean => toolCategory(mapPiToolName(name)) === "write";
-        const roleNames = this.teamAgentToolNames(ctx);
+        const roleNames = nestedAgentToolNames(this.teamAgentToolNames(ctx), this.teamAgentLoadableToolNames(mcp));
         const toolNames = ctx.kind === "reviewer" ? roleNames.filter((name) => !isWrite(name)) : roleNames;
         return {
           toolNames,
@@ -6553,6 +6712,7 @@ export class PiSession implements ChatSession {
         worktreeIsolation: () => this.worktreeIsolation(),
         designScope: () => this.design.scope(),
         machine: this.chatMachine(),
+        ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
         readOnlyShell: readOnly,
         parentToolUseId: agent.agentId,
         stopSignal: agent.stopSignal,
@@ -6579,7 +6739,7 @@ export class PiSession implements ChatSession {
         // (`resolveToolSearchEntries` → "Unknown entries"). This mirrors the
         // `tools: [...toolNames, ...mcp.names]` the caller builds from the same snapshot. Always-loaded
         // tools are in `mcp.names` but not `mcp.deferrable`, so they are active and never on the menu.
-        deferrableToolNames: loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach(), this.design.role() !== undefined),
+        deferrableToolNames: this.teamAgentLoadableToolNames(mcp),
         mcpDescriptions: mcp.descriptions,
         directMcpGroups: mcp.directGroups,
         isMcpReadOnly: mcp.isReadOnly,
@@ -6590,6 +6750,11 @@ export class PiSession implements ChatSession {
       disposeBrowserScope: (scopeId, closeTabs) => this.disposeAgentBrowserScope(scopeId, closeTabs),
       cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
     };
+  }
+
+  /** What a team agent's ToolSearch may load, read at spawn: its toolset drops every other deferred built-in tool. */
+  private teamAgentLoadableToolNames(mcp: NestedMcpToolset): string[] {
+    return loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach(), this.design.role() !== undefined);
   }
 
   /**

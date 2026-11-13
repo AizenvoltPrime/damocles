@@ -76,7 +76,7 @@ export type ScmAction =
 
 // A Graph commit row's actions (VS Code's scm/historyItem/context, in the plan's order), each on that row's commit.
 export type GraphCommitAction =
-  | 'openCommit' | 'checkoutCommit' | 'createBranchAtCommit' | 'createTagAtCommit' | 'cherryPick'
+  | 'openCommit' | 'openCommitOnServer' | 'checkoutCommit' | 'createBranchAtCommit' | 'createTagAtCommit' | 'cherryPick'
   | 'compareCommit' | 'compareWithRemote' | 'compareWithMergeBase' | 'copyCommitId' | 'copyCommitMessage' | 'addCommitToChat' | 'explainCommit';
 
 // A Graph ref badge's actions (VS Code's scm/historyItemRef/context, with Delete Remote Branch split out).
@@ -723,6 +723,8 @@ export interface GraphCommitMenuContext {
   readonly hasBase: boolean;
   // a merge, rebase or cherry-pick in progress, during which git cannot cherry-pick (the palette command's rule)
   readonly operation: ScmOperation | null;
+  // a remote is on a server with an account (the history context), as VS Code offers Open on GitHub only with a GitHub remote
+  readonly hasForge: boolean;
 }
 
 /**
@@ -732,6 +734,8 @@ export interface GraphCommitMenuContext {
 export function graphCommitMenu(context: GraphCommitMenuContext): ScmMenuNode[] {
   return [
     { action: 'openCommit', label: 'openChanges', icon: 'git-compare' },
+    // the commit on its Git hosting server, which main opens or explains
+    ...(context.hasForge ? [{ action: 'openCommitOnServer', label: 'openCommitOnServer', icon: 'arrow-up-right' } as const] : []),
     SEPARATOR,
     { action: 'checkoutCommit', label: 'checkoutRefDetached', icon: 'circle-dot' },
     { action: 'createBranchAtCommit', label: 'createBranch', icon: 'git-branch-plus' },
@@ -751,7 +755,7 @@ export function graphCommitMenu(context: GraphCommitMenuContext): ScmMenuNode[] 
 }
 
 /** A Graph commit row's action on that row's commit, by its full hash, which main checks is a commit of the repository. */
-export function graphCommitCall(action: GraphCommitAction, repoId: string, commit: string): ScmRowCall {
+export function graphCommitCall(action: Exclude<GraphCommitAction, 'openCommitOnServer'>, repoId: string, commit: string): ScmRowCall {
   switch (action) {
     case 'openCommit': return { run: { op: 'openCommit', repoId, commit } };
     case 'checkoutCommit': return { run: { op: 'checkout', repoId, detached: true, commit } };
@@ -769,7 +773,7 @@ export function graphCommitCall(action: GraphCommitAction, repoId: string, commi
 }
 
 const GRAPH_COMMIT_ACTIONS: ReadonlySet<ScmAction> = new Set<GraphCommitAction>([
-  'openCommit', 'checkoutCommit', 'createBranchAtCommit', 'createTagAtCommit', 'cherryPick',
+  'openCommit', 'openCommitOnServer', 'checkoutCommit', 'createBranchAtCommit', 'createTagAtCommit', 'cherryPick',
   'compareCommit', 'compareWithRemote', 'compareWithMergeBase', 'copyCommitId', 'copyCommitMessage', 'addCommitToChat', 'explainCommit',
 ]);
 export const isGraphCommitAction = (action: ScmAction): action is GraphCommitAction => GRAPH_COMMIT_ACTIONS.has(action);

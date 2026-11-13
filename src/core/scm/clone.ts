@@ -2,7 +2,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { isUnsafeWindowsName } from '../../shared/relative-path';
-import { isRemoteUrl } from './remotes';
+import { isRemoteUrl } from '../../shared/clone-address';
 
 // VS Code tries the base name and then -1 to -19 before it gives up.
 const MAX_NAME_ATTEMPTS = 20;

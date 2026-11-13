@@ -82,7 +82,7 @@ export function useHostConnection(source: () => HostConnectionSource | undefined
   }, { immediate: true, flush: 'sync' });
 
   // a host that showed it was away and is connected again shows green, then the banner collapses
-  watch(() => [away.value, source()?.hostId] as const, ([next, hostId], [previous, previousHostId]) => {
+  watch([away, () => source()?.hostId], ([next, hostId], [previous, previousHostId]) => {
     if (next !== undefined || hostId !== previousHostId) {
       endBack();
       return;

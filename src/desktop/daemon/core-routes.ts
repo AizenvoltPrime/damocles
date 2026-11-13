@@ -13,6 +13,7 @@ import { MAX_ITEMS } from '../core-protocol/messages';
 import { confineExisting, projectOfPath } from '../local-services/confine';
 import { readFileBytes } from '../local-services/file-bytes';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
+import { USER_FORGE_FEATURE } from '../../shared/forge/tools';
 import { DESIGN_JOURNEY_UPDATE_NEEDED, DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../shared/design-render';
 import { journeyNeedsScrollFeature } from '../../shared/design-journey';
 import type { JourneyStep } from '../../shared/types/design';
@@ -42,7 +43,8 @@ export interface NoClientContext {
  * attached one, never held, else noClient at once. issuingClient: the client that sent the scm.commit the token names;
  * viewClient: a client showing params.viewId, the actor's first; chatClient: a client showing the chat params.panelId names,
  * inside a client's work only the actor (a UI action never lands on another device), else any; pinnedClient: exactly the
- * client params.clientId names, refused with CREDENTIAL_CLIENT_ABSENT while it is gone or inside its grace, never another.
+ * client params.clientId names, refused with CREDENTIAL_CLIENT_ABSENT while it is gone or inside its grace, never another;
+ * a params.viewId reaches it as that client's own view id, and not at all when it does not show the view.
  * needs: a name of FEATURES; on every route kind that has it, only a client whose attach listed it is asked (one that
  * predates the request would close its connection on the name): for client inside a client's work the actor alone, else the
  * first client of the route's order that lists it; a pinnedClient route refuses a client without it with
@@ -136,6 +138,8 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'askpass.prompt': { to: 'client', noClient: answer({ cancelled: true }) },
   // the relay helper tells git on stderr that no client is attached
   'askpass.credential': { to: 'client', noClient: answer({ kind: 'notConnected' as const }) },
+  // only this computer's core keeps Git hosting accounts
+  'forge.chooseAccount': { to: 'refused' },
   'scm.branchName': { to: 'issuingClient', noClient: nothing },
   'worktrees.reviewSetup': { to: 'client', noClient: answer('skip' as const) },
   'worktrees.runSetup': { to: 'client', noClient: noClientFor('run the worktree setup') },
@@ -170,6 +174,9 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'user.mcp.call': { to: 'pinnedClient' },
   'user.mcp.resources': { to: 'pinnedClient' },
   'user.mcp.readResource': { to: 'pinnedClient' },
+  // the turn's device runs a chat's GitHub and GitLab tools with its own accounts
+  'user.forge.tool': { to: 'pinnedClient', needs: USER_FORGE_FEATURE },
+  'user.forge.describe': { to: 'pinnedClient', needs: USER_FORGE_FEATURE },
   'views.drained': { to: 'daemon' },
   'chats.reveal': { to: 'daemon' },
   // the daemon asks it of a client itself, for chats.reveal
@@ -216,15 +223,23 @@ export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute
   'user.mcpChanged': 'dropped',
   'ports.urlSeen': 'registry',
   'design.changed': { to: 'allClients', needs: 'design.changed' },
+  // only this computer's core keeps Git hosting accounts
+  'forge.chooseAccountRows': 'dropped',
+  'forge.bindingsChanged': 'dropped',
+  'forge.ci.changed': 'dropped',
 };
 
-// each attach gets a snapshot as deltas from version 1, then live deltas; chats only of the panels that client views
-export const CORE_MIRROR_ROUTES: Readonly<Record<keyof CoreMirrorTopics, 'materialized'>> = {
+// each attach gets a snapshot as deltas from version 1, then live deltas; chats only of the panels that client views;
+// dropped: a topic only this computer's core publishes, which no client gets from a daemon
+export const CORE_MIRROR_ROUTES: Readonly<Record<keyof CoreMirrorTopics, 'materialized' | 'dropped'>> = {
   chats: 'materialized',
   folderTargets: 'materialized',
   worktrees: 'materialized',
   scm: 'materialized',
   heldMemory: 'materialized',
+  // a daemon's core keeps no Git hosting accounts
+  forge: 'dropped',
+  forgeAuthorAvatars: 'dropped',
 };
 
 export const CORE_PANEL_OP_ROUTES: Readonly<Record<keyof CorePanelOps, 'actingClient' | 'views'>> = {
@@ -344,9 +359,47 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'memory.deliverHeld': 'core',
   'memory.discardHeld': 'core',
   'user.mcp.servers': 'refused',
+  // a daemon's core keeps no Git hosting accounts
+  'forge.avatar': 'refused',
+  'forge.repoAccounts': 'refused',
+  'forge.bindAccount': 'refused',
+  'forge.hostDefaults': 'refused',
+  'forge.setHostDefault': 'refused',
+  'forge.prepareGitOperation': 'refused',
+  'forge.forgetProject': 'refused',
+  'forge.forgetHost': 'refused',
+  'forge.keepHosts': 'refused',
+  'forge.gitCredential': 'refused',
+  'forge.ci.watch': 'refused',
+  'forge.ci.unwatch': 'refused',
+  'forge.ci.jobs': 'refused',
+  'forge.ci.jobLog': 'refused',
+  'forge.ci.jobAction': 'refused',
+  'forge.ci.commitStatus': 'refused',
+  'forge.ci.webUrl': 'refused',
+  'forge.link': 'refused',
+  'forge.history.context': 'refused',
+  'forge.history.avatars': 'refused',
+  'forge.history.containing': 'refused',
+  'forge.branchProtection': 'refused',
+  'forge.pushProtection': 'refused',
+  'forge.servers': 'refused',
+  'forge.clone.accounts': 'refused',
+  'forge.clone.search': 'refused',
+  'forge.clone.paste': 'refused',
+  'forge.clone.target': 'refused',
+  'forge.publishAccounts': 'refused',
+  'forge.publishOwners': 'refused',
+  'forge.createRepository': 'refused',
+  'forge.pushAccess': 'refused',
+  'forge.fork': 'refused',
+  'forge.openMergeRequest': 'refused',
+  'forge.openOrgAccess': 'refused',
   'user.mcp.call': 'refused',
   'user.mcp.resources': 'refused',
   'user.mcp.readResource': 'refused',
+  'user.forge.tool': 'refused',
+  'user.forge.describe': 'refused',
   'panels.attachForeign': 'refused',
   'panels.detachForeign': 'refused',
   'panels.foreignMessage': 'refused',
@@ -385,6 +438,7 @@ export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 
   clientTerminal: 'daemonOwned',
   clientLanguage: 'daemonOwned',
   clientMcp: 'perClient',
+  clientForges: 'perClient',
 };
 
 // daemon: the daemon sends it itself, and a client's is dropped
@@ -408,6 +462,7 @@ export interface ClientMirrors {
   readonly clientTerminal: Map<string, TerminalToggle>;
   readonly clientLanguage: Map<string, MirrorTopics['language']>;
   readonly clientMcp: Map<string, MirrorTopics['clientMcp']['value'] & object>;
+  readonly clientForges: Map<string, MirrorTopics['clientForges']['value'] & object>;
   actingClient: MirrorTopics['actingClient'];
 }
 
@@ -423,13 +478,14 @@ export function createClientMirrors(): ClientMirrors {
     clientTerminal: new Map(),
     clientLanguage: new Map(),
     clientMcp: new Map(),
+    clientForges: new Map(),
     actingClient: {},
   };
 }
 
-type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp';
-type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'] | (MirrorTopics['clientMcp']['value'] & object);
-const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage', 'clientMcp'];
+type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'clientForges';
+type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'] | (MirrorTopics['clientMcp']['value'] & object) | (MirrorTopics['clientForges']['value'] & object);
+const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage', 'clientMcp', 'clientForges'];
 
 /** What the router learns of a client's connection besides its channel. */
 export interface ClientLink {
@@ -821,7 +877,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (!handler) throw new Error(`No daemon handler for ${method}`);
       serveCore(method, handler as never);
     } else if (route.to === 'pinnedClient') {
-      serveCore(method, (async (params: { provider?: string; clientId: string }, signal: AbortSignal) => {
+      serveCore(method, (async (params: { provider?: string; clientId: string; viewId?: string }, signal: AbortSignal) => {
         const session = sessions.get(params.clientId);
         const what = params.provider === undefined ? method : `${method} for ${params.provider}`;
         if (!present(session)) {
@@ -841,8 +897,11 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           if (session.client.lost()) asking.abort();
         });
         const gone = new Promise<never>((_resolve, reject) => asking.signal.addEventListener('abort', () => reject(new Error(CREDENTIAL_CLIENT_ABSENT)), { once: true }));
+        const { viewId, ...rest } = params;
+        const clientView = viewId === undefined ? undefined : viewerOf(session, viewId)?.viewId;
+        const sent = clientView === undefined ? rest : { ...rest, viewId: clientView };
         try {
-          return await Promise.race([(session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, params, asking.signal), gone]);
+          return await Promise.race([(session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, sent, asking.signal), gone]);
         } catch (err) {
           // the connection closed, was replaced or was lost while the client answered: the turn waits for that device as for an absent one
           if (session.closed || session.client.lost()) throw new Error(CREDENTIAL_CLIENT_ABSENT);
@@ -1292,8 +1351,9 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           case 'clientAuth':
           case 'clientUser':
           case 'clientPolicy':
-          case 'clientMcp': {
-            const { value } = patch as { value?: ClientAuth | ClientUser | ClientPolicy | MirrorTopics['clientMcp']['value'] };
+          case 'clientMcp':
+          case 'clientForges': {
+            const { value } = patch as { value?: ClientAuth | ClientUser | ClientPolicy | MirrorTopics['clientMcp']['value'] | MirrorTopics['clientForges']['value'] };
             if (value === undefined) {
               log(`[core-host] dropped ${client.id}'s ${topic} without a value`);
               return;

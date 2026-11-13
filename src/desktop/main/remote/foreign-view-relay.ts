@@ -7,6 +7,7 @@
 import {
   FOREIGN_SETTING_POSTS,
   FOREIGN_VIEW_NOT_ATTACHED,
+  isRemoteChatForgeMessage,
   isRemoteChatLocalRequest,
   isRemoteChatSettingMessage,
   REMOTE_CHAT_LOCAL_POSTS,
@@ -16,6 +17,7 @@ import {
   USER_MEMORY_VIEW_SOURCES,
   VOICE_VIEW_MESSAGES,
   VOICE_VIEW_POSTS,
+  type RemoteChatForgeMessage,
   type RemoteChatLocalRequest,
   type RemoteChatSettingMessage,
 } from '../../../shared/remote-user';
@@ -113,6 +115,10 @@ export class ForeignViewRelay {
       this.localRequest(viewId, view.authority, type, message);
       return true;
     }
+    if (isRemoteChatForgeMessage(type)) {
+      this.forgeAction(viewId, view.authority, type, message);
+      return true;
+    }
     if (!VOICE_VIEW_MESSAGES.has(type)) return false;
     if (!this.deps.attached(view.authority)) {
       this.deps.log(`[foreign-view] dropped ${type} from a chat on ${view.authority}, whose core is not attached`);
@@ -175,6 +181,20 @@ export class ForeignViewRelay {
     void read.finally(() => current.reads.delete(read));
   }
 
+  // A refused notice's action goes in the view's order; the local core recorded the refusal for this view when it ran the tool.
+  private forgeAction(viewId: string, authority: string, type: RemoteChatForgeMessage, message: unknown): void {
+    const current = this.entryOf(viewId, authority);
+    current.queue = current.queue.then(() => this.send(viewId, current, message)).catch((err: unknown) => {
+      this.deps.log(`[foreign-view] ${type} from a chat on ${authority} failed: ${errorText(err)}`);
+      if (type !== 'forgeRefusedBind') return;
+      // the local core never answered, so the notice's menu learns the binding was not saved
+      const { toolCallId, accountId } = message as { readonly toolCallId?: unknown; readonly accountId?: unknown };
+      if (typeof toolCallId !== 'string' || typeof accountId !== 'string' || toolCallId.length > 1024 || accountId.length > 1024) return;
+      const answer = { type: 'forgeRefusedBindResult', toolCallId, accountId, ok: false };
+      this.deps.chatView(viewId)?.postJson(answer.type, JSON.stringify(answer));
+    });
+  }
+
   // A proxy the local core lost to its restart (the view's entry was taken before localCoreStarted) is attached once more.
   private async send(viewId: string, entry: AttachedView, message: unknown): Promise<void> {
     try {
@@ -222,6 +242,16 @@ export class ForeignViewRelay {
     const view = this.deps.chatView(viewId);
     if (!view || view.authority !== authority || authority === 'local') throw new Error('No chat of this host shows that view');
     await this.entryOf(viewId, authority).queue;
+  }
+
+  /** attachView for a view a remote core named: false, with nothing attached, when no live chat of that host shows it. */
+  async attachIfShown(viewId: string, authority: string): Promise<boolean> {
+    const view = this.deps.chatView(viewId);
+    if (!view || view.authority !== authority || authority === 'local') return false;
+    return this.entryOf(viewId, authority).attached.then(() => true, (err: unknown) => {
+      this.deps.log(`[foreign-view] attaching a chat view of ${authority} failed, so the call goes on without it: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    });
   }
 
   private entryOf(viewId: string, authority: string): AttachedView {

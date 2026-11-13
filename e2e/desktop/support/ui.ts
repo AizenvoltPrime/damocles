@@ -7,6 +7,19 @@ export const TRUST_PROMPT = 'Do you trust the authors of the files in';
 
 export const CHAT_PLACEHOLDER = 'Ask Damocles anything…';
 
+/** The element's box once every finite animation that moves it (its own, its subtree's and its ancestors') has played. */
+export async function settledBox(element: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
+  await element.evaluate(async (node) => {
+    const moving = [...node.getAnimations({ subtree: true })];
+    for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) moving.push(...ancestor.getAnimations());
+    // a cancelled animation rejects finished, and has stopped moving the box all the same
+    await Promise.all(moving.filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity).map((animation) => animation.finished.catch(() => undefined)));
+  });
+  const box = await element.boundingBox();
+  if (!box) throw new Error('The element has no box');
+  return box;
+}
+
 export function chatInput(tab: Page): Locator {
   return tab.getByPlaceholder(CHAT_PLACEHOLDER);
 }

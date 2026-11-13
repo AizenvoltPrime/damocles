@@ -4,6 +4,10 @@ import type { ChatChangeTotals } from '../../core/pi-session/chat-review';
 import type { ChatActivity, TurnOutcome } from '../../core/pi-session/session-state';
 import type { SessionFileWrite } from '../../core/pi-session/session-store/session-file-write';
 import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
+import type { ManagedServer } from '../../core/scm/askpass/credential-config';
+import type { MatchableServer } from '../../core/forge/remote-url';
+import type { ClientForgeServer } from '../../shared/git-credential';
+import type { RemoteBranchProtection } from '../../shared/forge/branch-protection';
 import type { Disposable } from '../../platform/disposable';
 import type { InputBoxOptions } from '../../platform/dialog-service';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
@@ -11,7 +15,7 @@ import type { UserContentBlock } from '../../shared/types/content';
 import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToExtensionMessage, WorktreeFinishAction } from '../../shared/types/messages';
 import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, GlobalMemorySearchFilters, HeldAuth, HeldMemoryQueue } from '../../shared/remote-user';
-import type { PushedCredential } from '../core-protocol/messages';
+import type { CoreEvents, PushedCredential } from '../core-protocol/messages';
 import type { DesignPreviewFile, DesignPreviewInfo } from '../../shared/types/design';
 import type { MarkupJsonInput } from '../../shared/design-markup';
 import type { LocalizedText } from '../../shared/localized-text';
@@ -44,6 +48,14 @@ export class CoreClient implements Disposable {
   private readonly foldersListeners = new Set<() => void>();
   private heldMemory: readonly HeldMemoryQueue[] = [];
   private readonly heldMemoryListeners = new Set<() => void>();
+  // this computer's core: the avatar keys of its Git hosting accounts; a daemon's core publishes none
+  private forgeAvatarKeys: ReadonlySet<string> = new Set();
+  private forgeAuthorAvatarKeys: ReadonlySet<string> = new Set();
+  // undefined until core's first forge mirror
+  private forgeManaged: readonly ManagedServer[] | undefined;
+  private forgeServerList: readonly ClientForgeServer[] | undefined;
+  private forgeAccountServerList: readonly MatchableServer[] | undefined;
+  private readonly forgeListeners = new Set<() => void>();
 
   constructor(endpoint: MainEndpoint, adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>, keys: ProjectKeys) {
     this.endpoint = endpoint;
@@ -70,6 +82,17 @@ export class CoreClient implements Disposable {
         this.heldMemory = queues;
         for (const listener of [...this.heldMemoryListeners]) listener();
       }),
+      endpoint.onMirror('forge', ({ avatarKeys, servers }) => {
+        this.forgeAvatarKeys = new Set(avatarKeys);
+        this.forgeManaged = servers.filter((server) => server.hasAccount).map(({ webUrl, gitHosts }) => ({ webUrl, gitHosts }));
+        this.forgeServerList = servers.map(({ id, webUrl, gitHosts, hasAccount }) => ({ id, webUrl, gitHosts, hasAccount }));
+        this.forgeAccountServerList = servers.filter((server) => server.hasAccount).map(({ id, kind, webUrl, gitHosts }) => ({ id, kind, webUrl, record: { gitHosts } }));
+        for (const listener of [...this.forgeListeners]) listener();
+      }),
+      // served like the account keys, but a new history page refreshes no view
+      endpoint.onMirror('forgeAuthorAvatars', ({ keys: authorKeys }) => {
+        this.forgeAuthorAvatarKeys = new Set(authorKeys);
+      }),
     ];
   }
 
@@ -77,6 +100,7 @@ export class CoreClient implements Disposable {
     for (const subscription of this.subscriptions) subscription.dispose();
     this.foldersListeners.clear();
     this.heldMemoryListeners.clear();
+    this.forgeListeners.clear();
   }
 
   // ---- the chats mirror
@@ -431,8 +455,8 @@ export class CoreClient implements Disposable {
     return parsedCallText('scm.call', method, SCM_CALL_LOCALIZED_TEXT[method], await this.request('scm.call', { method, args }));
   }
 
-  scmCommit(repoId: string, message: string, variant: unknown, saved: readonly string[], branchName: string | undefined): Promise<ScmCommitOutcome> {
-    return this.request('scm.commit', { repoId, message, variant, saved, ...(branchName !== undefined ? { branchName } : {}) });
+  scmCommit(repoId: string, message: string, variant: unknown, saved: readonly string[], branchName: string | undefined, protectedBranches?: readonly RemoteBranchProtection[]): Promise<ScmCommitOutcome> {
+    return this.request('scm.commit', { repoId, message, variant, saved, ...(branchName !== undefined ? { branchName } : {}), ...(protectedBranches !== undefined ? { protectedBranches } : {}) });
   }
 
   async scmIgnoredIn(projectKey: string, relativeDir: string, entries: readonly { readonly name: string; readonly dir: boolean }[]): Promise<readonly string[]> {
@@ -546,6 +570,15 @@ export class CoreClient implements Disposable {
     return this.request('user.mcp.servers', {});
   }
 
+  // a remote chat's GitHub or GitLab tool on this computer's accounts; the remote caller's signal ends it
+  forgeTool(params: Params<'user.forge.tool'>, signal: AbortSignal): Promise<Result<'user.forge.tool'>> {
+    return this.endpoint.request('user.forge.tool', params, signal);
+  }
+
+  forgeDescribe(params: Params<'user.forge.describe'>, signal: AbortSignal): Promise<Result<'user.forge.describe'>> {
+    return this.endpoint.request('user.forge.describe', params, signal);
+  }
+
   // the remote caller's signal ends the request on this computer's core
   mcpCall(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
     return this.endpoint.request('user.mcp.call', { server, tool, args }, signal);
@@ -635,6 +668,195 @@ export class CoreClient implements Disposable {
 
   e2eStopWatchProbe(folder: string): Promise<void> {
     return this.request('e2e.stopWatchProbe', { folder });
+  }
+
+  // ---- this computer's core: Git hosting account pictures
+
+  /** Core listed this avatar key, for an account's picture or a commit author's, and avatars are on. */
+  forgeAvatarKnown(key: string): boolean {
+    return this.forgeAvatarKeys.has(key) || this.forgeAuthorAvatarKeys.has(key);
+  }
+
+  forgeAvatar(key: string): Promise<Result<'forge.avatar'>> {
+    return this.request('forge.avatar', { key });
+  }
+
+  // ---- this computer's core: Git hosting accounts of projects; project keys are the shell's, which bindings.json stores
+
+  /** The forge mirror changed: a server, an account, or the avatars setting. */
+  onForgeChanged(listener: () => void): Disposable {
+    this.forgeListeners.add(listener);
+    return { dispose: () => this.forgeListeners.delete(listener) };
+  }
+
+  onForgeBindingsChanged(listener: (change: CoreEvents['forge.bindingsChanged']) => void): Disposable {
+    return this.endpoint.onEvent('forge.bindingsChanged', listener);
+  }
+
+  onForgeChooseAccountRows(listener: (rows: CoreEvents['forge.chooseAccountRows']) => void): Disposable {
+    return this.endpoint.onEvent('forge.chooseAccountRows', listener);
+  }
+
+  forgeRepoAccounts(input: Params<'forge.repoAccounts'>): Promise<Result<'forge.repoAccounts'>> {
+    return this.request('forge.repoAccounts', input);
+  }
+
+  forgeBindAccount(projectKey: string, serverId: string, accountId: string | null): Promise<boolean> {
+    return this.request('forge.bindAccount', { projectKey, serverId, accountId });
+  }
+
+  forgeHostDefaults(authorityKey: string): Promise<Result<'forge.hostDefaults'>> {
+    return this.request('forge.hostDefaults', { authorityKey });
+  }
+
+  forgeSetHostDefault(authorityKey: string, serverId: string, accountId: string | null): Promise<boolean> {
+    return this.request('forge.setHostDefault', { authorityKey, serverId, accountId });
+  }
+
+  forgePrepareGitOperation(input: Params<'forge.prepareGitOperation'>): Promise<Result<'forge.prepareGitOperation'>> {
+    return this.request('forge.prepareGitOperation', input);
+  }
+
+  forgeForgetProject(projectKey: string): Promise<void> {
+    return this.request('forge.forgetProject', { projectKey });
+  }
+
+  forgeForgetHost(authorityKey: string): Promise<void> {
+    return this.request('forge.forgetHost', { authorityKey });
+  }
+
+  forgeCiWatch(params: Params<'forge.ci.watch'>): Promise<Result<'forge.ci.watch'>> {
+    return this.request('forge.ci.watch', params);
+  }
+
+  forgeCiUnwatch(id: string): Promise<void> {
+    return this.request('forge.ci.unwatch', { id });
+  }
+
+  forgeCiJobs(id: string): Promise<Result<'forge.ci.jobs'>> {
+    return this.request('forge.ci.jobs', { id });
+  }
+
+  forgeCiJobLog(params: Params<'forge.ci.jobLog'>): Promise<Result<'forge.ci.jobLog'>> {
+    return this.request('forge.ci.jobLog', params);
+  }
+
+  forgeCiJobAction(params: Params<'forge.ci.jobAction'>): Promise<Result<'forge.ci.jobAction'>> {
+    return this.request('forge.ci.jobAction', params);
+  }
+
+  forgeCiCommitStatus(params: Params<'forge.ci.commitStatus'>): Promise<Result<'forge.ci.commitStatus'>> {
+    return this.request('forge.ci.commitStatus', params);
+  }
+
+  forgeCiWebUrl(params: Params<'forge.ci.webUrl'>): Promise<Result<'forge.ci.webUrl'>> {
+    return this.request('forge.ci.webUrl', params);
+  }
+
+  forgeLink(params: Params<'forge.link'>): Promise<Result<'forge.link'>> {
+    return this.request('forge.link', params);
+  }
+
+  forgeHistoryContext(params: Params<'forge.history.context'>): Promise<Result<'forge.history.context'>> {
+    return this.request('forge.history.context', params);
+  }
+
+  forgeHistoryAvatars(params: Params<'forge.history.avatars'>): Promise<Result<'forge.history.avatars'>> {
+    return this.request('forge.history.avatars', params);
+  }
+
+  forgeHistoryContaining(params: Params<'forge.history.containing'>): Promise<Result<'forge.history.containing'>> {
+    return this.request('forge.history.containing', params);
+  }
+
+  forgeBranchProtection(params: Params<'forge.branchProtection'>): Promise<Result<'forge.branchProtection'>> {
+    return this.request('forge.branchProtection', params);
+  }
+
+  forgeCloneAccounts(): Promise<Result<'forge.clone.accounts'>> {
+    return this.request('forge.clone.accounts', {});
+  }
+
+  // signal: a newer search of the same section, or the picker closing, ends this one on core
+  forgeCloneSearch(params: Params<'forge.clone.search'>, signal: AbortSignal): Promise<Result<'forge.clone.search'>> {
+    return this.endpoint.request('forge.clone.search', params, signal);
+  }
+
+  forgeClonePaste(text: string): Promise<Result<'forge.clone.paste'>> {
+    return this.request('forge.clone.paste', { text });
+  }
+
+  forgeCloneTarget(params: Params<'forge.clone.target'>): Promise<Result<'forge.clone.target'>> {
+    return this.request('forge.clone.target', params);
+  }
+
+  forgePublishAccounts(): Promise<Result<'forge.publishAccounts'>> {
+    return this.request('forge.publishAccounts', {});
+  }
+
+  forgePublishOwners(params: Params<'forge.publishOwners'>, signal: AbortSignal): Promise<Result<'forge.publishOwners'>> {
+    return this.endpoint.request('forge.publishOwners', params, signal);
+  }
+
+  forgePushProtection(params: Params<'forge.pushProtection'>, signal: AbortSignal): Promise<Result<'forge.pushProtection'>> {
+    return this.endpoint.request('forge.pushProtection', params, signal);
+  }
+
+  /** The managed servers once core read its forge files or failed to; the mirror's forgeServers() may be empty before that. */
+  forgeServersRead(): Promise<Result<'forge.servers'>> {
+    return this.request('forge.servers', {});
+  }
+
+  /** The authorities this computer still holds; core drops the account bindings and host defaults of every other. */
+  forgeKeepHosts(authorityKeys: readonly string[]): Promise<Result<'forge.keepHosts'>> {
+    return this.request('forge.keepHosts', { authorityKeys });
+  }
+
+  forgeCreateRepository(params: Params<'forge.createRepository'>): Promise<Result<'forge.createRepository'>> {
+    return this.request('forge.createRepository', params);
+  }
+
+  forgePushAccess(params: Params<'forge.pushAccess'>, signal: AbortSignal): Promise<Result<'forge.pushAccess'>> {
+    return this.endpoint.request('forge.pushAccess', params, signal);
+  }
+
+  // signal: the fork dialog's Cancel ends the fork's polls on core
+  forgeFork(params: Params<'forge.fork'>, signal: AbortSignal): Promise<Result<'forge.fork'>> {
+    return this.endpoint.request('forge.fork', params, signal);
+  }
+
+  forgeOpenMergeRequest(params: Params<'forge.openMergeRequest'>): Promise<Result<'forge.openMergeRequest'>> {
+    return this.request('forge.openMergeRequest', params);
+  }
+
+  forgeOpenOrgAccess(params: Params<'forge.openOrgAccess'>): Promise<Result<'forge.openOrgAccess'>> {
+    return this.request('forge.openOrgAccess', params);
+  }
+
+  onForgeCiChanged(listener: (event: CoreEvents['forge.ci.changed']) => void): Disposable {
+    return this.endpoint.onEvent('forge.ci.changed', listener);
+  }
+
+  // ---- this computer's core: git credentials of the takeover (docs/invariants.md "GitHub and GitLab accounts")
+
+  /** The servers with an account, as the forge mirror lists them now; undefined before core's first forge mirror. */
+  forgeManagedServers(): readonly ManagedServer[] | undefined {
+    return this.forgeManaged;
+  }
+
+  /** Every server of the forge mirror and whether it has an account; undefined before core's first forge mirror. */
+  forgeServers(): readonly ClientForgeServer[] | undefined {
+    return this.forgeServerList;
+  }
+
+  /** The servers with an account, with their kind, as remote matching reads them; undefined before core's first forge mirror. */
+  forgeAccountServers(): readonly MatchableServer[] | undefined {
+    return this.forgeAccountServerList;
+  }
+
+  /** A terminal's or a target's git credential request; the answer holds a credential, which is never logged. */
+  forgeGitCredential(params: Params<'forge.gitCredential'>, signal?: AbortSignal): Promise<Result<'forge.gitCredential'>> {
+    return this.endpoint.request('forge.gitCredential', params, signal);
   }
 
   e2eStubOAuth(account: string, expiresInMs: number, offline?: boolean): Promise<void> {

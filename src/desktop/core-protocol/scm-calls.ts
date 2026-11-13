@@ -13,12 +13,12 @@ export const SCM_CALLS = [
   'emptyTree', 'quickDiffBase', 'stageRanges', 'blame', 'timeline', 'historyLoad', 'historyPage', 'headRefs', 'mergeBase', 'isCommit',
   'resolveTypedCommit', 'commitMessage', 'commitDetails', 'commitAttachment', 'cherryPick', 'mergeInputs', 'noteWorktreeConflicts',
   'mergeFile', 'completeMerge', 'createTag', 'deleteTag', 'pushTags', 'addWorktree', 'worktreeDirty', 'removeWorktree', 'cancel',
-  'cancelClone', 'remotes', 'remoteBranches', 'addRemote', 'removeRemote', 'fetch', 'pull', 'push', 'sync', 'clone', 'worktreeFolder',
+  'cancelClone', 'remotes', 'remoteEndpoints', 'commitOnRemote', 'remoteBranches', 'addRemote', 'removeRemote', 'renameRemote', 'fetch', 'pull', 'push', 'sync', 'clone', 'worktreeFolder',
 ] as const;
 export type ScmCall = (typeof SCM_CALLS)[number];
 
 /** The Repository reads main makes on an open repository. */
-export const REPOSITORY_CALLS = ['confinedEntry', 'commitTemplate', 'isValidBranchName', 'diff', 'commitObject', 'show'] as const;
+export const REPOSITORY_CALLS = ['confinedEntry', 'commitTemplate', 'isValidBranchName', 'diff', 'commitObject', 'show', 'unpushedCount', 'ignoresCase'] as const;
 export type RepositoryCall = (typeof REPOSITORY_CALLS)[number];
 
 /** WorktreeController's git and registry work (core-host/worktrees.ts). */

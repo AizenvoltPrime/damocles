@@ -31,6 +31,7 @@ import { parseAgentEntries, segmentForInvocation, type AgentTerminalStatus } fro
 import { TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { joinResultText, resultImageCount } from '../tool-result-text';
+import { partialResultText } from '../known-secret-masking';
 import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
 import { NestedCallFailures, nestedCallFailure } from '../nested-call-failures';
@@ -254,7 +255,7 @@ export class SubagentStreamBridge {
         // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
         const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
         const call = this.running.get(event.toolCallId);
-        if (call) call.output = { text: joinResultText(event.partialResult), truncated: Boolean(details?.truncation?.truncated) };
+        if (call) call.output = { text: partialResultText(event.partialResult), truncated: Boolean(details?.truncation?.truncated) };
         // Built at emit time so a frame held for the whole window reports the elapsed time the card is
         // showing, not the one it had when the frame was pushed.
         this.outputCoalescer.push(event.toolCallId, () => ({
@@ -263,7 +264,7 @@ export class SubagentStreamBridge {
           toolName,
           parentToolUseId,
           elapsedTimeSeconds: this.elapsed(event.toolCallId),
-          output: joinResultText(event.partialResult),
+          output: partialResultText(event.partialResult),
           outputTruncated: Boolean(details?.truncation?.truncated),
         }));
         break;

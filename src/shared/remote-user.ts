@@ -86,9 +86,18 @@ export function planModelIdsOf(value: unknown): string[] | undefined {
   return valid ? [...(value as string[])] : undefined;
 }
 
-/** Every provider pi knows on the client, by provider id. */
+/**
+ * Why a client's sign-ins or user rules are not known yet (feature client.pending): its first read is under way, its engine
+ * is stopped, or its last read failed. A value carrying it holds nothing else and is never read as none.
+ */
+export type ClientPending = 'reading' | 'engineStopped' | 'readFailed';
+
+export const CLIENT_PENDING_REASONS: readonly ClientPending[] = ['reading', 'engineStopped', 'readFailed'];
+
+/** Every provider pi knows on the client, by provider id; pending: not known yet. */
 export interface ClientAuth {
   readonly providers: Readonly<Record<string, ClientAuthEntry>>;
+  readonly pending?: ClientPending;
 }
 
 /** A ClientAuthEntry as the machine holding it reads it: expires is epoch ms on that machine's own clock. */
@@ -105,6 +114,7 @@ export interface HeldAuthEntry {
 
 export interface HeldAuth {
   readonly providers: Readonly<Record<string, HeldAuthEntry>>;
+  readonly pending?: ClientPending;
 }
 
 /** A held snapshot as it is sent at `now`: each expiry becomes the ms left on this clock, never below 0. */
@@ -112,6 +122,7 @@ export function sentClientAuth(held: HeldAuth, now: number): ClientAuth {
   return {
     providers: Object.fromEntries(Object.entries(held.providers).map(([provider, { expires, ...entry }]) =>
       [provider, expires === undefined ? entry : { ...entry, expiresIn: Math.max(Math.floor(expires - now), 0) }])),
+    ...(held.pending !== undefined ? { pending: held.pending } : {}),
   };
 }
 
@@ -120,6 +131,7 @@ export function heldClientAuth(sent: ClientAuth, now: number): HeldAuth {
   return {
     providers: Object.fromEntries(Object.entries(sent.providers).map(([provider, { expiresIn, ...entry }]) =>
       [provider, expiresIn === undefined ? entry : { ...entry, expires: now + expiresIn }])),
+    ...(sent.pending !== undefined ? { pending: sent.pending } : {}),
   };
 }
 
@@ -137,10 +149,12 @@ export interface PermissionRuleLists {
  * The client's user layer as a daemon's core reads it: the contributed setting keys of its user settings, and the permission
  * rules of each of its user files (~/.damocles/settings*.json, ~/.claude/settings*.json), one entry per file in
  * loadPermissionsByPriority's order, so a `!` carve-out never crosses files. Never env, apiKeyHelper, hooks or tokens.
+ * pending: not known yet.
  */
 export interface ClientUser {
   readonly settings: Readonly<Record<string, unknown>>;
   readonly permissionRules: readonly PermissionRuleLists[];
+  readonly pending?: ClientPending;
 }
 
 /**
@@ -293,10 +307,27 @@ export const REMOTE_CHAT_LOCAL_POSTS: ReadonlySet<string> = new Set([
   'userMemoryUnforgotten',
   'userMemoryError',
   'userProfileSectionError',
+  // this computer's Git hosting accounts, which a remote chat's refused notice lists, and its notice's bind result
+  'forgeAccountsChanged',
+  'forgeRefusedBindResult',
 ] satisfies ExtensionToWebviewMessage['type'][]);
 
+export type RemoteChatForgeMessage = Extract<WebviewToExtensionMessage['type'], 'forgeRefusedBind' | 'forgeRefusedOpenSettings' | 'forgeRefusedOrgAction'>;
+
+/**
+ * A remote chat page's actions on a refused notice a GitHub or GitLab tool raised: the refusal and the accounts are this
+ * computer's (user.forge.*), so its core acts on them, whether or not the host is attached, and the remote core never sees them.
+ */
+export const REMOTE_CHAT_FORGE_MESSAGES: ReadonlySet<string> = new Set([
+  'forgeRefusedBind',
+  'forgeRefusedOpenSettings',
+  'forgeRefusedOrgAction',
+] satisfies RemoteChatForgeMessage[]);
+
+export const isRemoteChatForgeMessage = (type: string): type is RemoteChatForgeMessage => REMOTE_CHAT_FORGE_MESSAGES.has(type);
+
 /** Every webview message a remote chat's page sends to this computer's core instead of its own. */
-export const FOREIGN_VIEW_MESSAGES: ReadonlySet<string> = new Set([...VOICE_VIEW_MESSAGES, ...REMOTE_CHAT_USER_SETTING_MESSAGES, ...REMOTE_CHAT_LOCAL_REQUESTS]);
+export const FOREIGN_VIEW_MESSAGES: ReadonlySet<string> = new Set([...VOICE_VIEW_MESSAGES, ...REMOTE_CHAT_USER_SETTING_MESSAGES, ...REMOTE_CHAT_LOCAL_REQUESTS, ...REMOTE_CHAT_FORGE_MESSAGES]);
 
 /** The longest requestId a createUserMemory carries; this computer's core and main's fallback echo none longer. */
 export const MAX_VIEW_REQUEST_ID_CHARS = 128;
@@ -535,6 +566,12 @@ export interface RelayedMcpServer {
   readonly resources: boolean;
   // how long the client waits on one request of the server (its config's timeout), so the remote side waits as long
   readonly timeoutMs?: number;
+}
+
+/** A client's clientMcp mirror; pending (feature client.pending): not read yet, so `servers` is empty and never read as none. */
+export interface ClientMcp {
+  readonly servers: readonly RelayedMcpServer[];
+  readonly pending?: ClientPending;
 }
 
 /** The longest relayed request timeout: past it a Node timer fires at once. */

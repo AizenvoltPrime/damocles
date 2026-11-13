@@ -25,6 +25,7 @@ import PatchChangesTab from './PatchChangesTab.vue';
 import ChatReviewTab from './ChatReviewTab.vue';
 import TimelineTab from './TimelineTab.vue';
 import MergeEditor from './merge/MergeEditor.vue';
+import JobLogTab from '../forge/JobLogTab.vue';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
 import LoadFailedNotice from './LoadFailedNotice.vue';
 import { parseRootKey } from '../../preload/folder-root';
@@ -83,9 +84,10 @@ const designPreviewTab = computed(() => (tab.value?.designPreview ? (tab.value a
 const htmlPreviewTab = computed(() => (tab.value?.htmlPreview ? (tab.value as ShellEditorTab & { htmlPreview: NonNullable<ShellEditorTab['htmlPreview']> }) : undefined));
 const reviewTab = computed(() => (tab.value?.review ? (tab.value as ShellEditorTab & { review: NonNullable<ShellEditorTab['review']> }) : undefined));
 const timelineTab = computed(() => (tab.value?.timeline && tab.value.kind === 'timeline' ? (tab.value as ShellEditorTab & { timeline: NonNullable<ShellEditorTab['timeline']> }) : undefined));
+const jobLogTab = computed(() => (tab.value?.jobLog && tab.value.kind === 'jobLog' ? (tab.value as ShellEditorTab & { jobLog: NonNullable<ShellEditorTab['jobLog']> }) : undefined));
 const mergeTab = computed(() => (tab.value?.merge ? (tab.value as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> }) : undefined));
 // Tabs that are no file of their own: no mention and no breadcrumbs; each names what it shows in its own header or tab.
-const OWN_HEADER_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['changes', 'review', 'timeline', 'merge', 'terminal']);
+const OWN_HEADER_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['changes', 'review', 'timeline', 'merge', 'terminal', 'jobLog']);
 
 // One host per terminal tab, kept while the tab is open, so the terminal's teleported view never loses its parent when
 // another tab shows; the terminal pane renders the view itself (TerminalPanes.vue).
@@ -396,6 +398,12 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           :key="timelineTab.id"
           :api="api"
           :tab="timelineTab"
+        />
+        <JobLogTab
+          v-else-if="jobLogTab"
+          :key="jobLogTab.id"
+          :api="api"
+          :tab="jobLogTab"
         />
         <MergeEditor
           v-else-if="mergeTab"

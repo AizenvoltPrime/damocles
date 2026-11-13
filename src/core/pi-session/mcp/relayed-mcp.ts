@@ -147,6 +147,37 @@ export function clientRelayCalls(remote: RemoteHost, server: string): RelayedMcp
   };
 }
 
+/** Where an attached client's read of its personal MCP servers stands; `known` also for a detached client. */
+export type RelayedMcpRead = 'reading' | 'failed' | 'known';
+
+export function relayedMcpState(remote: RemoteHost, clientId: string): RelayedMcpRead {
+  const reason = remote.clients.mcpPending(clientId);
+  if (reason === undefined || !remote.clients.attached(clientId)) return 'known';
+  return reason === 'reading' ? 'reading' : 'failed';
+}
+
+/** Settles with the read's state once it is no longer `reading`, or with `reading` when `ended` aborts first. */
+export function relayedMcpRead(remote: RemoteHost, clientId: string, ended: AbortSignal): Promise<RelayedMcpRead> {
+  return new Promise((resolve) => {
+    // a detach arrives as a clientAuth delta without a value
+    const subscription = remote.clients.onDidChange((change) => {
+      if (change.clientId === clientId && (change.topic === 'clientMcp' || change.topic === 'clientAuth')) settle();
+    });
+    const stop = (state: RelayedMcpRead): void => {
+      subscription.dispose();
+      ended.removeEventListener('abort', onEnded);
+      resolve(state);
+    };
+    const onEnded = (): void => stop('reading');
+    const settle = (): void => {
+      const state = relayedMcpState(remote, clientId);
+      if (state !== 'reading' || ended.aborted) stop(state);
+    };
+    ended.addEventListener('abort', onEnded, { once: true });
+    settle();
+  });
+}
+
 const METHOD_NOT_FOUND = -32601;
 const INTERNAL_ERROR = -32603;
 

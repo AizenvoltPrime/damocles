@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { applyHostTheme } from './apply-theme';
+import { FORGE_CHANNELS, type ChooseAccountRows, type CiChanged, type CiStatusView, type CloneAccountsView, type ClonePasteAnswer, type CloneSearchAnswer, type CloneStartAnswer, type ForgeChanged } from './forge-channels';
+import type { HostDefaultsView } from '../../shared/forge/bindings';
+import { plainCiTarget } from '../../shared/forge/ci';
+import type { FlowStart, ForkState, PublishOwnersAnswer, PublishState } from '../../shared/forge/publish';
+import type { BranchNameCheck, ProtectedPushState } from '../../shared/forge/protected-push';
 import type { PanelTheme } from './panel-channels';
 import {
   OVERLAY_CHANNELS,
@@ -173,9 +178,32 @@ const api: DamoclesOverlayApi = {
   onConnectDistros: (listener) => subscribe<readonly WslDistroInfo[]>(OVERLAY_CHANNELS.connectDistros, listener),
   allowBackgroundWork: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsAllowBackground, { hostId }) as Promise<PopupAnswer<LingerResult>>,
   onCloseRemoteRows: (listener) => subscribe<readonly CloseRemoteRow[]>(OVERLAY_CHANNELS.closeRemoteRows, listener),
+  forgeHostDefaults: (authorityKey) => ipcRenderer.invoke(FORGE_CHANNELS.hostDefaults, { authorityKey }) as Promise<PopupAnswer<HostDefaultsView>>,
+  setForgeHostDefault: (authorityKey, serverId, accountId) => ipcRenderer.invoke(FORGE_CHANNELS.setHostDefault, { authorityKey, serverId, accountId }) as Promise<PopupAnswer<boolean>>,
+  openForgeAccounts: (target) => ipcRenderer.invoke(FORGE_CHANNELS.openAccounts, { ...(target.serverId !== undefined ? { serverId: target.serverId } : {}), ...(target.signIn ? { signIn: true } : {}) }) as Promise<PopupAnswer<void>>,
+  onForgeChanged: (listener) => subscribe<ForgeChanged>(OVERLAY_CHANNELS.forgeChanged, listener),
+  onForgeChooseAccountRows: (listener) => subscribe<ChooseAccountRows>(OVERLAY_CHANNELS.forgeChooseAccountRows, listener),
+  forgePipeline: (repoId) => ipcRenderer.invoke(FORGE_CHANNELS.ciStatus, { repoId }) as Promise<PopupAnswer<CiStatusView | null>>,
+  forgeJobAction: (repoId, target, action) => ipcRenderer.invoke(FORGE_CHANNELS.jobAction, { repoId, target: plainCiTarget(target), action }) as Promise<PopupAnswer<boolean>>,
+  forgeJobLogOpen: (repoId, jobId) => ipcRenderer.invoke(FORGE_CHANNELS.jobLogOpen, { repoId, jobId }) as Promise<PopupAnswer<void>>,
+  forgeOpenOnServer: (repoId, target) => ipcRenderer.invoke(FORGE_CHANNELS.openOnServer, { repoId, target: plainCiTarget(target) }) as Promise<PopupAnswer<string | null>>,
+  onForgeCiChanged: (listener) => subscribe<CiChanged>(OVERLAY_CHANNELS.forgeCiChanged, listener),
+  forgeCloneAccounts: () => ipcRenderer.invoke(FORGE_CHANNELS.cloneAccounts, {}) as Promise<PopupAnswer<CloneAccountsView>>,
+  forgeCloneSearch: (accountId, query, requestId) => ipcRenderer.invoke(FORGE_CHANNELS.cloneSearch, { accountId, query, requestId }) as Promise<PopupAnswer<CloneSearchAnswer>>,
+  forgeClonePaste: (text) => ipcRenderer.invoke(FORGE_CHANNELS.clonePaste, { text }) as Promise<PopupAnswer<ClonePasteAnswer>>,
+  forgeCloneStart: (source) => ipcRenderer.invoke(FORGE_CHANNELS.cloneStart, 'pasteText' in source ? { pasteText: source.pasteText } : { accountId: source.accountId, key: source.key }) as Promise<PopupAnswer<CloneStartAnswer>>,
+  forgePublishSubmit: (requestId, owner, name, visibility) => ipcRenderer.invoke(FORGE_CHANNELS.publishSubmit, { requestId, owner, name, visibility }) as Promise<PopupAnswer<FlowStart>>,
+  forgeForkStart: (requestId) => ipcRenderer.invoke(FORGE_CHANNELS.forkStart, { requestId }) as Promise<PopupAnswer<FlowStart>>,
+  onForgePublishState: (listener) => subscribe<PublishState>(OVERLAY_CHANNELS.forgePublishState, listener),
+  onForgeForkState: (listener) => subscribe<ForkState>(OVERLAY_CHANNELS.forgeForkState, listener),
+  forgePublishOwners: (requestId, accountId) => ipcRenderer.invoke(FORGE_CHANNELS.publishOwners, { requestId, accountId }) as Promise<PopupAnswer<PublishOwnersAnswer>>,
+  forgeProtectedCheckName: (requestId, name) => ipcRenderer.invoke(FORGE_CHANNELS.protectedCheckName, { requestId, name }) as Promise<PopupAnswer<BranchNameCheck>>,
+  forgeProtectedPush: (requestId, name) => ipcRenderer.invoke(FORGE_CHANNELS.protectedPush, { requestId, name }) as Promise<PopupAnswer<FlowStart>>,
+  onForgeProtectedState: (listener) => subscribe<ProtectedPushState>(OVERLAY_CHANNELS.forgeProtectedState, listener),
   listRemoteHosts: () => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsList, {}) as Promise<PopupAnswer<readonly RemoteHostEntry[]>>,
   setHostSetting: (hostId, change) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsSetSetting, { hostId, change: { key: change.key, value: change.value } }) as Promise<PopupAnswer<void>>,
   revokeCredentialHost: (hostId, credentialHost) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRevokeCredential, { hostId, credentialHost }) as Promise<PopupAnswer<void>>,
+  revokeForgeAccount: (hostId, account) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRevokeForgeAccount, { hostId, account: { serverId: account.serverId, accountId: account.accountId } }) as Promise<PopupAnswer<void>>,
   deliverHeldMemory: (hostId, queueId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsDeliverHeldMemory, { hostId, queueId }) as Promise<PopupAnswer<HeldMemoryResult>>,
   discardHeldMemory: (hostId, queueId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsDiscardHeldMemory, { hostId, queueId }) as Promise<PopupAnswer<HeldMemoryResult>>,
   setUpPasswordless: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsSetUpPasswordless, { hostId }) as Promise<PopupAnswer<PasswordlessResult>>,

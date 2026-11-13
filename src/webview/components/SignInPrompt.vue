@@ -7,11 +7,14 @@ import { usePermissionStore } from '@/stores/usePermissionStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useChatHost } from '@/composables/useChatHost';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 import { Button } from '@/components/ui/button';
 
-// Sign-in needed: a turn waits for the sign-in of the device that started it, which is not attached. Only a click on this
-// device's "Continue with my sign-in" moves the turn to this device's sign-in; Stop ends the turn.
+// Sign-in needed: a turn waits for the sign-in of the device that started it, which is not attached, or whose sign-ins are
+// not known yet (the request's reason, which the card says instead). Only a click on this device's "Continue with my
+// sign-in" moves the turn to this device's sign-in; Stop ends the turn.
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 const store = usePermissionStore();
 const host = useChatHost();
 const { postMessage } = usePlatformBridge();
@@ -54,8 +57,11 @@ function stop(): void {
         </div>
       </header>
 
-      <p class="px-3.5 pt-2.5 pb-3 text-13 text-pretty">
-        {{ t('signIn.body', { provider: providerName, host: host.name }) }}
+      <p
+        class="px-3.5 pt-2.5 pb-3 text-13 text-pretty"
+        data-testid="sign-in-body"
+      >
+        {{ current.reason ? rt(current.reason) : t('signIn.body', { provider: providerName, host: host.name }) }}
       </p>
 
       <div class="flex flex-wrap justify-end gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">

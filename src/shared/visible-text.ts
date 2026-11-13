@@ -21,9 +21,28 @@ function shownAs(char: string, offset: number, text: string): string {
 /** Repository text (a path, a branch, a subject) as Damocles shows it: each control or bidi character but tab as its visible `\u{…}` escape. */
 export const visibleText = (text: string): string => text.replace(HIDDEN_CHARACTERS, shownAs);
 
+// one piece of shown text: an escape visibleText wrote, or one code point
+const SHOWN_PIECE = /\\u\{[0-9A-F]{1,6}\}|[\s\S]/gu;
+
+function cutBetweenPieces(shown: string, max: number): string {
+  if (shown.length <= max) return shown;
+  let end = 0;
+  for (const piece of shown.matchAll(SHOWN_PIECE)) {
+    if (end + piece[0].length > max) break;
+    end += piece[0].length;
+  }
+  return shown.slice(0, end);
+}
+
+/** visibleText within max UTF-16 units, cut between pieces, so never inside an escape or a surrogate pair. */
+export const boundedVisible = (text: string, max: number): string => cutBetweenPieces(visibleText(text), max);
+
 /** Multi-line repository text (a commit's message or diff) the same way, keeping tabs and line breaks; CRLF reads as LF. */
 export const visibleLines = (text: string): string =>
   text.replace(/\r\n/g, '\n').replace(HIDDEN_CHARACTERS, (char: string, offset: number, whole: string) => (char === '\n' ? char : shownAs(char, offset, whole)));
+
+/** visibleLines within max UTF-16 units, cut as boundedVisible cuts. */
+export const boundedLines = (text: string, max: number): string => cutBetweenPieces(visibleLines(text), max);
 
 /** `text` with every string argument, nested ones included, as `visibleLines` shows it; the catalog keys are Damocles' own. */
 export function visibleArgs(text: LocalizedText): LocalizedText {

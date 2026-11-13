@@ -10,6 +10,7 @@
  * `SubagentEngine` so model policy + budget rollup stay owned by PiSession.
  */
 
+import type { ForgeToolsPort } from '../tools/forge-tools';
 import { randomUUID } from 'node:crypto';
 import type { TrustService } from '../../../platform/trust-service';
 import type { Model, Api } from '@earendil-works/pi-ai';
@@ -28,7 +29,7 @@ import type { DesignScope } from '../../design/design-write-rule';
 import type { ChatMachine } from '../proven-shell';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import type { DispatchDeps } from '../hooks';
-import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
+import { deferredToolNames, loadableToolNames, nestedAgentToolNames } from '../tools/deferred-tools';
 import { userScopeReach } from '../../user-scope';
 import type { NestedMcpToolset } from '../tools/mcp-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
@@ -140,6 +141,8 @@ export interface SubagentEngine {
   machine?: ChatMachine;
   /** Present while the panel is a design chat: its subagents get its verification tools, and their answers become its decisions. */
   nestedDesign?: () => NestedDesignGrant | undefined;
+  /** The chat's GitHub and GitLab tools, whose target and card the gate resolves for this agent's calls too. */
+  forgeTools?: ForgeToolsPort;
   /** The gate's cancel handle for one agent, delivering a note to that agent as its shell tools do. */
   shellCancelFor: (agentId: string) => ShellCancelRegistry;
   postMessage: (message: ExtensionToWebviewMessage) => void;
@@ -793,8 +796,11 @@ export class AgentManager {
     // name reaches the ToolSearch port only if it is in this array — `toolset.names` alone has every
     // `mcp__*` stripped and would yield an empty MCP inventory while the runtime still held those tools
     // inactive (it derives its own baseline from `tools:`). One array for both makes
-    // `deferrable ⊆ tools:` true by construction rather than by two call sites agreeing.
-    const eligibleToolNames = [...toolset.names, ...mcp.names];
+    // `deferrable ⊆ tools:` true by construction rather than by two call sites agreeing; `tools:` then
+    // leaves out the built-in deferred tools the agent can never load.
+    const allToolNames = [...toolset.names, ...mcp.names];
+    const deferrableToolNames = loadableToolNames(deferredToolNames(allToolNames, mcp.deferrable), userScopeReach(), this.engine.designScope?.() !== undefined);
+    const eligibleToolNames = nestedAgentToolNames(allToolNames, deferrableToolNames);
     const hooksDispatch = this.engine.getHooksDispatch?.();
     const extensionFactory = createSubagentExtensionFactory({
       permissionHandler: this.engine.permissionHandler,
@@ -803,6 +809,7 @@ export class AgentManager {
       ...(this.engine.worktreeIsolation ? { worktreeIsolation: this.engine.worktreeIsolation } : {}),
       ...(this.engine.designScope ? { designScope: this.engine.designScope } : {}),
       ...(this.engine.machine ? { machine: this.engine.machine } : {}),
+      ...(this.engine.forgeTools ? { forgeTools: this.engine.forgeTools } : {}),
       shellCancel: this.engine.shellCancelFor(record.id),
       postMessage: this.engine.postMessage,
       // An agent with no write tool (Explore/Plan, or any read-only user agent) keeps that guarantee in
@@ -810,7 +817,7 @@ export class AgentManager {
       readOnlyShell: toolset.readOnly,
       parentToolUseId,
       stopSignal: record.abortController!.signal,
-      deferrableToolNames: loadableToolNames(deferredToolNames(eligibleToolNames, mcp.deferrable), userScopeReach(), this.engine.designScope?.() !== undefined),
+      deferrableToolNames,
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
       // included, falls through to full approval.

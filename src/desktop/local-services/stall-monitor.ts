@@ -55,9 +55,58 @@ export interface StallSummary {
   readonly stacks: readonly StallStack[];
 }
 
-/** A running profile; `stop` returns it as `.cpuprofile` JSON. */
+/** A running profile; `stop` returns V8's serialization of it (`readCpuProfile` reads it). */
 export interface ProfileHandle {
   stop(): string;
+}
+
+// V8's CpuProfileJSONSerializer writes functionName, url and deoptReason unescaped (nodejs/node#67097), so a Windows path
+// or a quote in a frame name breaks its JSON. Each raw field ends where the serializer's fixed key order resumes.
+const RAW_FIELD_START = /"callFrame":\{"functionName":"|"deoptReason":"/g;
+const FUNCTION_NAME_END = /","lineNumber":-?\d+,"columnNumber":-?\d+,"scriptId":\d+,"url":"/g;
+const URL_END = /"\}(?=,"children":\[|,"deoptReason":"|,"positionTicks":\[|\})/g;
+const DEOPT_REASON_END = /"(?=,"positionTicks":\[|\})/g;
+
+function rawUntil(text: string, from: number, end: RegExp): { raw: string; next: number; delimiter: string } {
+  end.lastIndex = from;
+  const found = end.exec(text);
+  if (!found) throw new SyntaxError(`The CPU profile has an unterminated field at ${from}`);
+  return { raw: text.slice(from, found.index), next: found.index + found[0].length, delimiter: found[0] };
+}
+
+const escaped = (raw: string): string => JSON.stringify(raw).slice(1, -1);
+
+function escapeRawFields(text: string): string {
+  let out = '';
+  let at = 0;
+  RAW_FIELD_START.lastIndex = 0;
+  for (let start = RAW_FIELD_START.exec(text); start; start = RAW_FIELD_START.exec(text)) {
+    const from = start.index + start[0].length;
+    out += text.slice(at, from);
+    if (start[0] === '"deoptReason":"') {
+      const reason = rawUntil(text, from, DEOPT_REASON_END);
+      out += escaped(reason.raw) + reason.delimiter;
+      at = reason.next;
+    } else {
+      const name = rawUntil(text, from, FUNCTION_NAME_END);
+      const url = rawUntil(text, name.next, URL_END);
+      out += escaped(name.raw) + name.delimiter + escaped(url.raw) + url.delimiter;
+      at = url.next;
+    }
+    RAW_FIELD_START.lastIndex = at;
+  }
+  return out + text.slice(at);
+}
+
+/** A profile `ProfileHandle.stop` returned, and its JSON with every string escaped. */
+export function readCpuProfile(text: string): { profile: CpuProfile; json: string } {
+  try {
+    return { profile: JSON.parse(text) as CpuProfile, json: text };
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+  }
+  const json = escapeRawFields(text);
+  return { profile: JSON.parse(json) as CpuProfile, json };
 }
 
 // V8's meta frames are (root), (idle), (program) and (garbage collector); a (program) sample has no JS on the stack.
@@ -281,7 +330,7 @@ export class StallMonitor implements Disposable {
   }
 
   private report(stopped: { json: string; segmentStart: number }, fromPerf: number, toPerf: number, blockedMs: number, cpuMs: number): void {
-    const profile = JSON.parse(stopped.json) as CpuProfile;
+    const { profile, json } = readCpuProfile(stopped.json);
     const toProfileMs = (perfMs: number): number => profile.startTime / 1000 + (perfMs - stopped.segmentStart);
     const summary = summarizeStall(profile, toProfileMs(fromPerf), toProfileMs(toPerf));
     if (summary.sampledMs < MIN_SAMPLED_MS) {
@@ -290,7 +339,7 @@ export class StallMonitor implements Disposable {
     }
     const file = path.join(this.options.dir, `stall-${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.round(blockedMs)}ms.cpuprofile`);
     this.options.log(formatStall(this.options.process, blockedMs, cpuMs, summary, file));
-    this.saving = this.saving.then(() => this.save(file, stopped.json));
+    this.saving = this.saving.then(() => this.save(file, json));
   }
 
   // Saves run one at a time, so any partial file but this save's own was left by a quit. The rename comes last, so a

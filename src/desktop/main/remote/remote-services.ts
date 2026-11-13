@@ -214,6 +214,7 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     trash: () => refused('The trash'),
     ask: (question, signal) => deps.ui.ask({ ...question, message: t('{0}: {1}', deps.hostName(), question.message) }, signal),
     askpass: (prompt, signal) => deps.ui.askpass({ ...prompt, text: t('{0}: {1}', deps.hostName(), prompt.text) }, signal),
+    chooseForgeAccount: () => refused('Choosing a Git hosting account'),
     worktrees: deps.ui.worktrees,
   };
   return {

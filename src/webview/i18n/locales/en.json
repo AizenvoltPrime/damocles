@@ -464,12 +464,14 @@
     },
     "sendToClaude": "Send to Damocles",
     "ariaLabel": "Permission request",
+    "factsLabel": "Where this goes",
     "onHost": {
       "runCommand": "Run this command on {host}?",
       "generateImage": "Generate an image and save it as this new file on {host}?",
       "useTool": "Allow {tool} with this input on {host}?",
       "allowCreate": "Allow creating this file on {host}?",
-      "allowEdit": "Allow this edit on {host}?"
+      "allowEdit": "Allow this edit on {host}?",
+      "titled": "{host} {title}"
     }
   },
   "question": {
@@ -803,6 +805,7 @@
       "browser": "Browser",
       "web": "Web",
       "image": "Image",
+      "forge": "GitHub and GitLab",
       "subagents": "Subagents",
       "team": "Team",
       "design": "Design",
@@ -811,7 +814,9 @@
     "unavailable": {
       "noModel": "Unavailable: no image model chosen. Choose one in Settings.",
       "unknownModel": "Unavailable: the chosen image model is not available. Choose another in Settings.",
-      "noOpenRouterKey": "Unavailable: no OpenRouter key or sign-in."
+      "noOpenRouterKey": "Unavailable: no OpenRouter key or sign-in.",
+      "noForgeAccount": "Unavailable: no GitHub or GitLab account. Add one in Settings › Models & accounts › Git hosting.",
+      "forgeServersUnread": "Not available yet: Damocles is still reading the GitHub and GitLab accounts of your computer."
     },
     "setOnHost": {
       "group": "Set in this host's own settings, so it changes only there.",
@@ -1824,6 +1829,30 @@
     "rejected": "{provider} did not accept the saved credential. Update it in settings.",
     "missing": "No {provider} credential is saved. Add one in settings to continue.",
     "noApiAccess": "The {provider} account needs API access. Give the account API access, or save an API key and turn on Prefer API key over sign-in."
+  },
+  "forgeRefused": {
+    "title": "The agent's git was refused",
+    "agentShellsOff": "The account this project uses on {server}, {login}, does not allow agent shells. Damocles kept its token out of the shell.",
+    "noAccount": "Damocles found no account for this project on {server}, so the agent's git got no credentials.",
+    "chooseAccount": "Choose account",
+    "openSettings": "Open Git hosting settings",
+    "menuLabel": "Account for {server}",
+    "menuCaption": "{project} · {server}",
+    "shellsAllowed": "Agent shells allowed",
+    "shellsNotAllowed": "Agent shells not allowed",
+    "accountItem": "{login}, {shells}",
+    "nowUses": "{project} now uses {login}",
+    "nowUsesAllowed": "Agent shells may use {login} on {server}, so the agent's next git call signs in as {login}.",
+    "nowUsesNotAllowed": "Agent shells may not use {login} either, so the agent's next git call is refused too.",
+    "announce": "{project} now uses {login} on {server}.",
+    "saveFailed": "Damocles could not save the account for this project.",
+    "toolTitle": "The agent's {tool} was refused",
+    "toolNoAccount": "Damocles found no account for this project on {server}, so {tool} did not run.",
+    "toolNowUses": "The agent's GitHub and GitLab tools now use {login} on {server} for this project.",
+    "orgSso": "{org} on {server} uses single sign-on, and your account has not authorized Damocles for it yet.",
+    "orgApproval": "{org} on {server} has not approved Damocles, so its private repositories stay hidden from it.",
+    "orgAuthorize": "Authorize Damocles for {org}",
+    "orgRequest": "Request approval from {org}"
   },
   "allowanceBanner": {
     "title": "Claude requests here bill extra usage",
@@ -3001,6 +3030,158 @@
       "voiceFiles": {
         "label": "Voice files",
         "description": "The on-device voice runtime and its models."
+      },
+      "forgeServer": {
+        "label": "Git hosting",
+        "description": "GitHub and GitLab servers and the accounts you sign in with on them."
+      },
+      "forgeAddServer": {
+        "label": "Add a server",
+        "description": "GitHub Enterprise Server, a ghe.com tenant, or a self-managed GitLab."
+      }
+    },
+    "forge": {
+      "title": "Git hosting",
+      "intro": "GitHub and GitLab accounts on this computer. Source control and the agent's tools use them for each project's server.",
+      "loading": "Loading Git hosting accounts",
+      "showFile": "Show file",
+      "server": {
+        "accounts": "No account | {n} account | {n} accounts",
+        "noAccount": "No account yet. Git's own credentials answer for {server}.",
+        "noAccountAnywhere": "No account yet. Sign in to push without a password prompt and to let the agent read CI, merge requests and issues.",
+        "selfManagedOAuth": "Self-managed. Signs in through your own OAuth app.",
+        "tenantOAuth": "GitHub Enterprise Cloud tenant. Signs in through your own OAuth app.",
+        "selfManagedToken": "Self-managed. Signs in with a personal access token, or through your own OAuth app once you add its client id.",
+        "tenantToken": "GitHub Enterprise Cloud tenant. Signs in with a personal access token, or through your own OAuth app once you add its client id.",
+        "versionGitlab": "GitLab {version}",
+        "versionGhes": "GitHub Enterprise {version}",
+        "addAccount": "Add account",
+        "addAccountLabel": "Add account: {server}",
+        "editServer": "Edit server",
+        "editServerLabel": "Edit server: {server}",
+        "accountsOn": "Accounts on {server}"
+      },
+      "account": {
+        "route": {
+          "browser": "browser sign-in",
+          "device": "device code",
+          "token": "personal access token"
+        },
+        "signedIn": "Signed in",
+        "tokenRefused": "Token refused",
+        "signInExpired": "Sign-in expired",
+        "manage": "Manage",
+        "manageLabel": "Manage: {login} on {server}",
+        "agentShells": "Agent shells may use this account",
+        "agentShellsHint": "git in the agent's shells signs in as {login} on {server}. The token never enters the shell's environment.",
+        "agentShellsOffHint": "git in the agent's shells gets nothing for {server} and fails with a message naming this switch.",
+        "agentShellsNowOn": "Agent shells may now use {login}.",
+        "agentShellsNowOff": "Agent shells no longer use {login}.",
+        "signedInOn": {
+          "browser": "Signed in with the browser on {date}. The access token renews by itself.",
+          "device": "Signed in with a device code on {date}. The access token renews by itself.",
+          "token": "Signed in with a personal access token on {date}."
+        },
+        "tokenWarning": "The agent could read this token. A personal access token does not renew, so it stays usable until it expires.",
+        "tokenRefusedNote": "{server} refused this token on {date}. It may have expired or been revoked. Enter a new one to keep using {login}.",
+        "tokenRefusedNoteUndated": "{server} refused this token. It may have expired or been revoked. Enter a new one to keep using {login}.",
+        "signInExpiredNote": "{server} stopped accepting this sign-in on {date}. Sign in again to keep using {login}.",
+        "signInExpiredNoteUndated": "{server} stopped accepting this sign-in. Sign in again to keep using {login}.",
+        "signInAgain": "Sign in again",
+        "enterNewToken": "Enter a new token",
+        "signOut": "Sign out",
+        "orgSso": "Authorize Damocles for {org}",
+        "orgNotApproved": "{org} has not approved Damocles",
+        "requestApproval": "Request approval"
+      },
+      "signOut": {
+        "title": "Sign out of {login} on {server}?",
+        "oauth": "Damocles revokes its token on the server and forgets which projects and hosts used this account.",
+        "token": "Damocles tries to revoke this personal access token on the server and forgets which projects and hosts used this account. If the server cannot revoke it, Damocles shows the page where you revoke it yourself.",
+        "projects": "1 project uses it; it asks again the next time you push. | {n} projects use it; they ask again the next time you push.",
+        "hosts": "It is the default account of 1 remote host. | It is the default account of {n} remote hosts.",
+        "confirm": "Sign out"
+      },
+      "signIn": {
+        "title": "Sign in to {server}",
+        "method": "Sign-in method",
+        "browser": "Browser",
+        "device": "Device code",
+        "token": "Token",
+        "unavailable": "{route}: {reason}",
+        "browserHint": "Opens {server} in your browser. Damocles receives the sign-in on this computer.",
+        "browserStart": "Sign in with the browser",
+        "browserWaiting": "Finish signing in in your browser. Damocles receives the answer on this computer.",
+        "deviceHint": "Shows a code to enter on the server, from any browser or device.",
+        "deviceStart": "Get a code",
+        "tokenHint": "Create a token with these scopes, then paste it here.",
+        "scopes": "Required scopes",
+        "openTokenPage": "Open the token page",
+        "tokenLabel": "Personal access token",
+        "tokenEmpty": "Paste a token first.",
+        "tokenAgentWarning": "The agent could read this token.",
+        "submit": "Sign in",
+        "checking": "Checking your account…",
+        "signedInAs": "Signed in as {login}",
+        "status": {
+          "starting": "Starting sign-in…",
+          "browser": "Waiting for the browser",
+          "deviceCode": "Enter the code in your browser",
+          "finishing": "Checking your account"
+        }
+      },
+      "serverForm": {
+        "add": "Add server",
+        "save": "Save",
+        "remove": "Remove server",
+        "url": "Server URL",
+        "urlHint": "https only. A GitLab address may include a path, such as https://example.com/gitlab.",
+        "kind": "Kind",
+        "kindGitlab": "GitLab",
+        "kindGithub": "GitHub Enterprise",
+        "clientId": "OAuth app client id (optional)",
+        "clientIdHint": "Register an application on the server to sign in with the browser or a device code. Without one, sign in with a token.",
+        "clientSecret": "Client secret",
+        "clientSecretHint": "GitHub needs it for browser sign-in. It stays in this computer's secret store.",
+        "clientSecretKept": "A client secret is saved. Leave this empty to keep it.",
+        "clientSecretAgain": "Enter the client secret again. Damocles clears it after each save.",
+        "gitHosts": "Other git hosts (optional)",
+        "gitHostsHint": "Hosts that serve this server's repositories over https, such as git.example.com. Separate them with commas.",
+        "pendingTitle": "Hosts found in clone addresses",
+        "pendingHint": "Damocles found these hosts in this server's clone addresses. It manages a host only after you confirm it; until then, Git's own credentials answer for it.",
+        "confirmHost": "Confirm",
+        "dismissHost": "Dismiss",
+        "confirmHostLabel": "Confirm {host}",
+        "dismissHostLabel": "Dismiss {host}",
+        "hostConfirmed": "Added {host} to Other git hosts.",
+        "hostDismissed": "Dismissed {host}. Damocles does not propose it again.",
+        "redirectUri": "Redirect URI",
+        "copy": "Copy",
+        "copied": "Copied",
+        "copyFailed": "Could not copy the address. Select it and copy it yourself.",
+        "stepsGitlab": "To sign in with the browser or a device code, register an application in User settings (or Admin > Applications) > Add new application:",
+        "stepsGitlabList": {
+          "step1": "Paste the Redirect URI above.",
+          "step2": "Untick Confidential.",
+          "step3": "Tick api and write_repository.",
+          "step4": "Save.",
+          "step5": "Copy the Application ID into OAuth app client id."
+        },
+        "stepsGithub": "To sign in with the browser or a device code, register an app in Settings > Developer settings > OAuth Apps > New OAuth App:",
+        "stepsGithubList": {
+          "step1": "Paste the Redirect URI above as the callback URL.",
+          "step2": "Tick Enable Device Flow to sign in with the client id only, or generate a client secret for browser sign-in.",
+          "step3": "Enter the client id, and the secret if you made one."
+        },
+        "added": "Added {server}.",
+        "saved": "Saved {server}.",
+        "removed": "Removed {server}.",
+        "removeTitle": "Remove {server}?",
+        "removeMessage": "Damocles forgets this server. | Damocles signs out of its account first, revoking the token, then forgets this server. | Damocles signs out of its {n} accounts first, revoking their tokens, then forgets this server."
+      },
+      "notice": {
+        "openRevokePage": "Open the revoke page",
+        "dismiss": "Dismiss"
       }
     }
   },

@@ -4,6 +4,8 @@ export interface NotificationOptions {
   readonly modal?: boolean;
   // withdraws a modal notification, which then answers undefined; VS Code cannot withdraw one and ignores it
   readonly signal?: AbortSignal;
+  // a toast only while the host's window is unfocused; while it is focused the call answers undefined and shows nothing
+  readonly unlessFocused?: boolean;
 }
 
 /**

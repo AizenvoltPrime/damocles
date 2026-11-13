@@ -8,7 +8,7 @@ import { BUILTIN_DEFERRED_GROUPS, deferredToolNames } from '../../tools/deferred
 // from, so this file asserts against the names that actually reach the active set.
 import { WEB_PI_TOOL_NAMES } from '../../web-access/web-tool-specs';
 import { mapPiToolName, toolCategory } from '../../tool-normalization';
-import { TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE } from '../../../../shared/tool-names';
+import { TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE, FORGE_READ_TOOLS, FORGE_WRITE_TOOLS } from '../../../../shared/tool-names';
 import type { AgentConfig } from '../types';
 
 function cfg(over: Partial<AgentConfig>): AgentConfig {
@@ -532,7 +532,8 @@ describe('Explore/Plan prompts state how to load the deferred web and browser gr
     // `BUILTIN_DEFERRED_GROUPS` — the same single source of truth the shipped groups compose from — so
     // a new deferrable group is denied by default and has to be added to `allowedGroups` by someone who
     // has decided, on purpose, that these read-only agents should have it.
-    const allowedGroups = new Set(['browser', 'web']);
+    // `forge` is granted its reads only, as read-only agents may read the repository's server; its writes are checked below.
+    const allowedGroups = new Set(['browser', 'web', 'forge']);
     const forbidden = BUILTIN_DEFERRED_GROUPS.filter((g) => !allowedGroups.has(g.group));
     // Without this the loops below go vacuous the moment `allowedGroups` covers every group, and a
     // vacuous guard reports green forever.
@@ -542,6 +543,8 @@ describe('Explore/Plan prompts state how to load the deferred web and browser gr
       for (const g of forbidden) {
         for (const n of g.names) expect(names, `${agent} must not hold ${g.group}/${n}`).not.toContain(n);
       }
+      for (const n of FORGE_READ_TOOLS) expect(names, `${agent}/${n}`).toContain(n);
+      for (const n of FORGE_WRITE_TOOLS) expect(names, `${agent} must not hold ${n}`).not.toContain(n);
     }
   });
 });

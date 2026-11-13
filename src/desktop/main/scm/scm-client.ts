@@ -33,6 +33,10 @@ export interface ScmRepository {
   diff(group: ChangeGroup, relativePath: string): ReturnType<Repository['diff']>;
   commitObject(hash: string): ReturnType<Repository['commitObject']>;
   show(side: 'index' | 'HEAD', relativePath: string): Promise<Buffer | 'tooLarge' | undefined>;
+  /** Feature scm.unpushedCount on a remote core. */
+  unpushedCount(remote: string): Promise<number>;
+  /** Feature scm.ignoreCase on a remote core. */
+  ignoresCase(): Promise<boolean>;
 }
 
 export interface ScmRepositoryRef {
@@ -121,6 +125,8 @@ export function createScmClient(deps: ScmClientDeps): ScmClient {
       const bytes = await repoCall<Uint8Array | 'tooLarge' | undefined>(repoId, 'show', [side, relativePath]);
       return bytes instanceof Uint8Array ? toBuffer(bytes) : bytes;
     },
+    unpushedCount: (remote) => repoCall(repoId, 'unpushedCount', [remote]),
+    ignoresCase: () => repoCall(repoId, 'ignoresCase', []),
   });
   const applyPatch = (authority: string, patch: ScmMirrorPatch): void => {
     switch (patch.kind) {
@@ -254,7 +260,7 @@ export function createScmClient(deps: ScmClientDeps): ScmClient {
       const token = hooks.branchName ? randomUUID() : undefined;
       if (token !== undefined && hooks.branchName) branchNames.set(token, hooks.branchName);
       try {
-        return await core(authorityOfRepo(repoId), 'scm commit', (client) => client.scmCommit(repoId, message, variant, hooks.saved ?? [], token));
+        return await core(authorityOfRepo(repoId), 'scm commit', (client) => client.scmCommit(repoId, message, variant, hooks.saved ?? [], token, hooks.protectedBranches));
       } finally {
         if (token !== undefined) branchNames.delete(token);
       }

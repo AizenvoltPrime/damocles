@@ -95,4 +95,9 @@ export interface SettingsTarget {
   readonly release?: string;
   // a saved host's id for the Remote hosts section; only main sets it, after checking the host store
   readonly host?: string;
+  // Accounts > Git hosting: the server row to open (a forge server id), with its sign-in panel open when forgeSignIn
+  readonly forgeServer?: string;
+  readonly forgeSignIn?: boolean;
+  // an account id on forgeServer, whose Manage opens
+  readonly forgeAccount?: string;
 }

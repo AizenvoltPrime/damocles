@@ -1,6 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { MAX_CREDENTIAL_HOST_CHARS } from '../../shared/git-credential';
+import { FORGE_GIT_OPERATIONS, type ChooseAccountAnswer, type ChooseAccountRows, type RepoAccountOption } from '../../shared/forge/bindings';
+import type { ForgeChooseAccountDialog } from '../preload/forge-channels';
+import type { ForkState, PublishState } from '../../shared/forge/publish';
+import type { ProtectedPushState } from '../../shared/forge/protected-push';
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import { isHostColor } from '../../shared/host-colors';
 import {
@@ -70,6 +74,9 @@ import {
   type RemoteHostSettings,
   MAX_WORKTREE_DIALOG_ITEMS,
   CLOSE_REMOTE_STATUSES,
+  GIT_CONSENT_FORGE_REASONS,
+  isAlwaysForgeAccount,
+  MAX_CONSENT_REPO_PATH_CHARS,
   GIT_CREDENTIAL_CONSENT_CHOICES,
   type GitCredentialConsent,
   type GitCredentialConsentChoice,
@@ -193,6 +200,17 @@ function optionalFlag(raw: Record<string, unknown>, key: string): { ok: boolean;
   return typeof value === 'boolean' ? { ok: true, value } : { ok: false };
 }
 
+// a forge avatar key: SHA-256 hex (core/forge/avatars.ts avatarKey)
+const isAvatarKey = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+
+function parseMenuAvatar(raw: unknown): { login: string; key?: string } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const login = field(raw, 'login');
+  const key = field(raw, 'key');
+  if (!Object.keys(raw).every((name) => name === 'login' || name === 'key') || !isNonEmptyText(login, MAX_OVERLAY_LABEL_LENGTH) || (key !== undefined && !isAvatarKey(key))) return undefined;
+  return { login: visibleText(login), ...(key !== undefined ? { key } : {}) };
+}
+
 function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   if (!isRecord(raw)) return undefined;
   const kind = field(raw, 'kind');
@@ -203,6 +221,7 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   const icon = field(raw, 'icon');
   const glyph = field(raw, 'glyph');
   const color = field(raw, 'color');
+  const avatar = field(raw, 'avatar') === undefined ? undefined : parseMenuAvatar(field(raw, 'avatar'));
   const shortcut = field(raw, 'shortcut');
   const clipboard = field(raw, 'clipboard');
   const hint = field(raw, 'hint') === undefined ? undefined : shownLabel(field(raw, 'hint'));
@@ -212,6 +231,7 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
   if (glyph !== undefined && !(typeof glyph === 'string' && GLYPHS.has(glyph))) return undefined;
   if (color !== undefined && !(TERMINAL_COLORS as readonly unknown[]).includes(color)) return undefined;
+  if (field(raw, 'avatar') !== undefined && !avatar) return undefined;
   if (shortcut !== undefined && !isText(shortcut, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   const disabledReason = field(raw, 'disabledReason');
   const danger = optionalFlag(raw, 'danger');
@@ -229,6 +249,7 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
     ...(icon !== undefined ? { icon: icon as OverlayIcon } : {}),
     ...(glyph !== undefined ? { glyph: glyph as TerminalGlyph } : {}),
     ...(color !== undefined ? { color: color as TerminalColor } : {}),
+    ...(avatar !== undefined ? { avatar } : {}),
     ...(shortcut !== undefined ? { shortcut } : {}),
     ...(hint !== undefined ? { hint } : {}),
     ...(danger.value !== undefined ? { danger: danger.value } : {}),
@@ -894,9 +915,14 @@ function parseHostFacts(raw: unknown): RemoteHostFacts | undefined {
   if (!isRecord(raw)) return undefined;
   const flags = ['passwordless', 'keyInstalledByDamocles', 'lingerEnabledByDamocles'].map((key) => field(raw, key));
   const alwaysCredentialHosts = parseTextList(field(raw, 'alwaysCredentialHosts'), MAX_OVERLAY_ITEMS, MAX_CREDENTIAL_HOST_CHARS);
+  const accounts = field(raw, 'alwaysForgeAccounts');
   if (!flags.every((flag) => typeof flag === 'boolean') || !alwaysCredentialHosts) return undefined;
+  if (!Array.isArray(accounts) || accounts.length > MAX_OVERLAY_ITEMS || !accounts.every(isAlwaysForgeAccount)) return undefined;
   const [passwordless, keyInstalledByDamocles, lingerEnabledByDamocles] = flags as boolean[];
-  return { passwordless: passwordless!, keyInstalledByDamocles: keyInstalledByDamocles!, lingerEnabledByDamocles: lingerEnabledByDamocles!, alwaysCredentialHosts };
+  return {
+    passwordless: passwordless!, keyInstalledByDamocles: keyInstalledByDamocles!, lingerEnabledByDamocles: lingerEnabledByDamocles!, alwaysCredentialHosts,
+    alwaysForgeAccounts: accounts.map(({ serverId, accountId }) => ({ serverId, accountId })),
+  };
 }
 
 function parseHeldMemoryQueue(raw: unknown): HeldMemoryQueue | undefined {
@@ -1039,9 +1065,29 @@ export function closeRemoteResult(answer: OverlayAnswer): CloseRemoteResult {
 
 /** The git consent request (main/remote/git-credential-client.ts) within the overlay's bounds; undefined otherwise. */
 export function parseGitCredentialConsentRequest(consent: GitCredentialConsent): Extract<OverlayRequest, { kind: 'gitCredentialConsent' }> | undefined {
-  const { hostName, hostColor, credentialHost, targetHelper } = consent;
+  const { hostName, hostColor, credentialHost, targetHelper, forgeAccount } = consent;
   if (!isNonEmptyText(hostName, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(credentialHost, MAX_CREDENTIAL_HOST_CHARS) || (hostColor !== undefined && !isHostColor(hostColor))) return undefined;
-  return { kind: 'gitCredentialConsent', hostName, ...(hostColor !== undefined ? { hostColor } : {}), credentialHost, targetHelper };
+  if (forgeAccount !== undefined) {
+    const { serverLabel, login, reason, repoPath } = forgeAccount;
+    if (!isNonEmptyText(serverLabel, MAX_CREDENTIAL_HOST_CHARS) || !isNonEmptyText(login, MAX_OVERLAY_LABEL_LENGTH) || !GIT_CONSENT_FORGE_REASONS.includes(reason)
+      || (repoPath !== undefined && !isNonEmptyText(repoPath, MAX_CONSENT_REPO_PATH_CHARS))) return undefined;
+  }
+  return {
+    kind: 'gitCredentialConsent',
+    hostName,
+    ...(hostColor !== undefined ? { hostColor } : {}),
+    credentialHost,
+    targetHelper,
+    // the repository path comes from the target's git request, so no hidden character may misstate the consent text
+    ...(forgeAccount !== undefined ? {
+      forgeAccount: {
+        serverLabel: visibleText(forgeAccount.serverLabel),
+        login: visibleText(forgeAccount.login),
+        reason: forgeAccount.reason,
+        ...(forgeAccount.repoPath !== undefined ? { repoPath: visibleText(forgeAccount.repoPath) } : {}),
+      },
+    } : {}),
+  };
 }
 
 /** The consent answer as its asker acts on it: dismissed (Escape, the scrim, a withdrawn request) is Deny. */
@@ -1098,6 +1144,108 @@ export function parseClientCertificateRequest(site: string, certificates: readon
 /** The picked row's id; undefined for Cancel, Escape or a withdrawn request. parseOverlayAnswer already refused any other id. */
 export function clientCertificateChoice(answer: OverlayAnswer): string | undefined {
   return answer.kind === 'clientCertificate' ? answer.id : undefined;
+}
+
+const isOptionalFlag = (value: unknown): boolean => value === undefined || typeof value === 'boolean';
+
+function parseForgeAccountOption(raw: unknown): RepoAccountOption | undefined {
+  if (!isRecord(raw)) return undefined;
+  const id = field(raw, 'id');
+  const login = field(raw, 'login');
+  const name = field(raw, 'name');
+  const avatarKey = field(raw, 'avatarKey');
+  const needsSignIn = field(raw, 'needsSignIn');
+  const flags = ['checking', 'canPush', 'owner', 'ssoRequired', 'appNotApproved'] as const;
+  if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(login, MAX_OVERLAY_LABEL_LENGTH) || typeof needsSignIn !== 'boolean') return undefined;
+  if ((name !== undefined && !isText(name, MAX_OVERLAY_LABEL_LENGTH)) || (avatarKey !== undefined && !isAvatarKey(avatarKey))) return undefined;
+  if (!flags.every((key) => isOptionalFlag(field(raw, key)))) return undefined;
+  const set = Object.fromEntries(flags.flatMap((key) => (field(raw, key) === undefined ? [] : [[key, field(raw, key) as boolean]])));
+  return { id, login: visibleText(login), ...(name ? { name: visibleText(name) } : {}), ...(avatarKey !== undefined ? { avatarKey } : {}), needsSignIn, ...set };
+}
+
+/** The ask-once rows within the overlay's bounds, with unique ids and a preselection among them; undefined otherwise. */
+export function parseForgeChooseAccountRows(raw: ChooseAccountRows): ChooseAccountRows | undefined {
+  const { requestId, accounts, checking, preselectId } = raw;
+  if (!isNonEmptyText(requestId, MAX_OVERLAY_ID_LENGTH) || typeof checking !== 'boolean') return undefined;
+  if (!Array.isArray(accounts) || accounts.length > MAX_OVERLAY_ITEMS) return undefined;
+  const parsed = (accounts as readonly unknown[]).map(parseForgeAccountOption);
+  if (!parsed.every((row): row is RepoAccountOption => row !== undefined) || new Set(parsed.map((row) => row.id)).size !== parsed.length) return undefined;
+  if (preselectId !== undefined && !parsed.some((row) => row.id === preselectId)) return undefined;
+  return { requestId, accounts: parsed, checking, ...(preselectId !== undefined ? { preselectId } : {}) };
+}
+
+/** The ask-once dialog (main/forge/forge-host.ts) within the overlay's bounds; undefined otherwise, which runs no git operation. */
+export function parseForgeChooseAccountRequest(dialog: ForgeChooseAccountDialog): Extract<OverlayRequest, { kind: 'forgeChooseAccount' }> | undefined {
+  const rows = parseForgeChooseAccountRows(dialog);
+  const { projectKey, project, serverId, server, kind, repoPath, operation, where } = dialog;
+  // a clone asks before its project exists, so it has no projectKey; a project key and a repository path are paths
+  if (!rows || (projectKey !== undefined && !isNonEmptyText(projectKey, MAX_REMOTE_PATH_LENGTH * 2)) || !isNonEmptyText(serverId, MAX_OVERLAY_ID_LENGTH)) return undefined;
+  if (!isNonEmptyText(project, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(server, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(repoPath, MAX_REMOTE_PATH_LENGTH)) return undefined;
+  if ((kind !== 'github' && kind !== 'gitlab') || !FORGE_GIT_OPERATIONS.includes(operation)) return undefined;
+  if (where !== undefined && (!isNonEmptyText(where.hostName, MAX_HOST_NAME_LENGTH * 2) || (where.color !== undefined && !isHostColor(where.color)))) return undefined;
+  return {
+    kind: 'forgeChooseAccount',
+    dialog: {
+      ...rows,
+      ...(projectKey !== undefined ? { projectKey } : {}),
+      project: visibleText(project),
+      serverId,
+      server: visibleText(server),
+      kind,
+      repoPath: visibleText(repoPath),
+      operation,
+      ...(where ? { where: { hostName: where.hostName, ...(where.color !== undefined ? { color: where.color } : {}) } } : {}),
+    },
+  };
+}
+
+/** The ask-once answer as forge-host acts on it: dismissed (Escape, the scrim, Cancel, a withdrawn request) cancels. */
+export function forgeChooseAccountAnswer(answer: OverlayAnswer): ChooseAccountAnswer {
+  if (answer.kind !== 'forgeChooseAccount') return { kind: 'cancelled' };
+  return 'signIn' in answer ? { kind: 'signInAnother' } : { kind: 'account', accountId: answer.accountId };
+}
+
+export interface ForgeAccountAskerDeps {
+  // undefined while no window holds an overlay
+  readonly overlay: () => Pick<OverlayHost, 'request' | 'updateForgeChooseAccount'> | undefined;
+  // where keyboard focus returns once the dialog closes
+  readonly focused: () => WebContents | undefined;
+  // brings the window forward before the dialog shows
+  readonly reveal: () => void;
+  readonly log: (line: string) => void;
+}
+
+/**
+ * Ask once (the Choose account dialog) as main/forge/forge-host.ts asks it. chooseForgeAccount settles with the user's answer; a dialog that cannot
+ * show cancels, so the git operation does not run, and an aborted signal withdraws it. pushForgeChooseAccountRows forwards the
+ * access check's later rows to the open dialog of rows.requestId.
+ */
+export interface ForgeAccountAsker {
+  chooseForgeAccount(dialog: ForgeChooseAccountDialog, signal: AbortSignal): Promise<ChooseAccountAnswer>;
+  pushForgeChooseAccountRows(rows: ChooseAccountRows): void;
+}
+
+export function createForgeAccountAsker(deps: ForgeAccountAskerDeps): ForgeAccountAsker {
+  return {
+    async chooseForgeAccount(dialog, signal) {
+      const request = parseForgeChooseAccountRequest(dialog);
+      const overlay = deps.overlay();
+      if (!request || !overlay) {
+        deps.log(`[forge] the account question cannot show (${request ? 'no overlay' : 'past its bounds'}); the git operation does not run`);
+        return { kind: 'cancelled' };
+      }
+      deps.reveal();
+      try {
+        return forgeChooseAccountAnswer(await overlay.request(request, deps.focused(), undefined, undefined, signal));
+      } catch (err) {
+        deps.log(`[forge] the account question did not show (${err instanceof Error ? err.message : String(err)}); the git operation does not run`);
+        return { kind: 'cancelled' };
+      }
+    },
+    pushForgeChooseAccountRows(rows) {
+      deps.overlay()?.updateForgeChooseAccount(rows);
+    },
+  };
 }
 
 /** A message dialog main asks (D41) within the overlay's bounds, or undefined, when main asks with the OS message box instead. */
@@ -1250,6 +1398,7 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     return typeof confirmed === 'boolean' ? { kind: 'confirm', confirmed } : undefined;
   }
   if (request.kind === 'settings') return field(raw, 'closed') === true ? { kind: 'settings', closed: true } : undefined;
+  if (request.kind === 'cloneFromAccount') return field(raw, 'openAccounts') === true && Object.keys(raw).length === 2 ? { kind: 'cloneFromAccount', openAccounts: true } : undefined;
   if (request.kind === 'message') {
     const action = field(raw, 'action');
     const checked = field(raw, 'checked');
@@ -1306,6 +1455,13 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     const id = field(raw, 'id');
     return Object.keys(raw).length === 2 && request.certificates.some((row) => row.id === id && row.distinct) ? { kind: 'clientCertificate', id: id as string } : undefined;
   }
+  if (request.kind === 'forgeChooseAccount') {
+    if (Object.keys(raw).length !== 2) return undefined;
+    if (field(raw, 'signIn') === true) return { kind: 'forgeChooseAccount', signIn: true };
+    const accountId = field(raw, 'accountId');
+    if (accountId === null) return { kind: 'forgeChooseAccount', accountId: null };
+    return request.dialog.accounts.some((row) => row.id === accountId) ? { kind: 'forgeChooseAccount', accountId: accountId as string } : undefined;
+  }
   if (request.kind === 'closeRemote') {
     const choice = field(raw, 'choice');
     const dontAskAgain = field(raw, 'dontAskAgain');
@@ -1322,6 +1478,10 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     const answer = parseWorktreeDialogAnswer(raw, request);
     return answer && { kind: 'worktreeDialog', ...answer };
   }
+  // Publish answers only dismissed, taken above
+  if (request.kind === 'forgePublish') return undefined;
+  if (request.kind === 'forgeFork') return field(raw, 'openMergeRequest') === true && Object.keys(raw).length === 2 ? { kind: 'forgeFork', openMergeRequest: true } : undefined;
+  if (request.kind === 'forgeProtectedBranch') return field(raw, 'openMergeRequest') === true && Object.keys(raw).length === 2 ? { kind: 'forgeProtectedBranch', openMergeRequest: true } : undefined;
   const tag = field(raw, 'tag');
   if (tag === null) return { kind: 'tagPicker', tag: null };
   return isTag(tag) ? { kind: 'tagPicker', tag: tag.trim() } : undefined;
@@ -1493,7 +1653,7 @@ type PageState = 'none' | 'loading' | 'loaded';
 
 // Main's questions, which only main asks: they stack above whatever is open, and only their own answer closes them.
 function stacks(request: OverlayRequest): boolean {
-  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent' || request.kind === 'devcontainerTrust' || request.kind === 'allowYolo';
+  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent' || request.kind === 'devcontainerTrust' || request.kind === 'allowYolo' || request.kind === 'forgeChooseAccount' || request.kind === 'forgePublish' || request.kind === 'forgeFork' || request.kind === 'forgeProtectedBranch';
 }
 
 interface PendingRaster {
@@ -1602,7 +1762,7 @@ export class OverlayHost {
         this.coldShow = false;
         this.deps.log(`[overlay] the first request since the page loaded (${open.request.kind}) was acknowledged in ${open.acknowledgedAt - open.sentAt} ms of ${OVERLAY_ACK_TIMEOUT_MS} and shown in ${open.shownAt - open.sentAt} ms`);
       }
-      for (const { channel, payload } of open.pending.pushes.splice(0)) this.send(channel, payload);
+      for (const { channel, payload } of open.pending.pushes.splice(0)) this.post(channel, payload);
       open.pending.shown?.();
     });
     this.on(OVERLAY_CHANNELS.answer, (requestId, raw) => {
@@ -1864,6 +2024,45 @@ export class OverlayHost {
     this.send(OVERLAY_CHANNELS.closeRemoteRows, parsed);
   }
 
+  /**
+   * The rows of the ask-once dialog of rows.requestId after the access check answered, open or held, under another dialog
+   * too; one the page has not shown yet gets them once it shows. Nothing for no such dialog, or past its bounds.
+   */
+  updateForgeChooseAccount(rows: ChooseAccountRows): void {
+    const ofRows = (request: OverlayRequest): boolean => request.kind === 'forgeChooseAccount' && request.dialog.requestId === rows.requestId;
+    const open = this.open.find((entry) => ofRows(entry.request));
+    const pending = open?.pending ?? this.held.find((entry) => ofRows(entry.request));
+    if (!pending) return;
+    const parsed = parseForgeChooseAccountRows(rows);
+    if (!parsed) {
+      this.deps.log('[overlay] account rows exceed the overlay bounds; the dialog keeps its rows');
+      return;
+    }
+    const channel = OVERLAY_CHANNELS.forgeChooseAccountRows;
+    if (open?.shownAt !== undefined) {
+      this.post(channel, parsed);
+      return;
+    }
+    const earlier = pending.pushes.findIndex((entry) => entry.channel === channel);
+    if (earlier >= 0) pending.pushes.splice(earlier, 1);
+    pending.pushes.push({ channel, payload: parsed });
+  }
+
+  /** The open Publish dialog's state; nothing unless the dialog of state.requestId is open. */
+  updateForgePublish(state: PublishState): void {
+    if (this.openRequestOf('forgePublish')?.dialog.requestId === state.requestId) this.send(OVERLAY_CHANNELS.forgePublishState, state);
+  }
+
+  /** The open fork dialog's state; nothing unless the dialog of state.requestId is open. */
+  updateForgeFork(state: ForkState): void {
+    if (this.openRequestOf('forgeFork')?.dialog.requestId === state.requestId) this.send(OVERLAY_CHANNELS.forgeForkState, state);
+  }
+
+  /** The open protected-branch dialog's state; nothing unless the dialog of state.requestId is open. */
+  updateForgeProtected(state: ProtectedPushState): void {
+    if (this.openRequestOf('forgeProtectedBranch')?.dialog.requestId === state.requestId) this.send(OVERLAY_CHANNELS.forgeProtectedState, state);
+  }
+
   sendTheme(theme: PanelTheme): void {
     this.theme = theme;
     this.send(OVERLAY_CHANNELS.theme, theme);
@@ -2070,6 +2269,10 @@ export class OverlayHost {
       held.push({ channel, payload });
       return;
     }
+    this.post(channel, payload);
+  }
+
+  private post(channel: string, payload: unknown): void {
     if (this.disposed || this.page !== 'loaded') return;
     const contents = this.view.webContents;
     if (contents.isDestroyed() || contents.isCrashed()) return;

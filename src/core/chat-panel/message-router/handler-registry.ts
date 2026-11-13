@@ -16,6 +16,8 @@ import { createCompassHandlers } from "./handlers/compass-handlers";
 import { createOpenAIHandlers } from "./handlers/openai-handlers";
 import { createClaudeAuthHandlers } from "./handlers/claude-auth-handlers";
 import { createProviderAccountHandlers } from "./handlers/provider-account-handlers";
+import { createForgeAccountHandlers } from "./handlers/forge-account-handlers";
+import { createForgeRefusedHandlers, createForgeRefusedViewHandlers } from "./handlers/forge-refused-handlers";
 import { createUsageHandlers } from "./handlers/usage-handlers";
 import { createUsageStatsHandlers } from "./handlers/usage-stats-handlers";
 import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handlers";
@@ -37,12 +39,14 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
   const settingsFiles = createSettingsFileHandlers(deps);
   const claudeAuth = createClaudeAuthHandlers(deps);
   const providerAccounts = createProviderAccountHandlers(deps);
+  const forgeAccounts = createForgeAccountHandlers(deps);
   const usage = createUsageHandlers(deps);
   const settingsDeps: HandlerDependencies = {
     ...deps,
     postSettingsFileAvailability: settingsFiles.postAvailability,
     postClaudeAuthState: claudeAuth.postState,
     postProviderSignInState: providerAccounts.postState,
+    postForgeState: forgeAccounts.postState,
   };
   const handlers: HandlerRegistry = {
     log: (msg) => {
@@ -68,11 +72,13 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
     ...createOpenAIHandlers(deps),
     ...claudeAuth.handlers,
     ...providerAccounts.handlers,
+    ...forgeAccounts.handlers,
+    ...createForgeRefusedHandlers(deps),
     ...usage.handlers,
     ...createUsageStatsHandlers(deps),
     ...createWorkspaceFolderHandlers(deps),
     ...settingsFiles.handlers,
     ...createDesignHandlers(deps),
   };
-  return { handlers, foreignHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers, ...createRemoteChatSettingHandlers(deps), ...usage.viewHandlers, ...createUserMemoryViewHandlers(deps) } };
+  return { handlers, foreignHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers, ...createRemoteChatSettingHandlers(deps), ...usage.viewHandlers, ...createUserMemoryViewHandlers(deps), ...createForgeRefusedViewHandlers(deps) } };
 }

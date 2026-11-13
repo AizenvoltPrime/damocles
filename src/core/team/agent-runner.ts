@@ -14,7 +14,7 @@ import { runLifecycleOf } from '../pi-session/run-lifecycle';
 import type { PromptDisposition } from '../pi-session/prompt-entry';
 import { runUsageMeter, sameAgentUsage } from '../pi-session/session-usage';
 import { emptyAgentUsage } from '../../shared/usage-accounting';
-import { joinResultText } from '../pi-session/tool-result-text';
+import { partialResultText } from '../pi-session/known-secret-masking';
 import { mapPiToolName, normalizeToolInput } from '../pi-session/tool-normalization';
 import { extractImages } from '../pi-session/branch-text';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
@@ -674,7 +674,7 @@ export class AgentRunner {
         if (!LIVE_OUTPUT_TOOLS.has(mapPiToolName(event.toolName))) break;
         if (cb.call.running.has(event.toolCallId)) {
           const truncation = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details?.truncation;
-          cb.call.running.set(event.toolCallId, { output: joinResultText(event.partialResult), outputTruncated: Boolean(truncation?.truncated) });
+          cb.call.running.set(event.toolCallId, { output: partialResultText(event.partialResult), outputTruncated: Boolean(truncation?.truncated) });
         }
         // A thunk, so a frame the coalescer holds is rendered from the newest partial rather than the
         // one that happened to open the window.
@@ -686,7 +686,7 @@ export class AgentRunner {
             teamId: config.teamId,
             agentId: config.agentId,
             toolUseId: event.toolCallId,
-            output: joinResultText(event.partialResult),
+            output: partialResultText(event.partialResult),
             outputTruncated: Boolean(details?.truncation?.truncated),
           };
         });

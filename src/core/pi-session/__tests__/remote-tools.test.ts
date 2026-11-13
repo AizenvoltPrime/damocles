@@ -16,7 +16,7 @@ import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { OpenAIAuthStatus } from '../openai-auth';
 
 describe('deferred tools whose user-scope service a daemon\'s core cannot reach', () => {
-  const reach = (browser: boolean) => ({ browser, relayedTool: () => true });
+  const reach = (browser: boolean) => ({ browser, forge: true, relayedTool: () => true });
   const eligible = ['Read', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES];
   const deferred = deferredToolNames(eligible, []);
 

@@ -2,10 +2,11 @@
 // in every mode, YOLO included, and before any PreToolUse hook's force-allow, as worktree isolation is. docs/invariants.md "Design mode".
 import * as path from 'node:path';
 import { designBrowserAllows } from '../pi-session/tools/browser-tools';
+import { DESIGN_CHAT_FORGE_REFUSAL } from '../pi-session/tools/forge-tool-specs';
 import type { ReadOnlyVerdict } from '../pi-session/readonly-shell';
 import { toolShell } from '../pi-session/worktree-isolation';
 import { resolveToCwd } from '../pi-session/tools/search-tools';
-import { SHELL_TOOLS, TOOL_BASH, WRITE_TOOLS } from '../../shared/tool-names';
+import { FORGE_READ_TOOLS, FORGE_WRITE_TOOLS, SHELL_TOOLS, TOOL_BASH, WRITE_TOOLS } from '../../shared/tool-names';
 import { BUILT_DESIGN_TOOL_NAMES } from './tools/design-tool-specs';
 import { DAMOCLES_DESIGNS_DIR, isFileBelow } from '../paths';
 import { spelledPath } from '../canonical-path';
@@ -57,6 +58,7 @@ export function designShellRefusal(verdict: ReadOnlyVerdict & { readOnly: false 
  */
 export function designWriteBlock(toolName: string, input: Record<string, unknown>, scope: DesignScope, call: DesignCallFacts = {}): string | undefined {
   const { mcpReadOnly = false } = call;
+  if (FORGE_READ_TOOLS.has(toolName) || FORGE_WRITE_TOOLS.has(toolName)) return DESIGN_CHAT_FORGE_REFUSAL;
   if ('unreadable' in scope) {
     const runs = WRITE_TOOLS.has(toolName) || SHELL_TOOLS.has(toolName) || BUILT_DESIGN_TOOL_NAMES.has(toolName)
       || !designBrowserAllows(toolName) || (toolName.startsWith('mcp__') && !mcpReadOnly);

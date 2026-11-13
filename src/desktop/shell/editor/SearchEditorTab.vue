@@ -42,11 +42,13 @@ const draft = shallowRef<SearchEditorConfig>({ ...props.tab.searchEditor.config 
 // The context lines a toggle restores (VS Code keeps its number input while the toggle is off).
 const contextCount = ref(String(props.tab.searchEditor.config.contextLines || 1));
 let sendTimer: ReturnType<typeof setTimeout> | undefined;
-watch(() => [props.tab.id, props.tab.searchEditor.config] as const, ([, config], previous) => {
-  const switched = previous !== undefined && previous[0] !== props.tab.id;
+// every state push carries a new config object, so its content is what is compared
+watch([() => props.tab.id, () => JSON.stringify(props.tab.searchEditor.config)], ([tabId], [previousTabId]) => {
+  const switched = previousTabId !== tabId;
   if (!switched && sendTimer !== undefined) return;
   clearTimeout(sendTimer);
   sendTimer = undefined;
+  const config = props.tab.searchEditor.config;
   draft.value = { ...config };
   if (config.contextLines > 0) contextCount.value = String(config.contextLines);
 });

@@ -109,11 +109,44 @@ export interface LaunchBrowserOptions {
 // itself, so re-adding them would either be redundant or (for --enable-automation) actively harmful to
 // stealth. Playwright already injects --no-first-run and --no-default-browser-check via chromiumSwitches,
 // so we only add the genuinely-missing extras here.
+// Chrome keeps only the last --disable-features switch, so this one carries the list Playwright's chromiumSwitches passes
+// (patchright-core), which it would otherwise replace; launcher-args.test.ts fails when that list gains a feature.
+const PLAYWRIGHT_DISABLED_FEATURES = [
+  'AvoidUnnecessaryBeforeUnloadCheckSync',
+  'BoundaryEventDispatchTracksNodeRemoval',
+  'DestroyProfileOnBrowserClose',
+  'DialMediaRouteProvider',
+  'GlobalMediaControls',
+  'HttpsUpgrades',
+  'LensOverlay',
+  'MediaRouter',
+  'PaintHolding',
+  'ThirdPartyStoragePartitioning',
+  'Translate',
+  'AutoDeElevate',
+  'RenderDocument',
+  'OptimizationHints',
+  'msForceBrowserSignIn',
+  'msEdgeUpdateLaunchServicesPreferredVersion',
+];
+const DAMOCLES_DISABLED_FEATURES = [
+  // cookies keep working on strict sites, and FedCM prompts stay silent
+  'ThirdPartyCookiePhaseout',
+  'TrackingProtection3pcd',
+  'SameSiteByDefaultCookies',
+  'CookiesWithoutSameSiteMustBeSecure',
+  'FedCm',
+  'FedCmIdpSigninStatusEnabled',
+  'FedCmAutoSelectedFlag',
+  // Damocles tries https first, falls back to http and marks the page not secure; Chrome's HTTPS-First mode would upgrade
+  // that http load again and end on a warning page the screencast never shows
+  'HttpsFirstBalancedModeAutoEnable',
+];
+
 const CURATED_EXTRA_ARGS = [
   '--disable-translate',
   '--autoplay-policy=no-user-gesture-required',
-  // Keep cookies working on strict sites + silence FedCm prompts (unchanged from the raw-CDP launcher).
-  '--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd,ThirdPartyStoragePartitioning,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure,FedCm,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag',
+  `--disable-features=${[...new Set([...PLAYWRIGHT_DISABLED_FEATURES, ...DAMOCLES_DISABLED_FEATURES])].join(',')}`,
 ];
 
 /**

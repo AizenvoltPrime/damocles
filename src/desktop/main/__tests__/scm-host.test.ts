@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { type CommitHooks, type ProjectView, type ScmEvent, type ScmService } from '../../../core/scm/scm-service';
 import type { ScmServiceClient } from '../scm/scm-client';
-import { RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../../../core/scm/errors';
+import { RemoteCancelledError, StashKeptError, SyncBranchChangedError, SyncPushError } from '../../../core/scm/errors';
 import type { Change, Repository, RepositoryStatus } from '../../../core/scm/repository';
 import { SCM_SETTING_KEYS } from '../../../core/scm/settings-keys';
 import { GitError } from '../../../core/scm/errors';
@@ -98,6 +98,7 @@ interface SetupOptions {
   // the overlay quick pick's answers, by call
   picks?: Array<string | { readonly id: string; readonly query: string } | undefined>;
   clone?: ScmService['clone'];
+  forge?: Partial<ScmHostDeps['forge']>;
   remotes?: Array<{ name: string; fetchUrl?: string; pushUrl?: string }>;
   // the artifacts core reads, by group
   artifacts?: Partial<{ [G in Artifacts['group']]: Extract<Artifacts, { group: G }>['rows'] }>;
@@ -218,6 +219,7 @@ function setup(overrides: SetupOptions = {}) {
   const questions: MessageQuestion[] = [];
   const answers = [...(overrides.answers ?? [])];
   const inputRequests: AskInputRequest[] = [];
+  const forge: ScmHostDeps['forge'] = { prepareGitOperation: async () => true, prepareClone: async () => ({ proceed: true }), bindClone: vi.fn(async () => undefined), pipelineShown: () => false, hasAccount: async () => false, showClonePicker: vi.fn(async () => undefined), publishToAccount: vi.fn(async () => 'noAccount' as const), pushRefused: vi.fn(async () => false), pushProtected: vi.fn(async () => false), protectedBranches: vi.fn(async () => []), ...overrides.forge };
   const inputs = [...(overrides.inputs ?? [])];
   const setInputs: ScmSetInput[] = [];
   const commands: ScmShellCommand[] = [];
@@ -296,6 +298,7 @@ function setup(overrides: SetupOptions = {}) {
       return overrides.folder;
     },
     addProject: async (_authority, folder) => void added.push(folder),
+    forge,
     selectProject: async (projectKey) => void selectedProjects.push(projectKey),
     worktrees: {
       deleteChatWorktreeAt: async () => false,
@@ -349,7 +352,7 @@ function setup(overrides: SetupOptions = {}) {
   const settingsChanged = (): void => {
     for (const listener of settingListeners) listener();
   };
-  return { host, revealed, mentioned, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, mainLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
+  return { host, forge, revealed, mentioned, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, mainLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -515,6 +518,102 @@ describe('source control host', () => {
     expect(local.notices.at(-1)?.actions).toEqual(['Show Git Output']);
   });
 
+  it('hands an authorization-class push failure to the fork check, and never a non-fast-forward one', async () => {
+    const pushRefused = vi.fn(async () => true);
+    const { host, service, notices } = setup({ forge: { pushRefused } });
+    const forbidden = new GitError('git push exited with 128', 128, '', "fatal: unable to access 'https://gitlab.com/a/b.git/': The requested URL returned error: 403");
+    vi.mocked(service.push).mockRejectedValueOnce(forbidden);
+    expect(await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false })).toEqual({ ok: false, reason: 'failed' });
+    expect(pushRefused).toHaveBeenCalledWith('repo-1', 'origin', 'main', forbidden);
+    expect(notices).toEqual([]);
+    vi.mocked(service.push).mockRejectedValueOnce(new GitError('git push exited with 1', 1, '', ' ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs'));
+    await host.run({ op: 'publish', repoId: 'repo-1' });
+    expect(pushRefused).toHaveBeenCalledTimes(1);
+    expect(notices).toHaveLength(1);
+    pushRefused.mockResolvedValueOnce(false);
+    vi.mocked(service.push).mockRejectedValueOnce(forbidden);
+    await host.run({ op: 'publish', repoId: 'repo-1' });
+    expect(pushRefused).toHaveBeenCalledTimes(2);
+    expect(notices).toHaveLength(2);
+  });
+
+  // docs/invariants.md "GitHub and GitLab accounts", protected branch on push: the order is non-fast-forward, protected, fork
+  it('judges a refused push by the server\'s branch rules before the fork check, never a non-fast-forward one or Push Tags', async () => {
+    const pushProtected = vi.fn(async () => true);
+    const pushRefused = vi.fn(async () => true);
+    const tracking = { ...status, head: { type: 'branch' as const, name: 'feature' }, upstream: { remote: 'origin', branch: 'main', ahead: 2, behind: 0 } };
+    const { host, service, notices } = setup({ status: tracking, forge: { pushProtected, pushRefused } });
+    const forbidden = new GitError('git push exited with 128', 128, '', "remote: GitLab: You are not allowed to push code to protected branches on this project.\nfatal: unable to access 'https://gitlab.com/a/b.git/': The requested URL returned error: 403");
+    const declined = new GitError('git push exited with 1', 1, '', 'remote: error: GH006: Protected branch update failed for refs/heads/main.\n ! [remote rejected] main -> main (protected branch hook declined)');
+    const behind = new GitError('git push exited with 1', 1, '', ' ! [rejected]        main -> main (fetch first)\nremote: Permission to a/b.git denied to x.');
+
+    // protected: the server's branch name (the upstream's) and the local one; no fork check follows
+    vi.mocked(service.push).mockRejectedValueOnce(forbidden);
+    expect(await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false })).toEqual({ ok: false, reason: 'failed' });
+    expect(pushProtected).toHaveBeenCalledWith('repo-1', 'origin', 'main', 'feature', forbidden);
+    expect(pushRefused).not.toHaveBeenCalled();
+
+    // GitHub's refusal carries no authorization word: the rules judge it, and no fork is offered for it
+    pushProtected.mockResolvedValueOnce(false);
+    vi.mocked(service.push).mockRejectedValueOnce(declined);
+    await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false });
+    expect(pushProtected).toHaveBeenCalledTimes(2);
+    expect(pushRefused).not.toHaveBeenCalled();
+    expect(notices).toHaveLength(1);
+
+    // not protected: the fork check, with the local branch
+    pushProtected.mockResolvedValueOnce(false);
+    vi.mocked(service.push).mockRejectedValueOnce(forbidden);
+    await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false });
+    expect(pushRefused).toHaveBeenCalledWith('repo-1', 'origin', 'feature', forbidden);
+
+    // non-fast-forward: git's own error, no server asked
+    vi.mocked(service.push).mockRejectedValueOnce(behind);
+    await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false });
+    expect(pushProtected).toHaveBeenCalledTimes(3);
+    expect(pushRefused).toHaveBeenCalledTimes(1);
+
+    // Push (Follow Tags) pushes HEAD's branch to its upstream, so it keeps the same order
+    vi.mocked(service.push).mockRejectedValueOnce(declined);
+    await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: true });
+    expect(pushProtected).toHaveBeenLastCalledWith('repo-1', 'origin', 'main', 'feature', declined);
+    expect(pushProtected).toHaveBeenCalledTimes(4);
+
+    // Sync keeps the order for its push stage, with the upstream's branch
+    vi.mocked(service.sync).mockRejectedValueOnce(new SyncPushError(declined));
+    expect(await host.run({ op: 'sync', repoId: 'repo-1', rebase: false })).toEqual({ ok: false, reason: 'failed' });
+    expect(pushProtected).toHaveBeenLastCalledWith('repo-1', 'origin', 'main', 'feature', declined);
+    expect(pushProtected).toHaveBeenCalledTimes(5);
+
+    // a failure of Sync's pull stage is no refused push, whatever its words: git's own failure shows
+    const notified = notices.length;
+    vi.mocked(service.sync).mockRejectedValueOnce(forbidden);
+    await host.run({ op: 'sync', repoId: 'repo-1', rebase: false });
+    expect(pushProtected).toHaveBeenCalledTimes(5);
+    expect(pushRefused).toHaveBeenCalledTimes(1);
+    expect(notices).toHaveLength(notified + 1);
+
+    // Push Tags pushes no branch: neither the rules nor the fork check
+    vi.mocked(service.pushTags).mockRejectedValueOnce(declined);
+    await host.run({ op: 'pushTags', repoId: 'repo-1' });
+    expect(pushProtected).toHaveBeenCalledTimes(5);
+    expect(pushRefused).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the Publish dialog for a repository with no remote while an account exists, and keeps the warning otherwise', async () => {
+    const publishToAccount = vi.fn(async (): Promise<'noAccount' | 'shown' | 'closed'> => 'shown');
+    const shown = setup({ remotes: [], forge: { hasAccount: async () => true, publishToAccount } });
+    expect(await shown.host.run({ op: 'publish', repoId: 'repo-1' })).toEqual({ ok: true });
+    expect(publishToAccount).toHaveBeenCalledWith('repo-1', 'main');
+    expect(shown.notices).toEqual([]);
+    const closed = setup({ remotes: [], forge: { hasAccount: async () => true, publishToAccount: async () => 'closed' as const } });
+    expect(await closed.host.run({ op: 'publish', repoId: 'repo-1' })).toEqual({ ok: false, reason: 'failed' });
+    expect(closed.notices.map((notice) => notice.message)).toEqual(['The repository closed before Publish could open.']);
+    const none = setup({ remotes: [] });
+    expect(await none.host.run({ op: 'publish', repoId: 'repo-1' })).toEqual({ ok: false, reason: 'failed' });
+    expect(none.notices.map((notice) => notice.message)).toEqual(['Your repository has no remotes configured to publish to.']);
+  });
+
   it('picks a remote for Push to..., showing its URL without userinfo, and publishes with -u to the one remote', async () => {
     const remotes = [{ name: 'origin', pushUrl: 'https://user:token@example.com/a.git' }, { name: 'backup', pushUrl: 'https://example.com/b.git' }];
     // ids are indices, so a remote's name never travels as one
@@ -557,6 +656,24 @@ describe('source control host', () => {
     expect(await always.host.run({ op: 'clone', recursive: false })).toEqual({ ok: true });
     expect(always.questions).toEqual([]);
     expect(always.added).toEqual([path.join(folder, 'a')]);
+  });
+
+  it('opens the clone picker instead of the URL box once an account exists', async () => {
+    const { host, forge, inputRequests } = setup({ forge: { hasAccount: async () => true } });
+    expect(await host.run({ op: 'clone', recursive: true })).toEqual({ ok: true });
+    expect(vi.mocked(forge.showClonePicker)).toHaveBeenCalledWith(true);
+    expect(inputRequests).toEqual([]);
+  });
+
+  it('clones a picker row with its account preset and bound, after the polite status, asking no account question', async () => {
+    const folder = path.resolve('/work/clones');
+    const { host, service, forge, notices, added } = setup({ folder, answers: [0] });
+    host.cloneFromPicker({ url: 'https://gitlab.indigital.gr/grp/platform/intranet.git', recursive: false, status: 'Cloning grp/platform/intranet as astefanopoulos on gitlab.indigital.gr. Choose a folder next; the new project uses this account.', account: { serverId: 'gitlab.indigital.gr', accountId: 'gitlab.indigital.gr|32' } });
+    await vi.waitFor(() => expect(vi.mocked(forge.bindClone)).toHaveBeenCalled());
+    expect(notices[0]).toEqual({ severity: 'info', message: 'Cloning grp/platform/intranet as astefanopoulos on gitlab.indigital.gr. Choose a folder next; the new project uses this account.', actions: [] });
+    expect(vi.mocked(service.clone)).toHaveBeenCalledWith('https://gitlab.indigital.gr/grp/platform/intranet.git', folder, false, 'gitlab.indigital.gr|32');
+    expect(added).toEqual([path.join(folder, 'a')]);
+    expect(vi.mocked(forge.bindClone)).toHaveBeenCalledWith(expect.any(String), { serverId: 'gitlab.indigital.gr', accountId: 'gitlab.indigital.gr|32' }, false);
   });
 
   it('opens the folder picker at defaultCloneDirectory, ~ expanded, and answers a cancelled clone or picker cancelled', async () => {
@@ -644,6 +761,25 @@ describe('source control host', () => {
     await host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN });
     expect(await hooks!.branchName!()).toBe('me/topic');
     expect(inputRequests).toEqual([{ title: 'Commit to a New Branch', prompt: 'Please provide a new branch name', placeholder: 'Branch name', value: 'me/', valueSelection: [3, 3], validation: 'branchName' }]);
+  });
+
+  it('hands core the server branch protection the forge host holds, and nothing when it holds none', async () => {
+    const rules = [{ remote: 'origin', rules: [{ include: ['main'], exclude: [], syntax: 'fnmatch' as const }] }];
+    const given: CommitHooks[] = [];
+    const protectedBranches = vi.fn(async (): Promise<typeof rules> => rules);
+    const { host } = setup({
+      forge: { protectedBranches },
+      commit: async (_repoId, _message, _variant, hooks) => {
+        given.push(hooks);
+        return { ok: true };
+      },
+    });
+    await host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN });
+    expect(protectedBranches).toHaveBeenCalledWith('repo-1');
+    expect(given[0]!.protectedBranches).toEqual(rules);
+    protectedBranches.mockResolvedValueOnce([]);
+    await host.commit({ repoId: 'repo-1', message: 'y', variant: PLAIN });
+    expect(given[1]).not.toHaveProperty('protectedBranches');
   });
 
   it('puts the undone commit\'s message and the template back in the box, and warns when HEAD has no commit', async () => {

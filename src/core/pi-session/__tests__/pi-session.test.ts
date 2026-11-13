@@ -3,8 +3,11 @@ import * as path from 'path';
 import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
 import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
-import { processLauncher } from '../../process-launcher';
+import { processLauncher, type LaunchedProcess } from '../../process-launcher';
+import type { ShellCredentialLease } from '../tools/shell-credentials';
+import type { GitCredentialOrigin } from '../../../shared/git-credential';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { CREDENTIAL_CLIENT_ABSENT, type HeldAuth } from '../../../shared/remote-user';
 import { MAX_IMAGE_BASE64_LENGTH, type UserContentBlock } from '../../../shared/types/content';
 import { formatUserSteerPrefix, type UserSteerNote } from '../../../shared/steer';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
@@ -439,6 +442,7 @@ import { buildAccountInfo } from '../account-billing';
 import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
 import { DESIGN_PI_TOOL_NAMES, designRuleSet } from '../../design/rule-set';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
+import { FORGE_PI_TOOL_NAMES } from '../tools/forge-tool-specs';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../finish-turn';
@@ -501,9 +505,10 @@ import { IdeContextManager } from '../../chat-panel/ide-context-manager';
 import { createHarness, folderEntry, makeFakeHost } from '../../chat-panel/__tests__/panel-manager-harness';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
-import { runPin, type ClientPin } from '../../client-snapshots';
+import { runPin, runPinnedTurn, type ClientPin } from '../../client-snapshots';
 import { installPlatform } from '../../platform-host';
 import { installCredentialRelay } from '../../scm/askpass/credential-relay';
+import { asConfigParams, installCredentialHelper, managedEntries } from '../../scm/askpass/credential-config';
 
 /** The platform every session here reads through, also served by the host accessor; fresh per test. */
 let testPlatform: FakePlatform;
@@ -656,6 +661,160 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
     expect(piPrompt).toHaveBeenCalledWith('queued offline', expect.anything());
     expect(refresh).not.toHaveBeenCalled();
     await panel.dispose();
+  });
+
+  // Sign-ins not read yet are not none: a send waits for them and never runs on the host's own credential in their place.
+  describe('a send while the sending device\'s sign-ins are pending', () => {
+    const ANTHROPIC_KEY: HeldAuth = { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } };
+
+    /** A daemon's core whose device client-b sends; hostAuth: whether the host holds a credential of its own. */
+    async function pendingPanel(start: HeldAuth, hostAuth: boolean) {
+      const host = createFakeRemoteHost(async (_provider, clientId) => (clientId === 'client-b' && host.remote.clients.auth('client-b')?.providers['anthropic'] ? { type: 'api_key', key: 'sk-client-b' } : { type: 'none' }));
+      host.set('clientAuth', 'client-b', start);
+      host.setActor('client-b');
+      Object.assign(testPlatform, { remote: host.remote });
+      const modelRuntime = H.getServices().modelRuntime as unknown as { hasConfiguredAuth: (provider: string) => boolean; checkAuth: (provider: string) => Promise<unknown> };
+      modelRuntime.hasConfiguredAuth = () => hostAuth;
+      const hostCheck = vi.fn(async () => (hostAuth ? { type: 'api_key', source: 'ANTHROPIC_API_KEY' } : undefined));
+      modelRuntime.checkAuth = hostCheck;
+      const noKey = await loadFormatNoApiKeyFoundMessage();
+      const prompts: string[] = [];
+      // pi's own setModel and prompt preflight (agent-session.js): each asks the auth check of the model's provider
+      H.setSessionSetup((built) => {
+        const live = built as unknown as { model?: { provider: string; id: string }; prompt: ReturnType<typeof vi.fn>; setModel: ReturnType<typeof vi.fn>; sessionManager: { getBranch: ReturnType<typeof vi.fn> } };
+        live.sessionManager.getBranch.mockReturnValue([]);
+        live.setModel.mockImplementation(async (model: { provider: string; id: string }) => {
+          if (!(await modelRuntime.checkAuth(model.provider))) throw new Error(`No API key for ${model.provider}/${model.id}`);
+          live.model = model;
+        });
+        live.prompt.mockImplementation(async (text: string, opts: unknown) => {
+          if (!live.model) throw new Error('No model selected');
+          const provider = live.model.provider;
+          if (!modelRuntime.hasConfiguredAuth(provider) && (await modelRuntime.checkAuth(provider)) === undefined) throw new Error(noKey(provider));
+          piRuns(opts, live.sessionManager.getBranch, [{ type: 'message', id: `u-${text}`, message: { role: 'user', content: text } }]);
+          prompts.push(text);
+        });
+      });
+      const messages: ExtensionToWebviewMessage[] = [];
+      const raised: Array<LocalizedText | undefined> = [];
+      let open = 0;
+      const options = makeOptions(messages, { panelId: 'panel-1' });
+      Object.assign(options.permissionHandler, {
+        raiseSignIn: (_provider: string, _actions: unknown, reason?: LocalizedText) => {
+          raised.push(reason);
+          open++;
+          return { dispose: () => { open--; } };
+        },
+      });
+      const panel = new PiSession(options);
+      await panel.initializeEarly();
+      return { host, panel, messages, prompts, raised, hostCheck, open: () => open };
+    }
+
+    const reason = (message: string) => ({ message, args: ['anthropic'] });
+    const STOPPED = reason('The engine on the computer that started this chat is stopped, so this host has no sign-in for {0}. Restart the engine on that computer to continue.');
+
+    it('starts its run, waits behind Sign-in needed with the reason, and runs on the device\'s credential once known, never the host\'s', async () => {
+      const t = await pendingPanel(ANTHROPIC_KEY, true);
+      t.host.set('clientAuth', 'client-b', { providers: {}, pending: 'engineStopped' });
+      t.hostCheck.mockClear();
+
+      const sent = t.panel.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+      await vi.waitFor(() => expect(t.raised).toEqual([STOPPED]));
+      expect(t.prompts).toEqual([]);
+      t.host.set('clientAuth', 'client-b', ANTHROPIC_KEY);
+
+      expect(await sent).toBe('sent');
+      expect(t.prompts).toEqual(['hi']);
+      expect(t.open()).toBe(0);
+      expect(vi.mocked(t.host.remote.credentials).mock.calls).toEqual([['anthropic', 'client-b']]);
+      expect(t.hostCheck).not.toHaveBeenCalled();
+      expect(t.messages.filter((m) => m.type === 'promptReturned' || m.type === 'error' || m.type === 'authFailure')).toEqual([]);
+      await t.panel.dispose();
+    });
+
+    it('gets the ordinary sign-in refusal once known when the device then holds no credential for the provider', async () => {
+      const t = await pendingPanel(ANTHROPIC_KEY, false);
+      t.host.set('clientAuth', 'client-b', { providers: {}, pending: 'engineStopped' });
+
+      const sent = t.panel.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+      await vi.waitFor(() => expect(t.raised).toEqual([STOPPED]));
+      t.host.set('clientAuth', 'client-b', { providers: {} });
+
+      expect(await sent).toBe('unsent');
+      expect(t.prompts).toEqual([]);
+      expect(t.open()).toBe(0);
+      expect(t.messages.filter((m) => m.type === 'authFailure' || m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([
+        expect.objectContaining({ type: 'authFailure', account: 'anthropic', reason: 'missing' }),
+        expect.objectContaining({ type: 'promptReturned', reason: 'promptRejected', account: 'anthropic' }),
+        { type: 'openSettingsPanel', section: 'accounts', account: 'anthropic' },
+      ]);
+      await t.panel.dispose();
+    });
+
+    it('keeps waiting with the reason a failed read gives, for a chat that started before the sign-ins were known', async () => {
+      const t = await pendingPanel({ providers: {}, pending: 'reading' }, true);
+
+      const sent = t.panel.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+      await vi.waitFor(() => expect(t.raised).toHaveLength(1));
+      expect(t.raised[0]).toMatchObject({ message: expect.stringContaining('still reading') });
+      t.host.set('clientAuth', 'client-b', { providers: {}, pending: 'readFailed' });
+      await vi.waitFor(() => expect(t.raised).toHaveLength(2));
+      expect(t.raised[1]).toEqual(reason('Damocles could not read the sign-ins and settings of the computer that started this chat, so this host has no sign-in for {0}. Restart the engine on that computer to continue.'));
+      expect([t.open(), t.prompts]).toEqual([1, []]);
+      t.host.set('clientAuth', 'client-b', ANTHROPIC_KEY);
+
+      expect(await sent).toBe('sent');
+      expect(t.prompts).toEqual(['hi']);
+      expect(t.hostCheck).not.toHaveBeenCalled();
+      await t.panel.dispose();
+    });
+
+    // pi's auth check passes no signal, so the wait ends only through the turn's own Stop
+    it('ends at once on Stop: the card goes, the message returns to the composer, nothing is asked or run, and the next send runs once known', async () => {
+      const t = await pendingPanel(ANTHROPIC_KEY, true);
+      t.host.set('clientAuth', 'client-b', { providers: {}, pending: 'engineStopped' });
+
+      const sent = t.panel.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+      await vi.waitFor(() => expect(t.open()).toBe(1));
+      await t.panel.interrupt();
+
+      expect(await sent).toBe('withdrawn');
+      expect(t.open()).toBe(0);
+      expect(t.prompts).toEqual([]);
+      expect(t.host.remote.credentials).not.toHaveBeenCalled();
+      expect(t.messages.filter((m) => m.type === 'interruptRecovery')).toEqual([expect.objectContaining({ correlationId: 'c1', promptContent: 'hi' })]);
+      expect(t.messages.filter((m) => m.type === 'error' || m.type === 'authFailure' || m.type === 'notification')).toEqual([]);
+
+      t.host.set('clientAuth', 'client-b', ANTHROPIC_KEY);
+      expect(await t.panel.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('sent');
+      expect(t.prompts).toEqual(['again']);
+      expect(t.raised).toHaveLength(1);
+      await t.panel.dispose();
+    });
+
+    it('ends at once on Stop also once the device, its sign-ins known, turned out to be away', async () => {
+      const t = await pendingPanel(ANTHROPIC_KEY, true);
+      t.host.set('clientAuth', 'client-b', { providers: {}, pending: 'reading' });
+
+      const sent = t.panel.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+      await vi.waitFor(() => expect(t.raised).toHaveLength(1));
+      vi.mocked(t.host.remote.credentials).mockRejectedValueOnce(new Error(CREDENTIAL_CLIENT_ABSENT));
+      t.host.set('clientAuth', 'client-b', ANTHROPIC_KEY);
+      await vi.waitFor(() => expect(t.raised).toEqual([expect.anything(), undefined]));
+      expect(t.open()).toBe(1);
+      await t.panel.interrupt();
+
+      expect(await sent).toBe('withdrawn');
+      expect(t.open()).toBe(0);
+      expect(t.prompts).toEqual([]);
+      expect(t.messages.filter((m) => m.type === 'interruptRecovery')).toEqual([expect.objectContaining({ correlationId: 'c1' })]);
+
+      expect(await t.panel.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('sent');
+      expect(t.prompts).toEqual(['again']);
+      expect(t.hostCheck).not.toHaveBeenCalled();
+      await t.panel.dispose();
+    });
   });
 
   it('logs which models a loopback endpoint makes unavailable once per change, not on every model list read', async () => {
@@ -4780,6 +4939,9 @@ describe('plan-mode active set — exclusion model', () => {
     browserEnabled: true,
     imageEnabled: true,
     imageAvailability: { available: true },
+    forgeAvailable: true,
+    forgeEnabled: true,
+    forgeUnavailable: undefined,
     mcpEnabled: true,
     mcpToolNames: ['mcp__git__status', 'mcp__git__commit'],
     mcpDeferrableToolNames: ['mcp__git__status', 'mcp__git__commit'],
@@ -4820,7 +4982,8 @@ describe('plan-mode active set — exclusion model', () => {
     'BrowserSelect', 'BrowserSnapshot', 'BrowserTabs', 'BrowserType', 'BrowserUpload', 'BrowserWait',
     'CodeSearch', 'CompassBlastRadius', 'CompassBuild', 'CompassContext', 'CompassDeadCode',
     'CompassQuery', 'CompassReviewContext', 'CompassSearch', 'CompassStats', 'Edit', 'ExitPlanMode',
-    'FeedRead', 'ForgetMemory', 'GenerateImage', 'GetMemoryDetails', 'GetMemoryHistory', 'GetRelatedMemories',
+    'FeedRead', 'ForgeComment', 'ForgeIssue', 'ForgeIssues', 'ForgeJobAction', 'ForgeJobLog', 'ForgeJobs', 'ForgeMergeRequest',
+    'ForgeMergeRequests', 'ForgeOpenMergeRequest', 'ForgePipelines', 'ForgetMemory', 'GenerateImage', 'GetMemoryDetails', 'GetMemoryHistory', 'GetRelatedMemories',
     'GetSubagentResult', 'ListNotes', 'PowerShell', 'ResetObservationStaleness', 'SaveMemory',
     'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent',
     'ToolSearch', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
@@ -4834,7 +4997,8 @@ describe('plan-mode active set — exclusion model', () => {
   // it grants no capability the planner did not already have. Deliberately NOT in
   // `PLAN_MODE_EXCLUDED_TOOLS` (brief §2.5).
   // `GenerateImage` stays eligible like `Edit`/`write`: it is category `write`, so the gate's plan-mode
-  // branch blocks it with a policy reason the model can re-plan against, instead of a missing tool.
+  // branch blocks it with a policy reason the model can re-plan against, instead of a missing tool. The
+  // GitHub and GitLab writes are category `write` too, so the same holds for them; their reads serve research.
 
   it('matches the pinned plan-mode tool set exactly (no tool arrives unreviewed)', () => {
     const deps = { ...fullyEnabled, mcpEnabled: false, mcpToolNames: [] };
@@ -4854,14 +5018,14 @@ describe('plan-mode active set — exclusion model', () => {
   // Slice 2 widened `gained` by exactly one name: `ToolSearch` joined the eligible universe. The delta
   // is still stated as a set difference (not relaxed to a `toContain`), so a later edit that widens plan
   // mode by anything else still fails here even after the pinned list above is updated.
-  it('differs from the pre-inversion set by EXACTLY the browser tools, ToolSearch and GenerateImage', () => {
+  it('differs from the pre-inversion set by EXACTLY the browser tools, ToolSearch, GenerateImage and the GitHub and GitLab tools', () => {
     const legacyAllowed = new Set([...LEGACY_READONLY, ...LEGACY_INTERACTIVE, ...LEGACY_PLAN_FILE, ...LEGACY_SHELL, ...COMPASS_PI_TOOL_NAMES, ...MEMORY_PI_TOOL_NAMES]);
     const legacy = fullActiveToolNames(fullyEnabled).filter((n) => legacyAllowed.has(n) || n.startsWith('mcp__'));
 
     const gained = planSet().filter((n) => !legacy.includes(n));
     const lost = legacy.filter((n) => !planSet().includes(n));
 
-    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES, TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE].sort());
+    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES, TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE, ...FORGE_PI_TOOL_NAMES].sort());
     expect(lost).toEqual([]);
   });
 
@@ -7347,15 +7511,18 @@ describe('PiSession session-replacement contract (what a destructive delete is s
   const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
   /** Park the next runtime build so a panel can be observed while `start()` is still in flight. */
-  function parkNextStart(): { release: () => void } {
+  function parkNextStart(): { reached: Promise<void>; release: () => void } {
     const base = H.fakePi.createAgentSessionRuntime.getMockImplementation()!;
     let release!: () => void;
     const parked = new Promise<void>((r) => { release = r; });
+    let arrive!: () => void;
+    const reached = new Promise<void>((r) => { arrive = r; });
     H.fakePi.createAgentSessionRuntime.mockImplementationOnce(async (...args) => {
+      arrive();
       await parked;
       return base(...args);
     });
-    return { release };
+    return { reached, release };
   }
 
   it('detach waits for an in-flight start(), so a resuming panel really lets go', async () => {
@@ -7364,7 +7531,7 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     const gate = parkNextStart();
     const session = new PiSession(makeOptions([]));
     const starting = session.initializeEarly();
-    await tick();
+    await gate.reached;
 
     const detaching = session.detachFromDeletedSession();
     gate.release();
@@ -7382,7 +7549,7 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     const switchTo = vi.spyOn(session as unknown as { switchToResumeTarget: (target: unknown, stopped: unknown) => Promise<{ kind: 'switched' }> }, 'switchToResumeTarget')
       .mockResolvedValue({ kind: 'switched' });
     const starting = session.initializeEarly();
-    await tick();
+    await gate.reached;
 
     session.setResumeSession('sess-late');
     gate.release();
@@ -11560,6 +11727,122 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     await session.dispose();
   });
 
+  /** A daemon's core whose acting device has not read its personal MCP servers yet, with this panel's managers' reconcile held. */
+  async function remoteSessionReadingMcp(messages: ExtensionToWebviewMessage[]) {
+    const host = createFakeRemoteHost();
+    host.setMcpPending('client-a', 'reading');
+    const session = new PiSession(makeOptions(messages, { platform: { ...testPlatform, remote: host.remote } }));
+    await session.initializeEarly();
+    const { source, connect } = connectingSource([]);
+    let pending: string[] = [];
+    (source.pendingDirectServers as ReturnType<typeof vi.fn>).mockImplementation(() => [...pending]);
+    stubPanelMcp(source);
+    let reconciled!: () => void;
+    const user = vi.spyOn(PiRuntime.get('/fake/agent').getUserMcp()!, 'reconcile').mockReturnValue(new Promise<void>((resolve) => { reconciled = resolve; }));
+    const folder = vi.spyOn(FolderRuntime.prototype, 'reconcileFolder').mockResolvedValue();
+    return {
+      host,
+      session,
+      connecting: (servers: string[]) => { pending = servers; },
+      connect: () => {
+        pending = [];
+        connect();
+      },
+      reconciled: () => reconciled(),
+      restore: () => { user.mockRestore(); folder.mockRestore(); },
+    };
+  }
+
+  const readingNotices = (messages: ExtensionToWebviewMessage[]) =>
+    messages.filter((m) => m.type === 'notification' && englishText(m.message) === 'Reading the MCP servers of your computer');
+
+  it("waits while the send's device reads its personal MCP servers, then for those servers once this panel's managers took them", async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const remote = await remoteSessionReadingMcp(messages);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let done = false;
+    const waiting = remote.session.waitForAlwaysLoadedMcp('s1', new AbortController().signal).then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(done).toBe(false);
+    expect(readingNotices(messages)).toHaveLength(1);
+
+    // the read lands; the delta path has not fed this panel a scope holding the server yet
+    remote.host.set('clientMcp', 'client-a', [{ name: 'notes', tools: [{ name: 'search', exposure: 'direct' }], resources: false }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(done).toBe(false);
+    remote.connecting(['notes']);
+    remote.session.setMcpServers({ userUnion: {}, userVisible: [], folder: {}, relayed: ['notes'] });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(done).toBe(false);
+    remote.reconciled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(done).toBe(false);
+    remote.connect();
+    await waiting;
+    expect(done).toBe(true);
+    remote.restore();
+    await remote.session.dispose();
+  });
+
+  it("a failed read of the device's personal MCP servers ends only that part of the wait and says so", async () => {
+    const unread = "Damocles could not read the MCP servers of your computer, so this prompt goes without their tools.";
+    const warnings = (messages: ExtensionToWebviewMessage[]): string[] => messages.flatMap((m) => (m.type === 'notification' && m.notificationType === 'warning' ? [englishText(m.message)] : []));
+    const messages: ExtensionToWebviewMessage[] = [];
+    const remote = await remoteSessionReadingMcp(messages);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let done = false;
+    const waiting = remote.session.waitForAlwaysLoadedMcp('s1', new AbortController().signal).then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    remote.host.setMcpPending('client-a', 'readFailed');
+    await waiting;
+    expect(done).toBe(true);
+    expect(warnings(messages)).toEqual([unread]);
+
+    // a read that failed before the send still waits for the panel's other connecting servers
+    const againMessages: ExtensionToWebviewMessage[] = [];
+    const again = await remoteSessionReadingMcp(againMessages);
+    again.host.setMcpPending('client-a', 'readFailed');
+    again.connecting(['local']);
+    let againDone = false;
+    const againWaiting = again.session.waitForAlwaysLoadedMcp('s2', new AbortController().signal).then(() => { againDone = true; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(againDone).toBe(false);
+    expect(warnings(againMessages)).toEqual([unread]);
+    again.connect();
+    await againWaiting;
+    expect(againDone).toBe(true);
+    remote.restore();
+    again.restore();
+    await remote.session.dispose();
+    await again.session.dispose();
+  });
+
+  it("a stop ends the reading wait at once, and after 10 s the send goes on and says the servers join later", async () => {
+    const stopped = await remoteSessionReadingMcp([]);
+    const stop = new AbortController();
+    const waiting = stopped.session.waitForAlwaysLoadedMcp('s1', stop.signal);
+    stop.abort();
+    await waiting;
+    stopped.restore();
+    await stopped.session.dispose();
+
+    const messages: ExtensionToWebviewMessage[] = [];
+    const late = await remoteSessionReadingMcp(messages);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let done = false;
+    const timing = late.session.waitForAlwaysLoadedMcp('s2', new AbortController().signal).then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await timing;
+    expect(messages.map((m) => (m.type === 'notification' ? englishText(m.message) : undefined)).filter(Boolean)).toEqual([
+      'Reading the MCP servers of your computer',
+      'Damocles has not read the MCP servers of your computer yet. Their Always-loaded tools join from the next turn after they arrive.',
+    ]);
+    late.restore();
+    await late.session.dispose();
+  });
+
   type FakeSession = NonNullable<ReturnType<typeof H.getLastSession>>;
 
   /**
@@ -13137,6 +13420,171 @@ describe("PiSession's shell environment on a daemon's core", () => {
     }
     expect(gate.worktreeIsolation!()!.environment['DAMOCLES_CREDENTIAL_NONCE']).toBeUndefined();
     await session.dispose();
+  });
+});
+
+describe("PiSession's git credential takeover in its shells", () => {
+  const managed = [{ webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'] }];
+  const helper = '/app/dist/git-credential/git-credential-relay.sh';
+  const shellCall = (session: PiSession, toolCallId: string): Promise<ShellCredentialLease | undefined> =>
+    (session as unknown as { shellCredentials(id: string): Promise<ShellCredentialLease | undefined> }).shellCredentials(toolCallId);
+  // a shell as the launcher reports its close: whether it left a job running
+  const shellClosing = (): { shell: LaunchedProcess; close: (leftRunning: boolean) => void } => {
+    let close!: (leftRunning: boolean) => void;
+    const leftRunning = new Promise<boolean>((resolve) => (close = resolve));
+    return { shell: { leftRunning } as unknown as LaunchedProcess, close };
+  };
+  // each registration gets its own nonce, recorded as disposed
+  const installTakeover = (entries: () => ReturnType<typeof managedEntries> = () => managedEntries(managed, helper)): { registered: GitCredentialOrigin[]; disposed: string[] } => {
+    const registered: GitCredentialOrigin[] = [];
+    const disposed: string[] = [];
+    installCredentialHelper({
+      entries,
+      register: async (origin) => {
+        registered.push(origin);
+        const nonce = String(registered.length).padStart(64, '0');
+        return { env: { DAMOCLES_ASKPASS_NODE: '/app/node', DAMOCLES_ASKPASS_MAIN: '/app/main.js', DAMOCLES_ASKPASS_HANDLE: '/tmp/h', DAMOCLES_CREDENTIAL_NONCE: nonce }, dispose: () => { disposed.push(nonce); } };
+      },
+    });
+    return { registered, disposed };
+  };
+  const nonceOf = (lease: ShellCredentialLease | undefined): string => lease!.env['DAMOCLES_CREDENTIAL_NONCE']!;
+
+  it('registers each shell call apart, naming its tool call, appends the takeover to GIT_CONFIG_PARAMETERS, and holds no token or prompt capability', async () => {
+    const { registered } = installTakeover();
+    vi.stubEnv('GIT_CONFIG_PARAMETERS', "'core.pager=less'");
+    try {
+      const session = new PiSession(makeOptions([], { panelId: 'panel-1' }));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      const [first, second] = await Promise.all([shellCall(session, 'call-1'), shellCall(session, 'call-2')]);
+      expect(registered).toEqual([
+        { kind: 'agentShell', panelId: 'panel-1', sessionId: live.sessionId, toolCallId: 'call-1' },
+        { kind: 'agentShell', panelId: 'panel-1', sessionId: live.sessionId, toolCallId: 'call-2' },
+      ]);
+      expect(nonceOf(first)).not.toBe(nonceOf(second));
+      expect(first!.env['GIT_CONFIG_PARAMETERS']).toBe(`'core.pager=less' ${asConfigParams(managedEntries(managed, helper), undefined)!}`);
+      expect(first!.env['DAMOCLES_ASKPASS_NONCE']).toBeUndefined();
+      expect(first!.env['GIT_ASKPASS']).toBeUndefined();
+      // the environment the chat's shells start from carries no registration: each call brings its own
+      const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+      const project = path.resolve('/projects/app');
+      vi.spyOn(session.worktree, 'isolation').mockReturnValue({ workingFolder: path.resolve('/worktrees/app/aaaaaaaa'), projectPath: project, repositoryRoot: project, otherWorktrees: [], homeDir: path.resolve('/home') });
+      expect(gate.worktreeIsolation!()!.environment['DAMOCLES_CREDENTIAL_NONCE']).toBeUndefined();
+      await session.dispose();
+    } finally {
+      installCredentialHelper(undefined);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("ends a call's registration when its shell closes with nothing left running, and one no shell took over when the call ends", async () => {
+    const { disposed } = installTakeover();
+    try {
+      const session = new PiSession(makeOptions([], { panelId: 'panel-1' }));
+      await session.initializeEarly();
+      const ran = await shellCall(session, 'call-1');
+      const { shell, close } = shellClosing();
+      ran!.heldBy(shell);
+      // the call's end leaves the registration to the shell that took it over
+      ran!.release();
+      await Promise.resolve();
+      expect(disposed).toEqual([]);
+      close(false);
+      await vi.waitFor(() => expect(disposed).toEqual([nonceOf(ran)]));
+      const unstarted = await shellCall(session, 'call-2');
+      unstarted!.release();
+      expect(disposed).toEqual([nonceOf(ran), nonceOf(unstarted)]);
+      await session.dispose();
+      expect(disposed).toHaveLength(2);
+    } finally {
+      installCredentialHelper(undefined);
+    }
+  });
+
+  it('keeps the registration of a shell that left a job running across /clear, and ends it when the panel closes', async () => {
+    const { disposed } = installTakeover();
+    try {
+      const session = new PiSession(makeOptions([], { panelId: 'panel-1' }));
+      await session.initializeEarly();
+      const background = await shellCall(session, 'call-1');
+      const { shell, close } = shellClosing();
+      background!.heldBy(shell);
+      background!.release();
+      close(true);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(session.clear()).toBe(true);
+      await session.whenReplaced();
+      expect(disposed).toEqual([]);
+      await session.dispose();
+      expect(disposed).toEqual([nonceOf(background)]);
+    } finally {
+      installCredentialHelper(undefined);
+    }
+  });
+
+  it('starts a call whose registration failed with a nonce no server accepts, never without the takeover', async () => {
+    installCredentialHelper({ entries: () => managedEntries(managed, helper), register: () => Promise.reject(new Error('the askpass server could not listen')) });
+    try {
+      const session = new PiSession(makeOptions([], { panelId: 'panel-1' }));
+      await session.initializeEarly();
+      const lease = await shellCall(session, 'call-1');
+      expect(lease!.env).toEqual({ DAMOCLES_CREDENTIAL_NONCE: 'pending', GIT_CONFIG_PARAMETERS: asConfigParams(managedEntries(managed, helper), process.env['GIT_CONFIG_PARAMETERS'])! });
+      await session.dispose();
+    } finally {
+      installCredentialHelper(undefined);
+    }
+  });
+
+  it("replaces the relay's terminal nonce with the call's own on a daemon's core with no managed server, so its git never asks as a terminal", async () => {
+    const relay = { helper: '/srv/dist/git-credential/git-credential-relay.sh', node: '/srv/node', main: '/srv/dist/askpass-main.js', handle: '/tmp/a/askpass.sock', nonce: 'd'.repeat(64) };
+    installCredentialRelay(() => relay);
+    const { registered } = installTakeover(() => []);
+    try {
+      const session = new PiSession(makeOptions([], { panelId: 'panel-1' }));
+      await session.initializeEarly();
+      const lease = await shellCall(session, 'call-1');
+      expect(registered).toHaveLength(1);
+      // no takeover entries, so no GIT_CONFIG_PARAMETERS; the relay's helper pair stays in the chat's environment for unmanaged servers
+      expect(lease!.env).toEqual({ DAMOCLES_ASKPASS_NODE: '/app/node', DAMOCLES_ASKPASS_MAIN: '/app/main.js', DAMOCLES_ASKPASS_HANDLE: '/tmp/h', DAMOCLES_CREDENTIAL_NONCE: nonceOf(lease) });
+      expect(nonceOf(lease)).not.toBe(relay.nonce);
+      await session.dispose();
+    } finally {
+      installCredentialRelay(undefined);
+      installCredentialHelper(undefined);
+    }
+  });
+
+  it("names on a daemon's core the client the call's turn is pinned to, not the one acting later", async () => {
+    const host = createFakeRemoteHost();
+    host.setActing('client-a');
+    const { registered } = installTakeover();
+    try {
+      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: host.remote }, panelId: 'panel-1' }));
+      await session.initializeEarly();
+      const lease = await runPinnedTurn(host.remote, 'panel-1', () => {
+        host.setActing('client-b');
+        return shellCall(session, 'call-1');
+      });
+      expect(registered).toEqual([expect.objectContaining({ kind: 'agentShell', toolCallId: 'call-1', clientId: 'client-a' })]);
+      lease!.release();
+      await session.dispose();
+    } finally {
+      installCredentialHelper(undefined);
+    }
+  });
+
+  it('registers no call when nothing is taken over and no relay answers', async () => {
+    const { registered } = installTakeover(() => []);
+    try {
+      const session = new PiSession(makeOptions([], { panelId: 'panel-1' }));
+      await session.initializeEarly();
+      await expect(shellCall(session, 'call-1')).resolves.toBeUndefined();
+      expect(registered).toEqual([]);
+      await session.dispose();
+    } finally {
+      installCredentialHelper(undefined);
+    }
   });
 });
 

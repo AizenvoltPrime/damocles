@@ -166,6 +166,12 @@ interface Harness {
   screenReader: boolean;
   // variables a root's terminals add, by root key
   rootEnv: Record<string, Record<string, string>>;
+  // the git credential takeover's variables a local spawn gets; undefined registers nothing
+  credentialEnv: Record<string, string> | undefined;
+  // set: the takeover's registration rejects with it
+  credentialError: Error | undefined;
+  // each takeover registration: its root key, the GIT_CONFIG_PARAMETERS it inherited, and whether it was released
+  readonly registrations: { projectKey: string | null; inherited: string | undefined; disposed: boolean }[];
   crashHost(exit?: PtyHostExit): void;
   hostSend(message: unknown): void;
 }
@@ -210,6 +216,9 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     env: { PATH: 'C:\\bin', TERM_TEST: '1' },
     screenReader: false,
     rootEnv: {},
+    credentialEnv: undefined,
+    credentialError: undefined,
+    registrations: [],
     crashHost: (exit) => exitHost(exit ?? { code: 1, reason: null, error: null }),
     hostSend: (message) => hostSend(message),
   };
@@ -284,6 +293,13 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     rootEnv: (key) => h.rootEnv[key] ?? {},
     settings: () => ({ ...SETTINGS, defaultProfile: options.defaultProfile ?? '', ...h.settings }),
     env: async () => h.env,
+    gitCredentials: async (projectKey, inherited) => {
+      if (h.credentialError) throw h.credentialError;
+      if (!h.credentialEnv) return undefined;
+      const registration = { projectKey, inherited, disposed: false };
+      h.registrations.push(registration);
+      return { env: h.credentialEnv, dispose: () => { registration.disposed = true; } };
+    },
     osOf: () => 'linux',
     persistRemote: (terminals) => h.remote.push([...terminals]),
     killOnReattach: (authority, id) => h.kills.push([authority, id]),
@@ -815,6 +831,92 @@ describe('exit, kill and restart', () => {
     expect(h.hosts).toEqual({ count: 1, killed: 0 });
   });
 
+  it('gives each local shell process its own git credential registration, appended to the inherited GIT_CONFIG_PARAMETERS, released when the process exits or its tab closes', async () => {
+    const h = harness();
+    h.env = { PATH: 'C:\\bin', GIT_CONFIG_PARAMETERS: "'core.pager=less'" };
+    h.credentialEnv = { GIT_CONFIG_PARAMETERS: "'core.pager=less' 'credential.https://gitlab.com.helper='", DAMOCLES_CREDENTIAL_NONCE: 'a'.repeat(64) };
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    expect(h.registrations).toEqual([
+      { projectKey: ALPHA.key, inherited: "'core.pager=less'", disposed: false },
+      { projectKey: ALPHA.key, inherited: "'core.pager=less'", disposed: false },
+    ]);
+    expect(h.ptys[0]!.options.env).toMatchObject(h.credentialEnv);
+    h.ptys[0]!.exit(0);
+    await settle(EXIT_FLUSH_MS);
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true, false]);
+    // a restart is a new process with a new registration
+    await h.service.restart('term-1');
+    await settle();
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true, false, false]);
+    h.service.kill('term-2');
+    await settle();
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true, true, false]);
+    await h.service.dispose();
+    expect(h.registrations.every((registration) => registration.disposed)).toBe(true);
+  });
+
+  it('releases a registration that lands after its tab closed', async () => {
+    const h = harness();
+    h.credentialEnv = { DAMOCLES_CREDENTIAL_NONCE: 'a'.repeat(64) };
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.kill('term-1');
+    await settle();
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true]);
+  });
+
+  it('applies no takeover holding a variable the pty host refuses or an empty one, and releases its registration', async () => {
+    const h = harness();
+    h.credentialEnv = { GIT_CONFIG_PARAMETERS: '', DAMOCLES_CREDENTIAL_NONCE: 'a'.repeat(64) };
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    expect(h.ptys[0]!.options.env).not.toHaveProperty('DAMOCLES_CREDENTIAL_NONCE');
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true]);
+    expect(h.logs).toContain('[terminal] starting C:\\pwsh\\pwsh.exe without the git credential takeover: the pty host refuses GIT_CONFIG_PARAMETERS');
+    expect(lastState(h).terminals[0]!.status).toBe('running');
+  });
+
+  it('starts the shell without the takeover when its registration fails', async () => {
+    const h = harness();
+    h.credentialError = new Error('the askpass server could not listen');
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    expect(h.ptys).toHaveLength(1);
+    expect(h.ptys[0]!.options.env).not.toHaveProperty('DAMOCLES_CREDENTIAL_NONCE');
+    expect(h.logs).toContain('[terminal] starting C:\\pwsh\\pwsh.exe without the git credential takeover: the askpass server could not listen');
+    expect(lastState(h).terminals[0]!.status).toBe('running');
+  });
+
+  it('appends to an inherited GIT_CONFIG_PARAMETERS of any case on Windows and leaves only the takeover\'s spelling', async () => {
+    const h = harness();
+    h.env = { PATH: 'C:\\bin', Git_Config_Parameters: "'core.pager=less'" };
+    h.credentialEnv = { GIT_CONFIG_PARAMETERS: "'core.pager=less' 'credential.https://gitlab.com.helper='", DAMOCLES_CREDENTIAL_NONCE: 'a'.repeat(64) };
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    expect(h.registrations.map((registration) => registration.inherited)).toEqual(["'core.pager=less'"]);
+    const env = h.ptys[0]!.options.env;
+    expect(Object.keys(env).filter((key) => key.toUpperCase() === 'GIT_CONFIG_PARAMETERS')).toEqual(['GIT_CONFIG_PARAMETERS']);
+    expect(env['GIT_CONFIG_PARAMETERS']).toBe(h.credentialEnv['GIT_CONFIG_PARAMETERS']);
+  });
+
+  it('releases every registration when the window closes and when the pty host crashes', async () => {
+    const h = harness();
+    h.credentialEnv = { DAMOCLES_CREDENTIAL_NONCE: 'a'.repeat(64) };
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([false, false]);
+    h.service.closeWindow();
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true, true]);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    expect(h.registrations.map((registration) => registration.disposed)).toEqual([true, true, false, false]);
+    h.crashHost();
+    expect(h.registrations.every((registration) => registration.disposed)).toBe(true);
+  });
+
   it('spaces conpty starts and kills 250 ms apart on Windows', async () => {
     const h = harness({ throttleConpty: true });
     h.service.create({ profileId: null, target: { current: true } }, false);
@@ -955,10 +1057,13 @@ describe('remote terminals', () => {
   it('keeps a remote terminal\'s record in remote-state.json, names it by id alone in the layout, and leaves it out of the quit question', async () => {
     const h = harness();
     h.projects = [ALPHA, REMOTE];
+    h.credentialEnv = { DAMOCLES_CREDENTIAL_NONCE: 'a'.repeat(64) };
     h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
     const remote = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
     await settle();
     if (!remote.ok) throw new Error('no remote terminal');
+    // a remote terminal's git uses its daemon's relay, so only the local one registers
+    expect(h.registrations.map((registration) => registration.projectKey)).toEqual([ALPHA.key]);
     expect(remote.id).toMatch(/^term-[1-9]\d{14}$/);
     expect(h.persisted.at(-1)).toEqual(singles([stored('pwsh', ALPHA.key), { kind: 'remote', id: remote.id }], 1, DEFAULT_PERSISTED_TERMINALS.listWidthRem));
     expect(h.remote.at(-1)).toEqual([expect.objectContaining({ id: remote.id, projectKey: REMOTE.key, startCwd: REMOTE.fsPath, profile: expect.objectContaining({ id: 'pwsh' }) })]);

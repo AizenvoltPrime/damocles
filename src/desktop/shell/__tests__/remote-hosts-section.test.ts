@@ -10,6 +10,9 @@ import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { addSettingsMessages } from '../overlay/settings/settings-messages';
 import { shellI18n } from '../i18n';
+import SettingSelect from '@/components/settings/controls/SettingSelect.vue';
+import type { HostDefaultsView } from '@shared/forge/bindings';
+import type { Component } from 'vue';
 import { FakeResizeObserver, fakeOverlayApi, opened } from './fakes';
 
 // One overlay page per file, as in the app: the bridge is installed before anything uses it.
@@ -31,7 +34,7 @@ const PROD: RemoteHostEntry = {
   detectedOs: 'linux',
   connection: 'connected',
   settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
-  facts: { passwordless: false, keyInstalledByDamocles: true, lingerEnabledByDamocles: false, alwaysCredentialHosts: ['github.com'] },
+  facts: { passwordless: false, keyInstalledByDamocles: true, lingerEnabledByDamocles: false, alwaysCredentialHosts: ['github.com'], alwaysForgeAccounts: [] },
   heldMemoryQueues: [],
 };
 const WIN: RemoteHostEntry = { ...PROD, hostId: 'h2', authorityKey: 'ssh+h2', name: 'win-box', os: 'win32', detectedOs: 'win32', connection: 'offline', facts: { ...PROD.facts, alwaysCredentialHosts: [] } };
@@ -447,6 +450,23 @@ describe('Settings, Remote hosts', () => {
     expect(api.renameHost).toHaveBeenCalledWith('h1', 'prod-eu');
   });
 
+  it('keeps a typed name across a push of the same hosts, and takes a name the push changed', async () => {
+    await openRemoteHosts();
+    const field = block().querySelector<HTMLInputElement>('[data-testid="host-name-input"]')!;
+    field.value = 'PROD';
+    field.dispatchEvent(new Event('input'));
+    await flushPromises();
+    api.hostEntries([{ ...PROD, connection: 'offline' }, WIN]);
+    await flushPromises();
+    expect(field.value).toBe('PROD');
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(api.renameHost).toHaveBeenCalledWith('h1', 'PROD');
+    api.hostEntries([{ ...PROD, name: 'prod-eu' }, WIN]);
+    await flushPromises();
+    expect(field.value).toBe('prod-eu');
+  });
+
   it('says in place that the name was not saved when main\'s call fails', async () => {
     vi.mocked(api.renameHost).mockRejectedValueOnce(new Error('store write failed'));
     await openRemoteHosts();
@@ -700,5 +720,137 @@ describe('Settings, Remote hosts', () => {
     expect($('[data-testid="remove-server-progress"]')).toBeNull();
     expect($('[data-testid="remove-server-result"]')!.textContent).toContain('Damocles was still running on prod-1, so nothing was removed.');
     expect($('[data-testid="remove-server-retry"]')).not.toBeNull();
+  });
+});
+
+// sample data
+const READY: HostDefaultsView = {
+  state: 'ready',
+  servers: [
+    { serverId: 'indigital', server: 'gitlab.indigital.gr', kind: 'gitlab', gitHosts: ['gitlab.indigital.gr'], accounts: [{ id: 'indigital|1', login: 'astefanopoulos' }, { id: 'indigital|2', login: 'astef-admin' }], defaultAccountId: 'indigital|1' },
+    { serverId: 'gitlab.com', server: 'gitlab.com', kind: 'gitlab', gitHosts: ['gitlab.com'], accounts: [{ id: 'gitlab.com|1', login: 'alexios-s' }, { id: 'gitlab.com|2', login: 'work-alexios' }] },
+  ],
+};
+const defaultsBlock = (): HTMLElement => $('[data-testid="forge-defaults"]')!;
+// SettingSelect is generic, so its wrapper and props are typed by hand
+const propsOf = (select: VueWrapper): Record<string, unknown> => select.props() as Record<string, unknown>;
+const serverSelect = (wrapper: VueWrapper, server: string): VueWrapper => (wrapper.findAllComponents(SettingSelect as Component) as VueWrapper[]).find((select) => propsOf(select)['label'] === `Default account on ${server}`)!;
+
+describe('Settings, Remote hosts, Default accounts', () => {
+  beforeEach(() => {
+    api.forge.defaults.clear();
+    vi.mocked(api.forgeHostDefaults).mockClear();
+    vi.mocked(api.setForgeHostDefault).mockReset().mockResolvedValue(opened(true));
+    vi.mocked(api.openForgeAccounts).mockClear();
+    api.remoteHosts.list = [{ ...PROD, facts: { ...PROD.facts, alwaysCredentialHosts: ['gitlab.indigital.gr', 'bitbucket.org'] } }, WIN];
+  });
+
+  it('shows a skeleton shaped like a server line, declared loading, until core publishes the accounts', async () => {
+    await openRemoteHosts();
+    expect(defaultsBlock().dataset.state).toBe('loading');
+    const skeleton = $('[data-testid="forge-defaults-loading"]')!;
+    expect(skeleton.getAttribute('role')).toBe('status');
+    expect(skeleton.getAttribute('aria-busy')).toBe('true');
+    expect(skeleton.getAttribute('aria-label')).toBe('Loading accounts');
+    api.forge.defaults.set('ssh+h1', READY);
+    api.forgeChanged({});
+    await flushPromises();
+    expect($('[data-testid="forge-defaults-loading"]')).toBeNull();
+    expect(defaultsBlock().dataset.state).toBe('ready');
+  });
+
+  it('names the host, offers No default then each account per server, and names the default on the consent row', async () => {
+    api.forge.defaults.set('ssh+h1', READY);
+    const wrapper = await openRemoteHosts();
+    expect(block().textContent).toContain('Default accounts on prod-1');
+    const indigital = serverSelect(wrapper, 'gitlab.indigital.gr');
+    expect(propsOf(indigital)['modelValue']).toBe('indigital|1');
+    expect((propsOf(indigital)['options'] as readonly { label: string }[]).map((option) => option.label)).toEqual(['No default', 'astefanopoulos', 'astef-admin']);
+    expect(propsOf(serverSelect(wrapper, 'gitlab.com'))['modelValue']).toBe('none');
+    expect(defaultsBlock().querySelectorAll('[data-testid="forge-default-server"] svg[data-forge-mark="gitlab"]')).toHaveLength(2);
+    const consent = [...block().querySelectorAll<HTMLElement>('[data-testid="credential-host"]')];
+    expect(consent[0]!.querySelector('[data-testid="credential-host-default"]')!.textContent).toBe('as astefanopoulos, the default');
+    expect(consent[1]!.querySelector('[data-testid="credential-host-default"]')).toBeNull();
+  });
+
+  it('saves a pick at once, says Saved, and the consent row names the new default', async () => {
+    api.forge.defaults.set('ssh+h1', READY);
+    const wrapper = await openRemoteHosts();
+    serverSelect(wrapper, 'gitlab.indigital.gr').vm.$emit('update:modelValue', 'indigital|2');
+    await flushPromises();
+    expect(api.setForgeHostDefault).toHaveBeenCalledWith('ssh+h1', 'indigital', 'indigital|2');
+    expect(defaultsBlock().textContent).toContain('Saved');
+    expect(block().querySelector('[data-testid="credential-host-default"]')!.textContent).toBe('as astef-admin, the default');
+    serverSelect(wrapper, 'gitlab.com').vm.$emit('update:modelValue', 'none');
+    await flushPromises();
+    expect(api.setForgeHostDefault).toHaveBeenLastCalledWith('ssh+h1', 'gitlab.com', null);
+  });
+
+  it('lists an account the host may always use apart from the credential hosts, by its login, and revokes only that account', async () => {
+    api.forge.defaults.set('ssh+h1', READY);
+    api.remoteHosts.list = [{ ...PROD, facts: { ...PROD.facts, alwaysCredentialHosts: ['gitlab.indigital.gr'], alwaysForgeAccounts: [{ serverId: 'gitlab.com', accountId: 'gitlab.com|2' }] } }, WIN];
+    vi.mocked(api.revokeForgeAccount).mockClear();
+    await openRemoteHosts();
+    const row = block().querySelector<HTMLElement>('[data-testid="credential-account"]')!;
+    expect(row.textContent?.replace(/\s+/g, ' ').trim()).toContain('work-alexios on gitlab.com');
+    const revoke = row.querySelector<HTMLElement>('[data-testid="credential-account-revoke"]')!;
+    expect(revoke.getAttribute('aria-label')).toBe('Revoke work-alexios on gitlab.com');
+    revoke.click();
+    await flushPromises();
+    expect(api.revokeForgeAccount).toHaveBeenCalledWith('h1', { serverId: 'gitlab.com', accountId: 'gitlab.com|2' });
+    expect(api.revokeCredentialHost).not.toHaveBeenCalled();
+  });
+
+  it('reverts a pick main did not save and says so in an alert', async () => {
+    api.forge.defaults.set('ssh+h1', READY);
+    vi.mocked(api.setForgeHostDefault).mockResolvedValue(opened(false));
+    const wrapper = await openRemoteHosts();
+    serverSelect(wrapper, 'gitlab.indigital.gr').vm.$emit('update:modelValue', 'indigital|2');
+    await flushPromises();
+    expect(propsOf(serverSelect(wrapper, 'gitlab.indigital.gr'))['modelValue']).toBe('indigital|1');
+    expect([...block().querySelectorAll('[role="alert"]')].map((alert) => alert.textContent?.trim())).toContain('The setting could not be saved.');
+  });
+
+  it('says there is no account yet and opens Accounts', async () => {
+    api.forge.defaults.set('ssh+h1', { state: 'ready', servers: [] });
+    await openRemoteHosts();
+    expect(defaultsBlock().textContent).toContain('You have no GitHub or GitLab account on this computer yet.');
+    buttonNamed('Open Accounts', defaultsBlock())!.click();
+    await flushPromises();
+    expect(api.openForgeAccounts).toHaveBeenCalledWith({});
+  });
+
+  it('logs a refusal to open Accounts rather than leaving it unhandled', async () => {
+    api.forge.defaults.set('ssh+h1', { state: 'ready', servers: [] });
+    const refusal = new Error('Malformed forge.openAccounts call');
+    vi.mocked(api.openForgeAccounts).mockRejectedValueOnce(refusal);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await openRemoteHosts();
+    buttonNamed('Open Accounts', defaultsBlock())!.click();
+    await flushPromises();
+    expect(logged).toHaveBeenCalledWith('[remote hosts] main refused to open Git hosting settings', refusal);
+    logged.mockRestore();
+  });
+
+  it('says core could not read the accounts, with Try again', async () => {
+    api.forge.defaults.set('ssh+h1', { state: 'error' });
+    await openRemoteHosts();
+    expect(defaultsBlock().dataset.state).toBe('error');
+    expect(defaultsBlock().querySelector('[role="alert"]')!.textContent).toContain('Damocles could not read your GitHub and GitLab accounts.');
+    api.forge.defaults.set('ssh+h1', READY);
+    buttonNamed('Try again', defaultsBlock())!.click();
+    await flushPromises();
+    expect(defaultsBlock().dataset.state).toBe('ready');
+  });
+
+  it('reads the defaults of the host picked in the host switcher', async () => {
+    api.forge.defaults.set('ssh+h1', READY);
+    api.forge.defaults.set('ssh+h2', { state: 'ready', servers: [] });
+    await openRemoteHosts();
+    [...document.querySelectorAll<HTMLElement>('[data-testid="remote-host-pick"]')].find((pick) => pick.dataset.hostId === 'h2')!.click();
+    await flushPromises();
+    expect(api.forgeHostDefaults).toHaveBeenLastCalledWith('ssh+h2');
+    expect(block().textContent).toContain('Default accounts on win-box');
+    expect(defaultsBlock().textContent).toContain('You have no GitHub or GitLab account on this computer yet.');
   });
 });

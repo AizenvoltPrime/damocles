@@ -31,6 +31,7 @@ import { draggedTerminal, endTerminalDrag, startTerminalDrag, terminalDragOf, te
 import { terminalGlyph } from '../terminal/terminal-icons';
 import { runTerminalTabAction, terminalProjectLabel, terminalStatusLabel, terminalTabMenuItems } from '../terminal/terminal-menu';
 import TerminalRename from '../terminal/TerminalRename.vue';
+import { ciLook, ciStateWord } from '../forge/ci-view';
 
 const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string; projects: readonly ShellProject[]; hosts: readonly ShellHost[] }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef]; focusOverlay: [] }>();
@@ -83,7 +84,7 @@ watch(box, measureBar);
 useEventListener(window, 'animationend', measureBar, { capture: true });
 useEventListener(window, 'transitionend', measureBar, { capture: true });
 // Opening, closing, reordering and activating tabs move the active tab without resizing the row, so each re-measures.
-watch(() => [store.state.value?.activeTabId, store.tabs.value.map((tab) => tab.id).join('\n')], () => void nextTick(measure));
+watch([() => store.state.value?.activeTabId, () => store.tabs.value.map((tab) => tab.id).join('\n')], () => void nextTick(measure));
 
 const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; color: string }>> = {
   browser: { icon: Globe, color: 'var(--d-info)' },
@@ -249,7 +250,7 @@ function onKeydown(event: KeyboardEvent, index: number, tab: ShellEditorTab): vo
 }
 
 // Tabs that are no file: no path to copy.
-const NO_PATH_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
+const NO_PATH_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge', 'jobLog']);
 
 async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number; width: number; height: number }): Promise<void> {
   const item = (id: string, label: string, icon: Extract<OverlayMenuItem, { kind: 'item' }>['icon'], extra: Partial<Extract<OverlayMenuItem, { kind: 'item' }>> = {}): OverlayMenuItem =>
@@ -454,8 +455,28 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             @dragstart="onDragStart($event, tab)"
             @dragend="tab.terminal && endTerminalDrag()"
           >
+            <!-- A job log's state, live from main's descriptor; the spin sits on the wrapper so t-icon's entrance never fights it. -->
+            <span
+              v-if="tab.jobLog"
+              aria-hidden="true"
+              data-testid="editor-tab-job-state"
+              :data-state="tab.jobLog.state"
+              class="inline-flex size-3.25 shrink-0 [&_svg]:size-3.25"
+              :class="ciLook(tab.jobLog.state).spin ? 'd-spinning' : ''"
+            >
+              <Transition
+                name="t-icon"
+                mode="out-in"
+              >
+                <component
+                  :is="ciLook(tab.jobLog.state).icon"
+                  :key="tab.jobLog.state"
+                  :class="ciLook(tab.jobLog.state).tone"
+                />
+              </Transition>
+            </span>
             <LoaderCircle
-              v-if="tab.browser?.loading || terminalBusy(terminalOf(tab))"
+              v-else-if="tab.browser?.loading || terminalBusy(terminalOf(tab))"
               aria-hidden="true"
               data-testid="editor-tab-loading"
               class="d-spinning size-3.25 shrink-0"
@@ -568,6 +589,19 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               v-if="terminalOf(tab)"
               class="sr-only"
             >{{ terminalStatusLabel(terminalOf(tab)!, t) }}</span>
+            <template v-if="tab.jobLog">
+              <span
+                v-if="tab.jobLog.pipelineNumber !== undefined"
+                data-testid="editor-tab-pipeline"
+                class="shrink-0 text-11 text-(--d-faint-text)"
+              >#{{ tab.jobLog.pipelineNumber }}</span>
+              <span
+                v-else-if="tab.jobLog.workflow !== undefined"
+                data-testid="editor-tab-pipeline"
+                class="max-w-32 shrink truncate text-11 text-(--d-faint-text)"
+              >{{ tab.jobLog.workflow }}</span>
+              <span class="sr-only">, {{ ciStateWord(tab.jobLog.state, t) }}</span>
+            </template>
             <span
               v-if="tab.diff"
               class="shrink-0 font-mono text-10 text-(--d-faint-text)"

@@ -9,6 +9,7 @@ import {
   checkAsarEntries,
   checkAskpassScripts,
   checkCliScripts,
+  checkCredentialHelperScripts,
   checkAskpassTrampoline,
   checkChangelog,
   checkCoreHost,
@@ -28,6 +29,7 @@ import {
 } from '../verify-desktop-package.ts';
 import { parse } from 'yaml';
 import { ASAR_UNPACK } from '../../src/desktop/main/platform/unpacked-assets';
+import { CREDENTIAL_RELAY_SCRIPTS } from '../../esbuild.config.ts';
 
 type Result = { check: string; ok: boolean; detail: string };
 
@@ -243,6 +245,33 @@ describe('checkCliScripts', () => {
   });
 });
 
+describe('checkCredentialHelperScripts', () => {
+  const mode = (value: number) => () => ({ mode: value });
+  const files = (sh: string | undefined, cmd: string | undefined) => (file: string) => {
+    const text = file === 'git-credential-relay.sh' ? sh : cmd;
+    return text === undefined ? undefined : Buffer.from(text);
+  };
+  it('requires the .sh as an LF sh script, 0755 where modes are kept, and the .cmd as CRLF with delayed expansion off', () => {
+    const sh = '#!/bin/sh\nexec node\n';
+    const cmd = '@echo off\r\nsetlocal DisableDelayedExpansion\r\nnode\r\n';
+    expect(failures(checkCredentialHelperScripts(files(sh, cmd), mode(0o100755), true))).toEqual([]);
+    expect(failures(checkCredentialHelperScripts(files(sh, cmd), mode(0o100644), false))).toEqual([]);
+    expect(failures(checkCredentialHelperScripts(files(sh, cmd), mode(0o100644), true))).toEqual(['credential helper mode']);
+    expect(failures(checkCredentialHelperScripts(files(undefined, cmd), () => undefined, false))).toEqual(['credential helper']);
+    expect(failures(checkCredentialHelperScripts(files(sh, undefined), mode(0o100755), true))).toEqual(['credential helper .cmd']);
+    expect(failures(checkCredentialHelperScripts(files('#!/bin/sh\r\nexec node\r\n', cmd), mode(0o100755), true))).toEqual(['credential helper']);
+    expect(failures(checkCredentialHelperScripts(files(sh, '@echo off\nnode\n'), mode(0o100755), true))).toEqual(['credential helper .cmd']);
+    // a registry DelayedExpansion=1 would eat a ! in the paths
+    expect(failures(checkCredentialHelperScripts(files(sh, '@echo off\r\nsetlocal\r\nnode\r\n'), mode(0o100755), true))).toEqual(['credential helper .cmd']);
+  });
+
+  it('passes and names every script in resources/git-credential, which the desktop build copies', () => {
+    const dir = join(__dirname, '..', '..', 'resources', 'git-credential');
+    expect([...CREDENTIAL_RELAY_SCRIPTS].sort()).toEqual(readdirSync(dir).sort());
+    expect(failures(checkCredentialHelperScripts((file: string) => readFileSync(join(dir, file)), mode(0o100755), false))).toEqual([]);
+  });
+});
+
 describe('checkAskpassScripts', () => {
   const lf = Buffer.from('#!/bin/sh\nexec x\n');
   const mode = (value: number) => () => ({ mode: value });
@@ -397,6 +426,8 @@ describe('verifyPackage', () => {
     put(join(repoRoot, 'CHANGELOG.md'), CHANGELOG);
     put(join(repoRoot, 'resources', 'grammars', 'tree-sitter-go.wasm'), 'go-grammar');
     for (const file of ASKPASS_SCRIPTS) put(join(repoRoot, 'resources', 'askpass', file));
+    const credentialHelper: Record<string, string> = { 'git-credential-relay.sh': '#!/bin/sh\nexec node\n', 'git-credential-relay.cmd': '@echo off\r\nsetlocal DisableDelayedExpansion\r\nnode\r\n' };
+    for (const [file, text] of Object.entries(credentialHelper)) put(join(repoRoot, 'resources', 'git-credential', file), text);
     put(join(repoRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'), WAKE_MANIFEST);
     put(platform === 'win32' ? join(app, 'Damocles.exe') : join(app, 'Contents', 'MacOS', 'Damocles'), 'binary');
     put(join(resources, 'monaco-editor-ThirdPartyNotices.txt'), 'notices');
@@ -438,6 +469,8 @@ describe('verifyPackage', () => {
     if (platform === 'win32') put(join(unpacked, 'dist', 'askpass', 'ssh-askpass.exe'), 'MZ trampoline');
     // the desktop build gives the askpass scripts 0755 for every target, and a POSIX host checks it
     for (const file of ASKPASS_SCRIPTS) chmodSync(join(unpacked, 'dist', 'askpass', file), 0o755);
+    for (const [file, text] of Object.entries(credentialHelper)) put(join(unpacked, 'dist', 'git-credential', file), text);
+    chmodSync(join(unpacked, 'dist', 'git-credential', 'git-credential-relay.sh'), 0o755);
     put(join(resources, 'bin', 'damocles'), '#!/bin/sh\nexec app\n');
     chmodSync(join(resources, 'bin', 'damocles'), 0o755);
     put(join(resources, 'bin', 'damocles.cmd'), '@echo off\r\nsetlocal DisableDelayedExpansion\r\nexit /b\r\n');

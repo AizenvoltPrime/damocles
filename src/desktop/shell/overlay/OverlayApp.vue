@@ -24,6 +24,12 @@ import GitConsentDialog from './components/GitConsentDialog.vue';
 import DevcontainerTrustDialog from './components/DevcontainerTrustDialog.vue';
 import AllowYoloDialog from './components/AllowYoloDialog.vue';
 import ClientCertificateDialog from './components/ClientCertificateDialog.vue';
+import ForgeChooseAccountDialog from './components/ForgeChooseAccountDialog.vue';
+import ForgePublishDialog from './components/ForgePublishDialog.vue';
+import ForgeForkDialog from './components/ForgeForkDialog.vue';
+import ForgeProtectedBranchDialog from './components/ForgeProtectedBranchDialog.vue';
+import PipelinePopover from './components/PipelinePopover.vue';
+import ClonePicker from './components/ClonePicker.vue';
 import { commandsModel, quickOpenModel, quickOpenPick, type QuickOpenLabels, type QuickPickModel } from './quick-pick';
 import OverlaySettings from './settings/OverlaySettings.vue';
 import { applySettingsLocale, settingsLocalePending } from './settings/settings-messages';
@@ -82,8 +88,8 @@ function onAfterLeave(element: Element): void {
 
 // Kinds that handle Escape themselves, so the window's handler leaves it to them: the settings modal and the dialogs through
 // the overlay stack (a search query clears first, a dialog above the modal cancels without closing it), the Connect dialog, the dev container confirmation
-// and the Allow YOLO question through their reka dialogs, and Quick Open, New Terminal, the quick pick and the input box in their own keydown.
-const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'connect', 'closeRemote', 'gitCredentialConsent', 'devcontainerTrust', 'allowYolo', 'clientCertificate', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input']);
+// and the Allow YOLO question through their reka dialogs, and Quick Open, New Terminal, the quick pick, the clone picker and the input box in their own keydown.
+const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'connect', 'closeRemote', 'gitCredentialConsent', 'devcontainerTrust', 'allowYolo', 'clientCertificate', 'forgeChooseAccount', 'forgePublish', 'forgeFork', 'forgeProtectedBranch', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input', 'cloneFromAccount']);
 
 // Quick Open asks main for each query; the last answer names the files a pick may choose and how main parsed the query. A
 // query starting with ">" is the command palette, as in VS Code: it lists main's commands once per open request.
@@ -239,6 +245,9 @@ onBeforeUnmount(() => {
             :section="entry.request.section"
             :account="entry.request.account"
             :release="entry.request.release"
+            :forge-server="entry.request.forgeServer"
+            :forge-sign-in="entry.request.forgeSignIn"
+            :forge-account="entry.request.forgeAccount"
             :scopes="entry.request.scopes"
             @closed="answer(entry.id, { kind: 'settings', closed: true })"
           />
@@ -276,6 +285,38 @@ onBeforeUnmount(() => {
           v-else-if="entry.request.kind === 'clientCertificate'"
           :key="entry.id"
           :data-overlay-id="entry.id"
+          :request="entry.request"
+          @answer="answer(entry.id, $event)"
+        />
+        <ForgeChooseAccountDialog
+          v-else-if="entry.request.kind === 'forgeChooseAccount'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          :api="api"
+          :request="entry.request"
+          @answer="answer(entry.id, $event)"
+        />
+        <ForgePublishDialog
+          v-else-if="entry.request.kind === 'forgePublish'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          :api="api"
+          :request="entry.request"
+          @answer="answer(entry.id, $event)"
+        />
+        <ForgeForkDialog
+          v-else-if="entry.request.kind === 'forgeFork'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          :api="api"
+          :request="entry.request"
+          @answer="answer(entry.id, $event)"
+        />
+        <ForgeProtectedBranchDialog
+          v-else-if="entry.request.kind === 'forgeProtectedBranch'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          :api="api"
           :request="entry.request"
           @answer="answer(entry.id, $event)"
         />
@@ -347,6 +388,12 @@ onBeforeUnmount(() => {
             :request="entry.request"
             @answer="answer(entry.id, $event)"
           />
+          <PipelinePopover
+            v-else-if="entry.request.kind === 'pipeline'"
+            :api="api"
+            :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
           <NotificationCenter
             v-else-if="entry.request.kind === 'notifications'"
             :api="api"
@@ -378,6 +425,11 @@ onBeforeUnmount(() => {
             v-else-if="entry.request.kind === 'newTerminal'"
             :api="api"
             :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
+          <ClonePicker
+            v-else-if="entry.request.kind === 'cloneFromAccount'"
+            :api="api"
             @answer="answer(entry.id, $event)"
           />
           <ListPick

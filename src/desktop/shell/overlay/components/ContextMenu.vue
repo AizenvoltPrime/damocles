@@ -8,6 +8,7 @@ import { OVERLAY_ICON_COMPONENTS } from '../icons';
 import { glyphLook } from '../../terminal/terminal-icons';
 import { placePopup } from '../placement';
 import { createPointerMoveFilter } from '../pointer-moved';
+import ForgeAvatar from '@/components/settings/forge/ForgeAvatar.vue';
 
 type MenuRequest = Extract<OverlayRequest, { kind: 'menu' }>;
 type MenuEntry = Extract<OverlayMenuItem, { kind: 'item' }>;
@@ -41,9 +42,13 @@ const rows = computed<OverlayMenuItem[]>(() => {
 const items = computed(() => rows.value.filter((row): row is Focusable => row.kind !== 'separator'));
 const submenuItems = computed(() => openSubmenu.value?.entry.items.filter((row): row is MenuEntry => row.kind === 'item') ?? []);
 // A row without an icon keeps the icon column when others have one, so every label starts at the same edge.
-const hasIcon = (list: readonly OverlayMenuItem[]): boolean => list.some((item) => item.kind !== 'separator' && (item.icon !== undefined || (item.kind === 'item' && item.glyph !== undefined)));
+const hasIcon = (list: readonly OverlayMenuItem[]): boolean => list.some((item) => item.kind !== 'separator' && (item.icon !== undefined || (item.kind === 'item' && (item.glyph !== undefined || item.avatar !== undefined))));
 const iconColumn = computed(() => hasIcon(rows.value));
 const submenuIconColumn = computed(() => hasIcon(openSubmenu.value?.entry.items ?? []));
+// An avatar is wider than an icon, so a level holding one centres its icons in a slot of the avatar's size (ForgeAvatar's item).
+const hasAvatar = (list: readonly OverlayMenuItem[]): boolean => list.some((item) => item.kind === 'item' && item.avatar !== undefined);
+const avatarLevel = computed(() => hasAvatar(rows.value));
+const submenuAvatarLevel = computed(() => hasAvatar(openSubmenu.value?.entry.items ?? []));
 
 const levelElements = (inSubmenu: boolean): HTMLElement[] =>
   [...((inSubmenu ? submenuElement.value : root.value)?.querySelectorAll<HTMLElement>(inSubmenu ? '[data-submenu-item]' : '[data-menu-item]') ?? [])];
@@ -284,17 +289,19 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
           @keydown="onItemKeydown($event, row)"
           @mousemove="onItemMouseMove($event, row)"
         >
-          <component
-            :is="OVERLAY_ICON_COMPONENTS[row.icon]"
-            v-if="row.icon"
-            aria-hidden="true"
-            class="size-3.25 shrink-0"
-          />
           <span
-            v-else-if="iconColumn"
+            v-if="row.icon || iconColumn"
             aria-hidden="true"
-            class="size-3.25 shrink-0"
-          />
+            data-menu-icon
+            class="grid shrink-0 place-items-center"
+            :class="avatarLevel ? 'size-5' : 'size-3.25'"
+          >
+            <component
+              :is="OVERLAY_ICON_COMPONENTS[row.icon]"
+              v-if="row.icon"
+              class="size-3.25"
+            />
+          </span>
           <span
             v-if="row.hint"
             class="flex min-w-0 flex-1 flex-col"
@@ -328,26 +335,34 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
           @keydown="onItemKeydown($event, row)"
           @mousemove="onItemMouseMove($event, row)"
         >
-          <component
-            :is="glyphLook(row.glyph, row.color).icon"
-            v-if="row.glyph"
-            aria-hidden="true"
-            class="size-3.25 shrink-0"
-            :class="dimmed(row)"
-            :style="{ color: glyphLook(row.glyph, row.color).color }"
-          />
-          <component
-            :is="OVERLAY_ICON_COMPONENTS[row.icon]"
-            v-else-if="row.icon"
-            aria-hidden="true"
-            class="size-3.25 shrink-0"
+          <ForgeAvatar
+            v-if="row.avatar"
+            :login="row.avatar.login"
+            :avatar-key="row.avatar.key"
+            size="item"
             :class="dimmed(row)"
           />
           <span
-            v-else-if="iconColumn"
+            v-else-if="row.glyph || row.icon || iconColumn"
             aria-hidden="true"
-            class="size-3.25 shrink-0"
-          />
+            data-menu-icon
+            class="grid shrink-0 place-items-center"
+            :class="avatarLevel ? 'size-5' : 'size-3.25'"
+          >
+            <component
+              :is="glyphLook(row.glyph, row.color).icon"
+              v-if="row.glyph"
+              class="size-3.25"
+              :class="dimmed(row)"
+              :style="{ color: glyphLook(row.glyph, row.color).color }"
+            />
+            <component
+              :is="OVERLAY_ICON_COMPONENTS[row.icon]"
+              v-else-if="row.icon"
+              class="size-3.25"
+              :class="dimmed(row)"
+            />
+          </span>
           <span
             v-if="row.hint"
             class="flex min-w-0 flex-1 flex-col"
@@ -427,26 +442,34 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
         @keydown="onSubmenuKeydown($event, row)"
         @mousemove="onSubmenuItemMouseMove"
       >
-        <component
-          :is="glyphLook(row.glyph, row.color).icon"
-          v-if="row.glyph"
-          aria-hidden="true"
-          class="size-3.25 shrink-0"
-          :class="dimmed(row)"
-          :style="{ color: glyphLook(row.glyph, row.color).color }"
-        />
-        <component
-          :is="OVERLAY_ICON_COMPONENTS[row.icon]"
-          v-else-if="row.icon"
-          aria-hidden="true"
-          class="size-3.25 shrink-0"
+        <ForgeAvatar
+          v-if="row.avatar"
+          :login="row.avatar.login"
+          :avatar-key="row.avatar.key"
+          size="item"
           :class="dimmed(row)"
         />
         <span
-          v-else-if="submenuIconColumn"
+          v-else-if="row.glyph || row.icon || submenuIconColumn"
           aria-hidden="true"
-          class="size-3.25 shrink-0"
-        />
+          data-menu-icon
+          class="grid shrink-0 place-items-center"
+          :class="submenuAvatarLevel ? 'size-5' : 'size-3.25'"
+        >
+          <component
+            :is="glyphLook(row.glyph, row.color).icon"
+            v-if="row.glyph"
+            class="size-3.25"
+            :class="dimmed(row)"
+            :style="{ color: glyphLook(row.glyph, row.color).color }"
+          />
+          <component
+            :is="OVERLAY_ICON_COMPONENTS[row.icon]"
+            v-else-if="row.icon"
+            class="size-3.25"
+            :class="dimmed(row)"
+          />
+        </span>
         <span
           v-if="row.hint"
           class="flex min-w-0 flex-1 flex-col"

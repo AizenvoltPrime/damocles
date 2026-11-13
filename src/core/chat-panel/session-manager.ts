@@ -16,6 +16,7 @@ import type { SettingsFolder } from "../../platform/settings-store";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 import type { EffortLevel } from "../../shared/types/settings";
 import type { DesignPanels, DesignSeed } from "../design/tools/start-design";
+import type { ForgeToolsPort } from "../pi-session/tools/forge-tools";
 
 export interface SessionManagerConfig {
   getEnabledMcpServers: (folderKey: string) => McpScope;
@@ -38,6 +39,8 @@ export interface SessionManagerConfig {
   getMemoryService: () => MemoryService | null;
   /** The raw browser service, ungated by the enable flag, so its inert tools can be built once at session start. */
   getRawBrowserService: () => BrowserService;
+  /** A chat panel's GitHub and GitLab tools; absent, or undefined for a panel, where chats have none. */
+  forgeTools?: (panelId: string, host: PanelHost) => ((folder: () => string) => ForgeToolsPort) | undefined;
   /** The folder's Compass service, or null for a folder with no project index. */
   getCompassService: (folderKey: string) => CompassService | null;
   onAssistantTextFinal?: (text: string, panelId: string) => void;
@@ -58,6 +61,7 @@ export class SessionManager {
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
   private readonly getRawBrowserService: SessionManagerConfig["getRawBrowserService"];
+  private readonly forgeTools: SessionManagerConfig["forgeTools"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
   private readonly platform: PlatformWithWorktrees;
@@ -76,6 +80,7 @@ export class SessionManager {
     this.addOrUpdateSession = config.addOrUpdateSession;
     this.getMemoryService = config.getMemoryService;
     this.getRawBrowserService = config.getRawBrowserService;
+    this.forgeTools = config.forgeTools;
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
     this.platform = config.platform;
@@ -97,6 +102,7 @@ export class SessionManager {
     const piMemoryService = this.getMemoryService();
     const piCompassService = this.getCompassService(folder.key);
     const piBrowserService = this.getRawBrowserService();
+    const forgeTools = this.forgeTools?.(panelId, host);
     const onAssistantTextFinal = this.onAssistantTextFinal;
 
     // Team service: its deps reference the about-to-be-created PiSession lazily (resolved at call time).
@@ -166,6 +172,7 @@ export class SessionManager {
       ...(piCompassService ? { compassService: piCompassService } : {}),
       browserService: piBrowserService,
       browserChat: host,
+      ...(forgeTools ? { forgeTools } : {}),
       teamService,
       ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
       ...(forkContext !== undefined ? { forkContext } : {}),

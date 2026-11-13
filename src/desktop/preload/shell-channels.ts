@@ -15,6 +15,8 @@ import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab, ScmMergeInputsResult } from './scm-channels';
 import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
 import type { DamoclesPortsApi } from './ports-channels';
+import type { DamoclesForgeShellApi } from './forge-channels';
+import type { CiState } from '../../shared/forge/ci';
 import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
 import type { PROJECTS_VIEWS, SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
 
@@ -773,7 +775,7 @@ export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
 export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal'];
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
-export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge' | 'designPreview' | 'terminal' | 'htmlPreview';
+export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge' | 'designPreview' | 'terminal' | 'htmlPreview' | 'jobLog';
 export type EditorReadOnlyReason = 'encoding' | 'log' | 'snapshot' | 'tooLarge';
 
 // A browser page of the selected chat (D14), as main observed it from the host messages core posts to the page.
@@ -915,6 +917,20 @@ export interface ShellEditorTab {
   readonly timeline?: ShellTimelineTab;
   // merge tabs only, titled "Merging: {name}"; never restored after a restart (AD8)
   readonly merge?: ShellMergeTab;
+  // jobLog tabs only, titled with the job's name; read-only and never restored after a restart
+  readonly jobLog?: ShellJobLogTab;
+}
+
+// A CI job's log tab (main/forge/job-log-tabs.ts): one per (repoId, jobId); main keeps state current for the tab's icon.
+export interface ShellJobLogTab {
+  readonly repoId: string;
+  readonly jobId: number;
+  readonly jobName: string;
+  // GitLab's pipeline number, shown as "#<n>"; absent until main knows it
+  readonly pipelineNumber?: number;
+  // GitHub's workflow name, shown where a GitLab tab shows its pipeline number
+  readonly workflow?: string;
+  readonly state: CiState;
 }
 
 // A file of a two-file patch: its name, and its full path as the command named it, in that file's own path flavor.
@@ -1192,7 +1208,9 @@ export type EditorCommand =
   | 'nextConflict'
   | 'previousConflict'
   | 'openTimeline'
-  | 'showLineBlame';
+  | 'showLineBlame'
+  | 'copyPermalink'
+  | 'openFileOnServer';
 
 // The editor-scoped git keys, as accelerators: the shell binds them as Monaco keybindings (editor/editor-keys.ts), since
 // Electron accelerators cannot express a chord, and main shows them only as the palette's hints (commands.ts).
@@ -2039,4 +2057,6 @@ export interface DamoclesShellApi {
   // chat review tabs (review-channels.ts)
   readonly review: DamoclesReviewApi;
   readonly ports: DamoclesPortsApi;
+  // Git hosting accounts of the project (forge-channels.ts)
+  readonly forge: DamoclesForgeShellApi;
 }

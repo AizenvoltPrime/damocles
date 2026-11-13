@@ -61,7 +61,8 @@ describe('openAppSettings', () => {
     const outside = setup(false);
     const openAppSettings = vi.spyOn(outside.platform.window, 'openAppSettings');
     outside.open({ type: 'openAppSettings', section: 'accounts', account: 'openai' });
-    expect(openAppSettings).toHaveBeenCalledWith('accounts', 'openai', undefined);
+    // the fourth argument is the Git hosting account a forge notice opens, absent here
+    expect(openAppSettings).toHaveBeenCalledWith('accounts', 'openai', undefined, undefined);
     expect(() => outside.open({ type: 'openAppSettings', section: 'accounts', account: 'nobody' } as unknown as WebviewToExtensionMessage)).toThrow('Unknown settings account');
   });
 

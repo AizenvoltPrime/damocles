@@ -3,26 +3,46 @@
 import { MAX_REMOTE_NAME_LENGTH } from '../../shared/input-validation';
 import type { Upstream } from './repository';
 
-export const MAX_REMOTE_URL_LENGTH = 2048;
-
 /** Stricter than git: a letter or digit, then letters, digits, '.', '_' or '-'; no '..', trailing '.' or '.lock'. */
 export function isRemoteName(name: string): boolean {
   return name.length <= MAX_REMOTE_NAME_LENGTH && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && !name.includes('..') && !name.endsWith('.') && !name.endsWith('.lock');
 }
 
-// git's url_is_local_not_ssh (connect.c): no ':', a '/' before the first ':', or a DOS drive prefix
-function isLocalPath(url: string): boolean {
-  const colon = url.indexOf(':');
-  const slash = url.indexOf('/');
-  return colon < 0 || (slash >= 0 && slash < colon) || /^[A-Za-z]:/.test(url);
+/** How a fork re-points a repository's remotes: the pushed remote becomes upstreamName, and the fork is added as origin. */
+export interface ForkRemotePlan {
+  readonly pushed: string;
+  /** "upstream", else "upstream-2", "upstream-3"... the first name no remote has. */
+  readonly upstreamName: string;
+  /** A remote named upstream exists already, so the original takes another name (the dialog's note). */
+  readonly upstreamExists: boolean;
 }
 
-/** Only a local path may hold whitespace: in a URL or scp-like address ` -oProxyCommand=x:p` reads as an ssh host. */
-export function isRemoteUrl(url: string): boolean {
-  if (url.length === 0 || url.length > MAX_REMOTE_URL_LENGTH || url.startsWith('-') || /^\s/.test(url)) return false;
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(url) || /^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return false;
-  return isLocalPath(url) || !/\s/.test(url);
+const MAX_UPSTREAM_SUFFIX = 100;
+
+/**
+ * The fork's remote plan for a push refused on pushed; undefined unless pushed is origin (a fork replaces origin, and another
+ * remote's push has no origin to take the place of), or when every upstream name up to upstream-100 is taken.
+ */
+export function forkRemotePlan(pushed: string, existing: readonly string[]): ForkRemotePlan | undefined {
+  if (pushed !== 'origin' || !existing.includes(pushed)) return undefined;
+  const taken = new Set(existing);
+  const upstreamExists = taken.has('upstream');
+  if (!upstreamExists) return { pushed, upstreamName: 'upstream', upstreamExists };
+  for (let suffix = 2; suffix <= MAX_UPSTREAM_SUFFIX; suffix++) {
+    const name = `upstream-${suffix}`;
+    if (!taken.has(name)) return { pushed, upstreamName: name, upstreamExists };
+  }
+  return undefined;
+}
+
+export type RemoteEdit = { readonly op: 'rename'; readonly from: string; readonly to: string } | { readonly op: 'remove'; readonly name: string };
+
+/** What puts the remotes back after a fork stopped before its push: the added origin goes, then the original gets its name back. */
+export function forkRestorePlan(plan: ForkRemotePlan, done: { readonly renamed: boolean; readonly added: boolean }): RemoteEdit[] {
+  return [
+    ...(done.added ? [{ op: 'remove', name: 'origin' } as const] : []),
+    ...(done.renamed ? [{ op: 'rename', from: plan.upstreamName, to: plan.pushed } as const] : []),
+  ];
 }
 
 export interface Remote {

@@ -21,7 +21,7 @@ export type SettingsViewHandlers = {
 
 const t = i18n.global.t;
 
-// The panel that sent the request listens for its own acknowledgement (OpenAIAuthPanel, CustomProviderAuthPanel, ProviderSignInField, AccountsSection).
+// The panel that sent the request listens for its own acknowledgement (OpenAIAuthPanel, CustomProviderAuthPanel, ProviderSignInField, AccountsSection, the Git hosting group).
 const acknowledgedByPanel = (): void => {};
 
 const OPENAI_SIGN_IN: SettingsTarget = { section: "accounts", account: "openai" };
@@ -135,6 +135,16 @@ export const settingsViewHandlers: SettingsViewHandlers = {
     ctx.stores.settingsStore.setProviderSignInState(msg.provider, msg.state);
   },
   providerSignInCopyCodeAck: acknowledgedByPanel,
+  forgeAccountsChanged: (msg, ctx) => {
+    ctx.stores.settingsStore.setForgeAccounts(msg.state);
+  },
+  forgeSignInState: (msg, ctx) => {
+    ctx.stores.settingsStore.setForgeSignInState(msg.serverId, msg.state);
+  },
+  forgeSignInCopyCodeAck: acknowledgedByPanel,
+  forgeServerFormResult: acknowledgedByPanel,
+  forgeAccountActionResult: acknowledgedByPanel,
+  forgeCopyRedirectUriAck: acknowledgedByPanel,
   setProviderApiKeyAck: acknowledgedByPanel,
   clearProviderApiKeyAck: acknowledgedByPanel,
   setModelPickerProviderAck: acknowledgedByPanel,

@@ -33,7 +33,7 @@ function offeredImageModel(runtime: ImageRuntime | null, modelId: string): Image
   return model && isOfferedImageModel(model) ? model : undefined;
 }
 
-export type ImageAvailability = { available: true } | { available: false; reason: ToolGroupUnavailableReason };
+export type ImageAvailability = { available: true } | { available: false; reason: Exclude<ToolGroupUnavailableReason, 'noForgeAccount' | 'forgeServersUnread'> };
 
 /**
  * Whether GenerateImage can run with this model id: the id resolves in pi's image catalog, Damocles offers

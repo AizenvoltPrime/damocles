@@ -28,7 +28,7 @@ export interface DesktopCore {
 }
 
 export interface CoreConnectionDeps
-  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'foreignOwner' | 'servedFile' | 'clientNetwork' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log' | 'showSession' | 'openDesignPreview' | 'designRender'> {
+  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'foreignOwner' | 'servedFile' | 'clientNetwork' | 'git' | 'e2eHooks' | 'e2eForgeServers' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log' | 'showSession' | 'openDesignPreview' | 'designRender'> {
   // main's platform: what core's proxies reach
   readonly platform: DesktopPlatform;
   readonly trust: TrustStore;
@@ -45,6 +45,8 @@ export interface CoreConnectionDeps
 export interface CoreStart {
   // the cores that ended earlier in this app run holding session leases no live process holds
   readonly endedCores: CoreInit['endedCores'];
+  // another core ran before this one in this app run
+  readonly restarted?: boolean;
   // the worktree records main last read from a core
   readonly worktreeRecords: CoreInit['worktreeRecords'];
   // core's process ended without main asking it to, or main killed it for a protocol violation or a missed ready deadline
@@ -79,7 +81,7 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
     child.kill();
   }, undefined, deps.render);
   const trust = { trustedKeys: () => deps.trust.trustedFolders().map((folder) => folderKey(folder)), onDidGrant: deps.trust.onDidGrant.bind(deps.trust), requestTrust: deps.trust.requestTrust.bind(deps.trust) };
-  const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set() });
+  const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, ...(start.restarted === true ? { restarted: true } : {}), worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set() });
   // The init is the channel's first message; core parses everything after it with the protocol's tables.
   child.transport.post(hostServices.init);
   const client = new CoreClient(endpoint, (view, attach) => hostServices.adopt(view, attach), LOCAL_PROJECT_KEYS);
@@ -118,6 +120,7 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
     rejectReady(new Error('Damocles Core stopped before it was ready'));
     if (stopping) return;
     if (pid !== undefined) start.leftLeases(pid);
+    // on the turn ready rejects: a request made in reaction to the rejection then waits for the core the crash path starts
     start.crashed(pid, violation !== undefined ? 'protocol violation' : readyMissed ? `not ready within ${deps.readyTimeoutMs} ms` : `exit code ${code}`);
   });
   // Chromium's reason and core's stderr only for an exit main did not ask for; stderr can carry library output

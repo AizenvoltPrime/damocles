@@ -15,6 +15,7 @@ import { DesignApprovalManager, type DesignApprovalAsk } from './managers/design
 import type { DesignApprovalChoice, DesignVersionChoice } from '../../shared/types/design';
 import type { ElicitationRequest, ElicitationResult } from '../../shared/types/elicitation';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { LocalizedText } from '../../shared/localized-text';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, PromptApprover, PromptOwner, Question } from '../../shared/types/permissions';
 import { log } from '../logger';
@@ -200,12 +201,12 @@ export class PermissionHandler {
   }
 
   /**
-   * Raises the token broker's Sign-in needed prompt for a turn whose device is away; disposing it (the wait ended) tells
-   * the webview. continueWith and cancel are the broker's.
+   * Raises the token broker's Sign-in needed prompt for a turn whose device is away, or whose device's sign-ins are not known
+   * yet (reason says why); disposing it (the wait ended) tells the webview. continueWith and cancel are the broker's.
    */
-  raiseSignIn(provider: string, actions: { readonly continueWith: (clientId: string) => void; readonly cancel: () => void }): { dispose(): void } {
+  raiseSignIn(provider: string, actions: { readonly continueWith: (clientId: string) => void; readonly cancel: () => void }, reason?: LocalizedText): { dispose(): void } {
     const requestId = `signin-${randomUUID()}`;
-    const request = { type: 'signInRequest' as const, requestId, provider };
+    const request = { type: 'signInRequest' as const, requestId, provider, ...(reason !== undefined ? { reason } : {}) };
     this.state.addPendingSignIn(requestId, { request, ...actions });
     this.state.postMessageToWebview?.(request);
     return {

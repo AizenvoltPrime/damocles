@@ -87,6 +87,9 @@ export interface HostUser {
   mcpCall(request: CoreRequests['user.mcp.call']['params'], signal: AbortSignal): Promise<unknown>;
   mcpResources(request: CoreRequests['user.mcp.resources']['params'], signal: AbortSignal): Promise<unknown>;
   mcpReadResource(request: CoreRequests['user.mcp.readResource']['params'], signal: AbortSignal): Promise<unknown>;
+  // a remote chat's GitHub or GitLab tool, run by this computer's core with its accounts (remote/forge-relay.ts)
+  forgeTool(request: CoreRequests['user.forge.tool']['params'], signal: AbortSignal): Promise<CoreRequests['user.forge.tool']['result']>;
+  forgeDescribe(request: CoreRequests['user.forge.describe']['params'], signal: AbortSignal): Promise<CoreRequests['user.forge.describe']['result']>;
 }
 
 /** What the local core's host services answer: it asks this computer's PiRuntime and voice service itself. */
@@ -104,6 +107,8 @@ export const NO_USER_RELAYS: HostUser = {
   mcpCall: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
   mcpResources: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
   mcpReadResource: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
+  forgeTool: () => Promise.reject(new Error('GitHub and GitLab tools are relayed only from a remote core')),
+  forgeDescribe: () => Promise.reject(new Error('GitHub and GitLab tools are relayed only from a remote core')),
 };
 
 /** Main's own UI core's engine reaches: log tabs, the trash, questions, credential prompts and the worktree dialogs. */
@@ -115,6 +120,8 @@ export interface HostUi {
   ask(question: MessageQuestion, signal: AbortSignal): Promise<number | undefined>;
   // undefined answer with cancelled false: nothing was asked (a notice) or the prompt was withdrawn
   askpass(prompt: { readonly kind: CredentialKind; readonly text: string }, signal: AbortSignal): Promise<{ readonly answer?: string; readonly cancelled: boolean }>;
+  // the Choose account dialog, this computer's core only: which account a project uses on a server; signal withdraws the dialog
+  chooseForgeAccount(request: CoreRequests['forge.chooseAccount']['params'], signal: AbortSignal): Promise<CoreRequests['forge.chooseAccount']['result']>;
   readonly worktrees: HostWorktreeUi;
 }
 
@@ -130,10 +137,14 @@ export interface HostServicesDeps {
   readonly createView: (panelId: string, create: Omit<PanelCreate, 'owner' | 'parent'> & { readonly owner?: RelayView; readonly parent?: RelayView }) => RelayView;
   readonly git: CoreInit['git'];
   readonly e2eHooks: boolean;
+  // this computer's core only
+  readonly e2eForgeServers?: CoreInit['e2eForgeServers'];
   readonly paths: CoreInit['paths'];
   readonly logs: CoreInit['logs'];
   // the cores that crashed earlier in this app run
   readonly endedCores: CoreInit['endedCores'];
+  // another core ran before this one in this app run
+  readonly restarted?: boolean;
   readonly worktreeRecords: CoreInit['worktreeRecords'];
   readonly language: { current(): MirrorTopics['language']['language']; onDidChange(listener: () => void): Disposable };
   // this computer's core only: a live remote chat view its page may name as owner, so the page is a tab of that chat
@@ -202,10 +213,12 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     secretsPersistent: platform.secrets.isPersistent,
     chatBrowserPane: platform.window.chatBrowserPane,
     e2eHooks: deps.e2eHooks,
+    ...(deps.e2eForgeServers ? { e2eForgeServers: deps.e2eForgeServers } : {}),
     git: deps.git,
     paths: deps.paths,
     logs: deps.logs,
     endedCores: deps.endedCores,
+    ...(deps.restarted ? { restarted: true } : {}),
     worktreeRecords: deps.worktreeRecords,
     mirrors: {
       state: { global: state.snapshot('global'), workspace: state.snapshot('workspace') },
@@ -321,8 +334,11 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('secrets.delete', ({ key }) => secrets.delete(key));
     endpoint.serve('secrets.keys', () => secrets.keys());
     // a modal notice is a question, which goes with its request when core ends
-    endpoint.serve('notifications.show', ({ severity, message, modal, actions }, signal) =>
-      platform.notifications[severity](message, actions, modal === undefined ? undefined : { modal, signal }));
+    endpoint.serve('notifications.show', ({ severity, message, modal, unlessFocused, actions }, signal) =>
+      platform.notifications[severity](message, actions, modal === undefined && unlessFocused === undefined ? undefined : {
+        ...(modal !== undefined ? { modal, signal } : {}),
+        ...(unlessFocused !== undefined ? { unlessFocused } : {}),
+      }));
     endpoint.serve('dialogs.pickFolder', (options) => dialogs.pickFolder(options));
     endpoint.serve('dialogs.pickFile', (options) => dialogs.pickFile(options));
     endpoint.serve('clipboard.writeText', ({ text }) => platform.clipboard.writeText(text));
@@ -364,6 +380,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       ...(cancelLabel !== undefined ? { cancelLabel: deps.render(cancelLabel) } : {}),
     }, signal));
     endpoint.serve('askpass.prompt', (prompt, signal) => ui.askpass(prompt, signal));
+    endpoint.serve('forge.chooseAccount', (request, signal) => ui.chooseForgeAccount(request, signal));
     endpoint.serve('worktrees.reviewSetup', (request, signal) => ui.worktrees.reviewSetup(request, signal));
     endpoint.serve('worktrees.runSetup', (request) => ui.worktrees.runSetup(request, (step) => endpoint.emit('worktrees.setupStep', { worktreeId: request.worktreeId, ...step })));
     endpoint.serve('worktrees.showSetupTerminal', ({ worktreeId }) => ui.worktrees.showSetupTerminal(worktreeId));
@@ -383,6 +400,8 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('user.mcp.call', (params, signal) => deps.user.mcpCall(params, signal));
     endpoint.serve('user.mcp.resources', (params, signal) => deps.user.mcpResources(params, signal));
     endpoint.serve('user.mcp.readResource', (params, signal) => deps.user.mcpReadResource(params, signal));
+    endpoint.serve('user.forge.tool', (params, signal) => deps.user.forgeTool(params, signal));
+    endpoint.serve('user.forge.describe', (params, signal) => deps.user.forgeDescribe(params, signal));
     endpoint.serve('askpass.credential', (request, signal) => deps.user.gitCredential(request, signal));
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
     // main posts to a page in this process, which queues nothing toward it
@@ -398,7 +417,8 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
 
   serve();
   const subscriptions: Disposable[] = [
-    endpoint.onEvent('window.openAppSettings', ({ section, account, scope }) => platform.window.openAppSettings(section, account, scope)),
+    endpoint.onEvent('window.openAppSettings', ({ section, account, scope, forgeServer, forgeAccount }) =>
+      platform.window.openAppSettings(section, account, scope, forgeServer === undefined ? undefined : { server: forgeServer, ...(forgeAccount !== undefined ? { account: forgeAccount } : {}) })),
     endpoint.onEvent('window.toggleTerminal', () => platform.window.toggleTerminal()),
     endpoint.onPanel((panelId, envelope) => {
       if (envelope.op === 'create') {

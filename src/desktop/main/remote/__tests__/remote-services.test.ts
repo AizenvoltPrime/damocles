@@ -90,6 +90,7 @@ function services(wslDistro?: string, openNamed: (targetPath: string) => Promise
       ask: async () => undefined,
       t: (message) => message,
       log: () => undefined,
+      windowFocused: () => false,
     }),
     user: { ...NO_USER_RELAYS, credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }), browserTool: async () => ({ content: [] }) },
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },

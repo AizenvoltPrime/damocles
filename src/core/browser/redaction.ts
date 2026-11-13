@@ -110,6 +110,8 @@ const TOKEN_SHAPE_RES: RegExp[] = [
   /\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]{12,}/gi,
   /\bgh[pousr]_[A-Za-z0-9]{16,}/g, // GitHub token
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g, // GitHub fine-grained PAT
+  /\b(?:glpat|gloas|gldt|glrt|glrtr|glcbt|glptt|glft|glimt|glagent|glsoat|glffct|glwt)-[A-Za-z0-9_.-]{16,}/g, // GitLab tokens
+  /\bGR1348941[A-Za-z0-9_-]{16,}/g, // GitLab runner registration token
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, // Slack
   /\bsk_(?:live|test)_[A-Za-z0-9]{12,}/g, // Stripe

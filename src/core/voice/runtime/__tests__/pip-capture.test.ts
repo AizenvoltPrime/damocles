@@ -21,6 +21,7 @@ function scriptedLauncher(output: Array<[OutputStream, string | Buffer]>, code: 
         end: () => undefined,
         exited,
         closed: exited.then(() => undefined),
+        leftRunning: exited.then(() => false),
         kill: () => undefined,
       };
     },

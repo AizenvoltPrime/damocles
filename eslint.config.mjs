@@ -240,6 +240,8 @@ export const MAIN_CORE_IMPORTS = [
   'design/design-http-server',
   'design/serve-policy',
   'executable-path',
+  // a remote URL's parts, for a daemon without scm.remoteEndpoints and for Clone's URL
+  'forge/remote-url',
   // l() and verbatim(): text main hands a chat page, which renders it in its own language
   'l10n',
   'logger',
@@ -259,8 +261,10 @@ export const MAIN_CORE_IMPORTS = [
   'quick-open/fuzzy-match',
   'resource-fs',
   'scm/artifacts',
-  // main's own askpass server for its ssh transports; core's serves git
+  // main's own askpass servers: its ssh transports' prompts and its local terminals' git credential requests
   'scm/askpass/askpass-server',
+  // the git credential takeover a local terminal's spawn gets
+  'scm/askpass/credential-config',
   'scm/branches',
   'scm/discovery',
   'scm/remotes',
@@ -339,10 +343,20 @@ const PX_MESSAGE = 'Use rem (px / 16) so the size follows the host font; px is o
 const VIEWPORT_VARIANT = String.raw`(?:^|:)(?:(?:max-)?(?:sm|md|lg|xl|2xl)|(?:min|max)-\[[^\]]*\]|\[@media[^\]]*\]):`;
 const VIEWPORT_MESSAGE = 'Use a container variant (@min-[…]/app: for the panel width) instead of a viewport one: a media query ignores the host font (docs/invariants.md "Design tokens").';
 // Components whose `size` prop is a variant name, never a px number.
-const SIZE_VARIANT_COMPONENTS = ['Button', 'Toggle', 'ToggleGroup', 'ToggleGroupItem', 'ToggleSwitch', 'SegmentedToggle'];
+const SIZE_VARIANT_COMPONENTS = ['Button', 'Toggle', 'ToggleGroup', 'ToggleGroupItem', 'ToggleSwitch', 'SegmentedToggle', 'ForgeAvatar'];
 const NOT_SIZE_VARIANT = `/^(?!(?:${SIZE_VARIANT_COMPONENTS.join('|')})$)/`;
 const ICON_SIZE_MESSAGE = 'Size an icon with a size-* class (px / 4) so it follows the host font, never a size prop (docs/invariants.md "Design tokens").';
 const OFFSET_MESSAGE = 'A popper offset is px; pass remPx(rem) from @/composables/useRemPx so it follows the host font (docs/invariants.md "Design tokens").';
+
+// Vue's watch compares a getter's result with Object.is, so a getter that builds an array or object fires on every trigger.
+const WATCH_GETTER = "CallExpression[callee.name='watch'] > ArrowFunctionExpression:first-child";
+const WATCH_FRESH_VALUE_MESSAGE = 'This watch getter returns a new array or object each run, so the callback fires on every trigger even when nothing changed. Watch each value as its own source: watch([() => a, () => b], ([a, b], [oldA, oldB]) => ...).';
+const WATCH_FRESH_VALUE = [
+  `${WATCH_GETTER} > :matches(ArrayExpression, ObjectExpression)`,
+  `${WATCH_GETTER} > TSAsExpression > :matches(ArrayExpression, ObjectExpression)`,
+  `${WATCH_GETTER} > BlockStatement > ReturnStatement > :matches(ArrayExpression, ObjectExpression)`,
+  `${WATCH_GETTER} > BlockStatement > ReturnStatement > TSAsExpression > :matches(ArrayExpression, ObjectExpression)`,
+].map((selector) => ({ selector, message: WATCH_FRESH_VALUE_MESSAGE }));
 
 // The rem rules for one renderer tree; `entryPoint` is the stylesheet whose Tailwind theme its classes resolve against, and
 // `syntax` the tree's own no-restricted-syntax entries, which this block's rule replaces.
@@ -374,7 +388,7 @@ function remSizing(files, entryPoint, syntax) {
         selector: "VAttribute[directive=true][key.argument.name=/^(?:side|align)-offset$/] > VExpressionContainer > Literal[value!=0]",
         message: OFFSET_MESSAGE,
       }],
-      'no-restricted-syntax': ['error', ...syntax,
+      'no-restricted-syntax': ['error', ...syntax, ...WATCH_FRESH_VALUE,
         { selector: `CallExpression[callee.name='h'][arguments.0.name=${NOT_SIZE_VARIANT}] > ObjectExpression > Property[key.name='size']`, message: ICON_SIZE_MESSAGE },
         { selector: "Property[key.name=/^(?:side|align)Offset$/] > Literal[value!=0]", message: OFFSET_MESSAGE },
       ],
@@ -466,7 +480,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, OUTSIDE_DESKTOP.path, ...PROCESS_BAN.paths],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN, ...WATCH_FRESH_VALUE],
     },
   },
   {
@@ -475,7 +489,7 @@ export default [
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN, ...WATCH_FRESH_VALUE],
     },
   },
   {
@@ -587,7 +601,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_SHELL.path, ...PROCESS_BAN.paths],
         patterns: [IN_SHELL.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_SHELL.syntax, ...PROCESS_BAN.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_SHELL.syntax, ...PROCESS_BAN.syntax, ...WATCH_FRESH_VALUE],
     },
   },
   {
@@ -608,7 +622,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, OUTSIDE_DESKTOP.path],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...FS_BUILTIN_BAN],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...FS_BUILTIN_BAN, ...WATCH_FRESH_VALUE],
     },
   },
   {
@@ -619,7 +633,7 @@ export default [
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...FS_BUILTIN_BAN],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...FS_BUILTIN_BAN, ...WATCH_FRESH_VALUE],
     },
   },
   {
@@ -651,7 +665,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_SHELL.path],
         patterns: [IN_SHELL.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_SHELL.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_SHELL.syntax, ...WATCH_FRESH_VALUE],
     },
   },
   {

@@ -1047,6 +1047,18 @@
   pointer-events: none;
 }
 
+/* the author's 0.875rem avatar before the blame text; hidden while the line has no commit or avatars are off. */
+.monaco-editor .qd-blame-avatar {
+  display: inline-flex;
+  margin-inline-end: 0.3125rem;
+  font-style: normal;
+  vertical-align: middle;
+}
+
+.monaco-editor .qd-blame-avatar[hidden] {
+  display: none;
+}
+
 .monaco-editor .qd-blame-in {
   animation: o-fade 0.3s var(--ease-out) both;
 }

@@ -35,7 +35,7 @@ const PROD: RemoteHostEntry = {
   detectedOs: 'linux',
   connection: 'connected',
   settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
-  facts: { passwordless: true, keyInstalledByDamocles: true, lingerEnabledByDamocles: false, alwaysCredentialHosts: [] },
+  facts: { passwordless: true, keyInstalledByDamocles: true, lingerEnabledByDamocles: false, alwaysCredentialHosts: [], alwaysForgeAccounts: [] },
   heldMemoryQueues: [OLD, ONE],
 };
 

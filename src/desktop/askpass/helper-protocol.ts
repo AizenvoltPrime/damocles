@@ -1,6 +1,6 @@
 // The askpass helper's argument and reply parsing (askpass-main.ts), kept apart so tests import it without running the helper.
 import { createHash } from 'node:crypto';
-import { isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, parseCredentialFields, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
+import { isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, MAX_REFUSED_MESSAGE_CHARS, parseCredentialFields, TAKEOVER_HELPER_ARG, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 
 // Must equal MAX_ASKPASS_ARGS and MAX_ASKPASS_ARG_CHARS in src/core/scm/askpass/askpass-server.ts; helper-protocol.test.ts
 // compares them, and the helper stays free of core imports.
@@ -49,9 +49,11 @@ export const MAX_CREDENTIAL_INPUT_BYTES: number = 64 * 1024;
 
 export type CredentialOp = 'get' | 'store' | 'erase';
 
-/** git-credential-relay's one argument, the operation git runs it for; undefined for anything else. */
-export function parseCredentialOp(args: readonly string[]): CredentialOp | undefined {
-  return args.length === 1 && (args[0] === 'get' || args[0] === 'store' || args[0] === 'erase') ? args[0] : undefined;
+/** git-credential-relay's arguments: the operation git runs it for, after the takeover's flag when present; undefined for anything else. */
+export function parseCredentialOp(args: readonly string[]): { readonly op: CredentialOp; readonly takeover: boolean } | undefined {
+  const takeover = args.length === 2 && args[0] === TAKEOVER_HELPER_ARG;
+  const op = takeover ? args[1] : args.length === 1 ? args[0] : undefined;
+  return op === 'get' || op === 'store' || op === 'erase' ? { op, takeover } : undefined;
 }
 
 /**
@@ -92,17 +94,27 @@ export function readBounded(stream: NodeJS.EventEmitter, max: number, onInput: (
   stream.on('error', () => finish(undefined));
 }
 
-/** The SHA-256 of the password git's erase names, as hex; undefined when it names none, as git before 2.4x may send. */
-export function erasedPasswordHash(input: string): string | undefined {
+/**
+ * The password git's store or erase names, for the answering process to compare by SHA-256 or hand to the helpers it
+ * delegates to; undefined when it names none (an erase from git before 2.4x) or one past the bounds.
+ */
+export function namedPassword(input: string): string | undefined {
   for (const line of input.split('\n')) {
     if (line === '') break;
-    if (line.startsWith('password=')) return createHash('sha256').update(line.slice('password='.length), 'utf8').digest('hex');
+    if (!line.startsWith('password=')) continue;
+    const password = line.slice('password='.length);
+    return password !== '' && isCredentialValue(password, MAX_CREDENTIAL_PASSWORD_CHARS) ? password : undefined;
   }
   return undefined;
 }
 
-export function credentialRequestLine(nonce: string, op: 'get' | 'erase', cwd: string, fields: GitCredentialFields, passwordHash?: string): string {
-  return `${JSON.stringify({ nonce, kind: 'credential', op, cwd, fields, ...(passwordHash !== undefined ? { passwordHash } : {}) })}\n`;
+/** The SHA-256 of a password as hex, the form an erase names it in to another computer. */
+export function passwordHashOf(password: string): string {
+  return createHash('sha256').update(password, 'utf8').digest('hex');
+}
+
+export function credentialRequestLine(nonce: string, op: CredentialOp, cwd: string, fields: GitCredentialFields, password?: string): string {
+  return `${JSON.stringify({ nonce, kind: 'credential', op, cwd, fields, ...(password !== undefined && op !== 'get' ? { password } : {}) })}\n`;
 }
 
 /** The server's answer line, or undefined when it is not exactly one GitCredentialAnswer within the bounds. */
@@ -116,14 +128,28 @@ export function parseCredentialReply(line: string): GitCredentialAnswer | undefi
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const value = raw as Record<string, unknown>;
   const keys = Object.keys(value);
-  if ((value['kind'] === 'none' || value['kind'] === 'notConnected') && keys.length === 1) return { kind: value['kind'] };
+  if ((value['kind'] === 'none' || value['kind'] === 'notConnected' || value['kind'] === 'delegate') && keys.length === 1) return { kind: value['kind'] };
+  if (value['kind'] === 'refused') {
+    const refusal = value['message'];
+    return keys.length === 2 && isCredentialValue(refusal, MAX_REFUSED_MESSAGE_CHARS) && refusal !== '' ? { kind: 'refused', message: refusal } : undefined;
+  }
   const { username, password } = value;
   if (value['kind'] !== 'credential' || keys.length !== 3 || !isCredentialValue(username, MAX_CREDENTIAL_USERNAME_CHARS) || !isCredentialValue(password, MAX_CREDENTIAL_PASSWORD_CHARS) || password === '') return undefined;
   return { kind: 'credential', username, password };
 }
 
-/** What the helper prints for git: a credential on stdout, the not-connected line on stderr, else nothing. */
+/**
+ * What the helper prints for git: a credential on stdout; for a refusal quit=1, which stops git asking any helper or the
+ * user, and the reason on stderr; the not-connected line on stderr; else nothing. A delegate answer reaches a helper only
+ * when its caller already ran the delegation and found nothing, so git goes on as with none.
+ */
 export function credentialOutput(answer: GitCredentialAnswer): { readonly stdout: string; readonly stderr: string } {
-  if (answer.kind === 'credential') return { stdout: `username=${answer.username}\npassword=${answer.password}\n`, stderr: '' };
-  return { stdout: '', stderr: answer.kind === 'notConnected' ? `${NOT_CONNECTED_MESSAGE}\n` : '' };
+  switch (answer.kind) {
+    case 'credential': return { stdout: `username=${answer.username}\npassword=${answer.password}\n`, stderr: '' };
+    case 'refused': return { stdout: 'quit=1\n', stderr: `${answer.message}\n` };
+    case 'notConnected': return { stdout: '', stderr: `${NOT_CONNECTED_MESSAGE}\n` };
+    case 'none':
+    case 'delegate':
+      return { stdout: '', stderr: '' };
+  }
 }

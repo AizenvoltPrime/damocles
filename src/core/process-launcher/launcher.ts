@@ -26,6 +26,8 @@ export interface LaunchedProcess {
   readonly exited: Promise<ProcessExit>;
   // after exited and every output stream closed
   readonly closed: Promise<void>;
+  // settles with closed: whether a descendant still ran then, false unless the start set reportsLeftRunning
+  readonly leftRunning: Promise<boolean>;
   kill(options?: KillOptions): void;
 }
 
@@ -113,6 +115,7 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
   const pid = deferred<number>();
   const exited = deferred<ProcessExit>();
   const closed = deferred<void>();
+  const leftRunning = deferred<boolean>();
   const listeners: Record<OutputStream, Array<(chunk: Buffer) => void>> = { stdout: [], stderr: [] };
   // one per write sent and not yet answered, in order
   const writes: Array<Deferred<void>> = [];
@@ -131,6 +134,7 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
     if (!started) pid.reject(error);
     if (!exitedDone) exited.reject(error);
     closed.reject(error);
+    leftRunning.reject(error);
   };
   options.signal?.addEventListener('abort', onAbort, { once: true });
   const bytes = (chunk: string | Uint8Array): Uint8Array => {
@@ -143,6 +147,7 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
     pid: pid.promise,
     exited: exited.promise,
     closed: closed.promise,
+    leftRunning: leftRunning.promise,
     onData: (stream, listener) => void listeners[stream].push(listener),
     write: (chunk) => {
       const written = deferred<void>();
@@ -204,6 +209,7 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
         case 'close':
           finish(new Error('The process closed before the write reached it'));
           closed.resolve();
+          leftRunning.resolve(event.leftRunning === true);
           return;
       }
     },

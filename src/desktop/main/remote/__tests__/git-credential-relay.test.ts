@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -13,7 +14,10 @@ import { GitError, gitFailureCode } from '../../../../core/scm/errors';
 import { resolveGitExecutable } from '../../../../core/git-executable';
 import { credentialFields } from '../../../askpass/helper-protocol';
 import type { GitCredentialConsent, GitCredentialConsentChoice } from '../../../preload/overlay-channels';
-import { clientGitCredential, createGitCredentialClient, credentialHostOf, credentialInput, parseFillOutput, type CredentialTargetHost, type GitCredentialClientDeps, type GitCredentialRequest } from '../git-credential-client';
+import type { GitCredentialAnswer } from '../../../../shared/git-credential';
+import { CONSENTED_HOWS } from '../../../../shared/forge/bindings';
+import type { ForgeCredentialAccount } from '../../../core-protocol/messages';
+import { clientGitCredential, createGitCredentialClient, credentialHostOf, credentialInput, parseFillOutput, type CredentialDaemon, type CredentialTargetHost, type ForgeCredentialDeps, type GitCredentialClientDeps, type GitCredentialRequest } from '../git-credential-client';
 
 const RELAY: CredentialRelay = { helper: '/srv/dam server/dist/git-credential/git-credential-relay.sh', node: '/srv/node', main: '/srv/dist/askpass-main.js', handle: '/tmp/x/askpass.sock', nonce: 'c'.repeat(64) };
 const GIT = { path: '/usr/bin/git', version: { major: 2, minor: 45, patch: 1 } };
@@ -44,6 +48,7 @@ function recordingLauncher(stdout: (spec: SpawnSpec) => string = () => ''): { sp
         end: () => undefined,
         exited,
         closed,
+        leftRunning: closed.then(() => false),
         kill: () => undefined,
       };
     },
@@ -77,20 +82,24 @@ describe('the relay helper reads git\'s description', () => {
     expect(credentialFields(`protocol=https\nhost=${'h'.repeat(260)}\n`)).toBeUndefined();
   });
 
-  it('is refused at the server unless it is exactly a get or erase with bounded fields; store is never a request', () => {
+  it('is refused at the server unless it is exactly a get, store or erase with bounded fields', () => {
     const request = (body: unknown): unknown => parseAskpassRequest(Buffer.from(JSON.stringify(body)));
-    const base = { nonce: 'c'.repeat(64), kind: 'credential', op: 'get', cwd: '/w', fields: { protocol: 'https', host: 'github.com' } };
-    expect(request(base)).toEqual(base);
-    expect(request({ ...base, op: 'store' })).toBeUndefined();
+    const nonce = 'c'.repeat(64);
+    const asked = { op: 'get', cwd: '/w', fields: { protocol: 'https', host: 'github.com' } };
+    const base = { nonce, kind: 'credential', ...asked };
+    expect(request(base)).toEqual({ nonce, kind: 'credential', request: asked });
+    expect(request({ ...base, op: 'fill' })).toBeUndefined();
     expect(request({ ...base, fields: { ...base.fields, password: 'x' } })).toBeUndefined();
     expect(request({ ...base, fields: { protocol: 'https', host: 'a\nprotocol=http' } })).toBeUndefined();
     expect(request({ ...base, cwd: '/w\n' })).toBeUndefined();
     expect(request({ ...base, extra: 1 })).toBeUndefined();
-    // an erase may name its password's SHA-256; a get never does, and nothing else passes for one
-    const hash = 'a'.repeat(64);
-    expect(request({ ...base, op: 'erase', passwordHash: hash })).toEqual({ ...base, op: 'erase', passwordHash: hash });
-    expect(request({ ...base, passwordHash: hash })).toBeUndefined();
-    for (const passwordHash of ['tok', 'A'.repeat(64), 'a'.repeat(63), 1]) expect(request({ ...base, op: 'erase', passwordHash })).toBeUndefined();
+    // a store or erase names git's password, of which the server keeps the SHA-256 for anything leaving this machine
+    const hash = createHash('sha256').update('tok', 'utf8').digest('hex');
+    expect(request({ ...base, op: 'erase', password: 'tok' })).toEqual({ nonce, kind: 'credential', request: { ...asked, op: 'erase', password: 'tok', passwordHash: hash } });
+    expect(request({ ...base, op: 'store', password: 'tok' })).toEqual({ nonce, kind: 'credential', request: { ...asked, op: 'store', password: 'tok', passwordHash: hash } });
+    expect(request({ ...base, password: 'tok' })).toBeUndefined();
+    expect(request({ ...base, op: 'erase', passwordHash: hash })).toBeUndefined();
+    for (const password of ['', 'a\nb', 1]) expect(request({ ...base, op: 'erase', password })).toBeUndefined();
   });
 });
 
@@ -116,46 +125,74 @@ describe('main accepts https only, with bounded fields', () => {
   });
 });
 
-describe('the client side of the relay', () => {
-  const TARGET: CredentialTargetHost = { name: 'prod-1', color: 'danger', alwaysCredentialHosts: [] };
-  const GET: GitCredentialRequest = { op: 'get', fields: { protocol: 'https', host: 'github.com' }, targetHelper: false };
+const TARGET: CredentialTargetHost = { name: 'prod-1', color: 'danger', alwaysCredentialHosts: [], alwaysForgeAccounts: [] };
 
-  function client(options: { readonly target?: CredentialTargetHost; readonly choice?: GitCredentialConsentChoice; readonly notifyChoice?: (action: string) => string | undefined; readonly verifiesErase?: boolean; readonly askConsent?: GitCredentialClientDeps['askConsent']; readonly addAlways?: GitCredentialClientDeps['addAlways']; readonly fill?: string } = {}) {
-    const consents: GitCredentialConsent[] = [];
-    const git: Array<{ op: 'fill' | 'reject'; input: string }> = [];
-    const notices: string[] = [];
-    const logs: string[] = [];
-    const deps: GitCredentialClientDeps = {
-      host: () => options.target ?? TARGET,
-      verifiesErase: () => options.verifiesErase ?? true,
-      addAlways: vi.fn(options.addAlways ?? (async () => undefined)),
-      revokeAlways: vi.fn(async () => undefined),
-      askConsent: async (consent, consentSignal) => {
-        consents.push(consent);
-        return options.askConsent ? options.askConsent(consent, consentSignal) : (options.choice ?? 'once');
+interface ClientOptions {
+  readonly target?: CredentialTargetHost;
+  readonly choice?: GitCredentialConsentChoice;
+  readonly notifyChoice?: (action: string) => string | undefined;
+  readonly verifiesErase?: boolean;
+  readonly askConsent?: GitCredentialClientDeps['askConsent'];
+  readonly addAlways?: GitCredentialClientDeps['addAlways'];
+  readonly fill?: string;
+  readonly forge?: ForgeCredentialDeps['answer'];
+  readonly takesForgeAnswers?: boolean;
+}
+
+// The relay as one daemon's core reaches it: the daemon's welcome features come from the options, as the attach read them.
+function client(options: ClientOptions = {}) {
+  const consents: GitCredentialConsent[] = [];
+  const forgeAsked: Array<{ request: unknown; origin: unknown; authorityKey: string; projectKey: string | undefined; consentedAccountId: string | undefined }> = [];
+  const git: Array<{ op: 'fill' | 'reject'; input: string }> = [];
+  const notices: string[] = [];
+  const logs: string[] = [];
+  const deps: GitCredentialClientDeps = {
+    host: () => options.target ?? TARGET,
+    forge: {
+      answer: async (request, origin, authorityKey, projectKey, consentedAccountId, forgeSignal) => {
+        forgeAsked.push({ request, origin, authorityKey, projectKey, consentedAccountId });
+        if (!options.forge) throw new Error('no forge answer in this test');
+        return options.forge(request, origin, authorityKey, projectKey, consentedAccountId, forgeSignal);
       },
-      gitCredential: async (op, input) => {
-        git.push({ op, input });
-        return op === 'fill' ? (options.fill ?? 'protocol=https\nhost=github.com\nusername=ada\npassword=tok\n') : '';
-      },
-      notify: async (message, action) => {
-        notices.push(message);
-        return options.notifyChoice?.(action);
-      },
-      t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => args[Number(index)] ?? ''),
-      log: (line) => logs.push(line),
-    };
-    return { relay: createGitCredentialClient(deps), deps, consents, git, notices, logs };
-  }
-  // a consent dialog the test answers, with the signal it was shown with
-  function heldDialogs() {
-    const shown: Array<{ readonly consent: GitCredentialConsent; readonly signal: AbortSignal; readonly answer: (choice: GitCredentialConsentChoice) => void }> = [];
-    const askConsent: GitCredentialClientDeps['askConsent'] = (consent, dialogSignal) => new Promise((resolve) => {
-      shown.push({ consent, signal: dialogSignal, answer: resolve });
-      dialogSignal.addEventListener('abort', () => resolve('deny'), { once: true });
-    });
-    return { shown, askConsent };
-  }
+      authorityKey: () => 'ssh+h1',
+      projectOf: (_hostId, targetProjectKey, cwd) => (targetProjectKey !== undefined ? `ssh+h1|${targetProjectKey}` : cwd?.startsWith('/srv/app') ? 'ssh+h1|/srv/app' : undefined),
+    },
+    addAlways: vi.fn(options.addAlways ?? (async () => undefined)),
+    revokeAlways: vi.fn(async () => undefined),
+    addAlwaysAccount: vi.fn(async () => undefined),
+    askConsent: async (consent, consentSignal) => {
+      consents.push(consent);
+      return options.askConsent ? options.askConsent(consent, consentSignal) : (options.choice ?? 'once');
+    },
+    gitCredential: async (op, input) => {
+      git.push({ op, input });
+      return op === 'fill' ? (options.fill ?? 'protocol=https\nhost=github.com\nusername=ada\npassword=tok\n') : '';
+    },
+    notify: async (message, action) => {
+      notices.push(message);
+      return options.notifyChoice?.(action);
+    },
+    t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => args[Number(index)] ?? ''),
+    log: (line) => logs.push(line),
+  };
+  const daemon: CredentialDaemon = { takesForgeAnswers: options.takesForgeAnswers ?? true, verifiesErase: options.verifiesErase ?? true };
+  const inner = createGitCredentialClient(deps);
+  const relay = { handle: (hostId: string, request: GitCredentialRequest, handleSignal: AbortSignal) => inner.handle(hostId, request, daemon, handleSignal) };
+  return { relay, deps, consents, git, notices, logs, forgeAsked };
+}
+
+// a consent dialog the test answers, with the signal it was shown with
+function heldDialogs() {
+  const shown: Array<{ readonly consent: GitCredentialConsent; readonly signal: AbortSignal; readonly answer: (choice: GitCredentialConsentChoice) => void }> = [];
+  const askConsent: GitCredentialClientDeps['askConsent'] = (consent, dialogSignal) => new Promise((resolve) => {
+    shown.push({ consent, signal: dialogSignal, answer: resolve });
+    dialogSignal.addEventListener('abort', () => resolve('deny'), { once: true });
+  });
+  return { shown, askConsent };
+}
+
+describe('the client side of the relay', () => {
+  const GET: GitCredentialRequest = { op: 'get', fields: { protocol: 'https', host: 'github.com' }, targetHelper: false };
   const signal = new AbortController().signal;
 
   it('asks consent naming both hosts and the safety color, then relays get through git credential fill', async () => {
@@ -275,6 +312,204 @@ describe('the client side of the relay', () => {
     await expect(relay.handle('h1', { op: 'erase', fields: GET.fields, targetHelper: false }, signal)).resolves.toEqual({ kind: 'none' });
     expect(deps.revokeAlways).not.toHaveBeenCalled();
     expect(notices).toEqual([]);
+  });
+
+  it('passes a target\'s engine request to this computer\'s core without the preset account it named', async () => {
+    const { relay, forgeAsked } = client({ forge: async () => ({ answer: { kind: 'none' } }) });
+    const origin = { kind: 'engine', interactive: true, presetAccountId: 'gitlab.com|2001' } as const;
+    await relay.handle('h1', { op: 'get', fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' }, targetHelper: false, origin, cwd: '/srv/app' }, signal);
+    expect(forgeAsked).toHaveLength(1);
+    expect(forgeAsked[0]!.origin).toEqual({ kind: 'engine', interactive: true, projectKey: 'ssh+h1|/srv/app' });
+    expect(forgeAsked[0]!.origin).not.toHaveProperty('presetAccountId');
+  });
+});
+
+describe('the relay\'s forge branch: a target\'s takeover request', () => {
+  const PLAIN: CredentialTargetHost = { name: 'prod-1', alwaysCredentialHosts: [], alwaysForgeAccounts: [] };
+  const TOKEN = { kind: 'credential', username: 'oauth2', password: 'glo-token' } as const;
+  const ACCOUNT = 'gitlab.com|2001';
+  // cwd null: a request that names no folder
+  const takeover = (origin: GitCredentialRequest['origin'], cwd: string | null = '/srv/app/sub', path = 'g/p.git'): GitCredentialRequest => ({ op: 'get', fields: { protocol: 'https', host: 'GitLab.com', path }, targetHelper: false, ...(origin ? { origin } : {}), ...(cwd !== null ? { cwd } : {}) });
+  const signal = new AbortController().signal;
+  type How = ForgeCredentialAccount['how'];
+
+  // This computer's core as the relay sees it: a pick the user chose answers at once; an automatic one names the account
+  // first and answers only on a call that carries that account's consent.
+  function core(how: How, options: { readonly answer?: GitCredentialAnswer; readonly canPush?: boolean; readonly accountId?: (call: number) => string } = {}): ForgeCredentialDeps['answer'] {
+    let calls = 0;
+    return async (_request, _origin, _authorityKey, _projectKey, consentedAccountId) => {
+      const accountId = options.accountId?.(++calls) ?? ACCOUNT;
+      const account = { serverId: 'gitlab.com', accountId, login: 'alexios-s', how, ...(how === 'access' ? { canPush: options.canPush ?? true } : {}) };
+      const answer = options.answer ?? TOKEN;
+      if (answer.kind !== 'credential') return { answer };
+      if (!CONSENTED_HOWS.has(how) && consentedAccountId !== accountId) return { consent: account };
+      return { answer, account };
+    };
+  }
+
+  function forgeClient(how: How, choice: GitCredentialConsentChoice = 'once', answer: GitCredentialAnswer = TOKEN, takes = true, target: CredentialTargetHost = PLAIN) {
+    const made = client({ forge: core(how, { answer }), choice, takesForgeAnswers: takes, target });
+    return { ...made, asked: made.forgeAsked };
+  }
+
+  it('answers an explicit binding, host default or Choose account answer with no consent dialog', async () => {
+    for (const how of ['bound', 'hostDefault', 'choice'] as const) {
+      const { relay, consents } = forgeClient(how);
+      await expect(relay.handle('h1', takeover({ kind: 'engine', projectKey: '/srv/app', interactive: true }), signal)).resolves.toEqual(TOKEN);
+      expect(consents, how).toEqual([]);
+    }
+  });
+
+  it('asks consent naming the account before the core reads any token, then asks again with that account\'s consent', async () => {
+    const { relay, consents, asked } = forgeClient('onlyAccount');
+    await expect(relay.handle('h1', takeover({ kind: 'terminal' }), signal)).resolves.toEqual(TOKEN);
+    expect(consents).toEqual([{ hostName: 'prod-1', credentialHost: 'gitlab.com', targetHelper: false, forgeAccount: { serverLabel: 'gitlab.com', login: 'alexios-s', reason: 'onlyAccount', repoPath: 'g/p' } }]);
+    // the terminal's folder maps to the host's project, and the request reaches this computer's core under the target's authority
+    const request = { op: 'get', cwd: '/srv/app/sub', fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } };
+    const first = { request, origin: { kind: 'terminal', projectKey: 'ssh+h1|/srv/app' }, authorityKey: 'ssh+h1', projectKey: 'ssh+h1|/srv/app' };
+    expect(asked).toEqual([{ ...first, consentedAccountId: undefined }, { ...first, consentedAccountId: ACCOUNT }]);
+  });
+
+  it('on Deny asks the core nothing more, so no token is read and nothing is answered', async () => {
+    const denied = forgeClient('access', 'deny');
+    await expect(denied.relay.handle('h1', takeover({ kind: 'agentShell', panelId: 'p1', sessionId: 's1', toolCallId: 'call-1', clientId: 'client-1' }), signal)).resolves.toEqual({ kind: 'none' });
+    expect(denied.consents[0]?.forgeAccount?.reason).toBe('access');
+    expect(denied.asked).toHaveLength(1);
+    expect(denied.asked[0]!.consentedAccountId).toBeUndefined();
+  });
+
+  it('says an access pick that can only read reads, and one that can push pushes', async () => {
+    const reader = client({ forge: core('access', { canPush: false }) });
+    await reader.relay.handle('h1', takeover({ kind: 'terminal' }), signal);
+    const pusher = client({ forge: core('access', { canPush: true }) });
+    await pusher.relay.handle('h1', takeover({ kind: 'terminal' }), signal);
+    expect([reader.consents[0]?.forgeAccount?.reason, pusher.consents[0]?.forgeAccount?.reason]).toEqual(['accessRead', 'access']);
+  });
+
+  it('answers nothing when the account resolved after consent is another one', async () => {
+    const { relay, consents, forgeAsked: asked } = client({ forge: core('onlyAccount', { accountId: (call) => (call === 1 ? ACCOUNT : 'gitlab.com|2002') }) });
+    await expect(relay.handle('h1', takeover({ kind: 'terminal' }), signal)).resolves.toEqual({ kind: 'none' });
+    expect(consents).toHaveLength(1);
+    expect(asked).toHaveLength(2);
+  });
+
+  it('answers nothing for a credential whose account no consent covers', async () => {
+    const { relay, consents } = client({ forge: async () => ({ answer: TOKEN }) });
+    await expect(relay.handle('h1', takeover({ kind: 'terminal' }), signal)).resolves.toEqual({ kind: 'none' });
+    expect(consents).toEqual([]);
+  });
+
+  it('keeps an account consent\'s Always apart from the credential manager\'s: it remembers the account, never the pair', async () => {
+    const { relay, deps } = forgeClient('onlyAccount', 'always');
+    await relay.handle('h1', takeover({ kind: 'terminal' }), signal);
+    expect(deps.addAlwaysAccount).toHaveBeenCalledWith('h1', { serverId: 'gitlab.com', accountId: ACCOUNT });
+    expect(deps.addAlways).not.toHaveBeenCalled();
+    // the pair's Always lets the credential manager's password through, and never this account
+    const pairOnly = forgeClient('onlyAccount', 'once', TOKEN, true, { ...PLAIN, alwaysCredentialHosts: ['gitlab.com'] });
+    await pairOnly.relay.handle('h1', takeover({ kind: 'terminal' }), signal);
+    expect(pairOnly.consents).toHaveLength(1);
+  });
+
+  it('never shows a dialog for a background call: it gets the target\'s own helpers unless the account is always allowed', async () => {
+    const { relay, consents } = forgeClient('onlyAccount');
+    await expect(relay.handle('h1', takeover({ kind: 'engine', projectKey: '/srv/app', interactive: false }), signal)).resolves.toEqual({ kind: 'delegate' });
+    expect(consents).toEqual([]);
+  });
+
+  it('answers a background call with no dialog when the account is always allowed on the host', async () => {
+    const always = forgeClient('onlyAccount', 'deny', TOKEN, true, { ...PLAIN, alwaysForgeAccounts: [{ serverId: 'gitlab.com', accountId: ACCOUNT }] });
+    await expect(always.relay.handle('h1', takeover({ kind: 'engine', projectKey: '/srv/app', interactive: false }), signal)).resolves.toEqual(TOKEN);
+    expect(always.consents).toEqual([]);
+    expect(always.asked.map((call) => call.consentedAccountId)).toEqual([undefined, ACCOUNT]);
+  });
+
+  it('answers a background call none when the daemon takes no delegate answer', async () => {
+    const { relay, consents } = forgeClient('onlyAccount', 'once', TOKEN, false);
+    await expect(relay.handle('h1', takeover({ kind: 'engine', projectKey: '/srv/app', interactive: false }), signal)).resolves.toEqual({ kind: 'none' });
+    expect(consents).toEqual([]);
+  });
+
+  it('refuses a takeover request that names no folder, asking nothing', async () => {
+    const { relay, consents, asked } = forgeClient('bound');
+    await expect(relay.handle('h1', takeover({ kind: 'terminal' }, null), signal)).resolves.toEqual({ kind: 'none' });
+    expect(asked).toEqual([]);
+    expect(consents).toEqual([]);
+  });
+
+  it('shows one dialog for concurrent requests naming the same account', async () => {
+    const dialogs = heldDialogs();
+    const { relay, consents } = client({ forge: core('onlyAccount'), askConsent: dialogs.askConsent });
+    const both = Promise.all([relay.handle('h1', takeover({ kind: 'terminal' }), signal), relay.handle('h1', takeover({ kind: 'terminal' }), signal)]);
+    await vi.waitFor(() => expect(dialogs.shown).toHaveLength(1));
+    dialogs.shown[0]!.answer('once');
+    await expect(both).resolves.toEqual([TOKEN, TOKEN]);
+    expect(consents).toHaveLength(1);
+  });
+
+  it('asks a second account on the same pair only once the first dialog closed, in a dialog of its own', async () => {
+    const dialogs = heldDialogs();
+    const accountOf = (request: unknown): string => ((request as { fields: { path: string } }).fields.path.startsWith('g/') ? ACCOUNT : 'gitlab.com|2002');
+    const { relay } = client({
+      askConsent: dialogs.askConsent,
+      forge: async (request, _origin, _authorityKey, _projectKey, consentedAccountId) => {
+        const accountId = accountOf(request);
+        const account = { serverId: 'gitlab.com', accountId, login: accountId === ACCOUNT ? 'alexios-s' : 'astef-admin', how: 'onlyAccount' as const };
+        return consentedAccountId === accountId ? { answer: TOKEN, account } : { consent: account };
+      },
+    });
+    const first = relay.handle('h1', takeover({ kind: 'terminal' }), signal);
+    await vi.waitFor(() => expect(dialogs.shown).toHaveLength(1));
+    const second = relay.handle('h1', takeover({ kind: 'terminal' }, '/srv/app/sub', 'other/q.git'), signal);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(dialogs.shown).toHaveLength(1);
+    dialogs.shown[0]!.answer('once');
+    await expect(first).resolves.toEqual(TOKEN);
+    await vi.waitFor(() => expect(dialogs.shown).toHaveLength(2));
+    expect(dialogs.shown.map((dialog) => dialog.consent.forgeAccount?.login)).toEqual(['alexios-s', 'astef-admin']);
+    dialogs.shown[1]!.answer('deny');
+    await expect(second).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('names a 300-character repository path in the consent and leaves out a 2000-character one, logging it', async () => {
+    const shortPath = `grp/${'s'.repeat(296)}`;
+    const short = client({ forge: core('onlyAccount') });
+    await short.relay.handle('h1', takeover({ kind: 'terminal' }, '/srv/app/sub', `${shortPath}.git`), signal);
+    expect(short.consents[0]?.forgeAccount?.repoPath).toBe(shortPath);
+    const long = client({ forge: core('onlyAccount') });
+    await long.relay.handle('h1', takeover({ kind: 'terminal' }, '/srv/app/sub', `grp/${'s'.repeat(1996)}.git`), signal);
+    expect(long.consents[0]?.forgeAccount).not.toHaveProperty('repoPath');
+    expect(long.logs).toContain('[git-credential] the consent for prod-1 leaves out a repository path of 2000 characters');
+  });
+
+  it('passes delegate to a daemon whose welcome listed the feature when the attach was made, whatever its connection says now', async () => {
+    // the attach read the features; a suspect connection reads as none, and the relay never asks it
+    const { relay } = forgeClient('bound', 'once', { kind: 'delegate' }, true);
+    await expect(relay.handle('h1', takeover({ kind: 'engine', interactive: false }), signal)).resolves.toEqual({ kind: 'delegate' });
+  });
+
+  it('passes refused and delegate only to a daemon that takes them, and sends an erase to this computer\'s core only', async () => {
+    for (const [answer, takes, expected] of [
+      [{ kind: 'refused', message: 'No.' }, true, { kind: 'refused', message: 'No.' }],
+      [{ kind: 'delegate' }, true, { kind: 'delegate' }],
+      [{ kind: 'refused', message: 'No.' }, false, { kind: 'none' }],
+      [{ kind: 'delegate' }, false, { kind: 'none' }],
+    ] as const) {
+      const { relay } = forgeClient('bound', 'once', answer, takes);
+      await expect(relay.handle('h1', takeover({ kind: 'engine', interactive: true }), signal), JSON.stringify([answer, takes])).resolves.toEqual(expected);
+    }
+    const { relay, git, asked: forgeAsked } = forgeClient('bound', 'once', { kind: 'none' });
+    const hash = 'a'.repeat(64);
+    await expect(relay.handle('h1', { ...takeover({ kind: 'engine', projectKey: '/srv/app', interactive: true }), op: 'erase', passwordHash: hash }, signal)).resolves.toEqual({ kind: 'none' });
+    expect(forgeAsked[0]).toMatchObject({ request: { op: 'erase', passwordHash: hash }, origin: { kind: 'engine', projectKey: 'ssh+h1|/srv/app' } });
+    expect(git).toEqual([]);
+  });
+
+  it('keeps today\'s relay for a request without an origin, the reference daemon\'s', async () => {
+    const { relay, git, asked: forgeAsked, consents } = forgeClient('bound');
+    await expect(relay.handle('h1', { op: 'get', fields: { protocol: 'https', host: 'gitlab.com' }, targetHelper: false }, signal)).resolves.toMatchObject({ kind: 'credential' });
+    expect(forgeAsked).toEqual([]);
+    expect(git.map((call) => call.op)).toEqual(['fill']);
+    expect(consents[0]?.forgeAccount).toBeUndefined();
   });
 });
 
@@ -559,7 +794,35 @@ describe('the credential-relay nonce', () => {
     expect(prompts).toEqual([]);
     expect(credential).not.toHaveBeenCalled();
     await expect(exchange(relay.handle, { nonce: relay.nonce, kind: 'credential', op: 'get', cwd: '/w', fields })).resolves.toBe(`${JSON.stringify({ kind: 'credential', username: 'ada', password: 'tok' })}\n`);
-    expect(credential).toHaveBeenCalledWith({ op: 'get', cwd: '/w', fields }, expect.any(AbortSignal));
+    expect(credential).toHaveBeenCalledWith({ op: 'get', cwd: '/w', fields }, { kind: 'terminal' }, expect.any(AbortSignal));
+  });
+
+  it('gives each credential registration its own nonce and origin, which never prompts, and refuses the prompt nonce a credential', async () => {
+    const credential = vi.fn<RelayCredential>(async () => ({ kind: 'refused', message: 'No.' }));
+    const identity = await daemonRelay();
+    const { server, prompts } = start(credential, identity);
+    const relay = (await server.relay())!;
+    const engine = await server.registerCredential({ kind: 'engine', projectKey: '/p', interactive: true });
+    const shell = await server.registerCredential({ kind: 'agentShell', panelId: 'p1', sessionId: 's1' });
+    const prompt = await server.register('interactive', 'push');
+    const nonces = [relay.nonce, engine.env['DAMOCLES_CREDENTIAL_NONCE'], shell.env['DAMOCLES_CREDENTIAL_NONCE'], prompt.env['DAMOCLES_ASKPASS_NONCE']];
+    expect(new Set(nonces).size).toBe(4);
+    for (const nonce of nonces) expect(nonce).toMatch(/^[0-9a-f]{64}$/);
+    expect(Object.keys(shell.env).sort()).toEqual(['DAMOCLES_ASKPASS_HANDLE', 'DAMOCLES_ASKPASS_MAIN', 'DAMOCLES_ASKPASS_NODE', 'DAMOCLES_CREDENTIAL_NONCE']);
+    const fields = { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' };
+    await expect(exchange(relay.handle, { nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'credential', op: 'get', cwd: '/w', fields })).resolves.toBe(`${JSON.stringify({ kind: 'refused', message: 'No.' })}\n`);
+    expect(credential).toHaveBeenLastCalledWith({ op: 'get', cwd: '/w', fields }, { kind: 'agentShell', panelId: 'p1', sessionId: 's1' }, expect.any(AbortSignal));
+    await exchange(relay.handle, { nonce: engine.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'credential', op: 'get', cwd: '/w', fields });
+    expect(credential).toHaveBeenLastCalledWith({ op: 'get', cwd: '/w', fields }, { kind: 'engine', projectKey: '/p', interactive: true }, expect.any(AbortSignal));
+    // a credential nonce never prompts; a prompt nonce never answers a credential; a nonce of another length is unknown
+    await expect(exchange(relay.handle, { nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'askpass', argv: ['Password: '] })).resolves.toBe('');
+    await expect(exchange(relay.handle, { nonce: prompt.env['DAMOCLES_ASKPASS_NONCE'], kind: 'credential', op: 'get', cwd: '/w', fields })).resolves.toBe('');
+    await expect(exchange(relay.handle, { nonce: 'ab', kind: 'credential', op: 'get', cwd: '/w', fields })).resolves.toBe('');
+    expect(prompts).toEqual([]);
+    expect(credential).toHaveBeenCalledTimes(2);
+    shell.dispose();
+    await expect(exchange(relay.handle, { nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'credential', op: 'get', cwd: '/w', fields })).resolves.toBe('');
+    expect(credential).toHaveBeenCalledTimes(2);
   });
 
   it('exists only on a server given a helper and a relay', async () => {

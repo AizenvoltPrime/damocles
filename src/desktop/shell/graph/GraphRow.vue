@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ChevronRight, Cloud, GitBranch, GitMerge, Tag, Target } from 'lucide-vue-next';
 import type { Component } from 'vue';
+import ForgeAvatar from '@/components/settings/forge/ForgeAvatar.vue';
 import { visibleText } from '@shared/visible-text';
 import type { ScmHistoryRef } from '../../preload/scm-channels';
 import type { GraphListRow } from './graph-model';
@@ -38,6 +39,9 @@ const props = defineProps<{
   halo?: boolean | undefined;
   // Go to Current landed on this row: its background flashes once
   flash?: boolean | undefined;
+  // the author's avatar before the name (showAvatars on and a registered server), its image once core issued a key
+  showAvatar?: boolean | undefined;
+  avatarKey?: string | undefined;
 }>();
 const emit = defineEmits<{
   toggle: [];
@@ -46,6 +50,7 @@ const emit = defineEmits<{
   refMenu: [ref: ScmHistoryRef, anchor: DOMRect];
   focus: [];
   hover: [on: boolean];
+  avatarFailed: [];
 }>();
 const { t } = useI18n();
 
@@ -326,6 +331,15 @@ function onClick(): void {
       class="shrink-0 font-mono text-11"
       :style="{ color: laneTextColor(node.color) }"
     >{{ count }}{{ changes === 'incoming' ? '↓' : '↑' }}</span>
+    <!-- the avatar goes with the author below 17.5rem; aria-hidden, so the row's name keeps its format -->
+    <ForgeAvatar
+      v-if="commit && showAvatar"
+      :login="author"
+      :avatar-key="avatarKey"
+      size="chip"
+      class="@max-[17.5rem]/row:hidden"
+      @failed="emit('avatarFailed')"
+    />
     <span
       v-if="commit"
       data-testid="graph-author"

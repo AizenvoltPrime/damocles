@@ -1,7 +1,8 @@
-import { ref, computed } from 'vue';
+import { ref, computed, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
 import type { PendingPermissionInfo } from '@shared/types/permissions';
 import type { PlanApprovalDesignLink } from '@shared/types/design';
+import type { LocalizedText } from '@shared/localized-text';
 
 interface PendingPlanApproval {
   toolUseId: string;
@@ -14,10 +15,12 @@ interface ApprovedPlanInfo {
   approvalMode: 'acceptEdits' | 'manual';
 }
 
-// A turn waiting for its pinned device's sign-in (Sign-in needed); provider is a pi provider id.
+// A turn waiting for its pinned device's sign-in (Sign-in needed); provider is a pi provider id; reason: that device's
+// sign-ins are not known yet, and why.
 export interface PendingSignIn {
   requestId: string;
   provider: string;
+  reason?: LocalizedText;
 }
 
 interface PendingSkillApproval {
@@ -33,6 +36,8 @@ export const usePermissionStore = defineStore('permission', () => {
   const pendingSkillApproval = ref<PendingSkillApproval | null>(null);
   const approvedPlans = ref<Record<string, ApprovedPlanInfo>>({});
   const pendingSignIns = ref<PendingSignIn[]>([]);
+  // A prompt's approvedStatus after Yes, shown in its place until the next prompt or the user's next message.
+  const approvedStatus = shallowRef<LocalizedText | null>(null);
 
   const currentPermission = computed(() => {
     const entries = Object.values(pendingPermissions.value);
@@ -64,6 +69,15 @@ export const usePermissionStore = defineStore('permission', () => {
     pendingSkillApproval.value = null;
     approvedPlans.value = {};
     pendingSignIns.value = [];
+    approvedStatus.value = null;
+  }
+
+  function showApprovedStatus(text: LocalizedText) {
+    approvedStatus.value = text;
+  }
+
+  function clearApprovedStatus() {
+    approvedStatus.value = null;
   }
 
   function setPendingPlanApproval(info: PendingPlanApproval | null) {
@@ -139,6 +153,9 @@ export const usePermissionStore = defineStore('permission', () => {
     pendingSignIns,
     addSignIn,
     resolveSignIn,
+    approvedStatus,
+    showApprovedStatus,
+    clearApprovedStatus,
     $reset,
   };
 });

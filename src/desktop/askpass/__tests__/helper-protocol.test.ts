@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { MAX_ASKPASS_ARG_CHARS, MAX_ASKPASS_ARGS, parseAskpassRequest } from '../../../core/scm/askpass/askpass-server';
 import {
   credentialOutput,
+  credentialRequestLine,
   MAX_HELPER_ARG_CHARS,
+  namedPassword,
+  passwordHashOf,
   MAX_HELPER_ARGS,
   MAX_REPLY_BYTES,
   NOT_CONNECTED_MESSAGE,
@@ -72,9 +75,10 @@ describe('the askpass helper', () => {
 });
 
 describe('the git credential relay helper', () => {
-  it('runs for exactly one of get, store and erase', () => {
-    expect(['get', 'store', 'erase'].map((op) => parseCredentialOp([op]))).toEqual(['get', 'store', 'erase']);
-    for (const args of [[], ['get', 'extra'], ['fill'], ['GET']]) expect(parseCredentialOp(args), JSON.stringify(args)).toBeUndefined();
+  it('runs for exactly one of get, store and erase, after the takeover\'s flag when git passes it', () => {
+    expect(['get', 'store', 'erase'].map((op) => parseCredentialOp([op]))).toEqual(['get', 'store', 'erase'].map((op) => ({ op, takeover: false })));
+    expect(parseCredentialOp(['--takeover', 'get'])).toEqual({ op: 'get', takeover: true });
+    for (const args of [[], ['get', 'extra'], ['fill'], ['GET'], ['get', '--takeover'], ['--takeover'], ['--other', 'get'], ['--takeover', 'get', 'x']]) expect(parseCredentialOp(args), JSON.stringify(args)).toBeUndefined();
   });
 
   it('takes exactly one answer of the three kinds, a credential with a non-empty password and no line break', () => {
@@ -101,6 +105,29 @@ describe('the git credential relay helper', () => {
     expect(credentialOutput({ kind: 'credential', username: 'ada', password: 'tok' })).toEqual({ stdout: 'username=ada\npassword=tok\n', stderr: '' });
     expect(credentialOutput({ kind: 'notConnected' })).toEqual({ stdout: '', stderr: `${NOT_CONNECTED_MESSAGE}\n` });
     expect(credentialOutput({ kind: 'none' })).toEqual({ stdout: '', stderr: '' });
+  });
+
+  it('takes a refusal with a bounded one-line message and a bare delegate, and prints quit=1 with the reason or nothing', () => {
+    expect(parseCredentialReply(JSON.stringify({ kind: 'refused', message: 'No.' }))).toEqual({ kind: 'refused', message: 'No.' });
+    expect(parseCredentialReply(JSON.stringify({ kind: 'delegate' }))).toEqual({ kind: 'delegate' });
+    for (const reply of [{ kind: 'refused' }, { kind: 'refused', message: '' }, { kind: 'refused', message: 'a\nquit=0' }, { kind: 'refused', message: 'x'.repeat(1001) }, { kind: 'delegate', username: 'ada' }]) {
+      expect(parseCredentialReply(JSON.stringify(reply)), JSON.stringify(reply)).toBeUndefined();
+    }
+    expect(credentialOutput({ kind: 'refused', message: 'Turn on "Agent shells may use this account".' })).toEqual({ stdout: 'quit=1\n', stderr: 'Turn on "Agent shells may use this account".\n' });
+    expect(credentialOutput({ kind: 'delegate' })).toEqual({ stdout: '', stderr: '' });
+  });
+
+  it('sends a store\'s or erase\'s password, never a get\'s, and reads it only when it is one line within bounds', () => {
+    const nonce = 'b'.repeat(64);
+    const fields = { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' };
+    expect(JSON.parse(credentialRequestLine(nonce, 'get', '/w', fields, 'tok'))).toEqual({ nonce, kind: 'credential', op: 'get', cwd: '/w', fields });
+    const store = credentialRequestLine(nonce, 'store', '/w', fields, 'tok');
+    expect(JSON.parse(store)).toEqual({ nonce, kind: 'credential', op: 'store', cwd: '/w', fields, password: 'tok' });
+    expect(parseAskpassRequest(Buffer.from(store.slice(0, -1)))).toMatchObject({ request: { op: 'store', password: 'tok', passwordHash: passwordHashOf('tok') } });
+    expect(parseAskpassRequest(Buffer.from(JSON.stringify({ nonce, kind: 'credential', op: 'get', cwd: '/w', fields, password: 'tok' })))).toBeUndefined();
+    expect(namedPassword('protocol=https\nhost=x\npassword=tok\n\n')).toBe('tok');
+    expect(namedPassword('protocol=https\nhost=x\n\n')).toBeUndefined();
+    expect(namedPassword('password=\n')).toBeUndefined();
   });
 
   it('reads its input once, nothing past the bound, and answers once when the stream both fails and ends', () => {

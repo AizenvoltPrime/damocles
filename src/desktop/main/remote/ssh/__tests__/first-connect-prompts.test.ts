@@ -56,6 +56,7 @@ function passwordOnlyHost(password: string) {
         end: () => undefined,
         exited,
         closed: exited.then(() => undefined),
+        leftRunning: exited.then(() => false),
         kill: () => exit(255),
       };
     },

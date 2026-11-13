@@ -1,5 +1,6 @@
-// On a daemon's core the user-scope services live on the client: the browser (user.browser.*), global memory (user.memory.*)
-// and personal MCP servers (user.mcp.*) are relayed to an attached client; with none attached each answers its reason here.
+// On a daemon's core the user-scope services live on the client: the browser (user.browser.*), global memory (user.memory.*),
+// personal MCP servers (user.mcp.*) and the GitHub and GitLab tools (user.forge.*) are relayed to an attached client; with none
+// attached each answers its reason here.
 import { USER_SCOPE_UNAVAILABLE, type RelayedMcpServer } from '../shared/remote-user';
 import type { LocalizedText } from '../shared/localized-text';
 import type { RemoteHost } from '../platform/remote-host';
@@ -25,15 +26,77 @@ function pinnedRelayedServers(remote: RemoteHost): readonly RelayedMcpServer[] |
   return clientId !== undefined && remote.clients.attached(clientId) ? remote.clients.mcp(clientId) ?? [] : undefined;
 }
 
-/** What this core reaches of its client's user scope now: the browser through any attached client, a relayed MCP tool only through the pinned device that relays it. */
+let localForgeAccounts: () => boolean = () => false;
+
+/** This computer's core: whether a GitHub or GitLab account exists (ForgeService.hasAccount); a core without one keeps the default. */
+export function setLocalForgeAccounts(hasAccount: () => boolean): void {
+  localForgeAccounts = hasAccount;
+}
+
+/** A daemon's core: the GitHub and GitLab accounts of the device the running turn is pinned to (else the acting one). */
+function pinnedForges(remote: RemoteHost): 'away' | 'unread' | 'none' | 'account' {
+  const clientId = currentPin(remote).clientId;
+  if (clientId === undefined || !remote.clients.attached(clientId)) return 'away';
+  const forges = remote.clients.forges(clientId);
+  if (forges?.pending === true) return 'unread';
+  return forges?.servers.some((server) => server.hasAccount) === true ? 'account' : 'none';
+}
+
+/**
+ * What this core reaches of its client's user scope now: the browser through any attached client, the GitHub and GitLab
+ * tools while the pinned device has an account (this computer's core: its own accounts), a relayed MCP tool only through the
+ * pinned device that relays it.
+ */
 export function userScopeReach(): UserScopeReach {
   const remote = installedPlatform()?.remote;
-  if (remote === undefined) return { browser: true, relayedTool: () => true };
+  if (remote === undefined) return { browser: true, forge: localForgeAccounts(), relayedTool: () => true };
   const servers = pinnedRelayedServers(remote);
   return {
     browser: remote.clients.anyAttached(),
+    forge: pinnedForges(remote) === 'account',
     relayedTool: ({ server, tool }) => servers?.some((candidate) => candidate.name === server && candidate.tools.some((own) => own.name === tool)) === true,
   };
+}
+
+/** Why the Tools panel's GitHub and GitLab group is unavailable: the pinned device's servers are not read yet, or no account is known; undefined with one. */
+export function forgeGroupUnavailable(): 'noForgeAccount' | 'forgeServersUnread' | undefined {
+  const remote = installedPlatform()?.remote;
+  if (remote === undefined) return localForgeAccounts() ? undefined : 'noForgeAccount';
+  switch (pinnedForges(remote)) {
+    case 'account':
+      return undefined;
+    case 'unread':
+      return 'forgeServersUnread';
+    default:
+      return 'noForgeAccount';
+  }
+}
+
+/**
+ * Why the GitHub and GitLab tools are out of reach: the pinned device is away, its servers are not read yet, or no account
+ * exists where they would run.
+ */
+export function forgeUnreachableReason(): LocalizedText {
+  const remote = installedPlatform()?.remote;
+  if (remote === undefined) return forgeNoAccountReason();
+  switch (pinnedForges(remote)) {
+    case 'away':
+      return forgeClosedReason();
+    case 'unread':
+      return l('Damocles has not read the GitHub and GitLab servers of your computer yet. Try again in a moment.');
+    default:
+      return forgeNoAccountReason();
+  }
+}
+
+/** A GitHub or GitLab tool of a chat on a remote host while the device it runs on is not attached. */
+export function forgeClosedReason(): LocalizedText {
+  return l('Your GitHub and GitLab accounts are on your computer, and Damocles is closed.');
+}
+
+/** A GitHub or GitLab tool where no account exists. */
+export function forgeNoAccountReason(): LocalizedText {
+  return l('No GitHub or GitLab account is signed in. Sign in to one in Settings › Models & accounts › Git hosting.');
 }
 
 /** Why a relayed MCP server's tool is out of reach: its device is away, or the pinned device does not relay it. */

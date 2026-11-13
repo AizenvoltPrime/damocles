@@ -17,7 +17,7 @@ import type { RelayView } from '../../core-services/host-services';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
 import type { RemoteConnection } from '../connection';
 import { RemoteCore, type RemoteHostedCore } from '../remote-core';
-import { CLIENT_MCP_FEATURE, UserRelays, type LocalUserScope } from '../user-relays';
+import { CLIENT_MCP_FEATURE, CLIENT_PENDING_FEATURE, UserRelays, type LocalUserScope, type UserRelaysDeps } from '../user-relays';
 
 const EPOCH_A = 'a'.repeat(32);
 const EPOCH_B = 'b'.repeat(32);
@@ -160,7 +160,7 @@ function relayView(host: FakePanelHost, panelId: string, pages: unknown[]): Rela
   return Object.assign(host, { panelId, postJson: () => undefined, showPage: (page: unknown) => pages.push(page), closeReason: 'detach' as const });
 }
 
-function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null, reopenFails = false) {
+function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null, reopenFails = false, relayDeps: Partial<UserRelaysDeps> = {}) {
   const main = createFakePlatform({ chatBrowserPane: true });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-core-'));
   dirs.push(userData);
@@ -182,23 +182,30 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
   };
   // the personal MCP servers this computer marks available on remote hosts
   const mcp: RelayedMcpServer[] = [];
-  const relays = new UserRelays({ resolveCredential: async () => ({ type: 'none' }), clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), local: { mcpServers: async () => [...mcp] } as unknown as LocalUserScope, log: () => undefined });
+  // the welcome features each attach built its host services with
+  const serviceFeatures: Array<readonly string[]> = [];
+  const relays = new UserRelays({ resolveCredential: async () => ({ type: 'none' }), forges: async () => [], clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), savedHost: () => true, engineHalted: () => false, local: { mcpServers: async () => [...mcp] } as unknown as LocalUserScope, log: () => undefined, ...relayDeps });
+  // the reads main makes at startup, which an older daemon's attach waits for; main logs a failed one
+  for (const read of [relays.authChanged(), relays.userChanged(), relays.mcpChanged(), relays.forgesChanged()]) read.catch(() => undefined);
   const core = new RemoteCore({
     authority: 'loopback',
     hostId: 'loopback',
     connection: () => daemon.connection,
-    services: () => ({
-      platform: main,
-      trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
-      state: createDesktopKeyValueState(userData, () => undefined),
-      terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
-      resolveProxy: async () => 'DIRECT',
-      createView: () => { throw new Error('no view here'); },
-      git: { available: true },
-      e2eHooks: false,
-      ...hostExtras(),
-      log: () => undefined,
-    }),
+    services: (features) => {
+      serviceFeatures.push(features);
+      return {
+        platform: main,
+        trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+        state: createDesktopKeyValueState(userData, () => undefined),
+        terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
+        resolveProxy: async () => 'DIRECT',
+        createView: () => { throw new Error('no view here'); },
+        git: { available: true },
+        e2eHooks: false,
+        ...hostExtras(),
+        log: () => undefined,
+      };
+    },
     lastEpoch,
     openTabs: async (attached, rejoin, kept) => {
       opened.push({ rejoin, kept, core: attached });
@@ -218,7 +225,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
     log: () => undefined,
   });
   cleanups.push(() => core.dispose());
-  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded, relays, mcp, pills };
+  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded, relays, mcp, pills, serviceFeatures };
 }
 
 const chat = (viewId: string): ChatEntry => ({ panelId: 'host-1', viewId, hasConversation: true, folder: target, permissions: PLAN });
@@ -233,10 +240,59 @@ describe('RemoteCore', () => {
     expect(daemon.attaches.map((attach) => [attach.attach, attach.hostId])).toEqual([[1, 'loopback']]);
     expect(opened.map((entry) => entry.rejoin)).toEqual([true]);
     // every remote host starts with YOLO refused, the loopback one sharing this computer's loopback, and this computer's
-    // sign-ins and user rules as the relays hold them
+    // sign-ins and user rules pending until their first reads land
     expect(daemon.attaches[0]!.mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
-    expect(daemon.attaches[0]!.mirrors.clientAuth).toEqual({ providers: {} });
+    expect(daemon.attaches[0]!.mirrors.clientAuth).toEqual({ providers: {}, pending: 'reading' });
+    expect(daemon.attaches[0]!.mirrors.clientUser).toEqual({ settings: {}, permissionRules: [], pending: 'reading' });
     expect(core.epoch()).toBe(EPOCH_A);
+  });
+
+  // a relaunch with this computer's engine halted left every remote chat unattached, and a failed read sent empty sign-ins
+  // the daemon's core read as none, so a send billed the host's own credential
+  it("attaches at once while this computer's engine is halted, its sign-ins pending as stopped until a read lands", async () => {
+    const daemon = fakeDaemon(EPOCH_A);
+    let halted = true;
+    let failRead!: (err: Error) => void;
+    const known = { providers: { anthropic: { type: 'oauth' as const, expires: Date.now() + 3_600_000, hasKey: false, flatFee: false } } };
+    const { core, relays } = remote(daemon, EPOCH_A, false, {
+      clientAuth: () => (halted ? new Promise((_resolve, reject) => { failRead = reject; }) : Promise.resolve(known)),
+      engineHalted: () => halted,
+    });
+    core.connected(daemon.connection);
+    await core.host.ready();
+    const attach = daemon.attaches[0]!;
+    expect(attach.mirrors.clientAuth).toEqual({ providers: {}, pending: 'reading' });
+    const parsed = CLIENT_TO_CONTROL.requests.attachCore.params(structuredClone(attach));
+    if (parsed === INVALID) throw new Error('the attach does not parse');
+    expect(parsed.mirrors.clientAuth.pending).toBe('reading');
+    const heard: unknown[] = [];
+    daemon.cores.get(1)!.onMirror('clientAuth', (patch) => heard.push(patch));
+
+    failRead(new Error('Damocles Core is not running'));
+    await vi.waitFor(() => expect(heard).toEqual([{ value: { providers: {}, pending: 'engineStopped' } }]));
+    halted = false;
+    await relays.authChanged();
+    await vi.waitFor(() => expect(heard).toHaveLength(3));
+    expect(heard[1]).toEqual({ value: { providers: {}, pending: 'reading' } });
+    expect(heard[2]).toMatchObject({ value: { providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false } } } });
+    expect((heard[2] as { value: object }).value).not.toHaveProperty('pending');
+    expect(daemon.violations).toEqual([]);
+  });
+
+  // such a daemon drops `pending` and would read the empty values as no sign-in at all
+  it('keeps an older daemon waiting for the first reads before it attaches, then starts it from what they read', async () => {
+    const daemon = fakeDaemon(EPOCH_A, 'running', FEATURES.filter((feature) => feature !== CLIENT_PENDING_FEATURE));
+    let loaded!: () => void;
+    const known = { providers: { openai: { type: 'api_key' as const, hasKey: true, flatFee: false } } };
+    const { core } = remote(daemon, EPOCH_A, false, { clientAuth: () => new Promise((resolve) => { loaded = () => resolve(known); }) });
+    core.connected(daemon.connection);
+    await vi.waitFor(() => expect(loaded).toBeDefined());
+    await tick();
+    expect(daemon.attaches).toEqual([]);
+    loaded();
+    await core.host.ready();
+    expect(daemon.attaches[0]!.mirrors.clientAuth).toEqual({ providers: { openai: { type: 'api_key', hasKey: true, flatFee: false } } });
+    expect(daemon.attaches[0]!.mirrors.clientUser).not.toHaveProperty('pending');
   });
 
   // the daemon sends this app only the requests and events whose feature its attach lists (core-routes.ts needs), so an app
@@ -253,6 +309,17 @@ describe('RemoteCore', () => {
       expect(parsed.features).toEqual(FEATURES);
       expect(FEATURES).toEqual(expect.arrayContaining(['core.attachFeatures', 'design.capture', 'design.probe', 'design.journey', 'design.replayJourney', 'design.openPreview', 'design.changed']));
     }
+  });
+
+  // a suspect connection reads as none through Authorities.connection, so a credential answer decided by it would lose delegate
+  it("builds each attach's host services with the welcome features of the connection serving that core", async () => {
+    const features = FEATURES.filter((feature) => feature !== 'askpass.credential.verifiedErase');
+    const daemon = fakeDaemon(EPOCH_A, 'running', features);
+    const { core, serviceFeatures } = remote(daemon, EPOCH_A);
+    core.connected(daemon.connection);
+    await core.host.ready();
+    expect(serviceFeatures).toEqual([daemon.connection.features]);
+    expect(serviceFeatures[0]).toContain('askpass.credential.origin');
   });
 
   it('attaches to a daemon whose welcome does not list clientMcp without sending it a clientMcp mirror, then or on a change', async () => {

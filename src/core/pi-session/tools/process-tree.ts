@@ -11,6 +11,10 @@ const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 const EXTENDED_LIMIT_INFORMATION_BYTES = process.arch === 'ia32' ? 112 : 144;
 /** Byte offset of `BasicLimitInformation.LimitFlags` within that structure. */
 const LIMIT_FLAGS_OFFSET = 16;
+/** `JobObjectBasicAccountingInformation`: four LARGE_INTEGER times, then four DWORD counts, the same on every arch. */
+const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
+const BASIC_ACCOUNTING_INFORMATION_BYTES = 48;
+const ACTIVE_PROCESSES_OFFSET = 40;
 const PROCESS_TERMINATE = 0x0001;
 const PROCESS_SET_QUOTA = 0x0100;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -60,6 +64,7 @@ type Handle = bigint;
 interface JobObjectApi {
   createJobObject: (attributes: null, name: null) => Handle;
   setInformationJobObject: (job: Handle, infoClass: number, info: Buffer, length: number) => number;
+  queryInformationJobObject: (job: Handle, infoClass: number, info: Buffer, length: number, returnLength: null) => number;
   openProcess: (access: number, inheritHandle: boolean, pid: number) => Handle;
   assignProcessToJobObject: (job: Handle, target: Handle) => number;
   terminateJobObject: (job: Handle, exitCode: number) => number;
@@ -101,6 +106,13 @@ function loadJobObjectApi(): JobObjectApi | null {
         'void*',
         'uint32',
       ]) as JobObjectApi['setInformationJobObject'],
+      queryInformationJobObject: kernel32.func('__stdcall', 'QueryInformationJobObject', 'int', [
+        'void*',
+        'int',
+        'void*',
+        'uint32',
+        'void*',
+      ]) as JobObjectApi['queryInformationJobObject'],
       openProcess: kernel32.func('__stdcall', 'OpenProcess', 'void*', ['uint32', 'bool', 'uint32']) as JobObjectApi['openProcess'],
       assignProcessToJobObject: kernel32.func('__stdcall', 'AssignProcessToJobObject', 'int', [
         'void*',
@@ -317,6 +329,35 @@ export function createShellJob(pid: number, session: ShellSessionJob | undefined
     },
   };
   return callJob;
+}
+
+/**
+ * Whether a closed process left a descendant running, read once at its close and never polled: its call job's active
+ * processes (Windows, before the job is released), or a signal-0 probe of its detached group (POSIX), whose id no new
+ * process can take while a member holds it. False without a call job or group.
+ */
+export function leftRunning(job: ShellJob | undefined, pid: number, group: boolean): boolean {
+  if (process.platform !== 'win32') {
+    if (!group) return false;
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch (err) {
+      // EPERM: another user's group took the id, so none of ours is left
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ESRCH' && code !== 'EPERM') log('[ProcessTree] could not tell whether process group %d still runs, so it counts as ended: %O', pid, err);
+      return false;
+    }
+  }
+  const handle = shellJobHandle(job);
+  const api = handle === undefined ? null : loadJobObjectApi();
+  if (handle === undefined || api === null) return false;
+  const info = Buffer.alloc(BASIC_ACCOUNTING_INFORMATION_BYTES);
+  if (api.queryInformationJobObject(handle, JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION, info, info.length, null) === 0) {
+    log('[ProcessTree] ERROR: QueryInformationJobObject failed for pid %d with Win32 error %d, so what it started counts as ended', pid, api.getLastError());
+    return false;
+  }
+  return info.readUInt32LE(ACTIVE_PROCESSES_OFFSET) > 0;
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   createShellJob,
   createShellSessionJob,
   killProcessTree,
+  leftRunning,
   sessionJobHandle,
   shellJobHandle,
   terminateJobHandle,
@@ -171,10 +172,12 @@ export function createLauncherHost(deps: LauncherHostDeps): (request: LauncherRe
     });
     child.on('close', () => {
       clearTimeout(idle);
+      // read before the Windows call job is released below
+      const left = spec.reportsLeftRunning === true && child.pid !== undefined ? leftRunning(job, child.pid, entry.detached) : undefined;
       // Windows: the call job outlives the exit, so a tree kill still reaches what the process left holding its output.
       if (process.platform === 'win32') job?.dispose();
       running.delete(id);
-      deps.post({ type: 'close', id });
+      deps.post({ type: 'close', id, ...(left !== undefined ? { leftRunning: left } : {}) });
     });
   };
 

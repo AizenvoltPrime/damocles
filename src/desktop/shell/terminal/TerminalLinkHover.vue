@@ -32,7 +32,7 @@ const place = ref<{ left: number; top: number; above: boolean }>({ left: 0, top:
 const label = computed(() => (props.hover ? t(`terminal.link.${props.hover.kind}`) : ''));
 
 // Layout size, not getBoundingClientRect: the entrance animation starts translated.
-watch(() => [props.hover, props.width, props.height] as const, async ([hover]) => {
+watch([() => props.hover, () => props.width, () => props.height], async ([hover]) => {
   if (!hover) return;
   await nextTick();
   const element = hint.value;

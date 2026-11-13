@@ -12,6 +12,7 @@ vi.mock('../../../../core/pi-session/agent-dir', () => ({
   },
 }));
 
+import { createGuardedFetch, FetchRefusedError } from '../../../../core/pi-session/web-access/safe-fetch';
 import { httpIdleTimeoutMs, installProxyDispatcher, parseProxyList, type ProxySource } from '../proxy-dispatcher';
 
 const IDLE_TIMEOUT_MS = 300_000;
@@ -33,8 +34,8 @@ function target(body: string): Promise<number> {
   return listen(http.createServer((_req, res) => res.end(body)));
 }
 
-/** A CONNECT proxy that records every tunnel it opens. */
-async function connectProxy(): Promise<{ port: number; tunnels: string[] }> {
+/** A CONNECT proxy that records every tunnel it opens; with `to`, every tunnel leads to that address whatever host it names. */
+async function connectProxy(to?: string): Promise<{ port: number; tunnels: string[] }> {
   const tunnels: string[] = [];
   const proxy = http.createServer((_req, res) => {
     res.statusCode = 405;
@@ -43,7 +44,7 @@ async function connectProxy(): Promise<{ port: number; tunnels: string[] }> {
   proxy.on('connect', (req: http.IncomingMessage, client: net.Socket, head: Buffer) => {
     tunnels.push(req.url ?? '');
     const [host, port] = (req.url ?? '').split(':');
-    const upstream = net.connect(Number(port), host, () => {
+    const upstream = net.connect(Number(port), to ?? host, () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       upstream.write(head);
       upstream.pipe(client);
@@ -219,6 +220,23 @@ describe('installProxyDispatcher', () => {
     } finally {
       now.mockRestore();
     }
+  });
+
+  it("sends the SSRF guard's fetch through the proxy Chromium names after checking the name here, and connects directly through the guard otherwise", async () => {
+    const proxy = await connectProxy('127.0.0.1');
+    const port = await target('via proxy');
+    disposable = installProxyDispatcher(chromium((origin) => (origin.startsWith('http://proxied.test') ? `PROXY 127.0.0.1:${proxy.port}` : 'DIRECT')), IDLE_TIMEOUT_MS, log);
+    const resolve = vi.fn(async (host: string) => [{ address: host === 'proxied.test' ? '93.184.216.34' : '127.0.0.1', family: 4 }]);
+    const guarded = createGuardedFetch(resolve);
+
+    expect(await (await guarded(`http://proxied.test:${port}/`, {})).text()).toBe('via proxy');
+    expect(proxy.tunnels).toEqual([`proxied.test:${port}`]);
+    expect(resolve).toHaveBeenCalledWith('proxied.test');
+    // DIRECT: the guard's own connection resolves the name and refuses its private answer
+    await expect(guarded(`http://direct.test:${port}/`, {})).rejects.toBeInstanceOf(FetchRefusedError);
+    expect(proxy.tunnels).toHaveLength(1);
+    // a name this computer resolves to a private address is refused before the proxy hears of it
+    await expect(guarded(`http://proxied.test.internal:${port}/`, {})).rejects.toBeInstanceOf(FetchRefusedError);
   });
 
   it('restores the previous global dispatcher on dispose', async () => {

@@ -518,7 +518,7 @@ SOFTWARE.
 
 ## Visual Studio Code (Code - OSS)
 
-Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, remotes, fetch, pull, push, sync, clone, askpass and autofetch, branches, stash, tags and worktrees, the Repositories view, settings and palette titles, and the editor's git integration: hunk staging and revert (`applyLineChanges` and the selected-range rules of git's `staging.ts`), the merge conflict parser and merge editor labels, the quick diff and its provider rules, blame and the timeline, and the Graph: its lanes and its history view logic; and the remote Ports: finding URLs in terminal output, listening sockets as forwarding candidates, port attributes, restored forwards and their expiry, the automatic-forwarding fallback and its Undo, and Change Local Port's check; and the server build's clamp of Node's PT_LOAD alignment, so a server package runs on WSL 1; and the Keep both names of Files' copies.
+Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, remotes, fetch, pull, push, sync, clone, askpass and autofetch, branches, stash, tags and worktrees, the Repositories view, settings and palette titles, and the editor's git integration: hunk staging and revert (`applyLineChanges` and the selected-range rules of git's `staging.ts`), the merge conflict parser and merge editor labels, the quick diff and its provider rules, blame and the timeline, and the Graph: its lanes and its history view logic; and the remote Ports: finding URLs in terminal output, listening sockets as forwarding candidates, port attributes, restored forwards and their expiry, the automatic-forwarding fallback and its Undo, and Change Local Port's check; and the server build's clamp of Node's PT_LOAD alignment, so a server package runs on WSL 1; and the Keep both names of Files' copies; and the GitHub sign-in flows (PKCE through a loopback redirect, device code, the token scope check and revoke) and the typed server URL rules; and the GitHub file and commit links, their published check, and the clone picker's GitHub listing; and the protected branches GitHub's rulesets give; and the commit authors' GitHub pictures (the no-reply address, assignable users and commit author queries); and publish and fork on a denied push: the flow of `extensions/github/src/publish.ts` and `pushErrorHandler.ts`, the repository name sanitizer, and `PR_TEMPLATE_FILES` (`src/core/forge/publish.ts`, `src/shared/forge/publish.ts`, `src/desktop/main/forge/publish-flow.ts`).
 
 - **Source**: https://github.com/microsoft/vscode
 - **Adapted code**:
@@ -566,6 +566,7 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/desktop/pty-host/sessions.ts` and the terminal channels' flow control from `src/vs/platform/terminal/node/terminalProcess.ts` and `src/vs/platform/terminal/common/terminal.ts` (the exit flush window, the conpty spawn and kill throttle, the ignored resize-after-exit errors, and the 100,000 / 5,000 / 5,000 watermarks)
   - `src/core/scm/askpass/askpass-server.ts`, `src/desktop/askpass/askpass-main.ts` and `resources/askpass/askpass.sh`, `ssh-askpass.sh` (the askpass protocol shape: per-call environment naming a helper the scripts run as Node, one request carrying git's or ssh's prompt arguments and one answer, and the prompt classification) from `extensions/git/src/askpass.ts`, `askpass-main.ts`, `askpass.sh`, `ssh-askpass.sh` and `ipc/ipcServer.ts`
   - `src/core/scm/autofetch.ts` (fetch at once and then every period, and stop after a refused credential) from `extensions/git/src/autofetch.ts`
+  - `src/core/forge/remote-url.ts` (the GitHub `owner/repo` form over https and scp-like ssh, generalized to every GitHub server) and the GitHub cases of `src/core/forge/__tests__/remote-url.test.ts` from `extensions/github/src/util.ts` (`getRepositoryFromUrl`)
   - `src/core/scm/sync.ts`, `remotes.ts`, `clone.ts` and the remote flows of `src/core/scm/scm-service.ts` and `src/desktop/main/scm/scm-host.ts` (the fetch, pull, push, force-with-lease, autostash, sync, publish, Add Remote and clone arguments, pickers, questions and folder naming) from `extensions/git/src/git.ts`, `repository.ts`, `commands.ts` and `cloneManager.ts`
   - `src/core/scm/artifacts.ts` (`parseStashes` from `parseGitStashes`, the for-each-ref format and ref rows from `getRefs` and `parseRefs`, the name-status letters from `parseGitChanges`, a detached HEAD's tag from `getHEADRef`, the stash view's base and untracked side from `_viewStash`) from `extensions/git/src/git.ts`, `commands.ts` and `artifactProvider.ts`; `src/core/scm/branches.ts`, `stash.ts`, `tags.ts` and `worktrees.ts` (the checkout, branch, delete, rename, merge, rebase, fast-forward, remote ref delete, stash, tag, ls-remote and worktree arguments and refusals, the worktree folder name and default path, and `sanitizeBranchName`, with its tests in `src/core/scm/__tests__/branch-name.test.ts`) from `extensions/git/src/git.ts`, `repository.ts` and `commands.ts`; `src/core/scm/worktree-roots.ts` (the worktree folder remembered per repository root) from `extensions/git/src/repository.ts` (`createWorktree`); `src/desktop/main/scm/ref-flows.ts` (the branch, ref, stash, tag, remote and worktree pickers, the branch name and worktree path inputs, the worktree path's folder button, the dirty checkout, unmerged branch, stash, tag and dirty worktree questions, save-before-stash, and the messages) from `extensions/git/src/commands.ts` (`_checkout`, `_branch`, `promptForBranchName`, `_deleteBranch`, `renameBranch`, `merge`, `rebase`, `_stash`, `pickStash`, `_stashDrop`, `stashDropAll`, `_viewStash`, `_createTag`, `deleteTag`, `deleteRemoteTag`, `pushTags`, `_createWorktree`, `getWorktreePath`, `deleteWorktree` and the `git.repositories.*` artifact commands) and `repository.ts` (`checkout`, `fastForwardBranch`, `createWorktree`, `deleteWorktree`)
   - `src/desktop/shell/scm/repositories-tree.ts` (`sortRefByName`, the worktree order, the branch, tag, stash and worktree rows and descriptions, the folder tree with its merged single-child chains, and the repeated-time hiding) and its tests from `extensions/git/src/artifactProvider.ts` (`sortRefByName`, `sortByWorktreeTypeAndNameAsc`, `provideArtifacts`) and `src/vs/workbench/contrib/scm/browser/scmRepositoriesViewPane.ts` (`RepositoryTreeDataSource`, `RepositoriesTreeCompressionDelegate`, `ArtifactRenderer`); `src/desktop/shell/scm/RepositoriesSection.vue` and `ArtifactRow.vue` (selection, expansion on the twistie or a double-click, the repeated time shown on hover, the inline actions) from `scmRepositoriesViewPane.ts` and `media/scm.css`; the Repositories row menus and titles in `src/desktop/shell/scm/scm-menus.ts` from `extensions/git/package.json` (`scm/artifactGroup/context`, `scm/artifact/context`, `git.repositories.stash`) and `package.nls.json`; Compare with... and the row copies in `src/desktop/main/scm/ref-flows.ts` and `scm-host.ts` from `extensions/git/src/commands.ts` (`artifactCompareWith`, `_openChangesBetweenRefs`, the `git.repositories.*Copy*` commands)
@@ -588,10 +589,92 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `scripts/elf-load-align.ts` (every PT_LOAD `p_align` above 4 KiB of an x86-64 ELF executable clamped to 4 KiB, by a walk of its 56-byte program headers) from `build/gulpfile.reh.ts` (`patchElfLoadAlign`)
   - `resources/bin/damocles` and `damocles.cmd` (the app's binary run as Node on `cli.js` with `ELECTRON_RUN_AS_NODE`, the WSL branch that passes it through `WSLENV`, and the Git Bash, MSYS2 and Cygwin branch that names `cli.js` with `cygpath -m`) from `resources/win32/bin/code.sh`, `code.cmd`, `resources/linux/bin/code.sh` and `resources/darwin/bin/code.sh`
   - `resources/server-bin/remote-cli/damocles`, `damocles.cmd` and `helpers/browser.sh` (the server's own Node running the remote command, and `BROWSER` handing the address to the client) from `resources/server/bin/remote-cli/code-linux.sh`, `code.cmd` and `resources/server/bin/helpers/browser-linux.sh`, with `code.sh`'s `cygpath -m` branch for Git Bash, MSYS2 and Cygwin on a Windows host
+  - `src/core/forge/oauth/pkce.ts`, `loopback-receiver.ts`, `web-flow.ts`, `device-flow.ts` and `token-sign-in.ts`, and `src/core/forge/providers/github/auth.ts` (PKCE S256, the loopback redirect receiver, `prompt=select_account` and `login=`, the device code poll, the token scope check through `X-OAuth-Scopes`, the token page with its scopes, and the app token revoke) from `extensions/github-authentication/src/flows.ts` and `githubServer.ts`; the typed server URL rules of `src/core/forge/server-url.ts` from `extensions/github-authentication/src/common/enterpriseConfiguration.ts` (`parseEnterpriseUri`)
+  - `src/core/forge/links.ts` (each path segment encoded apart, the `#L<a>-L<b>` range and the blob and commit links) from `extensions/github/src/links.ts` (`encodeURIComponentExceptSlashes`, `rangeString`, `getLink`, `getCommitLink`); the published check of `ScmService.commitOnRemote` in `src/core/scm/scm-service.ts` from `ensurePublished` there; `src/core/forge/clone-sources.ts` (the account's repositories by last update, the search merged with that listing, `owner/name` searched under the owner, https or ssh by a setting) from `extensions/github/src/remoteSourceProvider.ts` (`GithubRemoteSourceProvider`)
+  - `src/core/forge/providers/github/protection.ts` (the repository and rulesets GraphQL queries, the active branch rulesets that require a pull request, `includeParents`, the write-permission check and `~ALL` and `~DEFAULT_BRANCH` as globs) from `extensions/github/src/branchProtection.ts` (`GitHubBranchProtectionProvider`); `src/core/scm/branch-protection.ts` (the setting's globs, then the upstream remote's rules, each matched as included and not excluded) from `extensions/git/src/repository.ts` (`isBranchProtected`, `updateBranchProtectionMatchers`)
+  - `src/core/forge/providers/github/history.ts` (the `assignableUsers(first: 100)` query, the commit author query, here aliased per commit, and the user id of a `users.noreply.github.com` address as an `avatars.githubusercontent.com/u/<id>` picture) and the per-repository user cache and email-then-name match of `src/core/forge/history.ts` from `extensions/github/src/historyItemDetailsProvider.ts` (`GitHubSourceControlHistoryItemDetailsProvider`) and `links.ts` (`getAvatarLink`)
 ```
 MIT License
 
 Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## GitLab Workflow
+
+Damocles adapts the GitLab sign-in, token refresh, remote URL parsing, account resolution, CI, link, clone and publish code of the GitLab Workflow extension for VS Code in its Git hosting accounts, CI views, links, clone picker and Publish dialog (desktop). Each adapted file carries a header naming its source and this license.
+
+- **Source**: https://gitlab.com/gitlab-org/gitlab-vscode-extension
+- **Adapted code**:
+  - `src/core/forge/providers/gitlab/auth.ts` from `src/desktop/accounts/auth_flows/oauth_flow.ts` (the authorize URL with PKCE S256 and the code exchange), `pat_flow.ts` (the token page and the token check), `src/desktop/gitlab/token_exchange_service.ts` and `src/desktop/gitlab/gitlab_service.ts` (`exchangeToken`: the `/oauth/token` refresh with the client id only)
+  - `src/core/forge/providers/gitlab/user.ts` from `pat_flow.ts` (`GET /user` for a token's account)
+  - `src/core/forge/accounts/refresh.ts` (one refresh in flight per account, the rotated tokens stored before use) from `src/desktop/gitlab/token_exchange_service.ts`
+  - `src/core/forge/accounts/account-store.ts` (`makeAccountId`, `<server>|<user id>`) from `src/common/platform/gitlab_account.ts`
+  - `src/core/forge/remote-url.ts` (`parseRemoteUrl` and `matchServer`: scp-like and bracketed ssh remotes, nested groups, the optional path prefix of an ssh remote) and the GitLab cases of `src/core/forge/__tests__/remote-url.test.ts` from `src/desktop/git/git_remote_parser.ts` (`normalizeSshRemote`, `parseGitLabRemote`) and `git_remote_parser.test.ts`
+  - `src/core/forge/bindings/resolve.ts` (the resolution order and the access check that singles out the account able to reach the project) from `src/desktop/accounts/workspace_account_manager.ts` and `account_preselection_service.ts`
+  - `src/core/forge/tools/gitlab.ts` (the pipelines of a ref, a pipeline's jobs with their retried attempts and the latest attempt of each, a job's retry and cancel, its trace) from `src/desktop/gitlab/get_pipeline_and_mr_for_branch.ts`, `api/get_pipelines_for_ref.ts` and `gitlab_service.ts` (`getJobsForPipeline`, `keepLatestAttempts`, `cancelOrRetryJob`, `getJobTrace`)
+  - `src/core/forge/ci-gitlab.ts` (the pipeline a branch shows: its merge request's, else the branch's; the latest attempt of each job; the trace read again while the job runs) from `src/desktop/gitlab/get_pipeline_and_mr_for_branch.ts` and `src/desktop/ci/job_log_refresher.ts`
+  - `src/core/forge/links.ts` (the GitLab `/-/blob/<sha>/<path>#L<a>-<b>` permalink) from `src/desktop/commands/openers.ts` (`getActiveFile`)
+  - `src/core/forge/clone-sources.ts` (the GraphQL `projects(search, membership, first: 30, searchNamespaces)` query, empty repositories left out, the ssh and https clone URLs of each project) from `src/desktop/gitlab/clone/gitlab_remote_source.ts` (`getRemoteSources`, `remoteForProject`) and `src/desktop/gitlab/api/get_projects_with_repository_info.ts`
+  - `src/core/forge/publish.ts` (the GraphQL `currentUser.groups(permissionScope: CREATE_PROJECTS)` namespace lookup, and `POST /projects` with `namespace_id`, `path` and `visibility`) from `src/desktop/gitlab/api/get_namespaces_where_user_can_create_projects.ts`, `src/desktop/gitlab/clone/pick_namespace.ts` and `src/desktop/gitlab/api/create_project.ts`
+  - `CiLogParser` in `src/shared/forge/ci-log.ts` (SGR codes and the 256-color table, section markers and their times, runner timestamps and their continuation flag, folding ranges) from `src/desktop/ci/ansi.ts`, `ansi_decoration_provider.ts` and `job_log_folding_provider.ts`; `ansi.ts` is itself adapted from ANSI Colors (see iliazeus/vscode-ansi below)
+
+```
+MIT License
+
+Copyright (c) 2020-present GitLab Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## ANSI Colors (iliazeus/vscode-ansi)
+
+GitLab Workflow's `src/desktop/ci/ansi.ts`, which `CiLogParser` in `src/shared/forge/ci-log.ts` ports, is adapted from the ANSI Colors extension for VS Code: its SGR attribute and colour handling and its 256-colour table.
+
+- **Source**: https://github.com/iliazeus/vscode-ansi
+- **Adapted code**: `CiLogParser` in `src/shared/forge/ci-log.ts` (`applySgr`, `color256`) from `src/ansi.ts`
+
+```
+MIT License
+
+Copyright (c) 2020 Ilia Pozdnyakov
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1471,6 +1554,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## GitHub and GitLab marks: Simple Icons (CC0-1.0)
+
+The GitHub and GitLab marks in `src/webview/components/icons/GithubMark.vue` and `GitlabMark.vue` are the SVG paths of the `github` and `gitlab` icons of Simple Icons 16.37.0 (https://github.com/simple-icons/simple-icons), dedicated to the public domain under CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/). The logos are trademarks of GitHub, Inc. and GitLab Inc.; Damocles uses them only to name those services.
 
 ---
 

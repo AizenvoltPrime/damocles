@@ -163,6 +163,9 @@ import {
 import { MAX_TERMINAL_ATTACHMENT_CHARS, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../preload/terminal-attachment-cap';
 import { REVIEW_CHANNELS, type ChatReviewFileDiffResult, type ChatReviewSendResult } from '../preload/review-channels';
 import { PORTS_CHANNELS, type PortsView } from '../preload/ports-channels';
+import { FORGE_CHANNELS, type CiChanged, type ForgeChanged, type JobLogUpdate } from '../preload/forge-channels';
+import type { CiStatusView, CommitStatusView, JobLogView } from '../../shared/forge/ci';
+import type { AuthorAvatars, ContainingChange, HistoryForgeContext } from '../../shared/forge/history';
 import type { ShellPortsActions } from './remote/ports/ports-controller';
 import {
   SCM_CHANNELS,
@@ -291,6 +294,28 @@ export interface ShellActions {
   readonly scm: ShellScmActions;
   readonly review: ShellReviewActions;
   readonly ports: ShellPortsActions;
+  // main/forge/forge-host.ts, which checks each payload field by field
+  readonly forge: {
+    repoAccounts(raw: unknown): Promise<unknown>;
+    chooseAccount(raw: unknown): Promise<boolean>;
+    openAccounts(raw: unknown): Promise<void>;
+    ciStatus(raw: unknown): Promise<CiStatusView | null>;
+    ciWatch(raw: unknown): Promise<void>;
+    showPipeline(raw: unknown): Promise<void>;
+    jobLogOpen(raw: unknown): Promise<void>;
+    jobAction(raw: unknown): Promise<boolean>;
+    openOnServer(raw: unknown): Promise<string | null>;
+    commitStatus(raw: unknown): Promise<CommitStatusView | null>;
+    historyContext(raw: unknown): Promise<HistoryForgeContext | null>;
+    authorAvatars(raw: unknown): Promise<AuthorAvatars>;
+    containingChange(raw: unknown): Promise<ContainingChange | null>;
+    // a link from the editor, Graph or blame: main opens or copies it and tells the user; nothing comes back
+    link(raw: unknown): Promise<void>;
+    // the jobLog tab's id, checked by main/forge/job-log-tabs.ts
+    jobLog(tabId: string): Promise<JobLogView>;
+    jobLogRead(tabId: string): Promise<void>;
+    jobLogVisible(tabId: string, visible: boolean): void;
+  };
   readonly gestures: ShellGestureActions;
   openQuickOpen(): Promise<void>;
   showCommands(): Promise<void>;
@@ -1571,6 +1596,7 @@ export class ShellHost {
     this.handleScm();
     this.handleReview();
     this.handlePorts();
+    this.handleForge();
 
     const contents = window.webContents;
     // Only input the browser process routes reaches these: page script's synthetic events never do.
@@ -2089,6 +2115,54 @@ export class ShellHost {
 
   portsView(view: PortsView): void {
     this.send(PORTS_CHANNELS.state, view);
+  }
+
+  private handleForge(): void {
+    const forge = this.actions.forge;
+    this.handle(FORGE_CHANNELS.repoAccounts, (raw) => forge.repoAccounts(raw));
+    this.handle(FORGE_CHANNELS.chooseAccount, (raw) => forge.chooseAccount(raw));
+    this.handle(FORGE_CHANNELS.openAccounts, (raw) => forge.openAccounts(raw));
+    this.handle(FORGE_CHANNELS.ciStatus, (raw) => forge.ciStatus(raw));
+    this.handle(FORGE_CHANNELS.ciWatch, (raw) => forge.ciWatch(raw));
+    this.handle(FORGE_CHANNELS.showPipeline, (raw) => forge.showPipeline(raw));
+    this.handle(FORGE_CHANNELS.jobLogOpen, (raw) => forge.jobLogOpen(raw));
+    this.handle(FORGE_CHANNELS.jobAction, (raw) => forge.jobAction(raw));
+    this.handle(FORGE_CHANNELS.openOnServer, (raw) => forge.openOnServer(raw));
+    this.handle(FORGE_CHANNELS.commitStatus, (raw) => forge.commitStatus(raw));
+    this.handle(FORGE_CHANNELS.historyContext, (raw) => forge.historyContext(raw));
+    this.handle(FORGE_CHANNELS.authorAvatars, (raw) => forge.authorAvatars(raw));
+    this.handle(FORGE_CHANNELS.containingChange, (raw) => forge.containingChange(raw));
+    this.handle(FORGE_CHANNELS.link, (raw) => forge.link(raw));
+    this.handle(FORGE_CHANNELS.jobLog, (raw) => {
+      const call = exactRecord(raw, ['tabId']);
+      if (!call || typeof call['tabId'] !== 'string' || call['tabId'] === '' || call['tabId'].length > 256) throw new Error('Malformed job log call from the shell');
+      return forge.jobLog(call['tabId']);
+    });
+    this.handle(FORGE_CHANNELS.jobLogRead, (raw) => {
+      const call = exactRecord(raw, ['tabId']);
+      if (!call || typeof call['tabId'] !== 'string' || call['tabId'] === '' || call['tabId'].length > 256) throw new Error('Malformed job log read from the shell');
+      return forge.jobLogRead(call['tabId']);
+    });
+    this.on(FORGE_CHANNELS.jobLogVisible, (raw) => {
+      const call = exactRecord(raw, ['tabId', 'visible']);
+      if (!call || typeof call['tabId'] !== 'string' || call['tabId'] === '' || call['tabId'].length > 256 || typeof call['visible'] !== 'boolean') {
+        this.log('[shell] ignored a malformed job log visibility from the shell');
+        return;
+      }
+      forge.jobLogVisible(call['tabId'], call['visible']);
+    });
+  }
+
+  forgeChanged(changed: ForgeChanged): void {
+    this.send(FORGE_CHANNELS.changed, changed);
+  }
+
+  forgeCiChanged(changed: CiChanged): void {
+    this.send(FORGE_CHANNELS.ciChanged, changed);
+  }
+
+  jobLogUpdate(update: JobLogUpdate): void {
+    this.send(FORGE_CHANNELS.jobLogUpdate, update);
   }
 
   scmView(view: ScmView): void {

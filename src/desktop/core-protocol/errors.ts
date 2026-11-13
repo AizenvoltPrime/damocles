@@ -1,4 +1,4 @@
-import { GitError, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type StashKeptOutcome, type SyncBranch } from '../../core/scm/errors';
+import { GitError, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError, SyncPushError, type StashKeptOutcome, type SyncBranch } from '../../core/scm/errors';
 import { WriteRefusedError, type WriteRefusal } from '../workspace/file-system';
 import type { ErrorCodec, Fault } from './endpoint';
 import { MAX_MESSAGE_CHARS } from './messages';
@@ -34,6 +34,7 @@ const FAULTS = {
     cause: maybe(obj({ message: str(MAX_MESSAGE_CHARS), git: maybe(gitFailure) })),
   }),
   SyncBranchChangedError: obj({ text, stage: oneOf(['pull', 'push'] as const), confirmed: syncBranch, found: either(syncBranch, nul) }),
+  SyncPushError: gitFailure,
   LocalizedError: obj({ text, code: maybe(errnoCode) }),
   WriteRefusedError: obj({ refusal: oneOf(['outsideProject', 'outsideFile', 'replaced', 'notAFile', 'diskFull', 'sessionFile'] as const satisfies readonly WriteRefusal[]) }),
   Errno: obj({ code: errnoCode }),
@@ -57,6 +58,7 @@ export function errorCodec(render: (text: LocalizedText) => string = englishText
   return {
     encode: (err, log): Fault | undefined => {
       if (err instanceof GitError) return { name: 'GitError', data: gitData(err) };
+      if (err instanceof SyncPushError) return { name: 'SyncPushError', data: gitData(err.cause) };
       if (err instanceof GitUntrustedError) return { name: 'GitUntrustedError', data: {} };
       if (err instanceof RemoteCancelledError) return { name: 'RemoteCancelledError', data: {} };
       // decode takes a text only through `text`, so one it refuses crosses as the error's message, never as a fault
@@ -88,6 +90,10 @@ export function errorCodec(render: (text: LocalizedText) => string = englishText
         case 'GitError': {
           const data = FAULTS.GitError(fault.data);
           return data === INVALID ? undefined : new GitError(cut, data.exitCode ?? null, '', data.stderr);
+        }
+        case 'SyncPushError': {
+          const data = FAULTS.SyncPushError(fault.data);
+          return data === INVALID ? undefined : new SyncPushError(new GitError(cut, data.exitCode ?? null, '', data.stderr));
         }
         case 'GitUntrustedError':
           return FAULTS.GitUntrustedError(fault.data) === INVALID ? undefined : new GitUntrustedError();

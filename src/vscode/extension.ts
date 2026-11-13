@@ -20,6 +20,7 @@ import { providerKeyStored } from "../core/pi-session/custom-providers";
 import { PROVIDER_SECRET_KEYS } from "../core/pi-session/explore-providers";
 import { runCheckpointMaintenance } from "../core/pi-session/checkpoints";
 import { isNavigableUrl } from "../core/browser/net-guard";
+import { connectGuardedFetchThroughHost } from "../core/pi-session/web-access/safe-fetch";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
@@ -46,6 +47,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const platform = createVsCodePlatform(context);
   installPlatform(platform);
   context.subscriptions.push({ dispose: lockThreadSpawns() });
+  // read at each call: VS Code patches globalThis.fetch with its proxy resolution
+  context.subscriptions.push({ dispose: connectGuardedFetchThroughHost((url, init) => globalThis.fetch(url, init)) });
   installProcessLauncher(createLauncherPool({ workerPath: platform.paths.workerEntry("processLauncher"), sentinelPath: platform.paths.workerEntry("sentinel") }));
   const outputChannel = platform.logSinks.create("Damocles");
   installLogSink(outputChannel);

@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { X } from 'lucide-vue-next';
+import { Button } from '@/components/ui/button';
 
 const props = defineProps<{
   tone: 'warning' | 'danger' | 'info' | 'design';
@@ -9,7 +12,12 @@ const props = defineProps<{
   chip?: string | undefined;
   /** The title's element id, for a control inside the notice to point at. */
   titleId?: string | undefined;
+  /** Shows a Dismiss button, which emits dismiss. */
+  dismissible?: boolean | undefined;
 }>();
+
+const emit = defineEmits<{ dismiss: [] }>();
+const { t } = useI18n();
 
 const toneVar = computed(() => `var(--d-${props.tone})`);
 const toneTextVar = computed(() => `var(--d-${props.tone}-text)`);
@@ -49,6 +57,19 @@ const toneTextVar = computed(() => `var(--d-${props.tone}-text)`);
           <slot />
         </div>
       </div>
+      <Button
+        v-if="dismissible"
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        class="-me-1 -mt-0.5 size-7 flex-none rounded-8 text-(--d-faint-text) hover:bg-(--d-hover) hover:text-(--d-text) [&_svg]:size-3.25"
+        :title="t('common.dismiss')"
+        :aria-label="t('common.dismiss')"
+        data-testid="transcript-notice-dismiss"
+        @click="emit('dismiss')"
+      >
+        <X aria-hidden="true" />
+      </Button>
     </section>
   </div>
 </template>

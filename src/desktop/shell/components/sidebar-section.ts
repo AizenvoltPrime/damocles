@@ -5,6 +5,9 @@ import type { DropEdge } from '../layout/section-order';
 /** damocles.desktop.sidebar.alwaysShowHeaderActions (VS Code's workbench.view.alwaysShowHeaderActions), provided by the sidebar. */
 export const ALWAYS_SHOW_SECTION_ACTIONS: InjectionKey<Readonly<Ref<boolean>>> = Symbol('always-show-section-actions');
 
+/** CSS px of the room a section header gives its #chip controls, which a chip that folds re-measures against as it changes. */
+export const SECTION_CHIP_ROOM: InjectionKey<Readonly<Ref<number>>> = Symbol('section-chip-room');
+
 // Ports shows only for a remote project and is docked below the user's order: never moved, resized or stored in the layout.
 export type SidebarPanelId = SidebarSectionId | 'ports';
 // CSS `order` past every ordered section (odd) and sash (even).

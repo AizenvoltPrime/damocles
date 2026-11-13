@@ -62,6 +62,11 @@ export interface TextFit {
   readonly scrollWidth: number;
 }
 
+/** The box shows less than its whole text. */
+export function textIsCut(box: TextFit): boolean {
+  return box.clientWidth + ROUNDING_PX < box.scrollWidth;
+}
+
 /**
  * A place chip folds to its icon when its whole label does not fit beside the title, which gives way first: the title is
  * cut below `minTitle`, or below its own width when that is shorter.

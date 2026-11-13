@@ -7,7 +7,7 @@ import type { PermissionState } from '../state';
 import type { MatchRuleOptions, McpToolIdentity } from '../types';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions } from '../permission-settings';
-import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, TOOL_WEB_FETCH, SHELL_TOOLS } from '../../../shared/tool-names';
+import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, TOOL_WEB_FETCH, SHELL_TOOLS, FORGE_READ_TOOLS, FORGE_WRITE_TOOLS } from '../../../shared/tool-names';
 import { isPlanFilePath } from '../../paths';
 import { canonicalPath, rememberedPathQueries, spelledPath } from '../../canonical-path';
 import { resolveReadPath, resolveToCwd } from '../../pi-session/tools/search-tools';
@@ -217,7 +217,7 @@ export class EvaluatorManager {
       return null;
     }
     const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
-    return this.matchAgainstPatterns(toolName, input, permissions, mcpTool, options.pathsAsWritten === true);
+    return this.matchAgainstPatterns(toolName, input, permissions, mcpTool, options.pathsAsWritten === true, options.forgeProject);
   }
 
   /**
@@ -355,13 +355,14 @@ export class EvaluatorManager {
     permissionsByFile: FilePermissions[],
     mcpTool: McpToolIdentity | undefined,
     pathsAsWritten: boolean,
+    forgeProject: string | undefined,
   ): PermissionBehavior | null {
     const resolvers = pathResolvers(pathsAsWritten);
     for (const behavior of ['deny', 'ask', 'allow'] as PermissionBehavior[]) {
       for (const filePerms of permissionsByFile) {
         const rules = filePerms[behavior];
         for (const [index, pattern] of rules.entries()) {
-          if (this.matchesPattern(toolName, input, pattern, behavior, filePerms.root, mcpTool, resolvers, rules.slice(index + 1))) {
+          if (this.matchesPattern(toolName, input, pattern, behavior, filePerms.root, mcpTool, resolvers, rules.slice(index + 1), forgeProject)) {
             return behavior;
           }
         }
@@ -379,6 +380,7 @@ export class EvaluatorManager {
     mcpTool: McpToolIdentity | undefined,
     resolvers: PathResolvers,
     later: readonly string[],
+    forgeProject?: string,
   ): boolean {
     // Claude Code skips an `mcp__` rule with parentheses; the URI-scoped resource form is Damocles' one exception.
     if (pattern.startsWith(MCP_TOOL_PREFIX)) {
@@ -397,6 +399,12 @@ export class EvaluatorManager {
 
     if (SHELL_TOOLS.has(toolName)) {
       return this.matchShellSpecifier(input, specifier);
+    }
+    // the target the gate resolved from the chat's own repository, never an input the model wrote; a deny or ask rule may
+    // glob it with `*`, an allow rule names one project exactly
+    if (FORGE_READ_TOOLS.has(toolName) || FORGE_WRITE_TOOLS.has(toolName)) {
+      if (forgeProject === undefined) return false;
+      return behavior === 'allow' ? specifier.toLowerCase() === forgeProject.toLowerCase() : matchesToolPattern(specifier.toLowerCase(), forgeProject.toLowerCase());
     }
     const carveOuts = later.flatMap((rule) => {
       const [, tool, carveOut] = rule.match(RULE_SHAPE) ?? [];

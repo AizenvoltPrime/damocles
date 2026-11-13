@@ -80,6 +80,27 @@ describe('ToolsStatusPanel image group', () => {
   });
 });
 
+describe('ToolsStatusPanel GitHub and GitLab group', () => {
+  const forgeNote = (): string | undefined => {
+    const label = i18n.global.t('tools.groupSwitch', { group: i18n.global.t('tools.group.forge') });
+    const id = document.body.querySelector<HTMLElement>(`[role="switch"][aria-label="${label}"]`)?.getAttribute('aria-describedby');
+    return id ? document.getElementById(id)?.textContent?.trim() : undefined;
+  };
+
+  // servers this computer has not read yet are not "no account"
+  it('says the accounts are still being read, apart from having no account', async () => {
+    const PIPELINES = { name: 'ForgePipelines', label: 'Pipelines', group: 'forge', toggleable: true, enabled: true } as const;
+    mountPanel({ groups: [{ group: 'forge', enabled: true, available: false, unavailableReason: 'forgeServersUnread' }], tools: [PIPELINES] });
+    await nextTick();
+    expect(forgeNote()).toBe('Not available yet: Damocles is still reading the GitHub and GitLab accounts of your computer.');
+    mounted.pop()?.unmount();
+
+    mountPanel({ groups: [{ group: 'forge', enabled: true, available: false, unavailableReason: 'noForgeAccount' }], tools: [PIPELINES] });
+    await nextTick();
+    expect(forgeNote()).toBe('Unavailable: no GitHub or GitLab account. Add one in Settings › Models & accounts › Git hosting.');
+  });
+});
+
 const tool = (name: string, group: ToolStatusInfo['group'], enabled: boolean, toggleable = true): ToolStatusInfo =>
   ({ name, label: name, description: `${name} blurb`, group, toggleable, enabled });
 

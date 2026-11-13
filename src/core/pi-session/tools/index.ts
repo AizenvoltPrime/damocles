@@ -31,6 +31,7 @@ import type { ChatServedFiles } from '../../browser/served-files';
 import { CHAT_BROWSER_SCOPE } from '../../../shared/remote-user';
 import { withPerCallCancel } from './cancellable-shell';
 import type { ShellCancelStore } from './shell-cancel-registry';
+import type { ShellCredentials } from './shell-credentials';
 import type { SessionJob } from '../../process-launcher';
 import { createPowerShellTool } from './powershell-tool';
 import { createPlanModeTools } from './plan-mode-tools';
@@ -51,6 +52,8 @@ import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { abortableTool } from './abortable-tool';
 import { createGenerateImageTool, type ImageToolDeps } from './image-tools';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
+import { FORGE_PI_TOOL_NAMES } from './forge-tool-specs';
+import { buildForgeTools, type ForgeToolsPort } from './forge-tools';
 import { createBrowserRequestInputTool } from './browser-request-input-tool';
 import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools, NO_USER_INPUT, type UserInput } from './subagent-tools';
@@ -74,6 +77,8 @@ export interface CustomToolDeps {
   permissionHandler: PermissionHandler;
   /** Required, with no default: a missing one would silently drop the user's configured shell. */
   getShellOptions: () => ShellOptions;
+  /** Each shell call's git credential takeover, registered before its shell starts. */
+  shellCredentials?: ShellCredentials;
   /** The session-lived store holding the per-call abort controllers of the shell calls the UI can stop. */
   shellCancel: ShellCancelStore;
   /** Delivers a cancel note as a real user turn to the agent that ran the command; supplied per build context. */
@@ -121,6 +126,8 @@ export interface CustomToolDeps {
   /** When present, `GenerateImage` is appended. Only the primary session passes it: image generation never
    *  reaches a subagent or a team agent. */
   imageGeneration?: Pick<ImageToolDeps, 'getRuntime' | 'getModelId'>;
+  /** The chat's GitHub and GitLab tools; built while inert, like the web tools, for the chat and every agent it starts. */
+  forgeTools?: ForgeToolsPort;
   /** Whether the multi-agent Team feature is live (`teamService` present AND `damocles.team.enabled`).
    *  Selects whether the team rung appears in the EnterPlanMode guidance's delivery-mechanism ladder. */
   isTeamEnabled?: () => boolean;
@@ -177,6 +184,8 @@ export interface ModuleToolNameDeps {
   browserEnabled: boolean;
   /** `damocles.imageGeneration.enabled` AND `imageAvailability(...).available`, computed by the caller. */
   imageEligible: boolean;
+  /** The chat has GitHub and GitLab tools (a desktop core) AND `damocles.desktop.forge.agentTools`, computed by the caller. */
+  forgeEligible: boolean;
 }
 
 /**
@@ -222,14 +231,14 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   const cancellable = (tool: ToolDefinition): ToolDefinition =>
     LIVE_OUTPUT_TOOLS.has(mapPiToolName(tool.name)) ? withPerCallCancel(tool, cancelRegistry) : tool;
   const tools: ToolDefinition[] = [
-    createBashTool(pi, cwd, { getShellOptions, shellJob }),
+    createBashTool(pi, cwd, { getShellOptions, shellJob, ...(deps.shellCredentials ? { shellCredentials: deps.shellCredentials } : {}) }),
     createGrepTool(pi, cwd, rgPath, readRuleFilter),
     createFindTool(pi, cwd, rgPath, readRuleFilter),
     createWriteTool(pi, cwd),
     createLsTool(pi, cwd),
     createReadTool(pi, cwd),
     createEditTool(pi, cwd),
-    createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env),
+    createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env, deps.shellCredentials),
     enterPlan,
     exitPlan,
     // only a design chat's questions, and its subagents', record decisions
@@ -284,6 +293,11 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     tools.push(createGenerateImageTool({ pi, cwd, ...imageGeneration }));
   }
 
+  // Built while inert, like the web tools: whether they are active follows the setting and the accounts.
+  if (deps.forgeTools) {
+    tools.push(...buildForgeTools(deps.forgeTools).map(abortableTool));
+  }
+
   // Built while inert, like the web tools: whether they are active follows the resource servers.
   if (mcpResources) {
     tools.push(...createMcpResourceTools({
@@ -334,5 +348,6 @@ export function moduleToolNames(deps: ModuleToolNameDeps): string[] {
   if (deps.compassService?.isEnabled) names.push(...COMPASS_PI_TOOL_NAMES);
   if (deps.browserEnabled) names.push(...BROWSER_PI_TOOL_NAMES);
   if (deps.imageEligible) names.push(...IMAGE_PI_TOOL_NAMES);
+  if (deps.forgeEligible) names.push(...FORGE_PI_TOOL_NAMES);
   return names;
 }

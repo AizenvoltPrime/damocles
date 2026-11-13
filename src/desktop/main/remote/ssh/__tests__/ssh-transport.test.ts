@@ -49,8 +49,10 @@ class FakeSsh {
     let failClose!: (err: Error) => void;
     const exited = new Promise<ProcessExit>((resolve, reject) => { exit = resolve; failExit = reject; });
     const closed = new Promise<void>((resolve, reject) => { close = resolve; failClose = reject; });
+    const leftRunning = closed.then(() => false);
     exited.catch(() => undefined);
     closed.catch(() => undefined);
+    leftRunning.catch(() => undefined);
     this.settle = { exit, close, fail: (err) => { failExit(err); failClose(err); } };
     this.handle = {
       pid: Promise.resolve(42),
@@ -62,6 +64,7 @@ class FakeSsh {
       end: () => { this.ended = true; },
       exited,
       closed,
+      leftRunning,
       kill: () => {
         if (this.done) return;
         this.killed++;

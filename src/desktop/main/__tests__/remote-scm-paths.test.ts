@@ -186,6 +186,7 @@ function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: stri
     openExternal: async () => undefined,
     pickFolder: vi.fn(async () => undefined),
     addProject: async (authority, folder) => void added.push([authority, folder]),
+    forge: { prepareGitOperation: async () => true, prepareClone: async () => ({ proceed: true }), bindClone: async () => undefined, pipelineShown: () => false, hasAccount: async () => false, showClonePicker: async () => undefined, publishToAccount: async () => 'noAccount', pushRefused: async () => false, pushProtected: async () => false, protectedBranches: async () => [] },
     selectProject: async () => undefined,
     worktrees: {
       deleteChatWorktreeAt: async (...args: unknown[]) => {

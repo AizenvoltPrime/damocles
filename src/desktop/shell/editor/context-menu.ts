@@ -3,6 +3,7 @@ import type { OverlayClipboardAction, OverlayMenuItem, OverlayRect } from '../..
 import type { DamoclesShellApi, EditorMenuShortcut } from '../../preload/shell-channels';
 import { tidyMenu } from '../../preload/overlay-channels';
 import type { Monaco } from './monaco';
+import type { EditorLinkCommand } from './editor-git';
 
 // VS Code's editor context menu as far as this page's language services fill it, in its group order (goToCommands.js,
 // rename.js, multicursor.js). The go-to commands show only where their provider exists, as their menu `when` says.
@@ -24,7 +25,12 @@ export interface EditorContextMenuDeps {
   readonly hasGoToProvider: (languageId: string, kind: 'definitions' | 'references') => boolean;
   // the registry's Format Document (D29); available is read each time the menu opens, since an editor shows one tab after another
   readonly formatDocument?: { readonly available: () => boolean; readonly run: () => Promise<void> };
+  // the file's links on its Git hosting server, for a file of an open repository; read each time the menu opens
+  readonly links?: { readonly available: () => boolean; readonly run: (command: EditorLinkCommand) => Promise<void> };
 }
+
+const LINK_COMMANDS: readonly EditorLinkCommand[] = ['copyPermalink', 'openFileOnServer'];
+const isLinkCommand = (id: string): id is EditorLinkCommand => (LINK_COMMANDS as readonly string[]).includes(id);
 
 /** The editor context menu for the model `target` shows. */
 export function editorContextMenuItems(target: MonacoEditor.ICodeEditor, monaco: Monaco, deps: EditorContextMenuDeps): OverlayMenuItem[] {
@@ -46,6 +52,8 @@ export function editorContextMenuItems(target: MonacoEditor.ICodeEditor, monaco:
     item('copy', 'copy', 'copy'),
     ...(writable ? [item('paste', 'paste', 'paste')] : []),
     separator,
+    ...(deps.links?.available() ? LINK_COMMANDS.map((id): OverlayMenuItem => ({ kind: 'item', id, label: deps.t(`editor.contextMenu.${id}`) })) : []),
+    separator,
     item('commandPalette', 'commandPalette'),
   ]);
 }
@@ -55,6 +63,7 @@ async function runItem(target: MonacoEditor.ICodeEditor, id: string, deps: Edito
   target.focus();
   if (id === 'formatDocument') await deps.formatDocument?.run();
   else if (id === 'commandPalette') await deps.api.showCommands();
+  else if (isLinkCommand(id)) await deps.links?.run(id);
   // trigger also reaches the go-to commands, which Monaco registers as commands rather than editor actions
   else if (MONACO_COMMANDS.has(id)) target.trigger('contextMenu', id, null);
 }

@@ -4,12 +4,15 @@ import { GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, MAX_GLOB
 
 const relays = (local: Partial<LocalUserScope>) => new UserRelays({
   resolveCredential: async () => ({ type: 'none' }),
+  forges: async () => [],
   clientAuth: async () => ({ providers: {} }),
   voice: false,
   homedir: '/home/u',
   userSettingKeys: () => [],
   userValue: () => undefined,
   hostPolicy: () => ({ allowBypass: false }),
+  savedHost: () => true,
+  engineHalted: () => false,
   local: local as LocalUserScope,
   log: () => undefined,
 });

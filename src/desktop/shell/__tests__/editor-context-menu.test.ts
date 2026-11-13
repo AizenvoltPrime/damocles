@@ -109,6 +109,18 @@ describe('editor context menu', () => {
     expect(focus).toHaveBeenCalledTimes(1);
   });
 
+  it('offers Copy Permalink and Open File on Server before the palette for a repository file, and runs the picked one', async () => {
+    const { editor, rightClick } = fakeEditor();
+    const run = vi.fn(async () => {});
+    const menu = deps({ kind: 'menu', itemId: 'copyPermalink' });
+    const value: EditorContextMenuDeps = { ...menu.value, links: { available: () => true, run } };
+    expect(labels(editorContextMenuItems(editor, monaco, value)).slice(-4)).toEqual(['copyPermalink', 'openFileOnServer', '---', 'commandPalette']);
+    expect(labels(editorContextMenuItems(editor, monaco, { ...value, links: { available: () => false, run } }))).not.toContain('copyPermalink');
+    attachEditorContextMenu(editor, monaco, value);
+    rightClick(CONTENT_TEXT);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledWith('copyPermalink'));
+  });
+
   it.each(['cut', 'copy', 'paste'])('leaves %s to main, focusing the editor and running nothing', async (itemId) => {
     const { editor, focus, trigger, rightClick } = fakeEditor();
     const menu = deps({ kind: 'menu', itemId }, true);

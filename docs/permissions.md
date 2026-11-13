@@ -117,6 +117,12 @@ In plan mode, for read-only agents and in design chats, a Bash or PowerShell com
 
 Every argument counts as a path these rules might reach, a search pattern included, so `rg environ src`, `git log -S environ`, `rg '..' src`, `grep -r '/' src` and a pattern starting with `\\` or `//` ask too. Each costs one prompt (a refusal in a design chat), never an unasked run.
 
+### GitHub and GitLab tools
+
+The GitHub and GitLab read tools (ForgePipelines, ForgeJobs, ForgeJobLog, ForgeMergeRequest, ForgeMergeRequests, ForgeIssue, ForgeIssues) run without asking in every mode. The writes (ForgeJobAction, ForgeOpenMergeRequest, ForgeComment) ask in Default and Accept Edits mode, run in YOLO, and are blocked in Plan mode, for read-only subagents and for team reviewers. A design chat cannot use any of them.
+
+A write's prompt names the server, the project and the account it writes as (with how the account was chosen), shows the comment or the merge request's title and description exactly as they will be posted, and after Yes says what it is doing. Its second option, "Yes, and don't ask again for <tool> on <project>", saves an allow rule for that tool on that project only, for example `ForgeComment(gitlab.com/grp/app)`. A rule names the project as `<server>/<path>`, matched against the repository the chat works in, never against what the agent wrote. A bare `ForgeComment` rule covers every project. A deny or ask rule may use `*` in the project (`ForgeComment(gitlab.com/grp/*)`); an allow rule names one project exactly. A write a deny rule covers is blocked before Damocles reads anything from the server for its prompt. If the repository, the account, a branch or the text to send changes between your answer and the call, the call sends nothing and the agent calls it again.
+
 ### MCP rules
 
 An `mcp__` rule names a server by the name in its config and a tool by the server's own tool name, written as is or as Claude Code writes it (other characters than letters, digits, `_` and `-` as `_`), so `mcp__my-srv` never covers a server named `my.srv` or `my_srv`. A rule spelling a tool's exact Damocles name also matches it. `mcp__<server>__read_mcp_resource(<uri pattern>)` from the table above is the only `mcp__` rule that takes parentheses. Any other `mcp__` rule with parentheses never matches, as in Claude Code: Damocles skips it and logs the settings file and the rule's position.

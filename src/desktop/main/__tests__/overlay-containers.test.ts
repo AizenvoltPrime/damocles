@@ -78,7 +78,7 @@ describe('container cards, steps and targets', () => {
   });
 
   it('lists a container in Settings under its container+<key> authority only', () => {
-    const entry = { hostId: 'h1', kind: 'container', container: card.container, authorityKey: `container+${KEY}`, name: 'app', destinationLabel: 'docker', connection: 'offline', settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false }, facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [] }, heldMemoryQueues: [] };
+    const entry = { hostId: 'h1', kind: 'container', container: card.container, authorityKey: `container+${KEY}`, name: 'app', destinationLabel: 'docker', connection: 'offline', settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false }, facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [], alwaysForgeAccounts: [] }, heldMemoryQueues: [] };
     expect(parseHostEntries([entry])).toHaveLength(1);
     expect(parseHostEntries([{ ...entry, authorityKey: 'container+xyz' }])).toBeUndefined();
     expect(parseHostEntries([{ ...entry, authorityKey: 'ssh+h1' }])).toBeUndefined();
@@ -91,6 +91,44 @@ describe('container cards, steps and targets', () => {
     for (const target of [{ attach: '--privileged', user: 'root', name: 'x' }, { attach: ID, user: 'admin', name: 'x' }, { devcontainer: 'relative', name: 'x' }, { devcontainer: '/srv/a\nb', name: 'x' }, { devcontainer: '/srv/app', name: 'x', extra: 1 }]) {
       expect(parseConnectTarget({ target })).toBeUndefined();
     }
+  });
+});
+
+describe('git consent naming a Git hosting account', () => {
+  const consent: GitCredentialConsent = { hostName: 'prod-1', credentialHost: 'gitlab.indigital.gr', targetHelper: false };
+  const forgeAccount = { serverLabel: 'gitlab.indigital.gr', login: 'astefanopoulos', reason: 'access', repoPath: 'grp/damocles' } as const;
+
+  it('carries the account through, and nothing more than its four fields', () => {
+    expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount })).toEqual({ kind: 'gitCredentialConsent', ...consent, forgeAccount });
+    const extra = { ...forgeAccount, token: 'secret' } as unknown as NonNullable<GitCredentialConsent['forgeAccount']>;
+    expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount: extra })).toEqual({ kind: 'gitCredentialConsent', ...consent, forgeAccount });
+  });
+
+  it('shows a hidden or bidi character in the path, login or server as its escape', () => {
+    const tricked = { serverLabel: 'gitlab\u200b.com', login: 'astef\u202eadmin', reason: 'access', repoPath: 'grp/\u2066damocles' } as const;
+    expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount: tricked })?.forgeAccount).toEqual({
+      serverLabel: String.raw`gitlab\u{200B}.com`,
+      login: String.raw`astef\u{202E}admin`,
+      reason: 'access',
+      repoPath: String.raw`grp/\u{2066}damocles`,
+    });
+  });
+
+  it('refuses a reason that never asks, and an empty or oversized login', () => {
+    for (const bad of [{ ...forgeAccount, reason: 'bound' }, { ...forgeAccount, reason: 'hostDefault' }, { ...forgeAccount, login: '' }, { ...forgeAccount, login: 'x'.repeat(10_000) }]) {
+      expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount: bad } as unknown as GitCredentialConsent)).toBeUndefined();
+    }
+  });
+
+  it('takes a deeply nested repository path within its own bound, past the host name\'s', () => {
+    const nested = `${'group/'.repeat(49)}project`;
+    expect(nested.length).toBe(301);
+    expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount: { ...forgeAccount, repoPath: nested } })?.forgeAccount?.repoPath).toBe(nested);
+    expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount: { ...forgeAccount, repoPath: 'g/'.repeat(1000) } })).toBeUndefined();
+  });
+
+  it('carries the read variant of an access pick', () => {
+    expect(parseGitCredentialConsentRequest({ ...consent, forgeAccount: { ...forgeAccount, reason: 'accessRead' } })?.forgeAccount?.reason).toBe('accessRead');
   });
 });
 
@@ -112,7 +150,7 @@ describe('host colors at the overlay boundary', () => {
   it('keeps a custom color on a Connect card and a Settings host entry, and refuses junk', () => {
     const card = { hostId: 'h1', kind: 'ssh', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', signInNeeded: false, recentFolders: [], projectFolders: [], notices: [], allowBypass: false, passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false };
     expect(parseConnectHosts([{ ...card, color: CUSTOM }])).toEqual([{ ...card, color: CUSTOM }]);
-    const entry = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false }, facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [] }, heldMemoryQueues: [] };
+    const entry = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false }, facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [], alwaysForgeAccounts: [] }, heldMemoryQueues: [] };
     expect(parseHostEntries([{ ...entry, settings: { ...entry.settings, color: CUSTOM } }])?.[0]?.settings.color).toBe(CUSTOM);
     for (const color of JUNK) {
       expect(parseConnectHosts([{ ...card, color }])).toBeUndefined();

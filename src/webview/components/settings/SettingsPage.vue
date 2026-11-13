@@ -12,7 +12,7 @@ import ApplicationSection from './sections/ApplicationSection.vue';
 import IntegrationsSection from './sections/IntegrationsSection.vue';
 import VoiceSection from './sections/VoiceSection.vue';
 import type { HostSettings, SettingsRowMeta, SettingsScopeView, SettingsSectionMeta } from './settings-rows';
-import { provideSettingsPage } from './settings-view';
+import { provideHostGroupRows, provideSettingsPage } from './settings-view';
 
 const props = defineProps<{
   /** One section, or every section while a search runs. */
@@ -32,6 +32,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const page = provideSettingsPage(() => props.query, () => props.rows, () => props.scopeView?.listed);
+provideHostGroupRows((group) => props.host.rows.filter((entry) => entry.group === group).map((entry) => entry.component));
 
 const scopeEmpty = computed(() => (props.scopeView && !props.query && page.shown.value.size === 0
   ? props.scopeView.empty?.(props.sections[0]!.id) ?? t('settingsModal.emptyScope')
@@ -50,7 +51,7 @@ const SHARED: Partial<Record<SettingsSectionId, Component>> = {
 
 function components(section: SettingsSectionId): Component[] {
   const own = SHARED[section] ?? props.host.sections.find((entry) => entry.id === section)?.component;
-  const extra = props.host.rows.filter((entry) => entry.section === section).map((entry) => entry.component);
+  const extra = props.host.rows.filter((entry) => entry.section === section && entry.group === undefined).map((entry) => entry.component);
   return own ? [own, ...extra] : extra;
 }
 

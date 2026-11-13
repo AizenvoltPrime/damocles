@@ -10,6 +10,7 @@ import { resolveReadPath, resolveToCwd } from '../../pi-session/tools/search-too
 
 const { lookup } = vi.hoisted(() => ({ lookup: vi.fn(async (_host: string, _options: unknown) => [{ address: '93.184.215.14', family: 4 }]) }));
 vi.mock('node:dns/promises', async (importOriginal) => ({ ...await importOriginal<typeof import('node:dns/promises')>(), lookup }));
+vi.mock('undici', async (importOriginal) => (await import('../../pi-session/web-access/__tests__/support/undici-through-global-fetch')).undiciThroughGlobalFetch(await importOriginal()));
 
 const dirs: string[] = [];
 afterEach(() => {

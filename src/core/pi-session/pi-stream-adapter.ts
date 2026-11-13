@@ -10,6 +10,7 @@ import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS, LIVE_OUTPUT_TOOLS } from '../
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
 import { joinResultText, resultImageCount } from './tool-result-text';
+import { partialResultText } from './known-secret-masking';
 import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
 import { turnOutcomeOfError, type TurnChange, type TurnOutcome } from './session-state';
@@ -739,7 +740,7 @@ export class PiStreamAdapter {
         // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
         const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
         const running = this._tools.get(event.toolCallId);
-        if (running) running.output = { text: joinResultText(event.partialResult), truncated: Boolean(details?.truncation?.truncated) };
+        if (running) running.output = { text: partialResultText(event.partialResult), truncated: Boolean(details?.truncation?.truncated) };
         // Built at emit time so a frame held for the whole window reports the elapsed time the card is
         // showing, not the one it had when the frame was pushed.
         this._outputCoalescer.push(event.toolCallId, () => ({
@@ -748,7 +749,7 @@ export class PiStreamAdapter {
           toolName,
           parentToolUseId: null,
           elapsedTimeSeconds: this.elapsed(event.toolCallId),
-          output: joinResultText(event.partialResult),
+          output: partialResultText(event.partialResult),
           outputTruncated: Boolean(details?.truncation?.truncated),
         }));
         break;

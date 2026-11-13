@@ -1,3 +1,4 @@
+import type { ForgeToolsPort } from './pi-session/tools/forge-tools';
 import type { SecretsStore } from '../platform/secrets-store';
 import type { PlatformWithWorktrees } from './worktrees/host';
 import type { SettingsFolder } from '../platform/settings-store';
@@ -22,6 +23,8 @@ export interface McpScope {
   userVisible: string[];
   /** This folder's enabled, trust-permitted folder-scope servers. */
   folder: Record<string, McpServerSpec>;
+  /** A daemon's core: the names of every client's relayed servers this scope was built from, enabled or not. */
+  relayed?: readonly string[];
 }
 
 /** Options for creating a chat session. */
@@ -51,6 +54,8 @@ export interface SessionOptions {
   browserService?: BrowserService;
   /** The chat panel this session runs in; its agents' browser pages belong to it. */
   browserChat?: PanelHost;
+  /** A desktop chat's GitHub and GitLab tools, for the working folder `folder` reads at each call. */
+  forgeTools?: (folder: () => string) => ForgeToolsPort;
   panelId?: string;
   teamService?: TeamService;
   compassService?: CompassService;

@@ -28,6 +28,8 @@ export interface PushOptions {
   readonly setUpstream: boolean;
   readonly followTags: boolean;
   readonly force: boolean;
+  // the push only creates toBranch on remote: the server refuses it if the branch exists there (an empty lease)
+  readonly createOnly?: boolean;
 }
 
 export function remoteArg(remote: string): string {
@@ -63,9 +65,11 @@ export function pullTarget(upstream: Upstream): { readonly remote: string; reado
 
 export function pushArgs(options: PushOptions, version: GitVersion): string[] {
   const refspec = options.branch !== undefined ? [`${headRef(options.branch)}:${headRef(options.toBranch ?? options.branch)}`] : [];
+  if (options.createOnly && (options.force || options.branch === undefined || options.remote === undefined)) throw new Error('A create-only push names its remote and branch and is never forced');
   return [
     'push',
     ...(options.force ? ['--force-with-lease', ...(gitAtLeast(version, 2, 30) ? ['--force-if-includes'] : [])] : []),
+    ...(options.createOnly ? [`--force-with-lease=${headRef(options.toBranch ?? options.branch!)}:`] : []),
     ...(options.setUpstream ? ['-u'] : []),
     ...(options.followTags ? ['--follow-tags'] : []),
     ...(options.remote !== undefined ? [...endOfOptions(version), remoteArg(options.remote), ...refspec] : []),

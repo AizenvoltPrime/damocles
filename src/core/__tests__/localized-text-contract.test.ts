@@ -43,6 +43,19 @@ const COMPASS = "Compass's index data, which its tools give the model in English
 const CODE = 'a code or raw error text the view words itself or shows beside its own words';
 
 const ALLOWED: Readonly<Record<string, string>> = {
+  // git prints it on stderr, in a terminal and to the agent whose shell ran git, which reads it in English
+  'MainRequests.forge.gitCredential.result.answer[kind="refused"].message': MODEL,
+  // a GitHub or GitLab tool's result and its write's card for a remote chat: the model's text and the server's, which the
+  // remote chat's card shows as data
+  'MainRequests.user.forge.tool.result.text': MODEL,
+  'MainRequests.user.forge.describe.result.answer.text': MODEL,
+  'MainRequests.user.forge.describe.result.detail.content.text': MODEL,
+  'MainRequests.user.forge.describe.result.detail.facts[].detail': THIRD_PARTY,
+  // a CI job's log as the server serves it, which the job log tab shows as written
+  'MainRequests.forge.ci.jobLog.result[status="ready"].text': THIRD_PARTY,
+  // a repository's description as its server lists it
+  'MainRequests.forge.clone.search.result.rows[].description': THIRD_PARTY,
+  'CoreEvents.forge.ci.changed.log[status="ready"].text': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="assistant"].data.message.content[][type="text"].text': MODEL,
   'ExtensionToWebviewMessage[type="assistantReplay"].contentBlocks[][type="text"].text': MODEL,
   'ExtensionToWebviewMessage[type="assistantReplay"].tools[].agentLaunch.description': MODEL,
@@ -111,6 +124,10 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'ExtensionToWebviewMessage[type="prefillInput"].text': USER,
   'ExtensionToWebviewMessage[type="promptReturned"].content[][type="text"].text': USER,
   'ExtensionToWebviewMessage[type="promptReturned"].parts[].content[][type="text"].text': USER,
+  // a forge write's comment or merge request text as the model wrote it and the server receives it
+  'ExtensionToWebviewMessage[type="requestPermission"].content.text': MODEL,
+  // a server's host, or a merge request, job or issue title the server holds
+  'ExtensionToWebviewMessage[type="requestPermission"].facts[].detail': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="designBrief"].brief.text': MODEL,
   // DesignCheck's finding, written for the model like a linter's message; the view names the rule by its id beside it
   'ExtensionToWebviewMessage[type="designResult"].result.check.warnings[].message': CODE,

@@ -19,9 +19,11 @@ import TranscriptNotice from './TranscriptNotice.vue';
 import EffortBadge from './EffortBadge.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
 import AuthFailureNotice from './AuthFailureNotice.vue';
+import ForgeRefusedNotice from './ForgeRefusedNotice.vue';
 import DesignResultCard from './design/DesignResultCard.vue';
 import DesignBriefNote from './design/DesignBriefNote.vue';
 import { errorRowText } from '@/composables/useLocalizedText';
+import { useForgeRefusalStore } from '@/stores/useForgeRefusalStore';
 
 const { t } = useI18n();
 
@@ -49,6 +51,9 @@ const emit = defineEmits<{
 }>();
 
 const wrapperRef = ref<HTMLElement | null>(null);
+
+const forgeRefusals = useForgeRefusalStore();
+const forgeRefusal = computed(() => (props.item.type === 'tool-call' && props.item.toolCall ? forgeRefusals.refusals.get(props.item.toolCall.id) : undefined));
 
 const userMessageId = computed<string | null>(() => {
   if (props.item.type !== 'user-message') return null;
@@ -156,6 +161,10 @@ onUnmounted(() => {
         :subagents="subagents"
         @expand-subagent="emit('expandSubagent', $event)"
         @open-lightbox="emit('openLightbox', $event)"
+      />
+      <ForgeRefusedNotice
+        v-if="forgeRefusal"
+        :refusal="forgeRefusal"
       />
     </div>
 

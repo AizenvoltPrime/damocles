@@ -3,6 +3,8 @@ import type { ScmCommitDetails, ScmCommitFileChange, ScmHistoryCommit, ScmHistor
 import { MAX_GRAPH_CHOICE_REFS, type GraphRefChoice } from '../../preload/shell-channels';
 import { graphRows, rowGeometry, type GraphRow, type RowGeometry, type Swimlane } from '../../../core/scm/graph-lanes';
 import { visibleText } from '@shared/visible-text';
+import type { CommitStatusView } from '@shared/forge/ci';
+import type { ContainingChange } from '@shared/forge/history';
 
 // The Graph's model (plan slice 13, VS Code's scmHistoryViewPane.ts): the ref choice and its picker, the refresh rule and the
 // list of fixed-height rows the section virtualizes.
@@ -117,11 +119,14 @@ export type DetailRow = { readonly key: string; readonly hash: string; readonly 
   | { readonly kind: 'message'; readonly text: string; readonly lines: number; readonly truncated: boolean }
   | { readonly kind: 'stat'; readonly stat: NonNullable<ScmCommitDetails['stat']> }
   | { readonly kind: 'file'; readonly file: ScmCommitFileChange }
+  // the status row under the message: the CI check (loading, the pipeline, or why it could not be read; null: no pipeline
+  // or no account) and the merged MR/PR holding the commit (null: none known)
+  | { readonly kind: 'status'; readonly status: Exclude<CommitStatusView, { status: 'none' }> | null; readonly merged: ContainingChange | null }
   // filesTruncated: the commit changed more files than main lists
   | { readonly kind: 'note'; readonly state: 'loading' | 'failed' | 'filesTruncated' });
 
 export const isDetailRow = (row: GraphListRow): row is DetailRow =>
-  row.kind === 'meta' || row.kind === 'message' || row.kind === 'stat' || row.kind === 'file' || row.kind === 'note';
+  row.kind === 'meta' || row.kind === 'message' || row.kind === 'status' || row.kind === 'stat' || row.kind === 'file' || row.kind === 'note';
 
 export interface LaneSize {
   readonly rowHeight: number;
@@ -131,6 +136,10 @@ export interface LaneSize {
 export interface ComposeOptions {
   readonly expanded: ReadonlySet<string>;
   readonly details: ReadonlyMap<string, DetailsState>;
+  // each expanded commit's CI status; absent or null (no account for the server) or none: no status row
+  readonly statuses?: ReadonlyMap<string, CommitStatusView | null> | undefined;
+  // each expanded commit's merged MR/PR; absent or null: none known
+  readonly merged?: ReadonlyMap<string, ContainingChange | null> | undefined;
   // the row ending the list while a next page is read, or after its read failed
   readonly more?: 'loading' | 'failed' | undefined;
   // the lines a message takes once wrapped beside the lanes of a row that has `lanes` of them; absent counts its line breaks
@@ -140,7 +149,7 @@ export interface ComposeOptions {
 export type ListOptions = LaneSize & ComposeOptions;
 
 /** One expanded commit's detail rows: the meta row, then the message, the stat and the files once read. */
-function detailRows(row: GraphRow<ScmHistoryCommit>, state: DetailsState | undefined, measure: ComposeOptions['messageLines']): DetailRow[] {
+function detailRows(row: GraphRow<ScmHistoryCommit>, state: DetailsState | undefined, status: CommitStatusView | null | undefined, merged: ContainingChange | null | undefined, measure: ComposeOptions['messageLines']): DetailRow[] {
   const commit = row.commit!;
   const base = { hash: commit.hash, lanes: row.output, last: false, position: 0, size: 0 };
   const details = state?.state === 'ready' ? state.details : undefined;
@@ -150,6 +159,8 @@ function detailRows(row: GraphRow<ScmHistoryCommit>, state: DetailsState | undef
   } else {
     const text = details.message.trimEnd();
     rows.push({ ...base, kind: 'message', key: `${commit.hash}:message`, text, lines: Math.min(MESSAGE_MAX_LINES, Math.max(1, measure ? measure(text, row.output.length) : text.split('\n').length)), truncated: details.messageTruncated });
+    const ci = status && status.status !== 'none' ? status : null;
+    if (ci || merged) rows.push({ ...base, kind: 'status', key: `${commit.hash}:status`, status: ci, merged: merged ?? null });
     if (details.stat && details.stat.files > 0) rows.push({ ...base, kind: 'stat', key: `${commit.hash}:stat`, stat: details.stat });
     for (const file of details.files) rows.push({ ...base, kind: 'file', key: `${commit.hash}:file:${file.path}`, file });
     if (details.filesTruncated) rows.push({ ...base, kind: 'note', key: `${commit.hash}:more-files`, state: 'filesTruncated' });
@@ -190,7 +201,7 @@ export function composeListRows(lanes: readonly LaneListRow[], options: ComposeO
   const rows: GraphListRow[] = [];
   for (const lane of lanes) {
     if (lane.kind === 'commit' && options.expanded.has(lane.key)) {
-      rows.push({ ...lane, expanded: true }, ...detailRows(lane.row, options.details.get(lane.key), options.messageLines));
+      rows.push({ ...lane, expanded: true }, ...detailRows(lane.row, options.details.get(lane.key), options.statuses?.get(lane.key), options.merged?.get(lane.key), options.messageLines));
     } else rows.push(lane);
   }
   if (options.more) rows.push({ kind: 'more', key: 'more', state: options.more });

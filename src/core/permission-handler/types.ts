@@ -1,6 +1,6 @@
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
-import type { PermissionUpdate, QuestionAnnotations } from '../../shared/types/permissions';
+import type { PermissionDetail, PermissionUpdate, QuestionAnnotations } from '../../shared/types/permissions';
 import type { FormValues } from '../../shared/types/forms';
 import type { ElicitationResult } from '../../shared/types/elicitation';
 import type { DesignVersionChoice, PlanApprovalDesignLink } from '../../shared/types/design';
@@ -30,6 +30,8 @@ export interface MatchRuleOptions {
   ignoreBypass?: true;
   /** Match the call's own path as written, with no file system call on it, and no allow rule with a path: it may reach a network host (`CallFacts.reachesNetwork`). */
   pathsAsWritten?: true;
+  /** A GitHub or GitLab tool's resolved target ("<server>/<path>"), which a `ForgeComment(<server>/<path>)` rule names. */
+  forgeProject?: string;
 }
 
 /** `rule` is required whenever `requiresUser` is set, since only that rule tells a deny from an ask. */
@@ -52,6 +54,8 @@ interface CanUseToolContextBase {
   agentID?: string;
   parentToolUseId?: string | null;
   suggestions?: PermissionUpdate[];
+  /** What the generic prompt shows in words beside the input: a forge write's card (`approvalOf`, `forge/tools/run.ts`). */
+  permissionDetail?: PermissionDetail;
   blockedPath?: string;
   decisionReason?: string;
   /** Set for an MCP call whose descriptor the caller found, or an MCP resource call naming a server; `mcp__` rules match it. */

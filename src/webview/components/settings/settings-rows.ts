@@ -28,9 +28,13 @@ export interface HostSettingsSection extends SettingsSectionMeta {
   readonly rows: readonly SettingsRowMeta[];
 }
 
-/** Rows only one host has, appended to a shared section (desktop Language and Notify me under Application). */
+/** A shared group that renders a host's rows after its own (desktop's damocles.desktop.forge.* rows in Accounts' Git hosting). */
+export type HostRowsGroup = 'forgeHosting';
+
+/** Rows only one host has, appended to a shared section (desktop Language and Notify me under Application), or to one of its groups. */
 export interface HostSettingsRows {
   readonly section: SettingsSectionId;
+  readonly group?: HostRowsGroup;
   readonly component: Component;
   readonly rows: readonly SettingsRowMeta[];
 }
@@ -66,6 +70,9 @@ function row(section: SettingsSectionId, id: string, name: string, keys?: readon
   };
 }
 
+export const FORGE_SERVER_ROW = 'forge-server';
+export const FORGE_ADD_SERVER_ROW = 'forge-add-server';
+
 /** The host tab's row that opens the MCP servers of the host's own ~/.damocles/mcp.json; it writes no setting key. */
 export const MCP_HOST_SERVERS_ROW = 'mcpHostServers';
 
@@ -87,6 +94,9 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('defaults', 'damocles.ideContext.enabled', 'ideContext', ['damocles.ideContext.enabled']),
 
   ...SETTINGS_ACCOUNT_IDS.map((account) => row('accounts', `account-${account}`, account)),
+  // One row per Git hosting server, told apart by SettingsRow's instance; neither writes a setting key, so only the User tab lists them.
+  row('accounts', FORGE_SERVER_ROW, 'forgeServer'),
+  row('accounts', FORGE_ADD_SERVER_ROW, 'forgeAddServer'),
   row('accounts', 'damocles.explore.model', 'exploreModel', ['damocles.explore.model', 'damocles.explore.effort']),
   row('accounts', 'damocles.background.model', 'backgroundModel', ['damocles.background.model', 'damocles.background.effort']),
   row('accounts', 'damocles.memory.judge', 'memoryJudge', ['damocles.memory.judge', 'damocles.memory.judgeEffort']),

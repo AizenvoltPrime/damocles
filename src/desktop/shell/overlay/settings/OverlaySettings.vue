@@ -32,6 +32,7 @@ import { EDIT_SETTINGS_FILE } from './settings-file-link';
 import LanguageRow from './LanguageRow.vue';
 import NotifyRow from './NotifyRow.vue';
 import NotifySoundRow from './NotifySoundRow.vue';
+import ForgeSettingsRows from './ForgeSettingsRows.vue';
 import type { OverlaySettingsBridge } from './overlay-bridge';
 import { provideDesktopPrefs } from './desktop-prefs';
 import { gitRowName } from './git-row-name';
@@ -46,6 +47,12 @@ import {
   EDITOR_WORD_WRAP_SETTING,
   FILE_ICON_THEME_SETTING,
   FILES_EXCLUDE_SETTING,
+  FORGE_AGENT_READ_ANY_REPOSITORY_SETTING,
+  FORGE_AGENT_TOOLS_SETTING,
+  FORGE_BRANCH_PROTECTION_SETTING,
+  FORGE_CI_STATUS_SETTING,
+  FORGE_CLONE_PROTOCOL_SETTING,
+  FORGE_SHOW_AVATARS_SETTING,
   GIT_ALLOW_FORCE_PUSH_SETTING,
   GIT_ALLOW_NO_VERIFY_COMMIT_SETTING,
   GIT_ALWAYS_SIGN_OFF_SETTING,
@@ -122,6 +129,9 @@ const props = defineProps<{
   section?: SettingsSectionId | undefined;
   account?: SettingsAccountId | undefined;
   release?: string | undefined;
+  forgeServer?: string | undefined;
+  forgeSignIn?: boolean | undefined;
+  forgeAccount?: string | undefined;
   scopes?: OverlaySettingsScopes | undefined;
 }>();
 
@@ -218,11 +228,22 @@ const GIT_SETTINGS = [
   GIT_BLAME_EDITOR_DECORATION_SETTING,
 ] as const;
 
+// The Git hosting group's settings rows in the order ForgeSettingsRows renders them: [key, settingsHost.rows name].
+const FORGE_SETTINGS = [
+  [FORGE_AGENT_TOOLS_SETTING, 'forgeAgentTools'],
+  [FORGE_AGENT_READ_ANY_REPOSITORY_SETTING, 'forgeAgentReadAnyRepository'],
+  [FORGE_CI_STATUS_SETTING, 'forgeCiStatus'],
+  [FORGE_BRANCH_PROTECTION_SETTING, 'forgeBranchProtection'],
+  [FORGE_CLONE_PROTOCOL_SETTING, 'forgeCloneProtocol'],
+  [FORGE_SHOW_AVATARS_SETTING, 'forgeShowAvatars'],
+] as const;
+
 // Remote hosts' rows after the idle-terminal limit, in the order RemoteHostsSection renders them: [row id, settingsHost.rows name].
 const REMOTE_HOST_ROWS = [
   ['remote-hosts', 'remoteHosts'],
   ['remote-host-held-memory', 'remoteHostHeldMemory'],
   ['remote-host-name', 'remoteHostName'],
+  ['remote-host-forge-defaults', 'remoteHostForgeDefaults'],
   ['remote-host-color', 'remoteHostColor'],
   ['remote-host-mode', 'remoteHostMode'],
   ['remote-host-yolo', 'remoteHostYolo'],
@@ -341,6 +362,12 @@ const DESKTOP_SETTINGS = computed((): HostSettings => ({
       section: 'application',
       component: NotifySoundRow,
       rows: [{ id: 'damocles.desktop.notifications.sound', section: 'application', label: 'settingsHost.rows.notifySound.label', description: 'settingsHost.rows.notifySound.description', keys: ['damocles.desktop.notifications.sound'] }],
+    },
+    {
+      section: 'accounts',
+      group: 'forgeHosting',
+      component: ForgeSettingsRows,
+      rows: FORGE_SETTINGS.map(([key, name]) => ({ id: key, section: 'accounts' as const, label: `settingsHost.rows.${name}.label`, description: `settingsHost.rows.${name}.description`, keys: [key] })),
     },
   ],
 }));
@@ -490,6 +517,9 @@ const target = shallowRef<SettingsTarget>({
   ...(props.section !== undefined ? { section: props.section } : {}),
   ...(props.account !== undefined ? { account: props.account } : {}),
   ...(props.release !== undefined ? { release: props.release } : {}),
+  ...(props.forgeServer !== undefined ? { forgeServer: props.forgeServer } : {}),
+  ...(props.forgeSignIn !== undefined ? { forgeSignIn: props.forgeSignIn } : {}),
+  ...(props.forgeAccount !== undefined ? { forgeAccount: props.forgeAccount } : {}),
 });
 
 function dispatch(message: ExtensionToWebviewMessage): void {

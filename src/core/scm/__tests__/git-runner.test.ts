@@ -4,6 +4,7 @@ import type { KillOptions, Launcher, SpawnSpec } from '../../process-launcher';
 import { createGitRunner, gitAtLeast, gitEnv, GitOutputTooLargeError, GitQueueDisposedError, isSafeRevision, RepoQueue, revision, type GitCall } from '../git-runner';
 import { parseGitVersion } from '../git-version';
 import { GitError, GitUntrustedError, redactUrls } from '../errors';
+import type { ConfigEntry, CredentialTakeover } from '../askpass/credential-config';
 
 interface Launched {
   readonly spec: SpawnSpec;
@@ -69,6 +70,7 @@ function fakeLauncher(): { launched: Launched[]; launcher: Launcher } {
         },
         exited,
         closed,
+        leftRunning: closed.then(() => false),
         kill: (options = {}) => {
           kills.push(options);
           finish(null);
@@ -401,6 +403,86 @@ describe('git runner', () => {
     expect(read).toBe('abcdef');
     expect(result.stdout.length).toBe(0);
     expect(lines[0]).toBe('> git status [0ms]');
+  });
+});
+
+describe('the credential takeover per call', () => {
+  const ENTRIES: ConfigEntry[] = [['credential.https://gitlab.com.helper', ''], ['credential.https://gitlab.com.helper', "!'/app/git-credential-relay.sh' --takeover"], ['credential.https://gitlab.com.useHttpPath', 'true']];
+  const ORIGIN = { kind: 'engine', projectKey: 'p', interactive: true } as const;
+
+  function takeoverRunner(version = GIT.version) {
+    const fake = fakeLauncher();
+    const events: string[] = [];
+    const lines: string[] = [];
+    const takeover: CredentialTakeover = {
+      entries: () => ENTRIES,
+      register: async () => {
+        events.push('register');
+        return { env: { DAMOCLES_CREDENTIAL_NONCE: 'f'.repeat(64) }, dispose: () => void events.push('dispose') };
+      },
+    };
+    const relay = { helper: '/srv/relay.sh', node: '/n', main: '/m', handle: '/h', nonce: 'e'.repeat(64) };
+    const instance = createGitRunner({ git: { ...GIT, version }, log: { appendLine: (line) => lines.push(line) }, isTrusted: () => true, launcher: fake.launcher, now: () => 0, credentialTakeover: () => takeover, credentialRelay: () => relay });
+    return { spawned: fake.launched, events, lines, instance };
+  }
+
+  it('registers once for a network call with an origin and disposes when it resolves', async () => {
+    const { spawned, events, instance } = takeoverRunner();
+    const done = instance.run(call({ kind: 'mutation', args: ['fetch', 'origin'], credentialOrigin: ORIGIN }));
+    await settle();
+    expect(events).toEqual(['register']);
+    expect(spawned[0]!.spec.env!['DAMOCLES_CREDENTIAL_NONCE']).toBe('f'.repeat(64));
+    spawned[0]!.finish(0);
+    await done;
+    expect(events).toEqual(['register', 'dispose']);
+  });
+
+  it('disposes once when the call rejects or is aborted', async () => {
+    const { spawned, events, instance } = takeoverRunner();
+    const failed = instance.run(call({ kind: 'mutation', args: ['push', 'origin'], credentialOrigin: ORIGIN }));
+    await settle();
+    spawned[0]!.finish(128, '', 'fatal: denied\n');
+    await expect(failed).rejects.toBeInstanceOf(GitError);
+    expect(events).toEqual(['register', 'dispose']);
+    const controller = new AbortController();
+    const aborted = instance.run(call({ kind: 'mutation', args: ['pull'], credentialOrigin: ORIGIN, signal: controller.signal }));
+    await settle();
+    controller.abort(new GitQueueDisposedError());
+    await expect(aborted).rejects.toBeInstanceOf(GitQueueDisposedError);
+    expect(events).toEqual(['register', 'dispose', 'register', 'dispose']);
+  });
+
+  it('registers nothing for a call already aborted, a call that reaches no remote, or one without an origin', async () => {
+    const { spawned, events, instance } = takeoverRunner();
+    const controller = new AbortController();
+    controller.abort(new GitQueueDisposedError());
+    await expect(instance.run(call({ kind: 'mutation', args: ['fetch'], credentialOrigin: ORIGIN, signal: controller.signal }))).rejects.toBeInstanceOf(GitQueueDisposedError);
+    const local = instance.run(call({ kind: 'mutation', args: ['commit', '--quiet'], credentialOrigin: ORIGIN }));
+    const anonymous = instance.run(call({ kind: 'mutation', args: ['fetch'] }));
+    await settle();
+    expect(spawned).toHaveLength(2);
+    for (const entry of spawned) {
+      expect(entry.spec.env!['GIT_CONFIG_PARAMETERS']).toBeUndefined();
+      entry.finish(0);
+    }
+    await Promise.all([local, anonymous]);
+    expect(events).toEqual([]);
+  });
+
+  it('on git 2.30 passes the engine\'s config, the call\'s, the relay and the takeover as -c in that order, and logs all but the takeover\'s', async () => {
+    const { spawned, lines, instance } = takeoverRunner({ major: 2, minor: 30, patch: 2 });
+    const done = instance.run(call({ kind: 'mutation', args: ['fetch', 'origin'], config: [['submodule.a.ignore', 'all']], relayCredentials: true, credentialOrigin: ORIGIN }));
+    await settle();
+    expect(spawned[0]!.spec.args).toEqual([
+      '-c', 'core.longpaths=true',
+      '-c', 'submodule.a.ignore=all',
+      '-c', "credential.helper=!'/srv/relay.sh'",
+      ...ENTRIES.flatMap(([key, value]) => ['-c', `${key}=${value}`]),
+      'fetch', 'origin',
+    ]);
+    spawned[0]!.finish(0);
+    await done;
+    expect(lines).toEqual([`> git -c core.longpaths=true -c submodule.a.ignore=all -c "credential.helper=!'/srv/relay.sh'" fetch origin [0ms]`]);
   });
 });
 

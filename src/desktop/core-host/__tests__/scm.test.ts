@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -13,10 +13,16 @@ import type { LocalizedText } from '../../../shared/localized-text';
 import { createDesktopLocalizationService } from '../../local-services/localization-service';
 import type { RepoSnapshot, ScmEvent } from '../../../core/scm/scm-service';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type AskQuestion, type CoreEndpoint, type MainEndpoint, type ScmMirrorPatch } from '../../core-protocol';
+import { createActorContext, type ActorContext } from '../../core-protocol/actor';
 import { createClientMirrors, createCoreRouter } from '../../daemon/core-routes';
 import { createRunRegistry } from '../../daemon/run-registry';
 import type { CorePlatform } from '../platform';
 import { startCoreScm, type CoreScm } from '../scm';
+import type { RemoteHost } from '../../../platform/remote-host';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { installedCredentialHelper } from '../../../core/scm/askpass/credential-config';
+import { runPinnedTurn } from '../../../core/client-snapshots';
+import { knownSecrets } from '../../../core/forge/known-secrets';
 
 // the askpass server's relay handler, which runs in whatever async context its connection gives it
 const relayHandler = vi.hoisted(() => ({ current: undefined as RelayCredential | undefined }));
@@ -42,12 +48,12 @@ afterEach(() => {
   running = undefined;
 });
 
-function corePlatform(endpoint: CoreEndpoint, trusted: string, remote: boolean, credentialRelay: RelayIdentity | undefined): CorePlatform {
+function corePlatform(endpoint: CoreEndpoint, trusted: string, remote: boolean, credentialRelay: RelayIdentity | undefined, remoteHost?: RemoteHost): CorePlatform {
   const trust = new FakeTrust();
   trust.trusted.add(path.resolve(trusted).toLowerCase());
   return {
     endpoint,
-    init: { git: { available: true, path: GIT_PATH, version: parseGitVersion(git(['--version'], trusted)) }, paths: { askpass: { askpass: '/a', sshAskpass: '/s', node: '/n', main: '/m', ...(credentialRelay ? { credentialRelay } : {}) } }, ...(remote ? { remote: { hostId: 'h1' } } : {}) },
+    init: { git: { available: true, path: GIT_PATH, version: parseGitVersion(git(['--version'], trusted)) }, paths: { unpackedRoot: '/app', askpass: { askpass: '/a', sshAskpass: '/s', node: '/n', main: '/m', ...(credentialRelay ? { credentialRelay } : {}) } }, ...(remote ? { remote: { hostId: 'h1' } } : {}) },
     localization: { t: (message: string) => message },
     trust,
     fileWatchers: watchers,
@@ -55,14 +61,16 @@ function corePlatform(endpoint: CoreEndpoint, trusted: string, remote: boolean, 
     state: { global: new MapMemento() },
     notifications: { info: async () => undefined },
     secrets: { get: async () => undefined },
+    ...(remoteHost ? { remote: remoteHost } : {}),
   } as unknown as CorePlatform;
 }
 
-function start(trusted: string, remote = false, credentialRelay?: RelayIdentity, logs: string[] = []): { seen: Seen[]; asked: AskQuestion[]; trashed: string[]; mainEndpoint: MainEndpoint; call: (method: string, args: unknown[]) => Promise<unknown> } {
+// mainActors: main's side reads the client each request was sent to, which core stamps from processActor
+function start(trusted: string, remote = false, credentialRelay?: RelayIdentity, logs: string[] = [], remoteHost?: RemoteHost, mainActors?: ActorContext): { seen: Seen[]; asked: AskQuestion[]; trashed: string[]; mainEndpoint: MainEndpoint; call: (method: string, args: unknown[]) => Promise<unknown> } {
   const { main, core } = createLoopback();
   const violations: string[] = [];
-  const mainEndpoint = createMainEndpoint(main, () => undefined, (error) => violations.push(error.message));
-  const platform = corePlatform(createCoreEndpoint(core, () => undefined), trusted, remote, credentialRelay);
+  const mainEndpoint = createMainEndpoint(main, () => undefined, (error) => violations.push(error.message), mainActors);
+  const platform = corePlatform(createCoreEndpoint(core, () => undefined, undefined, mainActors ? processActor : undefined), trusted, remote, credentialRelay, remoteHost);
   running = startCoreScm(platform, { appendLine: (line) => logs.push(line), show: () => undefined, dispose: () => undefined }, (line) => logs.push(line));
   const seen: Seen[] = [];
   const asked: AskQuestion[] = [];
@@ -179,7 +187,6 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
     socket.on('close', () => resolve(reply));
     socket.write(`${JSON.stringify({ nonce: identity.nonce, kind: 'credential', ...body })}\n`);
   });
-  const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
   const relayIdentity = (): RelayIdentity => ({ helper: '/srv/damocles/dist/git-credential/git-credential-relay.sh', nonce: 'c'.repeat(64), handle: relayHandle() });
   const servedRequests = (mainEndpoint: MainEndpoint) => {
     const requests: Array<{ readonly op: string; readonly fields: unknown; readonly targetHelper: boolean }> = [];
@@ -189,6 +196,188 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
     });
     return requests;
   };
+
+  it('sends a managed server\'s request with its origin, runs the target\'s own helpers on delegate, then today\'s relay; others as today', async () => {
+    const repo = makeRepo(folder('relay-forge'));
+    const identity = relayIdentity();
+    const fake = createFakeRemoteHost();
+    fake.set('clientForges', 'client-a', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    const { mainEndpoint } = start(repo, true, identity, [], fake.remote);
+    const requests: Array<Record<string, unknown>> = [];
+    mainEndpoint.serve('askpass.credential', (request): GitCredentialAnswer => {
+      requests.push(request);
+      return request.origin !== undefined ? { kind: 'delegate' } : { kind: 'credential', username: 'ada', password: 'relayed-7f3a' };
+    });
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    const managed = { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' };
+    await expect(relayRequest(identity, { op: 'get', cwd: repo, fields: managed })).resolves.toContain('relayed-7f3a');
+    expect(requests).toEqual([
+      { op: 'get', fields: managed, targetHelper: false, origin: { kind: 'terminal' }, cwd: repo },
+      expect.not.objectContaining({ origin: expect.anything() }),
+    ]);
+    requests.length = 0;
+    await relayRequest(identity, { op: 'get', cwd: repo, fields: { protocol: 'https', host: 'github.com', path: 'o/r.git' } });
+    expect(requests).toEqual([expect.not.objectContaining({ origin: expect.anything() })]);
+    // a store is never sent anywhere
+    requests.length = 0;
+    await expect(relayRequest(identity, { op: 'store', cwd: repo, fields: managed, password: 'tok' })).resolves.toBe('{"kind":"none"}\n');
+    expect(requests).toEqual([]);
+    await running!.close();
+  });
+
+  // One credential request as an agent shell's helper sends it; resolves the answer line, '' when the connection was dropped.
+  const shellAsk = (shell: { readonly env: Readonly<Record<string, string>> }, cwd: string): Promise<string> => new Promise((resolve) => {
+    const socket = net.connect(shell.env['DAMOCLES_ASKPASS_HANDLE']!);
+    let reply = '';
+    socket.on('data', (chunk: Buffer) => (reply += chunk.toString('utf8')));
+    socket.on('error', () => undefined);
+    socket.on('close', () => resolve(reply));
+    socket.write(`${JSON.stringify({ nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'credential', op: 'get', cwd, fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } })}\n`);
+  });
+
+  it('asks for an agent shell only the client its origin names while a turn of its chat holds that pin, not an older turn\'s, and nothing once the pin is let go', async () => {
+    const repo = makeRepo(folder('relay-shell-pin'));
+    const identity = relayIdentity();
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-b', { providers: {} });
+    fake.set('clientForges', 'client-a', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    fake.set('clientForges', 'client-b', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    const mainActors = createActorContext();
+    const { mainEndpoint } = start(repo, true, identity, [], fake.remote, mainActors);
+    const requests: Array<Record<string, unknown>> = [];
+    mainEndpoint.serve('askpass.credential', (request): GitCredentialAnswer => {
+      requests.push({ ...request, to: mainActors.current() });
+      return { kind: 'credential', username: 'oauth2', password: 'bound-token' };
+    });
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    // a background agent keeps the chat's first turn, pinned to client-a, running while its second turn is pinned to client-b
+    let releaseFirst!: () => void;
+    const first = runPinnedTurn(fake.remote, 'p1', () => new Promise<void>((resolve) => (releaseFirst = resolve)));
+    fake.setActor('client-b');
+    let releaseSecond!: () => void;
+    const second = runPinnedTurn(fake.remote, 'p1', () => new Promise<void>((resolve) => (releaseSecond = resolve)));
+    fake.setActor('client-a');
+    const origin = { kind: 'agentShell' as const, panelId: 'p1', sessionId: 's1', toolCallId: 'call-2', clientId: 'client-b' };
+    const shell = await installedCredentialHelper()!.register(origin);
+    try {
+      await expect(shellAsk(shell, repo)).resolves.toContain('bound-token');
+      expect(requests).toEqual([expect.objectContaining({ origin, to: 'client-b' })]);
+      requests.length = 0;
+      releaseSecond();
+      await second;
+      // client-a's pin is still held for the chat, but the shell's own turn let go of client-b
+      await expect(shellAsk(shell, repo)).resolves.toBe('{"kind":"none"}\n');
+      expect(requests).toEqual([]);
+    } finally {
+      releaseSecond();
+      releaseFirst();
+      await Promise.all([first, second]);
+      shell.dispose();
+    }
+    await running!.close();
+  });
+
+  it('asks for an agent shell only as an agent shell, of the client its turn is pinned to, and nothing outside a turn', async () => {
+    const repo = makeRepo(folder('relay-shell'));
+    const identity = relayIdentity();
+    const fake = createFakeRemoteHost();
+    // the acting device has the account; the device the turn is pinned to has none
+    fake.set('clientAuth', 'client-b', { providers: {} });
+    fake.set('clientForges', 'client-b', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    const { mainEndpoint } = start(repo, true, identity, [], fake.remote);
+    const requests: Array<Record<string, unknown>> = [];
+    mainEndpoint.serve('askpass.credential', (request): GitCredentialAnswer => {
+      requests.push(request);
+      return { kind: 'credential', username: 'oauth2', password: 'bound-token' };
+    });
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    const shell = await installedCredentialHelper()!.register({ kind: 'agentShell', panelId: 'p1', sessionId: 's1', toolCallId: 'call-1', clientId: 'client-a' });
+    const ask = (): Promise<string> => new Promise((resolve) => {
+      const socket = net.connect(shell.env['DAMOCLES_ASKPASS_HANDLE']!);
+      let reply = '';
+      socket.on('data', (chunk: Buffer) => (reply += chunk.toString('utf8')));
+      socket.on('error', () => undefined);
+      socket.on('close', () => resolve(reply));
+      socket.write(`${JSON.stringify({ nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'credential', op: 'get', cwd: repo, fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } })}\n`);
+    });
+    // outside every turn of its chat: nothing, asked of no device
+    await expect(ask()).resolves.toBe('{"kind":"none"}\n');
+    expect(requests).toEqual([]);
+    let release!: () => void;
+    const turn = runPinnedTurn(fake.remote, 'p1', () => new Promise<void>((resolve) => (release = resolve)));
+    fake.setActor('client-b');
+    try {
+      await ask();
+      // the pinned device manages no server, so today's relay asks it, never as a terminal and never with the acting device's accounts
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).not.toHaveProperty('origin');
+    } finally {
+      release();
+      await turn;
+      shell.dispose();
+    }
+    await running!.close();
+  });
+
+  it('masks what the target\'s own helpers gave an agent shell on delegate, as a relayed token is masked', async () => {
+    const repo = makeRepo(folder('relay-shell-delegate'));
+    const identity = relayIdentity();
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-b', { providers: {} });
+    fake.set('clientForges', 'client-b', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    const { mainEndpoint } = start(repo, true, identity, [], fake.remote);
+    const requests: Array<Record<string, unknown>> = [];
+    mainEndpoint.serve('askpass.credential', (request): GitCredentialAnswer => {
+      requests.push(request);
+      return { kind: 'delegate' };
+    });
+    const savedGlobal = process.env['GIT_CONFIG_GLOBAL'];
+    const global = path.join(folder('relay-shell-global'), 'global.gitconfig');
+    fs.writeFileSync(global, '[protocol "file"]\n\tallow = always\n[credential]\n\thelper = "!f() { echo username=target-user; echo password=target-pass-91c2; }; f"\n');
+    process.env['GIT_CONFIG_GLOBAL'] = global;
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    const shell = await installedCredentialHelper()!.register({ kind: 'agentShell', panelId: 'p1', sessionId: 's1', toolCallId: 'call-1', clientId: 'client-b' });
+    let release!: () => void;
+    fake.setActor('client-b');
+    const turn = runPinnedTurn(fake.remote, 'p1', () => new Promise<void>((resolve) => (release = resolve)));
+    try {
+      const reply = await new Promise<string>((resolve) => {
+        const socket = net.connect(shell.env['DAMOCLES_ASKPASS_HANDLE']!);
+        let text = '';
+        socket.on('data', (chunk: Buffer) => (text += chunk.toString('utf8')));
+        socket.on('error', () => undefined);
+        socket.on('close', () => resolve(text));
+        socket.write(`${JSON.stringify({ nonce: shell.env['DAMOCLES_CREDENTIAL_NONCE'], kind: 'credential', op: 'get', cwd: repo, fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } })}\n`);
+      });
+      expect(reply).toContain('"password":"target-pass-91c2"');
+      expect(requests).toHaveLength(1);
+      expect(knownSecrets().mask('git printed target-pass-91c2')).toBe('git printed ***');
+    } finally {
+      release();
+      await turn;
+      shell.dispose();
+      if (savedGlobal === undefined) delete process.env['GIT_CONFIG_GLOBAL'];
+      else process.env['GIT_CONFIG_GLOBAL'] = savedGlobal;
+    }
+    await running!.close();
+  });
+
+  it('answers a refusal for a managed server as the client\'s core gave it, with no relay', async () => {
+    const repo = makeRepo(folder('relay-refused'));
+    const identity = relayIdentity();
+    const fake = createFakeRemoteHost();
+    fake.set('clientForges', 'client-a', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    const { mainEndpoint } = start(repo, true, identity, [], fake.remote);
+    const requests: unknown[] = [];
+    mainEndpoint.serve('askpass.credential', (request): GitCredentialAnswer => {
+      requests.push(request);
+      return { kind: 'refused', message: 'Turn on "Agent shells may use this account".' };
+    });
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    await expect(relayRequest(identity, { op: 'get', cwd: repo, fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } })).resolves.toContain('"kind":"refused"');
+    expect(requests).toHaveLength(1);
+    await running!.close();
+  });
 
   it('passes an erase on to the client only when it names the password the relay answered, once', async () => {
     const repo = makeRepo(folder('relay-erase'));
@@ -200,7 +389,7 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
     const fields = { protocol: 'https', host: 'github.com', username: 'ada' };
     await expect(relayRequest(identity, { op: 'get', cwd: repo, fields })).resolves.toContain('"password":"relayed-7f3a"');
     // a refusal of the target's own credential, an erase naming no password, and the relayed one twice
-    for (const erase of [{ passwordHash: sha256('saved-on-the-target') }, {}, { passwordHash: sha256('relayed-7f3a') }, { passwordHash: sha256('relayed-7f3a') }]) {
+    for (const erase of [{ password: 'saved-on-the-target' }, {}, { password: 'relayed-7f3a' }, { password: 'relayed-7f3a' }]) {
       await expect(relayRequest(identity, { op: 'erase', cwd: repo, fields, ...erase })).resolves.toBe('{"kind":"none"}\n');
     }
     expect(requests.map((request) => request.op)).toEqual(['get', 'erase']);
@@ -284,7 +473,7 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
       away = true;
       // a connection handler keeps the async context of the listen, here device a's work
       const request = { op: 'get' as const, cwd: repo, fields: { protocol: 'https', host: 'github.com' } };
-      const answer = await processActor.run('device-a', () => relayHandler.current!(request, new AbortController().signal));
+      const answer = await processActor.run('device-a', () => relayHandler.current!(request, { kind: 'terminal' }, new AbortController().signal));
       expect(answer).toMatchObject({ kind: 'credential', username: 'device-b' });
       await expect(relayRequest(identity, request)).resolves.toContain('"username":"device-b"');
       expect(answered).toEqual(['device-b', 'device-b']);
@@ -292,6 +481,27 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
     } finally {
       router.dispose();
     }
+  });
+
+  it('judges a managed server by the acting client\'s accounts, never by the actor of the work the relay listened in', async () => {
+    const repo = makeRepo(folder('relay-actor-managed'));
+    const identity = relayIdentity();
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-b', { providers: {} });
+    fake.set('clientForges', 'client-a', { servers: [{ id: 'gitlab.com', webUrl: 'https://gitlab.com', gitHosts: ['gitlab.com'], hasAccount: true }] });
+    // as core-host/platform/clients.ts reads it: an attached actor, else the acting client the daemon names
+    const clients = { ...fake.remote.clients, acting: () => processActor.current() ?? 'client-a' };
+    const { mainEndpoint } = start(repo, true, identity, [], { ...fake.remote, clients });
+    const requests: Array<Record<string, unknown>> = [];
+    mainEndpoint.serve('askpass.credential', (request): GitCredentialAnswer => {
+      requests.push(request);
+      return { kind: 'credential', username: 'oauth2', password: 'bound-token' };
+    });
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    const request = { op: 'get' as const, cwd: repo, fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } };
+    await processActor.run('client-b', () => relayHandler.current!(request, { kind: 'terminal' }, new AbortController().signal));
+    expect(requests).toEqual([expect.objectContaining({ origin: { kind: 'terminal' } })]);
+    await running!.close();
   });
 
   it('listens again when a git call or agent shell wants the relay after its listen failed', async () => {

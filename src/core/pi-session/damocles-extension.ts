@@ -19,6 +19,7 @@ import type { HookCommon } from './hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from './context-image-pruning';
 import { registerStoppedToolResultMarker, registerWindDownErrorRecord } from './stopped-tool-result';
 import { registerIdentityPromptFold } from './identity-prompt-fold';
+import { registerKnownSecretMasking } from './known-secret-masking';
 import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
@@ -100,6 +101,8 @@ export function createDamoclesExtensionFactory(
     ? { config: hooks.config, workspaceRoot: hooks.workspaceRoot, userHome: hooks.userHome }
     : undefined;
   return (pi) => {
+    // First of every tool_result handler, the configured hooks' included: they and everything after see masked results.
+    registerKnownSecretMasking(pi);
     // PreToolUse `additionalContext` waiting to be delivered on its tool's result (keyed by toolCallId).
     // Per-runtime: shared between the gate below (writes) and the tool_result handler (drains).
     const preToolUseContextStash = createPreToolUseContextStash();

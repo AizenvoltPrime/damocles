@@ -961,6 +961,7 @@ describe('RemoteHosts', () => {
         profileFolder: folders(hostId).profile,
         forgetChats: () => undefined,
         forgetRemoteState: () => state.forgetAuthority(`ssh+${hostId}`),
+        forgetForgeBindings: async () => undefined,
         log: () => undefined,
       }),
     });

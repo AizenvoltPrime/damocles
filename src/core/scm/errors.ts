@@ -28,9 +28,50 @@ export class GitError extends Error {
 // git printed, and only this code decides the action.
 export type GitFailureCode = 'publickeyDenied';
 
+// The server's lines: git's untranslated sideband prefix `remote:` (https and ssh) and an ssh server's own `ERROR:` lines.
+const SERVER_LINE = /^(?:remote|ERROR):/;
+
+const serverLines = (stderr: string): string[] => stderr.split(/\r?\n/).filter((line) => SERVER_LINE.test(line));
+const ownLines = (stderr: string): string[] => stderr.split(/\r?\n/).filter((line) => !SERVER_LINE.test(line));
+
+// OpenSSH's "Permission denied (<methods>)." when no offered method was accepted
+const PUBLICKEY_DENIED = /Permission denied \([\w,-]*\bpublickey\b[\w,-]*\)/;
+
 export function gitFailureCode(err: unknown): GitFailureCode | undefined {
-  // OpenSSH's "Permission denied (publickey)." or "(publickey,password)." when no offered key was accepted
-  return err instanceof GitError && /Permission denied \(publickey[,)]/.test(err.stderr) ? 'publickeyDenied' : undefined;
+  return err instanceof GitError && ownLines(err.stderr).some((line) => PUBLICKEY_DENIED.test(line)) ? 'publickeyDenied' : undefined;
+}
+
+/**
+ * Why a push failed, read from git's stderr: nonFastForward (the remote has commits the branch lacks), authorization (HTTP 403,
+ * or the server's "permission denied" / "not allowed to push" words on its own lines), rejected (git's `[remote rejected]` ref
+ * status with GitHub's reason for a protected branch or a ruleset), or other. Authorization and rejected only lead to the
+ * server's branch rules, and authorization alone to its access check, which alone offers a fork; ssh's
+ * "Permission denied (<methods>)" is authentication, not authorization.
+ */
+export type PushFailureKind = 'nonFastForward' | 'authorization' | 'rejected' | 'other';
+
+const NON_FAST_FORWARD = /\[rejected\][^\n]*\((?:fetch first|non-fast-forward)\)|Updates were rejected because the (?:tip of your current branch is behind|remote contains work)/i;
+// curl's words for an HTTP 403, which git prints untranslated
+const HTTP_FORBIDDEN = /The requested URL returned error: 403|\bHTTP 403\b/;
+const SERVER_REFUSAL = /\bPermission to \S+ denied to\b|You are not allowed to push|\bpermission denied(?! \([\w,-]+\))/i;
+// GitHub's GH006 (protected branch) and GH013 (ruleset) reasons; a hook's other refusals (GH001, GH007, GH009) are not protection
+const REMOTE_REJECTED = /^\s*! \[remote rejected\] [^\n]* \((?:protected branch hook declined|push declined due to repository rule violations)\)\s*$/m;
+
+export function pushFailureKind(err: unknown): PushFailureKind {
+  if (!(err instanceof GitError)) return 'other';
+  if (NON_FAST_FORWARD.test(err.stderr)) return 'nonFastForward';
+  if (HTTP_FORBIDDEN.test(err.stderr) || serverLines(err.stderr).some((line) => SERVER_REFUSAL.test(line))) return 'authorization';
+  return REMOTE_REJECTED.test(err.stderr) ? 'rejected' : 'other';
+}
+
+/** Sync's push failed after its pull succeeded; only this failure of Sync is a refused push. cause: the push's GitError. */
+export class SyncPushError extends Error {
+  override readonly cause: GitError;
+  constructor(cause: GitError) {
+    super(cause.message, { cause });
+    this.name = 'SyncPushError';
+    this.cause = cause;
+  }
 }
 
 // The engine runs no git for a project that is not trusted (D8); the runner refuses as the last line.

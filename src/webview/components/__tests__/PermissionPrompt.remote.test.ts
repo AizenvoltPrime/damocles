@@ -53,4 +53,17 @@ describe('PermissionPrompt on a remote chat', () => {
     expect(title.get('[data-testid="host-name-badge"]').text()).toBe('prod-1');
     expect(wrapper.get('[data-testid="permission-card"]').attributes('aria-label')).toBe(i18n.global.t('permission.ariaLabel'));
   });
+
+  it("puts the host badge before a forge write's title, and names the options by both", () => {
+    const wrapper = prompt({
+      toolName: 'ForgeComment',
+      toolInput: {},
+      title: { message: 'Comment on merge request {0}?', args: ['!45'] },
+      facts: [{ label: { message: 'Server' }, value: 'gitlab.indigital.gr' }],
+    });
+    const title = wrapper.get('[data-testid="permission-title"]');
+    expect(title.text().replace(/\s+/g, ' ')).toBe('prod-1 Comment on merge request !45?');
+    expect(title.get('[data-testid="host-name-badge"]').text()).toBe('prod-1');
+    expect(wrapper.get('[role="listbox"]').attributes('aria-label')).toBe('prod-1 Comment on merge request !45?');
+  });
 });

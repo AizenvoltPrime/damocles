@@ -56,6 +56,7 @@ export interface MessageRouterConfig {
   withViewGate: HandlerDependencies["withViewGate"];
   worktrees: HandlerDependencies["worktrees"];
   broadcastAccountState: HandlerDependencies["broadcastAccountState"];
+  forge?: HandlerDependencies["forge"];
 }
 
 export class MessageRouter {
@@ -96,6 +97,7 @@ export class MessageRouter {
       withViewGate: config.withViewGate,
       worktrees: config.worktrees,
       broadcastAccountState: config.broadcastAccountState,
+      ...(config.forge ? { forge: config.forge } : {}),
     };
     ({ handlers: this.handlers, foreignHandlers: this.foreignHandlers } = createHandlerRegistry(deps));
     this.viewJoin = createViewJoin(deps);
@@ -147,10 +149,10 @@ export class MessageRouter {
    * A remote chat view's message on this computer's core: only FOREIGN_VIEW_MESSAGES, whose handlers read only the host
    * they reply to.
    */
-  async dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage): Promise<void> {
+  async dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage, viewId: string): Promise<void> {
     const handler = FOREIGN_VIEW_MESSAGES.has(message.type) ? this.foreignHandlers[message.type] : undefined;
     if (!handler) throw new Error(`${message.type} does not reach this computer from a remote chat`);
-    await handler(message, { host });
+    await handler(message, { host, viewId });
   }
 
   /**

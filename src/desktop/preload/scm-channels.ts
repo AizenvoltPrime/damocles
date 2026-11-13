@@ -932,8 +932,12 @@ export interface ScmCopyRequest {
   readonly value: string;
 }
 
-// A palette commit command: the shell commits its draft for repoId with the variant.
-export type ScmShellCommand = { readonly command: 'commit'; readonly repoId: string; readonly variant: ScmCommitVariant };
+// A palette command the shell carries out for repoId: commit commits its draft with the variant; chooseAccount opens the
+// account chip's menu and showPipeline the CI chip's job list.
+export type ScmShellCommand =
+  | { readonly command: 'commit'; readonly repoId: string; readonly variant: ScmCommitVariant }
+  | { readonly command: 'chooseAccount'; readonly repoId: string }
+  | { readonly command: 'showPipeline'; readonly repoId: string };
 
 // The editor's multi-file diff tab (EditorTabKind 'changes'); main keeps entries current while the tab is open.
 export interface ScmChangesTab {

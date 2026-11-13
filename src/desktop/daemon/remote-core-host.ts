@@ -10,6 +10,7 @@ import type { Disposable } from '../../platform/disposable';
 import { isAttachedFrame } from '../core-protocol/attached-transport';
 import { createMainEndpoint, processActor, type CoreTransport, type MainEndpoint } from '../core-protocol';
 import type { ClientPolicy, CoreEvents, CoreInit, MirrorTopics } from '../core-protocol/messages';
+import type { ClientForges } from '../../shared/git-credential';
 import { restartDecision } from '../local-services/restart-policy';
 import type { GitProbe } from '../local-services/shell-env';
 import type { CoreAttach, CoreState } from './control-messages';
@@ -77,6 +78,8 @@ export interface RemoteCoreHost {
   // the client core acts for now, and an attached client's policy, as the router keeps them
   actingClient(): string | undefined;
   clientPolicy(clientId: string): ClientPolicy | undefined;
+  // the client's managed git servers (clientForges), whose takeover its terminals get
+  clientForges(clientId: string): ClientForges | undefined;
   // a client's UI language while attached, else the last it had
   clientLanguage(clientId: string): MirrorTopics['language']['language'] | undefined;
   // the agent folder or the relay's handle moved: a running core hears the new paths, a later one reads them in its init
@@ -189,6 +192,8 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
       },
       logs: { dir: deps.paths.logsDir, echo: false },
       endedCores: [...endedCores],
+      // still the previous core's epoch here: start() sets the new one after it posts the init
+      ...(state.epoch !== null ? { restarted: true } : {}),
       worktreeRecords,
       remote: { hostId, ...agentFolderOf(deps.agentFolder()) },
       mirrors: {
@@ -207,6 +212,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
         clientTerminal: Object.fromEntries(mirrors.clientTerminal),
         clientLanguage: Object.fromEntries(mirrors.clientLanguage),
         clientMcp: Object.fromEntries(mirrors.clientMcp),
+        clientForges: Object.fromEntries(mirrors.clientForges),
       },
     };
   };
@@ -387,6 +393,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           }
           mirrors.clientLanguage.delete(clientId);
           mirrors.clientMcp.delete(clientId);
+          mirrors.clientForges.delete(clientId);
           if (mirrors.actingClient.clientId === clientId) mirrors.actingClient = {};
         },
       };
@@ -405,6 +412,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
     },
     actingClient: () => mirrors.actingClient.clientId,
     clientPolicy: (clientId) => mirrors.clientPolicy.get(clientId),
+    clientForges: (clientId) => mirrors.clientForges.get(clientId),
     clientLanguage: (clientId) => mirrors.clientLanguage.get(clientId)?.language ?? lastLanguage.get(clientId),
     socketsMoved: () => {
       if (!running || running.stopping) return;

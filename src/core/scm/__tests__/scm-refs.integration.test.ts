@@ -4,12 +4,12 @@ import { describe, expect, it } from 'vitest';
 import type { Disposable } from '../../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
 import { checkoutArgs } from '../branches';
-import { gitAtLeast } from '../git-runner';
+import { createGitRunner, gitAtLeast, type GitCloner, type GitRunner } from '../git-runner';
 import { parseGitVersion } from '../git-version';
 import { GitUntrustedError } from '../errors';
 import { PathRefusedError } from '../repository';
 import { type ScmEvent } from '../scm-service';
-import { folder, freshStatus, git, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
+import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 
 /** Branches, stash, tags and worktrees (slice 11b) against real and bare repositories, with real git. */
 useGitSandbox();
@@ -516,6 +516,52 @@ describe.skipIf(!HAS_GIT)('stash', { timeout: 120_000 }, () => {
     factory.around(() => git(['stash', 'drop', 'stash@{1}'], work));
     await waitFor(stashed, 'artifacts-changed after a terminal drop of stash@{1}');
     expect((await rows(h, repoId, 'stashes')).map((stash) => stash.description)).toEqual(['again']);
+    h.service.dispose();
+  }, 60_000);
+
+  it('marks the artifacts event config when the git config changes, a field and not a kind, so an older app meets no new kind', async () => {
+    const work = makeRepo(folder('config-watch'));
+    const factory = snapshotWatchers();
+    const h = harness({ trusted: [work], watchers: factory });
+    const events: ScmEvent[] = [];
+    h.service.onDidChange((event) => void events.push(event));
+    h.service.setProjects([{ key: 'p', path: work }]);
+    const repoId = (await ready(h)).repos[0]!.repoId;
+    await waitFor(() => statusOf(h, repoId), 'a first status');
+    const marked = () => events.find((event) => event.kind === 'artifacts' && event.repoId === repoId && event.config === true);
+    factory.around(() => git(['remote', 'add', 'origin', 'git@gl-work:grp/sub/proj.git'], work));
+    expect(await waitFor(marked, 'artifacts-changed marked config')).toMatchObject({ kind: 'artifacts', groups: expect.arrayContaining(['branches']) });
+    expect(events.every((event) => ['view', 'repository', 'decorations', 'ignores', 'clone', 'artifacts'].includes(event.kind))).toBe(true);
+    events.length = 0;
+    // a terminal's tag changes refs only: no config mark
+    factory.around(() => git(['tag', 'plain'], work));
+    const tagged = await waitFor(() => events.find((event) => event.kind === 'artifacts' && event.groups.includes('tags')), 'the tag');
+    expect(tagged && 'config' in tagged).toBe(false);
+    h.service.dispose();
+  }, 60_000);
+
+  it('reads each repository\'s remotes once per change of its git config for credential requests, never once per request', async () => {
+    const works = ['remotes-a', 'remotes-b', 'remotes-c'].map((name) => makeRepo(folder(name)));
+    for (const [index, work] of works.entries()) git(['remote', 'add', 'origin', `https://gitlab.com/grp/p${index}.git`], work);
+    const version = parseGitVersion(git(['--version'], sandbox))!;
+    const real = createGitRunner({ git: { path: GIT_PATH!, version }, log: { appendLine: () => undefined }, isTrusted: () => true });
+    const remoteReads: string[] = [];
+    const runner: GitRunner & GitCloner = { ...real, run: (call) => {
+      if (call.args[0] === 'remote' && call.args[1] === '--verbose') remoteReads.push(path.resolve(call.cwd));
+      return real.run(call);
+    } };
+    const factory = snapshotWatchers();
+    const h = harness({ trusted: works, watchers: factory, runner });
+    h.service.setProjects(works.map((work, index) => ({ key: `p${index}`, path: work })));
+    const repoIds = await Promise.all(works.map(async (_work, index) => (await ready(h, 1, `p${index}`)).repos[0]!.repoId));
+    const requests = (): Promise<unknown> => Promise.all(Array.from({ length: 5 }, () => Promise.all(repoIds.map((repoId) => h.service.cachedRemotes(repoId)))));
+    await requests();
+    expect(remoteReads.sort()).toEqual(works.map((work) => path.resolve(work)).sort());
+    remoteReads.length = 0;
+    factory.around(() => git(['remote', 'add', 'upstream', 'https://gitlab.com/grp/up.git'], works[0]!));
+    await requests();
+    expect(remoteReads).toEqual([path.resolve(works[0]!)]);
+    expect((await h.service.cachedRemotes(repoIds[0]!)).map((remote) => remote.name).sort()).toEqual(['origin', 'upstream']);
     h.service.dispose();
   }, 60_000);
 

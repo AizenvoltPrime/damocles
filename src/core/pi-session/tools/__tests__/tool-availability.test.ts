@@ -117,6 +117,7 @@ describe('moduleToolNames — active membership is live-enabled state', () => {
       compassService: { isEnabled: false } as never,
       browserEnabled: false,
       imageEligible: false,
+      forgeEligible: false,
     });
     for (const tool of MEMORY_PI_TOOL_NAMES) expect(names).toContain(tool);
     for (const tool of COMPASS_PI_TOOL_NAMES) expect(names).not.toContain(tool);
@@ -124,14 +125,14 @@ describe('moduleToolNames — active membership is live-enabled state', () => {
   });
 
   it('gates browser membership on the passed-in browserEnabled flag, not service presence', () => {
-    const enabled = moduleToolNames({ browserEnabled: true, imageEligible: false });
+    const enabled = moduleToolNames({ browserEnabled: true, imageEligible: false, forgeEligible: false });
     for (const tool of BROWSER_PI_TOOL_NAMES) expect(enabled).toContain(tool);
-    const disabled = moduleToolNames({ browserEnabled: false, imageEligible: false });
+    const disabled = moduleToolNames({ browserEnabled: false, imageEligible: false, forgeEligible: false });
     for (const tool of BROWSER_PI_TOOL_NAMES) expect(disabled).not.toContain(tool);
   });
 
   it('adds GenerateImage only when the caller found it eligible', () => {
-    expect(moduleToolNames({ browserEnabled: false, imageEligible: true })).toEqual([TOOL_GENERATE_IMAGE]);
-    expect(moduleToolNames({ browserEnabled: false, imageEligible: false })).not.toContain(TOOL_GENERATE_IMAGE);
+    expect(moduleToolNames({ browserEnabled: false, imageEligible: true, forgeEligible: false })).toEqual([TOOL_GENERATE_IMAGE]);
+    expect(moduleToolNames({ browserEnabled: false, imageEligible: false, forgeEligible: false })).not.toContain(TOOL_GENERATE_IMAGE);
   });
 });

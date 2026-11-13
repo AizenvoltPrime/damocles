@@ -29,6 +29,7 @@ function fakeWsl(output: readonly string[], code: number): { readonly launcher: 
       end: () => undefined,
       exited,
       closed: exited.then(() => undefined),
+      leftRunning: exited.then(() => false),
       kill: () => undefined,
     };
   };

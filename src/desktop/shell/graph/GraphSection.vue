@@ -39,6 +39,11 @@ import {
   type DetailsState,
   type GraphListRow,
 } from './graph-model';
+import type { CommitStatusView } from '@shared/forge/ci';
+import type { ContainingChange, HistoryForgeContext } from '@shared/forge/history';
+import type { ForgeReference } from '@shared/forge/references';
+import { createAvatarAsks, mergedReference, referenceRequest } from '../forge/history-view';
+import { ciPipelineName } from '../forge/ci-view';
 import { laneMetrics } from './lanes';
 
 // The Graph section (plan slice 13, A.4; VS Code's SCM Graph view, scmHistoryViewPane.ts): the history of the repository Source
@@ -95,6 +100,23 @@ const moreFailed = ref(false);
 const outdated = ref(false);
 const expanded = shallowRef(new Set<string>());
 const details = shallowRef(new Map<string, DetailsState>());
+// each expanded commit's CI status, read once per expansion; null: no account for the server, so no row
+const statuses = shallowRef(new Map<string, CommitStatusView | null>());
+// each expanded commit's merged MR/PR, asked on each expansion until one is known; one ask per commit at a time
+const merged = shallowRef(new Map<string, ContainingChange | null>());
+let mergedAsking = new Set<string>();
+// history details: the repository's server (null: none registered, so no links, avatars, CI or MR) and the authors' avatar keys by
+// lower-cased email, asked per email for the repository and context as createAvatarAsks rules
+const forgeContext = shallowRef<HistoryForgeContext | null>(null);
+const avatars = shallowRef(new Map<string, string>());
+let avatarAsks = createAvatarAsks();
+let contextRead = 0;
+// after the pipeline opens in the browser, a polite line says where, for a while; both lines belong to the repository
+const opened = ref('');
+const openFailed = ref('');
+// ms the line stays on screen
+const OPENED_MS = 10_000;
+let openedTimer: ReturnType<typeof setTimeout> | undefined;
 // the hovered commit (its lane lights) and the row holding the roving tabindex
 const hovered = ref<string | null>(null);
 const focusedKey = ref<string | null>(null);
@@ -173,6 +195,8 @@ const laneRows = computed(() => laneListRows(commits.value, load.value, { rowHei
 const rows = computed<GraphListRow[]>(() => composeListRows(laneRows.value, {
   expanded: expanded.value,
   details: details.value,
+  statuses: statuses.value,
+  merged: merged.value,
   more: loadingMore.value ? 'loading' : moreFailed.value ? 'failed' : undefined,
   messageLines,
 }));
@@ -242,6 +266,12 @@ function reset(): void {
   outdated.value = false;
   expanded.value = new Set();
   details.value = new Map();
+  statuses.value = new Map();
+  merged.value = new Map();
+  mergedAsking = new Set();
+  clearTimeout(openedTimer);
+  opened.value = '';
+  openFailed.value = '';
   again = false;
   shownFor = undefined;
   halo.value = null;
@@ -303,6 +333,7 @@ async function reload(): Promise<void> {
     load.value = next;
     cursor.value = page.cursor;
     status.value = 'ready';
+    askAvatars(page.commits);
     outdated.value = false;
     const present = new Set(page.commits.map((commit) => commit.hash));
     if ([...expanded.value].some((hash) => !present.has(hash))) expanded.value = new Set([...expanded.value].filter((hash) => present.has(hash)));
@@ -340,8 +371,95 @@ async function loadMore(): Promise<boolean> {
   for (const commit of added) seen.add(commit.hash);
   commits.value = [...commits.value, ...added];
   cursor.value = result.page.cursor;
+  askAvatars(added);
   return true;
 }
+
+// author avatars: one call per page that rendered (at most MAX_HISTORY_AUTHORS authors each), never awaited by the load; with
+// showAvatars off or no registered server nothing is asked.
+function askAvatars(page: readonly ScmHistoryCommit[]): void {
+  const id = repoId.value;
+  const context = forgeContext.value;
+  if (id === undefined || context === null || !context.showAvatars) return;
+  const read = contextRead;
+  const asks = avatarAsks;
+  for (const authors of asks.batches(page.map((commit) => ({ sha: commit.hash, email: commit.email, name: commit.author })))) {
+    props.api.forge.authorAvatars(id, authors).then((answer) => {
+      asks.settle(authors, answer);
+      if (read !== contextRead) return;
+      const next = new Map(avatars.value);
+      for (const [email, key] of Object.entries(answer)) next.set(email, key);
+      avatars.value = next;
+    }, (error: unknown) => {
+      asks.settle(authors, undefined);
+      console.error('[forge] main refused the author avatars', error);
+    });
+  }
+}
+
+// A picture that would not load drops its key, so the initial shows, and is asked for once more.
+let avatarRetry = false;
+function avatarFailed(commit: ScmHistoryCommit): void {
+  const email = commit.email.trim().toLowerCase();
+  if (!avatars.value.has(email)) return;
+  const next = new Map(avatars.value);
+  next.delete(email);
+  avatars.value = next;
+  if (!avatarAsks.pictureFailed(email) || avatarRetry) return;
+  // every row of a key that went fails together; one call asks for them all
+  avatarRetry = true;
+  queueMicrotask(() => {
+    avatarRetry = false;
+    askAvatars(commits.value);
+  });
+}
+
+// The repository's server, read when the repository changes and again on every forge change (an account, a server or
+// showAvatars); what was asked under the old context is asked again under the new one, and what the context no longer
+// covers goes.
+async function readContext(): Promise<void> {
+  const id = repoId.value;
+  const read = ++contextRead;
+  avatarAsks = createAvatarAsks();
+  if (id === undefined) {
+    forgeContext.value = null;
+    avatars.value = new Map();
+    return;
+  }
+  let context: HistoryForgeContext | null;
+  try {
+    context = await props.api.forge.historyContext(id);
+  } catch (error) {
+    console.error('[forge] main refused the history context', error);
+    context = null;
+  }
+  if (read !== contextRead) return;
+  forgeContext.value = context;
+  if (context === null || !context.showAvatars) avatars.value = new Map();
+  if (context === null) {
+    // no server any more: a "Merged in" or pipeline link would only fail
+    merged.value = new Map();
+    statuses.value = new Map();
+    return;
+  }
+  askAvatars(commits.value);
+  for (const hash of expanded.value) {
+    if (!statuses.value.has(hash)) void readStatus(hash, false);
+    void readMerged(hash);
+  }
+}
+
+watch(repoId, () => {
+  forgeContext.value = null;
+  avatars.value = new Map();
+  void readContext();
+}, { immediate: true });
+const stopForge = props.api.forge.onChanged(() => void readContext());
+
+const avatarOf = (commit: ScmHistoryCommit): { showAvatar: boolean; avatarKey: string | undefined } => ({
+  showAvatar: forgeContext.value?.showAvatars === true,
+  avatarKey: avatars.value.get(commit.email.trim().toLowerCase()),
+});
 
 watch([repoId, choiceKey, untrusted], ([id, key, isUntrusted], [previousId, , wasUntrusted]) => {
   if (id !== previousId) {
@@ -517,6 +635,91 @@ async function readDetails(hash: string): Promise<void> {
   triggerRef(details);
 }
 
+// the commit details' CI row: only on a registered server, so no account means no row flashing in and out; readContext reads it once one shows.
+async function readStatus(hash: string, retry: boolean): Promise<void> {
+  const id = repoId.value;
+  if (id === undefined || forgeContext.value === null) return;
+  const read = generation;
+  statuses.value.set(hash, { status: 'loading' });
+  triggerRef(statuses);
+  let status: CommitStatusView | null;
+  try {
+    status = await props.api.forge.commitStatus(id, hash, retry);
+  } catch (error) {
+    console.error('[ci] main refused the commit status', error);
+    status = { status: 'error', message: t('graph.status.readFailed') };
+  }
+  if (read !== generation || forgeContext.value === null) return;
+  statuses.value.set(hash, status);
+  triggerRef(statuses);
+}
+
+// "Merged in !45": only on a registered server; core answers null for none, no account or a failed read, which it logs.
+async function readMerged(hash: string): Promise<void> {
+  const id = repoId.value;
+  const asking = mergedAsking;
+  if (id === undefined || forgeContext.value === null || merged.value.get(hash) || asking.has(hash)) return;
+  const read = generation;
+  asking.add(hash);
+  let change: ContainingChange | null;
+  try {
+    change = await props.api.forge.containingChange(id, hash);
+  } catch (error) {
+    console.error('[forge] main refused the containing merge request', error);
+    return;
+  } finally {
+    asking.delete(hash);
+  }
+  if (read !== generation || forgeContext.value === null) return;
+  merged.value.set(hash, change);
+  triggerRef(merged);
+}
+
+function openReference(reference: ForgeReference): void {
+  const id = repoId.value;
+  if (id === undefined) return;
+  props.api.forge.link(referenceRequest(id, reference)).catch((error: unknown) => console.error('[forge] main refused to open the reference', error));
+}
+
+async function openPipeline(row: Extract<GraphListRow, { kind: 'status' }>): Promise<void> {
+  const id = repoId.value;
+  if (id === undefined || row.status?.status !== 'ready') return;
+  const { pipeline } = row.status;
+  clearTimeout(openedTimer);
+  opened.value = '';
+  openFailed.value = '';
+  let server: string | null;
+  try {
+    // GitHub's commit status is every check of the commit, which its checks page shows
+    server = await props.api.forge.openOnServer(id, pipeline.kind === 'github' ? { sha: row.hash } : { pipelineId: pipeline.id });
+  } catch (error) {
+    console.error('[ci] main refused to open the pipeline', error);
+    server = null;
+  }
+  if (server === null) {
+    openFailed.value = t('graph.status.openFailed');
+    return;
+  }
+  opened.value = t('forge.ci.opened', { thing: ciPipelineName(pipeline, (key, values) => (values ? t(key, values) : t(key))), server });
+  openedTimer = setTimeout(() => (opened.value = ''), OPENED_MS);
+}
+
+function openMerged(row: Extract<GraphListRow, { kind: 'status' }>): void {
+  if (row.merged) openReference(mergedReference(row.merged));
+}
+
+function retryStatus(hash: string): void {
+  void readStatus(hash, true);
+  void readMerged(hash);
+}
+
+// Enter on the row opens its first link, the pipeline, else the MR; on an error it tries again.
+function activateStatus(row: Extract<GraphListRow, { kind: 'status' }>): void {
+  if (row.status?.status === 'ready') void openPipeline(row);
+  else if (row.status?.status === 'error') retryStatus(row.hash);
+  else if (row.status === null) openMerged(row);
+}
+
 // Motion: detail rows tuck in one after another on a user's expand, and leave by the armed list's transition on collapse; a
 // scroll never plays either.
 const armed = ref(false);
@@ -542,6 +745,9 @@ function setExpanded(hash: string, open: boolean): void {
     revealFor = { hash, until: Date.now() + ARMED_MS };
     const state = details.value.get(hash);
     if (!state || state.state === 'failed') void readDetails(hash);
+    const status = statuses.value.get(hash);
+    if (status === undefined || status?.status === 'error') void readStatus(hash, false);
+    void readMerged(hash);
   } else {
     next.delete(hash);
   }
@@ -625,11 +831,13 @@ async function openCommitMenu(hash: string, anchor: Anchor): Promise<void> {
   const id = repoId.value;
   if (id === undefined) return;
   const commit = commits.value.find((each) => each.hash === hash);
-  const nodes = graphCommitMenu({ hasUpstream: load.value?.headRefs.upstream !== undefined, hasBase: load.value?.headRefs.base !== undefined, operation: snapshot.value?.operation ?? null });
+  const nodes = graphCommitMenu({ hasUpstream: load.value?.headRefs.upstream !== undefined, hasBase: load.value?.headRefs.base !== undefined, operation: snapshot.value?.operation ?? null, hasForge: forgeContext.value !== null });
   const itemId = await showMenu(nodes, t('graph.rowMenu', { hash: hash.slice(0, 8) }), anchor, commit ? `${hash.slice(0, 8)} ${visibleText(commit.subject)}` : undefined);
   if (itemId === undefined) return;
   const action = actionOf(itemId);
-  if (isGraphCommitAction(action)) await call(graphCommitCall(action, id, hash));
+  if (!isGraphCommitAction(action)) return;
+  if (action === 'openCommitOnServer') await props.api.forge.link({ action: 'openCommit', repoId: id, sha: hash }).catch((error: unknown) => console.error('[forge] main refused to open the commit', error));
+  else await call(graphCommitCall(action, id, hash));
 }
 
 async function openRefMenu(ref: ScmHistoryRef, rect: DOMRect): Promise<void> {
@@ -654,6 +862,7 @@ function activate(row: GraphListRow): void {
   else if (row.kind === 'changes') openChanges(row.direction);
   else if (row.kind === 'meta') void call(graphCommitCall('openCommit', id, row.hash));
   else if (row.kind === 'file') void run({ op: 'openCommit', repoId: id, commit: row.hash, path: row.file.path });
+  else if (row.kind === 'status') activateStatus(row);
   else if (row.kind === 'more') retryMore();
 }
 
@@ -713,10 +922,12 @@ const trustCard = computed<StateCard | undefined>(() => {
 
 onBeforeUnmount(() => {
   stopArtifacts();
+  stopForge();
   clearInterval(ageTimer);
   clearTimeout(armTimer);
   clearTimeout(haloTimer);
   clearTimeout(flashTimer);
+  clearTimeout(openedTimer);
   for (const timer of arrivalTimers) clearTimeout(timer);
 });
 
@@ -1012,6 +1223,8 @@ const raw = <T,>(value: T): T => toRaw(value);
                   :arrival="arrivals.get(row.key)"
                   :halo="halo === row.key"
                   :flash="flash === row.key"
+                  v-bind="row.kind === 'commit' ? avatarOf(row.row.commit!) : {}"
+                  @avatar-failed="row.kind === 'commit' && avatarFailed(row.row.commit!)"
                   @toggle="focusedKey = row.key; row.kind === 'commit' && setExpanded(row.key, !row.expanded)"
                   @open="row.kind === 'changes' && openChanges(row.direction)"
                   @menu="openCommitMenu(row.key, pointAnchor($event))"
@@ -1028,9 +1241,16 @@ const raw = <T,>(value: T): T => toRaw(value);
                   :lane="lane"
                   :lit="lit"
                   :reveal="revealing.get(row.key)"
+                  :forge-kind="forgeContext?.kind"
+                  v-bind="row.kind === 'meta' ? avatarOf(row.commit) : {}"
+                  @avatar-failed="row.kind === 'meta' && avatarFailed(row.commit)"
                   @copy-id="repoId && call(graphCommitCall('copyCommitId', repoId, row.hash))"
                   @open-changes="repoId && call(graphCommitCall('openCommit', repoId, row.hash))"
                   @open-file="(path) => repoId && run({ op: 'openCommit', repoId, commit: row.hash, path })"
+                  @open-pipeline="row.kind === 'status' && openPipeline(row)"
+                  @open-merged="row.kind === 'status' && openMerged(row)"
+                  @open-reference="openReference"
+                  @retry-status="retryStatus(row.hash)"
                   @focus="focusedKey = row.key"
                   @menu="openCommitMenu(row.hash, pointAnchor($event))"
                 />
@@ -1087,6 +1307,22 @@ const raw = <T,>(value: T): T => toRaw(value);
           class="sr-only"
         >
           {{ t('graph.keyboardHelp') }}
+        </p>
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="graph-ci-opened"
+          :class="opened ? 'shrink-0 border-t border-(--d-border) px-3 py-1.5 text-11 text-(--d-muted)' : 'sr-only'"
+        >
+          {{ opened }}
+        </p>
+        <p
+          v-if="openFailed"
+          role="alert"
+          data-testid="graph-ci-open-failed"
+          class="shrink-0 border-t border-(--d-border) px-3 py-1.5 text-11 text-(--d-danger-text)"
+        >
+          {{ openFailed }}
         </p>
       </div>
     </Transition>

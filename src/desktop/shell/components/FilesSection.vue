@@ -847,7 +847,7 @@ async function showFolderOf(file: FileRef): Promise<boolean> {
 // until it opens; each newer run supersedes the one before it.
 let autoRevealRun = 0;
 watch(
-  () => [editor.activeTab.value?.projectKey, editor.activeTab.value?.relativePath, props.projectKey, props.collapsed] as const,
+  [() => editor.activeTab.value?.projectKey, () => editor.activeTab.value?.relativePath, () => props.projectKey, () => props.collapsed],
   async ([tabProject, path, project, collapsed]) => {
     const run = ++autoRevealRun;
     if (collapsed || path === undefined || tabProject !== project || autoRevealExcluded(path)) return;

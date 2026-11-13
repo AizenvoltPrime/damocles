@@ -8,6 +8,8 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import { withUrlWatch } from './shell-url-watch';
 import { processLauncher, type LaunchedProcess, type SessionJob } from '../../process-launcher';
 import { findBash } from '../../system-tools';
+import { withEnvOverrides } from '../../../shared/env-spellings';
+import { currentShellLease, withShellCredentials, type ShellCredentials } from './shell-credentials';
 
 /** pi's own ceiling, mirrored because `resolveTimeoutMs` is internal to its bash tool. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -29,6 +31,8 @@ export interface BashToolDeps {
   getShellOptions: () => ShellOptions;
   /** The panel-lived session job every shell call starts in. */
   shellJob: SessionJob | undefined;
+  /** Each call's git credential takeover, registered before its shell starts. */
+  shellCredentials?: ShellCredentials;
 }
 
 /**
@@ -122,6 +126,7 @@ export function createTrackedBashOperations(
       }
 
       const commandFromStdin = shellConfig.commandTransport === 'stdin';
+      const lease = currentShellLease();
       const shell = processLauncher().launch({
         file: shellConfig.shell,
         args: commandFromStdin ? shellConfig.args : [...shellConfig.args, command],
@@ -132,8 +137,10 @@ export function createTrackedBashOperations(
         stdio: [commandFromStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
         windowsHide: true,
         exitOutputIdleMs: SHELL_EXIT_OUTPUT_GRACE_MS,
+        ...(lease ? { reportsLeftRunning: true } : {}),
         ...(shellJob ? { job: shellJob.id } : {}),
       });
+      lease?.heldBy(shell);
       if (commandFromStdin) shell.end(command);
 
       let timedOut = false;
@@ -192,7 +199,11 @@ export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashT
   const build = ({ env, ...options }: ShellOptions): AnyToolDefinition => pi.createBashToolDefinition(cwd, {
     ...options,
     operations,
-    ...(env !== undefined ? { spawnHook: (context) => ({ ...context, env: { ...context.env, ...env } }) } : {}),
+    spawnHook: (context) => {
+      const lease = currentShellLease();
+      if (env === undefined && lease === undefined) return context;
+      return { ...context, env: withEnvOverrides<string | undefined>(withEnvOverrides(context.env, env ?? {}, process.platform), lease?.env ?? {}, process.platform) };
+    },
   });
   const initialOptions = getShellOptions();
   let cachedKey = JSON.stringify(initialOptions);
@@ -213,6 +224,6 @@ export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashT
     // `constrainedSampling` comes in with this spread, so declaring it here would shadow pi's own setting.
     ...metadata,
     parameters: withCommandDescription(metadata.parameters),
-    execute: (toolCallId, params, signal, onUpdate, ctx) => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx),
+    execute: (toolCallId, params, signal, onUpdate, ctx) => withShellCredentials(deps.shellCredentials, toolCallId, () => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx)),
   };
 }

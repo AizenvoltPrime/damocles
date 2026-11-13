@@ -15,6 +15,7 @@ import SettingsRow from '../SettingsRow.vue';
 import SettingAccount from '../controls/SettingAccount.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
+import ForgeHostingGroup from '../forge/ForgeHostingGroup.vue';
 import { useMemoryJudgeNames } from '../memory-judge-names';
 import { useModelEffortPair } from '../model-effort-pair';
 import { modelOptions, useUnavailableHint, UNSET_OPTION } from '../model-options';
@@ -38,6 +39,7 @@ const {
   accountInfo,
   writableKeys,
   availableModels,
+  hostCapabilities,
 } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
 
@@ -275,6 +277,8 @@ const judgeWarning = computed(() => {
       </div>
     </template>
   </SettingsRow>
+
+  <ForgeHostingGroup v-if="hostCapabilities.forgeAccounts === true" />
 
   <div
     v-if="page.groupShown(['damocles.explore.model'])"

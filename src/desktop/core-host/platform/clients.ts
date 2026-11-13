@@ -1,7 +1,8 @@
 import type { Disposable } from '../../../platform/disposable';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform/remote-host';
 import type { PanelHost, TerminalToggle } from '../../../platform/window-service';
-import { heldClientAuth, type HeldAuth, type RelayedMcpServer } from '../../../shared/remote-user';
+import { heldClientAuth, type ClientMcp, type ClientPending, type HeldAuth, type RelayedMcpServer } from '../../../shared/remote-user';
+import type { ClientForges } from '../../../shared/git-credential';
 import type { ClientAuth, ClientPolicy, ClientUser, CoreEndpoint, CoreInit, EditorMirror, MirrorTopics } from '../../core-protocol';
 import { currentActor } from '../../core-protocol/actor';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
@@ -17,12 +18,14 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
   const terminal = new Map<string, TerminalToggle>(Object.entries(init.mirrors.clientTerminal ?? {}));
   const language = new Map<string, MirrorTopics['language']>(Object.entries(init.mirrors.clientLanguage ?? {}));
   const mcp = new Map<string, readonly RelayedMcpServer[]>(Object.entries(init.mirrors.clientMcp ?? {}).map(([clientId, value]) => [clientId, value.servers]));
+  const mcpPending = new Map<string, ClientPending>(Object.entries(init.mirrors.clientMcp ?? {}).flatMap(([clientId, value]) => (value.pending === undefined ? [] : [[clientId, value.pending] as const])));
+  const forges = new Map<string, ClientForges>(Object.entries(init.mirrors.clientForges ?? {}));
   // the daemon publishes clientAuth on every attach and without a value on every detach
   const attached = new Set(Object.keys(init.mirrors.clientAuth));
   let acting = init.mirrors.actingClient.clientId;
   const changed = new Listeners<[{ readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true }]>('client snapshots');
   // keepDetached: a detach (a delta without a value) keeps the client's last value, which its pinned runs go on reading
-  const track = <W, T>(topic: Exclude<ClientTopic, 'actingClient'>, map: Map<string, T>, held: (value: W) => T, keepDetached = false) =>
+  const track = <W, T>(topic: Exclude<ClientTopic, 'actingClient'>, map: Map<string, T>, held: (value: W, clientId: string) => T, keepDetached = false) =>
     endpoint.onMirror(topic, (patch) => {
       // the daemon stamps every delta it forwards
       if (patch.clientId === undefined) return;
@@ -32,7 +35,7 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
       }
       const before = map.get(patch.clientId);
       if (patch.value === undefined && !keepDetached) map.delete(patch.clientId);
-      else if (patch.value !== undefined) map.set(patch.clientId, held(patch.value as W));
+      else if (patch.value !== undefined) map.set(patch.clientId, held(patch.value as W, patch.clientId));
       changed.fire({ topic, clientId: patch.clientId, before, ...(patch.value === undefined ? { detached: true as const } : {}) });
     });
   const subscriptions = [
@@ -44,7 +47,12 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
     track('clientTerminal', terminal, (value: TerminalToggle) => value),
     track('clientLanguage', language, (value: MirrorTopics['language']) => value),
     // a detached client's servers stay, so their tools stay eligible while only their calls are refused
-    track('clientMcp', mcp, (value: { readonly servers: readonly RelayedMcpServer[] }) => value.servers, true),
+    track('clientMcp', mcp, (value: ClientMcp, clientId) => {
+      if (value.pending === undefined) mcpPending.delete(clientId);
+      else mcpPending.set(clientId, value.pending);
+      return value.servers;
+    }, true),
+    track('clientForges', forges, (value: ClientForges) => value),
     endpoint.onMirror('actingClient', (patch) => {
       acting = patch.clientId;
       changed.fire({ topic: 'actingClient' });
@@ -67,7 +75,9 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
     terminal: (clientId) => terminal.get(clientId),
     language: (clientId) => language.get(clientId)?.language,
     mcp: (clientId) => mcp.get(clientId),
+    mcpPending: (clientId) => mcpPending.get(clientId),
     mcpClients: () => [...mcp.keys()],
+    forges: (clientId) => forges.get(clientId),
     onDidChange: (cb) => changed.add(cb),
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();
@@ -117,6 +127,14 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
     mcpCall: (clientId, server, tool, args, signal) => endpoint.request('user.mcp.call', { clientId, server, tool, args }, signal),
     mcpResources: (clientId, server, kind, cursor, signal) => endpoint.request('user.mcp.resources', { clientId, server, kind, ...(cursor !== undefined ? { cursor } : {}) }, signal),
     mcpReadResource: (clientId, server, uri, signal) => endpoint.request('user.mcp.readResource', { clientId, server, uri }, signal),
+    forgeTool: (clientId, host, request, signal) => {
+      const viewId = viewIdOf(host);
+      return endpoint.request('user.forge.tool', { clientId, ...(viewId !== undefined ? { viewId } : {}), ...request }, signal);
+    },
+    forgeDescribe: (clientId, host, request, signal) => {
+      const viewId = viewIdOf(host);
+      return endpoint.request('user.forge.describe', { clientId, ...(viewId !== undefined ? { viewId } : {}), ...request }, signal);
+    },
     shellOutput: () => {
       const decoder = new TextDecoder();
       const finder = createUrlFinder((hit) => endpoint.emit('ports.urlSeen', hit));

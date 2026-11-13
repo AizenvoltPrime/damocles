@@ -9,6 +9,7 @@ import {
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
   SHELL_TOOLS,
+  FORGE_WRITE_TOOLS,
 } from '../../shared/tool-names';
 
 /**
@@ -43,7 +44,7 @@ export type ToolCategory = 'read' | 'write' | 'shell' | 'other';
 /** Classify a Damocles display name. Drives gate routing (read → auto-allow; write/shell → approval). */
 export function toolCategory(damoclesName: string): ToolCategory {
   if (SHELL_TOOLS.has(damoclesName)) return 'shell';
-  if (WRITE_TOOLS.has(damoclesName)) return 'write';
+  if (WRITE_TOOLS.has(damoclesName) || FORGE_WRITE_TOOLS.has(damoclesName)) return 'write';
   if (READ_ONLY_TOOLS.has(damoclesName)) return 'read';
   return 'other';
 }

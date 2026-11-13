@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { LoaderCircle } from 'lucide-vue-next';
+import { LoaderCircle, TriangleAlert } from 'lucide-vue-next';
 import SettingButton from './SettingButton.vue';
 
 defineProps<{
-  state: 'ok' | 'off' | 'busy';
+  /** warn: the credential needs the user (a refused token); it shows a warning icon, not the dot. */
+  state: 'ok' | 'off' | 'busy' | 'warn';
   status: string;
   action: string;
   /** Names the action for assistive technology, e.g. "Manage Anthropic". */
@@ -24,7 +25,13 @@ const emit = defineEmits<{
       :data-state="state"
       role="status"
     >
+      <TriangleAlert
+        v-if="state === 'warn'"
+        class="size-3"
+        aria-hidden="true"
+      />
       <span
+        v-else
         class="sm-account-dot"
         aria-hidden="true"
       />

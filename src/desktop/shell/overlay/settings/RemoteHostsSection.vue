@@ -3,6 +3,9 @@ import { computed, inject, nextTick, onScopeDispose, ref, shallowRef, useId, wat
 import { useI18n } from 'vue-i18n';
 import type { FocusOutsideEvent, PointerDownOutsideEvent } from 'reka-ui';
 import { Ban, Check, FileText, Pipette } from 'lucide-vue-next';
+import GithubMark from '@/components/icons/GithubMark.vue';
+import GitlabMark from '@/components/icons/GitlabMark.vue';
+import type { HostDefaultsView } from '@shared/forge/bindings';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import SettingInput from '@/components/settings/controls/SettingInput.vue';
@@ -14,7 +17,7 @@ import { canonicalHexColor, hexColorParts, type HexColor } from '@shared/hex-col
 import { HOST_TONES, canonicalHostColor, hostColorLook, isHostTone, type CustomHostColor, type HostTone } from '@shared/host-colors';
 import { PERMISSION_MODES, type PermissionMode } from '@shared/types/settings';
 import { DESKTOP_CONFIGURATION, REMOTE_TERMINAL_IDLE_DAYS_SETTING } from '../../../local-services/desktop-configuration';
-import type { HostSettingChange, NameCheck, RemoteHostEntry } from '../../../preload/overlay-channels';
+import type { AlwaysForgeAccount, HostSettingChange, NameCheck, RemoteHostEntry } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
 import { THEME_PALETTES } from '../../../theme-palettes';
 import { hostAppearance } from '../../host-appearance';
@@ -237,7 +240,8 @@ const opacityValueText = (percent: number): string => t('remoteHosts.picker.opac
 // Name: saved on Enter and when the field loses focus, through main's validator.
 const nameDraft = ref('');
 const nameField = ref<InstanceType<typeof HostNameField> | null>(null);
-watch(() => [host.value?.hostId, host.value?.name] as const, ([, name]) => {
+// Separate sources compare by value; main pushes every host again after any change, and the typed text must survive that.
+watch([() => host.value?.hostId, () => host.value?.name], ([, name]) => {
   nameDraft.value = name ?? '';
 }, { immediate: true });
 
@@ -305,6 +309,106 @@ async function showLog(entry: RemoteHostEntry): Promise<void> {
     await ran(api.showHostLog(entry.hostId));
   } catch {
     logFailed.value = true;
+  }
+}
+
+// Default accounts on the host: read per host from main, again after any accounts change; a pick shows at once and
+// reverts with the section's failure line when main does not save it.
+const defaults = shallowRef<HostDefaultsView | undefined>();
+const defaultsFailed = ref(false);
+const defaultPending = shallowRef<Readonly<Record<string, string | null>>>({});
+const defaultSaved = ref<string | undefined>();
+const defaultFailed = ref<string | undefined>();
+let defaultsRead = 0;
+// reka reserves '' for no selection, so No default is a sentinel of its own
+const NO_DEFAULT = 'none';
+
+async function loadDefaults(): Promise<void> {
+  const entry = host.value;
+  const mine = ++defaultsRead;
+  if (!entry) return;
+  let next: HostDefaultsView | undefined;
+  try {
+    next = await answerOf(api.forgeHostDefaults(entry.authorityKey));
+  } catch {
+    if (mine === defaultsRead) defaultsFailed.value = true;
+    return;
+  }
+  if (mine !== defaultsRead || next === undefined) return;
+  defaultsFailed.value = false;
+  defaults.value = next;
+  defaultPending.value = {};
+}
+watch(() => host.value?.authorityKey, () => {
+  defaults.value = undefined;
+  defaultsFailed.value = false;
+  defaultSaved.value = undefined;
+  defaultFailed.value = undefined;
+  defaultPending.value = {};
+  void loadDefaults();
+}, { immediate: true });
+onScopeDispose(api.onForgeChanged(() => void loadDefaults()));
+
+const defaultServers = computed(() => (defaults.value?.state === 'ready' ? defaults.value.servers : []));
+const defaultOf = (serverId: string): string => {
+  const pendingValue = defaultPending.value[serverId];
+  const value = pendingValue === undefined ? defaultServers.value.find((server) => server.serverId === serverId)?.defaultAccountId : pendingValue;
+  return value ?? NO_DEFAULT;
+};
+const defaultOptions = (server: (typeof defaultServers.value)[number]): SelectOption<string>[] => [
+  { value: NO_DEFAULT, label: t('remoteHosts.forgeDefaults.none') },
+  ...server.accounts.map((account) => ({ value: account.id, label: account.login })),
+];
+
+async function setDefault(entry: RemoteHostEntry, serverId: string, value: string): Promise<void> {
+  const accountId = value === NO_DEFAULT ? null : value;
+  defaultSaved.value = undefined;
+  defaultFailed.value = undefined;
+  defaultPending.value = { ...defaultPending.value, [serverId]: accountId };
+  let saved: boolean | undefined;
+  try {
+    saved = await answerOf(api.setForgeHostDefault(entry.authorityKey, serverId, accountId));
+  } catch {
+    saved = false;
+  }
+  if (saved === undefined) return;
+  if (saved) {
+    defaultSaved.value = serverId;
+    return;
+  }
+  const { [serverId]: _dropped, ...rest } = defaultPending.value;
+  defaultPending.value = rest;
+  defaultFailed.value = serverId;
+}
+
+// The consent row names the account a credential host's server defaults to on this host.
+function defaultLoginFor(credentialHost: string): string | undefined {
+  const server = defaultServers.value.find((each) => each.gitHosts.includes(credentialHost));
+  const id = server && defaultOf(server.serverId);
+  return server?.accounts.find((account) => account.id === id)?.login;
+}
+const credentialHostRows = computed(() => (host.value?.facts.alwaysCredentialHosts ?? []).map((credentialHost) => ({ credentialHost, defaultLogin: defaultLoginFor(credentialHost) })));
+
+async function openAccounts(): Promise<void> {
+  try {
+    await answerOf(api.openForgeAccounts({}));
+  } catch (error) {
+    console.error('[remote hosts] main refused to open Git hosting settings', error);
+  }
+}
+
+// an account consent's Always names the account's login while it is signed in here, else its id
+function alwaysLoginOf(account: AlwaysForgeAccount): string {
+  return defaultServers.value.find((server) => server.serverId === account.serverId)?.accounts.find((each) => each.id === account.accountId)?.login ?? account.accountId;
+}
+
+const revokeAccountFailed = ref<string | undefined>();
+async function revokeAccount(entry: RemoteHostEntry, account: AlwaysForgeAccount): Promise<void> {
+  revokeAccountFailed.value = undefined;
+  try {
+    await ran(api.revokeForgeAccount(entry.hostId, account));
+  } catch {
+    revokeAccountFailed.value = account.accountId;
   }
 }
 
@@ -407,6 +511,107 @@ watch(() => host.value?.hostId, () => {
           @cancel="nameDraft = host.name"
         />
       </span>
+    </SettingsRow>
+    <SettingsRow
+      id="remote-host-forge-defaults"
+      :label="t('remoteHosts.forgeDefaults.label', { name: host.name })"
+      :description="t('remoteHosts.forgeDefaults.description', { name: host.name })"
+    >
+      <template #note>
+        <p
+          v-if="defaultFailed !== undefined"
+          role="alert"
+          class="sm-feedback sm-feedback-error"
+        >
+          {{ t('remoteHosts.saveFailed') }}
+        </p>
+      </template>
+      <template #expand>
+        <div
+          class="sm-expand flex flex-col py-1"
+          data-testid="forge-defaults"
+          :data-state="defaultsFailed ? 'error' : defaults?.state ?? 'loading'"
+        >
+          <p
+            v-if="defaultsFailed || defaults?.state === 'error'"
+            role="alert"
+            class="flex min-h-11 flex-wrap items-center gap-2.5 text-12 text-(--d-danger-text)"
+          >
+            <span class="min-w-0 flex-1">{{ t('remoteHosts.forgeDefaults.readFailed') }}</span>
+            <SettingButton
+              data-testid="forge-defaults-retry"
+              @click="loadDefaults"
+            >
+              {{ t('remoteHosts.forgeDefaults.retry') }}
+            </SettingButton>
+          </p>
+          <div
+            v-else-if="!defaults || defaults.state === 'loading'"
+            role="status"
+            aria-busy="true"
+            :aria-label="t('remoteHosts.forgeDefaults.loading')"
+            data-testid="forge-defaults-loading"
+            class="flex min-h-11 items-center gap-2.5"
+          >
+            <span
+              aria-hidden="true"
+              class="relative block size-3.25 shrink-0 overflow-hidden rounded-full bg-(--d-hover) text-(--d-text)"
+            ><span class="d-sheen" /></span>
+            <span
+              aria-hidden="true"
+              class="relative block h-2.5 w-36 min-w-0 shrink overflow-hidden rounded-5 bg-(--d-hover) text-(--d-text)"
+            ><span class="d-sheen" /></span>
+            <span class="flex-1" />
+            <span
+              aria-hidden="true"
+              class="relative block h-7 w-36 shrink-0 overflow-hidden rounded-8 bg-(--d-hover) text-(--d-text)"
+            ><span class="d-sheen" /></span>
+          </div>
+          <p
+            v-else-if="defaultServers.length === 0"
+            data-testid="forge-defaults-empty"
+            class="flex min-h-11 flex-wrap items-center gap-2.5 text-12 text-(--d-muted)"
+          >
+            <span class="min-w-0 flex-1">{{ t('remoteHosts.forgeDefaults.empty') }}</span>
+            <SettingButton
+              data-testid="forge-defaults-open-accounts"
+              @click="openAccounts"
+            >
+              {{ t('remoteHosts.forgeDefaults.openAccounts') }}
+            </SettingButton>
+          </p>
+          <div
+            v-for="server in defaultServers"
+            v-else
+            :key="server.serverId"
+            data-testid="forge-default-server"
+            :data-server="server.server"
+            class="flex min-h-11 flex-wrap items-center gap-2.5 border-(--d-border) py-1.5 not-first:border-t"
+          >
+            <span class="flex min-w-0 flex-[1_1_10rem] items-center gap-2 text-12">
+              <component
+                :is="server.kind === 'github' ? GithubMark : GitlabMark"
+                class="size-3.25 shrink-0"
+              />
+              <span
+                dir="ltr"
+                class="min-w-0 truncate font-mono"
+                :title="server.server"
+              >{{ server.server }}</span>
+            </span>
+            <span
+              role="status"
+              class="text-11.5 text-(--d-success-text)"
+            >{{ defaultSaved === server.serverId ? t('remoteHosts.forgeDefaults.saved') : '' }}</span>
+            <SettingSelect
+              :model-value="defaultOf(server.serverId)"
+              :options="defaultOptions(server)"
+              :label="t('remoteHosts.forgeDefaults.select', { server: server.server })"
+              @update:model-value="(value) => setDefault(host!, server.serverId, value)"
+            />
+          </div>
+        </div>
+      </template>
     </SettingsRow>
     <SettingsRow
       id="remote-host-color"
@@ -580,15 +785,15 @@ watch(() => host.value?.hostId, () => {
     <SettingsRow
       id="remote-host-credentials"
       :label="t('remoteHosts.credentialsLabel', { name: host.name })"
-      :description="host.facts.alwaysCredentialHosts.length === 0 ? t('remoteHosts.credentialsNone', { name: host.name }) : t('remoteHosts.credentialsDescription', { name: host.name })"
+      :description="host.facts.alwaysCredentialHosts.length === 0 && host.facts.alwaysForgeAccounts.length === 0 ? t('remoteHosts.credentialsNone', { name: host.name }) : t('remoteHosts.credentialsDescription', { name: host.name })"
     >
       <template #expand>
         <ul
-          v-if="host.facts.alwaysCredentialHosts.length > 0"
+          v-if="host.facts.alwaysCredentialHosts.length > 0 || host.facts.alwaysForgeAccounts.length > 0"
           class="flex flex-col gap-px px-3.5 pb-2.5"
         >
           <li
-            v-for="credentialHost in host.facts.alwaysCredentialHosts"
+            v-for="{ credentialHost, defaultLogin } in credentialHostRows"
             :key="credentialHost"
             data-testid="credential-host"
             class="flex h-8 items-center gap-2 text-12.5"
@@ -598,6 +803,11 @@ watch(() => host.value?.hostId, () => {
               class="min-w-0 flex-1 truncate font-mono"
             >{{ credentialHost }}</span>
             <span
+              v-if="defaultLogin !== undefined"
+              data-testid="credential-host-default"
+              class="min-w-0 truncate text-12 text-(--d-muted)"
+            >{{ t('remoteHosts.forgeDefaults.asDefault', { login: defaultLogin }) }}</span>
+            <span
               v-if="revokeFailed === credentialHost"
               role="alert"
               class="text-11.5 text-(--d-danger-text)"
@@ -606,6 +816,44 @@ watch(() => host.value?.hostId, () => {
               :aria-label="t('remoteHosts.revokeHost', { host: credentialHost })"
               data-testid="credential-host-revoke"
               @click="revoke(host!, credentialHost)"
+            >
+              {{ t('remoteHosts.revoke') }}
+            </SettingButton>
+          </li>
+          <li
+            v-for="account in host.facts.alwaysForgeAccounts"
+            :key="account.accountId"
+            data-testid="credential-account"
+            class="flex h-8 items-center gap-2 text-12.5"
+          >
+            <span class="min-w-0 flex-1 truncate">
+              <i18n-t
+                keypath="remoteHosts.forgeAccountAlways"
+                scope="global"
+              >
+                <template #login>
+                  <span
+                    dir="ltr"
+                    class="font-mono"
+                  >{{ alwaysLoginOf(account) }}</span>
+                </template>
+                <template #server>
+                  <span
+                    dir="ltr"
+                    class="font-mono"
+                  >{{ account.serverId }}</span>
+                </template>
+              </i18n-t>
+            </span>
+            <span
+              v-if="revokeAccountFailed === account.accountId"
+              role="alert"
+              class="text-11.5 text-(--d-danger-text)"
+            >{{ t('remoteHosts.revokeFailed') }}</span>
+            <SettingButton
+              :aria-label="t('remoteHosts.revokeForgeAccount', { login: alwaysLoginOf(account), server: account.serverId })"
+              data-testid="credential-account-revoke"
+              @click="revokeAccount(host!, account)"
             >
               {{ t('remoteHosts.revoke') }}
             </SettingButton>

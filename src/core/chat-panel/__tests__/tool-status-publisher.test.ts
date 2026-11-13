@@ -23,6 +23,7 @@ import { createFakeRemoteHost } from "../../../__mocks__/fake-remote-host";
 import { PiRuntime } from "../../pi-session/pi-runtime";
 import { folderKey } from "../../workspace-folders/folder-key";
 import { runPin } from "../../client-snapshots";
+import { forgeGroupUnavailable } from "../../user-scope";
 import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING } from "../../../shared/types/tools";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../pi-session/tools/image-tool-specs";
 import type { Disposable } from "../../../platform/disposable";
@@ -169,5 +170,97 @@ describe("the Tools status publisher", () => {
     expect(toolStatuses(views.get("view-desktop")!)).toHaveLength(0);
     expect(toolStatuses(p1.posted)).toHaveLength(0);
     expect(p1.refreshActiveTools).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the GitHub and GitLab group follows the accounts", () => {
+  it("re-applies every chat's tools, which republishes the ToolSearch menu, only when the group becomes loadable or stops being so", () => {
+    let hasAccount = false;
+    const changed = new Set<() => void>();
+    const forge = {
+      hasAccount: () => hasAccount,
+      onChange: (listener: () => void) => {
+        changed.add(listener);
+        return { dispose: () => changed.delete(listener) };
+      },
+      onMessage: () => ({ dispose: () => undefined }),
+      onShellRefused: () => ({ dispose: () => undefined }),
+    };
+    const provider = new ChatPanelProvider(platform, {
+      subscriptions,
+      createCompassViews: () => ({ register: () => {}, setActive: () => {}, dispose: () => {} }),
+      forge: forge as unknown as NonNullable<ConstructorParameters<typeof ChatPanelProvider>[1]["forge"]>,
+    });
+    const panels = (provider as unknown as { panelManager: { getPanels: () => Map<string, unknown> } }).panelManager.getPanels();
+    const p1 = addPanel(panels, "p1");
+    const publish = (): void => {
+      for (const listener of changed) listener();
+    };
+    publish();
+    expect(p1.refreshActiveTools).not.toHaveBeenCalled();
+    expect(toolStatuses(p1.posted)).toHaveLength(1);
+    hasAccount = true;
+    publish();
+    expect(p1.refreshActiveTools).toHaveBeenCalledTimes(1);
+    publish();
+    expect(p1.refreshActiveTools).toHaveBeenCalledTimes(1);
+    hasAccount = false;
+    publish();
+    expect(p1.refreshActiveTools).toHaveBeenCalledTimes(2);
+    expect(toolStatuses(p1.posted)).toHaveLength(4);
+  });
+
+  it("on a daemon's core, posts every chat's toolStatus again once the device's servers land, which said not read yet until then", () => {
+    const remote = createFakeRemoteHost();
+    Object.assign(platform, { remote: remote.remote });
+    const { p1, p2 } = harness();
+    for (const panel of [p1, p2]) Object.assign((panel.entry as unknown as { session: object }).session, { getToolStatus: () => ({ forge: forgeGroupUnavailable() }) });
+
+    remote.set("clientForges", "client-a", { servers: [], pending: true });
+    remote.set("clientForges", "client-a", { servers: [{ id: "gitlab.com", webUrl: "https://gitlab.com", gitHosts: ["gitlab.com"], hasAccount: true }] });
+
+    for (const panel of [p1, p2]) {
+      expect(toolStatuses(panel.posted).map((m) => (m as { data: unknown }).data)).toEqual([{ forge: "forgeServersUnread" }, { forge: undefined }]);
+      expect(panel.refreshActiveTools).toHaveBeenCalledTimes(2);
+    }
+  });
+});
+
+describe("an agent shell's refused notice", () => {
+  it('lands under the tool call its shell ran in, whichever of two running shells git refused first', () => {
+    let refused: ((refusal: unknown) => void) | undefined;
+    const recorded: string[] = [];
+    const forge = {
+      hasAccount: () => true,
+      onChange: () => ({ dispose: () => undefined }),
+      onMessage: () => ({ dispose: () => undefined }),
+      onShellRefused: (listener: (refusal: unknown) => void) => {
+        refused = listener;
+        return { dispose: () => undefined };
+      },
+      state: () => ({ accounts: [], showAvatars: false }),
+      recordRefusal: (_panelId: string, toolCallId: string) => void recorded.push(toolCallId),
+      publish: () => undefined,
+    };
+    const provider = new ChatPanelProvider(platform, {
+      subscriptions,
+      createCompassViews: () => ({ register: () => {}, setActive: () => {}, dispose: () => {} }),
+      forge: forge as unknown as NonNullable<ConstructorParameters<typeof ChatPanelProvider>[1]["forge"]>,
+    });
+    const panels = (provider as unknown as { panelManager: { getPanels: () => Map<string, unknown> } }).panelManager.getPanels();
+    const p1 = addPanel(panels, "p1");
+    const refusal = (toolCallId: string) => ({
+      origin: { kind: "agentShell", panelId: "p1", sessionId: "s1", toolCallId },
+      server: { id: "gitlab.com" },
+      projectKey: fakeWorkspace,
+      projectLabel: "workspace",
+      reason: "noAccount",
+    });
+    // the second shell started last, and the first one's git asks after it
+    refused!(refusal("call-first"));
+    refused!(refusal("call-second"));
+    const notices = p1.posted.filter((m): m is Extract<Posted, { type: "forgeShellRefused" }> => m.type === "forgeShellRefused");
+    expect(notices.map((notice) => notice.toolCallId)).toEqual(["call-first", "call-second"]);
+    expect(recorded).toEqual(["call-first", "call-second"]);
   });
 });

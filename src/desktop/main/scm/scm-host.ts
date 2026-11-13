@@ -6,8 +6,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { isInside, samePath } from '../../../core/scm/discovery';
-import { gitErrorText, gitFailureCode, GitUntrustedError, redactUrls, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type SyncBranch } from '../../../core/scm/errors';
-import { isRemoteName, isRemoteUrl, type Remote } from '../../../core/scm/remotes';
+import { gitErrorText, gitFailureCode, GitUntrustedError, pushFailureKind, redactUrls, RemoteCancelledError, StashKeptError, SyncBranchChangedError, SyncPushError, type SyncBranch } from '../../../core/scm/errors';
+import { isRemoteName, type Remote } from '../../../core/scm/remotes';
+import { cloneAddressOf, isRemoteUrl } from '../../../shared/clone-address';
 import { isObjectName, type CommitPairDiff, type StashArtifact, type WorktreeArtifact } from '../../../core/scm/artifacts';
 import type { MergeLabel } from '../../../core/scm/merge';
 import type { Change, ChangeGroup } from '../../../core/scm/repository';
@@ -16,6 +17,7 @@ import type { ProjectView } from '../../../core/scm/scm-service';
 import { SCM_SETTING_KEYS, type OpenAfterClone, type PostCommitCommand, type PromptToSaveFilesBeforeCommit } from '../../../core/scm/settings-keys';
 import { canStashStaged } from '../../../core/scm/stash';
 import type { CommitAttachmentInput } from '../../../shared/types/chat-attachment';
+import type { RemoteBranchProtection } from '../../../shared/forge/branch-protection';
 import { folderKey, folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
 import { visibleText } from '../../../shared/visible-text';
@@ -185,6 +187,30 @@ export interface ScmHostDeps {
   readonly pickFolder: (defaultPath: string, title?: string, buttonLabel?: string) => Promise<string | undefined>;
   // adds a folder of the authority to the project list, asking for trust as any added project does (Clone, a worktree's Open)
   readonly addProject: (authority: string, folder: string) => Promise<void>;
+  // Git hosting accounts (main/forge/forge-host.ts): the user's own Push, Pull, Fetch, Publish and Clone ask once (the Choose account dialog) for an
+  // account first; false or proceed false means the user cancelled, and the operation does not run
+  readonly forge: {
+    prepareGitOperation(repoId: string, operation: 'push' | 'pull' | 'fetch' | 'publish', remotes: readonly string[]): Promise<boolean>;
+    prepareClone(url: string): Promise<{ readonly proceed: boolean; readonly bind?: { readonly serverId: string; readonly accountId: string | null } }>;
+    // announce: the binding was the Choose account dialog's answer, which the shell names in its polite status
+    bindClone(projectKey: string, bind: { readonly serverId: string; readonly accountId: string | null }, announce: boolean): Promise<void>;
+    // the repository's CI chip shows a pipeline
+    pipelineShown(repoId: string): boolean;
+    // any Git hosting account exists: Clone opens the clone picker instead of asking for a URL
+    hasAccount(): Promise<boolean>;
+    // the clone picker; settles once it closed, and its Enter starts cloneFromPicker
+    showClonePicker(recursive: boolean): Promise<void>;
+    // Publish of a repository with no remote: the Publish dialog, noAccount when no signed-in account can publish, closed
+    // when the repository is no longer open
+    publishToAccount(repoId: string, branch: string): Promise<'noAccount' | 'shown' | 'closed'>;
+    // a push of branch to remote failed: true once the fork dialog or an organization notice took the failure's place
+    pushRefused(repoId: string, remote: string, branch: string, err: unknown): Promise<boolean>;
+    // a push of localBranch to branch on remote was refused: true once the protected-branch dialog took the failure's place
+    pushProtected(repoId: string, remote: string, branch: string, localBranch: string, err: unknown): Promise<boolean>;
+    // the server branch protection this computer's core holds for the repository's remotes; never rejects, and answers
+    // nothing rather than wait on a server
+    protectedBranches(repoId: string): Promise<readonly RemoteBranchProtection[]>;
+  };
   // selects a project of the list, as its Projects row does (a worktree's Open)
   readonly selectProject: (projectKey: string) => Promise<void>;
   // worktree chats (slice 12a): D33's delete, rule 14's close-first order and the registry's adopted records
@@ -278,6 +304,8 @@ export interface ScmMenuState {
   readonly remoteRunning: boolean;
   // git 2.35 or later: Stash Staged is listed (VS Code's gitVersion2.35)
   readonly stashStaged: boolean;
+  // the selected repository's CI chip shows a pipeline: Show Pipeline is listed
+  readonly pipelineShown: boolean;
 }
 
 // Before startup finished: nothing open.
@@ -298,6 +326,7 @@ export const NO_SCM_MENU_STATE: ScmMenuState = {
   allowForcePush: false,
   remoteRunning: false,
   stashStaged: false,
+  pipelineShown: false,
 };
 
 type Flow<K extends ScmOp> = (host: ScmHost, request: Extract<ScmRunRequest, { op: K }>) => Promise<ScmRunResult>;
@@ -687,7 +716,8 @@ export class ScmHost {
       // a remote repository's files are saved through its own workspace, never matched against this computer's buffers
       const saved = request.variant.empty || target.repo.authority !== 'local' ? [] : await this.saveBeforeCommit(request.repoId, target.repo.root);
       if (saved === undefined) return { ok: false, reason: 'cancelled' };
-      const outcome = await this.deps.service.commit(request.repoId, request.message, request.variant, { saved, branchName: () => this.askBranchName() });
+      const protectedBranches = await this.deps.forge.protectedBranches(request.repoId);
+      const outcome = await this.deps.service.commit(request.repoId, request.message, request.variant, { saved, branchName: () => this.askBranchName(), ...(protectedBranches.length > 0 ? { protectedBranches } : {}) });
       if (!outcome.ok) {
         if (outcome.reason === 'failed') this.failed(this.deps.render(outcome.error));
         return { ok: false, reason: outcome.reason };
@@ -1047,6 +1077,7 @@ export class ScmHost {
       allowForcePush: settings.allowForcePush,
       remoteRunning: selected !== null && (this.deps.service.snapshot(selected)?.running ?? null) !== null,
       stashStaged: this.capabilities().stashStaged,
+      pipelineShown: selected !== null && this.deps.forge.pipelineShown(selected),
     };
   }
 
@@ -1098,6 +1129,23 @@ export class ScmHost {
     if (repoId) this.deps.send.command({ command: 'commit', repoId, variant });
   }
 
+  /** Source Control: Show Pipeline from the palette: the shell opens the job list from the selected repository's CI chip. */
+  paletteShowPipeline(): void {
+    const repoId = this.selectedView()?.selectedRepoId;
+    if (repoId) this.deps.send.command({ command: 'showPipeline', repoId });
+  }
+
+  /** The selected project's selected repository, which the palette's repository commands act on. */
+  paletteRepoId(): string | undefined {
+    return this.selectedView()?.selectedRepoId ?? undefined;
+  }
+
+  /** Source Control: Choose Account... from the palette: the shell opens the selected repository's account chip menu. */
+  paletteChooseAccount(): void {
+    const repoId = this.selectedView()?.selectedRepoId;
+    if (repoId) this.deps.send.command({ command: 'chooseAccount', repoId });
+  }
+
   /** Stage, Unstage, Discard, Open Changes, Open File, Open File (HEAD), Add to .gitignore, Rename and Delete on the active editor's file. */
   activeFile(op: ScmActiveFileOp): void {
     const active = this.activeResource();
@@ -1138,9 +1186,15 @@ export class ScmHost {
       void this.deps.notify.warn(t('This repository has no remotes configured to fetch from.'));
       return TOLD;
     }
-    if (scope === 'prune') return remote(() => this.deps.service.fetch(repoId, { prune: true }));
-    if (scope === 'all' || remotes.length === 1) return remote(() => this.deps.service.fetch(repoId, { all: scope === 'all' }));
     const upstreamRemote = this.repo(repoId).lastStatus?.upstream?.remote;
+    if (scope === 'prune') {
+      if (!(await this.deps.forge.prepareGitOperation(repoId, 'fetch', [upstreamRemote ?? 'origin']))) return CANCELLED;
+      return remote(() => this.deps.service.fetch(repoId, { prune: true }));
+    }
+    if (scope === 'all' || remotes.length === 1) {
+      if (!(await this.deps.forge.prepareGitOperation(repoId, 'fetch', scope === 'all' ? [] : [remotes[0]!.name]))) return CANCELLED;
+      return remote(() => this.deps.service.fetch(repoId, { all: scope === 'all' }));
+    }
     const ordered = [...remotes.filter((entry) => entry.name === upstreamRemote), ...remotes.filter((entry) => entry.name !== upstreamRemote)];
     const ALL = { kind: 'all' } as const;
     const picked = await this.pick<Remote | typeof ALL>(t('Select a remote to fetch'), [
@@ -1148,13 +1202,18 @@ export class ScmHost {
       { value: ALL, item: { label: t('Fetch From All Remotes') } },
     ]);
     if (picked === undefined) return CANCELLED;
-    if (picked === ALL) return remote(() => this.deps.service.fetch(repoId, { all: true }));
+    if (picked === ALL) {
+      if (!(await this.deps.forge.prepareGitOperation(repoId, 'fetch', []))) return CANCELLED;
+      return remote(() => this.deps.service.fetch(repoId, { all: true }));
+    }
     const chosen = picked as Remote;
+    if (!(await this.deps.forge.prepareGitOperation(repoId, 'fetch', [chosen.name]))) return CANCELLED;
     return remote(() => this.deps.service.fetch(repoId, { remote: chosen.name }));
   }
 
   async pull(repoId: string, rebase: boolean): Promise<ScmRunResult> {
     if (!(await this.hasRemotes(repoId, 'pull'))) return TOLD;
+    if (!(await this.deps.forge.prepareGitOperation(repoId, 'pull', [this.repo(repoId).lastStatus?.upstream?.remote ?? 'origin']))) return CANCELLED;
     return remote(() => this.deps.service.pull(repoId, { rebase }));
   }
 
@@ -1175,6 +1234,7 @@ export class ScmHost {
     }
     const branch = await this.pick(t('Pick a branch to pull from'), branches.map((name) => ({ value: name, item: { label: `${chosen.name}/${name}` } })));
     if (branch === undefined) return CANCELLED;
+    if (!(await this.deps.forge.prepareGitOperation(repoId, 'pull', [chosen.name]))) return CANCELLED;
     return remote(() => this.deps.service.pull(repoId, { rebase: false, remote: chosen.name, branch }));
   }
 
@@ -1195,8 +1255,14 @@ export class ScmHost {
       return TOLD;
     }
     const base = { setUpstream: false, followTags: false, force: request.force };
-    if (request.followTags && !request.to) return remote(() => this.deps.service.push(repoId, { ...base, followTags: true }));
     const status = this.repo(repoId).lastStatus;
+    if (request.followTags && !request.to) {
+      const target = status?.upstream?.remote ?? 'origin';
+      if (!(await this.deps.forge.prepareGitOperation(repoId, 'push', [target]))) return CANCELLED;
+      // git push --follow-tags pushes HEAD's branch as push.default says, to its upstream
+      const branch = status?.head?.type === 'branch' ? { local: status.head.name, onServer: status.upstream?.branch ?? status.head.name } : undefined;
+      return this.pushOrFork(repoId, target, branch, () => this.deps.service.push(repoId, { ...base, followTags: true }));
+    }
     const head = status?.head;
     if (head?.type !== 'branch') {
       void this.deps.notify.warn(t('Please check out a branch to push to a remote.'));
@@ -1204,13 +1270,17 @@ export class ScmHost {
     }
     if (!request.to) {
       const upstream = status?.upstream;
-      if (upstream) return remote(() => this.deps.service.push(repoId, { ...base, remote: upstream.remote, branch: head.name, toBranch: upstream.branch }));
+      if (upstream) {
+        if (!(await this.deps.forge.prepareGitOperation(repoId, 'push', [upstream.remote]))) return CANCELLED;
+        return this.pushOrFork(repoId, upstream.remote, { local: head.name, onServer: upstream.branch }, () => this.deps.service.push(repoId, { ...base, remote: upstream.remote, branch: head.name, toBranch: upstream.branch }));
+      }
       const choice = await this.deps.ask({ severity: 'warning', message: t('The branch "{0}" has no remote branch. Would you like to publish this branch?', visibleText(head.name)), actions: [t('OK')], cancelLabel: t('Cancel'), defaultAction: 0 });
       return choice === 0 ? this.publish(repoId) : CANCELLED;
     }
     const target = await this.pickPushRemote(repoId, remotes.filter((entry) => entry.pushUrl !== undefined), head.name);
     if (typeof target !== 'string') return target;
-    return remote(() => this.deps.service.push(repoId, { ...base, remote: target, branch: head.name }));
+    if (!(await this.deps.forge.prepareGitOperation(repoId, 'push', [target]))) return CANCELLED;
+    return this.pushOrFork(repoId, target, { local: head.name, onServer: head.name }, () => this.deps.service.push(repoId, { ...base, remote: target, branch: head.name }));
   }
 
   // VS Code's _sync: a detached HEAD or a branch without an upstream pushes (which warns, or offers Publish); otherwise core's
@@ -1218,7 +1288,29 @@ export class ScmHost {
   async sync(repoId: string, rebase: boolean): Promise<ScmRunResult> {
     const status = this.repo(repoId).lastStatus;
     if (status?.head?.type !== 'branch' || !status.upstream) return this.push(repoId, { to: false, force: false, followTags: false });
-    return remote(() => this.deps.service.sync(repoId, rebase));
+    if (!(await this.deps.forge.prepareGitOperation(repoId, 'push', [status.upstream.remote]))) return CANCELLED;
+    // only Sync's push stage is a refused push; a failed pull reaches runRequest's notice as it is
+    const pushFailure = (err: unknown): unknown => (err instanceof SyncPushError ? err.cause : undefined);
+    return this.pushOrFork(repoId, status.upstream.remote, { local: status.head.name, onServer: status.upstream.branch }, () => this.deps.service.sync(repoId, rebase), pushFailure);
+  }
+
+  // A refused push asks the server (forge-host), in this order: a non-fast-forward rejection never does; a refused branch the
+  // server protects for the account opens the protected-branch dialog; an authorization failure the server confirms opens the
+  // fork dialog or the organization notice. Each takes the place of the failure's notice; anything else reaches runRequest's
+  // notice as git's own error. branch.onServer: the branch as the remote names it. pushFailure: the push's error within
+  // work's, undefined when work failed before it pushed.
+  private async pushOrFork(repoId: string, target: string, branch: { readonly local: string; readonly onServer?: string } | undefined, work: () => Promise<unknown>, pushFailure: (err: unknown) => unknown = (err) => err): Promise<ScmRunResult> {
+    try {
+      return await remote(work);
+    } catch (thrown) {
+      const err = pushFailure(thrown);
+      if (err === undefined) throw thrown;
+      const kind = pushFailureKind(err);
+      if (branch === undefined || (kind !== 'authorization' && kind !== 'rejected')) throw err;
+      if (branch.onServer !== undefined && (await this.deps.forge.pushProtected(repoId, target, branch.onServer, branch.local, err))) return TOLD;
+      if (kind === 'authorization' && (await this.deps.forge.pushRefused(repoId, target, branch.local, err))) return TOLD;
+      throw err;
+    }
   }
 
   // VS Code's git.publish: push -u to the one remote, or to a picked one (or one Add Remote... creates).
@@ -1231,12 +1323,20 @@ export class ScmHost {
     }
     const remotes = await this.deps.service.remotes(repoId);
     if (remotes.length === 0) {
+      // with a Git hosting account, Publish creates the repository on a server
+      const published = (await this.deps.forge.hasAccount()) ? await this.deps.forge.publishToAccount(repoId, head.name) : 'noAccount';
+      if (published === 'shown') return OK;
+      if (published === 'closed') {
+        void this.deps.notify.warn(t('The repository closed before Publish could open.'));
+        return TOLD;
+      }
       void this.deps.notify.warn(t('Your repository has no remotes configured to publish to.'));
       return TOLD;
     }
     const target = remotes.length === 1 ? remotes[0]!.name : await this.pickPushRemote(repoId, remotes, head.name);
     if (typeof target !== 'string') return target;
-    return remote(() => this.deps.service.push(repoId, { remote: target, branch: head.name, setUpstream: true, followTags: false, force: false }));
+    if (!(await this.deps.forge.prepareGitOperation(repoId, 'publish', [target]))) return CANCELLED;
+    return this.pushOrFork(repoId, target, { local: head.name, onServer: head.name }, () => this.deps.service.push(repoId, { remote: target, branch: head.name, setUpstream: true, followTags: false, force: false }));
   }
 
   // VS Code's git.addRemote: a URL, then a name, then a fetch of the new remote. Resolves the name, or the result when nothing
@@ -1280,24 +1380,53 @@ export class ScmHost {
   }
 
   // VS Code's clone: a URL, a folder from the OS picker opened at defaultCloneDirectory (else the home folder), the clone, then
-  // openAfterClone. Clone runs no code of an existing repository, so no project's trust decides it; the clone joins the
-  // projects untrusted, and adding it asks for trust as any added project does.
+  // openAfterClone. With a Git hosting account, the clone picker takes the URL box's place. Clone runs no code of an
+  // existing repository, so no project's trust decides it; the clone joins the projects untrusted, and adding it asks for
+  // trust as any added project does.
   async clone(recursive: boolean): Promise<ScmRunResult> {
     const t = this.deps.t;
-    const typed = (await this.deps.askInput({ title: recursive ? t('Clone (Recursive)') : t('Clone'), prompt: t('Provide repository URL'), placeholder: t('Repository URL') }))?.trim();
-    const url = typed?.replace(/^git\s+clone\s+/, '');
+    if (await this.deps.forge.hasAccount()) {
+      await this.deps.forge.showClonePicker(recursive);
+      return OK;
+    }
+    const typed = await this.deps.askInput({ title: recursive ? t('Clone (Recursive)') : t('Clone'), prompt: t('Provide repository URL'), placeholder: t('Repository URL') });
+    const url = typed === undefined ? undefined : cloneAddressOf(typed);
     if (!url) return CANCELLED;
     if (!isRemoteUrl(url)) {
       void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', visibleText(redactUrls(url))));
       return TOLD;
     }
+    return this.cloneInto(url, recursive);
+  }
+
+  /** Clone from Your Repositories: the picker, with or without an account (its empty state still takes a pasted URL). */
+  async cloneFromAccount(recursive: boolean): Promise<void> {
+    await this.guarded('cloneFromAccount', () => this.deps.forge.showClonePicker(recursive));
+  }
+
+  /**
+   * The picker's Enter, after core checked the URL: its polite status, then the clone. account: the listing's account, preset
+   * and bound to the new project; none resolves (and may ask once) as Git: Clone does.
+   */
+  cloneFromPicker(clone: { readonly url: string; readonly recursive: boolean; readonly status: string; readonly account?: { readonly serverId: string; readonly accountId: string } }): void {
+    void this.deps.notify.info(clone.status);
+    void this.guarded('clone', async () => {
+      await this.cloneInto(clone.url, clone.recursive, clone.account);
+    });
+  }
+
+  private async cloneInto(url: string, recursive: boolean, preset?: { readonly serverId: string; readonly accountId: string }): Promise<ScmRunResult> {
+    const t = this.deps.t;
     const configured = expandHome(this.read(SCM_SETTING_KEYS.defaultCloneDirectory, '').trim());
     const opensAt = path.isAbsolute(configured) ? configured : os.homedir();
     const parent = await this.deps.pickFolder(opensAt, t('Choose a folder to clone {0} into', visibleText(redactUrls(url))), t('Select as Repository Destination'));
     if (parent === undefined) return CANCELLED;
+    const account = preset ? { proceed: true, bind: preset } : await this.deps.forge.prepareClone(url);
+    if (!account.proceed) return CANCELLED;
     let target: string;
     try {
-      target = await this.deps.service.clone(url, parent, recursive);
+      // only an explicit choice is passed: a null account clones with Git's own credentials
+      target = account.bind ? await this.deps.service.clone(url, parent, recursive, account.bind.accountId) : await this.deps.service.clone(url, parent, recursive);
     } catch (err) {
       if (err instanceof RemoteCancelledError) return CANCELLED;
       throw err;
@@ -1308,6 +1437,7 @@ export class ScmHost {
       if (choice !== 0) return OK;
     }
     await this.deps.addProject('local', target);
+    if (account.bind) await this.deps.forge.bindClone(folderKey(target), account.bind, preset === undefined);
     return OK;
   }
 

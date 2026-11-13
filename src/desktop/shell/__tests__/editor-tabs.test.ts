@@ -143,6 +143,32 @@ describe('a remote file saved while its host is away', () => {
   });
 });
 
+describe("the active tab's bar", () => {
+  it('measures the active tab again when the tabs or the active tab change, not for a push of the same tabs', async () => {
+    const tabs = [codeTab('a', 'a.ts'), codeTab('b', 'b.ts')];
+    const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: 'a' })) });
+    const store = createEditorStore(api);
+    await store.start();
+    const scm = createScmStore(api.scm);
+    await scm.start();
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [], hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm, [TERMINAL_STORE as symbol]: createTerminalStore(api) } }, attachTo: document.body });
+    mounted.push(wrapper);
+    await flushPromises();
+    // measureBar reads the active tab's painted separator
+    const styles = vi.spyOn(globalThis, 'getComputedStyle');
+    const tabMeasures = () => styles.mock.calls.filter(([element]) => element instanceof HTMLElement && element.hasAttribute('data-editor-tab')).length;
+
+    api.pushEditorState({ ...EDITOR_STATE, tabs: tabs.map((tab) => ({ ...tab })), activeTabId: 'a' });
+    await flushPromises();
+    expect(tabMeasures()).toBe(0);
+
+    api.pushEditorState({ ...EDITOR_STATE, tabs: tabs.map((tab) => ({ ...tab })), activeTabId: 'b' });
+    await flushPromises();
+    expect(tabMeasures()).toBeGreaterThan(0);
+    styles.mockRestore();
+  });
+});
+
 describe('a tab whose path holds a control or bidi character', () => {
   it('shows the path in its tooltip and the conflict bar\'s name with the character escaped', async () => {
     const wrapper = await mountTabs([codeTab('a', 'a\\u{202E}b.ts', { displayPath: 'C:\\work\\src\\a\u202Eb.ts' })]);
@@ -632,5 +658,21 @@ describe('a terminal tab', () => {
     expect(payload).toEqual({});
     expect(start.defaultPrevented).toBe(false);
     expect(tab.attributes('data-dragging')).toBeUndefined();
+  });
+});
+
+describe('a job log tab', () => {
+  const jobTab = (id: string, jobLog: NonNullable<ShellEditorTab['jobLog']>): ShellEditorTab => ({ id, kind: 'jobLog', title: jobLog.jobName, displayPath: jobLog.jobName, dirty: false, readOnly: true, conflict: false, jobLog });
+
+  it('shows GitLab\'s pipeline number, GitHub\'s workflow, and neither before main knows them', async () => {
+    const wrapper = await mountTabs([
+      jobTab('gl', { repoId: 'r1', jobId: 1, jobName: 'unit', pipelineNumber: 4312, state: 'running' }),
+      jobTab('gh', { repoId: 'r1', jobId: 2, jobName: 'test', workflow: 'CI', state: 'passed' }),
+      jobTab('new', { repoId: 'r1', jobId: 3, jobName: '#3', state: 'pending' }),
+    ]);
+    const [gitlab, github, unknown] = wrapper.findAll('[data-editor-tab]');
+    expect(gitlab!.get('[data-testid="editor-tab-pipeline"]').text()).toBe('#4312');
+    expect(github!.get('[data-testid="editor-tab-pipeline"]').text()).toBe('CI');
+    expect(unknown!.find('[data-testid="editor-tab-pipeline"]').exists()).toBe(false);
   });
 });

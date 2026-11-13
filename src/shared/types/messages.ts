@@ -12,7 +12,7 @@ import type {
   McpWriteErrorInfo,
 } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
-import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover } from './permissions';
+import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover, PermissionDetail } from './permissions';
 import type { FormSchema, FormValues } from './forms';
 import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, AssetSourcePrecedence, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings, ProviderSignInState } from './settings';
 import type {
@@ -60,6 +60,7 @@ import type { LocalizedText } from '../localized-text';
 import type { DesignApprovalChoice, DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignPreviewImage, DesignReferenceNote, DesignResultDecision, DesignResultView, DesignVersionChoice, PlanApprovalDesignLink, UncheckedDecisionGroup } from './design';
 import type { DesignMarkupNote } from '../design-markup';
 import type { UserMemoryViewRequest } from '../remote-user';
+import type { ForgeAccountsState, ForgeConfirmGitHostRequest, ForgeDismissGitHostRequest, ForgeKind, ForgeServerFormField, ForgeSignInRoute, ForgeSignInState } from '../forge/accounts';
 
 // A pi provider id as a credential ask or a run's token note names it; main's user relays and the overlay refuse any other form.
 export const PROVIDER_ID_PATTERN: RegExp = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -384,6 +385,35 @@ export type WebviewToExtensionMessage =
   | { type: "providerSignInCopyCode"; provider: SignInProviderId }
   | { type: "providerSignInCancel"; provider: SignInProviderId }
   | { type: "providerSignOut"; provider: SignInProviderId }
+  /** `token` only for route "token"; never log it. `reauthAccountId` is "Sign in again". */
+  | { type: "forgeSignIn"; serverId: string; route: ForgeSignInRoute; token?: string; agentShells: boolean; reauthAccountId?: string }
+  | { type: "forgeSignInCancel"; serverId: string }
+  /** Sign-out, the agent shells switch and Show file are each answered with forgeAccountActionResult under their requestId. */
+  | { type: "forgeSignOut"; requestId: string; accountId: string }
+  | { type: "forgeSetAgentShells"; requestId: string; accountId: string; agentShells: boolean }
+  /** `clientSecret` is GHES only; never log it. */
+  | { type: "forgeAddServer"; requestId: string; url: string; kind: ForgeKind; clientId?: string; clientSecret?: string; gitHosts: string[] }
+  | { type: "forgeEditServer"; requestId: string; serverId: string; clientId?: string; clientSecret?: string; gitHosts: string[] }
+  | { type: "forgeRemoveServer"; requestId: string; serverId: string }
+  | ForgeConfirmGitHostRequest
+  | ForgeDismissGitHostRequest
+  /** Reveals the forge file core failed to parse. */
+  | { type: "forgeRevealAccountsFile"; requestId: string }
+  /** Core resolves the URL itself and opens it; the webview never opens a URL. */
+  | { type: "forgeOpenPage"; page: "signIn"; serverId: string }
+  | { type: "forgeOpenPage"; page: "token"; serverId: string }
+  | { type: "forgeOpenPage"; page: "orgAccess"; accountId: string; org: string }
+  | { type: "forgeOpenPage"; page: "revoke"; noticeId: string }
+  /** Core copies the device code; the code never goes through the webview's clipboard. */
+  | { type: "forgeSignInCopyCode"; serverId: string }
+  | { type: "forgeDismissNotice"; noticeId: string }
+  /** Core copies the redirect URI it holds (an existing server's, or a new server's of `kind`). */
+  | { type: "forgeCopyRedirectUri"; requestId: string; kind: ForgeKind; serverId?: string }
+  /** Refused notice actions, each for a refusal core posted to this panel; core keeps its project, server and account. */
+  | { type: "forgeRefusedBind"; toolCallId: string; accountId: string }
+  | { type: "forgeRefusedOpenSettings"; toolCallId: string }
+  /** The orgAccess notice's action: core opens the page it recorded for that refusal (SSO authorization or the app's approval request). */
+  | { type: "forgeRefusedOrgAction"; toolCallId: string }
   | { type: "setModelPickerProvider"; provider: ModelVendor; shown: boolean; requestId: string }
   | { type: "startChatGPTOAuth" }
   | { type: "signOutChatGPT" }
@@ -451,6 +481,8 @@ export interface HostCapabilities {
   globalMemoryOnServer?: boolean;
   /** The host has the design preview; selects the FULL design rule set (`designRuleSet`), else REDUCED. Optional on the wire: an older daemon's core omits it. */
   designPreview?: boolean;
+  /** The local desktop core runs ForgeService: Settings › Models & accounts › Git hosting shows the Git hosting group. Absent or false elsewhere. */
+  forgeAccounts?: boolean;
 }
 
 /** Where a worktree-capable chat works (D61). */
@@ -779,7 +811,7 @@ export type ExtensionToWebviewMessage =
       suggestions?: PermissionUpdate[];
       blockedPath?: string;
       decisionReason?: string;
-    }
+    } & PermissionDetail
   /**
    * The prompt closed without the user's answer: an abort ended it, or `approvedBy`, the permission state
    * it no longer asks under, approved it. The tool's own lifecycle sets the card's status.
@@ -818,8 +850,9 @@ export type ExtensionToWebviewMessage =
   /**
    * A turn waits, while its pinned device is not attached, for that device's `provider` sign-in (a pi provider id, Sign-in
    * needed), a prompt of kind `signIn`; every view showing it belongs to another device, so it offers "Continue with my sign-in".
+   * reason: the device is attached and its sign-ins or user rules are not known yet, and why; the card says it instead.
    */
-  | { type: "signInRequest"; requestId: string; provider: string }
+  | { type: "signInRequest"; requestId: string; provider: string; reason?: LocalizedText }
   /** The wait ended: a push from the pinned device, a continue, or Stop. */
   | { type: "signInResolved"; requestId: string }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
@@ -1073,6 +1106,27 @@ export type ExtensionToWebviewMessage =
   | { type: "clearProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: LocalizedText }
   | { type: "providerSignInState"; provider: SignInProviderId; state: ProviderSignInState }
   | { type: "providerSignInCopyCodeAck"; provider: SignInProviderId; ok: boolean }
+  /** ForgeService.publish() is the only producer. */
+  | { type: "forgeAccountsChanged"; state: ForgeAccountsState }
+  | { type: "forgeSignInState"; serverId: string; state: ForgeSignInState }
+  | { type: "forgeSignInCopyCodeAck"; serverId: string; ok: boolean }
+  | { type: "forgeCopyRedirectUriAck"; requestId: string; ok: boolean }
+  | { type: "forgeServerFormResult"; requestId: string; ok: true; serverId: string }
+  | { type: "forgeServerFormResult"; requestId: string; ok: false; field?: ForgeServerFormField; message: LocalizedText }
+  /** The answer to forgeSignOut, forgeSetAgentShells or forgeRevealAccountsFile, to the view that sent it. */
+  | { type: "forgeAccountActionResult"; requestId: string; ok: true }
+  | { type: "forgeAccountActionResult"; requestId: string; ok: false; message: LocalizedText }
+  /**
+   * The refused notice: an agent shell's git was refused an account on the server (its "Agent shells may use this account" off, or nothing resolved), or a forge tool (`tool`, its
+   * name) found no account or an organization keeping the account out (`orgAccess`, with `org`); shown under the card with
+   * that toolCallId, else at the transcript's end. Ephemeral: never stored or replayed. `project` is "" outside a project.
+   * `canBind`: core recorded a project it can bind an account to, so the notice offers Choose account; absent is false.
+   */
+  | { type: "forgeShellRefused"; toolCallId: string; serverId: string; serverLabel: string; project: string; canBind?: boolean; account: { id: string; login: string; avatarKey?: string } | null; reason: "agentShellsOff" | "noAccount" | "orgAccess"; tool?: string; org?: { name: string; kind: "sso" | "approval" } }
+  /** ok false: the binding was not saved. */
+  | { type: "forgeRefusedBindResult"; toolCallId: string; accountId: string; ok: boolean }
+  /** The refusal's toast asked for its menu: the notice opens it. */
+  | { type: "forgeRefusedOpenMenu"; toolCallId: string }
   | { type: "setModelPickerProviderAck"; provider: ModelVendor; requestId: string; ok: boolean }
   /** `configured`: a key is in the host secret store. `external`: where pi's credential comes from when Damocles did not apply it. `signedIn`: `auth.json` holds an oauth credential. `active` is absent when a daemon's core reports it. */
   | { type: "providerAuthStatusChanged"; provider: AccountProviderId; configured: boolean; external: ExternalKeySource | null; signedIn: boolean; signedInExpiresAt?: number; preferApiKey: boolean; active?: ProviderCredentialActive }

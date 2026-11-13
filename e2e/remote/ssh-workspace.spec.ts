@@ -95,7 +95,7 @@ test('on an SSH project, Files, the editor, a terminal with shell integration, s
     await expect(picker.locator('[data-testid="quick-pick-item"]', { hasText: 'remote.ts' })).toBeVisible();
     await overlay.keyboard.press('Escape');
 
-    // Quick Open browses the target's home, and ~/.bashrc opens editable in a tab named with its host.
+    // Quick Open browses the target's home, and ~/.bashrc opens editable in a tab titled by its own name, its host in the tooltip.
     // the mark goes first, since the editor renders only the lines in view of a .bashrc taller than it
     await fixture.sh("sed -i '1i # quick open mark' ~/.bashrc", 'dev');
     const browse = await quickOpen(app, '~/');
@@ -105,7 +105,9 @@ test('on an SSH project, Files, the editor, a terminal with shell integration, s
     await browse.getByTestId('quick-pick-input').fill('~/.bashrc');
     await expect(quickPick(browse).getByTestId('quick-pick-item').first()).toContainText('.bashrc');
     await browse.getByTestId('quick-pick-input').press('Enter');
-    await expect(editorTab(shell, 'prod-1: .bashrc')).toHaveAttribute('aria-selected', 'true');
+    await expect(editorTab(shell, '.bashrc')).toHaveAttribute('aria-selected', 'true');
+    await expect(editorTab(shell, '.bashrc')).toHaveAttribute('title', /^prod-1: \S*\/\.bashrc$/);
+    expect(await activeTab(app)).toMatchObject({ title: '.bashrc', host: `ssh+${hostId}` });
     await editorShows(shell, '# quick open mark');
     await expect.poll(async () => (await activeTab(app))?.readOnly).toBe(false);
 

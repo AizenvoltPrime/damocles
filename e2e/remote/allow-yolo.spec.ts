@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { closeSettingsModal, openSettingsModal, settingsRow } from '../desktop/support/settings';
 import { overlayPage } from '../desktop/support/shell';
-import { awaitTurnEnd, hostMessages, recordHostMessages } from '../desktop/support/ui';
+import { awaitTurnEnd, hostMessages, recordHostMessages, settledBox } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { openRemoteHostSettings, setHostSwitch, storedHost } from './support/host-settings-ui';
 import { addHost, expect, openRemoteFolder, remoteEnv, SSH_TAG, test } from './support/remote';
@@ -15,16 +15,6 @@ const INPUT_PROTECTION_MS = 500;
 // placement.ts PANEL_GAP_REM at 16 px per rem
 const PANEL_GAP_PX = 6;
 const permissionCard = (tab: Page): Locator => tab.locator('section[role="region"][aria-label="Permission request"]:not([class*="-leave-"])');
-
-// The box once its entrance has played: the zoom-in scales it until then.
-async function settledBox(element: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
-  await element.evaluate(async (node) => {
-    await Promise.all(node.getAnimations({ subtree: true }).map((animation) => animation.finished));
-  });
-  const box = await element.boundingBox();
-  if (!box) throw new Error('The element has no box');
-  return box;
-}
 
 test('a locked YOLO and Start in YOLO mode ask to allow YOLO beside the control, and turn it on only once allowed', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);

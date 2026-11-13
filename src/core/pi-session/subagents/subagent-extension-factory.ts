@@ -32,6 +32,7 @@ import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from '../context-image-pruning';
 import { registerAbortSettledCallRecord, registerStoppedToolResultMarker, registerWindDownErrorRecord } from '../stopped-tool-result';
+import { registerKnownSecretMasking } from '../known-secret-masking';
 import { createToolSearchTool, mcpGroupsOf, type McpToolMenuEntry, type ToolActivationPort } from '../tools/tool-search-tool';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
@@ -78,6 +79,7 @@ function buildSubagentActivationPort(
   deferrableToolNames: readonly string[],
   mcpDescriptions: ReadonlyMap<string, McpToolMenuEntry> | undefined,
   directMcpGroups: ReadonlySet<string> | undefined,
+  design: () => boolean,
 ): ToolActivationPort {
   // Groups come from the snapshot's menu facts (the descriptor's server), the same rule as the panel's
   // `deferrableToolsSnapshot()`. Computed once per spawn: this agent's universe is frozen.
@@ -106,6 +108,7 @@ function buildSubagentActivationPort(
       loaded: new Set(pi.getActiveTools()),
       mcpGroups,
       ...(directMcpGroups?.size ? { directMcpGroups } : {}),
+      ...(design() ? { design: true } : {}),
     }),
     // Additive only: pi diffs the active set around `execute`, and any REMOVAL forces its safe fallback
     // of resending the full active set.
@@ -191,6 +194,8 @@ function registerSubagentHooks(
 /** Build a per-subagent extension factory whose `tool_call` hook inherits the parent's gate + mode. */
 export function createSubagentExtensionFactory(ctx: SubagentGateContext): ExtensionFactory {
   return (pi) => {
+    // First of every tool_result handler, the configured hooks' included, as in damocles-extension.ts.
+    registerKnownSecretMasking(pi);
     // Nothing here is retired: `createSubagentSession` gives each spawn its own services and resource
     // loader, so this instance serves exactly one session and dies with it. A nested session is also
     // disposed directly, never through an `AgentSessionRuntime`, so pi never emits its shutdown event.
@@ -210,7 +215,7 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
     if (ctx.deferrableToolNames.length > 0) {
       try {
         pi.registerTool(
-          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions, ctx.directMcpGroups)),
+          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions, ctx.directMcpGroups, () => ctx.designScope?.() !== undefined)),
         );
       } catch (err) {
         log('[SubagentExtension] ToolSearch registration failed: %O', err);

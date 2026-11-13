@@ -2,6 +2,7 @@ import { BROWSER_PI_TOOL_NAMES, designBrowserAllows } from './browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
+import { FORGE_PI_TOOL_NAMES, FORGE_TOOL_GUIDANCE } from './forge-tool-specs';
 import { MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
 import { relayedToolNames, relayedToolOf, type RelayedTool } from '../mcp/relayed-tool-names';
 
@@ -17,22 +18,24 @@ import { relayedToolNames, relayedToolOf, type RelayedTool } from '../mcp/relaye
  * import is fine", retiring the guard for every group at once.
  */
 
-export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image' | 'mcp_resources';
+export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image' | 'forge' | 'mcp_resources';
 
 export const MCP_RESOURCES_GROUP: BuiltinDeferredGroup = 'mcp_resources';
 
 /**
  * The built-in deferrable groups, in the order the ToolSearch inventory lists them — what the model
  * reads, so it is pinned by test rather than left to import order. The pin encodes exactly one claim:
- * `web` comes after `browser`, `image` after `web`, and `mcp_resources` comes last. It is NOT "mirrors
+ * `web` comes after `browser`, `image` after `web`, `forge` after `image`, and `mcp_resources` comes last. It is NOT "mirrors
  * `FULL_TOOL_CATALOG`", which runs compass → browser → web → image and so already disagrees. A new group
  * needs a deliberate position and a pin edit.
  */
-export const BUILTIN_DEFERRED_GROUPS: readonly { group: BuiltinDeferredGroup; names: readonly string[] }[] = [
+export const BUILTIN_DEFERRED_GROUPS: readonly { group: BuiltinDeferredGroup; names: readonly string[]; guidance?: string }[] = [
   { group: 'browser', names: BROWSER_PI_TOOL_NAMES },
   { group: 'compass', names: COMPASS_PI_TOOL_NAMES },
   { group: 'web', names: WEB_PI_TOOL_NAMES },
   { group: 'image', names: IMAGE_PI_TOOL_NAMES },
+  // the group line is the tools' only guidance; no prompt names them
+  { group: 'forge', names: FORGE_PI_TOOL_NAMES, guidance: FORGE_TOOL_GUIDANCE },
   { group: MCP_RESOURCES_GROUP, names: MCP_RESOURCE_TOOL_NAMES },
 ];
 
@@ -61,7 +64,7 @@ export interface ToolSearchResolution {
 }
 
 /**
- * The deferrable subset of an eligible set: browser + compass + web + image + the given MCP names, intersected
+ * The deferrable subset of an eligible set: browser + compass + web + image + forge + the given MCP names, intersected
  * with `eligible`. Callers pass only the MCP tools whose exposure is `deferred`, and the resource tools
  * only while no eligible resource server is Always loaded.
  * Intersecting here is what makes eligibility authoritative — a tool the user disabled via
@@ -75,29 +78,47 @@ export function deferredToolNames(eligible: Iterable<string>, mcpNames: Iterable
   return [...new Set(eligible)].filter((name) => deferrable.has(name));
 }
 
-/** Groups whose service is the client's user scope, which a daemon's core reaches only while a client is attached. */
-const USER_SCOPE_GROUPS: ReadonlySet<BuiltinDeferredGroup> = new Set(['browser']);
+/**
+ * Groups whose service is the user's own: the client's browser, which a daemon's core reaches only while a client is
+ * attached, and the GitHub and GitLab accounts of the computer the chat's turn is pinned to (this computer's own core: its
+ * own accounts), loadable only while one exists.
+ */
+const USER_SCOPE_GROUPS = ['browser', 'forge'] as const satisfies readonly BuiltinDeferredGroup[];
 
 /** What a core reaches of its client's user scope now (user-scope.ts userScopeReach). */
 export interface UserScopeReach {
   readonly browser: boolean;
+  readonly forge: boolean;
   readonly relayedTool: (relayed: RelayedTool) => boolean;
 }
 
 /** The deferred tools whose user-scope service is unavailable on this core: they stay eligible and deferred, never loadable. */
 export function userScopeToolNames(reach: UserScopeReach): ReadonlySet<string> {
-  const browser = reach.browser ? [] : BUILTIN_DEFERRED_GROUPS.filter((g) => USER_SCOPE_GROUPS.has(g.group)).flatMap((g) => [...g.names]);
+  const groups = BUILTIN_DEFERRED_GROUPS.filter((g) => USER_SCOPE_GROUPS.some((scoped) => scoped === g.group && !reach[scoped]));
   const relayed = relayedToolNames().filter((name) => !reach.relayedTool(relayedToolOf(name)!));
-  return new Set([...browser, ...relayed]);
+  return new Set([...groups.flatMap((g) => [...g.names]), ...relayed]);
 }
+
+const FORGE_NAMES: ReadonlySet<string> = new Set(FORGE_PI_TOOL_NAMES);
 
 /**
  * The loadable snapshot: the deferred tools ToolSearch may list and load, those with an unavailable service left out, and in
- * a design chat or an agent it started (`design`) every browser tool that is not a read (PD-25).
+ * a design chat or an agent it started (`design`) every browser tool that is not a read (PD-25) and every GitHub and GitLab
+ * tool.
  */
 export function loadableToolNames(deferred: readonly string[], reach: UserScopeReach, design: boolean): string[] {
   const unavailable = userScopeToolNames(reach);
-  return deferred.filter((name) => !unavailable.has(name) && (!design || designBrowserAllows(name)));
+  return deferred.filter((name) => !unavailable.has(name) && (!design || (designBrowserAllows(name) && !FORGE_NAMES.has(name))));
+}
+
+/**
+ * A nested agent's `tools:`: its eligible names without the built-in deferred tools its loadable snapshot (frozen at spawn)
+ * leaves out, which would otherwise start active in an agent with no ToolSearch. MCP names all stay.
+ */
+export function nestedAgentToolNames(eligible: readonly string[], loadable: readonly string[]): string[] {
+  const kept = new Set(loadable);
+  const unloadable = new Set(deferredToolNames(eligible, []).filter((name) => !kept.has(name)));
+  return eligible.filter((name) => !unloadable.has(name));
 }
 
 /** `(eligible \ deferred) ∪ (deferred ∩ activated)`, in `eligible` order. */

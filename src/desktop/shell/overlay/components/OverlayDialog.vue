@@ -56,9 +56,9 @@ function returnFocusTo(element: HTMLElement | null): void {
 </script>
 
 <script setup lang="ts">
-import { defineComponent, nextTick, onScopeDispose, type Component, type ComponentPublicInstance } from 'vue';
+import { computed, defineComponent, nextTick, onMounted, onScopeDispose, type Component, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Info, OctagonAlert, TriangleAlert } from 'lucide-vue-next';
+import { Check, Info, OctagonAlert, TriangleAlert } from 'lucide-vue-next';
 import { AlertDialogContent, AlertDialogRoot, injectDialogRootContext } from 'reka-ui';
 import { useOverlayDialog } from '@/composables/useOverlayDialog';
 import type { MessageSeverity } from '../../../preload/overlay-channels';
@@ -73,14 +73,16 @@ export interface DialogButton {
   readonly disabled?: boolean;
 }
 
-// accent: a question with no risk to warn of (a hand-off, a merge); its badge shows the action's own icon.
-export type DialogSeverity = MessageSeverity | 'accent';
+// accent: a question with no risk to warn of (a hand-off, a merge); its badge shows the action's own icon. success: a flow
+// that finished, shown in the dialog that ran it.
+export type DialogSeverity = MessageSeverity | 'accent' | 'success';
 
 /**
  * Every desktop dialog (D41): a severity badge, a heading and the buttons, as a reka alert dialog on the overlay's modal
  * layer, so it paints and takes Escape above the settings modal and the pointer and focus above an open reka dialog. Focus starts on `initialFocus`, Tab stays inside, Enter
- * activates the focused button and Escape or a click on the scrim chooses `cancelIndex`. While `hasDraft` (the dialog holds
- * text the user typed) the scrim does nothing, so a stray click beside the panel never throws the text away.
+ * activates the focused button and Escape or a click on the scrim chooses `cancelIndex`. While `scrimInert` (the dialog holds
+ * text the user typed, or runs work a cancel would stop) the scrim does nothing, so a stray click beside the panel never
+ * throws the text away or stops the work; Escape and the dialog's own Cancel still choose `cancelIndex`.
  */
 const props = defineProps<{
   severity: DialogSeverity;
@@ -92,9 +94,11 @@ const props = defineProps<{
   initialFocus: number;
   cancelIndex: number;
   testId?: string;
-  hasDraft?: boolean;
+  scrimInert?: boolean;
   // a dialog listing rows with several parts each
   wide?: boolean;
+  // dialog: a form or a running flow rather than a question that interrupts
+  role?: 'dialog' | 'alertdialog';
 }>();
 const emit = defineEmits<{ choose: [index: number] }>();
 const { t } = useI18n();
@@ -125,11 +129,17 @@ function onOpenAutoFocus(event: Event): void {
   focusInitial();
 }
 
+// reka's trap starts listening in the flush after mount, and a content change it sees before it heard focus land (a segmented
+// control placing its indicator) moves focus to the panel, so the initial control takes it back once that flush is done.
+onMounted(() => void nextTick(() => {
+  if (root.value !== null && document.activeElement === root.value) focusInitial();
+}));
+
 // After useOverlayDialog's own return, which cannot reach a control that was disabled when the dialog opened.
 onScopeDispose(() => void nextTick(() => returnFocusTo(opener)));
 
 function onScrim(): void {
-  if (!props.hasDraft) emit('choose', props.cancelIndex);
+  if (!props.scrimInert) emit('choose', props.cancelIndex);
 }
 
 const BADGE: Readonly<Record<DialogSeverity, { readonly icon: Component; readonly classes: string }>> = {
@@ -137,12 +147,16 @@ const BADGE: Readonly<Record<DialogSeverity, { readonly icon: Component; readonl
   info: { icon: Info, classes: 'bg-(--d-info)/15 text-(--d-info)' },
   warning: { icon: TriangleAlert, classes: 'bg-(--d-warning)/15 text-(--d-warning)' },
   danger: { icon: OctagonAlert, classes: 'bg-(--d-danger)/15 text-(--d-danger)' },
+  success: { icon: Check, classes: 'bg-(--d-success)/15 text-(--d-success)' },
 };
+// accent and success name no severity: the title says it all
+const named = computed(() => props.severity !== 'accent' && props.severity !== 'success');
 const FILL: Readonly<Record<DialogSeverity, string>> = {
   accent: 'bg-(--d-accent) text-(--d-on-accent)',
   info: 'bg-(--d-accent) text-(--d-on-accent)',
   warning: 'bg-(--d-accent) text-(--d-on-accent)',
   danger: 'bg-(--d-danger) text-(--d-on-danger)',
+  success: 'bg-(--d-accent) text-(--d-on-accent)',
 };
 </script>
 
@@ -169,8 +183,9 @@ const FILL: Readonly<Record<DialogSeverity, string>> = {
         aria-modal="true"
         tabindex="-1"
         :data-testid="testId ?? 'overlay-dialog'"
+        :role="role ?? 'alertdialog'"
         :data-severity="severity"
-        :aria-labelledby="severity === 'accent' ? titleId : `${severityId} ${titleId}`"
+        :aria-labelledby="named ? `${severityId} ${titleId}` : titleId"
         :aria-describedby="message || $slots.default ? messageId : undefined"
         :class="wide ? 'w-[min(31rem,100%)]' : 'w-[min(27.5rem,100%)]'"
         class="overlay-dialog-panel flex flex-col gap-3.5 rounded-[0.875rem] border border-(--d-border2) bg-(--d-card) px-4.5 pt-4.5 pb-4 text-(--d-text) shadow-(--d-shadow) outline-none"
@@ -189,7 +204,7 @@ const FILL: Readonly<Record<DialogSeverity, string>> = {
               data-testid="overlay-dialog-icon"
             />
             <span
-              v-if="severity !== 'accent'"
+              v-if="named"
               :id="severityId"
               class="sr-only"
             >{{ t(`dialog.${severity}`) }}</span>
@@ -214,9 +229,14 @@ const FILL: Readonly<Record<DialogSeverity, string>> = {
               </p>
               <slot />
             </div>
+            <!-- content outside the dialog's description, such as a list of choices -->
+            <slot name="controls" />
           </div>
         </div>
-        <div class="flex flex-wrap justify-end gap-2">
+        <div
+          v-if="buttons.length > 0"
+          class="flex flex-wrap justify-end gap-2"
+        >
           <button
             v-for="(button, index) in buttons"
             :key="index"

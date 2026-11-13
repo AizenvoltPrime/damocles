@@ -76,15 +76,18 @@ describe('core\'s ScmService as main reads it', () => {
     const scm = createScmClient({ core: (_authority, _label, work) => work(client), gitVersion: undefined, log: quiet });
     scm.attach(client);
     let asked: string | undefined;
-    core.serve('scm.commit', async ({ branchName }) => {
+    let rules: unknown;
+    core.serve('scm.commit', async ({ branchName, protectedBranches }) => {
       asked = await core.request('scm.branchName', { token: branchName! });
+      rules = protectedBranches;
       return { ok: true } as const;
     });
     core.serve('scm.commitBlob', () => new Uint8Array([104, 105]));
     core.serve('scm.ignoredIn', () => ['dist', 'node_modules']);
-    const outcome = await scm.commit('repo-1', 'msg', { scope: 'auto', amend: false, signoff: false, noVerify: false, empty: false }, { saved: [], branchName: async () => 'feature/x' });
+    const outcome = await scm.commit('repo-1', 'msg', { scope: 'auto', amend: false, signoff: false, noVerify: false, empty: false }, { saved: [], branchName: async () => 'feature/x', protectedBranches: [{ remote: 'origin', rules: [{ include: ['main'], exclude: [], syntax: 'gitlab' }] }] });
     expect(outcome).toEqual({ ok: true });
     expect(asked).toBe('feature/x');
+    expect(rules).toEqual([{ remote: 'origin', rules: [{ include: ['main'], exclude: [], syntax: 'gitlab' }] }]);
     const blob = await scm.commitBlob('repo-1', 'a'.repeat(40), 'a.ts');
     expect(Buffer.isBuffer(blob)).toBe(true);
     expect((blob as Buffer).toString('utf8')).toBe('hi');

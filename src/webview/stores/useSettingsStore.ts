@@ -17,6 +17,7 @@ import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY } f
 import { ACCOUNT_PROVIDER_IDS, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type ProviderCredentialActive, type SignInProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import type { LocalizedText } from '@shared/localized-text';
+import type { ForgeAccountsState, ForgeSignInState } from '@shared/forge/accounts';
 
 /** A Tools switch: a group's master switch or one tool's. */
 export type ToolSwitch = { readonly group: ToolGroup } | { readonly tool: string };
@@ -195,6 +196,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const claudeSignInWaiting = ref(false);
   const keyProviderStatus = ref(noKeyProviderStatus());
   const providerSignInState = ref(idleProviderSignIns());
+  // Null until core's first forgeAccountsChanged, while Git hosting shows its loading skeleton.
+  const forgeAccounts = shallowRef<ForgeAccountsState | null>(null);
+  // Per server id; a server without an entry has no flow running.
+  const forgeSignIns = shallowRef<Readonly<Record<string, ForgeSignInState>>>({});
   const memoryJudge = ref<MemoryJudge | null>(null);
   // Null until the host's first `memoryJudgeStatus`.
   const classifierCredentials = ref<Record<ClassifierProvider, ClassifierCredential> | null>(null);
@@ -527,6 +532,14 @@ export const useSettingsStore = defineStore('settings', () => {
     providerSignInState.value[provider] = state;
   }
 
+  function setForgeAccounts(state: ForgeAccountsState) {
+    forgeAccounts.value = state;
+  }
+
+  function setForgeSignInState(serverId: string, state: ForgeSignInState) {
+    forgeSignIns.value = { ...forgeSignIns.value, [serverId]: state };
+  }
+
   function setMemoryJudgeStatus(judge: MemoryJudge, credentials: Record<ClassifierProvider, ClassifierCredential>) {
     memoryJudge.value = judge;
     classifierCredentials.value = credentials;
@@ -591,6 +604,8 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeSignInWaiting.value = false;
     keyProviderStatus.value = noKeyProviderStatus();
     providerSignInState.value = idleProviderSignIns();
+    forgeAccounts.value = null;
+    forgeSignIns.value = {};
     memoryJudge.value = null;
     classifierCredentials.value = null;
     imageGeneration.value = null;
@@ -694,6 +709,10 @@ export const useSettingsStore = defineStore('settings', () => {
     setKeyProviderStatus,
     providerSignInState,
     setProviderSignInState,
+    forgeAccounts,
+    setForgeAccounts,
+    forgeSignIns,
+    setForgeSignInState,
     memoryJudge,
     classifierCredentials,
     setMemoryJudgeStatus,

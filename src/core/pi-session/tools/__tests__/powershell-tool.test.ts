@@ -11,6 +11,7 @@ import type { PiCodingAgentModule } from '../../pi-loader';
 import { createPowerShellTool, createTrackedPowerShellOperations, powerShellSearch } from '../powershell-tool';
 import { createShellJob, killProcessTree } from '../process-tree';
 import { windowsPowerShell } from '../../../system-tools';
+import type { ShellCredentialLease } from '../shell-credentials';
 
 const jobState = vi.hoisted(() => ({ created: 0, terminated: 0, disposed: 0 }));
 
@@ -393,6 +394,49 @@ describe('createTrackedPowerShellOperations', () => {
     );
 
     expect(spawnControl.calls).toEqual([]);
+  });
+});
+
+describe("the PowerShell tool's git credentials", () => {
+  useFakeShellEnvironment();
+
+  const leaseOf = (nonce: string): ShellCredentialLease & { heldBy: ReturnType<typeof vi.fn<ShellCredentialLease['heldBy']>>; release: ReturnType<typeof vi.fn<() => void>> } => ({
+    env: { DAMOCLES_CREDENTIAL_NONCE: nonce },
+    heldBy: vi.fn<ShellCredentialLease['heldBy']>(),
+    release: vi.fn<() => void>(),
+  });
+
+  it("starts no shell before its call's credentials are registered, then starts it with them over the chat's variables and hands it the lease", async () => {
+    const shell = armFakeShell();
+    let grant!: (lease: ShellCredentialLease) => void;
+    const credentials = vi.fn(() => new Promise<ShellCredentialLease | undefined>((resolve) => (grant = resolve)));
+    const tool = createPowerShellTool(pi, CWD, undefined, () => ({ DAMOCLES_CREDENTIAL_NONCE: 'relay-terminal', DAMOCLES_WORKTREE_INDEX: '2' }), credentials);
+    const pending = tool.execute('ps-cred', { command: 'Write-Output ok' }, undefined, undefined, ctx) as Promise<unknown>;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(credentials).toHaveBeenCalledWith('ps-cred');
+    expect(spawnControl.calls).toEqual([]);
+    const lease = leaseOf('call-nonce');
+    grant(lease);
+    await shell.spawned;
+    endShell(shell.child, 0);
+    await pending;
+    expect(spawnControl.calls[0]!.options['env']).toMatchObject({ DAMOCLES_CREDENTIAL_NONCE: 'call-nonce', DAMOCLES_WORKTREE_INDEX: '2' });
+    expect(lease.heldBy).toHaveBeenCalledTimes(1);
+    expect(lease.release).toHaveBeenCalledTimes(1);
+  });
+
+  it.runIf(process.platform === 'win32')('hands the lease only to the PowerShell that started, never to a candidate that failed to start', async () => {
+    const child = fakeChild();
+    spawnControl.fake = (exe) => {
+      if (exe === plantedPwsh()) throw Object.assign(new Error(`spawn ${exe} ENOENT`), { code: 'ENOENT' });
+      setImmediate(() => endShell(child, 0));
+      return child;
+    };
+    const lease = leaseOf('call-nonce');
+    const tool = createPowerShellTool(pi, CWD, undefined, undefined, async () => lease);
+    await tool.execute('ps-fallback', { command: 'Write-Output ok' }, undefined, undefined, ctx);
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual([plantedPwsh(), windowsPowerShell()]);
+    expect(lease.heldBy).toHaveBeenCalledTimes(1);
   });
 });
 

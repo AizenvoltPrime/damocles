@@ -45,7 +45,9 @@ A main stall freezes every window. A core stall delays the agent, source control
 
 Each monitor keeps V8's sampling profiler running on its process's main thread, in release builds too. When its 100 ms heartbeat lands 1 s or more late, it logs a `[stall]` entry to its process's log: the blocked time, how much of it the profiler sampled busy and idle, the main thread's CPU time over the stall (`process.threadCpuUsage()`, which leaves out other threads and workers), the four heaviest call stacks with their ms, and a `.cpuprofile` of the stalled stretch in its stall folder, which keeps the newest 20. Open a profile in Chrome DevTools' Performance panel.
 
-The profile rolls over to a new 10 s segment on a heartbeat. A roll-over cannot run during a stall, so the segment running when a stall began covers all of it. Stopping a segment holds the thread for time that grows with the segment; a stop over 50 ms logs `[stall-monitor] segment stop took N ms`.
+The profile rolls over to a new 10 s segment on a heartbeat. A roll-over cannot run during a stall, so the segment running when a stall began covers all of it. Stopping a segment holds the thread for time that grows with the segment; a stop over 50 ms logs `[stall-monitor] segment stop took N ms`. The next segment starts before the running one stops, so V8 keeps one profiler across the roll-over (0.1 ms). The inspector's `Profiler.stop` then `Profiler.start` builds a new one, which walks the heap: 220 to 270 ms per roll-over on a 323 MB heap.
+
+V8's profile serializer, which `v8.startCpuProfile()` uses, writes `functionName`, `url` and `deoptReason` unescaped (nodejs/node#67097), so a Windows path or a quote in a frame name makes its text invalid JSON. `readCpuProfile` re-escapes those three fields, each ending where the serializer's fixed key order resumes, and the saved `.cpuprofile` is that escaped JSON.
 
 A stall sampled busy for under 100 ms keeps no profile and logs one of two readings:
 

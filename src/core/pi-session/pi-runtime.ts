@@ -2,6 +2,7 @@ import type { ModelRuntime, PackageManager, PackageSource, SettingsManager } fro
 import type { Api, AuthInteraction, ClassifierAnswer, ClassifierApi, ClassifierModel, ClassifierQuestion, Credential, CredentialStore, JsonObject, Model, ModelThinkingLevel } from '@earendil-works/pi-ai';
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { log } from '../logger';
@@ -397,6 +398,17 @@ export type MemoryJudgeResolution =
   | { kind: 'model'; model: Model<Api>; effort?: EffortLevel }
   | { kind: 'none'; forced?: { choice: string; reason: MemoryJudgeUnavailable } };
 
+/** models.json's text, null when it is absent, undefined (logged) when it exists but could not be read. */
+async function readModelsConfig(file: string): Promise<string | null | undefined> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    log('[PiRuntime] models.json could not be read: %s', err instanceof Error ? err.message : String(err));
+    return undefined;
+  }
+}
+
 /**
  * The single per-process owner of pi's runtime (blocker B1).
  *
@@ -415,6 +427,10 @@ export class PiRuntime {
   private _initPromise: Promise<void> | null = null;
   private readonly _agentDir: string;
   private _modelRuntime: ModelRuntime | null = null;
+  /** models.json's text as last read before pi loaded it, null while absent, undefined when that read failed. */
+  private _modelsConfigRead: string | null | undefined = null;
+  /** `reloadChangedModelsConfig` runs one at a time, so each compares with what the one before it loaded. */
+  private _modelsConfigReload: Promise<void> = Promise.resolve();
   /** `modelRuntimeReady()` callers waiting for init to create the model runtime. */
   private readonly _modelRuntimeWaiters = new Set<(models: ModelRuntime) => void>();
   /** User-scope settings for package operations; the subscription plugin is only ever listed there. */
@@ -1276,7 +1292,7 @@ export class PiRuntime {
   private _adoptModelRuntime(modelRuntime: ModelRuntime): void {
     const remote = this._platform.remote;
     this._modelRuntime = modelRuntime;
-    this._hostOwnAuth = remote ? installClientAvailability(modelRuntime, remote) : null;
+    this._hostOwnAuth = remote ? installClientAvailability(modelRuntime, remote, { read: (provider, options) => this._broker!.read(provider, options) }) : null;
   }
 
   private async _doInit(): Promise<void> {
@@ -1295,10 +1311,11 @@ export class PiRuntime {
           },
         })
       : null;
+    this._modelsConfigRead = await readModelsConfig(this._modelsPath());
     // pi's availability checks read every provider's credential, so they must never run inside a turn's pin
     const modelRuntime = await outsidePins(() => pi.ModelRuntime.create({
       ...(this._broker ? { credentials: this._broker } : { authPath: path.join(this._agentDir, 'auth.json') }),
-      modelsPath: path.join(this._agentDir, 'models.json'),
+      modelsPath: this._modelsPath(),
       modelsStorePath: this._modelsStorePath(),
     }));
     if (remote) {
@@ -1693,6 +1710,32 @@ export class PiRuntime {
   /** pi's models store, where a networked catalog refresh saves what it fetched. */
   private _modelsStorePath(): string {
     return path.join(this._agentDir, 'models-store.json');
+  }
+
+  private _modelsPath(): string {
+    return path.join(this._agentDir, 'models.json');
+  }
+
+  /**
+   * Loads models.json into pi's model runtime again when its text changed since pi last loaded it, so a chat starts on the
+   * provider entries the file names then (docs/invariants.md "Agent auth store").
+   */
+  reloadChangedModelsConfig(): Promise<void> {
+    const reload = this._modelsConfigReload.then(() => this._reloadChangedModelsConfig());
+    this._modelsConfigReload = reload.catch(() => undefined);
+    return reload;
+  }
+
+  private async _reloadChangedModelsConfig(): Promise<void> {
+    const modelRuntime = this._modelRuntime;
+    if (!modelRuntime || this._disposed) return;
+    const text = await readModelsConfig(this._modelsPath());
+    // an unreadable file keeps what pi loaded, since pi's own read of it would fail too
+    if (text === undefined || text === this._modelsConfigRead) return;
+    this._modelsConfigRead = text;
+    const refreshed = await outsidePins(() => modelRuntime.refresh({ allowNetwork: false }));
+    for (const [provider, err] of refreshed.errors) log('[PiRuntime] models.json reload: provider %s failed: %s', provider, describeAuthError(err));
+    if (refreshed.aborted) log('[PiRuntime] models.json reload aborted before completing');
   }
 
   /**

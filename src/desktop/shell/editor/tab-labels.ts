@@ -10,7 +10,7 @@ export function tabHostName(tab: Pick<ShellEditorTab, 'host' | 'projectKey'>, pr
 }
 
 // Tabs that are no file of a path, so no description tells them apart.
-const PATHLESS: ReadonlySet<ShellEditorTab['kind']> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge', 'browser', 'terminal']);
+const PATHLESS: ReadonlySet<ShellEditorTab['kind']> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge', 'browser', 'terminal', 'jobLog']);
 
 const foldersOf = (displayPath: string): string[] => displayPath.split(/[\\/]+/).filter((segment) => segment !== '').slice(0, -1);
 const separatorOf = (displayPath: string): string => (displayPath.includes('\\') && !displayPath.startsWith('/') ? '\\' : '/');

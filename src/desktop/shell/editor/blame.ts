@@ -70,6 +70,9 @@ export interface BlameController extends IDisposable {
   cardLeft(): void;
 }
 
+/** Draws the author's avatar into the annotation's own slot, or empties it (null: no commit on the line). */
+export type BlameAvatarHost = (slot: HTMLElement, commit: ScmBlameCommit | null) => void;
+
 export interface BlameCardHost {
   show(anchor: { readonly line: number; readonly element: HTMLElement }, commit: ScmBlameCommit): void;
   hide(): void;
@@ -84,7 +87,7 @@ export interface BlameCardHost {
  * It takes no pointer events (.qd-blame), so clicks and drags on it reach the editor as on VS Code's after decoration, and
  * the pointer over it is found from the editor's own mouse moves.
  */
-export function attachBlame(editor: MonacoEditor.ICodeEditor, monaco: Monaco, text: BlameText, card: BlameCardHost): BlameController {
+export function attachBlame(editor: MonacoEditor.ICodeEditor, monaco: Monaco, text: BlameText, card: BlameCardHost, avatar: BlameAvatarHost): BlameController {
   let target: { readonly read: () => Promise<ScmBlameResult>; readonly quick: () => QuickDiffState | null } | null = null;
   let enabled = true;
   let result: ScmBlameResult | null = null;
@@ -98,6 +101,11 @@ export function attachBlame(editor: MonacoEditor.ICodeEditor, monaco: Monaco, te
   const node = document.createElement('span');
   node.className = 'qd-blame';
   node.dataset['testid'] = 'inline-blame';
+  // the avatar before the text, in a slot of its own so writing the text leaves it in place
+  const avatarSlot = document.createElement('span');
+  avatarSlot.className = 'qd-blame-avatar';
+  const label = document.createElement('span');
+  node.append(avatarSlot, label);
   let widget: MonacoEditor.IContentWidget | null = null;
   // the code's line box, so the smaller blame text centres on the line instead of sitting at its top
   const fitLineHeight = (): void => {
@@ -112,6 +120,7 @@ export function attachBlame(editor: MonacoEditor.ICodeEditor, monaco: Monaco, te
     pointerOver = false;
     if (widget) editor.removeContentWidget(widget);
     widget = null;
+    avatar(avatarSlot, null);
     card.hide();
   }
 
@@ -120,7 +129,8 @@ export function attachBlame(editor: MonacoEditor.ICodeEditor, monaco: Monaco, te
     const model = editor.getModel();
     if (!model || shown.line > model.getLineCount()) return;
     const position = { lineNumber: shown.line, column: model.getLineMaxColumn(shown.line) };
-    node.textContent = shown.content;
+    label.textContent = shown.content;
+    avatar(avatarSlot, shown.blame.kind === 'commit' ? shown.blame.commit : null);
     node.classList.toggle('qd-blame-in', fading);
     if (widget) {
       editor.removeContentWidget(widget);

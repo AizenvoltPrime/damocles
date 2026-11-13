@@ -28,7 +28,7 @@ describe('askpass-main credential mode', { timeout: 120_000 }, () => {
     server = createAskpassServer({
       paths: { askpass: '/a.sh', sshAskpass: '/s.sh', node: process.execPath, main, credentialRelay: daemonRelay.identity() },
       prompt: async () => 'a prompt answer',
-      credential: (request, signal) => credential(request, signal),
+      credential: (request, origin, signal) => credential(request, origin, signal),
       log: (line) => logs.push(line),
     });
     relay = (await server.relay())!;
@@ -58,7 +58,30 @@ describe('askpass-main credential mode', { timeout: 120_000 }, () => {
     credential.mockReset().mockResolvedValue({ kind: 'credential', username: 'ada', password: 'tok' });
     const result = await helper(['credential', 'get'], 'protocol=https\nhost=github.com\nusername=ada\npassword=stale\n\n', relayVariables(relay));
     expect(result).toEqual({ code: 0, stdout: 'username=ada\npassword=tok\n', stderr: '' });
-    expect(credential).toHaveBeenCalledWith({ op: 'get', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com', username: 'ada' } }, expect.any(AbortSignal));
+    expect(credential).toHaveBeenCalledWith({ op: 'get', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com', username: 'ada' } }, { kind: 'terminal' }, expect.any(AbortSignal));
+  });
+
+  it('prints quit=1 and the reason for a refusal, and nothing for a delegate answer', async () => {
+    credential.mockReset().mockResolvedValue({ kind: 'refused', message: 'Turn on "Agent shells may use this account".' });
+    await expect(helper(['credential', 'get'], 'protocol=https\nhost=gitlab.com\n\n', relayVariables(relay))).resolves.toEqual({ code: 0, stdout: 'quit=1\n', stderr: 'Turn on "Agent shells may use this account".\n' });
+    credential.mockReset().mockResolvedValue({ kind: 'delegate' });
+    await expect(helper(['credential', 'get'], 'protocol=https\nhost=gitlab.com\n\n', relayVariables(relay))).resolves.toEqual({ code: 0, stdout: '', stderr: '' });
+  });
+
+  it('answers nothing, asking no server, inside a delegation to the user\'s own helpers', async () => {
+    credential.mockReset().mockResolvedValue({ kind: 'credential', username: 'ada', password: 'tok' });
+    await expect(helper(['credential', 'get'], 'protocol=https\nhost=gitlab.com\n\n', { ...relayVariables(relay), DAMOCLES_CREDENTIAL_DELEGATE: '1' })).resolves.toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(credential).not.toHaveBeenCalled();
+  });
+
+  it('answers a credential nonce by its registration\'s origin, and drops the nonce once the registration ends', async () => {
+    credential.mockReset().mockResolvedValue({ kind: 'credential', username: 'oauth2', password: 'glo-tok' });
+    const origin = { kind: 'agentShell', panelId: 'p1', sessionId: 's1' } as const;
+    const registration = await server.registerCredential(origin);
+    await expect(helper(['credential', 'get'], 'protocol=https\nhost=gitlab.com\npath=g/p.git\n\n', registration.env)).resolves.toEqual({ code: 0, stdout: 'username=oauth2\npassword=glo-tok\n', stderr: '' });
+    expect(credential).toHaveBeenCalledWith({ op: 'get', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' } }, origin, expect.any(AbortSignal));
+    registration.dispose();
+    await expect(helper(['credential', 'get'], 'protocol=https\nhost=gitlab.com\n\n', registration.env)).resolves.toMatchObject({ code: 1, stderr: 'Damocles could not provide credentials.\n' });
   });
 
   it('writes exactly the not-connected line on stderr and nothing on stdout when no client is attached', async () => {
@@ -67,16 +90,16 @@ describe('askpass-main credential mode', { timeout: 120_000 }, () => {
     expect(NOT_CONNECTED_MESSAGE).toBe('Damocles is not connected. Git credentials from your computer are unavailable.');
   });
 
-  it('drops store without contacting the server, and sends erase with the password\'s SHA-256, never the password', async () => {
+  it('sends store and erase with git\'s password and its SHA-256 to the answering process on this machine', async () => {
     credential.mockReset().mockResolvedValue({ kind: 'none' });
-    await expect(helper(['credential', 'store'], 'protocol=https\nhost=github.com\nusername=ada\npassword=tok\n\n', relayVariables(relay))).resolves.toEqual({ code: 0, stdout: '', stderr: '' });
-    expect(credential).not.toHaveBeenCalled();
-    await expect(helper(['credential', 'erase'], 'protocol=https\nhost=github.com\nusername=ada\npassword=tok\n\n', relayVariables(relay))).resolves.toMatchObject({ code: 0, stdout: '' });
     const passwordHash = createHash('sha256').update('tok', 'utf8').digest('hex');
-    expect(credential).toHaveBeenCalledWith({ op: 'erase', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com', username: 'ada' }, passwordHash }, expect.any(AbortSignal));
+    await expect(helper(['credential', 'store'], 'protocol=https\nhost=github.com\nusername=ada\npassword=tok\n\n', relayVariables(relay))).resolves.toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(credential).toHaveBeenLastCalledWith({ op: 'store', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com', username: 'ada' }, password: 'tok', passwordHash }, { kind: 'terminal' }, expect.any(AbortSignal));
+    await expect(helper(['credential', 'erase'], 'protocol=https\nhost=github.com\nusername=ada\npassword=tok\n\n', relayVariables(relay))).resolves.toMatchObject({ code: 0, stdout: '' });
+    expect(credential).toHaveBeenLastCalledWith({ op: 'erase', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com', username: 'ada' }, password: 'tok', passwordHash }, { kind: 'terminal' }, expect.any(AbortSignal));
     // git before 2.4x may name no password
     await helper(['credential', 'erase'], 'protocol=https\nhost=github.com\n\n', relayVariables(relay));
-    expect(credential).toHaveBeenLastCalledWith({ op: 'erase', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com' } }, expect.any(AbortSignal));
+    expect(credential).toHaveBeenLastCalledWith({ op: 'erase', cwd: fs.realpathSync(dir), fields: { protocol: 'https', host: 'github.com' } }, { kind: 'terminal' }, expect.any(AbortSignal));
   });
 
   it.runIf(process.platform === 'win32')('runs as the .cmd helper with a ! in its paths under delayed expansion', async () => {
@@ -87,7 +110,7 @@ describe('askpass-main credential mode', { timeout: 120_000 }, () => {
     const cmd = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'cmd.exe');
     const script = path.resolve(__dirname, '..', '..', '..', '..', 'resources', 'git-credential', 'git-credential-relay.cmd');
     const result = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
-      const child = spawn(cmd, ['/d', '/v:on', '/c', script, 'get'], { env: { ...relayVariables(relay), DAMOCLES_ASKPASS_MAIN: path.join(bang, 'askpass-main.js'), SystemRoot: process.env['SystemRoot'] ?? '' }, cwd: dir, windowsHide: true });
+      const child = spawn(cmd, ['/d', '/v:on', '/c', script, '--takeover', 'get'], { env: { ...relayVariables(relay), DAMOCLES_ASKPASS_MAIN: path.join(bang, 'askpass-main.js'), SystemRoot: process.env['SystemRoot'] ?? '' }, cwd: dir, windowsHide: true });
       let stdout = '';
       child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
       child.on('error', reject);
@@ -100,11 +123,22 @@ describe('askpass-main credential mode', { timeout: 120_000 }, () => {
   it('fails without the relay nonce, and the server refuses its nonce as a prompt\'s', async () => {
     credential.mockReset();
     const { DAMOCLES_CREDENTIAL_NONCE: nonce, ...withoutNonce } = relayVariables(relay);
-    await expect(helper(['credential', 'get'], 'protocol=https\nhost=github.com\n\n', withoutNonce)).resolves.toMatchObject({ code: 1, stdout: '' });
+    // the takeover's get it cannot ask for stops git there, so no other helper or prompt answers in Damocles' place
+    await expect(helper(['credential', '--takeover', 'get'], 'protocol=https\nhost=github.com\n\n', withoutNonce)).resolves.toEqual({ code: 1, stdout: 'quit=1\n', stderr: 'Damocles could not provide credentials.\n' });
     // a terminal's variables used as an askpass helper's: the relay nonce in the prompt nonce's place
     logs.length = 0;
     await expect(helper(['askpass', 'Password: '], '', { ...withoutNonce, DAMOCLES_ASKPASS_NONCE: nonce! })).resolves.toMatchObject({ code: 1, stdout: '' });
     expect(logs).toEqual(['[askpass] dropped a helper connection: a prompt with the credential relay nonce']);
+    expect(credential).not.toHaveBeenCalled();
+  });
+
+  it('stops git with quit=1 while nothing listens only as the takeover\'s helper; the relay leaves git its other helpers', async () => {
+    credential.mockReset();
+    const nowhere = process.platform === 'win32' ? `\\\\.\\pipe\\damocles-nowhere-${process.pid}-${Date.now()}` : path.join(dir, 'nowhere.sock');
+    const env = { ...relayVariables(relay), DAMOCLES_ASKPASS_HANDLE: nowhere };
+    const input = 'protocol=https\nhost=example.com\n\n';
+    await expect(helper(['credential', '--takeover', 'get'], input, env)).resolves.toEqual({ code: 1, stdout: 'quit=1\n', stderr: 'Damocles could not provide credentials.\n' });
+    await expect(helper(['credential', 'get'], input, env)).resolves.toEqual({ code: 1, stdout: '', stderr: 'Damocles could not provide credentials.\n' });
     expect(credential).not.toHaveBeenCalled();
   });
 
@@ -117,8 +151,8 @@ describe('askpass-main credential mode', { timeout: 120_000 }, () => {
   it.runIf(process.platform !== 'win32')('fails with its one line when its working folder was deleted', async () => {
     credential.mockReset();
     const gone = fs.mkdtempSync(path.join(dir, 'gone-'));
-    const result = await helper(['credential', 'get'], 'protocol=https\nhost=github.com\n\n', relayVariables(relay), gone, () => fs.rmSync(gone, { recursive: true }));
-    expect(result).toEqual({ code: 1, stdout: '', stderr: 'Damocles could not provide credentials.\n' });
+    const result = await helper(['credential', '--takeover', 'get'], 'protocol=https\nhost=github.com\n\n', relayVariables(relay), gone, () => fs.rmSync(gone, { recursive: true }));
+    expect(result).toEqual({ code: 1, stdout: 'quit=1\n', stderr: 'Damocles could not provide credentials.\n' });
     expect(credential).not.toHaveBeenCalled();
   });
 });

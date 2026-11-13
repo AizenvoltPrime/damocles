@@ -269,6 +269,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       deps.postSettingsFileAvailability?.(ctx);
       deps.postClaudeAuthState?.(ctx.reply);
       deps.postProviderSignInState?.(ctx.reply);
+      deps.postForgeState?.(ctx.reply);
       postMessage(ctx.reply, await openaiAuthStatusMessage(platform));
       // Read together, each bounded, so one secret store read cannot hold the rest of the reply; posted in order, the judge last.
       const [keyStatuses, judgeStatus] = await Promise.all([

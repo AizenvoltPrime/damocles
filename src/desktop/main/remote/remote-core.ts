@@ -32,8 +32,9 @@ export interface RemoteCoreDeps {
   // this client's id for the host: its secrets namespace is remote/<hostId>/
   readonly hostId: string;
   readonly connection: () => RemoteConnection | undefined;
-  // the host services for this authority: its platform with main's refusals, trust from the host store, its views
-  readonly services: () => Omit<HostServicesDeps, 'endpoint'>;
+  // the host services for this authority: its platform with main's refusals, trust from the host store, its views; built per
+  // attach with the features of the connection serving that core
+  readonly services: (features: readonly string[]) => Omit<HostServicesDeps, 'endpoint'>;
   // the epoch the authority's chats were last open under (remote-state.json)
   readonly lastEpoch: string | null;
   // reopens the authority's chats into core: rejoin when the epoch is the one they were open under, else restore them
@@ -43,7 +44,7 @@ export interface RemoteCoreDeps {
   readonly retainTabStates: (retain: boolean) => void;
   // main's listeners on an attach's client, made with it and disposed with it
   readonly subscribe: (client: CoreClient) => readonly Disposable[];
-  // this computer's client mirrors (clientAuth, clientUser, clientPolicy), which every attach starts from and follows
+  // this computer's client mirrors (clientAuth, clientUser, clientPolicy, clientMcp, clientForges), which every attach starts from and follows
   readonly relays: UserRelays;
   // the authority runs on this computer, so its core reaches this computer's loopback endpoints
   readonly sharedLoopback: boolean;
@@ -261,7 +262,7 @@ export class RemoteCore {
       endpoint.close(why);
     };
     const transport: AttachedTransport = attachedTransport(connection.coreChannel, generation, (reason) => connection.close(reason));
-    const serviceDeps = this.deps.services();
+    const serviceDeps = this.deps.services(connection.features);
     const endpoint = createMainEndpoint(transport, log, (error) => {
       log(`[remote] the core on ${authority} broke the protocol (${error.message}); closing the connection`);
       connection.close(error.message);
@@ -272,16 +273,6 @@ export class RemoteCore {
     // a delta published before the attach opens waits in the transport, after the values the attach names
     const relayed = this.deps.relays.attach((topic, value) => endpoint.publish(topic, { value } as MirrorTopics[typeof topic]), this.deps.authority, this.deps.sharedLoopback, connection.features);
     subscriptions = [relayed.subscription, ...this.deps.subscribe(client)];
-    const mirrors = services.init.mirrors;
-    const payload: CoreAttach = {
-      attach: generation,
-      hostId: this.deps.hostId,
-      appInfo: services.init.appInfo,
-      secretsPersistent: services.init.secretsPersistent,
-      chatBrowserPane: services.init.chatBrowserPane,
-      features: FEATURES,
-      mirrors: { trust: mirrors.trust, folders: mirrors.folders, editor: mirrors.editor, terminal: mirrors.terminal, language: mirrors.language, ...relayed.mirrors },
-    };
     const ready = (async () => {
       const published = new Promise<void>((resolve) => {
         const subscription = client.onFoldersChanged(() => {
@@ -289,6 +280,17 @@ export class RemoteCore {
           resolve();
         });
       });
+      const relayedMirrors = await Promise.race([relayed.mirrors, endedEarly]);
+      const mirrors = services.init.mirrors;
+      const payload: CoreAttach = {
+        attach: generation,
+        hostId: this.deps.hostId,
+        appInfo: services.init.appInfo,
+        secretsPersistent: services.init.secretsPersistent,
+        chatBrowserPane: services.init.chatBrowserPane,
+        features: FEATURES,
+        mirrors: { trust: mirrors.trust, folders: mirrors.folders, editor: mirrors.editor, terminal: mirrors.terminal, language: mirrors.language, ...relayedMirrors },
+      };
       const state = await connection.control.request('attachCore', payload);
       this.state = { value: state, on: connection };
       epoch = state.epoch;

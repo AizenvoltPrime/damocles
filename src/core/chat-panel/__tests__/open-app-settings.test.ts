@@ -32,7 +32,13 @@ describe("openAppSettingsFor", () => {
     openAppSettingsFor(platform, post, undefined, "voice");
     openAppSettingsFor(platform, post, chat, "accounts", "openai");
     openAppSettingsFor(platform, post, chat, "integrations", undefined, "machine");
-    expect(openAppSettings.mock.calls).toEqual([["voice", undefined, undefined], ["accounts", "openai", undefined], ["integrations", undefined, "machine"]]);
+    openAppSettingsFor(platform, post, chat, "accounts", undefined, undefined, { server: "gitlab.com", account: "gitlab.com|7" });
+    expect(openAppSettings.mock.calls).toEqual([
+      ["voice", undefined, undefined, undefined],
+      ["accounts", "openai", undefined, undefined],
+      ["integrations", undefined, "machine", undefined],
+      ["accounts", undefined, undefined, { server: "gitlab.com", account: "gitlab.com|7" }],
+    ]);
     expect(posted).toEqual([]);
   });
 });

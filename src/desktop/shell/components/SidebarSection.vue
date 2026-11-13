@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, useId } from 'vue';
+import { computed, inject, onBeforeUnmount, onMounted, provide, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useResizeObserver } from '@vueuse/core';
 import { ChevronRight } from 'lucide-vue-next';
 import { MIN_SECTION_SIZE } from '../../preload/shell-channels';
 import { SECTION_HEADER_REM } from '../layout';
 import type { DropEdge } from '../layout/section-order';
 import { remPx } from '@/composables/useRemPx';
-import { ALWAYS_SHOW_SECTION_ACTIONS, DOCKED_SECTION_ORDER, SECTION_DRAG_MIME, SECTION_ORDER, SECTION_TITLES, type SidebarPanelId } from './sidebar-section';
+import { ALWAYS_SHOW_SECTION_ACTIONS, DOCKED_SECTION_ORDER, SECTION_CHIP_ROOM, SECTION_DRAG_MIME, SECTION_ORDER, SECTION_TITLES, type SidebarPanelId } from './sidebar-section';
 
 const props = defineProps<{
   section: SidebarPanelId;
@@ -137,10 +138,19 @@ onBeforeUnmount(() => {
 
 // With a chip beside the title, the actions lie over the chip's tail on an opaque ground (the header's own hover tint on top),
 // so the chip keeps its width and never jumps as they come and go. They share the chip's grid cell, whose minimum is theirs
-// alone, so they never reach over the title: a header too narrow for both shortens the title, as VS Code's pane header does.
-// Their ground starts with a 1rem fade, so a chip they cover ends softly rather than cut mid-letter.
-const CHIP_ACTIONS = 'relative isolate z-1 justify-self-end self-stretch [grid-area:1/1] bg-[linear-gradient(to_right,transparent,var(--d-panel)_1rem)] ps-5.5 before:pointer-events-none before:absolute before:inset-0 before:-z-1 group-hover/header:before:bg-[linear-gradient(to_right,transparent,var(--d-hover)_1rem)]';
+// plus the chip's head, so they never reach over the title or the chip's head: a header too narrow for all three shortens
+// the title, as VS Code's pane header does. Their ground starts with a 1rem fade, so a chip they cover ends softly rather
+// than cut mid-letter, and the pointer passes through it to the chip, which rises over them when pointed at.
+const CHIP_ACTIONS = 'pointer-events-none *:pointer-events-auto relative isolate z-1 justify-self-end self-stretch col-start-2 row-start-1 bg-[linear-gradient(to_right,transparent,var(--d-panel)_1rem)] ps-5.5 before:pointer-events-none before:absolute before:inset-0 before:-z-1 group-hover/header:before:bg-[linear-gradient(to_right,transparent,var(--d-hover)_1rem)]';
+// A #chip control's head, which the actions never cover: its margin, inset and icon or avatar (AccountChip, FilesBranchChip).
+const CHIP_CELL = 'grid-cols-[1.25rem_1fr]';
 const CHIP_GROUND = 'bg-(--d-panel) before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-full group-hover/header:before:bg-(--d-hover)';
+const chipCell = ref<HTMLElement | null>(null);
+const chipRoom = ref(0);
+useResizeObserver(chipCell, (entries) => {
+  chipRoom.value = entries[0]?.contentRect.width ?? 0;
+});
+provide(SECTION_CHIP_ROOM, chipRoom);
 const chipPointer = ref(false);
 const chipFocus = ref(false);
 const chipRaised = computed(() => chipPointer.value || chipFocus.value);
@@ -224,14 +234,16 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
       <!-- A control beside the title (the Files branch chip); the space after it still toggles the section. -->
       <div
         v-if="$slots.chip"
-        class="grid grid-cols-[1fr] items-center self-stretch"
-        :class="hasChip ? 'flex-1' : 'flex-none'"
+        ref="chipCell"
+        class="grid items-center self-stretch"
+        :class="hasChip ? `flex-1 ${CHIP_CELL}` : 'flex-none grid-cols-[1fr]'"
         @click.self="emit('toggle')"
       >
         <!-- w-14 min-w-full: the chip fills the cell and adds only 3.5rem to the cell's minimum width (its icon, a letter with
-             an ellipsis and its chevron), which a long title gives up first; past that only the actions set the minimum. -->
+             an ellipsis and its chevron), which a long title gives up first; past that only the actions and the chip's head
+             set the minimum. -->
         <span
-          class="flex min-w-0 self-stretch [grid-area:1/1]"
+          class="col-span-full row-start-1 flex min-w-0 self-stretch"
           :class="hasChip ? 'w-14 min-w-full' : ''"
           @click.self="emit('toggle')"
         >

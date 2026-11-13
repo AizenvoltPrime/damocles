@@ -412,7 +412,7 @@ onBeforeUnmount(() => {
               class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap"
               :class="shown.title ? 'text-pretty text-(--d-muted)' : 'text-(--d-text)'"
             >
-              <span class="sr-only">{{ shown.where }}: </span>{{ shown.message }}
+              <span class="sr-only">{{ shown.where }}: </span><span data-testid="overlay-toast-message">{{ shown.message }}</span>
             </p>
           </template>
           <template v-else-if="toast.body.kind === 'link'">

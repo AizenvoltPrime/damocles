@@ -17,6 +17,8 @@ export const autofetchNow = (app: ElectronApplication): Promise<void> => app.eva
 export const ledgerPath = (app: ElectronApplication): Promise<string> => app.evaluate(() => (globalThis as unknown as ScmHooks).__damoclesE2e.scm.ledgerPath());
 
 export const scmSection = (shell: Page): Locator => shell.getByTestId('scm-section');
+/** Clicks the account chip at its head, which the section's title actions never cover (SidebarSection's CHIP_CELL). */
+export const clickAccountChip = (chip: Locator): Promise<void> => chip.click({ position: { x: 8, y: 9 } });
 export const commitMessage = (shell: Page): Locator => scmSection(shell).getByTestId('scm-commit-message');
 export const quickInput = (scope: Page | Locator): Locator => scope.getByTestId('quick-input');
 export const quickInputField = (scope: Page | Locator): Locator => scope.getByTestId('quick-input-field');

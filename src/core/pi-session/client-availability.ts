@@ -1,18 +1,19 @@
-import type { Api, Model } from '@earendil-works/pi-ai';
+import type { Api, CredentialStore, Model } from '@earendil-works/pi-ai';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { RemoteHost } from '../../platform/remote-host';
 import type { HeldAuthEntry } from '../../shared/remote-user';
-import { credentialOwner, outsidePins } from '../client-snapshots';
-import { clientNotConnected, statusCredentialOf } from './credential-broker';
+import { credentialOwner, outsidePins, runPin } from '../client-snapshots';
+import { clientNotConnected, clientPendingError, statusCredentialOf } from './credential-broker';
 
 type AvailabilityReads = Pick<ModelRuntime, 'getProviders' | 'getProvider' | 'getAvailableSnapshot' | 'getAvailable' | 'checkAuth' | 'isUsingOAuth' | 'getProviderAuthStatus' | 'hasConfiguredAuth'>;
 
 /**
  * A daemon's core: replaces pi's availability reads on `modelRuntime`, whose snapshot holds only the host's own credentials,
- * with ones that add the pinned (else acting) client's from its clientAuth, and under a pin that names no device report
- * none, with checkAuth refusing as the broker does; returns the host's own check.
+ * with ones that add the pinned (else acting) client's from its clientAuth, and under a pin that names no device, or whose
+ * device's sign-ins or user rules are not known yet, report none and never the host's own; checkAuth refuses as the broker
+ * does, and inside a run waits on `credentials` (the broker) until those are known; returns the host's own check.
  */
-export function installClientAvailability(modelRuntime: AvailabilityReads, remote: RemoteHost): (provider: string) => boolean {
+export function installClientAvailability(modelRuntime: AvailabilityReads, remote: RemoteHost, credentials: Pick<CredentialStore, 'read'>): (provider: string) => boolean {
   const hostHasAuth = modelRuntime.hasConfiguredAuth.bind(modelRuntime);
   const hostUsesOAuth = modelRuntime.isUsingOAuth.bind(modelRuntime);
   const hostAuthStatus = modelRuntime.getProviderAuthStatus.bind(modelRuntime);
@@ -36,7 +37,7 @@ export function installClientAvailability(modelRuntime: AvailabilityReads, remot
     }
     return modelRuntime.getProviders().flatMap((provider) => {
       const owner = ownerOf(provider.id);
-      if (owner.kind === 'noDevice') return [];
+      if (owner.kind === 'noDevice' || owner.kind === 'pending') return [];
       if (owner.kind === 'host') return hostByProvider.get(provider.id) ?? [];
       if (!accepts(provider.id, owner.entry)) return [];
       const models = provider.getModels();
@@ -46,12 +47,12 @@ export function installClientAvailability(modelRuntime: AvailabilityReads, remot
 
   modelRuntime.hasConfiguredAuth = (providerId) => {
     const owner = ownerOf(providerId);
-    if (owner.kind === 'noDevice') return false;
+    if (owner.kind === 'noDevice' || owner.kind === 'pending') return false;
     return owner.kind === 'client' ? accepts(providerId, owner.entry) : hostHasAuth(providerId);
   };
   modelRuntime.isUsingOAuth = (providerId) => {
     const owner = ownerOf(providerId);
-    if (owner.kind === 'noDevice') return false;
+    if (owner.kind === 'noDevice' || owner.kind === 'pending') return false;
     return owner.kind === 'client' ? owner.entry.type === 'oauth' && accepts(providerId, owner.entry) : hostUsesOAuth(providerId);
   };
   // pi's order: a runtime key, then a stored credential, then config and environment
@@ -59,7 +60,7 @@ export function installClientAvailability(modelRuntime: AvailabilityReads, remot
     const status = hostAuthStatus(providerId);
     if (status.source === 'runtime') return status;
     const owner = ownerOf(providerId);
-    if (owner.kind === 'noDevice') return { configured: false };
+    if (owner.kind === 'noDevice' || owner.kind === 'pending') return { configured: false };
     return owner.kind === 'client' ? { configured: true, source: 'stored' } : status;
   };
   // pi's own check reads the broker, which answers none outside a pin and asks the client inside one
@@ -68,6 +69,12 @@ export function installClientAvailability(modelRuntime: AvailabilityReads, remot
     const owner = ownerOf(providerId);
     // pi's preflight and setModel then fail with the broker's own reason, not a missing key
     if (owner.kind === 'noDevice') throw clientNotConnected(providerId);
+    if (owner.kind === 'pending') {
+      // the broker decides: a turn waits behind Sign-in needed with the reason, a sub-call fails; then judged as known
+      if (runPin() === undefined) throw clientPendingError(providerId, owner.reason);
+      await credentials.read(providerId, options);
+      return modelRuntime.checkAuth(providerId, options);
+    }
     if (owner.kind === 'host') return outsidePins(() => hostCheckAuth(providerId, options));
     if (!accepts(providerId, owner.entry)) return undefined;
     return owner.entry.type === 'oauth' ? { source: 'OAuth', type: 'oauth' } : { source: 'stored credential', type: 'api_key' };

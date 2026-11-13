@@ -251,7 +251,7 @@ const markupToolbar = ref<InstanceType<typeof MarkupToolbar> | null>(null);
 const markupLayer = ref<InstanceType<typeof MarkupLayer> | null>(null);
 const markupBlocked = computed(() => freezing.value || glides.value || tweaksApplied.value > 0 || (preview.value.status !== 'ready' && marksWaiting.value === 0));
 
-watch(() => [session.value?.marks, session.value?.tool], () => {
+watch([() => session.value?.marks, () => session.value?.tool], () => {
   markupNotice.value = null;
 });
 

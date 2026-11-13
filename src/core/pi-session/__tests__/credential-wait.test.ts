@@ -4,7 +4,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { CREDENTIAL_CLIENT_ABSENT, type BrokerAnswer, type HeldAuth } from '../../../shared/remote-user';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import { runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
+import { credentialSourceOf, runPin, runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
 import { PermissionHandler } from '../../permission-handler';
 import { BrokeredCredentialStore, MIN_VALIDITY_MS } from '../credential-broker';
 
@@ -224,5 +224,94 @@ describe('a wait whose device comes back', () => {
     t.attach('client-p', 'p2');
     t.host.setActing('client-p');
     expect(await runPinnedTurn(t.host.remote, 'panel-2', () => t.broker.read('anthropic'))).toMatchObject({ access: 'p2-token' });
+  });
+});
+
+// A device whose app has not read its sign-ins yet, or whose engine is stopped, sent them pending: never none, so a run on
+// it never takes the host's own credential in their place.
+describe('sign-ins not known yet', () => {
+  const stopped = (provider: string) => ({ message: 'The engine on the computer that started this chat is stopped, so this host has no sign-in for {0}. Restart the engine on that computer to continue.', args: [provider] });
+
+  it('a turn waits with the reason, asks its device nothing, re-raises when the reason changes, and reads its device\'s credential once known', async () => {
+    const t = setUp();
+    t.host.set('clientAuth', 'client-a', { providers: {}, pending: 'engineStopped' });
+    const read = runPinnedTurn(t.host.remote, 'panel-1', () => t.broker.read('anthropic'), { raise: t.handler.raiseSignIn.bind(t.handler) });
+    await vi.waitFor(() => expect(t.requests()).toHaveLength(1));
+    expect(t.requests()[0]).toMatchObject({ provider: 'anthropic', reason: stopped('anthropic') });
+    t.host.set('clientAuth', 'client-a', { providers: {}, pending: 'reading' });
+    await vi.waitFor(() => expect(t.requests()).toHaveLength(2));
+    expect(t.requests()[1]!.reason).toMatchObject({ message: expect.stringContaining('still reading') });
+    expect(t.resolvedIds()).toEqual([t.requests()[0]!.requestId]);
+    expect(t.host.remote.credentials).not.toHaveBeenCalled();
+    t.host.set('clientAuth', 'client-a', signedIn);
+    expect(await read).toMatchObject({ access: 'a1-token' });
+    expect(t.handler.pendingPrompts()).toEqual([]);
+  });
+
+  it('a sub-call fails at once with the reason and the credential cause, for a provider the host has its own credential for too', async () => {
+    const t = setUp();
+    t.host.set('clientAuth', 'client-a', { providers: {}, pending: 'engineStopped' });
+    await expect(runPinnedSubcall(t.host.remote, () => t.broker.read('xai'))).rejects.toMatchObject({ cause: 'credential', text: stopped('xai') });
+    expect(t.host.remote.credentials).not.toHaveBeenCalled();
+    expect(credentialSourceOf(t.host.remote, 'xai')).toBeUndefined();
+    t.host.set('clientAuth', 'client-a', signedIn);
+    expect(credentialSourceOf(t.host.remote, 'xai')).toBe('host');
+  });
+
+  it('a turn pinned while its device\'s user rules were pending waits for them and runs on them once known', async () => {
+    const t = setUp();
+    const rules = { settings: {}, permissionRules: [{ allow: [], ask: [], deny: ['Bash(rm:*)'], dir: '.claude' as const }] };
+    t.host.set('clientUser', 'client-a', { settings: {}, permissionRules: [], pending: 'reading' });
+    const turn = runPinnedTurn(t.host.remote, 'panel-1', async () => {
+      const credential = await t.broker.read('anthropic');
+      return { credential, user: runPin()?.user };
+    }, { raise: t.handler.raiseSignIn.bind(t.handler) });
+    await vi.waitFor(() => expect(t.requests()).toHaveLength(1));
+    expect(t.host.remote.credentials).not.toHaveBeenCalled();
+    t.host.set('clientUser', 'client-a', rules);
+    expect(await turn).toMatchObject({ credential: { access: 'a1-token' }, user: rules });
+  });
+
+  // pi's auth check passes its read no signal, so only the turn's own Stop ends that wait
+  it('the turn\'s Stop ends a wait whose read has no signal, with the Stop\'s reason, and a read after it waits for no stop of its own', async () => {
+    const t = setUp();
+    let stop = new AbortController();
+    const signIn = { raise: t.handler.raiseSignIn.bind(t.handler), stopSignal: () => stop.signal };
+    t.host.set('clientAuth', 'client-a', { providers: {}, pending: 'engineStopped' });
+    const read = runPinnedTurn(t.host.remote, 'panel-1', () => t.broker.read('anthropic'), signIn);
+    await vi.waitFor(() => expect(t.requests()).toHaveLength(1));
+    const reason = new Error('stopped');
+    stop.abort(reason);
+    stop = new AbortController();
+    await expect(read).rejects.toBe(reason);
+    expect(t.resolvedIds()).toEqual([t.requests()[0]!.requestId]);
+    expect(t.handler.pendingPrompts()).toEqual([]);
+    expect(t.host.remote.credentials).not.toHaveBeenCalled();
+    t.host.set('clientAuth', 'client-a', signedIn);
+    expect(await runPinnedTurn(t.host.remote, 'panel-1', () => t.broker.read('anthropic'), signIn)).toMatchObject({ access: 'a1-token' });
+  });
+
+  it('the turn\'s Stop also ends the wait once the device, its sign-ins known, turned out to be away, and so does the read\'s own signal', async () => {
+    const t = setUp();
+    const stop = new AbortController();
+    const signIn = { raise: t.handler.raiseSignIn.bind(t.handler), stopSignal: () => stop.signal };
+    t.host.set('clientAuth', 'client-a', { providers: {}, pending: 'reading' });
+    const read = runPinnedTurn(t.host.remote, 'panel-1', () => t.broker.read('anthropic'), signIn);
+    await vi.waitFor(() => expect(t.requests()).toHaveLength(1));
+    vi.mocked(t.host.remote.credentials).mockRejectedValueOnce(new Error(CREDENTIAL_CLIENT_ABSENT));
+    t.host.set('clientAuth', 'client-a', signedIn);
+    await vi.waitFor(() => expect(t.requests()).toHaveLength(2));
+    expect(t.requests()[1]!.reason).toBeUndefined();
+    stop.abort(new Error('stopped'));
+    await expect(read).rejects.toThrow('stopped');
+    expect(t.handler.pendingPrompts()).toEqual([]);
+
+    const own = new AbortController();
+    t.host.set('clientAuth', 'client-a', { providers: {}, pending: 'reading' });
+    const signalled = runPinnedTurn(t.host.remote, 'panel-1', () => t.broker.read('anthropic', { signal: own.signal }), { ...signIn, stopSignal: () => new AbortController().signal });
+    await vi.waitFor(() => expect(t.handler.pendingPrompts()).toHaveLength(1));
+    own.abort(new Error('read aborted'));
+    await expect(signalled).rejects.toThrow('read aborted');
+    expect(t.handler.pendingPrompts()).toEqual([]);
   });
 });

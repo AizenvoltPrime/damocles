@@ -4,10 +4,15 @@ import type { editor as MonacoEditor, IDisposable } from 'monaco-editor/editor/e
 import { applyLineChanges, selectedLineChanges, type LineChange, type LineRange } from '@shared/scm/apply-line-changes';
 import type { Monaco } from '@/components/editor/useMonaco';
 import type { DamoclesShellApi, ShellEditorTab } from '../../preload/shell-channels';
-import type { ScmBlameCommit, ScmRangeAction, ScmRangeRefusal, ScmResource } from '../../preload/scm-channels';
+import type { ScmBlameCommit, ScmBlameResult, ScmRangeAction, ScmRangeRefusal, ScmResource } from '../../preload/scm-channels';
+import type { ContainingChange, HistoryForgeContext } from '@shared/forge/history';
+import type { ForgeReference } from '@shared/forge/references';
+import { visibleText } from '@shared/visible-text';
+import ForgeAvatar from '@/components/settings/forge/ForgeAvatar.vue';
+import { createAvatarAsks, mergedReference, referenceRequest, type AvatarAsks } from '../forge/history-view';
 import type { ScmStore } from '../scm/scm-store';
 import { fromNow } from '../scm/scm-list';
-import { attachBlame, type BlameCardHost, type BlameController } from './blame';
+import { attachBlame, type BlameAvatarHost, type BlameCardHost, type BlameController } from './blame';
 import BlameCard from './BlameCard.vue';
 import { lineEdits } from './format-edits';
 import { attachGutter, gutterMarks, type Gutter, type GutterMark } from './quick-diff/gutter';
@@ -19,7 +24,10 @@ import QuickDiffPeekHeader from './quick-diff/QuickDiffPeekHeader.vue';
 // A code tab's git: the quick diff gutter and peek (B25, B26), Stage, Unstage and Revert Selected Ranges (B27), Next and
 // Previous Change, and inline blame (B31). It runs only for a tab main gave a git resource, which an untrusted project never has.
 
-export type EditorGitCommand = 'nextChange' | 'previousChange' | 'stageSelectedRanges' | 'unstageSelectedRanges' | 'revertSelectedRanges' | 'showLineBlame';
+export type EditorGitCommand = 'nextChange' | 'previousChange' | 'stageSelectedRanges' | 'unstageSelectedRanges' | 'revertSelectedRanges' | 'showLineBlame' | EditorLinkCommand;
+
+// The file's link on its Git hosting server; main builds, opens or copies it and tells the user.
+export type EditorLinkCommand = 'copyPermalink' | 'openFileOnServer';
 
 const RANGE_ACTIONS = { stageSelectedRanges: 'stage', unstageSelectedRanges: 'unstage', revertSelectedRanges: 'revert' } as const satisfies Record<string, ScmRangeAction>;
 
@@ -40,12 +48,16 @@ export interface EditorGitDeps {
   readonly onQuickDiff: (marks: readonly GutterMark[], status: QuickDiffStatus) => void;
   // whether inline blame is on, for the editor element's data-inline-blame
   readonly onBlameEnabled: (enabled: boolean) => void;
+  // the shown buffer has edits its file on disk lacks, so a link's lines may not match
+  readonly modified: () => boolean;
 }
 
 export interface EditorGit extends IDisposable {
   /** The tab now shown, with its model; a tab without git turns everything off. */
   bind(tab: ShellEditorTab | null, model: MonacoEditor.ITextModel | null): void;
   run(command: EditorGitCommand): Promise<void>;
+  /** A remote of the bound file's repository is on a server with an account, so its links can be made. */
+  readonly hasForge: () => boolean;
   // the quick diff of the bound tab, for tests and screenshots
   readonly state: () => QuickDiffState | null;
 }
@@ -159,6 +171,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     editor.removeOverlayWidget(cardWidget);
     cardWidget = null;
     cardAnchor = null;
+    cardCommit = null;
     cardPointer = false;
     cardFocus = false;
     render(null, cardNode);
@@ -184,25 +197,44 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     editor.layoutOverlayWidget(cardWidget);
   }
 
+  // the commit the card shows, drawn again when its avatar or merged MR/PR arrives
+  let cardCommit: ScmBlameCommit | null = null;
+
+  function renderCard(commit: ScmBlameCommit): void {
+    const merged = history.merged.get(commit.hash) ?? null;
+    const vnode = h(BlameCard, {
+      commit,
+      ago: fromNow(commit.authorTime, Date.now(), deps.locale()),
+      avatarKey: avatarKeyOf(commit),
+      forgeKind: history.context?.kind,
+      merged,
+      onOpenCommit: () => void runBlameAction('openCommit', commit),
+      onCopyCommitId: () => void runBlameAction('copyCommitId', commit),
+      onOpenTimeline: () => void runBlameAction('openTimeline', commit),
+      onOpenOnServer: () => void runBlameAction('openOnServer', commit),
+      onOpenReference: (reference: ForgeReference) => openReference(reference),
+      onOpenMerged: () => {
+        if (merged) openReference(mergedReference(merged));
+      },
+      onAvatarFailed: () => avatarFailed(commit),
+      onHold: (by: 'pointer' | 'focus', inside: boolean) => {
+        if (by === 'pointer') cardPointer = inside;
+        else cardFocus = inside;
+        if (!cardHeld()) blame.cardLeft();
+      },
+    });
+    vnode.appContext = deps.appContext;
+    render(vnode, cardNode);
+  }
+
   const card: BlameCardHost = {
     show(anchor, commit) {
       clearTimeout(cardLeaving);
       cardLeaving = undefined;
       cardNode.querySelector('.qd-blame-card')?.classList.remove('qd-blame-card-out');
-      const vnode = h(BlameCard, {
-        commit,
-        ago: fromNow(commit.authorTime, Date.now(), deps.locale()),
-        onOpenCommit: () => void runBlameAction('openCommit', commit),
-        onCopyCommitId: () => void runBlameAction('copyCommitId', commit),
-        onOpenTimeline: () => void runBlameAction('openTimeline', commit),
-        onHold: (by: 'pointer' | 'focus', inside: boolean) => {
-          if (by === 'pointer') cardPointer = inside;
-          else cardFocus = inside;
-          if (!cardHeld()) blame.cardLeft();
-        },
-      });
-      vnode.appContext = deps.appContext;
-      render(vnode, cardNode);
+      cardCommit = commit;
+      renderCard(commit);
+      void readMerged(commit);
       cardAnchor = anchor.element;
       if (!cardWidget) {
         // an overlay widget in the editor's own coordinates: it draws over the minimap, and a fixed overflow widget's
@@ -227,12 +259,152 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     held: cardHeld,
   };
 
-  async function runBlameAction(action: 'openCommit' | 'copyCommitId' | 'openTimeline', commit: ScmBlameCommit): Promise<void> {
+  async function runBlameAction(action: 'openCommit' | 'copyCommitId' | 'openTimeline' | 'openOnServer', commit: ScmBlameCommit): Promise<void> {
     if (!target) return;
     card.hide();
     if (action === 'openCommit') await deps.api.scm.run({ op: 'openCommit', repoId: target.repoId, commit: commit.hash });
+    else if (action === 'openOnServer') await deps.api.forge.link({ action: 'openCommit', repoId: target.repoId, sha: commit.hash });
     else if (action === 'copyCommitId') await deps.api.scm.copy({ repoId: target.repoId, kind: 'commitId', value: commit.hash });
     else await deps.api.scm.run({ op: 'openTimeline', repoId: target.repoId, path: target.path });
+  }
+
+  // history details for the bound file's repository, kept while tabs of that repository show: its server (null: none
+  // registered), the authors' avatar keys by lower-cased email as createAvatarAsks asks them, and each opened commit's merged
+  // MR/PR, one ask per commit at a time
+  interface HistoryState {
+    context: HistoryForgeContext | null;
+    avatars: Map<string, string>;
+    asks: AvatarAsks;
+    merged: Map<string, ContainingChange | null>;
+    mergedAsking: Set<string>;
+  }
+  const emptyHistory = (): HistoryState => ({ context: null, avatars: new Map(), asks: createAvatarAsks(), merged: new Map(), mergedAsking: new Set() });
+  let history: HistoryState = emptyHistory();
+  // the repository history describes; undefined before the first bind
+  let historyRepo: string | undefined;
+  let historyRead = 0;
+  // the last blame read's commits, asked again when the context changes
+  let blamed: readonly ScmBlameCommit[] = [];
+  // the inline annotation's avatar slot and the commit it shows
+  let annotation: { slot: HTMLElement; commit: ScmBlameCommit } | null = null;
+
+  const avatarKeyOf = (commit: ScmBlameCommit): string | undefined => (history.context?.showAvatars ? history.avatars.get(commit.authorEmail.trim().toLowerCase()) : undefined);
+
+  // the annotation shows an avatar only with showAvatars on and a registered server; the card always keeps its initial
+  function drawAnnotationAvatar(): void {
+    if (!annotation) return;
+    const { slot, commit } = annotation;
+    const show = history.context?.showAvatars === true;
+    slot.hidden = !show;
+    if (!show) {
+      render(null, slot);
+      return;
+    }
+    const vnode = h(ForgeAvatar, { login: visibleText(commit.author), avatarKey: avatarKeyOf(commit), size: 'chip', onFailed: () => avatarFailed(commit) });
+    vnode.appContext = deps.appContext;
+    render(vnode, slot);
+  }
+
+  const drawAvatar: BlameAvatarHost = (slot, commit) => {
+    annotation = commit ? { slot, commit } : null;
+    if (commit) {
+      drawAnnotationAvatar();
+      return;
+    }
+    slot.hidden = true;
+    render(null, slot);
+  };
+
+  function redraw(): void {
+    drawAnnotationAvatar();
+    if (cardCommit && cardWidget && cardLeaving === undefined) renderCard(cardCommit);
+  }
+
+  // one call per blame read's authors not asked yet (at most MAX_HISTORY_AUTHORS each), never awaited by the blame; newest
+  // commit first, as history lists them, so each author is asked by their oldest commit here
+  function askAvatars(commits: readonly ScmBlameCommit[]): void {
+    const repoId = target?.repoId;
+    if (repoId === undefined || !history.context?.showAvatars) return;
+    const read = historyRead;
+    const { asks } = history;
+    const authors = [...commits].sort((a, b) => b.committerTime - a.committerTime).map((commit) => ({ sha: commit.hash, email: commit.authorEmail, name: commit.author }));
+    for (const batch of asks.batches(authors)) {
+      deps.api.forge.authorAvatars(repoId, batch).then((answer) => {
+        asks.settle(batch, answer);
+        if (read !== historyRead) return;
+        for (const [email, key] of Object.entries(answer)) history.avatars.set(email, key);
+        redraw();
+      }, (error: unknown) => {
+        asks.settle(batch, undefined);
+        console.error('[forge] main refused the author avatars', error);
+      });
+    }
+  }
+
+  // a picture that would not load drops its key, so the initial shows, and is asked for once more
+  function avatarFailed(commit: ScmBlameCommit): void {
+    const email = commit.authorEmail.trim().toLowerCase();
+    if (!history.avatars.delete(email)) return;
+    redraw();
+    if (history.asks.pictureFailed(email)) askAvatars(blamed);
+  }
+
+  // read when the bound repository changes and on every forge change (an account, a server or showAvatars)
+  async function readHistoryContext(): Promise<void> {
+    const repoId = target?.repoId;
+    const read = ++historyRead;
+    historyRepo = repoId;
+    history = emptyHistory();
+    redraw();
+    if (repoId === undefined) return;
+    let context: HistoryForgeContext | null;
+    try {
+      context = await deps.api.forge.historyContext(repoId);
+    } catch (error) {
+      console.error('[forge] main refused the history context', error);
+      return;
+    }
+    if (read !== historyRead) return;
+    history.context = context;
+    redraw();
+    askAvatars(blamed);
+    if (cardCommit) void readMerged(cardCommit);
+  }
+
+  // core answers null for none merged, no account or a failed read, which it logs
+  async function readMerged(commit: ScmBlameCommit): Promise<void> {
+    const repoId = target?.repoId;
+    const { mergedAsking } = history;
+    if (repoId === undefined || history.context === null || history.merged.get(commit.hash) || mergedAsking.has(commit.hash)) return;
+    const read = historyRead;
+    mergedAsking.add(commit.hash);
+    let change: ContainingChange | null;
+    try {
+      change = await deps.api.forge.containingChange(repoId, commit.hash);
+    } catch (error) {
+      console.error('[forge] main refused the containing merge request', error);
+      return;
+    } finally {
+      mergedAsking.delete(commit.hash);
+    }
+    if (read !== historyRead) return;
+    history.merged.set(commit.hash, change);
+    if (cardCommit?.hash === commit.hash) redraw();
+  }
+
+  function openReference(reference: ForgeReference): void {
+    if (!target) return;
+    card.hide();
+    deps.api.forge.link(referenceRequest(target.repoId, reference)).catch((error: unknown) => console.error('[forge] main refused to open the reference', error));
+  }
+
+  const stopForge = deps.api.forge.onChanged(() => void readHistoryContext());
+
+  async function readBlame(resource: ScmResource): Promise<ScmBlameResult> {
+    const result = await deps.api.scm.blame(resource);
+    blamed = result.ok ? result.commits : [];
+    askAvatars(blamed);
+    return result;
   }
 
   const blame: BlameController = attachBlame(editor, monaco, {
@@ -240,7 +412,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     staged: t('blame.staged'),
     line: (commit, ago) => t('blame.line', { author: commit.author, ago, subject: commit.summary }),
     ago: (time) => fromNow(time, Date.now(), deps.locale()),
-  }, card);
+  }, card, drawAvatar);
 
   function unbind(): void {
     scope.stop();
@@ -253,6 +425,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     deps.onQuickDiff([], 'none');
     deps.onBlameEnabled(false);
     blame.bind(null);
+    blamed = [];
   }
 
   function bind(nextTab: ShellEditorTab | null, nextModel: MonacoEditor.ITextModel | null): void {
@@ -263,6 +436,8 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     unbind();
     model = nextModel;
     target = git && nextModel ? { repoId: git.repoId, path: git.path } : null;
+    // another file of the same repository keeps its context, pictures and merged changes
+    if (target?.repoId !== historyRepo) void readHistoryContext();
     if (!target || !nextModel) return;
     const resource = target;
     const created = createQuickDiffModel(deps.api.scm, nextModel, resource, (listener) => {
@@ -284,7 +459,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
         deps.onBlameEnabled(enabled);
       }, { immediate: true });
     });
-    blame.bind({ read: () => deps.api.scm.blame(resource), quick: () => created.state.value });
+    blame.bind({ read: () => readBlame(resource), quick: () => created.state.value });
   }
 
   async function withBusy(work: () => Promise<void>): Promise<void> {
@@ -366,13 +541,21 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
   }
 
   async function run(command: EditorGitCommand): Promise<void> {
+    if (command === 'copyPermalink' || command === 'openFileOnServer') {
+      if (!target) return;
+      // VS Code's links.ts: the selection's lines, or the caret's line when nothing is selected; a Range starts first
+      const selection = editor.getSelection();
+      const lines = selection ? { startLine: selection.startLineNumber, endLine: selection.endLineNumber } : {};
+      await deps.api.forge.link({ action: command === 'copyPermalink' ? 'copyPermalink' : 'openFile', repoId: target.repoId, path: target.path, ...lines, ...(deps.modified() ? { modified: true } : {}) });
+      return;
+    }
     if (command === 'showLineBlame') {
       // the keyboard's way to the card: it opens on the cursor line's commit and takes focus
       const shown = blame.shown();
       const element = editor.getDomNode()?.querySelector<HTMLElement>('.qd-blame');
       if (shown?.blame.kind !== 'commit' || !element) return;
       card.show({ line: shown.line, element }, shown.blame.commit);
-      void nextTick(() => cardNode.querySelector<HTMLElement>('button')?.focus());
+      void nextTick(() => cardNode.querySelector<HTMLElement>('[data-blame-first]')?.focus());
       return;
     }
     if (command === 'nextChange' || command === 'previousChange') {
@@ -408,6 +591,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
   return {
     bind,
     run,
+    hasForge: () => target !== null && history.context !== null,
     state: () => quick?.state.value ?? null,
     dispose() {
       unbind();
@@ -416,6 +600,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
       peek.dispose();
       blame.dispose();
       for (const listener of cardFollows) listener.dispose();
+      stopForge();
       removeCard();
     },
   };

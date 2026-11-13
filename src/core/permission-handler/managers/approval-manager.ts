@@ -1,6 +1,6 @@
 import type { DiffManager } from '../diff-manager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
-import type { PermissionUpdate, PromptApprover } from '../../../shared/types/permissions';
+import type { PermissionDetail, PermissionUpdate, PromptApprover } from '../../../shared/types/permissions';
 import { registerAbortablePrompt, unaskedCheck, postApprovedUnasked, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier, SettledApproval, PendingApproval } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -96,13 +96,17 @@ export class ApprovalManager {
     };
   }
 
-  /** The prompt for any other tool, such as a read an ask rule names: the tool and its input, no diff. */
+  /**
+   * The prompt for any other tool, such as a read an ask rule names: the tool and its input, no diff. A forge write's card
+   * also carries its words and facts and option 2's project-scoped rule, which the gate resolved first.
+   */
   async handleToolPermission(
     toolName: string,
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    const result = await this.requestPermissionFromWebview(toolName, input, context, {}, {
+    const fields = { ...context.permissionDetail, ...(context.suggestions?.length ? { suggestions: context.suggestions } : {}) };
+    const result = await this.requestPermissionFromWebview(toolName, input, context, fields, {
       message: `Damocles is waiting for your approval to use ${toolName}`,
     });
 
@@ -112,7 +116,10 @@ export class ApprovalManager {
         : buildUnaskedDenyResult(result.customMessage, UNASKED_DENY_DEFAULT);
     }
 
-    return buildAllowResult(input);
+    return {
+      ...buildAllowResult(input),
+      ...(result.updatedPermissions?.length ? { updatedPermissions: result.updatedPermissions } : {}),
+    };
   }
 
   /**
@@ -309,7 +316,7 @@ export class ApprovalManager {
     toolName: string,
     input: Record<string, unknown>,
     context: CanUseToolContext,
-    fields: { command?: string; suggestions?: PermissionUpdate[] },
+    fields: { command?: string; suggestions?: PermissionUpdate[] } & PermissionDetail,
     notice: { message: string; command?: string }
   ): Promise<ApprovalResult> {
     const postMessage = this.getPostMessage();

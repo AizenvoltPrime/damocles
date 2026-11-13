@@ -1,3 +1,4 @@
+import type { LocalizedText } from '../localized-text';
 export type PermissionBehavior = 'allow' | 'deny' | 'ask';
 export type PermissionUpdateDestination = 'userSettings' | 'projectSettings' | 'localSettings' | 'session';
 
@@ -37,7 +38,40 @@ export interface PendingPromptOwner {
   readonly owner: PromptOwner;
 }
 
-export interface PendingPermissionInfo {
+/** One line of a generic prompt's facts list: a forge write names its server, project and account. */
+export interface PermissionFact {
+  label: LocalizedText;
+  /** Data, never translated: a server host, a repository path or a login. */
+  value: string;
+  /** Data shown muted after the value: the server's host, or the merge request, job or issue title. */
+  detail?: string;
+  /** Set on an account's fact, which shows its picture (app://damocles/forge/avatar/<key>) when a key is given, else its initial. */
+  avatar?: { key?: string };
+  /** Words shown muted after the value, such as how the account was chosen. */
+  note?: LocalizedText;
+}
+
+/** Text a write sends, shown as plain text in a scrollable box, never rendered as HTML; already redacted and bounded by core. */
+export interface PermissionContent {
+  label: LocalizedText;
+  text: string;
+}
+
+/** What a generic prompt shows in words beside the tool's input; a forge write carries every field (`approvalOf`, `src/core/forge/tools/run.ts`). */
+export interface PermissionDetail {
+  /** The action as a question, such as "Comment on merge request !45?". */
+  title?: LocalizedText;
+  /** Shown after the tool name, such as "writes to the server as you". */
+  subtitle?: LocalizedText;
+  facts?: PermissionFact[];
+  content?: PermissionContent;
+  /** Option 2's label; its rule is the request's `suggestions`. */
+  alwaysAllowLabel?: LocalizedText;
+  /** The card's status after Yes, such as "Allowed once. Posting the comment to !45 as <login> on <server>." */
+  approvedStatus?: LocalizedText;
+}
+
+export interface PendingPermissionInfo extends PermissionDetail {
   toolUseId: string;
   owner: PromptOwner;
   toolName: string;

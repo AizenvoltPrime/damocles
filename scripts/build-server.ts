@@ -27,6 +27,7 @@ import { DESKTOP_EXTERNALS } from './desktop-externals.ts';
 import { EXTENSION_EXTERNALS } from './extension-externals.ts';
 import { clampLoadAlign } from './elf-load-align.ts';
 import { isEntryPoint } from './entry-point.ts';
+import { FORGE_OAUTH_VARIABLES } from './forge-oauth-build.ts';
 import { readTarGz, readZip, sha256, tarGz, zip, type ArchiveEntry, type ReadEntry } from './server-archive.ts';
 import { readProtocolVersion } from './protocol-compat.ts';
 import {
@@ -336,6 +337,9 @@ export async function buildBundles(stage = STAGE_DIR): Promise<string> {
   copyCredentialRelayScripts(join(dist, 'git-credential'));
   await vendorSubscriptionPlugin(join(dist, PLUGIN_DIR));
   if (!readFileSync(join(dist, 'daemon.js'), 'utf8').includes('SERVER_PACKAGE = true')) throw new Error('The staged daemon.js was not built with SERVER_PACKAGE true');
+  const coreHost = readFileSync(join(dist, 'core-host.js'), 'utf8');
+  const forgeValues = FORGE_OAUTH_VARIABLES.map((name) => process.env[name]?.trim() ?? '').filter((value) => value.length >= 4);
+  if (forgeValues.some((value) => coreHost.includes(value))) throw new Error('The staged core-host.js carries a Git hosting OAuth value, which no server package may');
   return dist;
 }
 

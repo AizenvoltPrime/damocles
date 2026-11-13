@@ -20,7 +20,7 @@ describe('the worktree shell environment', () => {
     } as unknown as PiCodingAgentModule;
     let options: ShellOptions = {};
     const tool = createBashTool(pi, '/w', { getShellOptions: () => options, shellJob: undefined });
-    expect(built[0]!.spawnHook).toBeUndefined();
+    expect(built[0]!.spawnHook!({ command: 'echo', cwd: '/w', env: { PATH: 'x' } }).env).toEqual({ PATH: 'x' });
     options = { env: { DAMOCLES_WORKTREE_INDEX: '2', DAMOCLES_PROJECT_FOLDER: '/p' } };
     await tool.execute('t1', { command: 'echo' } as never, undefined, undefined, undefined as never);
     const hook = built.at(-1)!.spawnHook!;

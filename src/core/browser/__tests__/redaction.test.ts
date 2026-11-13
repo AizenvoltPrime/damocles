@@ -175,6 +175,21 @@ describe('redactSecrets — credential shapes that used to slip through', () => 
     ['PEM private key block', '-----BEGIN RSA PRIVATE KEY-----\nMIIEabcdef\n-----END RSA PRIVATE KEY-----', 'MIIEabcdef'],
     ['JSON array value', '{"tokens": ["abc123def456", "ghi789"]}', 'abc123def456'],
     ['embedded userinfo in a logged URL', 'fetching https://ada:hunter2@example.com/p', 'hunter2'],
+    ['GitLab personal access token', 'curl with glpat-AbCdEfGhIjKlMnOpQrSt', 'glpat-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab routable personal access token', 'token glpat-AbCdEfGhIjKlMnOpQrStUvWxYz0.01.1a2b3c4d5', 'glpat-AbCdEfGhIjKlMnOpQrStUvWxYz0.01.1a2b3c4d5'],
+    ['GitLab OAuth application secret', 'secret gloas-0123456789abcdef0123456789abcdef', 'gloas-0123456789abcdef0123456789abcdef'],
+    ['GitLab deploy token', 'deploy gldt-AbCdEfGhIjKlMnOpQrSt', 'gldt-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab runner token', 'runner glrt-AbCdEfGhIjKlMnOpQrSt', 'glrt-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab runner token of the registration flow', 'runner glrtr-AbCdEfGhIjKlMnOpQrSt', 'glrtr-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab workspace token', 'workspace glwt-AbCdEfGhIjKlMnOpQrSt', 'glwt-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab CI build token', 'job glcbt-64_AbCdEfGhIjKlMnOpQrSt', 'glcbt-64_AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab pipeline trigger token', 'trigger glptt-0123456789abcdef0123', 'glptt-0123456789abcdef0123'],
+    ['GitLab feed token', 'feed glft-AbCdEfGhIjKlMnOpQrSt', 'glft-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab incoming mail token', 'mail glimt-AbCdEfGhIjKlMnOpQrSt', 'glimt-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab agent token', 'agent glagent-AbCdEfGhIjKlMnOpQrSt', 'glagent-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab SCIM OAuth token', 'scim glsoat-AbCdEfGhIjKlMnOpQrSt', 'glsoat-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab feature flag client token', 'flags glffct-AbCdEfGhIjKlMnOpQrSt', 'glffct-AbCdEfGhIjKlMnOpQrSt'],
+    ['GitLab runner registration token', 'register GR1348941AbCdEfGhIjKlMnOpQrSt', 'GR1348941AbCdEfGhIjKlMnOpQrSt'],
   ])('redacts %s', (_label, line, secret) => {
     const out = redactSecrets(line);
     expect(out).not.toContain(secret);

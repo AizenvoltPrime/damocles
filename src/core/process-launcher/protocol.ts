@@ -25,6 +25,8 @@ export interface SpawnSpec {
   readonly stdio?: readonly [StdioMode, StdioMode, StdioMode];
   // after the process exits, its output closes once no chunk has arrived for this long, though a descendant still holds it
   readonly exitOutputIdleMs?: number;
+  // at close, report whether a descendant still runs in the process's call job (Windows) or detached group (POSIX)
+  readonly reportsLeftRunning?: boolean;
   readonly job?: number;
 }
 
@@ -74,7 +76,8 @@ export type LauncherEvent =
   | { readonly type: 'error'; readonly id: number; readonly error: SpawnErrorInfo }
   | { readonly type: 'data'; readonly id: number; readonly stream: OutputStream; readonly chunk: ArrayBuffer }
   | { readonly type: 'exit'; readonly id: number; readonly code: number | null; readonly signal: NodeJS.Signals | null }
-  | { readonly type: 'close'; readonly id: number }
+  // `leftRunning` only for a start with `reportsLeftRunning`
+  | { readonly type: 'close'; readonly id: number; readonly leftRunning?: boolean }
   // a write reached the process's stdin, or failed with `error`
   | { readonly type: 'written'; readonly id: number; readonly error?: SpawnErrorInfo }
   // every target of a `reap` request was killed

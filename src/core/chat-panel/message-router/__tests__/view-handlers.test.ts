@@ -49,16 +49,16 @@ describe("a remote chat view's messages on this computer's core", () => {
     const router = new MessageRouter({ postMessage: () => undefined, platform, subscriptions: [], getPanels: () => new Map() } as unknown as MessageRouterConfig);
     const usage = vi.fn();
     (router as unknown as { foreignHandlers: ViewHandlerRegistry }).foreignHandlers.requestSubscriptionUsage = usage;
-    await router.dispatchForeign(host, { type: 'requestSubscriptionUsage' });
-    expect(usage).toHaveBeenCalledWith({ type: 'requestSubscriptionUsage' }, { host });
+    await router.dispatchForeign(host, { type: 'requestSubscriptionUsage' }, 'view-1');
+    expect(usage).toHaveBeenCalledWith({ type: 'requestSubscriptionUsage' }, { host, viewId: 'view-1' });
     const userMemories = vi.fn();
     (router as unknown as { foreignHandlers: ViewHandlerRegistry }).foreignHandlers.pinUserMemory = userMemories;
-    await router.dispatchForeign(host, { type: 'pinUserMemory', id: 'm1' });
-    expect(userMemories).toHaveBeenCalledWith({ type: 'pinUserMemory', id: 'm1' }, { host });
-    await expect(router.dispatchForeign(host, { type: 'requestMemories' } as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
-    await expect(router.dispatchForeign(host, { type: 'pinMemory', id: 'm1' } as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
-    await expect(router.dispatchForeign(host, { type: 'setPermissionMode', mode: 'default' } as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
-    await expect(router.dispatchForeign(host, { type: 'constructor' } as unknown as WebviewToExtensionMessage)).rejects.toThrow('does not reach this computer');
+    await router.dispatchForeign(host, { type: 'pinUserMemory', id: 'm1' }, 'view-1');
+    expect(userMemories).toHaveBeenCalledWith({ type: 'pinUserMemory', id: 'm1' }, { host, viewId: 'view-1' });
+    await expect(router.dispatchForeign(host, { type: 'requestMemories' } as WebviewToExtensionMessage, 'view-1')).rejects.toThrow('does not reach this computer');
+    await expect(router.dispatchForeign(host, { type: 'pinMemory', id: 'm1' } as WebviewToExtensionMessage, 'view-1')).rejects.toThrow('does not reach this computer');
+    await expect(router.dispatchForeign(host, { type: 'setPermissionMode', mode: 'default' } as WebviewToExtensionMessage, 'view-1')).rejects.toThrow('does not reach this computer');
+    await expect(router.dispatchForeign(host, { type: 'constructor' } as unknown as WebviewToExtensionMessage, 'view-1')).rejects.toThrow('does not reach this computer');
   });
 });
 

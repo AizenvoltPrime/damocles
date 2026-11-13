@@ -22,28 +22,32 @@
 import { PLAN_AGENT_NAME, type AgentConfig } from './types';
 import { PROSE_RULES_BODY } from '../prose-rules';
 import { READ_ONLY_SHELL_LIMITS } from '../read-only-shell-rules';
-import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT } from '../../../shared/tool-names';
+import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, FORGE_READ_TOOLS } from '../../../shared/tool-names';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 
 /**
  * Tool names a read-only agent (Explore/Plan) may use. The local-search tools plus the read-only web
- * tools and the integrated browser tools. Research and planning legitimately need the web, and some
- * questions are only answerable against a running app or a live page. `resolveAgentToolset` maps these
- * to the Damocles active-set names and gates the opt-in ones by availability, so the web tools appear
- * only when `damocles.pi.webSearch.enabled` is on and the browser tools only when
- * `damocles.browser.enabled` is on, exactly like the parent panel and a `tools: *` agent.
+ * tools, the integrated browser tools and the GitHub and GitLab reads. Research and planning legitimately
+ * need the web, some questions are only answerable against a running app or a live page, and some only
+ * from the repository's pipelines, merge requests and issues. `resolveAgentToolset` maps these to the
+ * Damocles active-set names and gates the opt-in ones by availability, so the web tools appear only when
+ * `damocles.pi.webSearch.enabled` is on, the browser tools only when `damocles.browser.enabled` is on and
+ * the GitHub and GitLab reads only when `damocles.desktop.forge.agentTools` is on, exactly like the parent
+ * panel and a `tools: *` agent.
  *
- * The web and browser names stay listed here even though both groups are deferred: deferral operates
- * on the RESOLVED toolset, not on this allowlist. `resolveAgentToolset` intersects this list with the
- * parent's eligible set and `AgentManager.run` derives the deferrable set from `toolset.names`.
- * pi turns `options.tools` into its allowlist and filters the registry by it, and
+ * The web, browser and GitHub and GitLab names stay listed here even though their groups are deferred:
+ * deferral operates on the RESOLVED toolset, not on this allowlist. `resolveAgentToolset` intersects this
+ * list with the parent's eligible set and `AgentManager.run` derives the deferrable set from
+ * `toolset.names`. pi turns `options.tools` into its allowlist and filters the registry by it, and
  * `setActiveToolsByName` silently ignores unknown names, so a name dropped from `tools:` can NEVER be
- * re-activated via `ToolSearch`. Do not "helpfully" remove them.
+ * re-activated via `ToolSearch`; the spawn drops only the ones its loadable snapshot leaves out
+ * (`nestedAgentToolNames`). Do not "helpfully" remove them.
  *
- * `readOnly` is unaffected: browser names classify as `'other'` (not write-category), so both agents
- * stay read-only and the gate keeps holding their `Bash`/`PowerShell` to the read-only classifier.
+ * `readOnly` is unaffected: browser names classify as `'other'` and the GitHub and GitLab reads as
+ * `'read'` (not write-category), so both agents stay read-only and the gate keeps holding their
+ * `Bash`/`PowerShell` to the read-only classifier.
  */
-const EXPLORE_TOOL_NAMES = ['read', 'bash', 'grep', 'find', 'ls', TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, ...BROWSER_PI_TOOL_NAMES];
+const EXPLORE_TOOL_NAMES = ['read', 'bash', 'grep', 'find', 'ls', TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, ...BROWSER_PI_TOOL_NAMES, ...FORGE_READ_TOOLS];
 
 export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
   [

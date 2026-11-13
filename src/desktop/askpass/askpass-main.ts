@@ -7,9 +7,9 @@ import {
   credentialFields,
   credentialOutput,
   credentialRequestLine,
-  erasedPasswordHash,
   MAX_CREDENTIAL_INPUT_BYTES,
   MAX_REPLY_BYTES,
+  namedPassword,
   parseCredentialOp,
   parseCredentialReply,
   parseHelperArgs,
@@ -23,6 +23,13 @@ const NONCE_HEX = /^[0-9a-f]{64}$/;
 function fail(): void {
   process.stderr.write('Damocles could not provide credentials.\n');
   process.exitCode = 1;
+}
+
+// The takeover's helper, the only one for a managed URL, stops git on a get it cannot answer (core restarting, a registration
+// not yet landed), so no prompt answers in Damocles' place; the relay, a target's last helper for every host, must not.
+function failGet(parsed: ReturnType<typeof parseCredentialOp>): void {
+  if (parsed?.op === 'get' && parsed.takeover) process.stdout.write('quit=1\n');
+  fail();
 }
 
 // One request line out, one reply line back; the reply is undefined on any failure.
@@ -63,27 +70,30 @@ function workingFolder(): string | undefined {
   }
 }
 
-// git's credential helper: store is dropped here, so a credential git approves never leaves the target.
+// git's credential helper. A store or erase carries git's password to the answering process on this machine, which drops
+// it or hands it to the helpers it delegated to; it never crosses to another computer.
 function credential(args: readonly string[]): void {
-  const op = parseCredentialOp(args);
+  const parsed = parseCredentialOp(args);
+  const op = parsed?.op;
   const handle = process.env['DAMOCLES_ASKPASS_HANDLE'];
   const nonce = process.env['DAMOCLES_CREDENTIAL_NONCE'];
   // git's description on stdin, read to its end
   readBounded(process.stdin, MAX_CREDENTIAL_INPUT_BYTES, (input) => {
-    if (op === 'store') return;
+    // inside a delegation to the user's own helpers (forge/delegate.ts): Damocles answers nothing there
+    if (process.env['DAMOCLES_CREDENTIAL_DELEGATE'] === '1') return;
     const fields = input === undefined ? undefined : credentialFields(input);
     // git takes a helper's empty answer as "nothing here" and asks its next helper or the user
     if (op !== undefined && fields === 'noHost') return;
     const cwd = workingFolder();
     if (op === undefined || !fields || fields === 'noHost' || !handle || !nonce || !NONCE_HEX.test(nonce) || cwd === undefined) {
-      fail();
+      failGet(parsed);
       return;
     }
-    const passwordHash = op === 'erase' && input !== undefined ? erasedPasswordHash(input) : undefined;
-    exchange(handle, credentialRequestLine(nonce, op, cwd, fields, passwordHash), (reply) => {
+    const password = op !== 'get' && input !== undefined ? namedPassword(input) : undefined;
+    exchange(handle, credentialRequestLine(nonce, op, cwd, fields, password), (reply) => {
       const answer = reply === undefined ? undefined : parseCredentialReply(reply);
       if (!answer) {
-        fail();
+        failGet(parsed);
         return;
       }
       const { stdout, stderr } = credentialOutput(answer);

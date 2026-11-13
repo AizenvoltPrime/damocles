@@ -65,7 +65,7 @@ watch(() => props.hover?.status === 'running', (running) => {
 onBeforeUnmount(() => clearInterval(ticker));
 
 // Layout size, not getBoundingClientRect: the entrance animation starts translated.
-watch(() => [props.hover, props.width, props.height] as const, async ([hover]) => {
+watch([() => props.hover, () => props.width, () => props.height], async ([hover]) => {
   if (!hover) return;
   await nextTick();
   const element = card.value;

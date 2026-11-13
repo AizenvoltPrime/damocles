@@ -2,7 +2,8 @@ import { vi } from 'vitest';
 import type { ActiveEditorContext } from '../platform/editor-service';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../platform/remote-host';
 import type { PanelHost, TerminalToggle } from '../platform/window-service';
-import type { BrokerAnswer, ClientPolicy, ClientUser, HeldAuth, RelayedMcpServer } from '../shared/remote-user';
+import type { BrokerAnswer, ClientPending, ClientPolicy, ClientUser, HeldAuth, RelayedMcpServer } from '../shared/remote-user';
+import type { ClientForges } from '../shared/git-credential';
 
 type Change = { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true };
 
@@ -18,7 +19,9 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     clientTerminal: new Map<string, TerminalToggle>(),
     clientLanguage: new Map<string, { readonly language: 'en' | 'el' }>(),
     clientMcp: new Map<string, readonly RelayedMcpServer[]>(),
+    clientForges: new Map<string, ClientForges>(),
   };
+  const mcpPending = new Map<string, ClientPending>();
   const listeners = new Set<(change: Change) => void>();
   const attached = new Set<string>(['client-a']);
   let actor: string | undefined;
@@ -38,7 +41,9 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     terminal: (id) => maps.clientTerminal.get(id),
     language: (id) => maps.clientLanguage.get(id)?.language,
     mcp: (id) => maps.clientMcp.get(id),
+    mcpPending: (id) => mcpPending.get(id),
     mcpClients: () => [...maps.clientMcp.keys()],
+    forges: (id) => maps.clientForges.get(id),
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => { listeners.delete(cb); } };
@@ -69,6 +74,8 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     memoryList: vi.fn(async () => ({ rows: [] })),
     heldMemoryChanged: vi.fn(),
     mcpCall: vi.fn(async () => ({ content: [] })),
+    forgeTool: vi.fn(async () => ({ text: '' })),
+    forgeDescribe: vi.fn(async () => ({ ok: true as const, project: '', target: { serverId: '', repoPath: '', accountId: '' } })),
     mcpResources: vi.fn(async () => ({ resources: [] })),
     mcpReadResource: vi.fn(async () => ({ contents: [] })),
   };
@@ -80,6 +87,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
       else attached.add(clientId);
     }
     // a detached client's clientAuth and clientMcp stay, as clients.ts keeps them
+    if (topic === 'clientMcp' && value !== undefined) mcpPending.delete(clientId);
     if (value !== undefined) map.set(clientId, value);
     else if (topic !== 'clientAuth' && topic !== 'clientMcp') map.delete(clientId);
     fire({ topic, clientId, before, ...(value === undefined ? { detached: true as const } : {}) });
@@ -87,6 +95,13 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
   return {
     remote,
     set,
+    // a clientMcp marked not read yet, which holds no servers
+    setMcpPending: (clientId: string, reason: ClientPending): void => {
+      const before = maps.clientMcp.get(clientId);
+      maps.clientMcp.set(clientId, []);
+      mcpPending.set(clientId, reason);
+      fire({ topic: 'clientMcp', clientId, before });
+    },
     showView: (host: PanelHost): void => {
       viewed.add(host);
     },

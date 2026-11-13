@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { childEnv } from '../pi-session/checkpoints/exec';
 import { processLauncher, type Launcher, type SessionJob } from '../process-launcher';
+import type { GitCredentialOrigin } from '../../shared/git-credential';
+import { asConfigArgs, asConfigParams, type ConfigEntry, type CredentialTakeover } from './askpass/credential-config';
 import { CREDENTIAL_SUBCOMMANDS, relayHelperConfig, relayVariables, type CredentialRelay, type SpawnAgent } from './askpass/credential-relay';
 import { GitError, GitUntrustedError, redactUrls } from './errors';
 
@@ -139,6 +141,8 @@ export interface GitCall {
   readonly askpassEnv?: Readonly<Record<string, string>>;
   // a remote operation the user started: on a daemon's core git may ask the credential relay, whose consent asks the user
   readonly relayCredentials?: true;
+  // who asks for a managed server's credentials: the call gets the takeover's entries and a credential registration
+  readonly credentialOrigin?: GitCredentialOrigin;
   // set only by Repository.withStash after its fenced stash push; fence() refuses a starting pull, merge or rebase without it
   readonly fencedStash?: true;
   // command-line config passed as GIT_CONFIG_COUNT pairs, which carry a key holding '=' that -c would split
@@ -156,6 +160,7 @@ export interface GitCloneCall {
   readonly session?: SessionJob;
   readonly askpassEnv?: Readonly<Record<string, string>>;
   readonly relayCredentials?: true;
+  readonly credentialOrigin?: GitCredentialOrigin;
 }
 
 export interface GitResult {
@@ -184,12 +189,17 @@ export interface GitRunnerDeps {
   // inherited SSH_AUTH_SOCK
   readonly credentialRelay?: () => CredentialRelay | undefined;
   readonly agentSocket?: () => string | undefined;
+  // the credential takeover (docs/invariants.md "GitHub and GitLab accounts"), read per call and given only to
+  // CREDENTIAL_SUBCOMMANDS with a credentialOrigin
+  readonly credentialTakeover?: () => CredentialTakeover | undefined;
 }
 
 // What a call that may need credentials gets on top of its own variables.
 export interface CallCredentials {
   readonly relay?: CredentialRelay;
   readonly agent?: SpawnAgent;
+  // the takeover's helper variables and entries, which go after every other pair
+  readonly takeover?: { readonly env: Readonly<Record<string, string>>; readonly entries: readonly ConfigEntry[] };
 }
 
 export interface GitRunner {
@@ -236,6 +246,8 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
     ...(credentials.agent?.socket !== undefined ? { SSH_AUTH_SOCK: credentials.agent.socket } : {}),
     // before the engine's own variables, so a registration can never override one
     ...(credentials.relay ? relayVariables(credentials.relay) : {}),
+    // a daemon's takeover registration answers the relay's requests too, under its own nonce
+    ...credentials.takeover?.env,
     ...call.askpassEnv,
     GIT_TERMINAL_PROMPT: '0',
     GIT_EDITOR: 'true',
@@ -243,14 +255,23 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
     ...(call.literalPathspecs ? { GIT_LITERAL_PATHSPECS: '1' } : {}),
     ...(call.indexFile !== undefined ? { GIT_INDEX_FILE: call.indexFile } : {}),
     ...(call.localOnly ? { GIT_ALLOW_PROTOCOL: 'none' } : {}),
-    // the relay's helper last, after the engine's pairs and the call's
+    // the relay's helper after the engine's pairs and the call's
     ...configPairs([...ENGINE_CONFIG, ...(call.config ?? []), ...(credentials.relay ? [relayHelperConfig(credentials.relay)] : [])]),
+    // the takeover's reset and helper last of all: git reads GIT_CONFIG_PARAMETERS after the pairs, and the reset's empty
+    // value lives inside one non-empty variable, since a hook inherits every variable and an empty one breaks some tools
+    ...takeoverParams(credentials.takeover?.entries),
     ...(call.parsed ? { LC_ALL: 'C' } : {}),
     ...(ceilings.length > 0 ? { GIT_CEILING_DIRECTORIES: ceilings.join(path.delimiter) } : {}),
     // Status takes no optional lock, so it never holds the index lock another tool needs. A working-tree diff refreshes the
     // index whatever GIT_OPTIONAL_LOCKS says, so every engine diff passes -c diff.autoRefreshIndex=false instead.
     ...(call.kind === 'status' ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
   };
+}
+
+// childEnv() drops an inherited GIT_CONFIG_PARAMETERS, so the takeover's entries are all it holds
+function takeoverParams(entries: readonly ConfigEntry[] | undefined): Record<string, string> {
+  const params = entries === undefined ? undefined : asConfigParams(entries, undefined);
+  return params === undefined ? {} : { GIT_CONFIG_PARAMETERS: params };
 }
 
 // childEnv() drops any inherited GIT_CONFIG_COUNT, KEY and VALUE, so these are the only pairs
@@ -274,22 +295,37 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner & Cr
   const launcher = deps.launcher ?? processLauncher();
   const now = deps.now ?? (() => Date.now());
   const defaultMaxOutput = deps.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  const execute = (call: Omit<GitCall, 'project'>): Promise<GitResult> =>
+  // A network call with a credential origin gets the takeover for its lifetime: one registration, disposed when it settles.
+  const execute = async (call: Omit<GitCall, 'project'>): Promise<GitResult> => {
+    const network = CREDENTIAL_SUBCOMMANDS.has(call.args[subcommandIndex(call.args)] ?? '');
+    const takeover = network && call.credentialOrigin !== undefined ? deps.credentialTakeover?.() : undefined;
+    const entries = takeover && call.credentialOrigin ? takeover.entries(call.credentialOrigin) : [];
+    if (!takeover || entries.length === 0 || call.signal?.aborted) return spawn(call, network, undefined);
+    const registration = await takeover.register(call.credentialOrigin!);
+    try {
+      return await spawn(call, network, { env: registration.env, entries });
+    } finally {
+      registration.dispose();
+    }
+  };
+  const spawn = (call: Omit<GitCall, 'project'>, network: boolean, takeover: CallCredentials['takeover']): Promise<GitResult> =>
     new Promise<GitResult>((resolve, reject) => {
       if (call.signal?.aborted) {
         reject(call.signal.reason);
         return;
       }
-      const network = CREDENTIAL_SUBCOMMANDS.has(call.args[subcommandIndex(call.args)] ?? '');
       // a background call (autofetch) never asks this computer for a credential, as its askpass never prompts
       const relay = network && call.relayCredentials ? deps.credentialRelay?.() : undefined;
       const agent = deps.agentSocket ? { socket: network ? deps.agentSocket() : undefined } : undefined;
-      const credentials: CallCredentials = { ...(relay ? { relay } : {}), ...(agent ? { agent } : {}) };
-      // git before 2.31 ignores GIT_CONFIG_COUNT, so it gets the engine's config and the relay's helper as -c options
-      const oldConfig = [...ENGINE_CONFIG, ...(relay ? [relayHelperConfig(relay)] : [])];
-      const args = gitAtLeast(deps.git.version, 2, 31) ? call.args : [...oldConfig.flatMap(([key, value]) => ['-c', `${key}=${value}`]), ...call.args];
+      const credentials: CallCredentials = { ...(relay ? { relay } : {}), ...(agent ? { agent } : {}), ...(takeover ? { takeover } : {}) };
+      // git before 2.31 ignores GIT_CONFIG_COUNT, so it gets the engine's config, the call's, the relay's helper and the
+      // takeover's entries as -c options, in that order
+      const configArgs = gitAtLeast(deps.git.version, 2, 31) ? [] : asConfigArgs([...ENGINE_CONFIG, ...(call.config ?? []), ...(relay ? [relayHelperConfig(relay)] : [])]);
+      const takeoverArgs = gitAtLeast(deps.git.version, 2, 31) || !takeover ? [] : asConfigArgs(takeover.entries);
+      const args = [...configArgs, ...takeoverArgs, ...call.args];
       const started = now();
-      const argv = args.map((arg) => logArg(redactUrls(arg))).join(' ');
+      // the takeover's -c entries stay out of the log: they repeat the managed set on every network call
+      const argv = [...configArgs, ...call.args].map((arg) => logArg(redactUrls(arg))).join(' ');
       const cancellable = call.signal !== undefined;
       // Detached on POSIX: its own process group, which a kill signals as a whole. A cancellable call's process tree also
       // joins the owner's session job, which the launcher's worker assigns right after the start.
@@ -409,7 +445,7 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner & Cr
     },
     clone(call) {
       if (call.args[subcommandIndex(call.args)] !== 'clone') return Promise.reject(new Error('The clone entry runs git clone only'));
-      return execute({ cwd: call.cwd, args: call.args, kind: 'mutation', signal: call.signal, ceilingDirectories: [call.cwd], ...(call.session ? { session: call.session } : {}), ...(call.askpassEnv ? { askpassEnv: call.askpassEnv } : {}), ...(call.relayCredentials ? { relayCredentials: true as const } : {}) });
+      return execute({ cwd: call.cwd, args: call.args, kind: 'mutation', signal: call.signal, ceilingDirectories: [call.cwd], ...(call.session ? { session: call.session } : {}), ...(call.askpassEnv ? { askpassEnv: call.askpassEnv } : {}), ...(call.relayCredentials ? { relayCredentials: true as const } : {}), ...(call.credentialOrigin ? { credentialOrigin: call.credentialOrigin } : {}) });
     },
     // Every scope in cwd when project is trusted; elsewhere only the system and global files, read from an empty folder git
     // searches no further up from, so no repository is discovered at all. A named file reads no include unless asked. An

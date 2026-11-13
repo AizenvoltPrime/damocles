@@ -1,11 +1,13 @@
-import type { BrokerAnswer, BrowserToolAnswer, ClientGlobalProfile, ClientPolicy, ClientUser, GlobalMemoryListPage, GlobalMemoryListRequest, GlobalMemoryResolution, GlobalMemorySearchFilters, GlobalMemoryWrite, HeldAuth, HeldMemoryQueue, RelayedMcpServer, SearchedGlobalMemory } from '../shared/remote-user';
+import type { BrokerAnswer, BrowserToolAnswer, ClientGlobalProfile, ClientPending, ClientPolicy, ClientUser, GlobalMemoryListPage, GlobalMemoryListRequest, GlobalMemoryResolution, GlobalMemorySearchFilters, GlobalMemoryWrite, HeldAuth, HeldMemoryQueue, RelayedMcpServer, SearchedGlobalMemory } from '../shared/remote-user';
 
 import type { RelayedServedFile } from '../shared/served-file-url';
+import type { ClientForges } from '../shared/git-credential';
+import type { ForgeDescribeAnswer, ForgeToolAnswer, RelayedForgeRequest } from '../shared/forge/tools';
 import type { Disposable } from './disposable';
 import type { ActiveEditorContext } from './editor-service';
 import type { PanelHost, TerminalToggle } from './window-service';
 
-export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'actingClient';
+export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'clientForges' | 'actingClient';
 
 /** The per-client mirrors of a daemon's core, by the daemon's id for each attached client. */
 export interface ClientSnapshots {
@@ -32,8 +34,13 @@ export interface ClientSnapshots {
   language(clientId: string): 'en' | 'el' | undefined;
   // the personal MCP servers the client marked available on remote hosts; a detached client's last ones stay
   mcp(clientId: string): readonly RelayedMcpServer[] | undefined;
+  // why the client has not read those servers yet (its clientMcp is pending), else undefined
+  mcpPending(clientId: string): ClientPending | undefined;
   // the clients whose relayed MCP servers core holds, detached ones included
   mcpClients(): readonly string[];
+  // the client's managed git servers (clientForges), whose takeover this core's spawns apply; undefined while detached or
+  // from a client without the feature
+  forges(clientId: string): ClientForges | undefined;
   // before: a per-client topic's previous value for that client; detached: the topic's delta had no value, as the client detached
   onDidChange(cb: (change: { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true }) => void): Disposable;
 }
@@ -86,4 +93,9 @@ export interface RemoteHost {
   mcpCall(clientId: string, server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal | undefined): Promise<unknown>;
   mcpResources(clientId: string, server: string, kind: 'resources' | 'templates', cursor: string | undefined, signal: AbortSignal | undefined): Promise<unknown>;
   mcpReadResource(clientId: string, server: string, uri: string, signal: AbortSignal | undefined): Promise<unknown>;
+  // exactly that client's GitHub and GitLab accounts run a chat's agent tool (user.forge.*), refused with
+  // CREDENTIAL_CLIENT_ABSENT while it is gone and CLIENT_FEATURE_MISSING from a client without the feature; host: the chat whose
+  // views show the refused notice
+  forgeTool(clientId: string, host: PanelHost, request: RelayedForgeRequest, signal: AbortSignal): Promise<ForgeToolAnswer>;
+  forgeDescribe(clientId: string, host: PanelHost, request: RelayedForgeRequest & { readonly approval: boolean }, signal: AbortSignal): Promise<ForgeDescribeAnswer>;
 }

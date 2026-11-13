@@ -156,8 +156,8 @@ describe('subagent hooks (US-008)', () => {
       deferrableToolNames: [],
     })(pi as never);
     expect(handlers.has('tool_call')).toBe(true);
-    // The one `tool_result` handler is the stopped-result marker, which every nested session needs.
-    expect(handlers.get('tool_result')).toHaveLength(1);
+    // The two `tool_result` handlers every nested session needs: known-secret masking first, then the stopped-result marker.
+    expect(handlers.get('tool_result')).toHaveLength(2);
     expect(handlers.has('agent_end')).toBe(false);
     expect(handlers.has('agent_settled')).toBe(false);
   });

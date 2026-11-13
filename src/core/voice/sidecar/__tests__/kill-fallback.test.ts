@@ -30,6 +30,7 @@ class FakeChild implements LaunchedProcess {
   readonly pid: Promise<number> = Promise.resolve(PID);
   readonly exited: Promise<ProcessExit>;
   readonly closed: Promise<void>;
+  readonly leftRunning: Promise<boolean>;
   readonly kills: KillOptions[] = [];
   private readonly survives: boolean;
   private finish!: (exit: ProcessExit) => void;
@@ -42,6 +43,8 @@ class FakeChild implements LaunchedProcess {
     });
     this.closed = this.exited.then(() => undefined);
     this.closed.catch(() => undefined);
+    this.leftRunning = this.closed.then(() => false);
+    this.leftRunning.catch(() => undefined);
   }
   onData(): void {}
   write(): Promise<void> {

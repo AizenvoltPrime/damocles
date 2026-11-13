@@ -19,6 +19,9 @@ export interface ForgetHostDataSteps {
   // its offline queue and last chats in memory, then its remote-state.json entries
   readonly forgetChats: () => void;
   readonly forgetRemoteState: () => Promise<void>;
+  // this computer's core drops the host's default accounts and its projects' account bindings; a halted engine prunes them
+  // when it starts next (the saved authorities main sends it)
+  readonly forgetForgeBindings: () => Promise<void>;
   readonly log: (line: string) => void;
 }
 
@@ -52,6 +55,7 @@ export async function forgetHostData(steps: ForgetHostDataSteps): Promise<void> 
   if (steps.engineHalted() || (await step(steps.releaseBrowser))) await step(() => removeTree(steps.profileFolder));
   await step(steps.forgetChats);
   await step(steps.forgetRemoteState);
+  if (!steps.engineHalted()) await step(steps.forgetForgeBindings);
   for (const err of failures) steps.log(`[remote] a Forget host step failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
   if (failures.length > 0) throw failures[0];
 }

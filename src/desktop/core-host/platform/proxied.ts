@@ -33,7 +33,13 @@ const offered = (index: number | undefined, actions: readonly unknown[]): number
 
 export function createNotificationsProxy(endpoint: CoreEndpoint): NotificationService {
   const show = (severity: 'info' | 'warn' | 'error') => async (message: LocalizedText, actions: readonly LocalizedText[] = [], options?: NotificationOptions): Promise<number | undefined> =>
-    offered(await endpoint.request('notifications.show', { severity, message, ...(options?.modal !== undefined ? { modal: options.modal } : {}), actions }), actions);
+    offered(await endpoint.request('notifications.show', {
+      severity,
+      message,
+      ...(options?.modal !== undefined ? { modal: options.modal } : {}),
+      ...(options?.unlessFocused !== undefined ? { unlessFocused: options.unlessFocused } : {}),
+      actions,
+    }), actions);
   return { info: show('info'), warn: show('warn'), error: show('error') };
 }
 

@@ -2,7 +2,7 @@
 import { ref, computed, useId, type Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { AppWindow, Bot, Brain, ChevronRight, Compass, Globe, ImagePlus, Palette, Search, Settings, ShieldAlert, Users, Wrench } from 'lucide-vue-next';
+import { AppWindow, Bot, Brain, ChevronRight, Compass, GitPullRequest, Globe, ImagePlus, Palette, Search, Settings, ShieldAlert, Users, Wrench } from 'lucide-vue-next';
 import { enabledToolCount, isSwitchableToolGroup, type SwitchableToolGroup, type ToolsSnapshot, type ToolGroup, type ToolStatusInfo, type ToolGroupStatus } from '@shared/types/tools';
 import type { SettingsSectionId } from '@shared/settings-sections';
 import OverlayShell from './OverlayShell.vue';
@@ -28,7 +28,7 @@ const emit = defineEmits<{
   (e: 'trustProject'): void;
 }>();
 
-const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'image', 'subagents', 'team', 'design', 'core'];
+const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'image', 'forge', 'subagents', 'team', 'design', 'core'];
 
 const GROUP_ICONS: Record<ToolGroup, Component> = {
   memory: Brain,
@@ -36,6 +36,7 @@ const GROUP_ICONS: Record<ToolGroup, Component> = {
   browser: AppWindow,
   web: Globe,
   image: ImagePlus,
+  forge: GitPullRequest,
   subagents: Bot,
   team: Users,
   design: Palette,
@@ -53,6 +54,7 @@ const HOST_SETTINGS_SECTIONS: Readonly<Record<SwitchableToolGroup, SettingsSecti
   browser: 'integrations',
   web: 'integrations',
   image: 'integrations',
+  forge: 'accounts',
   team: 'teams',
   design: 'integrations',
 };

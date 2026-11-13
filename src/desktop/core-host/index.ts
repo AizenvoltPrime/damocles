@@ -20,6 +20,8 @@ import { parentChannel, type ParentChannel } from '../local-services/parent-chan
 import { createParentPortTransport } from './parent-port';
 import { createCorePlatform, type CorePlatform } from './platform';
 import { startCoreScm } from './scm';
+import { startCoreForge } from './forge';
+import { createChatRepositories } from './forge-repository';
 import { createFinishHolds, startCoreWorktrees } from './worktrees';
 
 // Exit codes main reads as how core ended (core-process.ts); any exit main did not ask for takes the crash path.
@@ -89,15 +91,19 @@ async function start(port: ParentChannel): Promise<void> {
   const finishHolds = createFinishHolds();
   const worktrees = startCoreWorktrees(platform, scm, finishHolds, (line) => log(line));
   platform.setWorktrees(worktrees.services);
+  const forge = startCoreForge(platform, scm, (line) => log(line));
 
   const service = startCoreService(platform, {
     finishHolds,
+    ...(forge ? { forge } : {}),
+    forgeRepositories: createChatRepositories(scm, (line) => log(line)),
     chatFolders: coreLocal.chatFolders,
     setPlatform: (next) => coreLocal.setPlatform(next),
     // core's dispose interrupts no worktree git work (git apply must finish), so the shutdown waits for its temp folders
     teardown: async () => {
       worktrees.dispose();
       scm.dispose();
+      forge?.dispose();
       await Promise.all([scm.close(), tempFoldersSettled(), heldRepoLocksReleased(), coreLocal.settings.flush(), coreLocal.fileWatchers.close()]);
       for (const disposable of owned.reverse()) disposable.dispose();
       coreLocal.dispose();

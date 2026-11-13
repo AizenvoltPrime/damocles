@@ -16,6 +16,7 @@ import {
 import type { Disposable } from '../../../platform/disposable';
 import { stripBom } from '../../../core/config/bom';
 import { PI_AGENT_DIR } from '../../../core/pi-session/agent-dir';
+import { routeGuardedFetchThroughProxies } from '../../../core/pi-session/web-access/safe-fetch';
 
 type StartupLog = (line: string) => void;
 
@@ -159,6 +160,14 @@ class ChromiumProxyDispatcher extends Dispatcher {
     this.routes.clear();
   }
 
+  /** The proxy an origin goes through, or undefined where it connects directly; HTTP(S)_PROXY counts as a proxy for every origin. */
+  async proxyFor(origin: string): Promise<Dispatcher | undefined> {
+    if (this.env) return this.env;
+    const cached = this.routes.get(origin);
+    const dispatcher = cached && !(cached instanceof Promise) && cached.expires > Date.now() ? cached.dispatcher : await (cached instanceof Promise ? cached : this.resolve(origin));
+    return dispatcher === this.direct ? undefined : dispatcher;
+  }
+
   override dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
     if (this.env) return this.env.dispatch(options, handler);
     const origin = new URL(String(options.origin)).origin;
@@ -230,10 +239,12 @@ export function installProxyDispatcher(source: ProxySource, idleTimeoutMs: numbe
   // pi does the same: fetch and the dispatcher must be one undici implementation. Kept after dispose.
   install();
   const resumed = source.onResume(() => dispatcher.clearRoutes());
+  const unrouted = routeGuardedFetchThroughProxies((origin) => dispatcher.proxyFor(origin));
   log(`[network] dispatcher installed (${ENV_PROXY_KEYS.some((key) => process.env[key]) ? 'proxy from environment' : 'proxy per origin from Chromium'}, idle timeout ${idleTimeoutMs} ms)`);
   return {
     dispose: () => {
       resumed.dispose();
+      unrouted();
       setGlobalDispatcher(previous);
       void dispatcher.close().catch((err: unknown) => log(`[network] closing the dispatcher failed: ${String(err)}`));
     },

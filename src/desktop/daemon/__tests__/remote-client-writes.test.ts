@@ -20,6 +20,7 @@ import { BrokeredCredentialStore } from '../../../core/pi-session/credential-bro
 import { OPENAI_API_KEY_SECRET } from '../../../core/pi-session/openai-auth';
 import { PiRuntime } from '../../../core/pi-session/pi-runtime';
 import { KEY_PROVIDER_IDS } from '../../../shared/settings-sections';
+import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../../shared/remote-user';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 import { runPinnedTurn } from '../../../core/client-snapshots';
 import { createCoreEndpoint, createLoopback, createMainEndpoint } from '../../core-protocol';
@@ -77,7 +78,8 @@ function attachedClient() {
   return { core, state, asked, clientSecrets };
 }
 
-// The user-scope relays are the designed exceptions, checked by main: user.memory.apply and user.mcp.* (user-relays.test.ts), and
+// The user-scope relays are the designed exceptions, checked by main: user.memory.apply and user.mcp.* (user-relays.test.ts), user.forge.*
+// (forge-relay.test.ts, routing below), and
 // user.browser.tool, whose profile and saved downloads are under ~/.damocles/browser-profiles/<authority>/ (main/remote's browser-relay.test.ts).
 describe('a daemon\'s core cannot write client files or change client credentials', () => {
   it.each(PROVIDER_KEY_SECRETS)('provider key %s: get answers undefined unasked, store and delete refuse, keys omit it', async (key) => {
@@ -204,6 +206,22 @@ describe('a daemon routes credential and transcript requests so no client\'s fil
     await expect(coreActors.run('client-2', () => core.request('askpass.credential', request))).resolves.toEqual({ kind: 'none' });
     expect(asked['client-2']).toHaveBeenCalledWith(request);
     expect(asked['client-1']).not.toHaveBeenCalled();
+  });
+
+  // a takeover request (origin set) asks that client's own accounts; a store never crosses (core-host/scm.ts)
+  it('askpass.credential of a takeover reaches only the client it acts for, the turn\'s pinned one for an agent shell', async () => {
+    const { core, coreActors, attach } = daemon();
+    const asked = { 'client-1': vi.fn(), 'client-2': vi.fn() };
+    for (const clientId of ['client-1', 'client-2'] as const) {
+      attach(clientId).serve('askpass.credential', (request) => {
+        asked[clientId](request);
+        return { kind: 'refused', message: 'No.' } as const;
+      });
+    }
+    const request = { op: 'get', fields: { protocol: 'https', host: 'gitlab.com', path: 'g/p.git' }, targetHelper: false, origin: { kind: 'agentShell', panelId: 'p1', sessionId: 's1' }, cwd: '/srv/app' } as const;
+    await expect(coreActors.run('client-1', () => core.request('askpass.credential', request))).resolves.toEqual({ kind: 'refused', message: 'No.' });
+    expect(asked['client-1']).toHaveBeenCalledWith(request);
+    expect(asked['client-2']).not.toHaveBeenCalled();
   });
 
   it('user.credentials.push lands only in the pushing client\'s broker entry, whatever actor its envelope names', async () => {
@@ -501,5 +519,88 @@ describe("a daemon's core runs and replays a journey only as validated steps of 
     post('design.replayJourney', { panelId: 'panel-1', designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', state: null, steps: OUTSIDE_STEPS, reducedMotion: false });
     expect(violations).toEqual([expect.stringContaining('request design.journey'), expect.stringContaining('request design.replayJourney')]);
     expect(asked).not.toHaveBeenCalled();
+  });
+});
+
+// The user.forge relay is a designed exception: a remote chat's GitHub or GitLab tool runs on the device the turn is pinned to,
+// with that device's accounts, and only bounded masked text comes back (main/remote's forge-relay.test.ts checks the folder,
+// the switch and the answer). The daemon routes it to that device alone, and only to one whose attach listed user.forge.
+describe("a daemon's core reaches this computer's GitHub and GitLab accounts only through user.forge on the pinned device", () => {
+  const MIRRORS = {
+    trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
+    clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false },
+  } as const;
+  const REQUEST = { toolCallId: 'call-1', folder: '/srv/app', endpoints: [{ remote: 'origin', fetch: { protocol: 'https' as const, host: 'gitlab.com', path: 'grp/app.git', aliasResolved: false } }], tool: 'ForgePipelines', input: {} };
+
+  function forgeDaemon() {
+    const coreLoop = createLoopback();
+    const core = createCoreEndpoint(coreLoop.core, quiet);
+    const state = createDaemonState(path.join(dir, 'state'), quiet);
+    router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
+    const attach = (clientId: string, features: readonly string[]) => {
+      const loop = createLoopback();
+      const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+      router!.attach({ id: `connection-${clientId}`, clientId, hostId: 'h1', features: new Set(features), transport: loop.core, mirrors: MIRRORS, close: vi.fn(), drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
+      return main;
+    };
+    return { core, attach };
+  }
+
+  function forgeClients() {
+    const { core, attach } = forgeDaemon();
+    const asked = { 'client-1': vi.fn(), 'client-2': vi.fn() };
+    const mains = (['client-1', 'client-2'] as const).map((clientId) => {
+      const main = attach(clientId, FEATURES);
+      main.serve('user.forge.tool', (params) => {
+        asked[clientId]('tool', params);
+        return { text: 'framed' };
+      });
+      main.serve('user.forge.describe', (params) => {
+        asked[clientId]('describe', params);
+        return { ok: true as const, project: 'gitlab.com/grp/app', target: { serverId: 'gitlab.com', repoPath: 'grp/app', accountId: 'a' } };
+      });
+      return main;
+    });
+    return { core, asked, mains };
+  }
+
+  it('user.forge.tool and user.forge.describe reach exactly the client the request names, a view it does not show left out', async () => {
+    const { core, asked } = forgeClients();
+    await expect(core.request('user.forge.tool', { clientId: 'client-2', viewId: 'view-1', ...REQUEST })).resolves.toEqual({ text: 'framed' });
+    await expect(core.request('user.forge.describe', { clientId: 'client-2', approval: false, ...REQUEST })).resolves.toEqual({ ok: true, project: 'gitlab.com/grp/app', target: { serverId: 'gitlab.com', repoPath: 'grp/app', accountId: 'a' } });
+    expect(asked['client-2'].mock.calls).toEqual([['tool', { clientId: 'client-2', ...REQUEST }], ['describe', { clientId: 'client-2', approval: false, ...REQUEST }]]);
+    expect(asked['client-1']).not.toHaveBeenCalled();
+  });
+
+  it("the view id reaches the client in its own numbering, for a client that joined the view under another id", async () => {
+    const { core, asked, mains } = forgeClients();
+    const [first, second] = [mains[0]!, mains[1]!];
+    core.serve('chats.restore', () => undefined);
+    core.serve('views.join', () => ({ panelId: 'panel-1' }));
+    await first.request('chats.restore', { viewId: 'view-1' });
+    first.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
+    await vi.waitFor(() => expect(second.request('views.join', { viewId: 'view-7', viewKey: 'token-1' })).resolves.toEqual({ panelId: 'panel-1' }));
+    await core.request('user.forge.tool', { clientId: 'client-2', viewId: 'view-1', ...REQUEST });
+    await core.request('user.forge.tool', { clientId: 'client-1', viewId: 'view-1', ...REQUEST });
+    expect(asked['client-2'].mock.calls).toEqual([['tool', { clientId: 'client-2', viewId: 'view-7', ...REQUEST }]]);
+    expect(asked['client-1'].mock.calls).toEqual([['tool', { clientId: 'client-1', viewId: 'view-1', ...REQUEST }]]);
+  });
+
+  it('a client whose attach did not list user.forge is never asked, and a detached one is refused as absent', async () => {
+    const { core, attach } = forgeDaemon();
+    const asked = vi.fn();
+    attach('client-old', FEATURES.filter((feature) => feature !== 'user.forge')).serve('user.forge.tool', asked);
+    await expect(core.request('user.forge.tool', { clientId: 'client-old', ...REQUEST })).rejects.toThrow(CLIENT_FEATURE_MISSING);
+    await expect(core.request('user.forge.tool', { clientId: 'client-gone', ...REQUEST })).rejects.toThrow(CREDENTIAL_CLIENT_ABSENT);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("a client's own user.forge requests never reach the daemon's core, which holds no accounts", async () => {
+    const { core, attach } = forgeDaemon();
+    const served = vi.fn();
+    core.serve('user.forge.tool', served);
+    const main = attach('client-1', FEATURES);
+    await expect(main.request('user.forge.tool', { request: { tool: 'ForgePipelines', input: {}, authorityKey: 'local', project: 'app', endpoints: [] }, toolCallId: 'call-1' })).rejects.toThrow('user.forge.tool is not available on this host');
+    expect(served).not.toHaveBeenCalled();
   });
 });

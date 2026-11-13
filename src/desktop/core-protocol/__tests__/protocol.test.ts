@@ -8,8 +8,9 @@ import { MAX_MARKUP_JSON_CHARS } from '../../../shared/design-markup';
 import { arr, data, INVALID, obj, opt, str } from '../schema';
 import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
-import { GitError, gitErrorText, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../../../core/scm/errors';
+import { GitError, gitErrorText, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError, SyncPushError } from '../../../core/scm/errors';
 import { createCoreEndpoint, createMainEndpoint } from '..';
+import { createHarness } from '../../../core/forge/__tests__/support/harness';
 
 const quiet = (): void => undefined;
 
@@ -454,12 +455,16 @@ describe('source control errors across the channel', () => {
       new RemoteCancelledError(),
       new GitUntrustedError(),
       new GitError('git fetch exited with 128', 128, 'ignored', 'fatal: unable to access'),
+      new SyncPushError(new GitError('git push exited with 1', 1, 'ignored', ' ! [remote rejected] main -> main (protected branch hook declined)')),
     ];
     let next = 0;
     core.serve('scm.call', () => Promise.reject(errors[next++]));
     const rebuilt: unknown[] = [];
     for (let i = 0; i < errors.length; i++) rebuilt.push(await main.request('scm.call', { method: 'fetch', args: ['repo-1', {}] }).catch((err: unknown) => err));
-    const [stash, sync, cancelled, untrusted, git] = rebuilt as [StashKeptError, SyncBranchChangedError, Error, Error, GitError];
+    const [stash, sync, cancelled, untrusted, git, syncPush] = rebuilt as [StashKeptError, SyncBranchChangedError, Error, Error, GitError, SyncPushError];
+    expect(syncPush).toBeInstanceOf(SyncPushError);
+    expect(syncPush.cause).toBeInstanceOf(GitError);
+    expect({ message: syncPush.cause.message, exitCode: syncPush.cause.exitCode, stderr: syncPush.cause.stderr }).toEqual({ message: 'git push exited with 1', exitCode: 1, stderr: ' ! [remote rejected] main -> main (protected branch hook declined)' });
     expect(stash).toBeInstanceOf(StashKeptError);
     expect({ text: stash.text, message: stash.message, outcome: stash.outcome, stash: stash.stash }).toEqual({ text: { message: 'Your changes are in the stash' }, message: 'Your changes are in the stash', outcome: 'failed', stash: 'a'.repeat(40) });
     expect(stash.cause).toBeInstanceOf(GitError);
@@ -633,5 +638,140 @@ describe('PanelCreate.parent', () => {
   it('refuses a parent that is not a view id', () => {
     expect(CORE_TO_MAIN.panelOps.create({ ...create, parent: 42 })).toBe(INVALID);
     expect(CORE_TO_MAIN.panelOps.create({ ...create, parent: '' })).toBe(INVALID);
+  });
+});
+
+describe('CI messages', () => {
+  const repo = { authorityKey: 'local', project: 'damocles', endpoints: [], branch: 'feature/forge-accounts', sha: 'a'.repeat(40) };
+  const job = { id: 9203, name: 'unit', stage: 'test', state: 'running', kind: 'job', canRetry: false, canCancel: true, hasLog: true, runner: 'shared-03' };
+
+  it('parses a watch, a job action and a commit status call, and refuses a sha or target past their shapes', () => {
+    const watch = MAIN_TO_CORE.requests['forge.ci.watch'].params;
+    expect(watch({ id: 'status:r1', repo, active: true })).not.toBe(INVALID);
+    expect(watch({ id: 'status:r1', active: false })).not.toBe(INVALID);
+    expect(watch({ id: 'status:r1', repo: { ...repo, sha: 'HEAD' }, active: true })).toBe(INVALID);
+    const action = MAIN_TO_CORE.requests['forge.ci.jobAction'].params;
+    expect(action({ repo, target: { jobId: 9203 }, action: 'retry' })).not.toBe(INVALID);
+    expect(action({ repo, target: { pipelineId: 54312 }, action: 'cancel' })).not.toBe(INVALID);
+    expect(action({ repo, target: { jobId: 0 }, action: 'retry' })).toBe(INVALID);
+    expect(action({ repo, target: { url: 'https://evil.test' }, action: 'retry' })).toBe(INVALID);
+    expect(action({ repo, target: { jobId: 1 }, action: 'play' })).toBe(INVALID);
+    expect(action({ repo, target: { runId: 64312 }, action: 'retry' })).not.toBe(INVALID);
+    const page = MAIN_TO_CORE.requests['forge.ci.webUrl'].params;
+    expect(page({ repo, target: { sha: 'c'.repeat(40) } })).not.toBe(INVALID);
+    expect(page({ repo, target: { sha: 'HEAD' } })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['forge.ci.commitStatus'].params({ repo, sha: 'b'.repeat(64), retry: false })).not.toBe(INVALID);
+  });
+
+  it('parses GitHub checks: no pipeline id, runs by stage, a run per job, allowed failures and a cut list', () => {
+    const status = MAIN_TO_CORE.requests['forge.ci.watch'].result;
+    const checks = {
+      serverId: 'github.com',
+      serverName: 'github.com',
+      kind: 'github',
+      id: 0,
+      number: 0,
+      state: 'failed',
+      jobsDone: 2,
+      jobsTotal: 2,
+      failedCount: 1,
+      canRetry: false,
+      canCancel: false,
+      jobs: [{ ...job, state: 'failed', runId: 64312, allowedFailure: true }, { ...job, id: 9601, stage: '', kind: 'external', hasLog: false, canCancel: false }],
+      runs: [{ id: 64312, stage: 'test', canRetry: true, canCancel: false }],
+      truncated: true,
+    };
+    expect(status({ status: 'ready', pipeline: checks })).not.toBe(INVALID);
+    expect(status({ status: 'ready', pipeline: { ...checks, runs: [{ id: 0, stage: 'test', canRetry: true, canCancel: false }] } })).toBe(INVALID);
+    const commit = MAIN_TO_CORE.requests['forge.ci.commitStatus'].result;
+    expect(commit({ status: 'ready', pipeline: { id: 0, number: 0, state: 'failed', serverName: 'github.com', kind: 'github' } })).not.toBe(INVALID);
+    expect(commit({ status: 'ready', pipeline: { id: 0, number: 0, state: 'failed', serverName: 'github.com' } })).toBe(INVALID);
+  });
+
+  it('parses the views core answers and pushes, with error text as LocalizedText', () => {
+    const status = MAIN_TO_CORE.requests['forge.ci.watch'].result;
+    const pipeline = { serverId: 'gitlab.com', serverName: 'gitlab.com', kind: 'gitlab', id: 54312, number: 4312, state: 'running', jobsDone: 3, jobsTotal: 5, failedCount: 0, canRetry: false, canCancel: true, jobs: [job] };
+    expect(status({ status: 'ready', pipeline })).not.toBe(INVALID);
+    expect(status(null)).toBeNull();
+    expect(status({ status: 'error', message: { message: '{0} could not answer.', args: ['gitlab.com'] } })).not.toBe(INVALID);
+    expect(status({ status: 'error', message: 'plain text' })).toBe(INVALID);
+    expect(status({ status: 'ready', pipeline: { ...pipeline, state: 'exploded' } })).toBe(INVALID);
+    const changed = CORE_TO_MAIN.events['forge.ci.changed'];
+    const log = { status: 'ready', job, pipeline: { id: 54312, number: 4312, ref: 'feature/forge-accounts' }, serverName: 'gitlab.com', kind: 'gitlab', reset: false, text: 'line\n', truncated: false, live: true };
+    expect(changed({ id: 'log:t1', log })).not.toBe(INVALID);
+    expect(changed({ id: 'log:t1', log: { status: 'githubRunning', job: { ...job, steps: [{ number: 1, name: 'Set up job', state: 'passed' }] }, serverName: 'github.com' } })).not.toBe(INVALID);
+    expect(changed({ id: 'status:r1', status: { status: 'none' } })).not.toBe(INVALID);
+    expect(changed({ id: 'log:t1', log: { ...log, text: 'x'.repeat(16 * 1024 * 1024 + 1) } })).toBe(INVALID);
+  });
+});
+
+describe('forge messages', () => {
+  const remote = (index: number) => ({ remote: `remote-${index}`, fetch: { protocol: 'https', host: 'gitlab.com', path: `grp/proj-${index}.git`, aliasResolved: false } });
+
+  it('carry a repository with 100 remotes on every call that names its endpoints', () => {
+    const endpoints = Array.from({ length: 100 }, (_, index) => remote(index));
+    const repo = { authorityKey: 'local', project: 'damocles', endpoints };
+    expect(MAIN_TO_CORE.requests['forge.ci.watch'].params({ id: 'status:r1', repo, active: true })).not.toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['forge.repoAccounts'].params({ projectKey: 'c:/src/damocles', ...repo })).not.toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['forge.prepareGitOperation'].params({ operation: 'push', ...repo, remotes: endpoints.map((item) => item.remote) })).not.toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['forge.pushAccess'].params({ repo, remote: 'remote-0' })).not.toBe(INVALID);
+    const request = { tool: 'ForgeIssue', input: {}, ...repo };
+    expect(MAIN_TO_CORE.requests['user.forge.tool'].params({ request, toolCallId: 'call-1' })).not.toBe(INVALID);
+    expect(CORE_TO_MAIN.requests['user.forge.tool'].params({ clientId: 'c1', toolCallId: 'call-1', folder: '/src/damocles', endpoints, tool: 'ForgeIssue', input: {} })).not.toBe(INVALID);
+  });
+
+  it('carry a server of the account chip with its account exactly when its state settled one', () => {
+    const result = MAIN_TO_CORE.requests['forge.repoAccounts'].result;
+    const account = { id: 'gitlab.com|1', login: 'alexios-s', needsSignIn: false };
+    const facts = { serverId: 'gitlab.com', server: 'gitlab.com', kind: 'gitlab', remotes: ['origin'], isPush: true, repoPath: 'alexios-s/damocles', accounts: [account] };
+    const view = (server: Record<string, unknown>) => ({ projectKey: 'c:/src/damocles', project: 'damocles', servers: [{ ...facts, ...server }] });
+    expect(result(view({ state: 'auto', how: 'onlyAccount', account }))).toEqual(view({ state: 'auto', how: 'onlyAccount', account }));
+    expect(result(view({ state: 'chosen', how: 'bound' }))).toBe(INVALID);
+    expect(result(view({ state: 'ownCredentials', how: 'bound', account }))).toEqual(view({ state: 'ownCredentials' }));
+  });
+
+  it("carry a decided target's fork and the hash of its card's text, and refuse a hash that is no SHA-256", () => {
+    const expected = { serverId: 'gitlab.com', repoPath: 'grp/app', accountId: 'gitlab.com|2001', sourceRepoPath: 'me/app', contentHash: 'a'.repeat(64) };
+    const call = { clientId: 'c1', toolCallId: 'call-1', folder: '/src/app', endpoints: [remote(0)], tool: 'ForgeComment', input: {} };
+    expect(CORE_TO_MAIN.requests['user.forge.tool'].params({ ...call, expected })).toEqual({ ...call, expected });
+    expect(CORE_TO_MAIN.requests['user.forge.tool'].params({ ...call, expected: { ...expected, contentHash: 'not-a-hash' } })).toBe(INVALID);
+  });
+
+  it('carry the mirror of a forge service with a signed-in account and a server at its most git hosts', async () => {
+    const harness = await createHarness();
+    try {
+      const service = harness.service();
+      await service.load();
+      const gitHosts = Array.from({ length: 15 }, (_, index) => `git${index}.indigital.gr`);
+      expect((await service.addServer({ url: harness.stub.indigital.webUrl, kind: 'gitlab', gitHosts })).ok).toBe(true);
+      await service.signIn({ serverId: 'gitlab.com', route: 'token', token: 'glpat-stubWorkAlexiosApi000001', agentShells: false });
+      const mirror = service.mirror();
+      expect(mirror.servers.find((server) => server.gitHosts.length === 16)).toBeDefined();
+      expect(mirror.servers.some((server) => server.hasAccount)).toBe(true);
+      expect(CORE_TO_MAIN.mirrors.forge(mirror)).toEqual(mirror);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('answer a git credential request with a credential, delegation or a refusal, and refuse a refusal without text', () => {
+    const answer = MAIN_TO_CORE.requests['forge.gitCredential'].result;
+    expect(answer({ answer: { kind: 'credential', username: 'oauth2', password: 'gl-token' }, account: { serverId: 'gitlab.com', accountId: 'gitlab.com|7', login: 'work-alexios', how: 'bound' } })).not.toBe(INVALID);
+    expect(answer({ answer: { kind: 'delegate' } })).toEqual({ answer: { kind: 'delegate' } });
+    expect(answer({ answer: { kind: 'refused', message: 'Turn on "Agent shells may use this account" for work-alexios.' } })).not.toBe(INVALID);
+    expect(answer({ answer: { kind: 'refused', message: '' } })).toBe(INVALID);
+    expect(answer({ answer: { kind: 'credential', username: 'oauth2', password: 'gl-token' }, account: { serverId: 'gitlab.com', accountId: 'gitlab.com|7', login: 'work-alexios', how: 'guessed' } })).toBe(INVALID);
+    // a target's automatic pick: the account to consent to, and no answer for git beside it
+    const consent = { serverId: 'gitlab.com', accountId: 'gitlab.com|7', login: 'work-alexios', how: 'access', canPush: false };
+    expect(answer({ consent })).toEqual({ consent });
+    expect(answer({ consent: { ...consent, canPush: 'no' } })).toBe(INVALID);
+    const params = MAIN_TO_CORE.requests['forge.gitCredential'].params;
+    const request = { op: 'get', cwd: '/src/damocles', fields: { protocol: 'https', host: 'gitlab.com', path: 'grp/proj.git' } };
+    expect(params({ request, origin: { kind: 'terminal', projectKey: '/src/damocles' }, authorityKey: 'local' })).not.toBe(INVALID);
+    expect(params({ request, origin: { kind: 'terminal' }, authorityKey: 'ssh+h1', consentedAccountId: 'gitlab.com|7' })).toMatchObject({ consentedAccountId: 'gitlab.com|7' });
+    expect(params({ request: { ...request, op: 'approve' }, origin: { kind: 'terminal' }, authorityKey: 'local' })).toBe(INVALID);
+    const relayed = CORE_TO_MAIN.requests['askpass.credential'].result;
+    expect(relayed({ kind: 'delegate' })).toEqual({ kind: 'delegate' });
+    expect(relayed({ kind: 'refused', message: 'No account was chosen for gitlab.com, so git got no credentials.' })).not.toBe(INVALID);
   });
 });

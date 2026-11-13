@@ -84,7 +84,8 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
   return {
     capabilities: () => {
       const capabilities = desktopHostCapabilities(platform ?? process.platform);
-      return shared.remote ? remoteHostCapabilities(capabilities, currentPin(shared.remote).policy) : capabilities;
+      // Git hosting accounts run only in this computer's core (core-host/forge.ts)
+      return shared.remote ? remoteHostCapabilities(capabilities, currentPin(shared.remote).policy) : { ...capabilities, forgeAccounts: shared.init.paths.forge !== undefined };
     },
     settings,
     fileWatchers,

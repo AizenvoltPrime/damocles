@@ -54,6 +54,7 @@ function clientMain(router: CoreRouter, id: string, language: DesktopLanguage, p
     ask: async () => undefined,
     t: (message) => localization.t(message),
     log: quiet,
+    windowFocused: () => false,
   });
   const base = { ...hostExtras(), render: (text: LocalizedText) => localization.render(text), terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, log: quiet };
   const services: HostServices = createHostServices({

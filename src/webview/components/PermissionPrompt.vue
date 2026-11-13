@@ -3,11 +3,12 @@ import { ref, computed, watch, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ListboxRoot, ListboxItem } from 'reka-ui';
 import DockPromptOptions from './DockPromptOptions.vue';
-import { FilePlus, ImagePlus, MessageSquare, PencilLine, SquareTerminal, Wrench } from 'lucide-vue-next';
+import { FilePlus, GitPullRequestCreateArrow, ImagePlus, MessageSquare, PencilLine, RotateCcw, SquareTerminal, Wrench } from 'lucide-vue-next';
 import PermissionDestinationPicker from './PermissionDestinationPicker.vue';
 import HostBadge from './HostBadge.vue';
-import { isShellTool, TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE, WRITE_TOOLS } from '@shared/tool-names';
-import type { PermissionUpdate, PermissionUpdateDestination, PromptOwner } from '@shared/types/permissions';
+import { isShellTool, TOOL_EDIT, TOOL_FORGE_COMMENT, TOOL_FORGE_JOB_ACTION, TOOL_FORGE_OPEN_MERGE_REQUEST, TOOL_GENERATE_IMAGE, TOOL_WRITE, WRITE_TOOLS } from '@shared/tool-names';
+import type { PermissionContent, PermissionFact, PermissionUpdate, PermissionUpdateDestination, PromptOwner } from '@shared/types/permissions';
+import type { LocalizedText } from '@shared/localized-text';
 import type { FilePatchOmitted } from '@shared/types/file-patch';
 import { buildFileDiff, fileChangeSource } from '@/utils/parseUnifiedDiff';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
@@ -17,6 +18,8 @@ import { useDiffStore } from '@/stores/useDiffStore';
 import { useEditorStore } from '@/stores/useEditorStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useChatHost } from '@/composables/useChatHost';
+import { renderText } from '@/composables/useLocalizedText';
+import ForgeAvatar from './settings/forge/ForgeAvatar.vue';
 
 const { t } = useI18n();
 const displayPath = useFolderRelativePath();
@@ -42,6 +45,12 @@ const props = defineProps<{
   suggestions?: PermissionUpdate[] | undefined;
   blockedPath?: string | undefined;
   decisionReason?: string | undefined;
+  /** A tool's own words for the request (a forge write: core's `approvalOf`, `forge/tools/run.ts`); absent, the generic prompt shows its input. */
+  title?: LocalizedText | undefined;
+  subtitle?: LocalizedText | undefined;
+  facts?: PermissionFact[] | undefined;
+  content?: PermissionContent | undefined;
+  alwaysAllowLabel?: LocalizedText | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -73,21 +82,35 @@ const isNewFile = computed(() => diffSource.value?.kind === 'newFile');
 // Any tool without its own view, such as a Read an ask rule names, shows its name and input.
 const isGeneric = computed(() => !isShell.value && !isGenerateImage.value && !isFileChange.value);
 
+// Each forge write gets the icon of what it does.
+const FORGE_WRITE_ICONS: Readonly<Record<string, Component>> = {
+  [TOOL_FORGE_COMMENT]: MessageSquare,
+  [TOOL_FORGE_JOB_ACTION]: RotateCcw,
+  [TOOL_FORGE_OPEN_MERGE_REQUEST]: GitPullRequestCreateArrow,
+};
+
 const kindIcon = computed<Component>(() => {
   if (isShell.value) return SquareTerminal;
   if (isGenerateImage.value) return ImagePlus;
-  if (isGeneric.value) return Wrench;
+  if (isGeneric.value) return FORGE_WRITE_ICONS[props.toolName ?? ''] ?? Wrench;
   return isNewFile.value ? FilePlus : PencilLine;
 });
 
 // On a remote chat the title names its host as main's panel init does; the visible title shows it in its badge.
 const host = useChatHost();
+// Core's facts and content stand in for the generic prompt's raw input.
+const hasDetail = computed(() => isGeneric.value && (props.facts !== undefined || props.content !== undefined));
+const toolTitle = computed(() => (isGeneric.value && props.title ? renderText(props.title) : undefined));
+const showAvatars = computed(() => settingsStore.forgeAccounts?.showAvatars ?? true);
 const titleKey = computed(() => {
   const key = isShell.value ? 'runCommand' : isGenerateImage.value ? 'generateImage' : isGeneric.value ? 'useTool' : isNewFile.value ? 'allowCreate' : 'allowEdit';
   if (host.value) return `permission.onHost.${key}`;
   return key === 'allowCreate' || key === 'allowEdit' ? `prompts.permission.${key}` : `permission.${key}`;
 });
-const title = computed(() => t(titleKey.value, { tool: props.toolName, host: host.value?.name }));
+const heading = computed(() => {
+  if (toolTitle.value === undefined) return t(titleKey.value, { tool: props.toolName, host: host.value?.name });
+  return host.value ? t('permission.onHost.titled', { title: toolTitle.value, host: host.value.name }) : toolTitle.value;
+});
 
 const agentLine = computed(() => {
   const owner = props.owner;
@@ -125,9 +148,9 @@ function subtitleWith(path: string | undefined): string {
   return [path, lineDelta.value].filter(Boolean).join(' · ');
 }
 
-const subtitle = computed(() => subtitleWith(props.filePath === undefined ? undefined : displayPath(props.filePath)));
+const subline = computed(() => subtitleWith(props.filePath === undefined ? undefined : displayPath(props.filePath)));
 // The tooltip names the full path, so a relative label never hides where the write lands.
-const subtitleTitle = computed(() => subtitleWith(props.filePath));
+const sublineTitle = computed(() => subtitleWith(props.filePath));
 
 const canOpenDiff = computed(() => diffSource.value !== null && props.filePath !== undefined);
 
@@ -160,9 +183,11 @@ const options = computed(() => {
     { value: 'yes', label: t('permission.options.yes'), hint: t('prompts.keys.enter'), extraKey: 'Enter' },
   ];
   if (offersAcceptAllEdits.value) list.push({ value: 'yes-accept-all', label: t('prompts.permission.yesAcceptAll') });
-  if (suggestionLabel.value) list.push({ value: 'always-allow', label: t('permission.options.alwaysAllow', { pattern: suggestionLabel.value }) });
+  // A tool that names its rule in words offers only that allow rule (Yes, don't ask again, No).
+  const scopedLabel = props.alwaysAllowLabel ? renderText(props.alwaysAllowLabel) : undefined;
+  if (suggestionLabel.value) list.push({ value: 'always-allow', label: scopedLabel ?? t('permission.options.alwaysAllow', { pattern: suggestionLabel.value }) });
   list.push({ value: 'no', label: t('permission.options.no'), hint: t('prompts.keys.esc'), extraKey: 'Escape' });
-  if (suggestionLabel.value) list.push({ value: 'always-deny', label: t('permission.options.alwaysDeny', { pattern: suggestionLabel.value }) });
+  if (suggestionLabel.value && scopedLabel === undefined) list.push({ value: 'always-deny', label: t('permission.options.alwaysDeny', { pattern: suggestionLabel.value }) });
   return list.map((option, index) => {
     const key = String(index + 1);
     return { ...option, key, shortcuts: option.extraKey ? `${key} ${option.extraKey}` : key };
@@ -271,7 +296,24 @@ watch(() => props.toolUseId, resetState);
           data-testid="permission-title"
         >
           <i18n-t
-            v-if="host"
+            v-if="host && toolTitle !== undefined"
+            keypath="permission.onHost.titled"
+            tag="span"
+            class="inline-flex flex-wrap items-center gap-x-1.5"
+            scope="global"
+          >
+            <template #host>
+              <HostBadge
+                :name="host.name"
+                :color="host.color"
+              />
+            </template>
+            <template #title>
+              {{ toolTitle }}
+            </template>
+          </i18n-t>
+          <i18n-t
+            v-else-if="host"
             :keypath="titleKey"
             tag="span"
             class="inline-flex flex-wrap items-center gap-x-1.5"
@@ -288,16 +330,29 @@ watch(() => props.toolUseId, resetState);
             </template>
           </i18n-t>
           <template v-else>
-            {{ title }}
+            {{ heading }}
           </template>
         </div>
         <div
-          v-if="subtitle"
-          class="truncate font-mono text-xs text-(--d-muted)"
-          :title="subtitleTitle"
+          v-if="isGeneric && props.subtitle"
+          class="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-(--d-muted)"
           data-testid="permission-subtitle"
         >
-          {{ subtitle }}
+          <span class="font-mono text-(--d-text)">{{ toolName }}</span>
+          <span class="sr-only">, </span>
+          <span
+            class="text-(--d-faint)"
+            aria-hidden="true"
+          >·</span>
+          <span>{{ renderText(props.subtitle) }}</span>
+        </div>
+        <div
+          v-else-if="subline"
+          class="truncate font-mono text-xs text-(--d-muted)"
+          :title="sublineTitle"
+          data-testid="permission-subtitle"
+        >
+          {{ subline }}
         </div>
       </div>
       <span
@@ -333,12 +388,56 @@ watch(() => props.toolUseId, resetState);
       >
         {{ command }}
       </div>
+      <template v-else-if="hasDetail">
+        <dl
+          v-if="facts?.length"
+          class="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+          role="group"
+          :aria-label="t('permission.factsLabel')"
+          data-testid="permission-facts"
+        >
+          <template
+            v-for="(fact, index) in facts"
+            :key="index"
+          >
+            <dt class="text-(--d-faint-text)">
+              {{ renderText(fact.label) }}
+            </dt>
+            <dd class="m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 font-mono wrap-anywhere">
+              <ForgeAvatar
+                v-if="fact.avatar !== undefined"
+                :login="fact.value"
+                :avatar-key="showAvatars ? fact.avatar.key : undefined"
+                size="chip"
+              />
+              <span dir="ltr">{{ fact.value }}</span>
+              <span
+                v-if="fact.detail !== undefined"
+                class="font-sans text-(--d-faint-text)"
+              ><span class="sr-only">, </span><span aria-hidden="true">· </span>{{ fact.detail }}</span>
+              <span
+                v-if="fact.note !== undefined"
+                class="font-sans text-(--d-faint-text)"
+              ><span class="sr-only">, </span><span aria-hidden="true">· </span>{{ renderText(fact.note) }}</span>
+            </dd>
+          </template>
+        </dl>
+        <div
+          v-if="content"
+          class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 text-xs wrap-break-word whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+          role="region"
+          tabindex="0"
+          :aria-label="renderText(content.label)"
+          data-testid="permission-content"
+          v-text="content.text"
+        />
+      </template>
       <div
         v-else-if="isGeneric"
         class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent)"
         role="region"
         tabindex="0"
-        :aria-label="title"
+        :aria-label="heading"
         data-testid="tool-permission-input"
         v-text="JSON.stringify(toolInput ?? {}, null, 2)"
       />
@@ -398,7 +497,7 @@ watch(() => props.toolUseId, resetState);
         data-testid="permission-options"
         @keydown.esc.prevent.stop="handleSelect('no')"
       >
-        <DockPromptOptions :aria-label="title">
+        <DockPromptOptions :aria-label="heading">
           <ListboxItem
             v-for="option in options"
             :key="option.value"

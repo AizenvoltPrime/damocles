@@ -25,6 +25,25 @@ jobs:
       server-alpine-build-image: ${{ steps.server-node.outputs.alpine-build-image }}
       server-alpine-target-image: ${{ steps.server-node.outputs.alpine-target-image }}
     steps:
+      # A tag release carries the built-in Git hosting OAuth apps (docs/release.md); this step sees only whether each value is set.
+      - name: Check the Git hosting OAuth app values
+        env:
+          HAS_GITHUB_CLIENT_ID: ${{ vars.DAMOCLES_FORGE_GITHUB_CLIENT_ID != '' }}
+          HAS_GITHUB_CLIENT_SECRET: ${{ secrets.DAMOCLES_FORGE_GITHUB_CLIENT_SECRET != '' }}
+          HAS_GITLAB_CLIENT_ID: ${{ vars.DAMOCLES_FORGE_GITLAB_CLIENT_ID != '' }}
+          TAG_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          missing=()
+          [ "$HAS_GITHUB_CLIENT_ID" = true ] || missing+=(DAMOCLES_FORGE_GITHUB_CLIENT_ID)
+          [ "$HAS_GITHUB_CLIENT_SECRET" = true ] || missing+=(DAMOCLES_FORGE_GITHUB_CLIENT_SECRET)
+          [ "$HAS_GITLAB_CLIENT_ID" = true ] || missing+=(DAMOCLES_FORGE_GITLAB_CLIENT_ID)
+          if [ ${#missing[@]} -eq 0 ]; then exit 0; fi
+          if [ "$TAG_PUSH" = true ]; then
+            echo "::error::A tag release needs ${missing[*]} (repository variables for the client ids, a repository secret for the client secret)."
+            exit 1
+          fi
+          echo "::warning::Building without ${missing[*]}: the desktop app's github.com and gitlab.com sign-in lacks the routes they enable."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -534,7 +553,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The OAuth app values are compiled into dist/core-host.js only; verify's first step fails a tag release without them.
       - name: Build desktop
+        env:
+          DAMOCLES_FORGE_GITHUB_CLIENT_ID: ${{ vars.DAMOCLES_FORGE_GITHUB_CLIENT_ID }}
+          DAMOCLES_FORGE_GITHUB_CLIENT_SECRET: ${{ secrets.DAMOCLES_FORGE_GITHUB_CLIENT_SECRET }}
+          DAMOCLES_FORGE_GITLAB_CLIENT_ID: ${{ vars.DAMOCLES_FORGE_GITLAB_CLIENT_ID }}
         run: npm run build:desktop
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

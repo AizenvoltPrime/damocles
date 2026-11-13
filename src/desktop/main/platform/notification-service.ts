@@ -28,6 +28,8 @@ export interface NotificationDeps {
   readonly ask: AskMessage;
   readonly t: (message: string) => string;
   readonly log: (line: string) => void;
+  // the main window has focus, for a notice raised unlessFocused
+  readonly windowFocused: () => boolean;
 }
 
 const DIALOG_SEVERITY: Readonly<Record<NoticeSeverity, MessageSeverity>> = { info: 'info', warning: 'warning', error: 'danger' };
@@ -55,6 +57,7 @@ export function createDesktopNotificationService(deps: NotificationDeps): Deskto
 
   const show: IndexedNotifications['show'] = (severity, message, actions, options) => {
     deps.log(`[notification:${severity}] ${message}`);
+    if (options?.unlessFocused === true && options.modal !== true && deps.windowFocused()) return Promise.resolve(undefined);
     return options?.modal === true ? modal(severity, message, actions, options.signal) : deps.notice(severity, message, actions);
   };
 

@@ -4,12 +4,18 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Disposable } from '../platform/disposable';
 import type { Platform } from '../platform/platform';
 import type { RemoteHost } from '../platform/remote-host';
-import type { ClientPolicy, ClientUser, HeldAuthEntry } from '../shared/remote-user';
+import type { LocalizedText } from '../shared/localized-text';
+import type { ClientPending, ClientPolicy, ClientUser, HeldAuthEntry } from '../shared/remote-user';
 import type { PermissionMode } from '../shared/types/settings';
 
-/** The chat a turn runs in, as the token broker raises its Sign-in needed prompt there; continueWith re-pins the turn to the device that clicked. */
+/**
+ * The chat a turn runs in, as the token broker raises its Sign-in needed prompt there; continueWith re-pins the turn to the
+ * device that clicked. reason: set when the turn waits for its device's sign-ins or user rules to be known, not for the device.
+ * stopSignal: read once as a turn is pinned; aborted by the user's Stop of that turn.
+ */
 export interface SignInPrompts {
-  raise(provider: string, actions: { readonly continueWith: (clientId: string) => void; readonly cancel: () => void }): Disposable;
+  raise(provider: string, actions: { readonly continueWith: (clientId: string) => void; readonly cancel: () => void }, reason?: LocalizedText): Disposable;
+  stopSignal?(): AbortSignal;
 }
 
 /** turn: a chat turn's run; subcall: a structured sub-call or classification, which never waits for a client. */
@@ -23,6 +29,8 @@ export interface ClientPin {
   readonly run?: string;
   // a turn's: where the broker raises Sign-in needed while its device is away
   readonly signIn?: SignInPrompts;
+  // a turn's: its Stop, which ends a sign-in wait also where pi passed the read no signal (its auth check)
+  readonly stop?: AbortSignal;
 }
 
 const pins = new AsyncLocalStorage<ClientPin>();
@@ -68,7 +76,9 @@ function holdPin<T>(pin: ClientPin, body: () => T): T {
 
 /** Runs a turn pinned to the client acting now, its broker reads recorded under `run`; a local core runs it as is. */
 export function runPinnedTurn<T>(remote: RemoteHost | undefined, run: string, body: () => T, signIn?: SignInPrompts): T {
-  return remote ? holdPin({ ...actingPin(remote, 'turn'), run, ...(signIn ? { signIn } : {}) }, body) : body();
+  if (!remote) return body();
+  const stop = signIn?.stopSignal?.();
+  return holdPin({ ...actingPin(remote, 'turn'), run, ...(signIn ? { signIn } : {}), ...(stop ? { stop } : {}) }, body);
 }
 
 /** Runs a run started inside a turn (a subagent's) under that turn's pin, held until it settles; outside a turn, as runPinnedTurn. */
@@ -81,6 +91,12 @@ export function runInTurnPin<T>(remote: RemoteHost, run: string, body: () => T, 
 /** The clients a running turn is pinned to. */
 export function pinnedClients(): ReadonlySet<string> {
   return new Set([...held.keys()].flatMap((pin) => (pin.clientId === undefined ? [] : [pin.clientId])));
+}
+
+/** Whether a running turn of `run` (a chat's panel id) is still pinned to `clientId`. */
+export function runHoldsPin(run: string, clientId: string): boolean {
+  for (const pin of held.keys()) if (pin.kind === 'turn' && pin.run === run && pin.clientId === clientId) return true;
+  return false;
 }
 
 /** Hears each turn pin whose last run settled. */
@@ -145,16 +161,36 @@ export function entryHoldsCredential(entry: HeldAuthEntry | undefined): entry is
   return entry?.type === 'oauth' || entry?.hasKey === true;
 }
 
-/** Whose credential a provider's request uses under a pin: its device's clientAuth entry, the host's own, or none for a pin that names no device. */
+/** Why `pin`'s device's sign-ins (its clientAuth) or user rules (as pinned) are not known yet, else undefined; never read as none. */
+export function clientPending(remote: RemoteHost, pin: ClientPin = currentPin(remote)): ClientPending | undefined {
+  const clientId = pin.clientId;
+  if (clientId === undefined) return undefined;
+  return remote.clients.auth(clientId)?.pending ?? pin.user?.pending;
+}
+
+/** A turn pinned while its device's user rules were not known yet takes them once they are, as its start would have. */
+export function settlePinnedUser(remote: RemoteHost, pin: ClientPin): void {
+  if (pin.user?.pending === undefined || pin.clientId === undefined) return;
+  const user = remote.clients.user(pin.clientId);
+  if (user !== undefined && user.pending === undefined) (pin as { user: ClientUser | undefined }).user = user;
+}
+
+/**
+ * Whose credential a provider's request uses under a pin: its device's clientAuth entry, the host's own, none for a pin that
+ * names no device, or not known yet while that device's sign-ins or user rules are pending.
+ */
 export type CredentialOwner =
   | { readonly kind: 'client'; readonly clientId: string; readonly entry: HeldAuthEntry }
   | { readonly kind: 'host'; readonly clientId: string }
+  | { readonly kind: 'pending'; readonly clientId: string; readonly reason: ClientPending }
   | { readonly kind: 'noDevice' };
 
 /** The one decision the token broker and pi's availability reads on a daemon's core share, for `pin`, else the pinned (else acting) client's. */
 export function credentialOwner(remote: RemoteHost, providerId: string, pin: ClientPin = currentPin(remote)): CredentialOwner {
   const clientId = pin.clientId;
   if (clientId === undefined) return { kind: 'noDevice' };
+  const reason = clientPending(remote, pin);
+  if (reason !== undefined) return { kind: 'pending', clientId, reason };
   const entry = remote.clients.auth(clientId)?.providers[providerId];
   return entryHoldsCredential(entry) ? { kind: 'client', clientId, entry } : { kind: 'host', clientId };
 }
@@ -171,9 +207,9 @@ export function clientHasCredential(remote: RemoteHost, providerId: string): boo
   return clientCredentialProviders(remote).includes(providerId);
 }
 
-/** Who paid for a provider's billed call: a daemon's core whose pinned (else acting) client holds no credential for it used the host's own. */
+/** Who paid for a provider's billed call: a daemon's core whose pinned (else acting) client is known to hold no credential for it used the host's own. */
 export function credentialSourceOf(remote: RemoteHost | undefined, providerId: string): 'host' | undefined {
-  return remote !== undefined && !clientHasCredential(remote, providerId) ? 'host' : undefined;
+  return remote !== undefined && clientPending(remote) === undefined && !clientHasCredential(remote, providerId) ? 'host' : undefined;
 }
 
 /**

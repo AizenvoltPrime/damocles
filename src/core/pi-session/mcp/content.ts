@@ -149,23 +149,28 @@ const savedOutputFiles = new Set<string>();
  * Results can carry private data, so the file gets an unguessable name and only the user may read it.
  * The name never comes from server output, and `wx` never follows a link someone placed at the path.
  */
-async function saveOutputFile(extension: '.txt' | '.bin', data: string | Uint8Array): Promise<string> {
-  const filePath = join(tmpdir(), `damocles-mcp-${randomBytes(8).toString('hex')}${extension}`);
+async function saveOutputFile(prefix: 'damocles-mcp' | 'damocles-forge', extension: '.txt' | '.bin', data: string | Uint8Array): Promise<string> {
+  const filePath = join(tmpdir(), `${prefix}-${randomBytes(8).toString('hex')}${extension}`);
   await writeFile(filePath, data, { mode: 0o600, flag: 'wx' });
   savedOutputFiles.add(filePath);
   return filePath;
 }
 
 export function saveMcpOutputToTempFile(text: string): Promise<string> {
-  return saveOutputFile('.txt', text);
+  return saveOutputFile('damocles-mcp', '.txt', text);
 }
 
 /** A resource's binary content, for the agent to open by path. */
 export function saveMcpBinaryToTempFile(data: Uint8Array): Promise<string> {
-  return saveOutputFile('.bin', data);
+  return saveOutputFile('damocles-mcp', '.bin', data);
 }
 
-/** Delete every full-output file this process saved; run when the runtime shuts down and no session can read them. */
+/** A GitHub or GitLab tool's full redacted text, for an agent on this computer to read by path. */
+export function saveForgeOutputToTempFile(text: string): Promise<string> {
+  return saveOutputFile('damocles-forge', '.txt', text);
+}
+
+/** Delete every full-output file this process saved, MCP's and the forge tools'; run when the runtime shuts down and no session can read them. */
 export async function removeSavedMcpOutputs(): Promise<void> {
   const files = [...savedOutputFiles];
   savedOutputFiles.clear();

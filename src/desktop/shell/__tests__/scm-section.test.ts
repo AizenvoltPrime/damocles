@@ -4,6 +4,7 @@ import { nextTick, triggerRef } from 'vue';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import type { OverlayMenuItem, OverlayRequest } from '../../preload/overlay-channels';
 import type { ScmArtifactsResult, ScmChange, ScmRepoSnapshot, ScmStashArtifact, ScmView } from '../../preload/scm-channels';
+import type { RepoAccountsView } from '../../../shared/forge/bindings';
 import { shellI18n } from '../i18n';
 import { createScmStore, SCM_STORE, type ScmStore } from '../scm/scm-store';
 import { COMMIT_VARIANTS } from '../scm/scm-menus';
@@ -384,5 +385,55 @@ describe('the Stashes group', () => {
     expect(focusedKey()).toBe(stashKey(HASH_B));
     await press('ArrowLeft');
     expect(focusedKey()).toBe('group:stashes');
+  });
+});
+
+describe('the account chip in Source control', () => {
+  const ACCOUNT = { id: 'gitlab.com|1', login: 'alexios-s', needsSignIn: false };
+  const accountsView = (checkFailed = false): RepoAccountsView => ({
+    projectKey: 'p1',
+    project: 'alpha',
+    servers: [{ serverId: 'gitlab.com', server: 'gitlab.com', kind: 'gitlab', remotes: ['origin'], isPush: true, repoPath: 'alexios-s/alpha', state: 'choose', accounts: [ACCOUNT], ...(checkFailed ? { checkFailed } : {}) }],
+  });
+  const status = (wrapper: VueWrapper): string => wrapper.get('[data-testid="forge-account-status"]').text();
+
+  it('waits for the chip\'s first read before Choose Account decides between its menu and Accounts settings', async () => {
+    const { scm, shell } = await mountSection([snapshot('r1', {})]);
+    let answer: (view: RepoAccountsView) => void = () => undefined;
+    vi.mocked(shell.forge.repoAccounts).mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    shell.forge.changed({});
+    await flushPromises();
+    scm.command({ command: 'chooseAccount', repoId: 'r1' });
+    await flushPromises();
+    expect(shell.forge.openAccounts).not.toHaveBeenCalled();
+    expect(shell.overlayRequests).toHaveLength(0);
+    answer(accountsView());
+    await flushPromises();
+    expect(shell.forge.openAccounts).not.toHaveBeenCalled();
+    expect(shell.overlayRequests.map((request) => request.kind === 'menu' && request.label)).toEqual(['Accounts for alpha']);
+  });
+
+  it('announces an ask-once choice of Git\'s own credentials, and nothing for an account it cannot name', async () => {
+    const { wrapper, shell } = await mountSection([snapshot('r1', {})]);
+    shell.forge.views.set('r1', accountsView());
+    shell.forge.changed({ projectKeys: ['p1'], chosen: { projectKey: 'p1', serverId: 'gitlab.com', accountId: 'gitlab.com|9', operation: 'push' } });
+    await flushPromises();
+    expect(status(wrapper)).toBe('');
+    shell.forge.changed({ projectKeys: ['p1'], chosen: { projectKey: 'p1', serverId: 'gitlab.com', accountId: null, operation: 'push' } });
+    await flushPromises();
+    expect(status(wrapper)).toBe("alpha now uses Git's own credentials on gitlab.com. Pushing…");
+    shell.forge.changed({ projectKeys: ['p1'], chosen: { projectKey: 'p1', serverId: 'gitlab.com', accountId: ACCOUNT.id, operation: 'push' } });
+    await flushPromises();
+    expect(status(wrapper)).toBe('alpha now uses alexios-s on gitlab.com. Pushing…');
+  });
+
+  it('shows a check that could not reach the server as a status, not an alert', async () => {
+    const { wrapper, shell } = await mountSection([snapshot('r1', {})]);
+    shell.forge.views.set('r1', accountsView(true));
+    shell.forge.changed({});
+    await flushPromises();
+    const notice = wrapper.get('[data-testid="forge-check-failed"]');
+    expect(notice.attributes('role')).toBe('status');
+    expect(notice.text()).toContain('Damocles could not reach gitlab.com to check which of your accounts can push here.');
   });
 });

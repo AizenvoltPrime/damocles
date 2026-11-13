@@ -4,11 +4,11 @@ import type { Credential, CredentialInfo, CredentialStore } from '@earendil-work
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { Disposable } from '../../platform/disposable';
 import type { RemoteHost } from '../../platform/remote-host';
-import { brokerEnvOf, CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
-import { clientCredentialProviders, credentialOwner, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, type ClientPin, type SignInPrompts } from '../client-snapshots';
+import { brokerEnvOf, CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type ClientPending, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
+import { clientCredentialProviders, clientPending, credentialOwner, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, settlePinnedUser, type ClientPin, type SignInPrompts } from '../client-snapshots';
 import { DAMOCLES_CREDENTIAL_SOURCE_ENTRY } from './session-store/constants';
 import { l } from '../l10n';
-import { LocalizedError } from '../../shared/localized-text';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { log } from '../logger';
 
 // pi's minimum OAuth validity (pi-ai auth/resolve.js DEFAULT_OAUTH_MINIMUM_VALIDITY_MS)
@@ -74,6 +74,8 @@ export function recordCredentialSources(session: AgentSession, remote: RemoteHos
   let recorded: string | undefined;
   session.subscribe((event) => {
     if (event.type !== 'agent_start' && !(event.type === 'message_start' && event.message.role === 'assistant')) return;
+    // a set not known yet is no set: the next run or reply after it is known records it
+    if (clientPending(remote) !== undefined) return;
     const clientProviders = clientCredentialProviders(remote);
     const key = clientProviders.join('\n');
     if (key === recorded) return;
@@ -110,6 +112,23 @@ export function clientNotConnected(providerId: string): LocalizedError {
   return new LocalizedError(l('The computer that started this chat is not connected, so this host has no sign-in for {0}. Reconnect from that computer to continue.', providerId), { cause: 'credential' });
 }
 
+/** Why a run has no credential for providerId while its device's sign-ins or user rules are not known yet. */
+export function clientPendingText(reason: ClientPending, providerId: string): LocalizedText {
+  switch (reason) {
+    case 'reading':
+      return l('Damocles is still reading the sign-ins and settings of the computer that started this chat, so this host has no sign-in for {0} yet.', providerId);
+    case 'engineStopped':
+      return l('The engine on the computer that started this chat is stopped, so this host has no sign-in for {0}. Restart the engine on that computer to continue.', providerId);
+    case 'readFailed':
+      return l('Damocles could not read the sign-ins and settings of the computer that started this chat, so this host has no sign-in for {0}. Restart the engine on that computer to continue.', providerId);
+  }
+}
+
+/** The refusal of a credential, and of pi's auth check, while the device's sign-ins or user rules are not known yet. */
+export function clientPendingError(providerId: string, reason: ClientPending): LocalizedError {
+  return new LocalizedError(clientPendingText(reason, providerId), { cause: 'credential' });
+}
+
 /**
  * The API key answer for the credential pi's request auth reads (its runtime key, else the stored credential): the key with
  * that credential's own env, or undefined for any other credential, a key-less one (a Bedrock AWS profile or credential
@@ -141,8 +160,11 @@ interface Waiter {
 interface SignInWait {
   readonly pin: ClientPin;
   readonly provider: string;
+  readonly signIn: SignInPrompts;
   readonly waiters: Set<Waiter>;
   prompt: Disposable | undefined;
+  // the prompt says the device's sign-ins are not known yet, and why
+  reason: ClientPending | undefined;
   asking: boolean;
   again: boolean;
 }
@@ -171,8 +193,14 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
     const clients = deps.remote.clients;
     this.subscriptions = [
       clients.onDidChange((change) => {
-        if (change.topic !== 'clientAuth' || change.clientId === undefined) return;
+        if (change.clientId === undefined) return;
         const clientId = change.clientId;
+        // a turn pinned while that device's user rules were pending goes on once they are known
+        if (change.topic === 'clientUser') {
+          for (const wait of this.waits) if (wait.pin.clientId === clientId && wait.reason !== undefined) this.askAgain(wait);
+          return;
+        }
+        if (change.topic !== 'clientAuth') return;
         if (!clients.attached(clientId)) {
           this.away.add(clientId);
           this.evictUnpinned(clientId);
@@ -181,10 +209,12 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
         // an ask made while the device was away answers absent, so the re-asks below never join one
         if (this.away.delete(clientId)) this.forgetAsks(clientId);
         const after = clients.auth(clientId);
-        const providers = changedProviders(this.lastAuth.get(clientId) ?? (change.before as HeldAuth | undefined), after);
+        const before = this.lastAuth.get(clientId) ?? (change.before as HeldAuth | undefined);
+        const providers = changedProviders(before, after);
         if (after !== undefined) this.lastAuth.set(clientId, after);
         for (const provider of providers) this.forget(cacheKey(clientId, provider));
-        if (providers.length > 0) deps.credentialsChanged();
+        // sign-ins that turn known (or pending) change every account read, also when they name no provider
+        if (providers.length > 0 || before?.pending !== after?.pending) deps.credentialsChanged();
         // the device a waiting turn is pinned to is back
         for (const wait of this.waits) if (wait.pin.clientId === clientId) this.askAgain(wait);
       }),
@@ -254,8 +284,14 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
       this.used.set(pin.run, used);
       this.deps.remote.runProviders(pin.run, [...used]);
     }
+    settlePinnedUser(this.deps.remote, pin);
     const owner = credentialOwner(this.deps.remote, providerId, pin);
     if (owner.kind === 'noDevice') throw this.absent(providerId, pin.kind);
+    // never the host's own in its place: a turn waits until they are known, a sub-call fails
+    if (owner.kind === 'pending') {
+      if (pin.kind !== 'turn' || pin.signIn === undefined) throw this.pending(providerId, owner.reason);
+      return this.waitForSignIn(pin, pin.signIn, providerId, signal);
+    }
     try {
       return await this.fetch(owner.clientId, providerId, refresh);
     } catch (err) {
@@ -297,12 +333,14 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
     return cached;
   }
 
-  // a turn whose device is away waits, behind one Sign-in needed prompt per pin and provider, until that device answers
-  private waitForSignIn(pin: ClientPin, signIn: SignInPrompts, provider: string, signal: AbortSignal | undefined): Promise<Cached> {
+  // a turn whose device is away waits, behind one Sign-in needed prompt per pin and provider, until that device answers or the read or its turn is stopped
+  private waitForSignIn(pin: ClientPin, signIn: SignInPrompts, provider: string, readSignal: AbortSignal | undefined): Promise<Cached> {
+    const signal = readSignal && pin.stop ? AbortSignal.any([readSignal, pin.stop]) : readSignal ?? pin.stop;
     if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise<Cached>((resolve, reject) => {
       const joined = [...this.waits].find((candidate) => candidate.pin === pin && candidate.provider === provider);
-      const wait: SignInWait = joined ?? { pin, provider, waiters: new Set(), prompt: undefined, asking: false, again: false };
+      const owner = credentialOwner(this.deps.remote, provider, pin);
+      const wait: SignInWait = joined ?? { pin, provider, signIn, waiters: new Set(), prompt: undefined, reason: owner.kind === 'pending' ? owner.reason : undefined, asking: false, again: false };
       const aborted = (): void => {
         if (!wait.waiters.delete(waiter)) return;
         if (wait.waiters.size === 0) this.settle(wait, () => undefined);
@@ -313,14 +351,22 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
       signal?.addEventListener('abort', aborted, { once: true });
       if (joined) return;
       this.waits.add(wait);
-      log('[credential-broker] %s: the turn\'s device %s is not attached; waiting for its sign-in', provider, pin.clientId);
-      wait.prompt = signIn.raise(provider, {
-        continueWith: (clientId) => this.continueWith(wait, clientId),
-        cancel: () => this.settle(wait, (each) => each.reject(new LocalizedError(l('The chat closed before a sign-in for {0} arrived.', provider), { cause: 'credential' }))),
-      });
+      if (wait.reason !== undefined) log('[credential-broker] %s: the sign-ins of the turn\'s device %s are not known yet (%s); waiting for them', provider, pin.clientId, wait.reason);
+      else log('[credential-broker] %s: the turn\'s device %s is not attached; waiting for its sign-in', provider, pin.clientId);
+      this.raisePrompt(wait);
       // the device may have come back between the absent answer and this wait
       if (pin.clientId !== undefined && this.deps.remote.clients.attached(pin.clientId)) this.askAgain(wait);
     });
+  }
+
+  private raisePrompt(wait: SignInWait): void {
+    wait.prompt?.dispose();
+    const { provider } = wait;
+    const actions = {
+      continueWith: (clientId: string) => this.continueWith(wait, clientId),
+      cancel: () => this.settle(wait, (each) => each.reject(new LocalizedError(l('The chat closed before a sign-in for {0} arrived.', provider), { cause: 'credential' }))),
+    };
+    wait.prompt = wait.reason === undefined ? wait.signIn.raise(provider, actions) : wait.signIn.raise(provider, actions, clientPendingText(wait.reason, provider));
   }
 
   // "Continue with my sign-in": only an explicit click on an attached device moves a turn to it
@@ -340,14 +386,31 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
       wait.again = true;
       return;
     }
+    settlePinnedUser(this.deps.remote, wait.pin);
+    const owner = credentialOwner(this.deps.remote, wait.provider, wait.pin);
+    // still not known: no ask, which this computer would judge against sign-ins it has not read; the prompt says why
+    if (owner.kind === 'pending') {
+      if (owner.reason !== wait.reason) {
+        wait.reason = owner.reason;
+        this.raisePrompt(wait);
+      }
+      return;
+    }
+    const saidPending = wait.reason !== undefined;
+    wait.reason = undefined;
     wait.asking = true;
     wait.again = false;
     this.fetch(clientId, wait.provider, false).then(
       (cached) => this.settle(wait, (waiter) => waiter.resolve(cached)),
       (err: unknown) => {
         wait.asking = false;
-        if (!(err instanceof ClientAbsent)) this.settle(wait, (waiter) => waiter.reject(err));
-        else if (wait.again) this.askAgain(wait);
+        if (!(err instanceof ClientAbsent)) {
+          this.settle(wait, (waiter) => waiter.reject(err));
+          return;
+        }
+        // the device went away once its sign-ins were known: the prompt says so instead
+        if (saidPending && this.waits.has(wait)) this.raisePrompt(wait);
+        if (wait.again) this.askAgain(wait);
       },
     );
   }
@@ -386,5 +449,10 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   private absent(providerId: string, kind: 'turn' | 'subcall'): Error {
     log('[credential-broker] %s: the %s\'s client is not attached', providerId, kind);
     return clientNotConnected(providerId);
+  }
+
+  private pending(providerId: string, reason: ClientPending): Error {
+    log('[credential-broker] %s: the run\'s client\'s sign-ins are not known yet (%s)', providerId, reason);
+    return clientPendingError(providerId, reason);
   }
 }

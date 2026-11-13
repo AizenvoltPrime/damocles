@@ -14,6 +14,7 @@ import type { BrowserService } from "../../browser";
 import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { UsageStatsService } from "../../usage-stats";
+import type { ForgeService } from "../../forge";
 import type { AttachedView, HostInstance, ViewJoinGate } from "../types";
 import type { PanelHost } from "../../../platform/window-service";
 import type { FolderTarget, WorkspaceFolderRegistry } from "../../workspace-folders/folder-registry";
@@ -50,7 +51,10 @@ export type HandlerRegistry = Record<string, MessageHandler>;
  * A remote chat view's message on this computer's core (FOREIGN_VIEW_MESSAGES) has no chat here: its handler reads only
  * the host it replies to.
  */
-export type ViewHandlerContext = Pick<HandlerContext, "host">;
+export type ViewHandlerContext = Pick<HandlerContext, "host"> & {
+  /** The remote chat view's id, which names what this core recorded for it (its refused notices); absent on a core-made call. */
+  readonly viewId?: string;
+};
 
 export type ViewHandlerRegistry = Record<string, (message: WebviewToExtensionMessage, ctx: ViewHandlerContext) => Promise<void> | void>;
 
@@ -85,6 +89,10 @@ export interface HandlerDependencies {
   broadcastAccountState: (what: string, row: string, read: () => Promise<ExtensionToWebviewMessage | undefined>) => Promise<void>;
   postClaudeAuthState?: (host: PanelHost) => void;
   postProviderSignInState?: (host: PanelHost) => void;
+  /** The Git hosting accounts state and sign-ins, for a settings view that (re)mounted; only where `forge` runs. */
+  postForgeState?: (host: PanelHost) => void;
+  /** Git hosting accounts: set only in this computer's desktop core (HostCapabilities.forgeAccounts). */
+  forge?: ForgeService;
   folderRegistry: WorkspaceFolderRegistry;
   /**
    * Resolves to the panel's instance on its new folder; a handler continues with it, never with `ctx.session`.

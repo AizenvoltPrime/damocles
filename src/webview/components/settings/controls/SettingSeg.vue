@@ -5,6 +5,7 @@ defineProps<{
   modelValue: T;
   options: readonly SegmentedOption<T>[];
   label: string;
+  radios?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -20,6 +21,7 @@ const emit = defineEmits<{
     indicator-class="text-(--d-card) drop-shadow-[0_1px_2px_rgba(0,0,0,.18)]"
     class="max-w-110 bg-(--d-hover)"
     :aria-label="label"
+    :radios="radios === true"
     @update:model-value="(value: T) => emit('update:modelValue', value)"
   />
 </template>

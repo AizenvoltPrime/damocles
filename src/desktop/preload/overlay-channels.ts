@@ -17,6 +17,10 @@ import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlat
 import { visibleText } from '../../shared/visible-text';
 import { MAX_HELD_MEMORY_QUEUES, type HeldMemoryQueue } from '../../shared/remote-user';
 import type { ContainerEngine } from '../daemon/container-values';
+import type { ChooseAccountRows, CiAction, CiChanged, CiStatusView, CiTarget, CloneAccountsView, ClonePasteAnswer, CloneSearchAnswer, CloneSource, CloneStartAnswer, ForgeChanged, ForgeChooseAccountDialog } from './forge-channels';
+import type { HostDefaultsView } from '../../shared/forge/bindings';
+import type { FlowStart, ForkDialog, ForkState, PublishDialog, PublishOwnersAnswer, PublishState, PublishVisibility } from '../../shared/forge/publish';
+import type { BranchNameCheck, ProtectedBranchDialog, ProtectedPushState } from '../../shared/forge/protected-push';
 
 export const OVERLAY_CHANNELS = {
   // renderer → main, invoke
@@ -135,6 +139,8 @@ export const OVERLAY_CHANNELS = {
   hostsSetSetting: 'damocles:overlay:hosts:set-setting',
   // { hostId, credentialHost }
   hostsRevokeCredential: 'damocles:overlay:hosts:revoke-credential',
+  // { hostId, account: { serverId, accountId } }
+  hostsRevokeForgeAccount: 'damocles:overlay:hosts:revoke-forge-account',
   // { hostId, queueId } -> HeldMemoryResult: the held queue goes to this computer's device on the host, which it then drains
   hostsDeliverHeldMemory: 'damocles:overlay:hosts:deliver-held-memory',
   // { hostId, queueId } -> HeldMemoryResult: the held queue is deleted; the overlay confirmed first
@@ -219,6 +225,18 @@ export const OVERLAY_CHANNELS = {
   // main → renderer, readonly CloseRemoteRow[], every row whole, after a status or token note changed while a closeRemote
   // request is open
   closeRemoteRows: 'damocles:overlay:close-remote:rows',
+  // main -> renderer, ForgeChanged: Git hosting accounts or host defaults changed while a settings request is open
+  forgeChanged: 'damocles:overlay:forge:changed',
+  // main -> renderer, ChooseAccountRows: the access check answered for an open forgeChooseAccount request
+  forgeChooseAccountRows: 'damocles:overlay:forge:choose-account-rows',
+  // main -> renderer, CiChanged: the open pipeline popover's repository's CI changed
+  forgeCiChanged: 'damocles:overlay:forge:ci-changed',
+  // main -> renderer, PublishState: the open forgePublish request's state after a submit
+  forgePublishState: 'damocles:overlay:forge:publish-state',
+  // main -> renderer, ForkState: the open forgeFork request's state after Fork and Push
+  forgeForkState: 'damocles:overlay:forge:fork-state',
+  // main -> renderer, ProtectedPushState: the open forgeProtectedBranch request's state after Push to a New Branch
+  forgeProtectedState: 'damocles:overlay:forge:protected-state',
 } as const;
 
 export interface OverlayRequestPush {
@@ -249,6 +267,15 @@ export const OVERLAY_REQUEST_PUSHES: ReadonlyMap<string, OverlayRequestPush> = n
   [OVERLAY_CHANNELS.hostsEntries, { kinds: ['connect', 'settings'], latest: true }],
   [OVERLAY_CHANNELS.hostsOperationsChanged, { kinds: ['connect', 'settings'], latest: false }],
   [OVERLAY_CHANNELS.closeRemoteRows, { kinds: ['closeRemote'], latest: true }],
+  // Settings > Remote hosts > Default accounts reads its accounts again after any change, so the newest push is enough
+  [OVERLAY_CHANNELS.forgeChanged, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.forgeChooseAccountRows, { kinds: ['forgeChooseAccount'], latest: true }],
+  // each push carries the repository's whole CI view
+  [OVERLAY_CHANNELS.forgeCiChanged, { kinds: ['pipeline'], latest: true }],
+  // each push carries the dialog's whole state
+  [OVERLAY_CHANNELS.forgePublishState, { kinds: ['forgePublish'], latest: true }],
+  [OVERLAY_CHANNELS.forgeForkState, { kinds: ['forgeFork'], latest: true }],
+  [OVERLAY_CHANNELS.forgeProtectedState, { kinds: ['forgeProtectedBranch'], latest: true }],
 ]);
 
 // The steps of a connection attempt, in the order they run; an attempt may skip installing. building runs only for a container
@@ -627,6 +654,24 @@ export interface RemoteHostFacts {
   readonly lingerEnabledByDamocles: boolean;
   // credential hosts (git over https) this host may use without asking, each with Revoke
   readonly alwaysCredentialHosts: readonly string[];
+  // Git hosting accounts this host's git may use without asking, each with Revoke
+  readonly alwaysForgeAccounts: readonly AlwaysForgeAccount[];
+}
+
+/** An account consent's Always: the account a host's git may use with no dialog. accountId is `<serverId>|<userId>`. */
+export interface AlwaysForgeAccount {
+  readonly serverId: string;
+  readonly accountId: string;
+}
+
+const MAX_ALWAYS_ACCOUNT_ID_CHARS = 1024;
+
+/** A stored or sent AlwaysForgeAccount: one-line ids within their bound, the account id under its server's. */
+export function isAlwaysForgeAccount(value: unknown): value is AlwaysForgeAccount {
+  if (typeof value !== 'object' || value === null) return false;
+  const { serverId, accountId } = value as Record<string, unknown>;
+  return typeof serverId === 'string' && typeof accountId === 'string' && serverId !== '' && accountId.length <= MAX_ALWAYS_ACCOUNT_ID_CHARS
+    && accountId.startsWith(`${serverId}|`) && accountId.length > serverId.length + 1 && !/\p{Cc}/u.test(accountId);
 }
 
 // A saved SSH host, WSL distro or container in Settings > Remote hosts, in saved order; every label from this computer's host store.
@@ -819,8 +864,11 @@ export const OVERLAY_ICONS = [
   'git-fork',
   'git-merge',
   'git-pull-request-arrow',
+  'github',
+  'gitlab',
   'hash',
   'history',
+  'key-round',
   'list',
   'list-filter',
   'list-tree',
@@ -842,6 +890,7 @@ export const OVERLAY_ICONS = [
   'scroll-text',
   'search',
   'server',
+  'settings',
   'shapes',
   'shield-check',
   'shield-off',
@@ -856,6 +905,7 @@ export const OVERLAY_ICONS = [
   'trash-2',
   'undo-2',
   'ungroup',
+  'user-round',
   'x',
 ] as const;
 export type OverlayIcon = (typeof OVERLAY_ICONS)[number];
@@ -938,6 +988,8 @@ export type OverlayMenuItem =
       readonly glyph?: TerminalGlyph;
       // tints the glyph with --d-ansi-<index of the color in TERMINAL_COLORS>
       readonly color?: TerminalColor;
+      // a Git hosting account's picture, drawn instead of icon: key is main's avatar key (SHA-256 hex), absent for the initial alone
+      readonly avatar?: { readonly login: string; readonly key?: string };
       readonly shortcut?: string;
       // a second line under the label, within MAX_OVERLAY_LABEL_LENGTH
       readonly hint?: string;
@@ -1031,6 +1083,11 @@ export type OverlayRequest =
       readonly release?: string;
       // a saved host's id, which the Remote hosts section shows
       readonly host?: string;
+      // a Git hosting server's id, whose Accounts row opens its sign-in panel with forgeSignIn
+      readonly forgeServer?: string;
+      readonly forgeSignIn?: boolean;
+      // an account on forgeServer, whose Manage opens
+      readonly forgeAccount?: string;
       readonly generation: number;
       readonly page: OverlaySettingsPage;
       // present while the selected chat is remote: its User, host and Project tabs
@@ -1125,7 +1182,27 @@ export type OverlayRequest =
   | { readonly kind: 'allowYolo'; readonly hostName: string; readonly hostColor?: HostColor; readonly anchor: OverlayRect }
   // Choose Client Certificate for This Site...: the certificates the site accepts, which Chrome would offer for it; site is the
   // page's host as its address bar names it
-  | { readonly kind: 'clientCertificate'; readonly site: string; readonly certificates: readonly ClientCertificateRow[] };
+  | { readonly kind: 'clientCertificate'; readonly site: string; readonly certificates: readonly ClientCertificateRow[] }
+  // Ask once (the Choose account dialog): which account a project uses on a server, before the user's own git operation (only main asks it); it stacks
+  // as a message does, and its rows follow on forgeChooseAccountRows
+  | { readonly kind: 'forgeChooseAccount'; readonly dialog: ForgeChooseAccountDialog }
+  // The CI chip's job list, end-aligned to the chip; it reads the repository's CI through FORGE_CHANNELS.ciStatus and
+  // follows forgeCiChanged. It answers only dismissed.
+  | { readonly kind: 'pipeline'; readonly repoId: string; readonly anchor: OverlayRect }
+  // Clone from Your Repositories: one section per account through FORGE_CHANNELS.clone*, and a pasted address's row; the
+  // overlay passes row keys and pasted text back and never sees a clone address. It answers only dismissed; recursive is the
+  // Clone (Recursive) that opened it, which main keeps.
+  | { readonly kind: 'cloneFromAccount'; readonly recursive: boolean }
+  // Publish: main opens it for a repository with no remote while a Git hosting account exists; the overlay submits through
+  // FORGE_CHANNELS.publishSubmit and follows forgePublishState. It stacks as a message does and answers only dismissed.
+  | { readonly kind: 'forgePublish'; readonly dialog: PublishDialog }
+  // Fork on a denied push: main opens it once the server confirmed the account cannot push; Fork and Push goes through
+  // FORGE_CHANNELS.forkStart and follows forgeForkState. It stacks as a message does.
+  | { readonly kind: 'forgeFork'; readonly dialog: ForkDialog }
+  // A push refused on a branch the server protects for the account: main opens it once the server's rules said so; the name
+  // step checks through FORGE_CHANNELS.protectedCheckName, Push to a New Branch goes through FORGE_CHANNELS.protectedPush and
+  // follows forgeProtectedState. It stacks as a message does.
+  | { readonly kind: 'forgeProtectedBranch'; readonly dialog: ProtectedBranchDialog };
 
 // What the picker shows of one certificate, and the opaque id main maps back to it; validity in seconds since the epoch.
 // distinct false: Chrome's auto-selection could not tell it from another one offered, so it cannot be chosen.
@@ -1140,11 +1217,22 @@ export interface ClientCertificateRow {
 
 // The host's name and tone come from this computer's host store; credentialHost is the https host the target's git asked
 // for, as main validated it; targetHelper: the target's git has a credential helper of its own that would save the credential.
+/** Why Damocles chose a Git hosting account by itself (the resolution order); a bound account or a host default never asks. */
+// access: the one account that can push; accessRead: no account can push, and this one alone can read
+export type GitConsentForgeReason = 'onlyAccount' | 'usernameHint' | 'access' | 'accessRead';
+
+export const GIT_CONSENT_FORGE_REASONS: readonly GitConsentForgeReason[] = ['onlyAccount', 'usernameHint', 'access', 'accessRead'];
+
+// a GitLab project path nests up to 20 groups, so the consent's repository path has its own bound
+export const MAX_CONSENT_REPO_PATH_CHARS = 1024;
+
 export interface GitCredentialConsent {
   readonly hostName: string;
   readonly hostColor?: HostColor;
   readonly credentialHost: string;
   readonly targetHelper: boolean;
+  // the answer is a Git hosting account's token, which Damocles chose automatically; absent: the credential manager's
+  readonly forgeAccount?: { readonly serverLabel: string; readonly login: string; readonly reason: GitConsentForgeReason; readonly repoPath?: string };
 }
 
 export const GIT_CREDENTIAL_CONSENT_CHOICES = ['once', 'always', 'deny'] as const;
@@ -1375,6 +1463,8 @@ export interface OverlayQuickPickItem {
 
 export type OverlayAnswer =
   | { readonly kind: 'dismissed' }
+  // the clone picker's "Open Git hosting settings": main opens Settings › Models & accounts › Git hosting once the picker closed
+  | { readonly kind: 'cloneFromAccount'; readonly openAccounts: true }
   | { readonly kind: 'menu'; readonly itemId: string }
   | { readonly kind: 'confirm'; readonly confirmed: boolean }
   // null removes the tag
@@ -1423,7 +1513,15 @@ export type OverlayAnswer =
   // every way the user closes it answers allow false
   | { readonly kind: 'allowYolo'; readonly allow: boolean }
   // a distinct row's id; Cancel and Escape answer dismissed
-  | { readonly kind: 'clientCertificate'; readonly id: string };
+  | { readonly kind: 'clientCertificate'; readonly id: string }
+  // an offered account's id, null for Git's own credentials, or signIn for "Sign in with another account..."; Cancel, Escape and
+  // the scrim answer dismissed, and the git operation does not run
+  | { readonly kind: 'forgeChooseAccount'; readonly accountId: string | null }
+  | { readonly kind: 'forgeChooseAccount'; readonly signIn: true }
+  // the fork dialog's Open Merge Request / Open Pull Request, in its done state only; main opens the create page
+  | { readonly kind: 'forgeFork'; readonly openMergeRequest: true }
+  // the protected-branch dialog's Open Merge Request / Open Pull Request, in its done state only; main opens the create page
+  | { readonly kind: 'forgeProtectedBranch'; readonly openMergeRequest: true };
 
 // Each answers only the dialog of the same name.
 export type WorktreeDialogAnswer =
@@ -1806,6 +1904,7 @@ export interface DamoclesOverlayApi {
   listRemoteHosts(): Promise<PopupAnswer<readonly RemoteHostEntry[]>>;
   setHostSetting(hostId: string, change: HostSettingChange): Promise<PopupAnswer<void>>;
   revokeCredentialHost(hostId: string, credentialHost: string): Promise<PopupAnswer<void>>;
+  revokeForgeAccount(hostId: string, account: AlwaysForgeAccount): Promise<PopupAnswer<void>>;
   deliverHeldMemory(hostId: string, queueId: string): Promise<PopupAnswer<HeldMemoryResult>>;
   discardHeldMemory(hostId: string, queueId: string): Promise<PopupAnswer<HeldMemoryResult>>;
   setUpPasswordless(hostId: string): Promise<PopupAnswer<PasswordlessResult>>;
@@ -1830,4 +1929,39 @@ export interface DamoclesOverlayApi {
   onHostEntries(listener: (hosts: readonly RemoteHostEntry[]) => void): () => void;
   onHostOperations(listener: (operations: HostOperations) => void): () => void;
   onCloseRemoteRows(listener: (rows: readonly CloseRemoteRow[]) => void): () => void;
+  // Settings > Remote hosts > Default accounts (FORGE_CHANNELS); each answers closed unless the settings modal is open
+  forgeHostDefaults(authorityKey: string): Promise<PopupAnswer<HostDefaultsView>>;
+  // false: not saved
+  setForgeHostDefault(authorityKey: string, serverId: string, accountId: string | null): Promise<PopupAnswer<boolean>>;
+  // Settings › Models & accounts › Git hosting at the server, its sign-in panel open with signIn; answers closed unless the settings modal is open
+  openForgeAccounts(target: { readonly serverId?: string; readonly signIn?: boolean }): Promise<PopupAnswer<void>>;
+  // returns the unsubscribe
+  onForgeChanged(listener: (changed: ForgeChanged) => void): () => void;
+  onForgeChooseAccountRows(listener: (rows: ChooseAccountRows) => void): () => void;
+  // the pipeline popover's repository (FORGE_CHANNELS); each answers closed unless a pipeline popover of repoId is open
+  forgePipeline(repoId: string): Promise<PopupAnswer<CiStatusView | null>>;
+  forgeJobAction(repoId: string, target: CiTarget, action: CiAction): Promise<PopupAnswer<boolean>>;
+  forgeJobLogOpen(repoId: string, jobId: number): Promise<PopupAnswer<void>>;
+  // the server's name for the polite status; null: nothing was opened
+  forgeOpenOnServer(repoId: string, target: CiTarget): Promise<PopupAnswer<string | null>>;
+  // returns the unsubscribe
+  onForgeCiChanged(listener: (changed: CiChanged) => void): () => void;
+  // the clone picker (FORGE_CHANNELS.clone*); each answers closed unless it is open
+  forgeCloneAccounts(): Promise<PopupAnswer<CloneAccountsView>>;
+  // requestId: the overlay's own counter, echoed back so it drops an answer to an older query
+  forgeCloneSearch(accountId: string, query: string, requestId: number): Promise<PopupAnswer<CloneSearchAnswer>>;
+  forgeClonePaste(text: string): Promise<PopupAnswer<ClonePasteAnswer>>;
+  forgeCloneStart(source: CloneSource): Promise<PopupAnswer<CloneStartAnswer>>;
+  // the Publish and fork dialogs; each answers closed unless its request of requestId is open
+  forgePublishSubmit(requestId: string, owner: string, name: string, visibility: PublishVisibility): Promise<PopupAnswer<FlowStart>>;
+  forgeForkStart(requestId: string): Promise<PopupAnswer<FlowStart>>;
+  // one account's organizations or groups for the open Publish dialog; a newer call for the account answers the older cancelled
+  forgePublishOwners(requestId: string, accountId: string): Promise<PopupAnswer<PublishOwnersAnswer>>;
+  // the protected-branch dialog; each answers closed unless its request of requestId is open
+  forgeProtectedCheckName(requestId: string, name: string): Promise<PopupAnswer<BranchNameCheck>>;
+  forgeProtectedPush(requestId: string, name: string): Promise<PopupAnswer<FlowStart>>;
+  // returns the unsubscribe
+  onForgePublishState(listener: (state: PublishState) => void): () => void;
+  onForgeForkState(listener: (state: ForkState) => void): () => void;
+  onForgeProtectedState(listener: (state: ProtectedPushState) => void): () => void;
 }

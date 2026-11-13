@@ -42,6 +42,21 @@ export const TOOL_MAP_REFERENCE = "MapReference";
 export const TOOL_DESIGN_PARITY = "DesignParity";
 export const TOOL_REMOVE_DESIGN_FILE = "RemoveDesignFile";
 export const TOOL_OPEN_PREVIEW = "OpenPreview";
+export const TOOL_FORGE_PIPELINES = "ForgePipelines";
+export const TOOL_FORGE_JOBS = "ForgeJobs";
+export const TOOL_FORGE_JOB_LOG = "ForgeJobLog";
+export const TOOL_FORGE_MERGE_REQUEST = "ForgeMergeRequest";
+export const TOOL_FORGE_MERGE_REQUESTS = "ForgeMergeRequests";
+export const TOOL_FORGE_ISSUE = "ForgeIssue";
+export const TOOL_FORGE_ISSUES = "ForgeIssues";
+export const TOOL_FORGE_JOB_ACTION = "ForgeJobAction";
+export const TOOL_FORGE_OPEN_MERGE_REQUEST = "ForgeOpenMergeRequest";
+export const TOOL_FORGE_COMMENT = "ForgeComment";
+
+/** The GitHub and GitLab tools that only read the server. */
+export const FORGE_READ_TOOLS: ReadonlySet<string> = new Set([TOOL_FORGE_PIPELINES, TOOL_FORGE_JOBS, TOOL_FORGE_JOB_LOG, TOOL_FORGE_MERGE_REQUEST, TOOL_FORGE_MERGE_REQUESTS, TOOL_FORGE_ISSUE, TOOL_FORGE_ISSUES]);
+/** The GitHub and GitLab tools that write to the server as the user; the gate classifies them as writes. */
+export const FORGE_WRITE_TOOLS: ReadonlySet<string> = new Set([TOOL_FORGE_JOB_ACTION, TOOL_FORGE_OPEN_MERGE_REQUEST, TOOL_FORGE_COMMENT]);
 
 /** The design chat's tools that `DesignToolCard` renders; StartDesign, FinishDesign, PreviewJourney and DesignParity have their own cards. */
 export const DESIGN_CHAT_TOOLS: ReadonlySet<string> = new Set([
@@ -62,7 +77,7 @@ export function isMcpToolName(name: string): boolean {
 
 export const FILE_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_GLOB, TOOL_GREP]);
 export const WRITE_TOOLS: Set<string> = new Set([TOOL_WRITE, TOOL_EDIT, TOOL_GENERATE_IMAGE]);
-export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_LS, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, TOOL_LSP, TOOL_TOOL_SEARCH, ...MCP_RESOURCE_TOOL_NAMES]);
+export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_LS, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, TOOL_LSP, TOOL_TOOL_SEARCH, ...MCP_RESOURCE_TOOL_NAMES, ...FORGE_READ_TOOLS]);
 export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION]);
 export const CRON_TOOLS: Set<string> = new Set([TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST]);
 export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT]);

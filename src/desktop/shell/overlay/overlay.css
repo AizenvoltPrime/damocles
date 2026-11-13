@@ -84,6 +84,26 @@ body {
   animation: d-pop 0.16s var(--ease-out) both;
 }
 
+/* The CI job list hangs from the CI chip's end. */
+.pipeline-popover {
+  transform-origin: top right;
+  animation: d-pop 0.16s var(--ease-out) both;
+}
+
+.overlay-pop-leave-active > .pipeline-popover {
+  transition: none;
+  animation: d-pop-out 0.12s ease-in both;
+}
+
+.pipeline-popover[data-placement="above"] {
+  transform-origin: bottom right;
+  animation-name: d-pop-top;
+}
+
+.overlay-pop-leave-active > .pipeline-popover[data-placement="above"] {
+  animation-name: d-pop-top-out;
+}
+
 .overlay-pop-leave-active > .notification-center {
   transition: none;
   animation: d-pop-out 0.12s ease-in both;
@@ -626,6 +646,22 @@ body {
   background: transparent;
   color: var(--d-accent-text);
   font-weight: 700;
+}
+
+/* A clone picker section's search in flight: a bar shaped like a row's text, swept by motion.css's shimmer. */
+.clone-picker-skeleton {
+  min-width: 2rem;
+  background: linear-gradient(90deg, var(--d-hover), var(--d-border2), var(--d-hover));
+  background-size: 200% 100%;
+  animation: d-shimmer 1.6s linear infinite;
+}
+
+.clone-picker-key {
+  padding: 0 0.3125rem;
+  border: 1px solid var(--d-border2);
+  border-radius: var(--radius-5);
+  font-family: var(--d-mono);
+  font-size: 0.625rem;
 }
 
 .quick-pick-list {

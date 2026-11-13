@@ -25,6 +25,7 @@ function setup(open = true) {
     entries: vi.fn(() => []),
     setSetting: vi.fn(async () => undefined),
     revokeCredentialHost: vi.fn(async () => undefined),
+    revokeForgeAccount: vi.fn(async () => undefined),
     deliverHeldMemory: vi.fn(async () => ({ ok: true })),
     discardHeldMemory: vi.fn(async () => ({ ok: false, code: 'gone' })),
     setUpPasswordless: vi.fn(async () => ({ ok: true })),
@@ -105,6 +106,11 @@ describe('the Remote hosts channels', () => {
     await expect(call(OVERLAY_CHANNELS.hostsRevokeCredential, { hostId: 'h', credentialHost: 'github.com/evil' })).rejects.toThrow('Malformed');
     await call(OVERLAY_CHANNELS.hostsRevokeCredential, { hostId: 'h', credentialHost: 'github.com' });
     expect(actions.revokeCredentialHost).toHaveBeenCalledWith('h', 'github.com');
+    for (const account of [{ serverId: 'gitlab.com', accountId: 'github.com|1' }, { serverId: 'gitlab.com', accountId: 'gitlab.com|' }, 'gitlab.com|1']) {
+      await expect(call(OVERLAY_CHANNELS.hostsRevokeForgeAccount, { hostId: 'h', account })).rejects.toThrow('Malformed');
+    }
+    await call(OVERLAY_CHANNELS.hostsRevokeForgeAccount, { hostId: 'h', account: { serverId: 'gitlab.com', accountId: 'gitlab.com|1' } });
+    expect(actions.revokeForgeAccount).toHaveBeenCalledWith('h', 'gitlab.com|1');
     await expect(call(OVERLAY_CHANNELS.hostsRemoveServer, { hostId: 'h', options: { removeKey: true } })).rejects.toThrow('Malformed');
     await call(OVERLAY_CHANNELS.hostsRemoveServer, { hostId: 'h', options: { removeKey: true, disableLinger: false } });
     expect(actions.removeServer).toHaveBeenCalledWith('h', { removeKey: true, disableLinger: false });
@@ -132,7 +138,7 @@ describe('the Remote hosts channels', () => {
       destinationLabel: 'deploy@10.0.0.9',
       connection: 'connected',
       settings: { allowBypass: false, forwardAgent: true, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
-      facts: { passwordless: true, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: ['github.com'] },
+      facts: { passwordless: true, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: ['github.com'], alwaysForgeAccounts: [] },
       heldMemoryQueues: [{ queueId: 'client-old', count: 3, lastSeen: 1_700_000_000_000 }],
     };
     actions.entries.mockReturnValue([{ ...entry, password: 'not for the page', settings: { ...entry.settings, token: 'x' }, heldMemoryQueues: [{ ...entry.heldMemoryQueues[0], path: '/home/u/.damocles/outbox' }] }]);

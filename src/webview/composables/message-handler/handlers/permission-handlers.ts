@@ -69,7 +69,14 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         ...(msg.suggestions !== undefined && { suggestions: msg.suggestions }),
         ...(msg.blockedPath !== undefined && { blockedPath: msg.blockedPath }),
         ...(msg.decisionReason !== undefined && { decisionReason: msg.decisionReason }),
+        ...(msg.title !== undefined && { title: msg.title }),
+        ...(msg.subtitle !== undefined && { subtitle: msg.subtitle }),
+        ...(msg.facts !== undefined && { facts: msg.facts }),
+        ...(msg.content !== undefined && { content: msg.content }),
+        ...(msg.alwaysAllowLabel !== undefined && { alwaysAllowLabel: msg.alwaysAllowLabel }),
+        ...(msg.approvedStatus !== undefined && { approvedStatus: msg.approvedStatus }),
       });
+      permissionStore.clearApprovedStatus();
     },
 
     permissionAutoResolved: (msg, ctx) => {
@@ -148,7 +155,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
     },
 
     signInRequest: (msg, ctx) => {
-      ctx.stores.permissionStore.addSignIn({ requestId: msg.requestId, provider: msg.provider });
+      ctx.stores.permissionStore.addSignIn({ requestId: msg.requestId, provider: msg.provider, ...(msg.reason !== undefined ? { reason: msg.reason } : {}) });
     },
 
     signInResolved: (msg, ctx) => {

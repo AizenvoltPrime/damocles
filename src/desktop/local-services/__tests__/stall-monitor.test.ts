@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as vm from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { formatStall, processProfiler, StallMonitor, startV8Profile, summarizeStall, type CpuProfile, type ProfileHandle } from '../stall-monitor';
+import { formatStall, processProfiler, readCpuProfile, StallMonitor, startV8Profile, summarizeStall, type CpuProfile, type ProfileHandle } from '../stall-monitor';
 
 const frame = (functionName: string, url = '', lineNumber = 0) => ({ functionName, url, lineNumber, columnNumber: 0 });
 
@@ -378,6 +379,33 @@ describe('StallMonitor on V8\'s profiler', () => {
         return false;
       }
     }).length).toBe(1);
+  });
+});
+
+describe('readCpuProfile', () => {
+  // V8's serializer writes these three fields unescaped, so a Windows path or a quote in a frame name breaks its JSON.
+  it('reads a profile of V8\'s whose frames name a Windows path and a quote, and returns it as JSON that parses', () => {
+    // a literal key names the function; V8 gives a computed key's function no name
+    const busy = vm.runInThisContext('({ \'say "hi" \\\\ \': function (ms) { const end = performance.now() + ms; let x = 0; while (performance.now() < end) x += Math.sqrt(x + 1); return x; } })[\'say "hi" \\\\ \']', { filename: 'C:\\Users\\dev\\x.cjs' }) as (ms: number) => number;
+    const handle = startV8Profile();
+    busy(60);
+    const { profile: read, json } = readCpuProfile(handle.stop());
+    expect(read.nodes.map((node) => node.callFrame)).toContainEqual(expect.objectContaining({ functionName: 'say "hi" \\ ', url: 'C:\\Users\\dev\\x.cjs' }));
+    expect(JSON.parse(json)).toEqual(read);
+  });
+
+  it('reads every field the serializer writes unescaped, after children and before position ticks', () => {
+    const text = '{"nodes":[{"id":1,"hitCount":0,"callFrame":{"functionName":"(root)","lineNumber":-1,"columnNumber":-1,"scriptId":0,"url":""},"children":[2]},'
+      + '{"id":2,"hitCount":3,"callFrame":{"functionName":"/"\\d"/","lineNumber":4,"columnNumber":2,"scriptId":7,"url":"C:\\a "b"\\c.js"},"deoptReason":"odd "reason"","positionTicks":[{"line":5,"ticks":3}]}],'
+      + '"startTime":10,"endTime":20,"samples":[2,2,2],"timeDeltas":[1,1,1]}';
+    const { profile: read } = readCpuProfile(text);
+    expect(read.nodes[1]).toEqual({ id: 2, hitCount: 3, callFrame: { functionName: '/"\\d"/', lineNumber: 4, columnNumber: 2, scriptId: 7, url: 'C:\\a "b"\\c.js' }, deoptReason: 'odd "reason"', positionTicks: [{ line: 5, ticks: 3 }] });
+    expect(read.samples).toEqual([2, 2, 2]);
+  });
+
+  it('keeps JSON that parses as it is', () => {
+    const text = JSON.stringify(profile);
+    expect(readCpuProfile(text)).toEqual({ profile, json: text });
   });
 });
 

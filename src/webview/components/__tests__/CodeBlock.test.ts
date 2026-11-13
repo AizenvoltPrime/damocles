@@ -82,6 +82,16 @@ describe('CodeBlock', () => {
     expect(shiki.instance.codeToHtml).toHaveBeenLastCalledWith('const x = 1;', expect.objectContaining({ theme: 'damocles' }));
   });
 
+  it('highlights again only when the code, language or theme changes, not for a push of the same capabilities', async () => {
+    mountBlock();
+    await flushPromises();
+    shiki.instance.codeToHtml.mockClear();
+
+    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES });
+    await flushPromises();
+    expect(shiki.instance.codeToHtml).not.toHaveBeenCalled();
+  });
+
   it('colors the Damocles theme only through design and syntax tokens', () => {
     const colors = [
       ...Object.values(damoclesShikiTheme.colors ?? {}),

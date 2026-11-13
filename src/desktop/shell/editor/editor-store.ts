@@ -23,13 +23,16 @@ import { replaceRegExp, replacementAt } from '../../../shared/text-search';
 import { visibleText } from '@shared/visible-text';
 import { shellI18n } from '../i18n';
 import { lineEdits, type FormatEdit } from './format-edits';
+import { releaseJobLogSessions } from '../forge/job-log-session';
 
 export type ShellMonacoModule = typeof import('./monaco');
-// The commands the shown editor carries out itself: quick diff, selected ranges and conflicts (EditorCommand's git part).
+// The commands the shown editor carries out itself: quick diff, selected ranges, conflicts, line blame (showLineBlame) and the
+// links to the server (copyPermalink, openFileOnServer), which act on its caret and selection.
 export type EditorTargetCommand = Exclude<EditorCommand, 'save' | 'saveAs' | 'close' | 'next' | 'previous' | 'formatDocument' | 'openTimeline'>;
 const TARGET_COMMANDS: ReadonlySet<EditorCommand> = new Set<EditorTargetCommand>([
   'nextChange', 'previousChange', 'stageSelectedRanges', 'unstageSelectedRanges', 'revertSelectedRanges',
   'acceptCurrent', 'acceptIncoming', 'acceptBoth', 'acceptAllCurrent', 'acceptAllIncoming', 'nextConflict', 'previousConflict', 'showLineBlame',
+  'copyPermalink', 'openFileOnServer',
 ]);
 type TextContent = Extract<ShellDocumentContent, { kind: 'text' }>;
 
@@ -757,6 +760,7 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
   function release(): void {
     const open = new Set(tabs.value.map((tab) => tab.id));
     for (const tabId of viewStates.keys()) if (!open.has(tabId)) viewStates.delete(tabId);
+    releaseJobLogSessions(api, open);
     const shown = new Set(tabs.value.flatMap(documentIdsOf));
     let disposed = false;
     for (const [documentId, buffer] of buffers) {
@@ -890,6 +894,7 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     buffers.clear();
     searchDecorations.clear();
     viewStates.clear();
+    releaseJobLogSessions(api, new Set());
     modelRevision.value++;
   }
 

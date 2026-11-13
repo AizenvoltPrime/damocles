@@ -41,6 +41,12 @@ export interface ToolStatusDeps {
   imageEnabled: boolean;
   /** The chosen model resolves in pi's image catalog and pi holds an OpenRouter credential. */
   imageAvailability: ImageAvailability;
+  /** The chat has GitHub and GitLab tools: a desktop core's chat. */
+  forgeAvailable: boolean;
+  /** `damocles.desktop.forge.agentTools`. */
+  forgeEnabled: boolean;
+  /** Why no account is known where the tools run, else undefined (`forgeGroupUnavailable()`). */
+  forgeUnavailable: 'noForgeAccount' | 'forgeServersUnread' | undefined;
   /** `this.isMcpEnabled()`. */
   mcpEnabled: boolean;
   /** `this.mcpToolNames()`: every MCP tool, whatever its exposure; `disabled` removes the `off` ones. */
@@ -99,6 +105,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
       ...(deps.compassService ? { compassService: deps.compassService } : {}),
       browserEnabled: deps.browserEnabled,
       imageEligible: deps.imageEnabled && deps.imageAvailability.available,
+      forgeEligible: deps.forgeAvailable && deps.forgeEnabled,
     }),
     ...(deps.mcpEnabled ? deps.mcpToolNames : []),
     ...(deps.mcpEnabled && deps.mcpResourceExposure !== null ? MCP_RESOURCE_TOOL_NAMES : []),
@@ -114,7 +121,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
 }
 
 /**
- * The live active set: the eligible universe with the deferrable tools (browser + compass + web + image + deferred MCP) held
+ * The live active set: the eligible universe with the deferrable tools (browser + compass + web + image + forge + deferred MCP) held
  * back until `ToolSearch` activates them. The union is computed HERE, from a freshly-derived eligible
  * set, which is what keeps eligibility authoritative: disabling the browser subsystem drops its tools
  * on the next recompute even though `activated` still names them. The activated set is a preference,
@@ -150,6 +157,7 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     browser: deps.browserEnabled,
     web: deps.webEnabled,
     image: deps.imageEnabled,
+    forge: deps.forgeEnabled,
     subagents: true,
     team: deps.teamEnabled,
     design: deps.designEnabled,
@@ -166,6 +174,9 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
       available: deps.imageAvailability.available,
       ...(deps.imageAvailability.available ? {} : { unavailableReason: deps.imageAvailability.reason }),
     },
+    ...(deps.forgeAvailable
+      ? [{ group: 'forge' as const, enabled: groupEnabled.forge, available: deps.forgeUnavailable === undefined, ...(deps.forgeUnavailable === undefined ? {} : { unavailableReason: deps.forgeUnavailable }) }]
+      : []),
     { group: 'subagents', enabled: groupEnabled.subagents, available: true },
     { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable },
     // Settings' design switch renders from this entry, so it is sent while off too; the Tools panel hides a group with no tools (PD-22).
@@ -175,7 +186,7 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
   const groups = entries.map((entry) =>
     isSwitchableToolGroup(entry.group) && heldOnHost(TOOL_GROUP_SETTINGS[entry.group]) ? { ...entry, setOnHost: true as const } : entry,
   );
-  const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.filter((entry) => entry.group !== 'design' || deps.designEnabled).map((entry) => ({
+  const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.filter((entry) => (entry.group !== 'design' || deps.designEnabled) && (entry.group !== 'forge' || deps.forgeAvailable)).map((entry) => ({
     ...entry,
     enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,
   }));

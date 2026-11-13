@@ -6,7 +6,8 @@ import { log } from '../../logger';
 import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
 import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries, userScopeToolNames } from './deferred-tools';
-import { browserClosedReason, relayedMcpUnreachableReason, userScopeReach } from '../../user-scope';
+import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, userScopeReach } from '../../user-scope';
+import { DESIGN_CHAT_FORGE_REFUSAL, FORGE_PI_TOOL_NAMES } from './forge-tool-specs';
 import { relayedServerNames, relayedServerOfTool } from '../mcp/relayed-tool-names';
 import { englishText } from '../../../shared/localized-text';
 
@@ -32,6 +33,8 @@ export interface DeferrableSnapshot {
   pendingMcpServers?: string[];
   /** MCP tool name → its menu facts, for the grouped name + blurb inventory lines. */
   mcpDescriptions?: ReadonlyMap<string, McpToolMenuEntry>;
+  /** A design chat or an agent it started, which never loads the GitHub and GitLab group. */
+  design?: boolean;
 }
 
 /** What the description advertises: the caller's deferrable universe, plus MCP menu facts when it has any. */
@@ -206,10 +209,11 @@ function buildDescription(inventory: ToolSearchInventory | null): string {
   const scope = inventory ? new Set(inventory.names) : null;
   const builtinLines = BUILTIN_DEFERRED_GROUPS.map((g) => ({
     group: g.group,
+    guidance: g.guidance,
     names: scope ? g.names.filter((n) => scope.has(n)) : [...g.names],
   }))
     .filter((g) => g.names.length > 0)
-    .map((g) => `${g.group} (${g.names.length}): ${g.names.join(', ')}`);
+    .map((g) => `${g.group} (${g.names.length})${g.guidance !== undefined ? ` — ${g.guidance}` : ''}: ${g.names.join(', ')}`);
   const mcpLines = inventory ? mcpInventoryLines(inventory.names, inventory.mcpDescriptions) : [];
   // The default workspace (browser off, compass off, no MCP) has nothing to defer, and ToolSearch is
   // always eligible — so without this the model reads "the tools below" followed by nothing.
@@ -288,10 +292,13 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
         return relayedServerNames().find((server) => mcpToolSearchGroup(server) === entry && [...userScope].some((name) => relayedServerOfTool(name) === server));
       };
       const unavailableServer = (entry: string): string | undefined => relayedServerOfTool(entry) ?? relayedGroup(entry);
-      const unavailable = entries.filter((entry) =>
-        userScope.has(entry) || relayedGroup(entry) !== undefined || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name))));
-      const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry));
-      const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry));
+      const forgeEntry = (entry: string): boolean => entry === 'forge' || FORGE_PI_TOOL_NAMES.includes(entry);
+      // the design rule decides there, account or not
+      const designForge = snapshot.design === true ? [...new Set(entries.filter(forgeEntry))] : [];
+      const unavailable = entries.filter((entry) => !designForge.includes(entry) && (
+        userScope.has(entry) || relayedGroup(entry) !== undefined || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name)))));
+      const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry) && !designForge.includes(entry));
+      const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry) && !designForge.includes(entry));
       const requested = matches.filter((name) => !snapshot.loaded.has(name));
       if (matches.length > 0) port.activate(sessionId, matches);
 
@@ -342,7 +349,10 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // Without this, an inert group is indistinguishable from a no-op: the description is built from
       // the static catalog (one process-wide extension, no session identity), so it lists groups whose
       // subsystem may be off in THIS session. Naming the cause stops the model retrying the same call.
-      const unavailableBrowser = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined);
+      if (designForge.length > 0) lines.push(`Not available: ${names(designForge)}. ${DESIGN_CHAT_FORGE_REFUSAL}`);
+      const unavailableForge = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined && forgeEntry(entry));
+      const unavailableBrowser = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined && !forgeEntry(entry));
+      if (unavailableForge.length > 0) lines.push(`Not available: ${names(unavailableForge)}. ${englishText(forgeUnreachableReason())}`);
       const unavailableMcp = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) !== undefined);
       if (unavailableBrowser.length > 0) lines.push(`Not available: ${names(unavailableBrowser)}. ${englishText(browserClosedReason())}`);
       for (const server of new Set(unavailableMcp.map((entry) => unavailableServer(entry)!))) {

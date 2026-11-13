@@ -646,7 +646,7 @@ test('an untrusted project shows the trust message and runs no git; an empty rep
   await expect(graph(shell).getByTestId('scm-state')).toHaveAttribute('data-state', 'untrusted');
   await expect(graph(shell).getByTestId('scm-state')).toContainText('Trust this folder to see its history.');
   await expect(graph(shell).getByTestId('graph-ref-chip')).toHaveCount(0);
-  expect(await gitLog(app)).toBe('');
+  expect((await gitLog(app)).split('\n').filter((entry) => entry !== '')).toEqual([]);
 
   await openProjectChat(app, empty);
   await expect(graph(shell).getByTestId('graph-state')).toHaveAttribute('data-state', 'empty');

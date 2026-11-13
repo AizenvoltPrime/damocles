@@ -105,7 +105,8 @@ export interface CoreAttach {
   // the app's own FEATURES (feature core.attachFeatures): the daemon sends this client only the requests and events whose
   // feature it lists (core-routes.ts `needs`); absent, it lists none
   readonly features?: readonly string[];
-  // version-0 values of the mirrors the daemon takes from clients
+  // version-0 values of the mirrors the daemon takes from clients; clientAuth and clientUser carry `pending` (feature
+  // client.pending) while the app has not read them yet, and a later delta without it makes them known
   readonly mirrors: {
     readonly trust: { readonly keys: readonly string[] };
     readonly folders: MirrorTopics['folders'];

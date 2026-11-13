@@ -46,6 +46,9 @@ function deps(overrides: Partial<ToolStatusDeps>): ToolStatusDeps {
     browserEnabled: false,
     imageEnabled: false,
     imageAvailability: { available: false, reason: 'noModel' },
+    forgeAvailable: false,
+    forgeEnabled: true,
+    forgeUnavailable: 'noForgeAccount',
     mcpEnabled: false,
     mcpToolNames: [],
     mcpDeferrableToolNames: [],
@@ -312,9 +315,21 @@ describe('buildToolStatus: switches the host\'s own settings file holds', () => 
   });
 
   it.each(Object.keys(TOOL_GROUP_SETTINGS) as SwitchableToolGroup[])('marks %s setOnHost exactly when its key reports a machineValue', (name) => {
-    const held = buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({ [TOOL_GROUP_SETTINGS[name]]: true }) }));
+    const held = buildToolStatus(deps({ designEnabled: true, forgeAvailable: true, hostSettings: hostFile({ [TOOL_GROUP_SETTINGS[name]]: true }) }));
     expect(group(held, name).setOnHost).toBe(true);
-    expect(group(buildToolStatus(deps({ designEnabled: true, hostSettings: hostFile({}) })), name)).not.toHaveProperty('setOnHost');
+    expect(group(buildToolStatus(deps({ designEnabled: true, forgeAvailable: true, hostSettings: hostFile({}) })), name)).not.toHaveProperty('setOnHost');
+  });
+
+  it('shows the GitHub and GitLab group only for a desktop chat, unavailable without an account, and makes its tools eligible only while switched on', () => {
+    expect(buildToolStatus(deps({})).groups.map((entry) => entry.group)).not.toContain('forge');
+    expect(buildToolStatus(deps({})).tools.some((tool) => tool.group === 'forge')).toBe(false);
+    expect(group(buildToolStatus(deps({ forgeAvailable: true })), 'forge')).toEqual({ group: 'forge', enabled: true, available: false, unavailableReason: 'noForgeAccount' });
+    expect(group(buildToolStatus(deps({ forgeAvailable: true, forgeUnavailable: undefined })), 'forge')).toEqual({ group: 'forge', enabled: true, available: true });
+    // servers not read yet are not none
+    expect(group(buildToolStatus(deps({ forgeAvailable: true, forgeUnavailable: 'forgeServersUnread' })), 'forge')).toEqual({ group: 'forge', enabled: true, available: false, unavailableReason: 'forgeServersUnread' });
+    expect(fullActiveToolNames(deps({ forgeAvailable: true }))).toEqual(expect.arrayContaining(['ForgePipelines', 'ForgeComment']));
+    expect(fullActiveToolNames(deps({ forgeAvailable: true, forgeEnabled: false }))).not.toContain('ForgePipelines');
+    expect(fullActiveToolNames(deps({ forgeAvailable: false }))).not.toContain('ForgePipelines');
   });
 
   it('marks a group setOnHost and the tool list toolsSetOnHost only for a key whose machineValue is set', () => {
@@ -425,9 +440,9 @@ describe('design tools in the active set (PD-15, PD-25)', () => {
     const browser = eligible.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n));
     expect(new Set(browser)).toEqual(DESIGN_BROWSER_TOOL_NAMES);
     expect(eligible).not.toContain('BrowserClick');
-    const loadable = loadableToolNames(deferredToolNames(eligible, []), { browser: true, relayedTool: () => true }, true);
+    const loadable = loadableToolNames(deferredToolNames(eligible, []), { browser: true, forge: true, relayedTool: () => true }, true);
     expect(loadable.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n)).sort()).toEqual([...DESIGN_BROWSER_TOOL_NAMES].sort());
-    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserEnabled: true })), []), { browser: true, relayedTool: () => true }, false);
+    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserEnabled: true })), []), { browser: true, forge: true, relayedTool: () => true }, false);
     expect(parent).toContain('BrowserClick');
   });
 });

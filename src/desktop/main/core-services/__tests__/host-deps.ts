@@ -40,6 +40,7 @@ export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly 
       trash: refuse,
       ask: refuse,
       askpass: refuse,
+      chooseForgeAccount: refuse,
       worktrees: {
         reviewSetup: refuse,
         runSetup: refuse,

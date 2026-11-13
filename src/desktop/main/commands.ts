@@ -100,6 +100,11 @@ export const MENU_IDS = {
   openFolderThroughLocalDaemon: 'damocles.developer.openFolderThroughLocalDaemon',
   showLocalDaemonLog: 'damocles.developer.showLocalDaemonLog',
   openSettings: 'damocles.openSettings',
+  forgeChooseAccount: 'damocles.forge.chooseAccount',
+  forgeShowPipeline: 'damocles.forge.showPipeline',
+  forgeOpenAccounts: 'damocles.forge.openAccounts',
+  // a git command listed in the File menu with the Git hosting accounts, so its key is not git-prefixed (GIT_COMMAND_IDS)
+  forgeCloneFromAccount: 'damocles.git.cloneFromAccount',
   about: 'damocles.about',
   releaseNotes: 'damocles.releaseNotes',
   checkForUpdates: 'damocles.checkForUpdates',
@@ -220,6 +225,9 @@ export const MENU_IDS = {
   gitOpenTimeline: 'damocles.git.openTimeline',
   gitToggleInlineBlame: 'damocles.git.blame.toggleEditorDecoration',
   gitShowLineBlame: 'damocles.git.showLineBlame',
+  gitCopyPermalink: 'damocles.git.copyPermalink',
+  gitOpenFileOnServer: 'damocles.git.openFileOnServer',
+  gitOpenCommitOnServer: 'damocles.git.openCommitOnServer',
   nextChange: 'damocles.editor.nextChange',
   previousChange: 'damocles.editor.previousChange',
   mergeAcceptCurrent: 'damocles.mergeConflict.acceptCurrent',
@@ -442,6 +450,7 @@ export const GIT_MENU_GROUPS: ReadonlyArray<readonly string[]> = [
   [MENU_IDS.gitCreateWorktree, MENU_IDS.gitDeleteWorktree],
   [MENU_IDS.gitStageSelectedRanges, MENU_IDS.gitUnstageSelectedRanges, MENU_IDS.gitRevertSelectedRanges],
   [MENU_IDS.gitOpenTimeline, MENU_IDS.gitShowLineBlame, MENU_IDS.gitToggleInlineBlame],
+  [MENU_IDS.gitCopyPermalink, MENU_IDS.gitOpenFileOnServer, MENU_IDS.gitOpenCommitOnServer],
   [MENU_IDS.gitShowOutput],
 ];
 
@@ -544,6 +553,8 @@ function gitCommands(actions: MenuActions): Command[] {
     command(MENU_IDS.gitOpenRepositoriesInParentFolders, t('Open Repositories In Parent Folders'), (context) => available(context) && context.scm.parentRepositoryCount !== 0, () => actions.scmRun({ op: 'openParentRepositories' })),
     command(MENU_IDS.gitClone, t('Clone'), cloneAvailable, () => actions.scmRun({ op: 'clone', recursive: false })),
     command(MENU_IDS.gitCloneRecursive, t('Clone (Recursive)'), cloneAvailable, () => actions.scmRun({ op: 'clone', recursive: true })),
+    // the clone picker: the Git hosting accounts' repositories, or a pasted URL; with no account it says how to add one
+    command(MENU_IDS.forgeCloneFromAccount, t('Clone from Your Repositories...'), cloneAvailable, () => actions.cloneFromAccount()),
     idleCommand(MENU_IDS.gitFetch, t('Fetch'), { op: 'fetch', scope: 'default' }),
     idleCommand(MENU_IDS.gitFetchPrune, t('Fetch (Prune)'), { op: 'fetch', scope: 'prune' }),
     idleCommand(MENU_IDS.gitFetchAll, t('Fetch From All Remotes'), { op: 'fetch', scope: 'all' }),
@@ -612,6 +623,11 @@ function gitCommands(actions: MenuActions): Command[] {
     command(MENU_IDS.gitShowLineBlame, t('Show Line Blame'), (context) => open(context) && context.editorGit === 'file', () => actions.editorCommand('showLineBlame')),
     // git.blame.toggleEditorDecoration is always in VS Code's palette; it flips the setting
     command(MENU_IDS.gitToggleInlineBlame, t('Toggle Inline Blame'), () => true, () => actions.toggleInlineBlame()),
+    // links on the repository's Git hosting server: the file ones on a code tab of a repository file, at the shell's
+    // selection; Open Commit on Server opens the selected repository's HEAD
+    command(MENU_IDS.gitCopyPermalink, t('Copy Permalink'), (context) => open(context) && context.editorGit === 'file', () => actions.editorCommand('copyPermalink')),
+    command(MENU_IDS.gitOpenFileOnServer, t('Open File on Server'), (context) => open(context) && context.editorGit === 'file', () => actions.editorCommand('openFileOnServer')),
+    command(MENU_IDS.gitOpenCommitOnServer, t('Open Commit on Server'), open, () => actions.forgeOpenCommitOnServer()),
   ];
 }
 
@@ -721,6 +737,25 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.saveAs, title: t('Save As...'), category: file, accelerator: 'CmdOrCtrl+Shift+S', enabled: hasDocument, keyWhen: editorFocus, run: () => actions.saveEditorAs() },
     { id: MENU_IDS.addProject, title: t('Add Project...'), category: file, run: () => actions.addProject() },
     { id: MENU_IDS.openSettings, title: t('Settings...'), category: file, accelerator: OPEN_SETTINGS_ACCELERATOR, inTerminal: true, run: () => actions.openSettings() },
+    // the account chip's menu for the selected repository; with no chip it opens the accounts
+    {
+      id: MENU_IDS.forgeChooseAccount,
+      title: t('Choose Account...'),
+      category: t('Source Control'),
+      enabled: (context) => context.scm.available && context.scm.openRepositoryCount !== 0,
+      palette: (context) => context.scm.available && context.scm.openRepositoryCount !== 0,
+      run: () => actions.forgeChooseAccount(),
+    },
+    // the CI chip's job list for the selected repository; listed only while its chip shows a pipeline
+    {
+      id: MENU_IDS.forgeShowPipeline,
+      title: t('Show Pipeline'),
+      category: t('Source Control'),
+      enabled: (context) => context.scm.available && context.scm.pipelineShown,
+      palette: (context) => context.scm.available && context.scm.pipelineShown,
+      run: () => actions.forgeShowPipeline(),
+    },
+    { id: MENU_IDS.forgeOpenAccounts, title: t('Git Hosting Accounts'), category: t('Settings'), run: () => actions.forgeOpenAccounts() },
     { id: MENU_IDS.closeEditor, title: t('Close Editor'), category: file, accelerator: CLOSE_EDITOR_ACCELERATOR, enabled: hasEditor, keyWhen: editorFocus, run: () => actions.closeEditor() },
     { id: MENU_IDS.formatDocument, title: t('Format Document'), category: edit, accelerator: FORMAT_DOCUMENT_ACCELERATOR, enabled: hasFormattableDocument, keyWhen: editorFocus, run: () => actions.formatDocument() },
     { id: MENU_IDS.findInFiles, title: t('Find in Files'), category: search, accelerator: FIND_IN_FILES_ACCELERATOR, run: () => actions.searchInFiles(false) },

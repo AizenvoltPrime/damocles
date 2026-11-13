@@ -11,6 +11,8 @@ import { designRuleSet } from '../../../design/rule-set';
 import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
+import { FORGE_PI_TOOL_NAMES } from '../../tools/forge-tool-specs';
+import { setLocalForgeAccounts } from '../../../user-scope';
 import { COMPASS_AGENT_PROMPT, COMPASS_SYSTEM_PROMPT } from '../../../compass/system-prompt';
 import { buildAgentPrompt } from '../prompts';
 import { createSubagentExtensionFactory, type SubagentGateContext } from '../subagent-extension-factory';
@@ -1223,6 +1225,32 @@ describe('AgentManager → subagent gate context', () => {
     } finally {
       installPlatform(createFakePlatform());
     }
+  });
+
+  it('an Explore agent with no GitHub or GitLab account gets no forge tool, so none starts active without a ToolSearch', async () => {
+    vi.mocked(createSubagentExtensionFactory).mockClear();
+    const { engine } = makeEngine();
+    engine.parentFullToolNames = () => ['read', 'bash', 'grep', ...FORGE_PI_TOOL_NAMES, 'ToolSearch'];
+    const run = async (hasAccount: boolean): Promise<{ readonly tools: readonly string[]; readonly deferrable: readonly string[] }> => {
+      setLocalForgeAccounts(() => hasAccount);
+      try {
+        const mgr = new AgentManager(engine, 2);
+        mgr.spawn({ ...spec(0), type: 'Explore' });
+        await flush();
+        const result = { tools: sessionOpts.at(-1)!.tools ?? [], deferrable: gateContexts().at(-1)!.deferrableToolNames };
+        mgr.dispose();
+        return result;
+      } finally {
+        setLocalForgeAccounts(() => false);
+      }
+    };
+    const without = await run(false);
+    for (const name of FORGE_PI_TOOL_NAMES) expect(without.tools, name).not.toContain(name);
+    expect(without.deferrable).toEqual([]);
+    expect(without.tools).toContain('read');
+    const withAccount = await run(true);
+    expect(withAccount.tools).toContain('ForgeIssues');
+    expect(withAccount.deferrable).toContain('ForgeIssues');
   });
 
   it('marks a read-only agent readOnlyShell, so no write tool means no writes via the shell either', async () => {

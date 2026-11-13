@@ -2,15 +2,15 @@
 // ipc/ipcServer.ts, MIT, see THIRD-PARTY-NOTICES.md). git and ssh run the helper scripts, which run askpass-main.js; the helper
 // sends one JSON line naming its registration's nonce and git's prompt, and gets back one JSON line with the answer or a cancel.
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseCredentialFields, PASSWORD_HASH, type GitCredentialAnswer, type GitCredentialFields } from '../../../shared/git-credential';
+import { isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, parseCredentialFields, type GitCredentialAnswer, type GitCredentialOrigin, type GitCredentialRequest } from '../../../shared/git-credential';
 import { MAX_INPUT_VALUE_LENGTH } from '../../../shared/input-validation';
 import { redactUrls } from '../errors';
-import type { CredentialRelay, RelayIdentity } from './credential-relay';
+import { CREDENTIAL_NONCE_VARIABLE, type CredentialRelay, type RelayIdentity } from './credential-relay';
 
 // notice: ssh's information-only message (SSH_ASKPASS_PROMPT=none, a security key's touch request), which ssh ends by
 // killing the helper; it takes no answer.
@@ -45,22 +45,18 @@ export interface AskpassPaths {
   readonly credentialRelay?: RelayIdentity;
 }
 
-// A get or erase the relay helper sent; cwd is the folder git ran the helper in, on the target.
-export interface CredentialRequest {
-  readonly op: 'get' | 'erase';
-  readonly cwd: string;
-  readonly fields: GitCredentialFields;
-  // an erase's: the SHA-256 of the password git names, absent when git sent none
-  readonly passwordHash?: string;
-}
+// A request a credential helper sent; cwd is the folder git ran the helper in.
+export type CredentialRequest = GitCredentialRequest;
 
-// Answers a relay request; signal aborts when the helper goes away or the server is disposed.
-export type RelayCredential = (request: CredentialRequest, signal: AbortSignal) => Promise<GitCredentialAnswer>;
+// Answers a credential helper by its registration's origin (the relay's: a terminal on the target); signal aborts when the
+// helper goes away, its registration ends or the server is disposed.
+export type RelayCredential = (request: CredentialRequest, origin: GitCredentialOrigin, signal: AbortSignal) => Promise<GitCredentialAnswer>;
 
 export interface AskpassServerDeps {
   readonly paths: AskpassPaths;
   readonly prompt: PromptCredential;
-  // a daemon's core: answers the credential relay, whose nonce is accepted for nothing else; needs paths.credentialRelay
+  // answers credential registrations and, with paths.credentialRelay, the daemon's relay; a credential nonce is accepted
+  // for nothing else, and a prompt nonce never for a credential
   readonly credential?: RelayCredential;
   readonly log: (line: string) => void;
   readonly platform?: NodeJS.Platform;
@@ -81,9 +77,18 @@ export interface AskpassRegistration {
   dispose(): void;
 }
 
+// One origin's capability to ask for credentials (git-credential-relay with DAMOCLES_CREDENTIAL_NONCE), never to prompt.
+export interface CredentialRegistration {
+  // the helper's variables, each non-empty
+  readonly env: Readonly<Record<string, string>>;
+  dispose(): void;
+}
+
 export interface AskpassServer {
   // prompt: this registration's own, answering its helpers instead of the server's
   register(mode: AskpassMode, label: string, prompt?: PromptCredential): Promise<AskpassRegistration>;
+  // needs deps.credential
+  registerCredential(origin: GitCredentialOrigin): Promise<CredentialRegistration>;
   // starts listening; the relay of this server's life, or undefined without deps.credential or paths.credentialRelay; a
   // failed listen rejects and the next call listens again
   relay(): Promise<CredentialRelay | undefined>;
@@ -149,25 +154,32 @@ interface AskpassRequest {
   readonly sshPrompt?: SshPromptHint;
 }
 
-interface RelayRequest extends CredentialRequest {
+interface RelayRequest {
   readonly nonce: string;
   readonly kind: 'credential';
+  readonly request: CredentialRequest;
 }
 
 function parseRelayRequest(value: Record<string, unknown>): RelayRequest | undefined {
-  const hashed = Object.hasOwn(value, 'passwordHash');
-  if (Object.keys(value).length !== (hashed ? 6 : 5) || !['nonce', 'op', 'cwd', 'fields'].every((key) => Object.hasOwn(value, key))) return undefined;
-  const { nonce, op, cwd, fields, passwordHash } = value;
-  if (typeof nonce !== 'string' || !NONCE_HEX.test(nonce) || (op !== 'get' && op !== 'erase')) return undefined;
+  const allowed = new Set(['nonce', 'kind', 'op', 'cwd', 'fields', 'password']);
+  if (!Object.keys(value).every((key) => allowed.has(key)) || !['nonce', 'op', 'cwd', 'fields'].every((key) => Object.hasOwn(value, key))) return undefined;
+  const { nonce, op, cwd, fields, password } = value;
+  if (typeof nonce !== 'string' || !NONCE_HEX.test(nonce) || (op !== 'get' && op !== 'store' && op !== 'erase')) return undefined;
   if (typeof cwd !== 'string' || cwd === '' || cwd.length > MAX_ASKPASS_ARG_CHARS || /[\0\r\n]/.test(cwd)) return undefined;
-  if (hashed && (op !== 'erase' || typeof passwordHash !== 'string' || !PASSWORD_HASH.test(passwordHash))) return undefined;
+  if (password !== undefined && (op === 'get' || !isCredentialValue(password, MAX_CREDENTIAL_PASSWORD_CHARS) || password === '')) return undefined;
   const parsed = parseCredentialFields(fields);
-  return parsed && { nonce, kind: 'credential', op, cwd, fields: parsed, ...(hashed ? { passwordHash: passwordHash as string } : {}) };
+  if (!parsed) return undefined;
+  const secret = password as string | undefined;
+  return {
+    nonce,
+    kind: 'credential',
+    request: { op, cwd, fields: parsed, ...(secret !== undefined ? { password: secret, passwordHash: createHash('sha256').update(secret, 'utf8').digest('hex') } : {}) },
+  };
 }
 
 /**
  * One request line as the helper sends it, or undefined: a prompt is exactly nonce, kind and argv, and sshPrompt for ssh; a
- * relay request exactly nonce, kind, op, cwd and fields; each within its bounds.
+ * credential request nonce, kind, op, cwd and fields, and a store's or erase's password; each within its bounds.
  */
 export function parseAskpassRequest(line: Buffer): AskpassRequest | RelayRequest | undefined {
   let raw: unknown;
@@ -202,6 +214,12 @@ interface Registration {
   readonly ended: AbortController;
   readonly cancelled: AbortController;
   loggedRefusal: boolean;
+}
+
+interface CredentialHolder {
+  readonly origin: GitCredentialOrigin;
+  readonly nonce: Buffer;
+  readonly ended: AbortController;
 }
 
 interface Listening {
@@ -276,9 +294,15 @@ export async function removeAbandonedSocketFolders(sweep: AbandonedSocketSweep):
   }
 }
 
+// timingSafeEqual throws on unequal lengths; a nonce's length is no secret
+function sameNonce(held: Buffer, wanted: Buffer): boolean {
+  return held.length === wanted.length && timingSafeEqual(held, wanted);
+}
+
 export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
   const platform = deps.platform ?? process.platform;
   const registrations = new Set<Registration>();
+  const credentialHolders = new Set<CredentialHolder>();
   const sockets = new Set<net.Socket>();
   // in connect order, so the oldest is dropped first
   const waiting = new Set<net.Socket>();
@@ -307,7 +331,14 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
     const wanted = Buffer.from(nonce, 'hex');
     let found: Registration | undefined;
     // every registration is compared, so the time taken says nothing about which one matched
-    for (const registration of registrations) if (timingSafeEqual(registration.nonce, wanted) && !registration.ended.signal.aborted) found = registration;
+    for (const registration of registrations) if (sameNonce(registration.nonce, wanted) && !registration.ended.signal.aborted) found = registration;
+    return found;
+  };
+
+  const findCredential = (nonce: string): CredentialHolder | undefined => {
+    const wanted = Buffer.from(nonce, 'hex');
+    let found: CredentialHolder | undefined;
+    for (const holder of credentialHolders) if (sameNonce(holder.nonce, wanted) && !holder.ended.signal.aborted) found = holder;
     return found;
   };
 
@@ -381,20 +412,19 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
     }
   };
 
-  const relayAnswer = async (socket: net.Socket, request: RelayRequest): Promise<void> => {
+  const relayAnswer = async (socket: net.Socket, request: CredentialRequest, origin: GitCredentialOrigin, ended: AbortSignal): Promise<void> => {
     const gone = new AbortController();
     const onGone = (): void => gone.abort();
     socket.once('close', onGone);
     try {
-      const asked: CredentialRequest = { op: request.op, cwd: request.cwd, fields: request.fields, ...(request.passwordHash !== undefined ? { passwordHash: request.passwordHash } : {}) };
-      const answer = await deps.credential!(asked, AbortSignal.any([gone.signal, relayEnded.signal]));
+      const answer = await deps.credential!(request, origin, AbortSignal.any([gone.signal, ended, relayEnded.signal]));
       if (!socket.destroyed) socket.end(`${JSON.stringify(answer)}\n`);
     } finally {
       socket.off('close', onGone);
     }
   };
 
-  const isRelayNonce = (nonce: string): boolean => relayNonce !== undefined && timingSafeEqual(relayNonce, Buffer.from(nonce, 'hex'));
+  const isRelayNonce = (nonce: string): boolean => relayNonce !== undefined && sameNonce(relayNonce, Buffer.from(nonce, 'hex'));
 
   const onConnection = (socket: net.Socket): void => {
     if (disposed) {
@@ -447,17 +477,25 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
         return;
       }
       if (request.kind === 'credential') {
-        if (!isRelayNonce(request.nonce)) {
-          drop(socket, 'a credential request without the relay nonce');
+        if (isRelayNonce(request.nonce)) {
+          relayAnswer(socket, request.request, { kind: 'terminal' }, relayEnded.signal).catch((err: unknown) => {
+            deps.log(`[askpass] the credential relay failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+            if (!socket.destroyed) socket.end(`${JSON.stringify({ kind: 'none' } satisfies GitCredentialAnswer)}\n`);
+          });
           return;
         }
-        relayAnswer(socket, request).catch((err: unknown) => {
-          deps.log(`[askpass] the credential relay failed: ${err instanceof Error ? err.message : 'unknown error'}`);
-          if (!socket.destroyed) socket.end(`${JSON.stringify({ kind: 'none' } satisfies GitCredentialAnswer)}\n`);
+        const holder = findCredential(request.nonce);
+        if (!holder) {
+          drop(socket, 'a credential request without a credential nonce');
+          return;
+        }
+        // the helper then fails with "Damocles could not provide credentials.", and git asks no one else on its behalf
+        relayAnswer(socket, request.request, holder.origin, holder.ended.signal).catch((err: unknown) => {
+          drop(socket, `the credential answer failed: ${err instanceof Error ? redactUrls(err.message) : 'unknown error'}`);
         });
         return;
       }
-      if (isRelayNonce(request.nonce)) {
+      if (isRelayNonce(request.nonce) || findCredential(request.nonce)) {
         drop(socket, 'a prompt with the credential relay nonce');
         return;
       }
@@ -600,12 +638,34 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
         },
       };
     },
+    async registerCredential(origin) {
+      if (disposed) throw new Error('The askpass server was disposed');
+      if (!deps.credential) throw new Error('This askpass server answers no credentials');
+      const { handle } = await listen();
+      if (disposed) throw new Error('The askpass server was disposed');
+      const holder: CredentialHolder = { origin, nonce: randomBytes(32), ended: new AbortController() };
+      credentialHolders.add(holder);
+      return {
+        env: {
+          DAMOCLES_ASKPASS_NODE: deps.paths.node,
+          DAMOCLES_ASKPASS_MAIN: deps.paths.main,
+          DAMOCLES_ASKPASS_HANDLE: handle,
+          [CREDENTIAL_NONCE_VARIABLE]: holder.nonce.toString('hex'),
+        },
+        dispose: () => {
+          holder.ended.abort();
+          credentialHolders.delete(holder);
+        },
+      };
+    },
     async dispose() {
       if (disposed) return;
       disposed = true;
       relayEnded.abort();
       for (const registration of registrations) registration.ended.abort();
       registrations.clear();
+      for (const holder of credentialHolders) holder.ended.abort();
+      credentialHolders.clear();
       for (const socket of sockets) socket.destroy();
       if (!listening) return;
       let started: Listening;

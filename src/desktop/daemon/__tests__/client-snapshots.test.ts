@@ -97,6 +97,21 @@ describe('client snapshots on a daemon\'s core', () => {
     expect(await runPinnedTurn(remote, 'panel-1', async () => [send(), clientClaudeAuthStatus(remote, true).mode])).toEqual(['allowance', 'allowance']);
   });
 
+  it('read a clientMcp marked pending as not read yet, never as no servers, until a list lands', async () => {
+    const { snapshots, attach } = setUp();
+    const a = attach('connection-1', values('a'));
+    a.main.publish('clientMcp', { value: { servers: [], pending: 'reading' } });
+    await flush();
+    expect(snapshots.mcpPending('connection-1')).toBe('reading');
+    a.main.publish('clientMcp', { value: { servers: [], pending: 'readFailed' } });
+    await flush();
+    expect(snapshots.mcpPending('connection-1')).toBe('readFailed');
+    a.main.publish('clientMcp', { value: { servers: [{ name: 'notes', tools: [], resources: false }] } });
+    await flush();
+    expect(snapshots.mcpPending('connection-1')).toBeUndefined();
+    expect(snapshots.mcp('connection-1')).toEqual([{ name: 'notes', tools: [], resources: false }]);
+  });
+
   it('stamp the sending client\'s id, so a client cannot write another client\'s entry or name the acting client', async () => {
     const { snapshots, attach } = setUp();
     const a = attach('connection-1', values('a'));

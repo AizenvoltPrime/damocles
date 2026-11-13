@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import type { GitCredentialOrigin } from '../../shared/git-credential';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 import { LETTER_TONE, type StatusLetter, type StatusTone } from '../../shared/scm/status-letter';
 import { followsLocalLinksOnly } from '../local-links';
@@ -12,7 +13,8 @@ import { endOfOptions, MAX_CLI_LENGTH, RepoQueue, revision, splitInChunks, type 
 import { GitError } from './errors';
 import { isInside, readSubmodules, samePath } from './discovery';
 import { GitStatusParser, stripCommitMessageComments, type FileStatus } from './parsers';
-import { isRemoteName, isRemoteUrl, parseRemoteBranches, parseRemoteNames, parseRemotes, parseUpstream, type Remote } from './remotes';
+import { isRemoteUrl } from '../../shared/clone-address';
+import { isRemoteName, parseRemoteBranches, parseRemoteNames, parseRemotes, parseUpstream, type Remote } from './remotes';
 import type { UntrackedChanges } from './settings-keys';
 
 export type ChangeStatus =
@@ -283,6 +285,8 @@ export interface NetworkCall {
   readonly relayCredentials?: true;
   // LC_ALL=C, for a caller that tells a refusal from git's words
   readonly english?: true;
+  // GitCall.credentialOrigin
+  readonly credentialOrigin?: GitCredentialOrigin;
 }
 
 // fenced stashes tracked changes only, as git's autostash does; includeUntracked is VS Code's maybeAutoStash
@@ -699,6 +703,26 @@ export class Repository {
     });
   }
 
+  /** Whether git takes ref names that differ only in letter case for one (core.ignorecase, which init and clone set on such a file system). */
+  ignoresCase(): Promise<boolean> {
+    return this.queue.read(async () => {
+      const result = await this.runner.run({ ...this.call(['config', '--bool', '--get', 'core.ignorecase'], 'read'), allowFailure: true });
+      return result.exitCode === 0 && result.stdout.toString('utf8').trim() === 'true';
+    });
+  }
+
+  /** The commits HEAD has that no ref of remote holds as last fetched (refs/remotes/<remote>/*). */
+  unpushedCount(remote: string): Promise<number> {
+    if (!isRemoteName(remote)) throw new Error('Refused a remote name that git could read as an option');
+    return this.queue.read(async () => {
+      // a remote name is a ref component, which holds no glob character, so --remotes matches exactly refs/remotes/<remote>/*
+      const result = await this.runner.run(this.call(['rev-list', '--count', 'HEAD', '--not', `--remotes=${remote}`], 'read', true));
+      const count = Number(result.stdout.toString('utf8').trim());
+      if (!Number.isSafeInteger(count) || count < 0) throw new Error('git rev-list printed no count');
+      return count;
+    });
+  }
+
   addRemote(name: string, url: string): Promise<void> {
     if (!isRemoteName(name) || !isRemoteUrl(url)) throw new Error('Refused a remote name or URL that git could read as an option');
     return this.queue.mutation(() => this.run(['remote', 'add', '--', name, url], 'mutation').then(() => undefined));
@@ -707,6 +731,13 @@ export class Repository {
   removeRemote(name: string): Promise<void> {
     if (!isRemoteName(name)) throw new Error('Refused a remote name that git could read as an option');
     return this.queue.mutation(() => this.run(['remote', 'remove', '--', name], 'mutation').then(() => undefined));
+  }
+
+  /** `git remote rename`: its remote-tracking branches and every branch's upstream on it follow. */
+  renameRemote(from: string, to: string): Promise<void> {
+    if (!isRemoteName(from) || !isRemoteName(to)) throw new Error('Refused a remote name that git could read as an option');
+    // no '--': git before 2.36 takes exactly two arguments here, and isRemoteName never lets a name start with '-'
+    return this.queue.mutation(() => this.run(['remote', 'rename', from, to], 'mutation').then(() => undefined));
   }
 
   async lockFiles(scope: LockScope): Promise<Set<string>> {
@@ -1110,7 +1141,7 @@ export class Repository {
   }
 
   private networkCall(args: readonly string[], net: NetworkCall): GitCall {
-    return { ...this.call(args, 'mutation', net.english === true), signal: AbortSignal.any([net.signal, this.queue.signal]), ...(net.askpassEnv ? { askpassEnv: net.askpassEnv } : {}), ...(net.relayCredentials ? { relayCredentials: true as const } : {}) };
+    return { ...this.call(args, 'mutation', net.english === true), signal: AbortSignal.any([net.signal, this.queue.signal]), ...(net.askpassEnv ? { askpassEnv: net.askpassEnv } : {}), ...(net.relayCredentials ? { relayCredentials: true as const } : {}), ...(net.credentialOrigin ? { credentialOrigin: net.credentialOrigin } : {}) };
   }
 
   // A read or status is killed with its process tree when the queue is disposed; an index write never is.

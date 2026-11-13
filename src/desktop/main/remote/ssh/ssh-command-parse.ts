@@ -3,6 +3,7 @@
 // options in the user's own ~/.ssh/config are ssh's to read and never parsed here.
 import * as net from 'node:net';
 import * as path from 'node:path';
+import { SSH_UNSAFE } from '../../../../shared/ssh-alias';
 import type { HostParseRefusal } from '../../../preload/overlay-channels';
 
 // The options a saved address keeps; `-l`/`User` and `-p`/`Port` are its user and port.
@@ -30,7 +31,6 @@ export type SshParseResult =
 // bounds that keep the parse cheap; no real command or option value comes near them
 const MAX_INPUT_CHARS = 4096;
 const MAX_VALUE_CHARS = 1024;
-export const UNSAFE: RegExp = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
 // 253: the longest DNS name
 const HOST_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,252}$/;
 // at most 256 characters; `@` splits at the last one, so only a leading one is refused
@@ -51,7 +51,7 @@ export function isSafeHost(host: string): boolean {
 
 /** A user ssh takes as `-l`'s value: nothing starting with `-` and none of the characters ssh refuses. */
 export function isSafeUser(user: string): boolean {
-  return USER.test(user) && !USER_REFUSED.test(user) && !UNSAFE.test(user);
+  return USER.test(user) && !USER_REFUSED.test(user) && !SSH_UNSAFE.test(user);
 }
 
 export type JumpHost = { readonly user?: string; readonly host: string; readonly port?: number };
@@ -135,7 +135,7 @@ function identityFileProblem(value: string, platform: NodeJS.Platform): Identity
 export function isAllowedSshOption(option: { readonly name: string; readonly value: string }, platform: NodeJS.Platform = process.platform): option is AllowedSshOption {
   if (!(ALLOWED_SSH_OPTION_NAMES as readonly string[]).includes(option.name)) return false;
   const { value } = option;
-  if (value === '' || value.length > MAX_VALUE_CHARS || UNSAFE.test(value) || value.includes('"')) return false;
+  if (value === '' || value.length > MAX_VALUE_CHARS || SSH_UNSAFE.test(value) || value.includes('"')) return false;
   switch (option.name as AllowedSshOptionName) {
     case 'IdentityFile': return identityFileProblem(value, platform) === undefined;
     case 'IdentitiesOnly':
@@ -289,7 +289,7 @@ export function parseSshCommand(input: string, platform: NodeJS.Platform = proce
   };
   const take = (name: string, value: string, route: string): Refusal | undefined => {
     if (value === '') return refuse(route, 'missing');
-    if (value.length > MAX_VALUE_CHARS || UNSAFE.test(value)) return refuse(route, 'value');
+    if (value.length > MAX_VALUE_CHARS || SSH_UNSAFE.test(value)) return refuse(route, 'value');
     if (name === 'User') return isSafeUser(value) ? set('User', value, route) : refuse(route, 'value');
     if (name === 'Port') return isPort(value) ? set('Port', String(Number(value)), route) : refuse(route, 'value');
     const option = { name: name as AllowedSshOptionName, value: normalizedValue(name as AllowedSshOptionName, value) };

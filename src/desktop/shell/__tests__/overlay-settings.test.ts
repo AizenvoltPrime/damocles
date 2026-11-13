@@ -280,7 +280,7 @@ describe('overlay settings', () => {
       detectedOs: 'linux',
       connection: 'connected',
       settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
-      facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [] },
+      facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [], alwaysForgeAccounts: [] },
       heldMemoryQueues: [],
     };
     api.remoteHosts.list = [host];

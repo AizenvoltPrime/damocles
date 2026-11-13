@@ -233,18 +233,26 @@ export class OverlaySettings {
    * resolves once it has closed. While it shows, the modal goes to the target instead.
    */
   async show(request: SettingsTarget, scope?: 'machine'): Promise<void> {
-    const { section, account, release, host } = request;
+    const { section, account, release, host, forgeServer, forgeSignIn, forgeAccount } = request;
     if (section !== undefined && !isSettingsSectionId(section)) throw new Error('Unknown settings section');
     if (account !== undefined && !isSettingsAccountId(account)) throw new Error('Unknown settings account');
     if (release !== undefined && !isVersion(release)) throw new Error('Unknown release');
     if (host !== undefined && !this.deps.knownHost(host)) throw new Error('Unknown host');
+    // a forge server id is a host[:port][/path]; the settings view opens only a row it lists
+    if (forgeServer !== undefined && (forgeServer.length === 0 || forgeServer.length > 512)) throw new Error('Unknown Git hosting server');
+    if (forgeSignIn !== undefined && forgeSignIn !== true) throw new Error('Malformed Git hosting sign-in target');
+    // an account id is "<serverId>|<userId>"; the settings view opens only an account it lists on that server
+    if (forgeAccount !== undefined && (forgeServer === undefined || !forgeAccount.startsWith(`${forgeServer}|`) || forgeAccount.length > 1024)) throw new Error('Unknown Git hosting account');
     const target: SettingsTarget = {
       ...(section !== undefined ? { section } : {}),
       ...(account !== undefined ? { account } : {}),
       ...(release !== undefined ? { release } : {}),
       ...(host !== undefined ? { host } : {}),
+      ...(forgeServer !== undefined ? { forgeServer } : {}),
+      ...(forgeServer !== undefined && forgeSignIn === true ? { forgeSignIn } : {}),
+      ...(forgeAccount !== undefined ? { forgeAccount } : {}),
     };
-    const userTab = section === 'accounts' || account !== undefined || section === 'remoteHosts' || host !== undefined;
+    const userTab = section === 'accounts' || account !== undefined || section === 'remoteHosts' || host !== undefined || forgeServer !== undefined;
     if (this.open) {
       this.deps.overlay.send(OVERLAY_CHANNELS.settingsTarget, target);
       if (userTab && this.scope !== undefined && this.scope !== 'user') await this.reattach('user');

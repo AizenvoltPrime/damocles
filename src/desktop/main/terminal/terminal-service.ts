@@ -63,6 +63,7 @@ import type { Workspaces } from '../workspace/workspaces';
 import { linkPathStyle, type LinkBase, type LinkPathStyle } from './terminal-links';
 import { pasteChunks } from './terminal-paste';
 import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/project-location';
+import { envSpellings } from '../../../shared/env-spellings';
 import type { RemoteTerminalRecord } from '../remote/remote-state';
 import type { TerminalAppearance } from '../terminal-pick';
 import type { LaunchProfile } from './user-profiles';
@@ -191,6 +192,9 @@ export interface TerminalServiceDeps {
   readonly settings: () => TerminalServiceSettings;
   // a terminal's environment from its project's backend (null: the home folder), read at each spawn
   readonly env: (projectKey: string | null) => Promise<Record<string, string>>;
+  // a local shell process's git credential takeover (docs/invariants.md "GitHub and GitLab accounts"), given the
+  // GIT_CONFIG_PARAMETERS it inherits; undefined adds nothing
+  readonly gitCredentials: (projectKey: string | null, inheritedConfigParams: string | undefined) => Promise<TerminalGitCredentials | undefined>;
   // a remote project's OS, which its shells' paths and exit codes follow
   readonly osOf: (projectKey: string) => NodeJS.Platform;
   // the terminals on remote hosts, kept in remote-state.json; called on every change of the list
@@ -252,6 +256,13 @@ export interface CommandFacts {
   readonly exitCode: number | null;
 }
 
+// The variables of one local shell process's credential takeover and the registration that answers its git, which ends with
+// that process.
+export interface TerminalGitCredentials {
+  readonly env: Readonly<Record<string, string>>;
+  dispose(): void;
+}
+
 // The shell's settings plus those only main reads.
 export type TerminalServiceSettings = TerminalSettings & {
   readonly defaultProfile: string;
@@ -267,6 +278,7 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 // Characters of a dropped environment variable's name the log keeps.
 const MAX_LOGGED_ENV_NAME_CHARS = 100;
+const CONFIG_PARAMS_ENV = 'GIT_CONFIG_PARAMETERS';
 
 // One shell process's integration state; a restart starts a fresh one.
 interface ShellSession {
@@ -285,6 +297,8 @@ interface ShellSession {
   processName: string | null;
   // the spawn of this process was posted, so the pty host keeps its screen
   spawned: boolean;
+  // this process's credential registration, released when the process ends or its tab closes
+  gitCredentials?: TerminalGitCredentials | undefined;
   // the trusted events of each OSC 633 sequence by its index since the spawn, the latest MAX_TERMINAL_SCREEN_MARKS, which a
   // screen's marks name
   readonly marks: Map<number, TerminalShellEvent[]>;
@@ -421,6 +435,11 @@ export function terminalSettings(settings: SettingsStore): TerminalServiceSettin
   };
 }
 
+function releaseGitCredentials(shell: ShellSession): void {
+  shell.gitCredentials?.dispose();
+  shell.gitCredentials = undefined;
+}
+
 function newShellSession(cwd: string): ShellSession {
   return { nonce: newShellNonce(), stream: new Osc633Stream(), integrated: false, commandLine: null, running: null, cwd, processName: null, spawned: false, marks: new Map() };
 }
@@ -468,6 +487,8 @@ export class TerminalService {
   // one pty host per backend, started on its first spawn
   private readonly hosts = new Map<TerminalBackend, Host>();
   private shell: TerminalShell | undefined;
+  // dispose() ran: a credential registration that lands after it is released at once
+  private disposed = false;
   // The window layout's terminals as the window opened; a terminal started before restore() runs rewrites the saved list.
   private toRestore: PersistedTerminals | undefined;
   private nextId = 1;
@@ -1325,7 +1346,9 @@ export class TerminalService {
 
   // The terminal's tab goes, and its slot in its group or the editor; nothing reaches its host, and the caller publishes.
   private closeTab(id: string): void {
-    this.terminals.splice(this.terminals.findIndex((terminal) => terminal.id === id), 1);
+    const index = this.terminals.findIndex((terminal) => terminal.id === id);
+    releaseGitCredentials(this.terminals[index]!.shell);
+    this.terminals.splice(index, 1);
     const group = this.groupOf(id);
     if (group) this.leavePanel(id, group);
     else this.editor.splice(this.editor.indexOf(id), 1);
@@ -1610,6 +1633,8 @@ export class TerminalService {
     for (const terminal of this.terminals) if (terminal.status !== 'exited') terminal.task?.onExit(null);
     // a spawn still waiting on its environment is never posted
     for (const terminal of this.terminals) terminal.pending = undefined;
+    // the ptys' exit messages find no terminal once the list is cleared, so their registrations end here
+    for (const terminal of this.terminals) releaseGitCredentials(terminal.shell);
     this.terminals = [];
     this.groups = [];
     this.editor = [];
@@ -1641,6 +1666,8 @@ export class TerminalService {
   /** Quit: each host kills every pty and ends; one that does not end in time is killed. */
   async dispose(): Promise<void> {
     this.shell = undefined;
+    this.disposed = true;
+    for (const terminal of this.terminals) releaseGitCredentials(terminal.shell);
     for (const host of this.hosts.values()) if (host.persistent) host.process.kill();
     await Promise.all([...this.hosts.values()].filter((host) => !host.persistent).map(async (host) => {
       host.process.postMessage({ type: 'shutdown' });
@@ -1759,15 +1786,20 @@ export class TerminalService {
     // forProject throws while a remote project's host is not connected, which fails this spawn as a start error
     Promise.resolve().then(async () => {
       const backend = this.deps.workspaces.forProject(terminal.projectKey).terminals;
-      return { backend, request: await this.spawnRequest(terminal, backend, cwd) };
+      return { backend, request: await this.spawnRequest(terminal, shell, backend, cwd) };
     }).then(({ backend, request }) => {
-      if (!current()) return;
+      if (!current()) {
+        // the spawn is dropped, so its registration answers nothing
+        releaseGitCredentials(shell);
+        return;
+      }
       terminal.pending = undefined;
       terminal.backend = backend;
       this.ensureHost(backend, isRemoteKey(terminal.projectKey));
       this.post(terminal, request);
       for (const message of pending) this.post(terminal, message);
     }, (err: unknown) => {
+      releaseGitCredentials(shell);
       if (!current()) return;
       terminal.pending = undefined;
       const message = err instanceof Error ? err.message : String(err);
@@ -1775,12 +1807,17 @@ export class TerminalService {
     });
   }
 
-  private async spawnRequest(terminal: Terminal, backend: TerminalBackend, cwd: string): Promise<HostRequest> {
-    const env = { ...(await this.deps.env(terminal.projectKey)), ...(terminal.projectKey !== null ? this.deps.rootEnv(terminal.projectKey) : {}), ...terminal.task?.env };
+  private async spawnRequest(terminal: Terminal, shell: ShellSession, backend: TerminalBackend, cwd: string): Promise<HostRequest> {
+    const env: Record<string, string> = { ...(await this.deps.env(terminal.projectKey)), ...(terminal.projectKey !== null ? this.deps.rootEnv(terminal.projectKey) : {}), ...terminal.task?.env };
+    // Windows variable names are case-insensitive, so an inherited spelling left beside the takeover's could win in the shell
+    const spellings = envSpellings(env, CONFIG_PARAMS_ENV, this.osOf(terminal));
+    const inheritedKey = spellings.includes(CONFIG_PARAMS_ENV) ? CONFIG_PARAMS_ENV : spellings[0];
+    const credentials = await this.gitCredentialEnv(terminal, shell, inheritedKey === undefined ? undefined : env[inheritedKey]);
+    if (Object.hasOwn(credentials, CONFIG_PARAMS_ENV)) for (const key of spellings) if (key !== CONFIG_PARAMS_ENV) delete env[key];
     const { scrollback, shellIntegration } = this.deps.settings();
     const view = this.viewOf(terminal);
     if (terminal.task) {
-      return { type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1), [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows, scrollback, ...view };
+      return { type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1 + Object.keys(credentials).length), ...credentials, [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows, scrollback, ...view };
     }
     const injection = shellIntegration ? await backend.injection({ file: terminal.profile.file, args: terminal.profile.args, nonce: terminal.shell.nonce, env }) : undefined;
     return {
@@ -1789,12 +1826,38 @@ export class TerminalService {
       file: terminal.profile.file,
       args: [...(injection?.args ?? terminal.profile.args)],
       cwd,
-      env: { ...this.hostEnv(terminal, env, Object.keys(injection?.env ?? {}).length), ...injection?.env },
+      env: { ...this.hostEnv(terminal, env, Object.keys(injection?.env ?? {}).length + Object.keys(credentials).length), ...credentials, ...injection?.env },
       cols: terminal.cols,
       rows: terminal.rows,
       scrollback,
       ...view,
     };
+  }
+
+  // A local process's takeover variables, kept on its shell session until the process ends; a remote terminal's git uses its
+  // daemon's relay. The pty host ends on a variable it refuses, so a takeover holding one is not applied, and the log says so;
+  // a registration that fails starts the shell without the takeover too, so the user's own helpers answer.
+  private async gitCredentialEnv(terminal: Terminal, shell: ShellSession, inherited: string | undefined): Promise<Readonly<Record<string, string>>> {
+    if (terminal.projectKey !== null && isRemoteKey(terminal.projectKey)) return {};
+    let credentials: TerminalGitCredentials | undefined;
+    try {
+      credentials = await this.deps.gitCredentials(terminal.projectKey, inherited);
+    } catch (err) {
+      this.deps.log(`[terminal] starting ${terminal.profile.file} without the git credential takeover: ${err instanceof Error ? err.message : String(err)}`);
+      return {};
+    }
+    if (!credentials) return {};
+    // the tab closed, a restart replaced the process or the service was disposed while the registration was made
+    if (this.disposed || this.find(terminal.id) !== terminal || terminal.shell !== shell) {
+      credentials.dispose();
+      return {};
+    }
+    shell.gitCredentials = credentials;
+    const refused = Object.entries(credentials.env).filter(([key, value]) => value === '' || !isHostEnvEntry(key, value)).map(([key]) => key);
+    if (refused.length === 0) return credentials.env;
+    this.deps.log(`[terminal] starting ${terminal.profile.file} without the git credential takeover: the pty host refuses ${refused.join(', ')}`);
+    releaseGitCredentials(shell);
+    return {};
   }
 
   // What a daemon lists so its other clients can show a remote terminal; a local pty host has no other client.
@@ -1990,6 +2053,7 @@ export class TerminalService {
         terminal.status = 'exited';
         terminal.exitCode = null;
         terminal.restoring = 0;
+        releaseGitCredentials(terminal.shell);
         terminal.task?.onExit(null);
       }
       this.changed(false);
@@ -2040,6 +2104,7 @@ export class TerminalService {
         terminal.exitCode = message.exitCode;
         terminal.ended = true;
         terminal.restoring = 0;
+        releaseGitCredentials(terminal.shell);
         terminal.task?.onExit(message.exitCode);
         if (reason !== undefined) {
           const cwd = terminal.shell.cwd ?? terminal.launchCwd;
@@ -2055,6 +2120,7 @@ export class TerminalService {
         terminal.exitCode = null;
         terminal.ended = true;
         terminal.restoring = 0;
+        releaseGitCredentials(terminal.shell);
         terminal.task?.onExit(null);
         this.shell?.data({ id: terminal.id, data: `${this.deps.spawnFailed(message.message)}\r\n` });
         this.changed(isRemoteKey(terminal.projectKey));

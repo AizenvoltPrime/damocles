@@ -23,6 +23,7 @@ import { useTeamStore } from '@/stores/useTeamStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useMemoryStore } from '@/stores/useMemoryStore';
 import { useCompassStore } from '@/stores/useCompassStore';
+import { useForgeRefusalStore } from '@/stores/useForgeRefusalStore';
 import { useMessageHandler } from '../../index';
 import type { ExtensionToWebviewMessage, WorktreeStateData } from '@shared/types/messages';
 import type { StoredSession } from '@shared/types/session';
@@ -115,6 +116,19 @@ describe('a session reset closing the open tool overlay', () => {
 
     expect(uiStore.expandedToolId).toBeNull();
     expect(uiStore.expandedToolSource).toBeNull();
+  });
+
+  it.each([
+    ['sessionCleared', { type: 'sessionCleared' } as const],
+    ['conversationCleared', { type: 'conversationCleared' } as const],
+  ])('%s drops the refused-git notices, which are never stored or replayed', (_name, msg) => {
+    const ctx = context();
+    dispatch({ type: 'forgeShellRefused', toolCallId: 't-1', serverId: 'gitlab.com', serverLabel: 'gitlab.com', project: 'app', account: null, reason: 'noAccount' }, ctx);
+    expect(useForgeRefusalStore().refusals.has('t-1')).toBe(true);
+
+    dispatch(msg, ctx);
+
+    expect(useForgeRefusalStore().refusals.size).toBe(0);
   });
 });
 

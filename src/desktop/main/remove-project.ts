@@ -37,6 +37,8 @@ export interface RemoveProjectDeps {
   readonly discard: (chats: readonly WaitingChat[]) => Promise<void>;
   // unloads the project's worktree chats and removes it from the list
   readonly remove: (key: string) => Promise<void>;
+  // this computer's core drops the project's Git hosting account bindings; settles once done or reported
+  readonly forgetAccounts: (key: string) => Promise<void>;
   readonly t: Translate;
 }
 
@@ -62,6 +64,7 @@ export async function removeProject(key: string, deps: RemoveProjectDeps): Promi
   }
   if (waiting.length > 0) await deps.discard(waiting);
   await deps.remove(key);
+  await deps.forgetAccounts(key);
   return { ok: true };
 }
 

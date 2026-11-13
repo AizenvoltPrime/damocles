@@ -14,6 +14,8 @@ const props = defineProps<{
   label?: string | undefined;
   /** Replaces the row's static description, which search still matches. */
   description?: string | undefined;
+  /** Tells apart the rows one declared id repeats per data item (a Git hosting server); ids, test ids and labels then name it. */
+  instance?: string | undefined;
 }>();
 
 /** How long "Saved to {file}" stays before it fades (M7). */
@@ -30,7 +32,9 @@ const meta = computed(() => {
   return found;
 });
 const keys = computed(() => meta.value.keys ?? []);
-const visible = computed(() => page.listed(meta.value) && rowMatches(meta.value, page.query, t));
+const rowKey = computed(() => (props.instance === undefined ? props.id : `${props.id}-${props.instance}`));
+const shownTextMatches = (): boolean => [props.label, props.description].some((text) => text !== undefined && text.toLocaleLowerCase().includes(page.query));
+const visible = computed(() => page.listed(meta.value) && (rowMatches(meta.value, page.query, t) || shownTextMatches()));
 // The entrance plays only when the row's element is created, so a row takes a slot only as it appears.
 const index = ref(visible.value ? page.nextIndex() : STAGGERED_ROWS);
 watch(visible, (shown) => {
@@ -38,8 +42,8 @@ watch(visible, (shown) => {
 });
 const rowDelay = computed(() => (index.value < STAGGERED_ROWS ? `${index.value * ROW_STAGGER_MS}ms` : '0s'));
 
-watch(visible, (shown) => (shown ? page.show(props.id, meta.value.section) : page.hide(props.id)), { immediate: true });
-onBeforeUnmount(() => page.hide(props.id));
+watch(visible, (shown) => (shown ? page.show(rowKey.value, meta.value.section) : page.hide(rowKey.value)), { immediate: true });
+onBeforeUnmount(() => page.hide(rowKey.value));
 
 const label = computed(() => props.label ?? t(meta.value.label));
 const descriptionText = computed(() => props.description ?? (meta.value.description ? t(meta.value.description) : ''));
@@ -70,7 +74,7 @@ const savedText = computed(() => {
 });
 const savedPath = computed(() => (feedback.value?.kind === 'saved' ? feedback.value.file : undefined));
 const errorText = computed(() => (feedback.value?.kind === 'error' ? vt(feedback.value.error) : ''));
-const labelId = computed(() => `settings-row-label-${props.id}`);
+const labelId = computed(() => `settings-row-label-${rowKey.value}`);
 </script>
 
 <template>
@@ -78,12 +82,13 @@ const labelId = computed(() => `settings-row-label-${props.id}`);
     v-if="visible"
     class="sm-row"
     :style="{ '--sm-row-delay': rowDelay }"
-    :data-testid="`settings-row-${id}`"
+    :data-testid="`settings-row-${rowKey}`"
     role="group"
     :aria-labelledby="labelId"
   >
     <div class="sm-row-text">
       <div class="sm-row-label">
+        <slot name="label-start" />
         <span :id="labelId"><SettingsHighlight
           :text="label"
           :query="page.query"

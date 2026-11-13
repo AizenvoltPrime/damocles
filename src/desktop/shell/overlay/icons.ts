@@ -53,6 +53,7 @@ import {
   GitPullRequestArrow,
   Hash,
   History,
+  KeyRound,
   List,
   ListFilter,
   ListTree,
@@ -74,6 +75,7 @@ import {
   ScrollText,
   Search,
   Server,
+  Settings,
   Shapes,
   ShieldCheck,
   ShieldOff,
@@ -88,8 +90,11 @@ import {
   Trash2,
   Undo2,
   Ungroup,
+  UserRound,
   X,
 } from 'lucide-vue-next';
+import GithubMark from '@/components/icons/GithubMark.vue';
+import GitlabMark from '@/components/icons/GitlabMark.vue';
 import type { OverlayIcon, OverlayQuickPickIcon } from '../../preload/overlay-channels';
 
 export const OVERLAY_ICON_COMPONENTS: Readonly<Record<OverlayIcon, Component>> = {
@@ -144,8 +149,11 @@ export const OVERLAY_ICON_COMPONENTS: Readonly<Record<OverlayIcon, Component>> =
   'git-fork': GitFork,
   'git-merge': GitMerge,
   'git-pull-request-arrow': GitPullRequestArrow,
+  github: GithubMark,
+  gitlab: GitlabMark,
   hash: Hash,
   history: History,
+  'key-round': KeyRound,
   list: List,
   'list-filter': ListFilter,
   'list-tree': ListTree,
@@ -167,6 +175,7 @@ export const OVERLAY_ICON_COMPONENTS: Readonly<Record<OverlayIcon, Component>> =
   'scroll-text': ScrollText,
   search: Search,
   server: Server,
+  settings: Settings,
   shapes: Shapes,
   'shield-check': ShieldCheck,
   'shield-off': ShieldOff,
@@ -181,6 +190,7 @@ export const OVERLAY_ICON_COMPONENTS: Readonly<Record<OverlayIcon, Component>> =
   'trash-2': Trash2,
   'undo-2': Undo2,
   ungroup: Ungroup,
+  'user-round': UserRound,
   x: X,
 };
 

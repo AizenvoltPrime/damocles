@@ -100,6 +100,15 @@ describe('Sign-in needed card', () => {
     }
   });
 
+  it('says why the turn waits when its device is attached and its sign-ins are not known yet', async () => {
+    const card = await mountCard();
+    const message = 'The engine on the computer that started this chat is stopped, so this host has no sign-in for {0}. Restart the engine on that computer to continue.';
+    deliver({ type: 'signInRequest', requestId: 'w1', provider: 'anthropic', reason: { message, args: ['anthropic'] } });
+    await flushPromises();
+    expect(card.get('[data-testid="sign-in-body"]').text()).toBe('The engine on the computer that started this chat is stopped, so this host has no sign-in for anthropic. Restart the engine on that computer to continue.');
+    expect(card.text()).not.toContain('Sign in to Claude on a computer connected to prod-1.');
+  });
+
   it('keeps one card for a wait core posts again on a replay', async () => {
     await mountCard();
     deliver({ type: 'signInRequest', requestId: 'w1', provider: 'anthropic' });

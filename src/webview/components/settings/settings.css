@@ -361,6 +361,11 @@
   animation: d-up 0.3s var(--ease-out) both;
 }
 
+.sm-banner-warning {
+  background: color-mix(in srgb, var(--d-warning) 12%, transparent);
+  color: var(--d-warning-text);
+}
+
 .sm-banner-text {
   flex: 1 1 13.75rem;
   min-width: 0;
@@ -780,6 +785,10 @@ mark.sm-mark {
 
 .sm-account-status[data-state="busy"] {
   color: var(--d-accent);
+}
+
+.sm-account-status[data-state="warn"] {
+  color: var(--d-warning-text);
 }
 
 .sm-account-dot {

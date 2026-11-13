@@ -29,6 +29,10 @@ import BranchButton from './BranchButton.vue';
 import StashRow from './StashRow.vue';
 import ScmStateCard from './ScmStateCard.vue';
 import { scmStateCard } from './scm-state';
+import AccountChip from '../forge/AccountChip.vue';
+import { checkFailedNotice, chipServers, useRepoAccounts } from '../forge/repo-accounts';
+import PipelineChip from '../forge/PipelineChip.vue';
+import { useRepoCi } from '../forge/repo-ci';
 
 const props = defineProps<{
   api: DamoclesShellApi;
@@ -38,6 +42,8 @@ const props = defineProps<{
   viewMode: ScmViewMode;
   sortKey: ScmSortKey;
   collapsed: boolean;
+  // false while the sidebar is off screen: Source Control shows only while the sidebar is on and the section open
+  sidebarShown?: boolean | undefined;
   bodySize?: number | undefined;
   // the selected project's shown folder: the header names the place source control works on
   shown?: ShownFolder | undefined;
@@ -85,6 +91,80 @@ watch([repoId, amending], ([id, on]) => {
 }, { immediate: true });
 const commitLabel = computed(() => t('scm.commit.withShortcut', { label: amending.value ? t('scm.commit.amend') : t('scm.commit.commit'), shortcut: props.platform === 'darwin' ? '⌘Enter' : 'Ctrl+Enter' }));
 const untrackedChanges = computed(() => store.settings.value.untrackedChanges);
+// the account chip: the shown repository's accounts; the chip shows once main named at least one server Damocles knows.
+const accounts = useRepoAccounts(props.api.forge, repoId);
+const accountChip = ref<InstanceType<typeof AccountChip> | null>(null);
+const accountServers = computed(() => chipServers(accounts.view.value));
+const accountsLoading = computed(() => accounts.loading.value && accounts.view.value === null && !accounts.failed.value);
+// The chip mounts only after the loading chip's exit, so a read that names a server settles once the chip is there.
+const accountChipSettled = computed(() => !accountsLoading.value && (accountServers.value.length === 0 || accountChip.value !== null));
+function settledAccountChip(): Promise<InstanceType<typeof AccountChip> | null> {
+  if (accountChipSettled.value) return Promise.resolve(accountChip.value);
+  return new Promise((resolve) => {
+    const stop = watch(accountChipSettled, (done) => {
+      if (!done) return;
+      stop();
+      resolve(accountChip.value);
+    });
+  });
+}
+const checkFailed = computed(() => accountServers.value.flatMap((server) => {
+  const text = checkFailedNotice(server, t);
+  return text === undefined ? [] : [{ serverId: server.serverId, text }];
+}));
+// One polite region for account changes: sr-only for a menu choice, shown for an ask-once choice, whose git operation follows.
+const accountStatus = ref('');
+const accountStatusShown = ref(false);
+const accountAlert = ref('');
+// ms an ask-once status stays on screen
+const ACCOUNT_STATUS_MS = 10_000;
+let accountStatusTimer: ReturnType<typeof setTimeout> | undefined;
+
+function announceAccount(text: string, alert: boolean, shown = false): void {
+  clearTimeout(accountStatusTimer);
+  accountAlert.value = alert ? text : '';
+  accountStatus.value = '';
+  accountStatusShown.value = shown;
+  if (alert) return;
+  // the region empties first, so the same sentence twice is announced twice
+  void nextTick(() => {
+    accountStatus.value = text;
+    if (shown) accountStatusTimer = setTimeout(() => (accountStatusShown.value = false), ACCOUNT_STATUS_MS);
+  });
+}
+
+watch(accounts.chosen, (chosen) => {
+  const server = chosen && accounts.view.value?.servers.find((each) => each.serverId === chosen.serverId);
+  if (!chosen || !server) return;
+  const project = accounts.view.value!.project;
+  const login = server.accounts.find((account) => account.id === chosen.accountId)?.login;
+  // an account signed out since the choice has no login to name
+  if (chosen.accountId !== null && login === undefined) return;
+  const choice = chosen.accountId === null
+    ? t('forge.announce.ownCredentials', { project, server: server.server })
+    : t('forge.announce.account', { project, login, server: server.server });
+  // a credential request's choice names no git operation
+  announceAccount(chosen.operation === undefined ? choice : `${choice} ${t(`forge.operation.${chosen.operation}`)}`, false, true);
+});
+// The push server follows the current branch's upstream remote, which main's change push does not cover.
+watch(() => snapshot.value?.upstream?.remote, (remote, previous) => {
+  if (remote !== previous && accounts.view.value !== null) accounts.reload();
+});
+// the CI chip: main polls the shown repository's CI only while Source Control shows it.
+const ci = useRepoCi(props.api.forge, repoId, computed(() => props.sidebarShown !== false && !props.collapsed), t);
+const pipelineChip = ref<InstanceType<typeof PipelineChip> | null>(null);
+const ciStatus = computed(() => {
+  const status = ci.status.value;
+  return status === null || status.status === 'none' ? undefined : status;
+});
+
+watch(repoId, () => {
+  clearTimeout(accountStatusTimer);
+  accountStatus.value = '';
+  accountAlert.value = '';
+  accountStatusShown.value = false;
+});
+
 // VS Code's count badge (scm.countBadge 'all'): every change of every open repository of the project.
 const total = computed(() => (view.value?.repos ?? []).reduce((sum, each) => {
   const repoSnapshot = store.snapshots.value.get(each.repoId);
@@ -563,10 +643,30 @@ async function select(id: string): Promise<void> {
 
 // Palette commits run here, where the drafts are, on the repository main named; the view naming it may arrive later.
 const stopCommand = store.onCommand((command) => {
-  if (command.command !== 'commit' || !view.value?.repos.some((each) => each.repoId === command.repoId)) return;
+  if (!view.value?.repos.some((each) => each.repoId === command.repoId)) return;
+  if (command.command === 'chooseAccount') {
+    void (async () => {
+      await select(command.repoId);
+      await nextTick();
+      // with no chip (no server Damocles knows) the command opens the accounts instead of acting on nothing
+      const chip = await settledAccountChip();
+      if (chip) await chip.openMenu();
+      else await props.api.forge.openAccounts({});
+    })();
+    return;
+  }
+  if (command.command === 'showPipeline') {
+    void (async () => {
+      await select(command.repoId);
+      await nextTick();
+      await pipelineChip.value?.showJobs();
+    })();
+    return;
+  }
+  const { variant } = command;
   void (async () => {
     await select(command.repoId);
-    await commit(command.variant, command.repoId);
+    await commit(variant, command.repoId);
   })();
 });
 onBeforeUnmount(() => {
@@ -574,6 +674,7 @@ onBeforeUnmount(() => {
   stopArtifacts();
   clearTimeout(armTimer);
   clearInterval(ageTimer);
+  clearTimeout(accountStatusTimer);
 });
 </script>
 
@@ -584,18 +685,52 @@ onBeforeUnmount(() => {
     :collapsed="collapsed"
     :body-size="bodySize"
     data-testid="scm-section"
-    :has-chip="!!shown?.worktree"
+    :has-chip="!!shown?.worktree || accountServers.length > 0 || accountsLoading"
     @toggle="emit('toggle')"
   >
     <template #chip>
-      <Transition name="t-chip">
-        <FilesBranchChip
-          v-if="shown?.worktree"
-          :api="api"
-          :shown="shown"
-          :new-chat-shortcut="newChatInWorktreeShortcut"
-        />
-      </Transition>
+      <span class="flex max-w-full min-w-0 items-center">
+        <Transition name="t-chip">
+          <FilesBranchChip
+            v-if="shown?.worktree"
+            :api="api"
+            :shown="shown"
+            :new-chat-shortcut="newChatInWorktreeShortcut"
+          />
+        </Transition>
+        <Transition
+          name="t-chip"
+          mode="out-in"
+        >
+          <span
+            v-if="accountsLoading"
+            role="status"
+            aria-busy="true"
+            :aria-label="t('forge.chip.loading')"
+            data-testid="forge-account-chip-loading"
+            class="ms-1 flex h-4.5 w-24 shrink items-center gap-1 rounded-full bg-(--d-hover) ps-0.5"
+          >
+            <span
+              aria-hidden="true"
+              class="relative block size-3.5 shrink-0 overflow-hidden rounded-full bg-(--d-border2) text-(--d-text)"
+            ><span class="d-sheen" /></span>
+            <span
+              aria-hidden="true"
+              class="relative block h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-(--d-border2) text-(--d-text)"
+            ><span class="d-sheen" /></span>
+          </span>
+          <AccountChip
+            v-else-if="accountServers.length > 0 && accounts.view.value && repoId !== undefined"
+            ref="accountChip"
+            :api="api"
+            :repo-id="repoId"
+            :view="accounts.view.value"
+            :servers="accountServers"
+            :compact="!!shown?.worktree"
+            @announce="announceAccount"
+          />
+        </Transition>
+      </span>
     </template>
     <template #badge>
       <Transition name="t-badge">
@@ -712,11 +847,18 @@ onBeforeUnmount(() => {
             <div
               v-if="snapshot.head"
               data-testid="scm-branch-row"
-              class="flex items-center gap-1.5"
+              class="@container/branchrow flex items-center gap-1.5"
             >
               <BranchButton
                 :snapshot="snapshot"
                 :head="snapshot.head"
+              />
+              <PipelineChip
+                v-if="ciStatus && repoId !== undefined"
+                ref="pipelineChip"
+                :api="api"
+                :repo-id="repoId"
+                :status="ciStatus"
               />
               <SyncButton
                 v-if="snapshot.remotes.length > 0"
@@ -739,6 +881,55 @@ onBeforeUnmount(() => {
                 class="cursor-pointer text-(--d-accent-text) underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
                 @click="projectKey !== undefined && run({ op: notice.op, projectKey })"
               >{{ notice.label }}</button></span>
+            </p>
+            <p
+              v-for="server in checkFailed"
+              :key="`check:${server.serverId}`"
+              role="status"
+              data-testid="forge-check-failed"
+              class="flex items-start gap-1.5 text-11 text-(--d-warning-text)"
+            >
+              <TriangleAlert
+                aria-hidden="true"
+                class="mt-0.5 size-3 shrink-0"
+              />
+              <span class="min-w-0 flex-1">{{ server.text }} <button
+                type="button"
+                class="cursor-pointer text-(--d-accent-text) underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
+                @click="accounts.retry()"
+              >{{ t('forge.notice.retry') }}</button></span>
+            </p>
+            <p
+              v-if="accounts.failed.value"
+              role="alert"
+              data-testid="forge-accounts-failed"
+              class="flex items-start gap-1.5 text-11 text-(--d-warning-text)"
+            >
+              <TriangleAlert
+                aria-hidden="true"
+                class="mt-0.5 size-3 shrink-0"
+              />
+              <span class="min-w-0 flex-1">{{ t('forge.notice.readFailed') }} <button
+                type="button"
+                class="cursor-pointer text-(--d-accent-text) underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
+                @click="accounts.reload()"
+              >{{ t('forge.notice.retry') }}</button></span>
+            </p>
+            <p
+              v-if="accountAlert"
+              role="alert"
+              data-testid="forge-account-alert"
+              class="text-11 text-(--d-danger-text)"
+            >
+              {{ accountAlert }}
+            </p>
+            <p
+              role="status"
+              aria-live="polite"
+              data-testid="forge-account-status"
+              :class="accountStatusShown ? 'text-11 text-(--d-success-text)' : 'sr-only'"
+            >
+              {{ accountStatus }}
             </p>
             <CommitBox
               ref="commitBox"

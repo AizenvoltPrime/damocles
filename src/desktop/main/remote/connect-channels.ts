@@ -1,4 +1,5 @@
 import {
+  isAlwaysForgeAccount,
   MAX_HELD_MEMORY_QUEUE_ID_LENGTH,
   MAX_HOST_INPUT_LENGTH,
   MAX_HOST_NAME_LENGTH,
@@ -54,6 +55,7 @@ export interface ConnectActions {
   entries(): readonly RemoteHostEntry[];
   setSetting(hostId: string, change: HostSettingChange): Promise<void>;
   revokeCredentialHost(hostId: string, credentialHost: string): Promise<void>;
+  revokeForgeAccount(hostId: string, accountId: string): Promise<void>;
   deliverHeldMemory(hostId: string, queueId: string): Promise<HeldMemoryResult>;
   discardHeldMemory(hostId: string, queueId: string): Promise<HeldMemoryResult>;
   setUpPasswordless(hostId: string): Promise<PasswordlessResult>;
@@ -167,6 +169,11 @@ export function registerConnectChannels(overlay: ConnectOverlay, actions: Connec
     const call = exactFields(raw, ['hostId', 'credentialHost']);
     if (!call || !isToken(call['hostId']) || !isCredentialHost(call['credentialHost'])) throw malformed('hosts.revokeCredential');
     return actions.revokeCredentialHost(call['hostId'], call['credentialHost']);
+  });
+  onHosts(OVERLAY_CHANNELS.hostsRevokeForgeAccount, (raw) => {
+    const call = exactFields(raw, ['hostId', 'account']);
+    if (!call || !isToken(call['hostId']) || !isAlwaysForgeAccount(call['account'])) throw malformed('hosts.revokeForgeAccount');
+    return actions.revokeForgeAccount(call['hostId'], call['account'].accountId);
   });
   const heldMemoryCall = (raw: unknown, name: string): { readonly hostId: string; readonly queueId: string } => {
     const call = exactFields(raw, ['hostId', 'queueId']);

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Check, LoaderCircle, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { CONNECT_STEPS, type ConnectStep, type ConnectStepEvent, type InstallFolderResult } from '../../../preload/overlay-channels';
 import InstallFolderField from './InstallFolderField.vue';
 import SecretPrompt from './SecretPrompt.vue';
+import TimelineStepRow from './TimelineStepRow.vue';
 import BuildLogTail from './BuildLogTail.vue';
 import { failureText, needsInstallFolder } from '../connect-text';
 
@@ -96,152 +96,105 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
       :aria-label="t('remote.timeline.steps')"
       class="flex flex-col"
     >
-      <li
+      <TimelineStepRow
         v-for="(row, index) in rows"
         :key="row.name"
-        :data-step="row.name"
-        :data-state="row.state"
-        class="timeline-row relative grid grid-cols-[1.5rem_1fr] gap-x-3 pb-4.5 last:pb-0"
-        :style="{ '--row-index': index }"
+        :step="row.name"
+        :state="row.state"
+        :index="index"
+        :last="index === rows.length - 1"
       >
-        <span
-          v-if="index < rows.length - 1"
-          aria-hidden="true"
-          class="absolute top-6 bottom-0 left-3 -ml-px w-0.5 bg-(--d-border)"
-        >
+        <template #label>
+          {{ stepLabel(row.name) }}
+        </template>
+        <template v-if="row.state === 'active' && row.name === 'installing' && percent !== undefined">
+          <span class="text-11.5 text-(--d-muted) tabular-nums">{{ t('remote.timeline.percent', { percent }) }}</span>
+          <!-- Drawn, not a second progressbar: the timeline's progressbar carries this value in its text. -->
           <span
-            class="timeline-line block size-full origin-top bg-(--d-success)"
-            :class="row.state === 'done' ? 'scale-y-100' : 'scale-y-0'"
-          />
-        </span>
-        <span
-          aria-hidden="true"
-          class="relative z-1 grid size-6 place-items-center rounded-full border-[1.5px] bg-(--d-card) transition-colors duration-200"
-          :class="{
-            'border-(--d-border2) text-(--d-faint)': row.state === 'pending',
-            'border-(--d-accent) text-(--d-accent)': row.state === 'active',
-            'border-(--d-success) bg-[color-mix(in_srgb,var(--d-success)_16%,var(--d-card))] text-(--d-success)': row.state === 'done',
-            'border-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger)_16%,var(--d-card))] text-(--d-danger)': row.state === 'failed',
-          }"
-        >
-          <Transition
-            name="t-icon"
-            mode="out-in"
+            aria-hidden="true"
+            class="mt-1.5 h-1 max-w-80 overflow-hidden rounded-full bg-(--d-border)"
           >
-            <Check
-              v-if="row.state === 'done'"
-              key="done"
-              class="size-3"
-            />
-            <X
-              v-else-if="row.state === 'failed'"
-              key="failed"
-              class="size-3"
-            />
             <span
-              v-else-if="row.state === 'active'"
-              key="active"
-              class="grid place-items-center"
-            >
-              <LoaderCircle class="timeline-spinner d-spinning size-3" />
-              <span class="timeline-ellipsis text-11 leading-none font-semibold">…</span>
-            </span>
-          </Transition>
-        </span>
-        <div class="flex min-w-0 flex-col">
+              data-testid="install-progress"
+              class="timeline-bar block h-full rounded-full bg-(--d-accent)"
+              :style="{ transform: `scaleX(${progress})` }"
+            />
+          </span>
+        </template>
+        <!-- The build's output while it runs, and under its failure; a finished build leaves only its check mark. -->
+        <BuildLogTail
+          v-if="row.name === 'building' && row.state !== 'done' && event.buildLog"
+          class="timeline-grow"
+          :lines="event.buildLog.lines"
+          :total="event.buildLog.total"
+          :host-name="hostName"
+        />
+        <SecretPrompt
+          v-if="row.state === 'active' && prompt"
+          :key="prompt.promptId"
+          class="timeline-grow mt-2"
+          :prompt="prompt"
+          @answer="(answer, remember) => emit('answer', prompt!.promptId, answer, remember)"
+        />
+        <template v-if="row.name === failureRow && failure">
+          <p
+            role="alert"
+            data-testid="connect-failure"
+            :data-code="shownFailure?.code"
+            class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
+          >
+            {{ failure }}
+          </p>
+          <InstallFolderField
+            v-if="choosingFolder"
+            class="mt-2"
+            :save="setInstallFolder"
+            @saved="choosingFolder = false; emit('retry')"
+          />
           <span
-            class="text-13/6  font-medium"
-            :class="row.state === 'pending' ? 'text-(--d-faint-text)' : row.state === 'failed' ? 'text-(--d-danger-text)' : ''"
-          >{{ stepLabel(row.name) }}</span>
-          <template v-if="row.state === 'active' && row.name === 'installing' && percent !== undefined">
-            <span class="text-11.5 text-(--d-muted) tabular-nums">{{ t('remote.timeline.percent', { percent }) }}</span>
-            <!-- Drawn, not a second progressbar: the timeline's progressbar carries this value in its text. -->
-            <span
-              aria-hidden="true"
-              class="mt-1.5 h-1 max-w-80 overflow-hidden rounded-full bg-(--d-border)"
+            data-failure-actions
+            class="mt-2.5 flex flex-wrap items-center gap-1.5"
+          >
+            <Button
+              v-if="needsInstallFolder(shownFailure) && !choosingFolder"
+              type="button"
+              size="sm"
+              class="h-6 rounded-7 px-2 text-11 font-semibold"
+              @click="choosingFolder = true"
             >
-              <span
-                data-testid="install-progress"
-                class="timeline-bar block h-full rounded-full bg-(--d-accent)"
-                :style="{ transform: `scaleX(${progress})` }"
-              />
-            </span>
-          </template>
-          <!-- The build's output while it runs, and under its failure; a finished build leaves only its check mark. -->
-          <BuildLogTail
-            v-if="row.name === 'building' && row.state !== 'done' && event.buildLog"
-            class="timeline-grow"
-            :lines="event.buildLog.lines"
-            :total="event.buildLog.total"
-            :host-name="hostName"
-          />
-          <SecretPrompt
-            v-if="row.state === 'active' && prompt"
-            :key="prompt.promptId"
-            class="timeline-grow mt-2"
-            :prompt="prompt"
-            @answer="(answer, remember) => emit('answer', prompt!.promptId, answer, remember)"
-          />
-          <template v-if="row.name === failureRow && failure">
-            <p
-              role="alert"
-              data-testid="connect-failure"
-              :data-code="shownFailure?.code"
-              class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
+              {{ t('remote.installFolder.choose') }}
+            </Button>
+            <Button
+              v-if="canRetry"
+              type="button"
+              :variant="needsInstallFolder(shownFailure) ? 'outline' : 'default'"
+              size="sm"
+              class="h-6 rounded-7 px-2 text-11 font-semibold"
+              @click="emit('retry')"
             >
-              {{ failure }}
-            </p>
-            <InstallFolderField
-              v-if="choosingFolder"
-              class="mt-2"
-              :save="setInstallFolder"
-              @saved="choosingFolder = false; emit('retry')"
-            />
-            <span
-              data-failure-actions
-              class="mt-2.5 flex flex-wrap items-center gap-1.5"
+              {{ t('remote.timeline.retry') }}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              class="h-6 rounded-7 border-(--d-border2) bg-(--d-card) px-2 text-11"
+              @click="emit('showLog')"
             >
-              <Button
-                v-if="needsInstallFolder(shownFailure) && !choosingFolder"
-                type="button"
-                size="sm"
-                class="h-6 rounded-7 px-2 text-11 font-semibold"
-                @click="choosingFolder = true"
-              >
-                {{ t('remote.installFolder.choose') }}
-              </Button>
-              <Button
-                v-if="canRetry"
-                type="button"
-                :variant="needsInstallFolder(shownFailure) ? 'outline' : 'default'"
-                size="sm"
-                class="h-6 rounded-7 px-2 text-11 font-semibold"
-                @click="emit('retry')"
-              >
-                {{ t('remote.timeline.retry') }}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                class="h-6 rounded-7 border-(--d-border2) bg-(--d-card) px-2 text-11"
-                @click="emit('showLog')"
-              >
-                {{ t('remote.card.showLog') }}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                class="h-6 rounded-7 px-2 text-11 text-(--d-muted)"
-                @click="emit('editHost')"
-              >
-                {{ t('remote.timeline.editHost') }}
-              </Button>
-            </span>
-          </template>
-        </div>
-      </li>
+              {{ t('remote.card.showLog') }}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-6 rounded-7 px-2 text-11 text-(--d-muted)"
+              @click="emit('editHost')"
+            >
+              {{ t('remote.timeline.editHost') }}
+            </Button>
+          </span>
+        </template>
+      </TimelineStepRow>
     </ol>
     <p
       v-if="event.step === 'connected' && otherDevices > 0"

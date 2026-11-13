@@ -587,10 +587,11 @@ export class McpManager {
    * so a repository had no hand in it. This is the single chokepoint feeding the live MCP clients.
    */
   getEnabledServers(folderKey: string): McpScope {
-    if (!this.isMasterEnabled()) return { userUnion: {}, userVisible: [], folder: {} };
+    const relayed = this.platform.remote ? { relayed: [...this.relayed.keys()] } : {};
+    if (!this.isMasterEnabled()) return { userUnion: {}, userVisible: [], folder: {}, ...relayed };
     const userUnion = this.userUnion();
     const state = this.stateFor(folderKey, "getEnabledServers");
-    if (!state) return { userUnion, userVisible: [], folder: {} };
+    if (!state) return { userUnion, userVisible: [], folder: {}, ...relayed };
 
     const target = this.folders().find(candidate => candidate.key === folderKey)!;
     const trusted = this.isFolderTrusted(folderKey);
@@ -604,6 +605,7 @@ export class McpManager {
           .filter(entry => trusted || !isRepoAuthored(entry))
           .map(entry => [entry.name, serverSpec(entry, entry.config!, target.fsPath, trusted)]),
       ),
+      ...relayed,
     };
   }
 

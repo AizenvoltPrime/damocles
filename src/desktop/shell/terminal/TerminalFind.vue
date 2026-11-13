@@ -8,10 +8,11 @@ import { Toggle } from '@/components/ui/toggle';
 import { searchDecorations, watchHostTheme } from './terminal-theme';
 
 // The terminal's find widget, in the editor's find widget style: a card hanging from the pane's top edge with the query, the
-// three match options, the match count and previous, next and close.
-const props = defineProps<{ search: SearchAddon }>();
+// three match options, the match count and previous, next and close. search is any source shaped like SearchAddon's find calls;
+// countLimit is where it stops counting, a count that reaches it reading "10,000+".
+const props = defineProps<{ search: Pick<SearchAddon, 'findNext' | 'findPrevious' | 'clearDecorations' | 'onDidChangeResults'>; label?: string | undefined; countLimit?: number | undefined }>();
 const emit = defineEmits<{ close: [] }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const input = ref<HTMLInputElement | null>(null);
 const query = ref('');
@@ -51,6 +52,11 @@ const status = computed(() => {
   if (query.value === '' || !results.value) return '';
   const { index, count } = results.value;
   if (count === 0) return t('terminal.find.none');
+  if (props.countLimit !== undefined && count >= props.countLimit) {
+    const format = new Intl.NumberFormat(locale.value);
+    const limit = format.format(props.countLimit);
+    return index < 0 ? t('terminal.find.countOver', { count: limit }) : t('terminal.find.positionOver', { index: format.format(index + 1), count: limit });
+  }
   return index < 0 ? t('terminal.find.count', { count }, count) : t('terminal.find.position', { index: index + 1, count });
 });
 
@@ -108,7 +114,7 @@ const OPTIONS = [
         spellcheck="false"
         autocomplete="off"
         data-testid="terminal-find-input"
-        :aria-label="t('terminal.find.label')"
+        :aria-label="label ?? t('terminal.find.label')"
         :aria-invalid="invalid || undefined"
         :placeholder="t('terminal.find.placeholder')"
         class="min-w-0 flex-1 border-0 bg-transparent text-xs text-(--d-text) outline-none placeholder:text-(--d-faint)"

@@ -39,6 +39,8 @@ files:
   # The askpass scripts ship from dist/askpass, where the desktop build set their mode; resources/askpass is their source.
   - dist/askpass-main.js
   - dist/askpass/**
+  # Git's credential helper for the Git hosting accounts, from dist/git-credential where the desktop build set its mode.
+  - dist/git-credential/**
   # The damocles command's program, which resources/bin/damocles(.cmd) runs under the app's binary as Node.
   - dist/cli.js
   # Nothing loads source maps at runtime (no --enable-source-maps); they were a quarter of app.asar.
@@ -46,7 +48,7 @@ files:
   - l10n/**
   - resources/**
   - '!resources/askpass{,/**}'
-  # the git credential relay runs only on a target, from a server package
+  # the credential helper's source; it ships from dist/git-credential
   - '!resources/git-credential{,/**}'
   # the damocles command's scripts ship beside app.asar from dist/bin (extraResources); resources/server-bin is a server package's
   - '!resources/bin{,/**}'
@@ -109,6 +111,7 @@ asarUnpack:
   - dist/watch-worker.js
   - dist/askpass-main.js
   - dist/askpass/**
+  - dist/git-credential/**
   - dist/cli.js
   - resources/grammars/**
   - resources/shell-integration/**

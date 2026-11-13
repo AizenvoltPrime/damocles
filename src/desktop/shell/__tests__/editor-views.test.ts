@@ -31,6 +31,8 @@ class FakeModel {
     this.uri = uri;
   }
   getValue(): string { return this.text; }
+  version = 1;
+  getAlternativeVersionId(): number { return this.version; }
   setEOL(): void {}
   updateOptions(): void {}
   detectIndentation(): void {}
@@ -44,6 +46,7 @@ class FakeModel {
   type(text: string): void {
     const changes = [{ rangeOffset: 0, rangeLength: this.text.length, text }];
     this.text = text;
+    this.version++;
     for (const listener of [...this.listeners]) listener({ changes });
   }
   dispose(): void { this.disposed = true; }
@@ -434,6 +437,35 @@ describe('a text tab\'s view state', () => {
     await flushPromises();
     expect(editors[0]!.disposed).toBe(true);
     expect(editors[0]!.setModelCalls.filter((call) => call.model !== null)).toEqual([]);
+  });
+
+  it('is not shown again by a push of the same tab, and is by a change of what the editor shows', async () => {
+    const code = tab('a', { title: 'a.ts' });
+    const { api, store } = await setup(state([code]), { 'doc-a': text('doc-a', 'const a = 1;') });
+    const wrapper = mountWith(CodeEditor, store, props(api, code));
+    await flushPromises();
+    expect(editors[0]!.setModelCalls).toHaveLength(1);
+
+    await wrapper.setProps({ tab: { ...code } });
+    await flushPromises();
+    expect(editors[0]!.setModelCalls).toHaveLength(1);
+
+    await wrapper.setProps({ tab: { ...code, readOnly: true } });
+    await flushPromises();
+    expect(editors[0]!.setModelCalls).toHaveLength(2);
+  });
+
+  it('keeps an edit main has not heard of as modified across a push of the same tab', async () => {
+    const code = tab('a', { title: 'a.ts', git: { repoId: 'r1', path: 'a.ts' } });
+    const { api, store } = await setup(state([code]), { 'doc-a': text('doc-a', 'const a = 1;') });
+    const wrapper = mountWith(CodeEditor, store, props(api, code));
+    await flushPromises();
+    (editors[0]!.model as FakeModel).type('const a = 2;');
+
+    await wrapper.setProps({ tab: { ...code } });
+    await flushPromises();
+    await store.runCommand('copyPermalink');
+    expect(api.forge.link).toHaveBeenCalledWith(expect.objectContaining({ action: 'copyPermalink', modified: true }));
   });
 
   it('comes back for a diff tab, which is keyed by its tab and unmounts whenever another tab shows', async () => {

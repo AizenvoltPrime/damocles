@@ -42,6 +42,7 @@ function fakeWsl(answer: (stdin: string, emit: (line: string) => void, exit: (co
       end: () => undefined,
       exited,
       closed: exited.then(() => undefined),
+      leftRunning: exited.then(() => false),
       kill: () => {
         kills++;
         finish({ code: null, signal: 'SIGTERM' } as ProcessExit);

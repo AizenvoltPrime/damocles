@@ -184,6 +184,7 @@ describe('LauncherStdioTransport framing, as pi-mcp frames', () => {
       pid: Promise.resolve(4242),
       exited: pending,
       closed: pending,
+      leftRunning: pending,
       onData: () => undefined,
       write: () => Promise.reject(epipe),
       end: () => undefined,

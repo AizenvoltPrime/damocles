@@ -1618,6 +1618,20 @@ describe('source control tab actions', () => {
     expect(asked).toEqual([]);
   });
 
+  it('closes a gone repository\'s job log tabs, and names a GitHub job by its workflow', async () => {
+    const gone = pane.showJobLog({ repoId: 'repo-1', jobId: 9203, jobName: 'unit', pipelineNumber: 4312, state: 'running' }, { focus: false });
+    pane.showJobLog({ repoId: 'repo-2', jobId: 9401, jobName: 'test', workflow: 'CI', state: 'passed' }, { focus: false });
+    let closed = false;
+    void pane.whenClosed(gone).then(() => (closed = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(states.at(-1)!.tabs.filter((tab) => tab.jobLog).map((tab) => tab.displayPath)).toEqual(['unit #4312', 'CI / test']);
+    await pane.closeChanges('repo-1');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(states.at(-1)!.tabs.filter((tab) => tab.jobLog).map((tab) => tab.jobLog!.repoId)).toEqual(['repo-2']);
+    expect(closed).toBe(true);
+    expect(asked).toEqual([]);
+  });
+
   it('closes a gone repository\'s diff tabs, turns one with unsaved edits into its file\'s tab in place, and leaves other tabs alone', async () => {
     write('clean.ts', 'clean');
     write('dirty.ts', 'disk');

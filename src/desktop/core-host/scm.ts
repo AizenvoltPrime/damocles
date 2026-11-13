@@ -1,10 +1,16 @@
 // Damocles Core's source control: the one git runner, askpass server and ScmService of the app (one process owns every git
 // queue), served to desktop main over scm.* with a mirror of what main reads synchronously (docs/invariants.md "Desktop host").
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
 import { agentSocketPath } from '../../core/client-snapshots';
-import { createAskpassServer, removeAbandonedSocketFolders, type AskpassServer, type RelayCredential } from '../../core/scm/askpass/askpass-server';
+import { createAskpassServer, removeAbandonedSocketFolders, type AskpassRegistration, type AskpassServer, type RelayCredential } from '../../core/scm/askpass/askpass-server';
 import { createRelayedPasswords, installCredentialRelay, type CredentialRelay } from '../../core/scm/askpass/credential-relay';
+import { credentialHelperPath, installCredentialHelper, managedEntries, managedUrls, type CredentialTakeover, type ManagedServer } from '../../core/scm/askpass/credential-config';
+import { createDelegator } from '../../core/forge/delegate';
+import { currentPin, runHoldsPin } from '../../core/client-snapshots';
+import type { GitCredentialAnswer, GitCredentialOrigin, GitCredentialRequest } from '../../shared/git-credential';
+import { knownSecrets } from '../../core/forge/known-secrets';
 import { generateCommitMessage } from '../../core/scm/commit-message';
 import { gitErrorText } from '../../core/scm/errors';
 import { createGitRunner, type GitCloner, type GitRunner } from '../../core/scm/git-runner';
@@ -33,6 +39,18 @@ export interface CoreScm extends Disposable {
   onDidChangeProjectRepository(listener: (projectPath: string) => void): Disposable;
   // closes the askpass server, whose POSIX socket folder is removed only once the close finishes
   close(): Promise<void>;
+  // this computer's core: git credential requests are answered by answer, and managed names the servers each origin's
+  // takeover covers (docs/invariants.md "GitHub and GitLab accounts")
+  connectCredentials(source: CredentialSource): void;
+  // the listed project folders by project key, never a chat worktree root
+  projectFolders(): ReadonlyMap<string, string>;
+  // a prompt registration for a delegation's own sign-in prompts, through the askpass bridge
+  askpassFor(label: string): Promise<AskpassRegistration>;
+}
+
+export interface CredentialSource {
+  readonly answer: RelayCredential;
+  readonly managed: (origin: GitCredentialOrigin) => readonly ManagedServer[];
 }
 
 // The facts main reads off a repository synchronously (ScmService.repository and snapshot).
@@ -68,6 +86,10 @@ function repositoryRead(repo: Repository, method: RepositoryCall, args: readonly
       return repo.commitObject(first as string);
     case 'show':
       return repo.show(first as 'index' | 'HEAD', second as string);
+    case 'unpushedCount':
+      return repo.unpushedCount(first as string);
+    case 'ignoresCase':
+      return repo.ignoresCase();
   }
 }
 
@@ -89,9 +111,12 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
       return true;
     });
   };
-  // the relay follows the acting client (D20), never an actor: its server's connections keep the context of whatever work listened
-  const asNoActor = <T>(send: () => T): T => processActor.run(undefined, send);
-  const relayCredential: RelayCredential = async ({ op, cwd, fields, passwordHash }, signal) => {
+  // the askpass server's connections keep the context of whatever work listened, so its actor is never the asker: a relay
+  // names its client, undefined for the acting one (D20), and the acting one is read with no actor
+  const actingClient = (): string | undefined => processActor.run(undefined, () => platform.remote?.clients.acting());
+  const relayCredential = async ({ op, cwd, fields, passwordHash }: GitCredentialRequest, clientId: string | undefined, signal: AbortSignal): Promise<GitCredentialAnswer> => {
+    // a credential git approves never leaves the target
+    if (op === 'store') return { kind: 'none' };
     if (op === 'erase') {
       if (passwordHash === undefined) {
         if (!loggedUnnamedErase) {
@@ -101,19 +126,122 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
         return { kind: 'none' };
       }
       if (!relayedPasswords.refused(fields, passwordHash)) return { kind: 'none' };
-      return asNoActor(() => endpoint.request('askpass.credential', { op, fields, targetHelper: false }, signal));
+      return processActor.run(clientId, () => endpoint.request('askpass.credential', { op, fields, targetHelper: false }, signal));
     }
     const targetHelper = await helperProbe(cwd, `${fields.protocol}://${fields.host}/${fields.path ?? ''}`);
-    const answer = await asNoActor(() => endpoint.request('askpass.credential', { op, fields, targetHelper }, signal));
-    if (answer.kind === 'credential') relayedPasswords.answered(fields, answer.password);
+    const answer = await processActor.run(clientId, () => endpoint.request('askpass.credential', { op, fields, targetHelper }, signal));
+    if (answer.kind === 'credential') {
+      relayedPasswords.answered(fields, answer.password);
+      // masked in this core's tool results, in memory only, for the window a relayed token lives
+      knownSecrets().answered(answer.password);
+    }
     return answer;
+  };
+  // this computer's core: the forge's answers once connected; a daemon's: its takeover below. Until then a helper fails
+  // with Damocles' line.
+  let source: CredentialSource | undefined;
+  const answerCredential: RelayCredential = (request, origin, signal) => {
+    if (!source) throw new Error('Git credentials are not connected yet');
+    return source.answer(request, origin, signal);
   };
   const askpass: AskpassServer = createAskpassServer({
     paths: init.paths.askpass,
     prompt: credentialPrompt((prompt, signal) => endpoint.request('askpass.prompt', prompt, signal)),
-    ...(init.remote ? { credential: relayCredential } : {}),
+    credential: answerCredential,
     log: (line) => gitLog.appendLine(line),
   });
+
+  // A daemon's core (docs/invariants.md "GitHub and GitLab accounts", remote): the takeover covers the managed servers
+  // (clientForges) of the client a request goes to, the turn's pinned one for an agent shell; that client's core answers
+  // from its accounts, and a delegate answer runs the target's own helpers first, then today's relay.
+  const remoteHost = platform.remote;
+  const clientServers = (clientId: string | undefined): ManagedServer[] => (clientId === undefined || !remoteHost ? [] : (remoteHost.clients.forges(clientId)?.servers ?? []).filter((server) => server.hasAccount));
+  const isManaged = (servers: readonly ManagedServer[], fields: GitCredentialRequest['fields']): boolean => {
+    if (fields.protocol !== 'https') return false;
+    const asked = `https://${fields.host.toLowerCase()}/${fields.path ?? ''}`;
+    return servers.some((server) => managedUrls(server).some((url) => asked.startsWith(`${url}/`)));
+  };
+  // the tokens the takeover relayed, for an erase naming one; and what the target's own helpers gave, for its store and erase
+  const forgeRelayed = createRelayedPasswords();
+  const targetDelegated = new Map<string, Buffer>();
+  const targetDelegator = createDelegator({
+    git: () => runner?.git.path,
+    trustedProjectAt: (cwd) => {
+      const project = service.trustedProjectAt(cwd);
+      return typeof project === 'string' ? project : undefined;
+    },
+    log: (line) => gitLog.appendLine(line),
+  });
+  const hashOf = (password: string): Buffer => createHash('sha256').update(password, 'utf8').digest();
+  const namesHeld = (held: Buffer | undefined, named: string | undefined): boolean => held !== undefined && named !== undefined && /^[0-9a-f]{64}$/.test(named) && timingSafeEqual(held, Buffer.from(named, 'hex'));
+  const daemonCredential: RelayCredential = async (request, origin, signal) => {
+    // an agent shell asks only the client its turn was pinned to when the shell started, while a running turn of its chat
+    // still holds that pin, never whoever acts now
+    const { op, cwd, fields } = request;
+    if (origin.kind === 'agentShell' && (origin.clientId === undefined || !runHoldsPin(origin.panelId, origin.clientId))) {
+      gitLog.appendLine(`[askpass] an agent shell asked for ${fields.host} while no running turn of its chat holds the client it started with, so it got nothing`);
+      return { kind: 'none' };
+    }
+    const clientId = origin.kind === 'agentShell' ? origin.clientId : actingClient();
+    // today's relay: an agent shell's pinned client, else whichever client the daemon finds acting when it sends
+    const relayTo = origin.kind === 'agentShell' ? clientId : undefined;
+    if (!isManaged(clientServers(clientId), fields)) return relayCredential(request, relayTo, signal);
+    const key = JSON.stringify([fields.host.toLowerCase(), fields.path ?? '']);
+    // the target's own helpers never prompt: when they give nothing, today's relay asks this computer, as before accounts
+    const agentShell = origin.kind === 'agentShell';
+    const onTarget = (): Promise<unknown> => targetDelegator.run({ op, cwd, fields, ...(request.password !== undefined ? { password: request.password } : {}), interactive: false, agentShell }, signal);
+    if (op === 'store') {
+      if (namesHeld(targetDelegated.get(key), request.passwordHash)) await onTarget();
+      return { kind: 'none' };
+    }
+    if (op === 'erase') {
+      const { passwordHash } = request;
+      if (passwordHash !== undefined && forgeRelayed.refused(fields, passwordHash)) {
+        return processActor.run(clientId, () => endpoint.request('askpass.credential', { op, fields, targetHelper: false, origin, cwd, passwordHash }, signal));
+      }
+      if (namesHeld(targetDelegated.get(key), request.passwordHash)) {
+        targetDelegated.delete(key);
+        await onTarget();
+      }
+      return { kind: 'none' };
+    }
+    const answer = await processActor.run(clientId, () => endpoint.request('askpass.credential', { op, fields, targetHelper: false, origin, cwd }, signal));
+    if (answer.kind === 'credential') {
+      forgeRelayed.answered(fields, answer.password);
+      knownSecrets().answered(answer.password);
+      return answer;
+    }
+    if (answer.kind !== 'delegate') return answer;
+    const filled = await targetDelegator.run({ op: 'get', cwd, fields, interactive: false, agentShell }, signal);
+    if (filled) {
+      targetDelegated.set(key, hashOf(filled.password));
+      // the agent's shell prints what git is given, so the target's own password is masked there as a token is
+      if (agentShell) knownSecrets().answered(filled.password);
+      return { kind: 'credential', ...filled };
+    }
+    // a background call never asks this computer, as before accounts existed
+    if (origin.kind === 'engine' && !origin.interactive) return { kind: 'none' };
+    return relayCredential(request, relayTo, signal);
+  };
+  if (init.remote) {
+    source = {
+      answer: daemonCredential,
+      // read at spawn: an agent shell's from the client its origin names, the one its asks go to
+      managed: (origin) => (remoteHost ? clientServers(origin.kind === 'agentShell' ? origin.clientId : currentPin(remoteHost).clientId) : []),
+    };
+  }
+  // a daemon's core gets its helper from the daemon's relay; this computer's from the desktop build
+  const helperPath = init.remote ? init.paths.askpass.credentialRelay?.helper : credentialHelperPath(init.paths.unpackedRoot);
+  const takeover: CredentialTakeover | undefined = helperPath === undefined ? undefined : {
+    entries: (origin) => (source ? managedEntries(source.managed(origin), helperPath) : []),
+    register: (origin) => askpass.registerCredential(origin),
+  };
+  installCredentialHelper(takeover);
+  // the core restart window's end, once a source answers: until then a terminal's or shell's helper could not reach this core
+  const answering = (): void => {
+    if (takeover && init.restarted === true) gitLog.appendLine('[askpass] Damocles Core answers git credential requests from now on; one made while it was not running failed with "Damocles could not provide credentials."');
+  };
+  if (source) answering();
   const relays = init.remote !== undefined && init.paths.askpass.credentialRelay !== undefined;
   const relayFailed = (err: unknown): void => {
     const line = `[scm] the git credential relay does not listen; the next git call or agent shell that wants it listens again: ${err instanceof Error ? err.message : String(err)}`;
@@ -163,6 +291,7 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
       log: gitLog,
       isTrusted: (project) => platform.trust.isTrusted(project),
       credentialRelay: readRelay,
+      ...(takeover ? { credentialTakeover: () => takeover } : {}),
       // a daemon's core: no git call runs with an inherited SSH_AUTH_SOCK
       ...(init.remote ? { agentSocket: () => agentSocketPath(platform) } : {}),
     })
@@ -259,10 +388,11 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
     }
     return (calls[method] as (...callArgs: unknown[]) => unknown).apply(service, [...args]);
   });
-  endpoint.serve('scm.commit', async ({ repoId, message, variant, saved, branchName }): Promise<ScmCommitOutcome> => {
+  endpoint.serve('scm.commit', async ({ repoId, message, variant, saved, branchName, protectedBranches }): Promise<ScmCommitOutcome> => {
     const outcome = await service.commit(repoId, message, variant as CommitVariant, {
       saved,
       ...(branchName !== undefined ? { branchName: () => endpoint.request('scm.branchName', { token: branchName }) } : {}),
+      ...(protectedBranches !== undefined ? { protectedBranches } : {}),
     });
     if (outcome.ok) return { ok: true };
     return outcome.reason === 'failed' ? { ok: false, reason: 'failed', error: commitErrorText(outcome.error) } : { ok: false, reason: outcome.reason };
@@ -301,8 +431,15 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
       relayGeneration++;
       relay = undefined;
       if (relays) installCredentialRelay(undefined);
+      installCredentialHelper(undefined);
       return askpass.dispose();
     },
+    connectCredentials: (next) => {
+      source = next;
+      answering();
+    },
+    projectFolders: () => projectsOf,
+    askpassFor: (label) => askpass.register('interactive', label),
     dispose: () => {
       subscription.dispose();
       relayMoved?.dispose();

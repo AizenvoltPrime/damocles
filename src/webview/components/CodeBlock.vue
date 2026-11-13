@@ -82,7 +82,7 @@ function handleCopy() {
   copyToClipboard(props.code);
 }
 
-watch(() => [props.code, props.language, settingsStore.hostCapabilities.damoclesTheme], highlight, { immediate: true });
+watch([() => props.code, () => props.language, () => settingsStore.hostCapabilities.damoclesTheme], highlight, { immediate: true });
 
 onMounted(() => {
   isMounted.value = true;

@@ -659,7 +659,7 @@ function takeFocusRequest(): void {
   store.focusRequest.value = null;
   void nextTick(focus);
 }
-watch(() => [store.focusRequest.value, props.shown], takeFocusRequest);
+watch([store.focusRequest, () => props.shown], takeFocusRequest);
 
 // Main asks for the Edit menu's Paste only while this xterm's input has focus.
 watch(store.pasteRequest, (request) => {

@@ -100,6 +100,7 @@ import {
   DEFAULT_SEARCH_EXCLUDE,
   DESKTOP_CONFIGURATION,
   FILES_EXCLUDE_SETTING,
+  FORGE_AGENT_TOOLS_SETTING,
   GIT_BLAME_EDITOR_DECORATION_SETTING,
   SEARCH_EXCLUDE_SETTING,
   isDesktopSettingValue,
@@ -157,7 +158,7 @@ import {
 } from './terminal-pick';
 import { windowsBuildNumber } from '../workspace/terminal/profiles';
 import { detectedProfile, profileFileKind, TerminalProfileCatalog, type LaunchProfile } from './terminal/user-profiles';
-import { TerminalService, terminalSettings, terminalTabId } from './terminal/terminal-service';
+import { TerminalService, terminalSettings, terminalTabId, type TerminalGitCredentials } from './terminal/terminal-service';
 import { killQuestion } from './terminal/kill-confirmation';
 import { folderLinkAction, TerminalLinks, type LinkBase } from './terminal/terminal-links';
 import { pasteText, TerminalPasteGate } from './terminal/terminal-paste';
@@ -188,7 +189,7 @@ import { createAskpassBridge, type AskCredential } from './askpass-bridge';
 import { createCheckedMessageAsker, createMessageAsker, type AskCheckedMessage, type AskMessage } from './message-dialog';
 import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps, type StickyNotice } from './notification-center';
 import { NotifierHost } from './notifier';
-import { closeRemoteResult, createInputAsker, createQuickPickAsker, createQuickPickManyAsker, devcontainerTrustAccepted, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest, parseRect } from './overlay';
+import { closeRemoteResult, createForgeAccountAsker, createInputAsker, createQuickPickAsker, createQuickPickManyAsker, devcontainerTrustAccepted, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest, parseRect } from './overlay';
 import { hostAwayOf, hostCoreFacts, lookupOnUpCore, OverlaySettings, settingsPageChat, writeDesktopSetting, type SettingsAttachTarget, type SettingsScope, type SettingsScopes } from './overlay-settings';
 import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
@@ -208,6 +209,8 @@ import { logUncaughtErrors } from '../local-services/process-errors';
 import { ProjectList } from './projects';
 import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
 import { appResourceUri, handleAppProtocol, registerAppScheme } from './protocol';
+import { createAvatarCache } from './forge/avatar-cache';
+import { forgeE2eServers } from './forge/e2e-forge-servers';
 import { restrictPermissions, hardenWebContents } from './security';
 import { chooseClientCertificate, openProbeContents, probeClientCertificates, refuseClientCertificates } from './client-certificates';
 import { clientCertificateOriginOf } from '../../shared/client-certificate';
@@ -285,13 +288,20 @@ import { validateInstallFolder } from './remote/bootstrap';
 import { readServerManifest } from './remote/server-manifest';
 import { appVersionOf, type ServerManifest } from './remote/server-manifest-format';
 import { createArtifactCache, releasesUrlOf, type ArtifactCache } from './remote/artifact-cache';
-import { PROMPT_CANCELLED, type AskpassServer } from '../../core/scm/askpass/askpass-server';
+import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer } from '../../core/scm/askpass/askpass-server';
+import { asConfigParams, credentialHelperPath, managedEntries, type ManagedServer } from '../../core/scm/askpass/credential-config';
 import type { PanelConnection, PanelHostAction, PanelHostLabel, PanelHostNames, PanelQueueAction } from '../preload/panel-channels';
 import type { HostColor } from '../../shared/host-colors';
 import type { CloseRemoteRow, CloseRemoteStatus, CloseRowHost } from '../preload/overlay-channels';
 import type { Run } from '../daemon/control-messages';
 import type { ChatConnection, HostReconnect } from '../../shared/host-connection';
 import { registerConnectChannels } from './remote/connect-channels';
+import { ForgeHost, parseForgeLinkRequest } from './forge/forge-host';
+import { runForgeLink } from './forge-link-commands';
+import type { ForgeLinkRequest } from '../../shared/forge/links';
+import { JobLogTabs } from './forge/job-log-tabs';
+import { registerForgeOverlayChannels } from './forge/forge-overlay-channels';
+import { terminalManagedServers } from './forge/terminal-managed-servers';
 import { authoritiesToConnectAtLaunch } from './remote/launch-connect';
 import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, SessionMirror, type MirrorChannel } from './remote/session-mirror';
 import { OfflineTranscripts } from './remote/offline-transcripts';
@@ -336,6 +346,7 @@ import type { HostServicesDeps, HostTrust } from './core-services/host-services'
 import { ERROR_PAGE_STRINGS } from '../../shared/panel-html';
 import { createProjectTrust, createRemoteTrust, type RemoteTrustTarget } from './remote/remote-trust';
 import { authorityKeyOfProject, isAbsoluteOn, pathFor, projectKeyOf, targetFolderKeyOf, type Authority } from '../../shared/project-location';
+import { CREDENTIAL_ORIGIN_FEATURE } from '../../shared/git-credential';
 import { projectOfCwd, remoteFileRef, type RemoteFileRoot } from './remote/remote-files';
 import { visibleText } from '../../shared/visible-text';
 import { crossedByMention, crossedByViewMessage, ownRemoteDrop, type AuthorityMentionTarget } from './mention-authority';
@@ -343,6 +354,7 @@ import { UserRelays, relayedUserSettingKeys } from './remote/user-relays';
 import { ForeignViewRelay } from './remote/foreign-view-relay';
 import { LOOPBACK_HOST, PortsController } from './remote/ports/ports-controller';
 import { relayBrowserTool, typedRemoteAddress } from './remote/browser-relay';
+import { relayForgeDescribe, relayForgeTool, type ForgeRelayDeps } from './remote/forge-relay';
 import { rewriteOutbound } from './remote/ports/url-rewrite';
 import { memoryDocument } from './platform/editor-document';
 import type { HostDiffView } from './platform/editor-service';
@@ -382,6 +394,7 @@ const LOOPBACK = !app.isPackaged && (E2E_HOOKS || process.env['DAMOCLES_LOOPBACK
 // The ssh config and release URL e2e runs point the transport at (dev builds with the e2e hooks only).
 const SSH_ENVIRONMENT = sshEnvironment({ packaged: app.isPackaged, env: process.env });
 const REMOTE_E2E = remoteE2eEnvironment({ packaged: app.isPackaged, env: process.env });
+const FORGE_E2E_SERVERS = forgeE2eServers({ packaged: app.isPackaged, env: process.env });
 // how often a busy daemon of another protocol is asked for its runs and its mirror: its frozen commands carry no events
 const OTHER_PROTOCOL_POLL_MS = 5000;
 // the window an OS shutdown or an update's quit gives the token pushes, inside the quit's own bound
@@ -559,6 +572,8 @@ class DesktopApp {
   private readonly userDataDir = app.getPath('userData');
   private readonly logsDir = path.join(this.userDataDir, 'logs');
   // D36: Show Log opens a log sink's file as a read-only editor tab.
+  // account pictures of this computer's core's Git hosting accounts, served by the app protocol
+  private readonly forgeAvatars = createAvatarCache(async (key) => (await this.client()?.forgeAvatar(key)) ?? undefined);
   private readonly logSinks = createDesktopLogSinkFactory(this.logsDir, !app.isPackaged, (filePath, preserveFocus) => this.openLogTab(filePath, preserveFocus));
   private readonly logSink = this.logSinks.create(MAIN_LOG_NAME);
   private readonly states: PanelStateStore;
@@ -622,6 +637,10 @@ class DesktopApp {
   private remoteHosts: RemoteHosts | undefined;
   // main's askpass server for ssh's prompts, made on the first connect
   private sshAskpass: AskpassServer | undefined;
+  // main's askpass server for local terminals' git credential requests, which the local core answers; made on the first spawn
+  private terminalAskpass: AskpassServer | undefined;
+  // the servers the last ready core named as managed, so a terminal started while core restarts still hands git to Damocles
+  private managedServers: readonly ManagedServer[] = [];
   // remembered ssh answers: one per process, so a host's store never lands after its deletion
   private sshRememberedSecrets: RememberedSecrets | undefined;
   private gitCredentials: GitCredentialClient | undefined;
@@ -823,6 +842,7 @@ class DesktopApp {
     ask: this.ask,
     t: (message) => this.requireLocalization().t(message),
     log: (line) => log(line),
+    windowFocused: () => this.window?.isFocused() ?? false,
   });
   private readonly core = new CoreHost<DesktopCore>({
     start: () => this.startCoreServices(),
@@ -888,6 +908,10 @@ class DesktopApp {
   private scmClient: ScmClient | undefined;
   // the overlay's credential prompts core's askpass server asks for
   private askCredential: AskCredential | undefined;
+  // Git hosting accounts of projects: the shell's and overlay's forge channels and the Choose account dialog (main/forge/forge-host.ts)
+  private forgeHost: ForgeHost | undefined;
+  // CI job logs in editor tabs (main/forge/job-log-tabs.ts)
+  private jobLogTabs: JobLogTabs | undefined;
   // the git probeGit found at startup; core's source control spawns its absolute path
   private gitProbe: GitProbe = { available: false, reason: '' };
   // the e2e hooks' stand-in for the commit-message model (DAMOCLES_E2E_HOOKS, unpackaged only)
@@ -926,6 +950,8 @@ class DesktopApp {
   // the cores that ended in this app run without releasing their session leases (a crash, or a kill after core.shutdown
   // failed or timed out) and when main saw each end; the next core takes those leases over at once
   private readonly endedCores: { pid: number; endedAt: number }[] = [];
+  // a core was started earlier in this app run
+  private coreStarted = false;
   // the open window's bounds tracker, which a placement main makes records what it applied in
   private windowBounds: WindowBoundsTracker | undefined;
   private updates: UpdateService | undefined;
@@ -1201,6 +1227,10 @@ class DesktopApp {
       overlay: () => overlayHtml(currentTheme(), localization.language),
       // The overlay bundle, which shows only its toast stack at this path.
       notifier: () => overlayHtml(currentTheme(), localization.language),
+      forgeAvatar: (key) => {
+        const client = this.client();
+        return client?.forgeAvatarKnown(key) === true ? this.forgeAvatars.get(key) : Promise.resolve(undefined);
+      },
     });
 
     [this.hostStore, this.remoteState] = await Promise.all([HostStore.open(this.userDataDir, bootLog), RemoteState.open(this.userDataDir, bootLog)]);
@@ -1233,7 +1263,11 @@ class DesktopApp {
       trust: this.trust,
       window: () => this.window,
       showChatReview: (panelId, scope) => this.showChatReview(panelId, scope),
-      openAppSettings: (section, account, scope) => this.openSettings({ ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}) }, scope),
+      openAppSettings: (section, account, scope, forge) => this.openSettings({
+        ...(section !== undefined ? { section } : {}),
+        ...(account !== undefined ? { account } : {}),
+        ...(forge !== undefined ? { forgeServer: forge.server, ...(forge.account !== undefined ? { forgeAccount: forge.account } : {}) } : {}),
+      }, scope),
       toggleTerminal: () => this.toggleTerminal(false),
       terminalToggle: () => this.terminalToggle(),
       chatTabs: this.chatTabs,
@@ -1298,6 +1332,7 @@ class DesktopApp {
       designRender: this.designRenderFor('local'),
       git: git.available ? { available: true, path: git.path, version: git.version } : { available: false, reason: git.reason },
       e2eHooks: E2E_HOOKS,
+      ...(FORGE_E2E_SERVERS ? { e2eForgeServers: FORGE_E2E_SERVERS } : {}),
       paths: {
         resourceRoot: appPaths.resourceRoot,
         unpackedRoot: appPaths.unpackedRoot,
@@ -1312,6 +1347,7 @@ class DesktopApp {
         },
         watchWorker: watchWorkerPath(appPaths),
         remoteMirrors: path.join(this.userDataDir, 'remote'),
+        forge: path.join(this.userDataDir, 'forge'),
         // core's process.execPath is this same executable
         askpass: askpassPaths(appPaths, process.execPath),
       },
@@ -1335,6 +1371,10 @@ class DesktopApp {
         askpass: (prompt, signal) => {
           if (!this.askCredential) throw new Error('Source control used before startup finished');
           return this.askCredential(prompt, signal);
+        },
+        chooseForgeAccount: (request, signal) => {
+          if (!this.forgeHost) throw new Error('Git hosting accounts used before startup finished');
+          return this.forgeHost.chooseAccount(request, signal);
         },
         worktrees: worktrees.ui(),
       },
@@ -1620,6 +1660,37 @@ class DesktopApp {
     return this.scmClient;
   }
 
+  private requireJobLogTabs(): JobLogTabs {
+    if (!this.jobLogTabs) throw new Error('Job log tabs used before startup finished');
+    return this.jobLogTabs;
+  }
+
+  /** The window was focused or blurred: CI polls only while it is focused. */
+  private ciWindowFocused(focused: boolean): void {
+    this.forgeHost?.setWindowFocused(focused);
+    this.jobLogTabs?.setWindowFocused();
+  }
+
+  private requireForgeHost(): ForgeHost {
+    if (!this.forgeHost) throw new Error('Git hosting accounts used before startup finished');
+    return this.forgeHost;
+  }
+
+  /** A link the user asked for: main opens or copies it, then a toast says so, or offers Push for an unpushed commit. */
+  private runForgeLink(request: ForgeLinkRequest): Promise<void> {
+    return runForgeLink({
+      link: (asked) => this.requireForgeHost().link(asked),
+      notify: this.notifications,
+      t: (message, ...args) => this.requirePlatform().localization.t(message, ...args),
+      render: (text) => this.requirePlatform().localization.render(text),
+      push: async (repoId) => {
+        if (!this.scm) throw new Error('Source control used before startup finished');
+        return (await this.scm.runRequest({ op: 'push', repoId, to: false, force: false, followTags: false })).ok;
+      },
+      log: (line) => log(line),
+    }, request);
+  }
+
   // The running core's client; undefined before startup finished and while a reload replaces the core.
   private client(): CoreClient | undefined {
     return this.core.current()?.client;
@@ -1715,6 +1786,7 @@ class DesktopApp {
       },
       settings: () => terminalSettings(platform.settings),
       env: (projectKey) => workspaces.forProject(projectKey).terminals.environment(app.getLocale()),
+      gitCredentials: (projectKey, inherited) => this.terminalGitCredentials(projectKey, inherited),
       osOf: (projectKey) => this.filesTarget(projectKey).os,
       persistRemote: (terminals) => this.persistRemoteTerminals(terminals),
       killOnReattach: (authorityKey, id) => this.remoteState?.killOnReattach(authorityKey, id).catch(this.report('Keeping a terminal kill for its host')),
@@ -1770,8 +1842,11 @@ class DesktopApp {
 
   private startCoreServices(): DesktopCore {
     // core's exit is reported on a later turn, once hosted exists
+    const restarted = this.coreStarted;
+    this.coreStarted = true;
     const core = startDesktopCore(this.requireCoreDeps(), {
       endedCores: [...this.endedCores],
+      restarted,
       // a new core's registry serves them while registry.json does not parse, as the one before it did
       worktreeRecords: [...this.worktreeRecords.records()],
       crashed: (pid, how) => this.coreCrashed(hosted, pid, how),
@@ -1781,8 +1856,12 @@ class DesktopApp {
     // The previous core's chats closed with it, and its foreign view proxies.
     this.forgetChatsOf('local');
     this.foreignViews.localCoreStarted();
-    void core.ready.then(() => this.userRelays?.authChanged()).catch(this.report('Reading the sign-ins for remote chats'));
-    void core.ready.then(() => this.userRelays?.mcpChanged()).catch(this.report('Reading the personal MCP servers for remote chats'));
+    // also after a core that ended before it was ready: a remote attach's pending values, or an older daemon's attach, wait for these reads
+    void core.ready.catch(() => undefined).then(() => this.userRelays?.authChanged()).catch(this.report('Reading the sign-ins for remote chats'));
+    void core.ready.catch(() => undefined).then(() => this.userRelays?.mcpChanged()).catch(this.report('Reading the personal MCP servers for remote chats'));
+    void core.ready.catch(() => undefined).then(() => this.userRelays?.forgesChanged()).catch(this.report('Reading the Git hosting servers for remote hosts'));
+    // a Forget host while the engine was halted left that host's bindings and host defaults, which this core drops
+    void core.ready.then(() => this.keepForgeHosts(client), () => undefined).catch(this.report('Dropping the Git hosting bindings of forgotten hosts'));
     for (const key of [...this.catalogRows.keys()]) if (authorityKeyOfProject(key) === 'local') this.catalogRows.delete(key);
     const subscriptions = [
       client.onWorktreeState((event) => this.onWorktreeState(event)),
@@ -1791,6 +1870,10 @@ class DesktopApp {
         this.shellStateChanged();
       }),
       client.onAllChatsClosed(() => log('[chats] the last loaded chat closed')),
+      // remote hosts' takeover follows this computer's managed servers (clientForges)
+      client.onForgeChanged(() => {
+        this.userRelays?.forgesChanged().catch(this.report('Reading the Git hosting servers for remote hosts'));
+      }),
       client.onActivity((panelId, activity) => this.onChatActivity(panelId, activity)),
       client.onChatChanges((panelId, totals, generation) => this.chatReviews.chatChanged(panelId, totals, generation)),
       client.onTurnSettled((panelId, outcome) => {
@@ -1828,7 +1911,10 @@ class DesktopApp {
       }),
       client.onForeignPost((viewId, message) => this.foreignViews.foreignPost(viewId, message)),
       this.requireScmClient().attach(client),
+      this.requireForgeHost().attach(client),
     ];
+    // the new core holds no job log watch
+    this.jobLogTabs?.coreAttached();
     const hosted: DesktopCore = {
       authority: 'local',
       client,
@@ -1920,6 +2006,7 @@ class DesktopApp {
       this.haltNotice?.withdraw();
       this.haltNotice = undefined;
     }
+    this.userRelays?.engineHaltedChanged();
     this.shellStateChanged();
   }
 
@@ -1971,6 +2058,10 @@ class DesktopApp {
     if (!mac) window.setMenuBarVisibility(false);
     if (placement?.maximized) window.maximize();
     if (placement?.fullScreen) window.setFullScreen(true);
+    // a blurred window polls no CI
+    window.on('blur', () => this.ciWindowFocused(false));
+    window.on('focus', () => this.ciWindowFocused(true));
+    this.ciWindowFocused(window.isFocused());
     const overlay = new OverlayHost({
       window,
       preloadPath: path.join(__dirname, 'preload-overlay.js'),
@@ -1993,6 +2084,8 @@ class DesktopApp {
     handleCenterChannels(overlay, this.notificationCenter);
     handleAboutChannels(overlay, this.aboutDeps());
     registerConnectChannels(overlay, this.requireRemoteHosts());
+    // the change pushes live as long as this window's overlay; macOS opens a new window after a close
+    const unregisterForgeOverlay = registerForgeOverlayChannels(overlay, this.requireForgeHost());
     // the New menu's options and the Merge dialog's Generate answer for the request open in this overlay
     overlay.handleWhileOpen(OVERLAY_CHANNELS.worktreeOptions, () => overlay.isOpen('newChatMenu'), () => {
       const open = overlay.openRequestOf('newChatMenu');
@@ -2178,7 +2271,9 @@ class DesktopApp {
       this.reattachedAuthorities.clear();
       shell.dispose();
       overlaySettings.dispose();
+      unregisterForgeOverlay();
       overlay.dispose();
+      this.ciWindowFocused(false);
       if (this.window === window) {
         this.window = undefined;
         this.views = undefined;
@@ -3430,6 +3525,7 @@ class DesktopApp {
         },
         ask: this.ask,
         discard: (chats) => this.discardWaitingChats(chats),
+        forgetAccounts: (projectKey) => this.requireForgeHost().forgetProject(projectKey).catch(this.report('Forgetting the project\'s Git hosting accounts')),
         remove: async () => {
           if (remote) {
             this.releaseRemoteTerminals(remote, hostTerminals!);
@@ -3716,6 +3812,25 @@ class DesktopApp {
         resource: (raw) => this.requireScm().resource(raw),
       },
       ports: this.requirePorts().actions,
+      forge: {
+        repoAccounts: (raw) => this.requireForgeHost().repoAccounts(raw),
+        chooseAccount: (raw) => this.requireForgeHost().chooseAccountFromShell(raw),
+        openAccounts: (raw) => this.requireForgeHost().openAccountsFromShell(raw),
+        ciStatus: (raw) => this.requireForgeHost().ciStatusFromShell(raw),
+        ciWatch: (raw) => this.requireForgeHost().ciWatchFromShell(raw),
+        showPipeline: (raw) => this.requireForgeHost().showPipelineFromShell(raw),
+        jobLogOpen: (raw) => this.requireForgeHost().jobLogOpenFromShell(raw),
+        jobAction: (raw) => this.requireForgeHost().jobActionFromShell(raw),
+        openOnServer: (raw) => this.requireForgeHost().openOnServerFromShell(raw),
+        link: (raw) => this.runForgeLink(parseForgeLinkRequest(raw)),
+        commitStatus: (raw) => this.requireForgeHost().commitStatusFromShell(raw),
+        historyContext: (raw) => this.requireForgeHost().historyContextFromShell(raw),
+        authorAvatars: (raw) => this.requireForgeHost().authorAvatarsFromShell(raw),
+        containingChange: (raw) => this.requireForgeHost().containingChangeFromShell(raw),
+        jobLog: (tabId) => this.requireJobLogTabs().jobLog(tabId),
+        jobLogRead: (tabId) => this.requireJobLogTabs().readNow(tabId),
+        jobLogVisible: (tabId, visible) => this.requireJobLogTabs().setVisible(tabId, visible),
+      },
       review: {
         fileDiff: (raw) => this.chatReviews.fileDiff(raw),
         setScope: (raw) => this.chatReviews.setScope(raw),
@@ -4102,7 +4217,86 @@ class DesktopApp {
       log: report,
     });
     this.scmClient = scmClient;
+    const forgeHost = new ForgeHost({
+      core: (label, work) => this.core.run(label, (core) => work(core.client)),
+      scm: scmClient,
+      features: (authority) => this.authorities?.connection(authority)?.features,
+      projectName: (projectKey) => (this.remoteProject(projectKey) ?? this.projectByKey(projectKey)).name,
+      savedHost: (authority) => {
+        if (this.savedHostRecord(authority) === undefined) return undefined;
+        const color = this.hostColor(authority);
+        return { hostName: this.hostName(authority), ...(color !== undefined ? { color } : {}) };
+      },
+      asker: createForgeAccountAsker({
+        overlay: () => this.overlay,
+        focused: () => webContents.getFocusedWebContents() ?? undefined,
+        reveal: () => this.revealWindow(),
+        log: report,
+      }),
+      openAccounts: (target) => this.openSettings({ section: 'accounts', ...(target.serverId !== undefined ? { forgeServer: target.serverId } : {}), ...(target.signIn === true ? { forgeSignIn: true } : {}) }),
+      render: (text) => localization.render(text),
+      openExternal: async (url) => {
+        if (!(await platform.shell.openExternal(url))) throw new Error('The page could not be opened');
+      },
+      serverWebUrls: () => this.client()?.forgeServers()?.filter((server) => server.hasAccount).map((server) => server.webUrl),
+      accountServers: () => this.client()?.forgeAccountServers(),
+      showPipelinePopover: async (repoId, anchor) => {
+        const overlay = this.overlay;
+        if (!overlay) throw new Error('The job list has no window to show in');
+        // the shell keeps focus on the chip, which gets it back when the popover closes
+        await overlay.request({ kind: 'pipeline', repoId, anchor }, this.window?.webContents);
+      },
+      openJobLog: (repoId, jobId) => this.requireJobLogTabs().open(repoId, jobId, { focus: true }),
+      writeClipboard: (text) => platform.clipboard.writeText(text),
+      showClonePicker: async (request) => {
+        const overlay = this.overlay;
+        if (!overlay) throw new Error('The clone picker has no window to show in');
+        return overlay.request(request, this.window?.webContents);
+      },
+      startClone: (clone) => {
+        if (!this.scm) throw new Error('Source control is not ready for a clone');
+        this.scm.cloneFromPicker(clone);
+      },
+      dialogs: {
+        ask: async (request) => {
+          const overlay = this.overlay;
+          if (!overlay) throw new Error('The Publish and fork dialogs have no window to show in');
+          this.revealWindow();
+          return overlay.request(request, webContents.getFocusedWebContents() ?? this.window?.webContents);
+        },
+        publishState: (state) => this.overlay?.updateForgePublish(state),
+        forkState: (state) => this.overlay?.updateForgeFork(state),
+        protectedState: (state) => this.overlay?.updateForgeProtected(state),
+      },
+      notify: {
+        info: (message) => void this.notifications.info(message),
+        warn: async (message, action) => (await this.notifications.warn(message, action)) === action,
+        error: (message) => void this.notifications.error(message),
+      },
+      log: report,
+    });
+    this.forgeHost = forgeHost;
+    forgeHost.onChanged((changed) => this.shell?.forgeChanged(changed));
+    forgeHost.onCiChanged((changed) => {
+      this.shell?.forgeCiChanged(changed);
+      this.refreshMenuState();
+    });
+    const jobLogTabs = new JobLogTabs({
+      core: (label, work) => this.core.run(label, (core) => work(core.client)),
+      coreRunning: () => this.core.current() !== undefined,
+      forge: forgeHost,
+      pane: editorPane,
+      render: (text) => localization.render(text),
+      t,
+      send: (update) => this.shell?.jobLogUpdate(update),
+      log: report,
+    });
+    this.jobLogTabs = jobLogTabs;
+    const stopCiLogs = forgeHost.onCiLog((id, view) => jobLogTabs.coreLog(id, view));
+    const stopRetargets = forgeHost.onJobRetargeted((repoId, jobId, newJobId) => jobLogTabs.retarget(repoId, jobId, newJobId));
+    this.disposables.push(forgeHost, jobLogTabs, { dispose: stopCiLogs }, { dispose: stopRetargets });
     const scm = new ScmHost({
+      forge: forgeHost,
       service: scmClient,
       remoteFileRef: (authority, targetPath) => remoteFileRef(this.remoteFileRoots(authority), targetPath),
       hostName: (authority) => this.hostName(authority),
@@ -4282,7 +4476,7 @@ class DesktopApp {
           latency: (authorityKey: string) => this.latency?.latency(authorityKey),
           // the picker a remote core's dialogs.pickFile or dialogs.pickFolder opens, answered as core would be
           pick: (authorityKey: string, kind: 'file' | 'folder', { title, ...options }: { readonly title?: string; readonly defaultPath?: string; readonly buttonLabel?: string }) => {
-            const { dialogs } = this.remoteServicesOf(authorityKey).platform;
+            const { dialogs } = this.remoteServicesOf(authorityKey, this.authorities?.connection(authorityKey)?.features ?? []).platform;
             const named = { ...options, ...(title !== undefined ? { title: verbatim(title) } : {}) };
             const { buttonLabel, ...file } = named;
             return kind === 'file' ? dialogs.pickFile(file) : dialogs.pickFolder({ ...file, ...(buttonLabel !== undefined ? { buttonLabel: verbatim(buttonLabel) } : {}) });
@@ -4979,7 +5173,7 @@ class DesktopApp {
       authority,
       hostId: this.hostIdOf(authority),
       connection: () => this.authorities?.connection(authority),
-      services: () => this.remoteServicesOf(authority),
+      services: (features) => this.remoteServicesOf(authority, features),
       lastEpoch: this.remoteState?.coreEpoch(authority) ?? null,
       openTabs: (core, rejoin, kept) => this.openRemoteChats(core, rejoin, kept).finally(() => {
         this.reselectRemote.delete(authority);
@@ -5146,12 +5340,18 @@ class DesktopApp {
         mcpResources: (server, kind, cursor, signal) => this.core.run('A personal MCP server for a remote chat', (core) => core.client.mcpResources(server, kind, cursor, signal)),
         mcpReadResource: (server, uri, signal) => this.core.run('A personal MCP server for a remote chat', (core) => core.client.mcpReadResource(server, uri, signal)),
       },
+      forges: async () => (await this.core.run('Reading the Git hosting servers for remote hosts', (core) => core.client.forgeServersRead())).servers,
+      engineHalted: () => this.core.halted(),
       hostPolicy: (authorityKey) => {
         const hostId = this.savedHostIdOf(authorityKey);
         const record = hostId === undefined ? undefined : this.hostStore?.host(hostId);
         if (!record) return { allowBypass: false };
         const { allowBypass, defaultPermissionMode } = record.settings;
         return { allowBypass: allowBypass === true, ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}), agentForwarding: forwardsAgent(record) };
+      },
+      savedHost: (authorityKey) => {
+        const hostId = this.savedHostIdOf(authorityKey);
+        return hostId !== undefined && this.hostStore?.host(hostId) !== undefined;
       },
       log: (line) => log(line),
     });
@@ -5278,9 +5478,11 @@ class DesktopApp {
   }
 
   // A remote core's services: main's own, with the refusals and the host store's trust for this authority.
-  private remoteServicesOf(authority: string): Omit<HostServicesDeps, 'endpoint'> {
+  // features: the welcome of the connection serving that core, which Authorities.connection hides while it is suspect
+  private remoteServicesOf(authority: string, features: readonly string[]): Omit<HostServicesDeps, 'endpoint'> {
     const deps = this.requireCoreDeps();
     const wsl = this.hostAuthority(authority);
+    const credentialDaemon = { takesForgeAnswers: features.includes(CREDENTIAL_ORIGIN_FEATURE), verifiesErase: features.includes(VERIFIED_ERASE_FEATURE) };
     return remoteServices({
       authority,
       hostId: this.hostIdOf(authority),
@@ -5316,7 +5518,7 @@ class DesktopApp {
       user: {
         credentials: (provider) => this.requireUserRelays().credentials(authority, provider, this.authorities?.connection(authority)?.features ?? []),
         speak: (viewId, text) => this.foreignViews.speak(authority, viewId, text),
-        gitCredential: (request, signal) => this.gitCredentialClient().handle(this.hostIdOf(authority), request, signal),
+        gitCredential: (request, signal) => this.gitCredentialClient().handle(this.hostIdOf(authority), request, credentialDaemon, signal),
         browserTool: (request, signal) => relayBrowserTool({
           authority,
           attachView: (viewId) => this.foreignViews.attachView(viewId, authority),
@@ -5337,6 +5539,8 @@ class DesktopApp {
         mcpCall: ({ server, tool, args }, signal) => this.requireUserRelays().mcpCall(authority, server, tool, args, signal),
         mcpResources: ({ server, kind, cursor }, signal) => this.requireUserRelays().mcpResources(authority, server, kind, cursor, signal),
         mcpReadResource: ({ server, uri }, signal) => this.requireUserRelays().mcpReadResource(authority, server, uri, signal),
+        forgeTool: ({ clientId: _clientId, ...call }, signal) => relayForgeTool(this.forgeRelayDeps(authority), call, signal),
+        forgeDescribe: ({ clientId: _clientId, ...call }, signal) => relayForgeDescribe(this.forgeRelayDeps(authority), call, signal),
       },
       base: {
         render: deps.render,
@@ -5355,6 +5559,24 @@ class DesktopApp {
       },
       t: (message, ...args) => this.requireLocalization().t(message, ...args),
     });
+  }
+
+  // A remote chat's GitHub and GitLab tools: this host's projects, this computer's switch, and its core with its accounts.
+  private forgeRelayDeps(authority: string): ForgeRelayDeps {
+    const platform = this.requireCoreDeps().platform;
+    return {
+      authority,
+      projects: () => this.remoteProjects(),
+      os: () => this.knownAuthorityOs(authority),
+      enabled: () => {
+        const value = platform.settings.get<unknown>(FORGE_AGENT_TOOLS_SETTING);
+        return isDesktopSettingValue(FORGE_AGENT_TOOLS_SETTING, value) ? value === true : DESKTOP_CONFIGURATION[FORGE_AGENT_TOOLS_SETTING]!.default === true;
+      },
+      attachView: (viewId) => this.foreignViews.attachIfShown(viewId, authority),
+      tool: (params, signal) => this.core.run('A GitHub or GitLab tool for a remote chat', (core) => core.client.forgeTool(params, signal)),
+      describe: (params, signal) => this.core.run('A GitHub or GitLab tool for a remote chat', (core) => core.client.forgeDescribe(params, signal)),
+      log: (line) => log(line),
+    };
   }
 
   // The authority's trust as its core reads it: the host store's grants for its projects, which a grant there extends.
@@ -5588,6 +5810,7 @@ class DesktopApp {
         this.offlineQueue?.forgetAuthority(authority);
         this.lastChats.forgetAuthority(authority);
       },
+      forgetForgeBindings: () => this.requireForgeHost().forgetHost(authority),
       forgetRemoteState: () => this.requireRemoteState().forgetAuthority(authority),
       log: (line) => log(line),
     });
@@ -5884,11 +6107,31 @@ class DesktopApp {
     this.gitCredentials ??= createGitCredentialClient({
       host: (hostId) => {
         const record = this.hostStore?.host(hostId);
-        return record && { name: record.name, ...(record.color !== undefined ? { color: record.color } : {}), alwaysCredentialHosts: record.alwaysCredentialHosts ?? [] };
+        return record && { name: record.name, ...(record.color !== undefined ? { color: record.color } : {}), alwaysCredentialHosts: record.alwaysCredentialHosts ?? [], alwaysForgeAccounts: record.alwaysForgeAccounts ?? [] };
       },
-      verifiesErase: (hostId) => this.authorities?.connection(this.authorityOfHost(hostId))?.features.includes(VERIFIED_ERASE_FEATURE) === true,
+      forge: {
+        answer: (request, origin, authorityKey, projectKey, consentedAccountId, signal) => this.core.run('Answering a remote host\'s git credential request', (core) => core.client.forgeGitCredential({
+          request, origin, authorityKey, ...(projectKey !== undefined ? { projectKey } : {}), ...(consentedAccountId !== undefined ? { consentedAccountId } : {}),
+        }, signal)),
+        authorityKey: (hostId) => this.authorityOfHost(hostId),
+        projectOf: (hostId, targetProjectKey, cwd) => {
+          const authority = this.authorityOfHost(hostId);
+          const roots = this.roots.all().filter((root) => authorityKeyOfProject(root.root.projectKey) === authority);
+          if (targetProjectKey !== undefined) {
+            const key = `${authority}|${targetProjectKey}`;
+            return roots.some((root) => root.root.projectKey === key) ? key : undefined;
+          }
+          const os = this.knownAuthorityOs(authority);
+          if (cwd === undefined || os === undefined) return undefined;
+          // git -C <project> runs the helper in the project's own folder, which holding (strictly below a root) passes over
+          const at = folderKeyOn(os, cwd);
+          const own = roots.find((root) => folderKeyOn(os, root.fsPath) === at);
+          return own?.root.projectKey ?? this.rootSpellings.holding({ authority, os }, roots, cwd)?.root.root.projectKey;
+        },
+      },
       addAlways: (hostId, credentialHost) => this.requireHostStore().addAlwaysCredentialHost(hostId, credentialHost),
       revokeAlways: (hostId, credentialHost) => this.requireHostStore().revokeCredentialHost(hostId, credentialHost),
+      addAlwaysAccount: (hostId, account) => this.requireHostStore().addAlwaysForgeAccount(hostId, account),
       askConsent: async (consent, signal) => {
         const request = parseGitCredentialConsentRequest(consent);
         const overlay = this.overlay;
@@ -5929,6 +6172,32 @@ class DesktopApp {
   // the host's remembered answers for an ssh call, only while its Remember password setting is on
   private rememberedOption(host: SshHostRecord): { readonly remembered?: RememberedOption } {
     return host.settings.rememberPassword === true ? { remembered: { offer: true, secrets: this.rememberedSecrets().forHost(host.id) } } : {};
+  }
+
+  // A local terminal's git credential takeover (docs/invariants.md "GitHub and GitLab accounts"): one credential registration per
+  // shell process, answered by the local core; nothing while no server has an account.
+  private async terminalGitCredentials(projectKey: string | null, inherited: string | undefined): Promise<TerminalGitCredentials | undefined> {
+    this.managedServers = await terminalManagedServers(this.client(), this.managedServers);
+    const appPaths = createDesktopAppPaths(layout);
+    if (this.managedServers.length === 0) return undefined;
+    const params = asConfigParams(managedEntries(this.managedServers, credentialHelperPath(appPaths.unpackedRoot)), inherited);
+    if (params === undefined) return undefined;
+    this.terminalAskpass ??= createAskpassServer({
+      paths: askpassPaths(appPaths, process.execPath),
+      // a credential registration never prompts
+      prompt: async () => PROMPT_CANCELLED,
+      credential: async (request, origin, signal) => {
+        const running = this.client();
+        if (!running) throw new Error('Damocles Core is not running, so a terminal\'s git credential request could not be answered');
+        const result = await running.forgeGitCredential({ request, origin, authorityKey: 'local' }, signal);
+        if ('consent' in result) throw new Error('A terminal\'s git credential request on this computer asked for a relay consent');
+        return result.answer;
+      },
+      log: (line) => log(`[terminal-git] ${line}`),
+    });
+    const project = projectKey === null ? undefined : (parseRootKey(projectKey)?.projectKey ?? projectKey);
+    const registration = await this.terminalAskpass.registerCredential({ kind: 'terminal', ...(project !== undefined ? { projectKey: project } : {}) });
+    return { env: { ...registration.env, GIT_CONFIG_PARAMETERS: params }, dispose: () => registration.dispose() };
   }
 
   private mainAskpass(): AskpassServer {
@@ -6870,6 +7139,18 @@ class DesktopApp {
     return this.hostStore ? this.hostStore.hostIdOf(authorityKey) : hostIdOfAuthority(authorityKey);
   }
 
+  // The authorities this computer still holds (a saved host's, or one with listed projects): the local core drops the account
+  // bindings and host defaults of every other.
+  private async keepForgeHosts(client: CoreClient): Promise<void> {
+    const store = this.hostStore;
+    if (!store) {
+      log('[forge] the host store is not open, so no forgotten host\'s account bindings are dropped');
+      return;
+    }
+    const kept = new Set([...store.hosts().flatMap((record) => store.authorityOf(record.id) ?? []), ...store.projects().map(({ authorityKey }) => authorityKey)]);
+    await client.forgeKeepHosts([...kept]);
+  }
+
   // The saved host record an authority key names; undefined for a key no saved host holds (loopback included).
   private savedHostRecord(authorityKey: string): HostRecord | undefined {
     const hostId = this.savedHostIdOf(authorityKey);
@@ -7401,6 +7682,7 @@ class DesktopApp {
       ask: (question, signal) => this.ask({ ...question, message: this.requireLocalization().t('{0}: {1}', this.hostName(authority), question.message) }, signal),
       t: (message) => this.requireLocalization().t(message),
       log: (line) => log(line),
+      windowFocused: () => this.window?.isFocused() ?? false,
     });
   }
 
@@ -8535,6 +8817,14 @@ class DesktopApp {
       scmRun: (request) => this.scm?.paletteRun(request),
       scmActiveFile: (op) => this.scm?.activeFile(op),
       scmCommit: (variant) => this.scm?.paletteCommit(variant),
+      forgeChooseAccount: () => this.scm?.paletteChooseAccount(),
+      forgeShowPipeline: () => this.scm?.paletteShowPipeline(),
+      forgeOpenAccounts: () => this.openSettings({ section: 'accounts' }),
+      forgeOpenCommitOnServer: () => {
+        const repoId = this.scm?.paletteRepoId();
+        if (repoId !== undefined) this.runForgeLink({ action: 'openCommit', repoId }).catch(report('Open Commit on Server'));
+      },
+      cloneFromAccount: () => void this.scm?.cloneFromAccount(false).catch(report('Clone from Your Repositories')),
       editorCommand: (command) => this.editorPane?.command(command),
       toggleInlineBlame: () => {
         const settings = this.requirePlatform().settings;
@@ -8861,6 +9151,7 @@ class DesktopApp {
         this.remoteConnections?.dispose();
         this.authorities?.dispose();
         await this.sshAskpass?.dispose();
+        await this.terminalAskpass?.dispose();
         await this.exitControlMasters();
       },
       closeWatchers: async () => this.platform?.fileWatchers.close(),

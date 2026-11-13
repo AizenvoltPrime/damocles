@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
+import { CREDENTIAL_RELAY_SCRIPTS } from '../esbuild.config.ts';
 import { ASAR_UNPACK, asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
 import { parseServerManifest } from '../src/desktop/main/remote/server-manifest-format.ts';
 import { asarFiles, readAsarFile, readAsarHeader, type AsarFileEntry } from './asar-archive.ts';
@@ -408,6 +409,28 @@ export function checkAskpassScripts(read: ReadFile, stat: StatFile, keepsModes: 
 }
 
 /**
+ * The credential helper scripts unpacked from app.asar: the .sh is an LF sh script, exactly 0755 where the file system keeps
+ * modes; the .cmd is CRLF and turns delayed expansion off. `read` and `stat` answer undefined for a missing file.
+ */
+export function checkCredentialHelperScripts(read: ReadFile, stat: StatFile, keepsModes: boolean): CheckResult[] {
+  const sh = read('git-credential-relay.sh');
+  const cmd = read('git-credential-relay.cmd');
+  const mode = stat('git-credential-relay.sh')?.mode;
+  return [
+    sh === undefined || sh.length === 0 ? fail('credential helper', 'dist/git-credential/git-credential-relay.sh is missing or empty')
+      : sh.includes(0x0d) || !sh.toString('utf8').startsWith('#!/bin/sh\n') ? fail('credential helper', 'dist/git-credential/git-credential-relay.sh is not an LF sh script')
+        : pass('credential helper', 'git-credential-relay.sh, LF'),
+    cmd === undefined || cmd.length === 0 ? fail('credential helper .cmd', 'dist/git-credential/git-credential-relay.cmd is missing or empty')
+      : /(?<!\r)\n/.test(cmd.toString('utf8')) ? fail('credential helper .cmd', 'dist/git-credential/git-credential-relay.cmd is not a CRLF batch file')
+        // a registry DelayedExpansion=1 would eat a ! in the paths
+        : !/^setlocal DisableDelayedExpansion\r$/im.test(cmd.toString('utf8')) ? fail('credential helper .cmd', 'dist/git-credential/git-credential-relay.cmd does not turn delayed expansion off')
+          : pass('credential helper .cmd', 'CRLF, delayed expansion off'),
+    !keepsModes ? pass('credential helper mode', 'not kept on a Windows file system')
+      : mode !== undefined && (mode & 0o777) === 0o755 ? pass('credential helper mode', '0755') : fail('credential helper mode', `0${((mode ?? 0) & 0o777).toString(8)}, expected 0755`),
+  ];
+}
+
+/**
  * The damocles command beside app.asar (resources/bin): the sh script, which macOS, Linux and WSL shells run, exists, is LF
  * and 0755 where the file system keeps modes; damocles.cmd, which cmd.exe runs, is CRLF and turns delayed expansion off.
  * `read` and `stat` answer undefined for a missing file.
@@ -520,6 +543,13 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
     process.platform !== 'win32',
   ));
   results.push(checkSameFiles('askpass script contents', join(repoRoot, 'resources', 'askpass'), askpass, (file) => file.endsWith('.sh')));
+  const credentialHelper = join(unpacked, 'dist', 'git-credential');
+  results.push(...checkCredentialHelperScripts(
+    (file) => (existsSync(join(credentialHelper, file)) ? readFileSync(join(credentialHelper, file)) : undefined),
+    (file) => (existsSync(join(credentialHelper, file)) ? statSync(join(credentialHelper, file)) : undefined),
+    process.platform !== 'win32',
+  ));
+  results.push(checkSameFiles('credential helper contents', join(repoRoot, 'resources', 'git-credential'), credentialHelper, (file) => CREDENTIAL_RELAY_SCRIPTS.includes(file)));
   const bin = join(resources, 'bin');
   results.push(...checkCliScripts(
     (file) => (existsSync(join(bin, file)) ? readFileSync(join(bin, file)) : undefined),
