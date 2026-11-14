@@ -11,7 +11,7 @@ Before the apps are signed:
 verify ─┬─ package (7 VSIX legs)
         ├─ remote-e2e (Windows and macOS target suites)
         ├─ reference-e2e
-        └─ sign-browser-helper ─ package-server (8 server legs) ─┬─ e2e-desktop (13 shards)
+        └─ sign-browser-helper ─ package-server (8 server legs) ─┬─ e2e-desktop (19 shards)
                                                                  └─ package-desktop (5 installer legs) ─┬─ verify-desktop-install (deb, rpm, dmg)
                                                                                                         └─ desktop-update-test (linux-x64, mac-arm64)
 
@@ -215,7 +215,7 @@ A Windows package's `BROWSER`, `bin/helpers/browser.exe`, is compiled during the
 
 ## Desktop end-to-end suite
 
-`e2e-desktop` runs the dev suite, `npm run test:desktop`, on the five desktop targets and the runners their `package-desktop` legs use. It needs only `verify` and `package-server`, so it runs beside `package-desktop` instead of before its packaging, and `attest` and `release` need it, so a failing test still blocks publishing. Playwright's `--shard=<n>/<total>` splits each target's tests across runners: three shards on Windows and macOS, two on Linux, 13 jobs in all. The matrix is `fail-fast: false`, so every shard reports all its failures. `scripts/__tests__/release-targets.test.ts` fails when the job's targets, runners or shard counts drift from `DESKTOP_TARGETS` or `package-desktop` runs the dev suite again.
+`e2e-desktop` runs the dev suite, `npm run test:desktop`, on the five desktop targets and the runners their `package-desktop` legs use. It needs only `verify` and `package-server`, so it runs beside `package-desktop` instead of before its packaging, and `attest` and `release` need it, so a failing test still blocks publishing. Playwright's `--shard=<n>/<total>` splits each target's tests across runners: four shards on Windows, five on macOS and three on Linux, 19 jobs in all ("Time limits" gives the measurements). The matrix is `fail-fast: false`, so every shard reports all its failures. `scripts/__tests__/release-targets.test.ts` fails when the job's targets or runners drift from `DESKTOP_TARGETS`, when a target's shard list and the count it passes to Playwright disagree, or when `package-desktop` runs the dev suite again.
 
 Each shard runs, in order:
 
@@ -232,7 +232,7 @@ In CI the suite retries a failed test once, only to tell a flaky test from a bro
 
 A job's `timeout-minutes` cancels the job, and a cancelled job skips every `if: ${{ !cancelled() }}` step, so a suite that hits it loses its report. A step's `timeout-minutes` fails only that step: the runner marks a timed-out step failed, not cancelled, unless the job itself was cancelled (`StepsRunner.cs` in actions/runner), and `cancelled()` reads only the job's status, so the `e2e-report-*` upload still runs. The limits therefore nest: Playwright's `globalTimeout` (45 minutes) inside each suite step's `timeout-minutes` (55), inside its job's (110 for `e2e-desktop`, which also runs the 20-minute server package loopback step on shard 1, and 90 for `package-desktop`).
 
-The measurements below come from the release runs 38075559913 and 37964451858, the first two with this job layout (`gh run view <id> --json jobs`, and the job logs for Playwright's own run time), and `scripts/__tests__/release-targets.test.ts` asserts every margin with them, counting every other step's own `timeout-minutes` (the loopback step's 20) into its job's:
+The measurements below come from the release runs 38075559913 and 37964451858, the first two with this job's steps (`gh run view <id> --json jobs`, and the job logs for Playwright's own run time), and `scripts/__tests__/release-targets.test.ts` asserts every margin with them, counting every other step's own `timeout-minutes` (the loopback step's 20) into its job's:
 
 | Budget (test constant) | Measured | Budget |
 | --- | --- | --- |
@@ -242,6 +242,20 @@ The measurements below come from the release runs 38075559913 and 37964451858, t
 | `package-desktop`'s steps after its suite: the Windows installer, the N+1 build and the uploads (`PACKAGE_AFTER_SUITE_BUDGET_MIN`) | up to 3.2 min | 10 min |
 
 Each suite step is 45 + 10 = 55 minutes. `e2e-desktop` needs 25 + 55 + 20 + 5 = 105 minutes and has 110; `package-desktop` needs 25 + 55 + 10 = 90 and has 90. If a measurement outgrows its budget, raise the budget, then the limits the test names.
+
+The `e2e-desktop` shard counts aim to keep every shard's Playwright run under 34 minutes, about three quarters of `globalTimeout`. Playwright splits a target's tests into shards by count, not duration, and in release run 43508105806 a target's longest shard ran about 1.2 times its average, so a count is sized for an average of at most 28 minutes. When a shard runs longer than 34 minutes in a CI run, add a shard to its target before raising `globalTimeout`.
+
+Playwright's run time in that run, from each shard's summary in the job log. A shard that hit the limit left tests not run; the sum with them is estimated at that shard's own pace. The run had failing forge tests, whose retries lengthened the shards they hit, so the sums are on the high side:
+
+| Target | Workers | Shards then | Sum of the shards | Longest shard | Shards now | Average now |
+| --- | --- | --- | --- | --- | --- | --- |
+| `win-x64` | 2 | 3 | 104.6 min | 42.1 min | 4 | 26 min |
+| `win-arm64` | 2 | 3 | 106.5 min | 39.6 min | 4 | 27 min |
+| `mac-arm64` | 1 | 3 | 119.4 min, 21 tests not run (about 125 min with them) | 45.0 min, the limit | 5 | 25 min |
+| `linux-x64` | 1 | 2 | 79.3 min, 51 tests not run (about 88 min with them) | 45.0 min, the limit | 3 | 29 min |
+| `linux-arm64` | 1 | 2 | 79.9 min, 6 tests not run (about 81 min with them) | 45.0 min, the limit | 3 | 27 min |
+
+`linux-x64` is the one target above 28 minutes, and its sum carries the most retries; the longest shard of its next release run decides whether it needs a fourth.
 
 The remote suites nest the same way. `playwright.remote.config.ts` ends a hung run with a 45-minute `globalTimeout` in CI, and every `npm run test:remote` step allows 45 + 15 = 60 minutes. The 15 (`REMOTE_BUILD_AND_REPORT_BUDGET_MIN`) covers what `test:remote` does before Playwright's clock starts, the spec listing, the app build (1.4 to 1.5 minutes in `e2e-desktop`), any server package it was not given prebuilt and the fixture images it needs, and the HTML report after. A job's limit is the 25-minute install budget, plus every step limit in the job, plus 5 minutes for each suite step's upload:
 
