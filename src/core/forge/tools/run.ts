@@ -224,6 +224,16 @@ function signInAgainText(target: { readonly account: AccountRecord; readonly ser
 /** frame: the server's own text under the result header, fenced as the server's content is everywhere else. */
 async function failureText(err: unknown, server: ForgeServer, what: string, frame: (body: string) => Promise<string>): Promise<string> {
   if (err instanceof InputError) return err.message;
+  if (err instanceof ForgeHttpError && err.foreignHost !== undefined) {
+    const where = `${err.foreignHost}, where ${server.id} redirected the request,`;
+    switch (err.kind) {
+      case 'network': return err.privateAddress
+        ? `${where} is a private address, which Damocles reaches only as a Git hosting server's own address.`
+        : `Could not reach ${err.foreignHost}, where ${server.id} redirected the request.`;
+      case 'tls': return `${where} presented a certificate this computer does not trust.`;
+      default: return `${where} could not answer: ${cleanLine(err.message)}.`;
+    }
+  }
   if (err instanceof ForgeHttpError) {
     switch (err.kind) {
       case 'refused': {

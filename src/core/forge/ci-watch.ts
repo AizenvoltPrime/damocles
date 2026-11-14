@@ -155,18 +155,28 @@ interface LogWatch extends Watch, LogPosition {
 /** What a failed read tells the user; rateLimited's retryAt drives the backoff. */
 export function ciErrorText(err: unknown, serverName: string): LocalizedText {
   if (err instanceof ForgeHttpError) {
+    const host = err.foreignHost ?? serverName;
     switch (err.kind) {
-      case 'rateLimited': return l('{0} is limiting requests. Damocles reads CI again once the limit resets.', serverName);
-      case 'unauthorized': return l('{0} refused the account\'s sign-in. Sign in again in Settings › Models & accounts › Git hosting.', serverName);
-      case 'network': return l('Could not reach {0}. Check the connection and try again.', serverName);
-      case 'tls': return l('{0} presented a certificate this computer does not trust.', serverName);
-      case 'notFound': return l('{0} has no such pipeline or job, or the account cannot see it.', serverName);
-      case 'forbidden':
-      case 'ssoRequired':
-      case 'appNotApproved':
-        return l('{0} refused the request: the account lacks the permission it needs.', serverName);
-      default: return err.status !== undefined ? l('{0} could not answer (HTTP {1}).', serverName, err.status) : l('{0} could not answer.', serverName);
+      case 'rateLimited': return l('{0} is limiting requests. Damocles reads CI again once the limit resets.', host);
+      case 'network': return err.privateAddress
+        ? l('{0} is a private address, which Damocles reaches only as a Git hosting server\'s own address.', host)
+        : l('Could not reach {0}. Check the connection and try again.', host);
+      case 'tls': return l('{0} presented a certificate this computer does not trust.', host);
+      default: break;
     }
+    // a host that is not the server's gets no credential, so its refusals say nothing about the account
+    if (err.foreignHost === undefined) {
+      switch (err.kind) {
+        case 'unauthorized': return l('{0} refused the account\'s sign-in. Sign in again in Settings › Models & accounts › Git hosting.', serverName);
+        case 'notFound': return l('{0} has no such pipeline or job, or the account cannot see it.', serverName);
+        case 'forbidden':
+        case 'ssoRequired':
+        case 'appNotApproved':
+          return l('{0} refused the request: the account lacks the permission it needs.', serverName);
+        default: break;
+      }
+    }
+    return err.status !== undefined ? l('{0} could not answer (HTTP {1}).', host, err.status) : l('{0} could not answer.', host);
   }
   return l('{0} could not answer.', serverName);
 }

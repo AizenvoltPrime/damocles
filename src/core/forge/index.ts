@@ -158,6 +158,8 @@ export interface ForgeServiceDeps {
   /** Reaches any origin but a server's own; the SSRF guard's fetch by default. */
   readonly publicFetch?: GuardedFetch;
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** The HTTP retry wait's random source (http.ts); Math.random by default. */
+  readonly random?: () => number;
 }
 
 export interface ForgeService {
@@ -268,15 +270,17 @@ function signInFailure(err: unknown, server: string, aborted: boolean): Provider
   if (err instanceof ForgeSignInError) return { kind: err.kind, message: err.text };
   if (err instanceof ForgeFileBrokenError) return { kind: 'provider', message: l('Damocles could not save the account because {0} does not parse.', path.basename(err.filePath)) };
   if (err instanceof ForgeHttpError) {
+    const host = err.foreignHost ?? server;
     switch (err.kind) {
-      case 'network': return { kind: 'network', message: l('Could not reach {0}. Check the connection and try again.', server) };
-      case 'tls': return { kind: 'network', message: l('{0} presented a certificate this computer does not trust.', server) };
-      case 'rateLimited': return { kind: 'provider', message: l('{0} is limiting requests. Try again in a few minutes.', server) };
+      case 'network': return { kind: 'network', message: l('Could not reach {0}. Check the connection and try again.', host) };
+      case 'tls': return { kind: 'network', message: l('{0} presented a certificate this computer does not trust.', host) };
+      case 'rateLimited': return { kind: 'provider', message: l('{0} is limiting requests. Try again in a few minutes.', host) };
       case 'unauthorized': return { kind: 'provider', message: l('{0} refused the sign-in. Start it again.', server) };
-      default: return err.status !== undefined
-        ? { kind: 'provider', message: l('{0} could not complete the sign-in (HTTP {1}).', server, err.status), status: err.status }
-        : { kind: 'provider', message: l('{0} could not complete the sign-in.', server) };
+      default: break;
     }
+    return err.status !== undefined
+      ? { kind: 'provider', message: l('{0} could not complete the sign-in (HTTP {1}).', host, err.status), status: err.status }
+      : { kind: 'provider', message: l('{0} could not complete the sign-in.', host) };
   }
   return { kind: 'provider', message: l('{0} could not complete the sign-in.', server) };
 }
@@ -297,7 +301,7 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
   const servers: ServerRegistry = createServerRegistry({ forgeDir: deps.forgeDir, tokens, buildOAuth: deps.buildOAuth, ...(deps.overrides ? { overrides: deps.overrides } : {}), log });
   const store = createAccountStore(deps.forgeDir, log);
   const bindings: BindingStore = createBindingStore(deps.forgeDir, log);
-  const http: ForgeHttp = createForgeHttp({ fetch: deps.fetch, userAgent: deps.userAgent, log, now, ...(deps.publicFetch ? { publicFetch: deps.publicFetch } : {}) });
+  const http: ForgeHttp = createForgeHttp({ fetch: deps.fetch, userAgent: deps.userAgent, log, now, ...(deps.publicFetch ? { publicFetch: deps.publicFetch } : {}), ...(deps.random ? { random: deps.random } : {}) });
   const messageListeners = new Set<(message: ForgeViewMessage) => void>();
   const changeListeners = new Set<() => void>();
   // accounts whose secret this run cannot read: a volatile store after a restart, or a deleted secret

@@ -2776,7 +2776,7 @@ class DesktopApp {
 
   // Keys from the shell are matched against the project list; a renderer string is never used as a path.
   private projectByKey(key: string): { fsPath: string; name: string } {
-    const project = this.projects.folders().find((folder) => folderKey(folder.fsPath) === key);
+    const project = this.listedFolder(key);
     if (!project) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
     return project;
   }
@@ -4221,7 +4221,7 @@ class DesktopApp {
       core: (label, work) => this.core.run(label, (core) => work(core.client)),
       scm: scmClient,
       features: (authority) => this.authorities?.connection(authority)?.features,
-      projectName: (projectKey) => (this.remoteProject(projectKey) ?? this.projectByKey(projectKey)).name,
+      projectName: (projectKey) => this.listedProjectName(projectKey),
       savedHost: (authority) => {
         if (this.savedHostRecord(authority) === undefined) return undefined;
         const color = this.hostColor(authority);
@@ -5044,7 +5044,18 @@ class DesktopApp {
   // A project of the sidebar's list, local or remote.
   private projectListed(key: string): boolean {
     if (authorityKeyOfProject(key) !== 'local') return this.remoteProject(key) !== undefined;
-    return this.projects.folders().some((folder) => folderKey(folder.fsPath) === key);
+    return this.listedFolder(key) !== undefined;
+  }
+
+  private listedFolder(key: string): { fsPath: string; name: string } | undefined {
+    return this.projects.folders().find((folder) => folderKey(folder.fsPath) === key);
+  }
+
+  // The name the sidebar shows (shellState) for a listed project; undefined once it left the list.
+  private listedProjectName(key: string): string | undefined {
+    if (authorityKeyOfProject(key) !== 'local') return this.remoteProject(key)?.name;
+    const folder = this.listedFolder(key);
+    return folder && (this.client()?.resolve(key)?.label ?? folder.name);
   }
 
   // A removed project's last chat goes with it, whichever path removed it.

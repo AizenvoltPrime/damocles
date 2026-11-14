@@ -201,7 +201,7 @@ export interface ScmHostDeps {
     // the clone picker; settles once it closed, and its Enter starts cloneFromPicker
     showClonePicker(recursive: boolean): Promise<void>;
     // Publish of a repository with no remote: the Publish dialog, noAccount when no signed-in account can publish, closed
-    // when the repository is no longer open
+    // when the repository or its project is gone
     publishToAccount(repoId: string, branch: string): Promise<'noAccount' | 'shown' | 'closed'>;
     // a push of branch to remote failed: true once the fork dialog or an organization notice took the failure's place
     pushRefused(repoId: string, remote: string, branch: string, err: unknown): Promise<boolean>;

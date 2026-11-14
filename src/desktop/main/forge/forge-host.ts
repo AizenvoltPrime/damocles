@@ -47,8 +47,8 @@ export interface ForgeHostDeps {
   readonly scm: Pick<ScmServiceClient, 'repository' | 'remoteEndpoints' | 'remotes' | 'commitOnRemote' | 'resolveTypedCommit' | 'onDidChange' | 'addRemote' | 'removeRemote' | 'renameRemote' | 'push' | 'artifacts' | 'remoteBranches' | 'createBranch' | 'currentStatus'>;
   /** What the authority's daemon listed in its welcome; undefined for 'local' or a host not connected. */
   readonly features: (authorityKey: string) => readonly string[] | undefined;
-  /** The project's name as the project list shows it. */
-  readonly projectName: (projectKey: string) => string;
+  /** The project's name as the project list shows it; undefined once it left the list, which happens before its repository closes. */
+  readonly projectName: (projectKey: string) => string | undefined;
   /** A saved remote host's badge; undefined for 'local' or an authority no saved host has. */
   readonly savedHost: (authorityKey: string) => { readonly hostName: string; readonly color?: HostColor } | undefined;
   readonly asker: ForgeAccountAsker;
@@ -256,9 +256,9 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
       },
       projectName: deps.projectName,
       bind: async (projectKey, bind) => {
-        const saved = await deps.core('forge bindAccount', (client) => client.forgeBindAccount(projectKey, bind.serverId, bind.accountId));
-        if (saved) this.fire({ projectKeys: [projectKey] });
-        return saved;
+        const outcome = await this.bindListed(projectKey, bind.serverId, bind.accountId);
+        if (outcome === 'saved') this.fire({ projectKeys: [projectKey] });
+        return outcome;
       },
       openOnServer: (url) => this.openOnManagedOrigin(url),
       ask: (request) => deps.dialogs.ask(request),
@@ -354,11 +354,13 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
     if (!ref) return null;
     const endpoints = await this.openEndpoints(call['repoId']);
     if (!endpoints) return null;
+    const project = this.deps.projectName(ref.projectKey);
+    if (project === undefined) return null;
     const pushRemote = ref.repo.lastStatus?.upstream?.remote;
     const view = await this.deps.core('forge repoAccounts', (client) => client.forgeRepoAccounts({
       projectKey: ref.projectKey,
       authorityKey: ref.repo.authority,
-      project: this.deps.projectName(ref.projectKey),
+      project,
       ...(pushRemote !== undefined ? { pushRemote } : {}),
       endpoints,
       ...(call['recheck'] === true ? { recheck: true } : {}),
@@ -372,7 +374,19 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
     if (!isId(repoId) || !isId(serverId) || (accountId !== null && !isId(accountId))) throw new Error('Malformed forge chooseAccount call from the shell');
     const ref = this.repository(repoId);
     if (!ref) return false;
-    return this.deps.core('forge bindAccount', (client) => client.forgeBindAccount(ref.projectKey, serverId, accountId as string | null));
+    return (await this.bindListed(ref.projectKey, serverId, accountId as string | null)) === 'saved';
+  }
+
+  /**
+   * Core's forgeBindAccount for a project of the list. The list check and the send run in one step, and core takes main's
+   * calls in order, so Remove Project's forget always lands after a binding sent before it, and none outlives it.
+   */
+  private bindListed(projectKey: string, serverId: string, accountId: string | null): Promise<'saved' | 'unsaved' | 'unlisted'> {
+    if (this.deps.projectName(projectKey) === undefined) {
+      this.deps.log(`[forge] no account was bound to ${projectKey}, which left the project list`);
+      return Promise.resolve('unlisted');
+    }
+    return this.deps.core('forge bindAccount', (client) => client.forgeBindAccount(projectKey, serverId, accountId)).then((saved) => (saved ? 'saved' : 'unsaved'));
   }
 
   async openAccountsFromShell(raw: unknown): Promise<void> {
@@ -567,7 +581,7 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
 
   // ---- publish and fork on a denied push (main/forge/publish-flow.ts)
 
-  /** Publish of a repository with no remote: the Publish dialog, noAccount when no signed-in account can publish, closed when the repository is gone. */
+  /** Publish of a repository with no remote: the Publish dialog, noAccount when no signed-in account can publish, closed when the repository or its project is gone. */
   publishToAccount(repoId: string, branch: string): Promise<'noAccount' | 'shown' | 'closed'> {
     return this.flows.publish(repoId, branch);
   }
@@ -662,6 +676,8 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
     if (!ref) return undefined;
     const endpoints = await this.openEndpoints(repoId);
     if (!endpoints) return undefined;
+    const project = this.deps.projectName(ref.projectKey);
+    if (project === undefined) return undefined;
     const status = ref.repo.lastStatus;
     const pushRemote = status?.upstream?.remote;
     // the branch as the server names it: the upstream's, else the local one
@@ -670,7 +686,7 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
     return {
       projectKey: ref.projectKey,
       authorityKey: ref.repo.authority,
-      project: this.deps.projectName(ref.projectKey),
+      project,
       ...(pushRemote !== undefined ? { pushRemote } : {}),
       endpoints,
       ...(branch !== undefined ? { branch } : {}),
@@ -790,11 +806,16 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
     if (!ref) return true;
     try {
       const endpoints = await this.endpointsOf(repoId);
+      const project = this.deps.projectName(ref.projectKey);
+      if (project === undefined) {
+        this.deps.log(`[forge] the project of ${repoId} left the list, so ${operation} runs without asking`);
+        return true;
+      }
       const result = await this.deps.core('forge prepareGitOperation', (client) => client.forgePrepareGitOperation({
         operation,
         projectKey: ref.projectKey,
         authorityKey: ref.repo.authority,
-        project: this.deps.projectName(ref.projectKey),
+        project,
         remotes: [...remotes],
         endpoints,
       }));
@@ -828,8 +849,7 @@ export class ForgeHost implements ForgeOverlayActions, Disposable {
 
   /** The clone's project was added: the Choose account dialog's explicit choice, or the clone picker's account, becomes its binding; announce: the dialog's. */
   async bindClone(projectKey: string, bind: { readonly serverId: string; readonly accountId: string | null }, announce: boolean): Promise<void> {
-    const saved = await this.deps.core('forge bindAccount', (client) => client.forgeBindAccount(projectKey, bind.serverId, bind.accountId));
-    if (!saved) return;
+    if ((await this.bindListed(projectKey, bind.serverId, bind.accountId)) !== 'saved') return;
     this.fire(announce ? { projectKeys: [projectKey], chosen: { projectKey, serverId: bind.serverId, accountId: bind.accountId, operation: 'clone' } } : { projectKeys: [projectKey] });
   }
 

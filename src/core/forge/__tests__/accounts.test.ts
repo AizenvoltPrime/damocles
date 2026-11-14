@@ -219,6 +219,21 @@ describe('accounts: sign-in', () => {
     await running;
   });
 
+  it('names a host the server redirected the sign-in to when it failed there, and never says the server refused the sign-in for its 401', async () => {
+    const redirected = fetchWith((url) => (url.pathname.endsWith('/user') ? new Response(null, { status: 302, headers: { location: 'https://sso.example.net/login' } }) : undefined));
+    const expired = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('expired'), { code: 'CERT_HAS_EXPIRED' }) });
+    const cases = [
+      [() => Promise.reject(expired), { kind: 'network', message: { message: '{0} presented a certificate this computer does not trust.', args: ['sso.example.net'] } }],
+      [() => Promise.resolve(new Response(null, { status: 401 })), { kind: 'provider', message: { message: '{0} could not complete the sign-in (HTTP {1}).', args: ['sso.example.net', 401] }, status: 401 }],
+    ] as const;
+    for (const [publicFetch, error] of cases) {
+      const service = harness.service({ fetch: redirected, publicFetch });
+      await service.load();
+      await service.signIn({ serverId: 'github.com', route: 'browser', agentShells: true });
+      expect(signInStates(harness, 'github.com').at(-1)).toEqual({ phase: 'idle', error });
+    }
+  });
+
   it('offers only the token route on built-in servers when the build has no OAuth apps', async () => {
     const service = harness.service({ overrides: {} });
     await service.load();

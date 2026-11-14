@@ -46,7 +46,7 @@ interface WorldOptions {
   readonly features?: readonly string[];
   readonly remotes?: readonly string[];
   readonly template?: string;
-  readonly bind?: 'saved' | 'unsaved' | 'throws';
+  readonly bind?: 'saved' | 'unsaved' | 'unlisted' | 'throws';
   readonly kind?: 'github' | 'gitlab';
 }
 
@@ -71,7 +71,8 @@ function world(options: WorldOptions = {}) {
     if (failure !== undefined) throw failure;
     work();
   };
-  const open = { repository: true };
+  // listed: the project is in the project list, which it leaves before its repository closes
+  const open = { repository: true, listed: true };
   const show = vi.fn(async (_side: string, file: string): Promise<Buffer | undefined> => (options.template !== undefined && file === '.gitlab/merge_request_templates/Default.md' ? Buffer.from(options.template) : undefined));
   const scm = {
     repository: (repoId: string) => (repoId === 'repo' && open.repository ? {
@@ -111,11 +112,11 @@ function world(options: WorldOptions = {}) {
       { remote: 'fork', fetch: { protocol: 'https', host: 'gitlab.indigital.gr', path: 'astefanopoulos/damocles.git', aliasResolved: false } },
     ],
     serverKind: () => options.kind ?? 'gitlab',
-    projectName: () => 'damocles',
+    projectName: () => (open.listed ? 'damocles' : undefined),
     bind: async (projectKey, bind) => {
       bound.push({ projectKey, ...bind });
       if (options.bind === 'throws') throw new Error('Damocles Core stopped');
-      return options.bind !== 'unsaved';
+      return options.bind ?? 'saved';
     },
     openOnServer: async (url) => {
       opened.push(url);
@@ -282,6 +283,18 @@ describe('Fork and Push', () => {
     expect(w.notices).toEqual(['info: Fork canceled. Nothing changed on your remotes.']);
   });
 
+  it('cancelled while the server refuses the fork: the user hears the cancel, not the refusal', async () => {
+    const { w, requestId } = await opened();
+    w.client.forgeFork.mockImplementationOnce((_params, signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve({ kind: 'failed', reason: { message: '{0} refused to fork {1}.', args: ['gitlab.indigital.gr', 'grp/damocles'] } }), { once: true })));
+    expect(w.flow.forkStart(requestId)).toBe('started');
+    await settle();
+    w.answer.resolve({ kind: 'dismissed' });
+    await settle();
+    expect(w.calls).toEqual([]);
+    expect(w.forkStates.some((state) => state.phase === 'failed')).toBe(false);
+    expect(w.notices).toEqual(['info: Fork canceled. Nothing changed on your remotes.']);
+  });
+
   it('ends a fork the server is copying when the flows are disposed', async () => {
     const { w, requestId } = await opened();
     w.client.forgeFork.mockImplementationOnce((_params, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })));
@@ -392,13 +405,17 @@ describe('Fork and Push', () => {
     expect(w.client.forgeFork).not.toHaveBeenCalled();
   });
 
-  it.each(['unsaved', 'throws'] as const)('pushes nothing and restores the remotes when the account could not be saved for the project (%s)', async (bind) => {
+  it.each([
+    ['unsaved', 'could not save which account'],
+    ['throws', 'could not save which account'],
+    ['unlisted', 'The project was removed, so nothing was pushed.'],
+  ] as const)('pushes nothing and restores the remotes when the account could not be saved for the project (%s)', async (bind, failure) => {
     const { w, requestId } = await opened({ bind });
     await ran(w.flow.forkStart(requestId));
     expect(w.calls.some((call) => call.startsWith('push'))).toBe(false);
     expect(w.calls.slice(-2)).toEqual(['remove origin', 'rename upstream origin']);
     expect([...w.remotes]).toEqual(['origin']);
-    expect(w.forkStates.at(-1)).toMatchObject({ phase: 'failed', restored: true, steps: [{ state: 'done' }, { state: 'done' }, { state: 'done' }, { state: 'failed', failure: expect.stringContaining('could not save which account') }] });
+    expect(w.forkStates.at(-1)).toMatchObject({ phase: 'failed', restored: true, steps: [{ state: 'done' }, { state: 'done' }, { state: 'done' }, { state: 'failed', failure: expect.stringContaining(failure) }] });
   });
 
   it('a failed push keeps the new layout: origin is the fork, upstream the original', async () => {
@@ -430,11 +447,17 @@ describe('Publish', () => {
   const unpublished = (options: WorldOptions = {}) => world({ remotes: [], ...options });
   const requestOf = (w: ReturnType<typeof world>): Extract<OverlayRequest, { kind: 'forgePublish' }>['dialog'] => (w.asked[0] as Extract<OverlayRequest, { kind: 'forgePublish' }>).dialog;
 
-  it('keeps the zero-remote warning when no account can publish, and says when the repository closed', async () => {
+  it('keeps the zero-remote warning when no account can publish, and says when the repository or its project closed', async () => {
     const w = unpublished();
     w.client.forgePublishAccounts.mockResolvedValueOnce({ accounts: [] });
     expect(await w.flow.publish('repo', 'main')).toBe('noAccount');
     expect(await w.flow.publish('gone', 'main')).toBe('closed');
+    const listing = w.client.forgePublishAccounts.getMockImplementation()!;
+    w.client.forgePublishAccounts.mockImplementationOnce(async () => {
+      w.open.listed = false;
+      return listing();
+    });
+    expect(await w.flow.publish('repo', 'main')).toBe('closed');
     expect(w.asked).toEqual([]);
   });
 
@@ -581,6 +604,7 @@ describe('Publish', () => {
   it.each([
     ['unsaved', 'Damocles could not save which account this project uses, so nothing was pushed. Settings › Models & accounts › Git hosting says why.'],
     ['throws', 'Damocles could not save which account this project uses, so nothing was pushed.'],
+    ['unlisted', 'The project was removed, so nothing was pushed.'],
   ] as const)('pushes nothing when the account could not be saved (%s)', async (bind, failure) => {
     const w = unpublished({ bind });
     await w.flow.publish('repo', 'main');

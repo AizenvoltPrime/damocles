@@ -7,7 +7,7 @@ import { expect, test } from './support/fixtures';
 import { coreLog, type DesktopApp, type LaunchOptions } from './support/app';
 import { git } from './support/git';
 import { writeUserSettings, type HermeticHome } from './support/hermetic';
-import { readyOverlay } from './support/overlay';
+import { overlayViewState, readyOverlay } from './support/overlay';
 import { bareRepo, commitMessage, gitLog, openScmProject, quickInput, scmSection } from './support/scm';
 import { setContentSize } from './support/settings';
 import { recordedToasts, recordToasts } from './support/shell';
@@ -288,11 +288,13 @@ test('Cancel while the server copies the repository leaves the remotes as they w
   await ask.getByRole('button', { name: 'Fork and Push', exact: true }).click();
   const progress = overlay.getByRole('dialog', { name: 'Forking grp/damocles', exact: true });
   await expect(progress.getByText(`Waiting for ${run.indigital} to copy the repository`, { exact: true })).toBeVisible({ timeout: 30_000 });
+  // the fork's POST reached the server, which core never aborts, so the cancel's toast names the fork
+  await expect.poll(() => run.stub.indigital.created.map((item) => item.path)).toEqual(['astefanopoulos/damocles']);
   const cancel = progress.getByRole('button', { name: 'Cancel', exact: true });
   await expect(cancel).toBeFocused();
   await cancel.click();
   await expect(progress).toHaveCount(0);
-  await expect.poll(async () => (await recordedToasts(run.app)).map((toast) => toast.message)).toContain('Fork canceled. Nothing changed on your remotes.');
+  await expect.poll(async () => (await recordedToasts(run.app)).map((toast) => toast.message)).toContain(`Fork canceled. Your remotes are as they were; the fork astefanopoulos/damocles stays on ${run.indigital}.`);
   expect(await remotesOf(home, dir)).toEqual(before);
 });
 
@@ -548,6 +550,8 @@ test('closing Publish while a server lists its groups lets a new Publish open at
   await expect(publishDialog(overlay).getByTestId('forge-publish-owners-loading')).toHaveCount(1);
   await publishDialog(overlay).getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(publishDialog(overlay)).toHaveCount(0);
+  // main refuses a second Publish until the closed one's answer arrives, after the exit, and hides the overlay in the same step
+  await expect.poll(async () => (await overlayViewState(run.app)).visible).toBe(false);
   const again = await openPublish(run.app);
   await expect(publishDialog(again).getByTestId('forge-publish-owners-loading')).toHaveCount(1);
 });

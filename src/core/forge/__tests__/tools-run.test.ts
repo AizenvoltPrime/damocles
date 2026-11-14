@@ -1,5 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { ForgeService } from '..';
+import { FetchRefusedError, type GuardedFetch } from '../../pi-session/web-access/safe-fetch';
+import { MAX_TRANSIENT_RETRIES } from '../http';
 import type { RemoteEndpoint } from '../../../shared/forge/bindings';
 import type { ForgeToolRequest } from '../../../shared/forge/tools';
 import { FORGE_AGENT_READ_ANY_REPOSITORY_SETTING } from '../types';
@@ -40,6 +42,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await harness.close();
+});
+
+afterEach(() => {
+  harness.stub.logStorage.dropNext = 0;
 });
 
 describe('reads', () => {
@@ -104,6 +110,38 @@ describe('reads', () => {
     expect(storage).toEqual([{ path: `/_logs/${CI_FIXTURES.jobs.unit}.txt`, authorized: false }]);
     expect(new URL(harness.stub.logStorage.url).origin).not.toBe(new URL(harness.stub.github.webUrl).origin);
     for (const item of harness.stub.github.requests) expect(item.origin).toBe(harness.stub.github.webUrl);
+  });
+
+  it('a job log whose storage drops the connection once is read on the next try, which goes to the storage alone', async () => {
+    const before = { storage: harness.stub.logStorage.requests.length, github: harness.stub.github.requests.length };
+    harness.stub.logStorage.dropNext = 1;
+    const answer = await service.agentTool(request('ForgeJobLog', { job: CI_FIXTURES.jobs.unit }, github()), signal());
+    expect(answer.isError).toBeUndefined();
+    expect(answer.text).toContain('unit ok');
+    expect(harness.stub.logStorage.requests.slice(before.storage)).toEqual(Array.from({ length: 2 }, () => ({ path: `/_logs/${CI_FIXTURES.jobs.unit}.txt`, authorized: false })));
+    expect(harness.stub.github.requests.slice(before.github).filter((item) => item.path.endsWith('/logs'))).toHaveLength(1);
+  });
+
+  it('a job log whose storage stays unreachable names the storage, not the server', async () => {
+    harness.stub.logStorage.dropNext = MAX_TRANSIENT_RETRIES + 1;
+    const answer = await service.agentTool(request('ForgeJobLog', { job: CI_FIXTURES.jobs.unit }, github()), signal());
+    expect(answer).toEqual({ text: `Could not reach ${new URL(harness.stub.logStorage.url).host}, where github.com redirected the request.`, isError: true });
+    expect(harness.stub.logStorage.dropNext).toBe(0);
+  });
+
+  it('a job log whose storage is a private address, has an untrusted certificate or answers an error names the storage, not the server', async () => {
+    const where = `${new URL(harness.stub.logStorage.url).host}, where github.com redirected the request,`;
+    const expired = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('expired'), { code: 'CERT_HAS_EXPIRED' }) });
+    const cases: readonly (readonly [GuardedFetch, string])[] = [
+      [() => Promise.reject(new FetchRefusedError('Blocked private address')), `${where} is a private address, which Damocles reaches only as a Git hosting server's own address.`],
+      [() => Promise.reject(expired), `${where} presented a certificate this computer does not trust.`],
+      [() => Promise.resolve(new Response(null, { status: 503 })), `${where} could not answer: The host answered HTTP 503.`],
+    ];
+    for (const [publicFetch, text] of cases) {
+      const restarted = harness.service({ publicFetch });
+      await restarted.load();
+      expect(await restarted.agentTool(request('ForgeJobLog', { job: CI_FIXTURES.jobs.unit }, github()), signal())).toEqual({ text, isError: true });
+    }
   });
 
   it('ForgeJobLog of a running GitHub job reads the job, says its log is published when it completes, and asks for no log', async () => {

@@ -212,6 +212,7 @@ function grownDelay(delay: number): number {
  */
 async function pollFork(ctx: ListingContext, timing: ForkTiming, start: number, path: string, poll: () => Promise<CreatedRepository | 'pending' | { readonly failed: LocalizedText }>): Promise<ForkOnServer> {
   let delay = FORK_POLL_FIRST_MS;
+  if (ctx.signal.aborted) return { cancelled: { path } };
   try {
     for (;;) {
       const answer = await poll();
@@ -230,7 +231,8 @@ async function pollFork(ctx: ListingContext, timing: ForkTiming, start: number, 
 async function githubFork(ctx: ListingContext, timing: ForkTiming, upstream: string, login: string): Promise<ForkOnServer> {
   const start = timing.now();
   const [owner, repo] = upstream.split('/') as [string, string];
-  const created = await ctx.http.request({ server: ctx.server, method: 'POST', url: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/forks`, template: '/repos/{owner}/{repo}/forks', credential: { bearer: ctx.token }, json: {}, acceptStatuses: REFUSAL_STATUSES, signal: ctx.signal });
+  // no signal: a fork the server made must be reported, so a cancel is read once the server named it (pollFork)
+  const created = await ctx.http.request({ server: ctx.server, method: 'POST', url: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/forks`, template: '/repos/{owner}/{repo}/forks', credential: { bearer: ctx.token }, json: {}, acceptStatuses: REFUSAL_STATUSES });
   if (created.status >= 400) return { failed: refusedFork(ctx.server, upstream, serverReason(created.body)) };
   const named = stringField(created.body, 'full_name');
   const path = named !== undefined ? checkedRepoPath('github', named) : undefined;
@@ -245,7 +247,8 @@ async function githubFork(ctx: ListingContext, timing: ForkTiming, upstream: str
 /** GitLab: POST /projects/:id/fork, then GET /projects/:fork until import_status is finished; an existing fork of upstream is reused. */
 async function gitlabFork(ctx: ListingContext, timing: ForkTiming, upstream: string, login: string): Promise<ForkOnServer> {
   const start = timing.now();
-  const created = await ctx.http.request({ server: ctx.server, method: 'POST', url: `/projects/${encodeURIComponent(upstream)}/fork`, template: '/projects/{id}/fork', credential: { bearer: ctx.token }, json: {}, acceptStatuses: REFUSAL_STATUSES, signal: ctx.signal });
+  // no signal: a fork the server made must be reported, so a cancel is read once the server named it (pollFork)
+  const created = await ctx.http.request({ server: ctx.server, method: 'POST', url: `/projects/${encodeURIComponent(upstream)}/fork`, template: '/projects/{id}/fork', credential: { bearer: ctx.token }, json: {}, acceptStatuses: REFUSAL_STATUSES });
   let fork = created.body;
   if (created.status === 409 || (created.status === 400 && /already been taken/i.test(serverReason(created.body) ?? ''))) {
     // a fork made before: reused only when it is this account's fork of upstream; GitLab paths are case-insensitive
@@ -396,10 +399,12 @@ interface IssuedOwner {
 
 function failureText(err: unknown, server: ForgeServer, account: AccountRecord): LocalizedText {
   if (err instanceof ForgeHttpError) {
-    if (err.kind === 'rateLimited') return l('{0} is limiting requests. Try again in a few minutes.', server.id);
+    const host = err.foreignHost ?? server.id;
+    if (err.kind === 'rateLimited') return l('{0} is limiting requests. Try again in a few minutes.', host);
     if (err.kind === 'unauthorized') return l('{0} must sign in again on {1}.', account.login, server.id);
-    if (err.kind === 'network' || err.kind === 'tls') return l('Could not reach {0}. Check the connection and try again.', server.id);
-    if (err.status !== undefined) return l('{0} could not complete the request (HTTP {1}).', server.id, err.status);
+    if (err.kind === 'network' || err.kind === 'tls') return l('Could not reach {0}. Check the connection and try again.', host);
+    if (err.status !== undefined) return l('{0} could not complete the request (HTTP {1}).', host, err.status);
+    return l('{0} could not complete the request.', host);
   }
   return l('{0} could not complete the request.', server.id);
 }

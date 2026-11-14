@@ -103,6 +103,8 @@ export async function createHarness(options: { readonly gitRoot?: string; readon
           reject(new Error('aborted'));
         }, { once: true });
       }),
+      // a GET the stub fails is sent again at once
+      random: () => 0,
       ...overrides,
     }),
     service: (overrides = {}) => {

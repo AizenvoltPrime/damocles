@@ -21,6 +21,7 @@ function world(overrides: { features?: readonly string[]; endpoints?: () => Prom
   const client = {
     forgePrepareGitOperation: vi.fn(async (): Promise<{ proceed: boolean; signInServerId?: string }> => ({ proceed: true })),
     forgeRepoAccounts: vi.fn(async () => ({ projectKey: 'c:/src/damocles', project: 'damocles', servers: [] })),
+    forgeBindAccount: vi.fn(async () => true),
     forgeHostDefaults: vi.fn(async () => ({ state: 'ready' as const, servers: [] })),
     forgeCiWatch: vi.fn(async (): Promise<CiStatus | null> => ({ status: 'error', message: { message: 'Could not reach {0}. Check the connection and try again.', args: ['gitlab.com'] } })),
     forgeCiJobs: vi.fn(async (): Promise<CiStatus | null> => ({ status: 'none' })),
@@ -433,6 +434,38 @@ describe('history details', () => {
     expect(w.client.forgeHistoryContext).toHaveBeenCalledWith({ repo: expect.objectContaining({ projectKey: 'c:/src/damocles' }) });
     expect(w.client.forgeRepoAccounts).toHaveBeenCalledWith(expect.objectContaining({ projectKey: 'c:/src/damocles' }));
     expect(named).toEqual(['c:/src/damocles', 'c:/src/damocles']);
+  });
+
+  // Remove Project takes the project off the list before its repository closes in source control
+  it('answers as for a closed repository when the project leaves the list while the endpoints are read', async () => {
+    const w = world();
+    let listed = true;
+    let read!: () => void;
+    w.scm.remoteEndpoints.mockImplementationOnce(() => new Promise((resolve) => (read = () => resolve(ENDPOINTS))));
+    const host = new ForgeHost({ ...w.deps, scm: w.scm as unknown as ForgeHostDeps['scm'], projectName: () => (listed ? 'damocles' : undefined) });
+    const calls = [host.historyContextFromShell({ repoId: 'local-repo' }), host.repoAccounts({ repoId: 'local-repo' }), host.ciStatus('local-repo'), host.prepareGitOperation('local-repo', 'push', ['origin'])];
+    expect(w.scm.remoteEndpoints).toHaveBeenCalledTimes(1);
+    listed = false;
+    read();
+    expect(await Promise.all(calls)).toEqual([null, null, null, true]);
+    expect(w.client.forgeHistoryContext).not.toHaveBeenCalled();
+    expect(w.client.forgeRepoAccounts).not.toHaveBeenCalled();
+    expect(w.client.forgeCiWatch).not.toHaveBeenCalled();
+    expect(w.client.forgePrepareGitOperation).not.toHaveBeenCalled();
+    expect(w.logs).toContain('[forge] the project of local-repo left the list, so push runs without asking');
+  });
+
+  // Remove Project forgets the project's bindings through core after taking it off the list, so a later bind would outlive it
+  it('binds no account to a project that left the list', async () => {
+    const w = world();
+    let listed = true;
+    const host = new ForgeHost({ ...w.deps, projectName: () => (listed ? 'damocles' : undefined) });
+    expect(await host.chooseAccountFromShell({ repoId: 'local-repo', serverId: 'gitlab.com', accountId: 'gitlab.com|7' })).toBe(true);
+    expect(w.client.forgeBindAccount).toHaveBeenCalledWith('c:/src/damocles', 'gitlab.com', 'gitlab.com|7');
+    listed = false;
+    expect(await host.chooseAccountFromShell({ repoId: 'local-repo', serverId: 'gitlab.com', accountId: 'gitlab.com|7' })).toBe(false);
+    await host.bindClone('c:/src/damocles', { serverId: 'gitlab.com', accountId: null }, true);
+    expect(w.client.forgeBindAccount).toHaveBeenCalledTimes(1);
   });
 
   it('refuses malformed history calls field by field', async () => {

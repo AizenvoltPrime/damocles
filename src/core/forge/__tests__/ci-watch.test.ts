@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CiJobView, CiPipelineView, CiState } from '../../../shared/forge/ci';
 import type { CiAdapter, CiLogRead } from '../ci-adapter';
-import { createCiWatcher, LOG_BACKOFF_MAX_MS, LOG_POLL_MS, logDelta, STATUS_IDLE_MS, STATUS_RUNNING_MS, type CiChangedEvent, type CiRepo, type CiResolution, type CiWatcher } from '../ci-watch';
+import { ciErrorText, createCiWatcher, LOG_BACKOFF_MAX_MS, LOG_POLL_MS, logDelta, STATUS_IDLE_MS, STATUS_RUNNING_MS, type CiChangedEvent, type CiRepo, type CiResolution, type CiWatcher } from '../ci-watch';
 import { createKnownSecrets, type KnownSecrets } from '../known-secrets';
 import type { RepoContext } from '../tools/api';
 import { ForgeHttpError, type ForgeServer } from '../types';
@@ -560,5 +560,27 @@ describe('logDelta', () => {
     expect(logDelta(state, { bytes: window, totalBytes: 30_000_000 }).reset).toBe(true);
     const moved = new Uint8Array([...window.subarray(5), ...encode('next\n')]);
     expect(logDelta(state, { bytes: moved, totalBytes: 30_000_005 })).toEqual({ text: 'next\n', reset: false, truncated: true });
+  });
+});
+
+describe('ciErrorText', () => {
+  it('names the host that failed when it is not the server, such as the log storage a log read was redirected to', () => {
+    const unreachable = 'Could not reach {0}. Check the connection and try again.';
+    expect(ciErrorText(new ForgeHttpError('network', 'down', { foreignHost: 'results.blob.example.net' }), 'github.com')).toEqual({ message: unreachable, args: ['results.blob.example.net'] });
+    expect(ciErrorText(new ForgeHttpError('network', 'down'), 'github.com')).toEqual({ message: unreachable, args: ['github.com'] });
+    expect(ciErrorText(new ForgeHttpError('tls', 'refused', { foreignHost: 'results.blob.example.net' }), 'github.com')).toEqual({ message: '{0} presented a certificate this computer does not trust.', args: ['results.blob.example.net'] });
+  });
+
+  it('calls a foreign host the SSRF guard refused a private address', () => {
+    expect(ciErrorText(new ForgeHttpError('network', 'refused', { foreignHost: 'minio.corp.example:9000', privateAddress: true }), 'ghes.corp.example')).toEqual({ message: '{0} is a private address, which Damocles reaches only as a Git hosting server\'s own address.', args: ['minio.corp.example:9000'] });
+  });
+
+  it('names a foreign host for its error statuses and broken answers, never blaming the account', () => {
+    const storage = { foreignHost: 'results.blob.example.net' };
+    expect(ciErrorText(new ForgeHttpError('notFound', 'gone', { status: 404, ...storage }), 'github.com')).toEqual({ message: '{0} could not answer (HTTP {1}).', args: ['results.blob.example.net', 404] });
+    expect(ciErrorText(new ForgeHttpError('forbidden', 'expired', { status: 403, ...storage }), 'github.com')).toEqual({ message: '{0} could not answer (HTTP {1}).', args: ['results.blob.example.net', 403] });
+    expect(ciErrorText(new ForgeHttpError('unauthorized', 'no', { status: 401, ...storage }), 'github.com')).toEqual({ message: '{0} could not answer (HTTP {1}).', args: ['results.blob.example.net', 401] });
+    expect(ciErrorText(new ForgeHttpError('rateLimited', 'slow', { status: 429, ...storage }), 'github.com')).toEqual({ message: '{0} is limiting requests. Damocles reads CI again once the limit resets.', args: ['results.blob.example.net'] });
+    expect(ciErrorText(new ForgeHttpError('notFound', 'gone', { status: 404 }), 'github.com')).toEqual({ message: '{0} has no such pipeline or job, or the account cannot see it.', args: ['github.com'] });
   });
 });

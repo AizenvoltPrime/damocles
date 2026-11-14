@@ -398,6 +398,8 @@ export interface StubLogStorage {
   /** https://127.0.0.1:<port> */
   readonly url: string;
   readonly requests: { readonly path: string; readonly authorized: boolean }[];
+  /** How many of the next requests it ends by dropping the connection, unanswered. */
+  dropNext: number;
 }
 
 export interface ForgeStub {
@@ -1380,9 +1382,23 @@ async function startServer(spec: StubServerSpec, options: ForgeStubOptions, logS
 async function startLogStorage(options: ForgeStubOptions): Promise<StubLogStorage & { close(): Promise<void> }> {
   const requests: { readonly path: string; readonly authorized: boolean }[] = [];
   const sockets = new Set<Duplex>();
+  const storage = {
+    url: '',
+    requests,
+    dropNext: 0,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    },
+  };
   const listener = https.createServer({ cert: options.cert, key: options.key }, (request, response) => {
     const url = new URL(request.url ?? '/', 'https://storage.invalid');
     requests.push({ path: url.pathname, authorized: request.headers.authorization !== undefined });
+    if (storage.dropNext > 0) {
+      storage.dropNext--;
+      response.socket?.destroy();
+      return;
+    }
     if (!answerGithubLog(request, response, url)) {
       response.writeHead(404);
       response.end();
@@ -1396,14 +1412,8 @@ async function startLogStorage(options: ForgeStubOptions): Promise<StubLogStorag
     listener.once('error', reject);
     listener.listen(0, options.listenAddress ?? '127.0.0.1', () => resolve());
   });
-  return {
-    url: `https://${options.publicHost ?? '127.0.0.1'}:${(listener.address() as AddressInfo).port}`,
-    requests,
-    close: async () => {
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => listener.close(() => resolve()));
-    },
-  };
+  storage.url = `https://${options.publicHost ?? '127.0.0.1'}:${(listener.address() as AddressInfo).port}`;
+  return storage;
 }
 
 /** Starts the four stub servers of FORGE_FIXTURES and GitHub's log storage. */

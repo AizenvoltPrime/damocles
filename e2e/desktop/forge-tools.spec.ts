@@ -8,7 +8,7 @@ import type { DesktopApp } from './support/app';
 import { startDesignChat } from './support/design';
 import { git, initRepo } from './support/git';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
-import { call, chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
+import { agentRequests, call, chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { openProjectChat } from './support/screenshots';
 import { setContentSize } from './support/settings';
 import { awaitTurnEnd, chatInput, postFromWebview } from './support/ui';
@@ -155,15 +155,18 @@ test('ForgeComment asks in default and acceptEdits, is blocked in plan mode, and
 
   await postFromWebview(tab, { type: 'setPermissionMode', mode: 'plan' });
   const before = comments(run).length;
-  run.openai.replies.push(call('ForgeComment', { number: MR.number, body: 'in plan mode' }), { chunks: ['Blocked in plan mode.'] });
+  const asked = agentRequests(run.openai).length;
+  // a plan-mode turn ends only at ExitPlanMode or AskUserQuestion: a reply that ended would get the stub's echo for every
+  // nudge, and those rows push this one out of the virtualized list, so it stays open until the user stops it
+  run.openai.replies.push(call('ForgeComment', { number: MR.number, body: 'in plan mode' }), { chunks: ['Blocked in plan mode.'], holdAfterFirst: new Promise<void>(() => {}) });
   await send(tab, 'comment in plan mode');
   await expect(tab.getByText('Blocked in plan mode.', { exact: true })).toBeVisible(CHECKED);
-  // a plan-mode turn ends only at ExitPlanMode or AskUserQuestion, so the user stops it
   await tab.getByTestId('composer-send').click();
   await awaitTurnEnd(tab);
   await expect(card(tab)).toHaveCount(0);
   expect(toolResults(run.openai).at(-1)).toMatch(/plan mode/i);
   expect(comments(run)).toHaveLength(before);
+  expect(agentRequests(run.openai)).toHaveLength(asked + 2);
 
   await postFromWebview(tab, { type: 'setPermissionMode', mode: 'default' });
   await postFromWebview(tab, { type: 'setDangerouslySkipPermissions', enabled: true });

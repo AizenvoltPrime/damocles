@@ -372,6 +372,19 @@ describe('what a server answers to a create or a fork', () => {
     expect(await foreign.publisher.fork({ serverId: SERVER_ID, accountId: ACCOUNT.id, path: 'grp/b' }, signal())).toMatchObject({ kind: 'failed', reason: { message: '{0} gave no {1} clone address on its own hosts for {2}.' } });
   });
 
+  it.each([
+    ['github', { status: 202, body: { full_name: 'astef/b' } }],
+    ['gitlab', { status: 201, body: { id: 5, path_with_namespace: 'astef/b' } }],
+  ] as const)('%s: a cancel while the fork is requested waits for the answer and names the fork the server made', async (kind, made) => {
+    const controller = new AbortController();
+    const { publisher, requests } = scripted(kind, (request) => {
+      controller.abort();
+      return request.method === 'POST' ? made : { status: 200, body: {} };
+    });
+    expect(await publisher.fork({ serverId: SERVER_ID, accountId: ACCOUNT.id, path: 'grp/b' }, controller.signal)).toEqual({ kind: 'cancelled', path: 'astef/b' });
+    expect(requests.map((request) => ({ method: request.method, signal: request.signal }))).toEqual([{ method: 'POST', signal: undefined }]);
+  });
+
   it('GitLab: refuses a name clash with a project that is not a fork of upstream, and reuses one whose upstream differs in letter case only', async () => {
     const project = (forkOf: string) => (request: ForgeRequest) => {
       if (request.method === 'POST') return { status: 409, body: { message: { name: ['has already been taken'] } } };
@@ -391,6 +404,21 @@ describe('what a server answers to a create or a fork', () => {
       unavailable: { message: 'The account for {0} is signed out. Sign in again in Settings › Models & accounts › Git hosting.', args: [SERVER_ID] },
     });
     expect(requests).toEqual([]);
+  });
+
+  it('names a host that is not the server when a request failed there, and the account only for its own server\'s refusal', async () => {
+    const page = async (err: ForgeHttpError) => {
+      const { publisher } = scripted('gitlab', () => {
+        throw err;
+      });
+      return publisher.mergeRequestPage({ serverId: SERVER_ID, accountId: ACCOUNT.id, upstreamPath: 'grp/b', forkPath: 'astef/b', branch: 'astef/main' }, signal());
+    };
+    const sso = { foreignHost: 'sso.example.net' };
+    expect(await page(new ForgeHttpError('tls', 'refused', sso))).toEqual({ unavailable: { message: 'Could not reach {0}. Check the connection and try again.', args: ['sso.example.net'] } });
+    expect(await page(new ForgeHttpError('server', 'down', { status: 503, ...sso }))).toEqual({ unavailable: { message: '{0} could not complete the request (HTTP {1}).', args: ['sso.example.net', 503] } });
+    // http.ts reads a foreign 401 as forbidden, since no token went there
+    expect(await page(new ForgeHttpError('forbidden', 'no', { status: 401, ...sso }))).toEqual({ unavailable: { message: '{0} could not complete the request (HTTP {1}).', args: ['sso.example.net', 401] } });
+    expect(await page(new ForgeHttpError('unauthorized', 'no', { status: 401 }))).toEqual({ unavailable: { message: '{0} must sign in again on {1}.', args: ['astef', SERVER_ID] } });
   });
 
   it('offers only the namespaces whose Owner value fits the wire, in ordinal order', async () => {

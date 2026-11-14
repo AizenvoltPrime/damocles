@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FetchRefusedError } from '../../pi-session/web-access/safe-fetch';
-import { createForgeHttp, GITHUB_API_VERSION, MAX_REDIRECTS, type ForgeTail } from '../http';
+import { createForgeHttp, GITHUB_API_VERSION, MAX_REDIRECTS, MAX_TRANSIENT_RETRIES, REQUEST_TIMEOUT_MS, type ForgeTail } from '../http';
 import { githubGraphql } from '../providers/github/graphql';
 import { assignableUsers } from '../providers/github/history';
 import { githubBranchProtection } from '../providers/github/protection';
@@ -135,10 +135,12 @@ describe('forge http', () => {
   it('classifies 401, 404, 5xx, TLS and network failures', async () => {
     const tlsError = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('unable to verify'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }) });
     const netError = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
-    const answers: (() => Response | never)[] = [jsonAnswer(401, {}), jsonAnswer(404, {}), jsonAnswer(503, {}), () => { throw tlsError; }, () => { throw netError; }];
-    const http = createForgeHttp({ fetch: (async () => answers.shift()!()) as unknown as typeof fetch, userAgent: 'Damocles/test', log: () => undefined });
+    const refused = () => { throw netError; };
+    const answers: (() => Response | never)[] = [jsonAnswer(401, {}), jsonAnswer(404, {}), jsonAnswer(503, {}), () => { throw tlsError; }, ...Array.from({ length: MAX_TRANSIENT_RETRIES + 1 }, () => refused)];
+    const http = createForgeHttp({ fetch: (async () => answers.shift()!()) as unknown as typeof fetch, userAgent: 'Damocles/test', log: () => undefined, random: () => 0 });
     const request = () => http.request({ server: GITLAB, url: '/user', template: '/user' });
     for (const kind of ['unauthorized', 'notFound', 'server', 'tls', 'network']) await expect(request()).rejects.toMatchObject({ kind });
+    expect(answers).toEqual([]);
   });
 
   it('cancels the body of an error answer it does not read, and of a redirect without a Location', async () => {
@@ -367,5 +369,180 @@ describe('a job log\'s tail', () => {
   it('starts a cut tail at a whole character', () => {
     const bytes = new TextEncoder().encode('✓ ok');
     expect(decodeTail({ bytes: bytes.subarray(1), totalBytes: 100 })).toEqual({ text: ' ok', truncated: true });
+  });
+});
+
+describe('transient connection failures', () => {
+  const coded = (code: string) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
+  const failure = (code: string) => () => {
+    throw coded(code);
+  };
+  const random = () => 0;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('sends a GET again after a dropped connection with the same headers, and logs the retry', async () => {
+    const log = vi.fn();
+    const { sent, fetch } = recorder([failure('UND_ERR_SOCKET'), jsonAnswer(200, { ok: true })]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log, random });
+    const response = await http.request({ server: GITHUB, url: '/repos/a/b/commits/c/check-runs', template: '/check-runs', credential: { bearer: 'gho_t' } });
+    expect(response.body).toEqual({ ok: true });
+    expect(sent.map((item) => item.headers['Authorization'])).toEqual(['Bearer gho_t', 'Bearer gho_t']);
+    expect(sent.map((item) => item.headers['X-GitHub-Api-Version'])).toEqual([GITHUB_API_VERSION, GITHUB_API_VERSION]);
+    expect(JSON.stringify(log.mock.calls)).toMatch(new RegExp(`GET github\\.com /check-runs failed: network \\(UND_ERR_SOCKET\\) after \\d+ ms, retry 1 of ${MAX_TRANSIENT_RETRIES} in 0 ms`));
+  });
+
+  it("sends a GET again after DNS's try-again answer and after Windows' aborted connection", async () => {
+    for (const code of ['EAI_AGAIN', 'ECONNABORTED']) {
+      const { fetch } = recorder([failure(code), jsonAnswer(200, { ok: true })]);
+      const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, random });
+      expect((await http.request({ server: GITHUB, url: '/x', template: '/x' })).body).toEqual({ ok: true });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('retries only the hop that failed, a TLS message that did not parse at the log storage included, still without the credential', async () => {
+    const { sent, fetch } = recorder([redirect('https://objects.example.net/blob'), failure('ERR_SSL_DECODE_ERROR'), jsonAnswer(200, { ok: true })]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, publicFetch: fetch, random });
+    await http.request({ server: GITHUB, url: '/repos/a/b/actions/jobs/1/logs', template: '/logs', credential: { bearer: 'gho_t' } });
+    expect(sent.map((item) => item.url)).toEqual(['https://api.github.com/repos/a/b/actions/jobs/1/logs', 'https://objects.example.net/blob', 'https://objects.example.net/blob']);
+    expect(sent.map((item) => item.headers['Authorization'])).toEqual(['Bearer gho_t', undefined, undefined]);
+  });
+
+  it(`gives up after ${MAX_TRANSIENT_RETRIES} retries and names the host that failed when it is not the server's`, async () => {
+    const log = vi.fn();
+    const { fetch } = recorder([redirect('https://objects.example.net/blob'), ...Array.from({ length: MAX_TRANSIENT_RETRIES + 1 }, () => failure('ECONNRESET'))]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log, publicFetch: fetch, random });
+    const failed = await http.request({ server: GITHUB, url: '/logs', template: '/logs' }).catch((err: unknown) => err);
+    expect(failed).toBeInstanceOf(ForgeHttpError);
+    expect(failed).toMatchObject({ kind: 'network', foreignHost: 'objects.example.net' });
+    expect((failed as ForgeHttpError).privateAddress).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(MAX_TRANSIENT_RETRIES + 2);
+    expect(JSON.stringify(log.mock.calls.at(-1))).toContain('GET github.com /logs failed at objects.example.net: network (ECONNRESET)');
+    // a failure at the server's own origin names no other host
+    const own = recorder([...Array.from({ length: MAX_TRANSIENT_RETRIES + 1 }, () => failure('ECONNRESET'))]);
+    const ownFailure = await createForgeHttp({ fetch: own.fetch, userAgent: 'Damocles/test', log: () => undefined, random }).request({ server: GITHUB, url: '/user', template: '/user' }).catch((err: unknown) => err);
+    expect(ownFailure).toMatchObject({ kind: 'network' });
+    expect((ownFailure as ForgeHttpError).foreignHost).toBeUndefined();
+  });
+
+  it("never retries a POST, a DELETE, a certificate error, undici's connect timeout or an error that is not transient", async () => {
+    for (const [method, answer] of [['POST', failure('ECONNRESET')], ['DELETE', failure('ECONNRESET')], ['GET', failure('CERT_HAS_EXPIRED')], ['GET', failure('UND_ERR_CONNECT_TIMEOUT')], ['GET', failure('ERR_INVALID_URL')]] as const) {
+      const { fetch } = recorder([answer]);
+      const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, random });
+      await expect(http.request({ server: GITHUB, method, url: '/x', template: '/x' })).rejects.toBeInstanceOf(ForgeHttpError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("never retries the SSRF guard's refusal, and marks a foreign host it refused as a private address", async () => {
+    const { fetch } = recorder([redirect('https://objects.example.net/blob')]);
+    const publicFetch = vi.fn(() => Promise.reject(new FetchRefusedError('Blocked private address: objects.example.net → 10.0.0.5')));
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, publicFetch, random });
+    const failed = await http.request({ server: GITHUB, url: '/logs', template: '/logs' }).catch((err: unknown) => err);
+    expect(failed).toMatchObject({ kind: 'network', foreignHost: 'objects.example.net', privateAddress: true });
+    expect(publicFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends a retry whose wait outlives the request timeout as a network failure, without another send', async () => {
+    vi.useFakeTimers();
+    // Node's AbortSignal.timeout keeps its own timer, which fake timers do not reach
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), ms);
+      return controller.signal;
+    });
+    const fetch = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, REQUEST_TIMEOUT_MS - 100));
+      throw coded('ECONNRESET');
+    });
+    const http = createForgeHttp({ fetch: fetch as unknown as typeof globalThis.fetch, userAgent: 'Damocles/test', log: () => undefined, random: () => 0.99 });
+    const pending = http.request({ server: GITHUB, url: '/x', template: '/x' }).catch((err: unknown) => err);
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1_000);
+    expect(await pending).toMatchObject({ kind: 'network' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a caller's abort during the wait ends the request with the caller's reason, logs the failure last, and sends nothing more", async () => {
+    vi.useFakeTimers();
+    const log = vi.fn();
+    const controller = new AbortController();
+    const reason = new DOMException('stopped', 'AbortError');
+    const { fetch } = recorder([failure('ECONNRESET')]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log, random: () => 0.99 });
+    const pending = http.request({ server: GITHUB, url: '/x', template: '/x', signal: controller.signal }).catch((err: unknown) => err);
+    await vi.advanceTimersByTimeAsync(10);
+    controller.abort(reason);
+    expect(await pending).toBe(reason);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(log.mock.lastCall?.[0]).toMatch(/GET github\.com \/x failed: network \(ECONNRESET\) after \d+ ms$/);
+  });
+
+  it("a caller's abort that a send fails with ends the request with the caller's reason", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('stopped', 'AbortError');
+    const fetch = vi.fn(() => {
+      controller.abort(reason);
+      return Promise.reject(coded('ECONNRESET'));
+    });
+    const http = createForgeHttp({ fetch: fetch as unknown as typeof globalThis.fetch, userAgent: 'Damocles/test', log: () => undefined, random });
+    expect(await http.request({ server: GITHUB, url: '/x', template: '/x', signal: controller.signal }).catch((err: unknown) => err)).toBe(reason);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('failures at a host that is not the server', () => {
+  const brokenBody = () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1]));
+      controller.error(new Error('reset'));
+    },
+  }), { status: 200 });
+
+  it('names the host of an error status or a body that broke off there, and never the server for its own failures', async () => {
+    const { fetch } = recorder([
+      redirect('https://objects.example.net/blob'), jsonAnswer(404, {}),
+      redirect('https://objects.example.net/blob'), jsonAnswer(503, {}),
+      redirect('https://objects.example.net/blob'), brokenBody,
+      jsonAnswer(404, {}),
+    ]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, publicFetch: fetch });
+    const read = (as?: 'tail') => http.request({ server: GITHUB, url: '/logs', template: '/logs', ...(as !== undefined ? { as } : {}) }).catch((err: unknown) => err);
+    expect(await read()).toMatchObject({ kind: 'notFound', foreignHost: 'objects.example.net' });
+    expect(await read()).toMatchObject({ kind: 'server', status: 503, foreignHost: 'objects.example.net' });
+    expect(await read('tail')).toMatchObject({ kind: 'server', foreignHost: 'objects.example.net' });
+    const own = await read();
+    expect(own).toMatchObject({ kind: 'notFound' });
+    expect((own as ForgeHttpError).foreignHost).toBeUndefined();
+  });
+
+  // the host got no token, so no answer of it may mark the account refused or hold back the server's own requests
+  it('reads a foreign error status by the status alone: no credential refusal, rate limit, SSO or app policy', async () => {
+    const limit = { 'retry-after': '600', 'x-ratelimit-remaining': '0' };
+    const { fetch } = recorder([
+      redirect('https://objects.example.net/blob'), jsonAnswer(401, {}),
+      redirect('https://objects.example.net/blob'), jsonAnswer(403, { message: 'OAuth App access restrictions' }, { 'x-github-sso': 'required; url=https://github.com/orgs/acme/sso' }),
+      redirect('https://objects.example.net/blob'), jsonAnswer(429, {}, limit),
+      redirect('https://objects.example.net/blob'), jsonAnswer(403, {}, limit),
+      jsonAnswer(200, { ok: true }),
+    ]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, publicFetch: fetch });
+    const read = () => http.request({ server: GITHUB, url: '/logs', template: '/logs', credential: { bearer: 'gho_token' } }).catch((err: unknown) => err);
+    expect(await read()).toMatchObject({ kind: 'forbidden', status: 401, foreignHost: 'objects.example.net' });
+    expect(await read()).toMatchObject({ kind: 'forbidden', status: 403, foreignHost: 'objects.example.net' });
+    expect(await read()).toMatchObject({ kind: 'server', status: 429, foreignHost: 'objects.example.net' });
+    expect(await read()).toMatchObject({ kind: 'forbidden', status: 403, foreignHost: 'objects.example.net' });
+    expect(await read()).toMatchObject({ status: 200, body: { ok: true } });
+  });
+
+  it('names at most 253 characters of a foreign host, and its port', async () => {
+    const hostname = `${'a'.repeat(300)}.example.net`;
+    const { fetch } = recorder([redirect(`https://${hostname}:8443/blob`), jsonAnswer(503, {})]);
+    const http = createForgeHttp({ fetch, userAgent: 'Damocles/test', log: () => undefined, publicFetch: fetch });
+    const failed = await http.request({ server: GITHUB, url: '/logs', template: '/logs' }).catch((err: unknown) => err);
+    expect((failed as ForgeHttpError).foreignHost).toBe(`${'a'.repeat(253)}:8443`);
   });
 });

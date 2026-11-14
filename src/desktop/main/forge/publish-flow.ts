@@ -45,9 +45,10 @@ export interface PublishFlowDeps {
   readonly endpoints: (repoId: string) => Promise<readonly RemoteEndpoint[]>;
   /** The kind of the server with an account that location names, as the forge mirror lists them; undefined when none does. */
   readonly serverKind: (location: RemoteLocation) => ForgeKind | undefined;
-  readonly projectName: (projectKey: string) => string;
-  /** Binds the project to the account the push authenticates as; false: bindings.json does not parse, so nothing was saved. */
-  readonly bind: (projectKey: string, bind: { readonly serverId: string; readonly accountId: string }) => Promise<boolean>;
+  /** The project's name as the project list shows it; undefined once it left the list, which happens before its repository closes. */
+  readonly projectName: (projectKey: string) => string | undefined;
+  /** Binds the project to the account the push authenticates as; unsaved: bindings.json does not parse; unlisted: the project left the list. */
+  readonly bind: (projectKey: string, bind: { readonly serverId: string; readonly accountId: string }) => Promise<'saved' | 'unsaved' | 'unlisted'>;
   /** The guarded opener: https on a managed server's web origin, as the user's click; false when it refused. */
   readonly openOnServer: (url: string) => Promise<boolean>;
   /** Shows a dialog and settles with its answer; rejects when it cannot show. */
@@ -203,7 +204,7 @@ export class PublishFlow {
   /**
    * Opens the Publish dialog at once with each account's own namespace; the dialog asks for each account's organizations or
    * groups (publishOwners). noAccount when no signed-in account can publish (the caller keeps its zero-remote warning); closed
-   * when the repository is no longer open. A repository whose Publish dialog is open already gets no second one.
+   * when the repository or its project is gone. A repository whose Publish dialog is open already gets no second one.
    */
   async publish(repoId: string, branch: string): Promise<'noAccount' | 'shown' | 'closed'> {
     if (!this.deps.scm.repository(repoId)) return 'closed';
@@ -211,12 +212,14 @@ export class PublishFlow {
     if (accounts.length === 0) return 'noAccount';
     const ref = this.deps.scm.repository(repoId);
     if (!ref) return 'closed';
+    const project = this.deps.projectName(ref.projectKey);
+    if (project === undefined) return 'closed';
     if ([...this.publishes.values()].some((open) => open.repoId === repoId)) {
       this.deps.log(`[forge] the Publish dialog of ${repoId} is open already; no second one is shown`);
       return 'shown';
     }
     const requestId = randomUUID();
-    const request = parsePublishRequest({ requestId, project: this.deps.projectName(ref.projectKey), branch, accounts, defaultOwner: accounts[0]!.personal.value, defaultName: defaultName(ref.repo.root) });
+    const request = parsePublishRequest({ requestId, project, branch, accounts, defaultOwner: accounts[0]!.personal.value, defaultName: defaultName(ref.repo.root) });
     if (!request) {
       this.deps.log('[forge] the Publish dialog is past the overlay bounds; nothing is shown');
       return 'noAccount';
@@ -398,7 +401,9 @@ export class PublishFlow {
   /** Binds the project to the account the push authenticates as; the failure text, or undefined once saved. */
   private async bindForPush(projectKey: string, bind: { readonly serverId: string; readonly accountId: string }): Promise<string | undefined> {
     try {
-      if (await this.deps.bind(projectKey, bind)) return undefined;
+      const outcome = await this.deps.bind(projectKey, bind);
+      if (outcome === 'saved') return undefined;
+      if (outcome === 'unlisted') return this.deps.render(l('The project was removed, so nothing was pushed.'));
       return this.deps.render(l('Damocles could not save which account this project uses, so nothing was pushed. Settings › Models & accounts › Git hosting says why.'));
     } catch (err) {
       this.deps.log(`[forge] saving the account for the push failed: ${errorMessage(err)}`);
@@ -525,7 +530,8 @@ export class PublishFlow {
       this.deps.log(`[forge] the fork failed: ${errorMessage(err)}`);
       return stop(0, this.deps.render(l('{0} could not complete the request.', dialog.serverName)));
     }
-    if (forked.kind === 'failed') return stop(0, this.deps.render(forked.reason));
+    // core never aborts the fork's POST, so a refusal can answer a fork already cancelled, which then made nothing
+    if (forked.kind === 'failed') return stop(0, session.controller.signal.aborted ? undefined : this.deps.render(forked.reason));
     server.made = forked.path;
     if (forked.kind === 'cancelled' || session.controller.signal.aborted) return stop(0, undefined);
     session.forkPath = forked.path;

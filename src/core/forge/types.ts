@@ -115,8 +115,12 @@ export class ForgeHttpError extends Error {
   readonly retryAt?: number;
   /** refused: the server's own reason, raw and hostile; never logged and never part of `message`. */
   readonly serverText?: string;
+  /** The host (with any port, at most 253 characters before it) that failed when it is not one of the server's origins, such as GitHub's log storage. */
+  readonly foreignHost?: string;
+  /** network: the SSRF guard refused foreignHost's address, which is private. */
+  readonly privateAddress?: true;
 
-  constructor(kind: ForgeHttpErrorKind, message: string, extra: { status?: number; ssoUrl?: string; retryAt?: number; serverText?: string; cause?: unknown } = {}) {
+  constructor(kind: ForgeHttpErrorKind, message: string, extra: { status?: number; ssoUrl?: string; retryAt?: number; serverText?: string; foreignHost?: string; privateAddress?: true; cause?: unknown } = {}) {
     super(message, extra.cause !== undefined ? { cause: extra.cause } : undefined);
     this.name = 'ForgeHttpError';
     this.kind = kind;
@@ -124,6 +128,8 @@ export class ForgeHttpError extends Error {
     if (extra.ssoUrl !== undefined) this.ssoUrl = extra.ssoUrl;
     if (extra.retryAt !== undefined) this.retryAt = extra.retryAt;
     if (extra.serverText !== undefined) this.serverText = extra.serverText;
+    if (extra.foreignHost !== undefined) this.foreignHost = extra.foreignHost;
+    if (extra.privateAddress) this.privateAddress = true;
   }
 }
 
