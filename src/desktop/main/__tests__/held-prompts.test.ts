@@ -42,4 +42,15 @@ describe('HeldPrompts', () => {
     prompts.keep();
     expect(stored.get('b')).toBeUndefined();
   });
+
+  it('names a chat started with its kept prompt from its start, after the prompt is back in its composer, until it closes', () => {
+    const { prompts } = setup();
+    expect(prompts.startedWithPrompt('b')).toBe(false);
+    prompts.restoring('b');
+    expect(prompts.startedWithPrompt('b')).toBe(true);
+    prompts.restored('b');
+    expect(prompts.startedWithPrompt('b')).toBe(true);
+    prompts.closed('b');
+    expect(prompts.startedWithPrompt('b')).toBe(false);
+  });
 });

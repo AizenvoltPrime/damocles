@@ -80,6 +80,11 @@ describe('chatsToUnload', () => {
     expect(chatsToUnload(chats.map((entry) => ({ ...entry, restoring: false }))).sort()).toEqual(['r1', 'r2']);
   });
 
+  it('keeps an unselected chat started with its kept first prompt, which no file holds, outside the idle budget (rule 6)', () => {
+    const chats = [chat('kept', 0, { empty: true, hasSession: false, holdsKeptPrompt: true }), ...[1, 2, 3, 4].map((n) => chat(`c${n}`, n)), chat('sel', 5, { selected: true })];
+    expect(chatsToUnload(chats)).toEqual(['c1']);
+  });
+
   it('never drops a restoring chat as empty, even while core reports no conversation for it', () => {
     expect(chatsToUnload([chat('restoring', 1, { restoring: true, empty: true, hasSession: false }), chat('sel', 2, { selected: true })])).toEqual([]);
   });

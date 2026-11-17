@@ -1,8 +1,8 @@
 import { holdsWorktreeSetup } from '../../shared/chat-retention';
 import type { WorktreePhase } from '../../shared/types/messages';
 
-// Which loaded chats stay loaded (plan AD8): the selected chat, every active or restoring chat and the most recently viewed idle chats
-// that hold a stored session. Everything here is pure except ChatWorkQueue.
+// Which loaded chats stay loaded (plan AD8): the selected chat, every active or restoring chat, every chat holding its kept first
+// prompt and the most recently viewed idle chats that hold a stored session. Everything here is pure except ChatWorkQueue.
 
 export const RETAINED_IDLE_CHATS = 3;
 
@@ -23,6 +23,8 @@ export interface PooledChat {
   readonly worktreePhase?: WorktreePhase;
   // a remote chat's messages held while its host was away, or not sent: an unload would drop the page that shows them
   readonly holdsMessages?: boolean;
+  // a chat with no session started with the first prompt kept for it across a close (rule 6): no file can reopen that prompt
+  readonly holdsKeptPrompt?: boolean;
 }
 
 /** The ids of the chats to unload, given every loaded chat. */
@@ -30,7 +32,7 @@ export function chatsToUnload(chats: readonly PooledChat[], retainedIdle: number
   const unload: string[] = [];
   const idleWithSession: PooledChat[] = [];
   for (const chat of chats) {
-    if (chat.selected || chat.active || chat.restoring || chat.holdsMessages === true || holdsWorktreeSetup(chat.worktreePhase)) continue;
+    if (chat.selected || chat.active || chat.restoring || chat.holdsMessages === true || chat.holdsKeptPrompt === true || holdsWorktreeSetup(chat.worktreePhase)) continue;
     if (chat.empty) unload.push(chat.id);
     else if (chat.hasSession) idleWithSession.push(chat);
   }

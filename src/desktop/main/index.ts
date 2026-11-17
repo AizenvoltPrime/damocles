@@ -3753,6 +3753,7 @@ class DesktopApp {
   // A chat left memory: by retention, Delete, or the window or core closing (which keep the saved selection).
   private chatClosed(panel: DesktopPanel): void {
     this.servedRoots.release(panel.panelId);
+    this.heldPrompts.closed(panel.panelId);
     const projectKey = this.projectOf(panel);
     this.chatsChanged(projectKey);
     if (panel.authority !== 'local') {
@@ -3856,6 +3857,7 @@ class DesktopApp {
         selected: chat === selected || settingsHold,
         active: isActiveActivity(this.activityOf(chat)) || this.browserTabs?.holdsPages(chat) === true || this.designPreviews?.holdsTabs(chat) === true,
         holdsMessages,
+        holdsKeptPrompt: this.heldPrompts.startedWithPrompt(chat.panelId) && this.sessionIdOf(chat) === undefined,
         restoring: this.isRestoring(chat),
         hasSession: this.sessionIdOf(chat) !== undefined,
         empty: this.isEmpty(chat),

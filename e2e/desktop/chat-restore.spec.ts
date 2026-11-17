@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { logBeforeQuit, mainLog } from './support/app';
-import { activeChat, expect, test } from './support/fixtures';
+import { activeChat, chatById, expect, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { answerConfirm } from './support/overlay';
@@ -153,6 +153,33 @@ test('after a relaunch, selecting a project shows the chat last viewed in it', a
   } finally {
     await stub.close();
   }
+});
+
+test('a relaunch keeps a saved new chat holding its first prompt loaded, the prompt in its composer, while other chats are selected (rule 6)', async ({ home, launch }) => {
+  test.setTimeout(180_000);
+  let desktop = await launch();
+  let app = desktop.app;
+  await expect(chatInput(await activeChat(app))).toBeVisible();
+  await addProject(app, home.project, true);
+  const projectKey = (await shellState(app)).selected.projectKey!;
+  await desktop.close();
+  const heldPanel = 'held-beside-the-selection';
+  const held = 'A first prompt held beside the selection';
+  const file = path.join(home.userData, 'panels.json');
+  const panels = JSON.parse(fs.readFileSync(file, 'utf8')) as { chats: unknown[] };
+  fs.writeFileSync(file, JSON.stringify({ ...panels, chats: [...panels.chats, { panelId: heldPanel, state: { workspaceFolderKey: projectKey }, pages: [], heldPrompt: [{ type: 'text', text: held }] }] }));
+
+  desktop = await launch();
+  app = desktop.app;
+  let selected: string | undefined;
+  await expect.poll(async () => (selected = (await shellState(app)).selected.chatId)).toBeDefined();
+  expect(selected).not.toBe(`new:${heldPanel}`);
+  await expect(chatInput(await chatById(app, `new:${heldPanel}`))).toHaveValue(held, { timeout: 30_000 });
+  // New Chat leaves the empty chat selected before it, which retention then drops; the held chat is kept through that pass
+  await clickMenu(app, 'damocles.newChat');
+  await expect.poll(() => mainLog(home)).toContain(`[chats] unloading chat ${selected!.slice('new:'.length)}`);
+  expect(mainLog(home)).not.toContain(`[chats] unloading chat ${heldPanel}`);
+  await expect(chatInput(await chatById(app, `new:${heldPanel}`))).toHaveValue(held);
 });
 
 test('deleting the chat being viewed selects the top of its project\'s Chats list, never a new chat', async ({ foreground: _foreground, home, launch }) => {

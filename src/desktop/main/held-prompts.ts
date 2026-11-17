@@ -14,6 +14,8 @@ export class HeldPrompts {
   private readonly deps: HeldPromptsDeps;
   // chats whose kept prompt is not back in their composer yet; core holds nothing for them meanwhile
   private readonly pending = new Set<string>();
+  // chats started with a kept prompt, until they close: once it is back in the composer, nothing else holds it
+  private readonly started = new Set<string>();
 
   constructor(deps: HeldPromptsDeps) {
     this.deps = deps;
@@ -31,6 +33,16 @@ export class HeldPrompts {
   /** A start is putting the chat's kept prompt back; until restored, keep leaves it stored. */
   restoring(panelId: string): void {
     this.pending.add(panelId);
+    this.started.add(panelId);
+  }
+
+  /** Whether the chat was started with its kept prompt: while it has no session, an unload would lose that prompt. */
+  startedWithPrompt(panelId: string): boolean {
+    return this.started.has(panelId);
+  }
+
+  closed(panelId: string): void {
+    this.started.delete(panelId);
   }
 
   /** The kept prompt is in the chat's composer, so the store forgets it. */
