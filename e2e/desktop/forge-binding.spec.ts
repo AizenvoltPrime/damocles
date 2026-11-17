@@ -232,7 +232,9 @@ test('choose and remember: two gitlab.com accounts show Choose account; the choi
 
   run = await relaunch(run, launch);
   shell = await shellPage(run.app);
-  await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: work-alexios on ${GITLAB}, chosen by you`, CHECKED);
+  // With no keyring (the Linux runner) the token lived in the first process's memory only, so the kept binding asks for a sign-in.
+  const tokenKept = await run.app.evaluate(({ safeStorage }) => process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text');
+  await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: work-alexios on ${GITLAB}, ${tokenKept ? 'chosen by you' : 'sign in again'}`, CHECKED);
 
   await pickInChip(run.app, shell, "Use Git's own credentials");
   await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: ${GITLAB}, Git's own credentials`);

@@ -38,7 +38,7 @@ test('settings scopes: an untrusted project is ignored, trust applies it live, a
     'damocles.team.enabled': false,
     // restricted (capabilities.untrustedWorkspaces.restrictedConfigurations) and application scoped: never read from a project
     'damocles.permissionMode': 'plan',
-    'damocles.cacheWarming': 'idle',
+    'damocles.cacheWarming': 'off',
     'damocles.checkpoints.retentionDays': 7,
     'damocles.assetSourcePrecedence': 'codex',
   };
@@ -58,7 +58,7 @@ test('settings scopes: an untrusted project is ignored, trust applies it live, a
   writeUserSettings(home, { 'damocles.taskBudget': 2000 });
   await expect.poll(async () => (await latestSettings(alpha))?.settings.taskBudget).toBe(2000);
   const untrusted = (await latestSettings(alpha))!;
-  const userOnly = { checkpointRetentionDays: 50, assetSourcePrecedence: 'claude', defaultPermissionMode: 'acceptEdits', cacheWarming: 'streaming' };
+  const userOnly = { checkpointRetentionDays: 50, assetSourcePrecedence: 'claude', defaultPermissionMode: 'acceptEdits', cacheWarming: 'idle' };
   expect(untrusted.settings).toMatchObject({ ...userOnly, memoryAutoExtract: true, maxBudgetUsd: null });
   expect(untrusted.settingSources).toEqual({});
 

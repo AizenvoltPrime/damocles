@@ -129,14 +129,21 @@ export async function designViews(app: ElectronApplication): Promise<ViewInfo[]>
   return (await windowViews(app)).filter((view) => view.url.startsWith(DESIGN_SCHEME));
 }
 
-/** Runs `code` in the shown design view's page, as the page's own script would. */
+/**
+ * Runs `code` in the shown design view's page, as the page's own script would, once a design view is shown: none is while a
+ * preview tab opens or switches. Waits rather than throws, since `expect.poll` fails at once when its callback throws.
+ */
 export async function inShownDesignView<T>(app: ElectronApplication, code: string): Promise<T> {
-  return app.evaluate(async ({ BrowserWindow, WebContentsView }, [scheme, script]) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
-    const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView | undefined;
-    if (!view) throw new Error('no design view is shown');
-    return view.webContents.executeJavaScript(script, true) as Promise<T>;
-  }, [DESIGN_SCHEME, code] as const);
+  let ran: { readonly value: T } | undefined;
+  await expect.poll(async () => {
+    ran = await app.evaluate(async ({ BrowserWindow, WebContentsView }, [scheme, script]) => {
+      const win = BrowserWindow.getAllWindows()[0]!;
+      const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView | undefined;
+      return view ? { value: await (view.webContents.executeJavaScript(script, true) as Promise<T>) } : undefined;
+    }, [DESIGN_SCHEME, code] as const);
+    return ran !== undefined;
+  }, { message: 'a design view is shown' }).toBe(true);
+  return ran!.value;
 }
 
 /** Records every URL main hands to the OS from now on, without opening any. */

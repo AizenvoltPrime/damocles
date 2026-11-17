@@ -169,7 +169,8 @@ test('the job list updates a job live and opens its log; the job log tab appends
   await expect.poll(() => log.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(20);
 });
 
-test('polling stops while the window is blurred, an unchanged log answers 304, and reduced motion stops the spinner', async ({ home, launch }) => {
+// The foreground: another worker's app opening or closing focuses this window for real, which resumes polling mid-blur.
+test('polling stops while the window is blurred, an unchanged log answers 304, and reduced motion stops the spinner', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(240_000);
   const run = await launchCi(launch, home, 1280);
   const { app, shell, stub } = run;

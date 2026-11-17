@@ -291,12 +291,15 @@ test('Memory judge defaults to Automatic, lists a classifier without its key as 
   await expect(effort).toHaveCount(0);
 
   await judge.click();
-  await expect(optionLabels(overlay)).toHaveText(['Automatic', 'Jev (TypeSafe)', 'Jev (OpenRouter)', 'GPT-6 Luna (Decisions API)', ...CATALOG]);
+  await expect(optionLabels(overlay)).toHaveText(['Automatic', 'Jev (TypeSafe)', 'Jev (OpenRouter)', 'GPT-6 Luna (Decisions API)', 'Microsoft-Decision-1 (GitHub Copilot)', ...CATALOG]);
   for (const name of [/^Jev \(TypeSafe\)/, /^Jev \(OpenRouter\)/, /^GPT-6 Luna \(Decisions API\)/]) {
     const option = overlay.getByRole('option', { name });
     await expect(option).toHaveAttribute('aria-disabled', 'true');
     await expect(option).toContainText('No key saved');
   }
+  const copilotJudge = overlay.getByRole('option', { name: /^Microsoft-Decision-1 \(GitHub Copilot\)/ });
+  await expect(copilotJudge).toHaveAttribute('aria-disabled', 'true');
+  await expect(copilotJudge).toContainText('Sign in to GitHub Copilot');
   await overlay.getByRole('option', { name: 'Sonnet 5.5', exact: true }).click();
   await expect.poll(() => readUserSettings(home)['damocles.memory.judge']).toBe('claude-sonnet-5-5');
   await expect(effort).toHaveText('Per job');

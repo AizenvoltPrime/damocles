@@ -64,6 +64,14 @@ function addLastSavedChat(home: HermeticHome, projectKey: string, chat: { readon
 
 const projectAt = async (app: ElectronApplication, fsPath: string): Promise<ShellProject | undefined> => (await shellState(app)).projects.find((p) => p.fsPath === fsPath);
 
+/**
+ * The titles of the chats `ids` in the project's Chats list, by id. A loaded chat whose file the catalog is still parsing lists
+ * untitled until the parsed row arrives, so a caller polls this.
+ */
+async function listedTitles(app: ElectronApplication, projectKey: string, ids: readonly string[]): Promise<Map<string, string>> {
+  return new Map((await listChats(app, projectKey)).chats.filter((chat) => ids.includes(chat.id)).map((chat) => [chat.id, chat.title]));
+}
+
 /** Whether the list holds a project at `fsPath` whose folder is there and that no relocation names. */
 async function listedAndPresent(app: ElectronApplication, fsPath: string): Promise<boolean> {
   const project = await projectAt(app, fsPath);
@@ -114,8 +122,9 @@ async function seedProject(home: HermeticHome, launch: () => Promise<DesktopApp>
   }
   await addProject(app, second, true);
   const other = await chatWith(app, 'a chat of the second project', []);
-  const titles = new Map((await listChats(app, key)).chats.filter((chat) => ids.includes(chat.id)).map((chat) => [chat.id, chat.title]));
-  expect([...titles.keys()].sort()).toEqual([...ids].sort());
+  // a chat is titled by its first prompt once the catalog has parsed its file
+  const titles = new Map(ids.map((id, i) => [id, prompts[i]!]));
+  await expect.poll(() => listedTitles(app, key, ids)).toEqual(titles);
   const order = await shownProjectOrder(await readyShell(app));
   await desktop.close();
   return { ids, prompts, titles, order, key, otherId: other.id };
@@ -186,8 +195,7 @@ test('Locate moves a renamed project\'s chats to the picked untrusted folder: tr
     await expect.poll(() => leftIn(home, home.project), { timeout: 15_000 }).toBeNull();
     expect(fs.readFileSync(path.join(home.agentDir, 'sessions', sessionDirName(moved), seeded.ids[0]!, subagent), 'utf8')).toBe(subagentBytes);
 
-    const listed = (await listChats(app, project.key)).chats;
-    expect(new Map(listed.filter((chat) => seeded.ids.includes(chat.id)).map((chat) => [chat.id, chat.title]))).toEqual(seeded.titles);
+    await expect.poll(() => listedTitles(app, project.key, seeded.ids)).toEqual(seeded.titles);
     for (const [i, id] of seeded.ids.entries()) {
       await clickChat(shell, id);
       await expect.poll(async () => (await shellState(app)).selected.chatId).toBe(id);

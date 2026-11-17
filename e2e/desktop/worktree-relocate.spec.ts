@@ -342,7 +342,8 @@ test('a chat worktree open as a project whose folder was moved is never offered 
     expect(await projectAt(app, elsewhere)).toBeUndefined();
     expect(fs.readFileSync(path.join(elsewhere, 'a.ts'), 'utf8')).toBe('export const a = 1;\n');
     const projectKey = (await projectAt(app, seeded.a.projectPath!))!.key;
-    expect((await listChats(app, projectKey)).chats.map((chat) => chat.title).sort()).toEqual(['Second chat in A', 'Worktree chat A']);
+    // a restored chat lists untitled until the catalog has parsed its file
+    await expect.poll(async () => (await listChats(app, projectKey)).chats.map((chat) => chat.title).sort()).toEqual(['Second chat in A', 'Worktree chat A']);
   });
 });
 

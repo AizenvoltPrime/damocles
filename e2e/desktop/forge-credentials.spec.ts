@@ -14,6 +14,7 @@ import { overlayMenu, readyOverlay } from './support/overlay';
 import { recordingCredentialHelper, type RecordingCredentialHelper } from './support/recording-credential-helper';
 import { autofetchNow, clickAccountChip, gitLog, openScmProject, scmSection } from './support/scm';
 import { openProjectChat } from './support/screenshots';
+import { recordedToasts, recordToasts } from './support/shell';
 import { openTerminal, runInTerminal, useTestProfile } from './support/terminal';
 import { clickMenu } from './support/ui';
 
@@ -287,8 +288,11 @@ test('erase: a token the server revoked is refreshed; when the refresh is refuse
   run.stub.gitlab.revokeTokens('alexios-s');
   const refreshes = run.stub.gitlab.counts.refreshes;
   await commit(home, dir, 'after-revoke.txt');
+  await recordToasts(run.app);
   await clickMenu(run.app, 'damocles.git.push');
   await expect.poll(() => run.stub.gitlab.counts.refreshes, CHECKED).toBeGreaterThan(refreshes);
+  // the refresh lands during that push, which still fails; a push before it ends is refused as a second remote operation
+  await expect.poll(async () => (await recordedToasts(run.app)).some((toast) => toast.severity === 'error' && toast.message.includes('Authentication failed')), CHECKED).toBe(true);
   await scmPush(run, home, dir);
   const second = pushes(run).at(-1)!.credential!;
   expect(second).not.toBe(first);
