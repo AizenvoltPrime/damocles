@@ -51,16 +51,67 @@ export interface Launcher {
 // Installed by the host before its first process start; tests install the in-process launcher.
 let installed: Launcher | undefined;
 
-/** Installs the process-wide launcher and returns the one it replaces. */
+// The working folder of each process an installed launcher started that has not closed, which Windows refuses to remove.
+const runningIn = new Map<LaunchedProcess, string>();
+const closedListeners = new Set<() => void>();
+const trackers = new WeakSet<Launcher>();
+
+function tracked(spec: SpawnSpec, launched: LaunchedProcess): LaunchedProcess {
+  if (spec.cwd === undefined) return launched;
+  runningIn.set(launched, spec.cwd);
+  const closed = (): void => {
+    runningIn.delete(launched);
+    for (const listener of [...closedListeners]) listener();
+  };
+  launched.closed.then(closed, closed);
+  return launched;
+}
+
+function trackingFolders(launcher: Launcher): Launcher {
+  if (trackers.has(launcher)) return launcher;
+  const tracking: Launcher = {
+    launch: (spec, options) => tracked(spec, launcher.launch(spec, options)),
+    createSessionJob: () => launcher.createSessionJob(),
+    dispose: () => launcher.dispose(),
+  };
+  trackers.add(tracking);
+  return tracking;
+}
+
+/** Installs the process-wide launcher, recording each start's working folder until it closes, and returns the one it replaces. */
 export function installProcessLauncher(launcher: Launcher): Launcher | undefined {
   const previous = installed;
-  installed = launcher;
+  installed = trackingFolders(launcher);
   return previous;
 }
 
 export function processLauncher(): Launcher {
   if (!installed) throw new Error('No process launcher installed: the host must call installProcessLauncher() before it starts a process');
   return installed;
+}
+
+// How long a folder's remove waits for this process's starts there (a closed chat's git reads, a search) to close.
+export const FOLDER_PROCESSES_CLOSE_MS = 10_000;
+
+/**
+ * Settles once no process an installed launcher started in a working folder `inFolder` accepts is running, or after
+ * `timeoutMs`, with the working folders of those still running then (none when all closed).
+ */
+export function whenProcessesClosed(inFolder: (cwd: string) => boolean, timeoutMs: number): Promise<readonly string[]> {
+  const running = (): string[] => [...runningIn.values()].filter(inFolder);
+  if (running().length === 0) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      closedListeners.delete(check);
+      resolve(running());
+    };
+    const check = (): void => {
+      if (running().length === 0) finish();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    closedListeners.add(check);
+  });
 }
 
 /** What an aborted start or run rejects with. */

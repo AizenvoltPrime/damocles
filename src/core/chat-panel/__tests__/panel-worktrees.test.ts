@@ -11,6 +11,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 import type { StoredSession } from '../../../shared/types/session';
 import type { PanelWorktreeBinding } from '../../pi-session/session-worktree';
 import { createChatWorktree } from '../../worktrees/create';
+import { processLauncher } from '../../process-launcher';
 import { WORKTREE_ENTRY } from '../../worktrees/hand-off';
 import { ensurePiSessionDir } from '../../pi-session/session-store/session-dir';
 import { isSessionHeldByPanelHere } from '../../pi-session/session-store/session-lease';
@@ -538,6 +539,22 @@ describe.skipIf(!HAS_GIT)('panel worktrees: a new chat in a worktree, sharing an
     h.worktrees.dropHold('p2');
     await h.worktrees.whenFolderReleased(record.workingFolder);
     expect(h.releaseFolder).toHaveBeenCalledWith(folderKey(record.workingFolder));
+  });
+
+  // Windows refuses to remove a running process's working folder, so a closed chat's git read there holds the remove back
+  it('settles a release only once a process core started in the working folder closed (rule 14)', async () => {
+    const h = harness('release-processes');
+    const record = await chatRecord(h);
+    const child = processLauncher().launch({ file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: record.workingFolder, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore'] });
+    await child.pid;
+    let released = false;
+    const release = h.worktrees.whenFolderReleased(record.workingFolder).then(() => {
+      released = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(released).toBe(false);
+    child.kill();
+    await release;
   });
 });
 

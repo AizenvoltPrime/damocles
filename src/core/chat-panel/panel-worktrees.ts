@@ -27,6 +27,8 @@ import type { WorktreeStateData } from '../../shared/types/messages';
 import type { HostInstance } from './types';
 import { resolvePiSessionFile } from '../pi-session/session-store/reading';
 import { piSessionDir } from '../pi-session/session-store/session-dir';
+import { FOLDER_PROCESSES_CLOSE_MS, whenProcessesClosed } from '../process-launcher';
+import { isInsideFolder } from '../../shared/project-location';
 
 export interface PanelWorktreeStateEvent extends WorktreeStateEvent {
   readonly panelId: string;
@@ -979,11 +981,16 @@ export class PanelWorktrees implements Disposable {
     });
   }
 
-  /** Settles once no panel holds `fsPath` and its per-folder services are released (rule 14); at once when nothing holds it. */
+  /**
+   * Settles once no panel holds `fsPath`, its per-folder services are released and no process core started in it runs
+   * (rule 14: Windows refuses to remove a running process's working folder); at once when nothing holds or runs there.
+   */
   async whenFolderReleased(fsPath: string): Promise<void> {
     const key = folderKey(fsPath);
     await this.deps.sessionsClosed();
     await (this.releasing.get(key) ?? Promise.resolve());
+    const left = await whenProcessesClosed((cwd) => isInsideFolder({ os: process.platform }, fsPath, cwd), FOLDER_PROCESSES_CLOSE_MS);
+    if (left.length > 0) log('[PanelWorktrees] processes still run in %s after %d ms, in %O; its remove may fail', fsPath, FOLDER_PROCESSES_CLOSE_MS, left);
   }
 
   /** Core is shutting down and disposes every folder's services itself, so nothing is released here. */

@@ -227,7 +227,7 @@ import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell'
 import { mergeLoginShellEnv, probeGit, type GitProbe } from '../local-services/shell-env';
 import { NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host';
 import type { ScmWorktreeChat } from '../preload/scm-channels';
-import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher, runProcess, type Launcher } from '../../core/process-launcher';
+import { createLauncherPool, FOLDER_PROCESSES_CLOSE_MS, installProcessLauncher, lockThreadSpawns, processLauncher, runProcess, whenProcessesClosed, type Launcher } from '../../core/process-launcher';
 import { allJsonConfigWritesSettled } from '../../core/config/json-config-write';
 import { createScmClient, type ScmClient } from './scm/scm-client';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
@@ -360,7 +360,7 @@ import type { DesignMarkupSendRequest, DesignMarkupSent, DesignTweakKeepRequest,
 import type { HostServicesDeps, HostTrust } from './core-services/host-services';
 import { ERROR_PAGE_STRINGS } from '../../shared/panel-html';
 import { createProjectTrust, createRemoteTrust, remoteHostTrust, type HostTrustFolder, type RemoteTrustTarget } from './remote/remote-trust';
-import { authorityKeyOfProject, isAbsoluteOn, pathFor, projectKeyOf, targetFolderKeyOf, type Authority } from '../../shared/project-location';
+import { authorityKeyOfProject, isAbsoluteOn, isInsideFolder, pathFor, projectKeyOf, targetFolderKeyOf, type Authority } from '../../shared/project-location';
 import { CREDENTIAL_ORIGIN_FEATURE } from '../../shared/git-credential';
 import { projectOfCwd, remoteFileRef, type RemoteFileRoot } from './remote/remote-files';
 import { visibleText } from '../../shared/visible-text';
@@ -8822,7 +8822,12 @@ class DesktopApp {
       releaseFormatter: (rootKey) => this.workspaces?.forProject(rootKey).format.release(rootKey) ?? Promise.resolve(),
       whenFolderReleased: async () => {
         const record = this.worktreeRegistry(authority)?.get(worktreeId);
-        if (record) await this.clientFor(authority)?.whenFolderReleased(record.workingFolder);
+        if (!record) return;
+        await this.clientFor(authority)?.whenFolderReleased(record.workingFolder);
+        // main's own starts there (a search of the root) run on this computer only
+        if (authority !== 'local') return;
+        const left = await whenProcessesClosed((cwd) => isInsideFolder({ os: process.platform }, record.workingFolder, cwd), FOLDER_PROCESSES_CLOSE_MS);
+        if (left.length > 0) log(`[worktrees] processes still run in ${record.workingFolder} after ${FOLDER_PROCESSES_CLOSE_MS} ms; its remove may fail`);
       },
     }, key, stop);
   }

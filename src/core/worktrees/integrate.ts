@@ -49,6 +49,9 @@ async function unmergedPaths(git: ProjectGit, cwd: string): Promise<string[]> {
 
 // git's own markers of an unfinished operation (wt-status.c, VS Code's Repository.operation), kept per worktree.
 const OPERATION_MARKERS = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer'];
+// fs.rm waits retryDelay longer before each retry: 0.2 + 0.4 + ... + 1 s, 3 s at most
+const LEFTOVER_REMOVE_RETRIES = 5;
+const LEFTOVER_REMOVE_RETRY_DELAY_MS = 200;
 
 /** True while a merge, rebase, cherry-pick or revert in `cwd`'s worktree waits to be finished or aborted. */
 async function operationInProgress(git: ProjectGit, cwd: string): Promise<boolean> {
@@ -505,7 +508,8 @@ export async function removeWorktree(
   } else {
     // git refuses to remove a folder without its .git link, so the rest of a remove it could not finish goes here.
     if (state === 'leftover') {
-      await fs.rm(live.worktreeRoot, { recursive: true }).catch((err: unknown) => {
+      // Node retries EBUSY and EPERM, which an antivirus or indexer scan of the folder gives on Windows for a moment
+      await fs.rm(live.worktreeRoot, { recursive: true, maxRetries: LEFTOVER_REMOVE_RETRIES, retryDelay: LEFTOVER_REMOVE_RETRY_DELAY_MS }).catch((err: unknown) => {
         throw new WorktreeRemoveError(live.worktreeRoot, err instanceof Error ? err.message : String(err));
       });
     }
