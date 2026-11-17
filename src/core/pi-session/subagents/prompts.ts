@@ -5,7 +5,7 @@
  */
 
 import { STEERING_PROTOCOL_BLOCK } from '../steering-protocol';
-import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from '../code-rules';
+import { COMMENT_RULES_BODY, TEST_CADENCE_PRECEDENCE, TEST_RUN_RULES_BODY } from '../code-rules';
 import { buildNarrationRule } from '../prose-rules';
 import { mechanismRecordRule, sliceMechanismRungs } from '../delivery-mechanisms';
 import { MODEL_SECTION } from '../system-prompt';
@@ -35,7 +35,8 @@ const codeRulesBlock = `# Comments
 ${COMMENT_RULES_BODY}
 
 # Running tests and checks
-${TEST_RUN_RULES_BODY}`;
+${TEST_RUN_RULES_BODY}
+${TEST_CADENCE_PRECEDENCE}`;
 
 /**
  * An agent's narration is spent from the PARENT's context window, and the parent reads only the final

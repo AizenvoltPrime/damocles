@@ -25,16 +25,17 @@ export const COMMENT_RULES_BODY: string = `A comment states a constraint the nex
  - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.`;
 
 /**
- * Counterweight to any "prove it before you claim it" rule, which on its own reads as a licence to
- * re-run anything at any time. The bound is that an unchanged tree returns the same answer. A team
- * specialist gets a stronger version of the same bound from the fingerprinted verification ledger, so
- * it appends the ledger mechanics to this body rather than restating it.
+ * The bound on re-runs is that an unchanged tree returns the same answer. Callers append to this body
+ * rather than restate it: team specialists add the fingerprinted ledger, replace-mode writers a line
+ * that puts it above their role description's test cadence.
  */
-export const TEST_RUN_RULES_BODY: string = `Run a test, type check, linter, or build when its result can change what you do next.
- - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
- - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
- - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
- - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
- - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
- - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+export const TEST_RUN_RULES_BODY: string = `A test run costs the user time and some suites take minutes, so run one only when its result can change what you do next. Read the code to learn what it does; a run only tells you whether it passes.
+ - Run the narrowest command that covers your change: the test file or test name, not the suite. Run a whole suite once, at the end of a change set, or when the project's workflow asks for it.
+ - Make a set of related edits, then run once. A run on a tree you have not changed since gives the same answer, so cite it. Edits to comments, docs or unrelated config cannot change a result.
+ - When a run fails, read its output (for a browser test, its trace or screenshot) and change something before you run again. Reproduce the failure with the fastest test that shows it, a unit test before a browser test, and return to the wider command once, after it passes.
+ - Send long output to a log file once and search the file, rather than running the command again to see another part of it.
  - Use the project's single-run command. Watch mode never exits and blocks the session.`;
+
+/** Where a role description (a bundled profile, a team specialist's domain) carries its own test cadence. */
+export const TEST_CADENCE_PRECEDENCE: string =
+  "These rules replace the testing cadence in your role description. Your task's instructions about which tests to run still apply.";

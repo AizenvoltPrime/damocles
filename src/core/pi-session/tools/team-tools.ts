@@ -878,10 +878,9 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
       label: 'team_record_verification',
       description:
         'Record a verification run in the shared `verification` ledger, and read back every entry recorded so far. ' +
-        'Call it AFTER any verification run, full-suite or scoped; the tool classifies which it was. The tool stamps each entry with a tree fingerprint it computes itself from git state. ' +
-        'You do not supply one, and cannot. Before starting a full-suite run, call this tool (or read the `verification` scratchpad section): ' +
-        'if a peer already recorded a FULL-SUITE result for the CURRENT fingerprint, that run is provably redundant. Reuse their result instead of re-running. ' +
-        'The fingerprint changes the moment anyone edits a file, so a result recorded before an edit can never satisfy a check after it.',
+        'Call it after each run your report relies on, full-suite or scoped; the tool classifies which it was and stamps the entry with a tree fingerprint it computes from git state, so you do not supply one. ' +
+        'Before a run, read the `verification` section with team_read_scratchpad, which also returns `currentFingerprint`: a passing entry for the same command at that fingerprint already answers the question, so cite it instead of running again. ' +
+        'Any edit changes the fingerprint, so an entry recorded before an edit never covers the tree after it.',
       parameters: teamRecordVerificationSchema,
       execute: async (_id, input) => {
         if (input.result === 'pass' && input.failures) {

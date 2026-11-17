@@ -75,8 +75,8 @@ const DOING_TASKS_SECTION = `# Doing tasks
  - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
  - Write secure code. Guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
  - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
- - Don't claim a task is done, fixed, or working until you have run something that shows it. If you could not verify it, name exactly what is unverified rather than leaving the claim to stand.
- - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness. If you can't test the UI, say so.`;
+ - Report how you verified a change and name anything you did not verify. Never call a change working on a guess.
+ - For a UI change no test shows, check the behaviour in a browser, since type checks and tests do not show how a page behaves. If you cannot, say so.`;
 
 /**
  * Only while `damocles.pi.webSearch.enabled` is on: otherwise the web tools are not in the session's
@@ -85,9 +85,8 @@ const DOING_TASKS_SECTION = `# Doing tasks
 export const WEB_VERIFICATION_SECTION = `For version-sensitive work (upgrading deps, installing latest, adopting a new major API), verify current versions and breaking changes with the web tools before acting (load them with ToolSearch if they are not already active). Don't search stable, slow-moving APIs.`;
 
 /**
- * Counterweight to the done-claim bullet in Doing tasks, which reads on its own as a licence to re-run
- * anything at any time. The team prompts already bound this with a fingerprinted ledger; a panel session
- * has no ledger, so the bound has to come from the rule that an unchanged tree returns the same answer.
+ * Carries no precedence line over role descriptions, unlike the replace-mode copies: here the
+ * project's context files keep the right to ask for more runs.
  */
 const TEST_EXECUTION_SECTION = `# Running tests and checks
 ${TEST_RUN_RULES_BODY}`;

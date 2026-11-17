@@ -208,7 +208,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 
         1. Read their scratchpad section, including cross-review subsections, and review against quality standards (Section 7)
-        1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it (\`team_record_verification\` returns it) and judge the recorded entries. Reading the section also returns \`currentFingerprint\`, the tree's fingerprint now: an entry vouches for the current tree only when its fingerprint equals it. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint. That fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
+        1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it with \`team_read_scratchpad\` and judge the recorded entries. Reading the section also returns \`currentFingerprint\`, the tree's fingerprint now: an entry vouches for the current tree only when its fingerprint equals it. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint. That fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
         2. If work meets standards → call \`team_approve_specialist\` with their name (moves them to completed)
         3. If violations found → call \`team_request_revision\` with specific corrections
            - The specialist resumes with full context, applies fixes, and reports back
@@ -227,13 +227,13 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         ### Always include:
         - **Specific file paths and line numbers.** Not "the auth module" but "src/auth/validate.ts:42"
         - **What to change and why.** Not "fix the bug" but "add a null check before user.id access because Session.user is undefined when expired"
-        - **Done criteria.** What "finished" looks like ("commit changes, run tests, report results via team_send_message")
+        - **Done criteria.** The behaviour that must hold and the narrowed test command that covers it, so the specialist runs that and not a whole suite.
         - **Scratchpad reference.** "read the scratchpad section 'api-contract' for the interface you must implement"
 
         **Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` selects whether the specialist runs under the user's implementor or reviewer role settings (model + reasoning effort), configured in settings. You do not choose models. A reviewer is read-only: it cannot edit files, and any shell command beyond a plain read needs the user's approval, so it confirms test evidence from the \`verification\` ledger. Spawn any role that must run tests or change files as \`'implementor'\`.
 
         ### Good examples:
-        - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."
+        - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Its tests are in src/services/__tests__/user.test.ts."
         - "Research all files in src/auth/. Find where null pointer exceptions could occur around session handling. Report specific file paths, line numbers, and types involved. Do NOT modify any files."
 
         ### Anti-patterns (never do these):
@@ -286,7 +286,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         1. **Summary.** What the team accomplished relative to the mission
         2. **Changes made.** Specific files modified, created, or deleted
         3. **Decisions.** Architecture choices, trade-offs, and rationale
-        4. **Verification status.** What was tested and the results
+        4. **Verification.** The ledger entries that cover the result, and what was not verified
         5. **Remaining work.** Anything that couldn't be completed and why
 
         \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released. The synthesis call also re-verifies that you have read the current version of every team-member-authored section. If anyone wrote a new version after you approved them, re-read it before synthesizing.
@@ -459,7 +459,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 
         1. Read their scratchpad section, including cross-review subsections, and review against quality standards (Section 7)
-        1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it (\`team_record_verification\` returns it) and judge the recorded entries. Reading the section also returns \`currentFingerprint\`, the tree's fingerprint now: an entry vouches for the current tree only when its fingerprint equals it. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint. That fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
+        1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it with \`team_read_scratchpad\` and judge the recorded entries. Reading the section also returns \`currentFingerprint\`, the tree's fingerprint now: an entry vouches for the current tree only when its fingerprint equals it. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint. That fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
         2. If work meets standards → call \`team_approve_specialist\` with their name (moves them to completed)
         3. If violations found → call \`team_request_revision\` with specific corrections
            - The specialist resumes with full context, applies fixes, and reports back
@@ -478,13 +478,13 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         ### Always include:
         - **Specific file paths and line numbers.** Not "the auth module" but "src/auth/validate.ts:42"
         - **What to change and why.** Not "fix the bug" but "add a null check before user.id access because Session.user is undefined when expired"
-        - **Done criteria.** What "finished" looks like ("commit changes, run tests, report results via team_send_message")
+        - **Done criteria.** The behaviour that must hold and the narrowed test command that covers it, so the specialist runs that and not a whole suite.
         - **Scratchpad reference.** "read the scratchpad section 'api-contract' for the interface you must implement"
 
         **Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` selects whether the specialist runs under the user's implementor or reviewer role settings (model + reasoning effort), configured in settings. You do not choose models. A reviewer is read-only: it cannot edit files, and any shell command beyond a plain read needs the user's approval, so it confirms test evidence from the \`verification\` ledger. Spawn any role that must run tests or change files as \`'implementor'\`.
 
         ### Good examples:
-        - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."
+        - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Its tests are in src/services/__tests__/user.test.ts."
         - "Research all files in src/auth/. Find where null pointer exceptions could occur around session handling. Report specific file paths, line numbers, and types involved. Do NOT modify any files."
 
         ### Anti-patterns (never do these):
@@ -537,7 +537,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         1. **Summary.** What the team accomplished relative to the mission
         2. **Changes made.** Specific files modified, created, or deleted
         3. **Decisions.** Architecture choices, trade-offs, and rationale
-        4. **Verification status.** What was tested and the results
+        4. **Verification.** The ledger entries that cover the result, and what was not verified
         5. **Remaining work.** Anything that couldn't be completed and why
 
         \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released. The synthesis call also re-verifies that you have read the current version of every team-member-authored section. If anyone wrote a new version after you approved them, re-read it before synthesizing.
@@ -707,25 +707,44 @@ describe('plain-writing rules reach every team prompt', () => {
   // it is explicitly instructed not to run.
   it('gives the specialists the test cadence and points the lead at the ledger instead', () => {
     for (const prompt of [prompts.specialist, prompts.profiled]) {
-      expect(prompt).toContain('Run a test, type check, linter, or build when its result can change what you do next.');
-      expect(prompt).toContain('Run the narrowest command that answers the question');
+      expect(prompt).toContain('so run one only when its result can change what you do next.');
+      expect(prompt).toContain('Run the narrowest command that covers your change');
       expect(prompt).toContain('Watch mode never exits and blocks the session.');
     }
-    expect(prompts.lead).not.toContain('Run the narrowest command that answers the question');
+    expect(prompts.lead).not.toContain('Run the narrowest command that covers your change');
     expect(prompts.lead).toContain('Section 4 Phase 1b governs test runs: you judge the ledger, you do not run suites yourself.');
   });
 
   // The shared cadence and the ledger say the same thing at different strengths, so the ledger is
   // phrased as an addition. Two independent full-suite policies is how they drift into contradiction.
+  // "Scoped runs are free" was such a second policy: specialists took it as licence for repeat runs.
   it('states the ledger as an addition to the shared cadence, not a second policy', () => {
     for (const prompt of [prompts.specialist, prompts.profiled]) {
-      expect(prompt.indexOf('Run a test, type check, linter, or build')).toBeLessThan(
-        prompt.indexOf('In a team, verification is shared through the append-only'),
+      expect(prompt.indexOf('Run the narrowest command that covers your change')).toBeLessThan(
+        prompt.indexOf('In a team, the append-only `verification` scratchpad ledger is shared evidence.'),
       );
-      expect(prompt).toContain("A peer's entry at the CURRENT fingerprint makes your run provably redundant");
-      expect(prompt).toContain('Record every full-suite run with `team_record_verification`');
-      expect(prompt).toContain('Scoped runs while you work are free. Take them.');
+      expect(prompt).toContain('A passing entry for the same command at the current fingerprint already answers the question: cite it.');
+      expect(prompt).toContain('Record each run your report relies on with `team_record_verification`');
+      expect(prompt).not.toContain('Scoped runs while you work are free');
     }
+  });
+
+  // Profiles such as Frontend Developer ask for comprehensive tests. A reviewer runs no tests, so the line
+  // would tell it about a cadence it does not have.
+  it('puts the shared test rules above a role description for implementors only', () => {
+    const precedence = 'These rules replace the testing cadence in your role description.';
+    for (const prompt of [prompts.specialist, prompts.profiled]) {
+      expect(prompt).toContain(precedence);
+    }
+    expect(prompts.lead).not.toContain(precedence);
+  });
+
+  // Only team_read_scratchpad returns currentFingerprint; team_record_verification needs a run to record.
+  it('names the tool that returns the current fingerprint as the ledger read', () => {
+    for (const prompt of [prompts.specialist, prompts.profiled]) {
+      expect(prompt).toContain('read the `verification` section with `team_read_scratchpad`, which also returns `currentFingerprint`');
+    }
+    expect(prompts.lead).toContain('Read it with `team_read_scratchpad` and judge the recorded entries.');
   });
 });
 
@@ -837,10 +856,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('**No silent error swallowing.**');
     });
 
-    it('states the verification-ledger rule: check before a full-suite run, never re-run an unchanged tree (RC2)', () => {
+    it('states the verification-ledger rule: read the ledger before a run, never re-run an unchanged tree (RC2)', () => {
       expect(prompt).toContain('### Verification Budget');
-      expect(prompt).toContain('Before any full-suite run, check the ledger');
-      expect(prompt).toContain('The same command over a tree you have not changed since returns the same answer');
+      expect(prompt).toContain('Before running a suite, read the `verification` section');
+      expect(prompt).toContain('A run on a tree you have not changed since gives the same answer');
       expect(prompt).toContain('`team_record_verification`');
     });
 
@@ -872,7 +891,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         | \`team_get_status\` | Check teammate statuses and names |
         | \`team_standby\` | Pause until peer content arrives, instead of polling |
         | \`team_flag_brief_conflict\` | Hard-stop on a conflict with the \`mission-brief\`, which blocks synthesis until the lead reconciles it |
-        | \`team_record_verification\` | Record a test-suite run in the shared verification ledger, and read what peers already verified |
+        | \`team_record_verification\` | Record a test run in the shared verification ledger, and read what peers already verified |
         | \`team_report_complete\` | Signal work is done, entering awaiting-review for lead to review |
 
         You also have full codebase access (Read, Write, Bash, etc.).
@@ -910,20 +929,18 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ### Verification Budget
 
-        Run a test, type check, linter, or build when its result can change what you do next.
-         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
-         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
-         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
-         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
-         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
-         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+        A test run costs the user time and some suites take minutes, so run one only when its result can change what you do next. Read the code to learn what it does; a run only tells you whether it passes.
+         - Run the narrowest command that covers your change: the test file or test name, not the suite. Run a whole suite once, at the end of a change set, or when the project's workflow asks for it.
+         - Make a set of related edits, then run once. A run on a tree you have not changed since gives the same answer, so cite it. Edits to comments, docs or unrelated config cannot change a result.
+         - When a run fails, read its output (for a browser test, its trace or screenshot) and change something before you run again. Reproduce the failure with the fastest test that shows it, a unit test before a browser test, and return to the wider command once, after it passes.
+         - Send long output to a log file once and search the file, rather than running the command again to see another part of it.
          - Use the project's single-run command. Watch mode never exits and blocks the session.
+        These rules replace the testing cadence in your role description. Your task's instructions about which tests to run still apply.
 
-        In a team, verification is shared through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state, and it changes the instant anyone edits a file, so an entry vouches for exactly the tree it was recorded against.
-         - Scoped runs while you work are free. Take them.
-         - Before any full-suite run, check the ledger (\`team_record_verification\` returns it, or read the \`verification\` section). A peer's entry at the CURRENT fingerprint makes your run provably redundant: cite it instead of re-running. Reading the \`verification\` section returns \`currentFingerprint\`; match entries against it.
-         - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
-         - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
+        In a team, the append-only \`verification\` scratchpad ledger is shared evidence. Each entry carries a tree fingerprint the extension computes from git state; any edit changes it, so an entry vouches only for the tree it was recorded on.
+         - Before running a suite, read the \`verification\` section with \`team_read_scratchpad\`, which also returns \`currentFingerprint\`. A passing entry for the same command at the current fingerprint already answers the question: cite it.
+         - Record each run your report relies on with \`team_record_verification\`: command, pass or fail, and the failing tests. The tool adds the fingerprint.
+         - In your report, point at ledger entries rather than describing results.
 
         ## 5. Peer Collaboration: Contract-Driven
 
@@ -1123,10 +1140,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('**No silent error swallowing.**');
     });
 
-    it('states the verification-ledger rule: check before a full-suite run, never re-run an unchanged tree (RC2)', () => {
+    it('states the verification-ledger rule: read the ledger before a run, never re-run an unchanged tree (RC2)', () => {
       expect(prompt).toContain('### Verification Budget');
-      expect(prompt).toContain('Before any full-suite run, check the ledger');
-      expect(prompt).toContain('The same command over a tree you have not changed since returns the same answer');
+      expect(prompt).toContain('Before running a suite, read the `verification` section');
+      expect(prompt).toContain('A run on a tree you have not changed since gives the same answer');
       expect(prompt).toContain('`team_record_verification`');
     });
 
@@ -1168,7 +1185,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         | \`team_get_status\` | Check teammate statuses and names |
         | \`team_standby\` | Pause until peer content arrives, instead of polling |
         | \`team_flag_brief_conflict\` | Hard-stop on a conflict with the \`mission-brief\`, which blocks synthesis until the lead reconciles it |
-        | \`team_record_verification\` | Record a test-suite run in the shared verification ledger, and read what peers already verified |
+        | \`team_record_verification\` | Record a test run in the shared verification ledger, and read what peers already verified |
         | \`team_report_complete\` | Signal work is done, entering awaiting-review for lead to review |
 
         You also have full codebase access (Read, Write, Bash, etc.).
@@ -1206,20 +1223,18 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ### Verification Budget
 
-        Run a test, type check, linter, or build when its result can change what you do next.
-         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
-         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
-         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
-         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
-         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
-         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+        A test run costs the user time and some suites take minutes, so run one only when its result can change what you do next. Read the code to learn what it does; a run only tells you whether it passes.
+         - Run the narrowest command that covers your change: the test file or test name, not the suite. Run a whole suite once, at the end of a change set, or when the project's workflow asks for it.
+         - Make a set of related edits, then run once. A run on a tree you have not changed since gives the same answer, so cite it. Edits to comments, docs or unrelated config cannot change a result.
+         - When a run fails, read its output (for a browser test, its trace or screenshot) and change something before you run again. Reproduce the failure with the fastest test that shows it, a unit test before a browser test, and return to the wider command once, after it passes.
+         - Send long output to a log file once and search the file, rather than running the command again to see another part of it.
          - Use the project's single-run command. Watch mode never exits and blocks the session.
+        These rules replace the testing cadence in your role description. Your task's instructions about which tests to run still apply.
 
-        In a team, verification is shared through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state, and it changes the instant anyone edits a file, so an entry vouches for exactly the tree it was recorded against.
-         - Scoped runs while you work are free. Take them.
-         - Before any full-suite run, check the ledger (\`team_record_verification\` returns it, or read the \`verification\` section). A peer's entry at the CURRENT fingerprint makes your run provably redundant: cite it instead of re-running. Reading the \`verification\` section returns \`currentFingerprint\`; match entries against it.
-         - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
-         - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
+        In a team, the append-only \`verification\` scratchpad ledger is shared evidence. Each entry carries a tree fingerprint the extension computes from git state; any edit changes it, so an entry vouches only for the tree it was recorded on.
+         - Before running a suite, read the \`verification\` section with \`team_read_scratchpad\`, which also returns \`currentFingerprint\`. A passing entry for the same command at the current fingerprint already answers the question: cite it.
+         - Record each run your report relies on with \`team_record_verification\`: command, pass or fail, and the failing tests. The tool adds the fingerprint.
+         - In your report, point at ledger entries rather than describing results.
 
         ## 7. Peer Collaboration: Contract-Driven
 
@@ -1469,8 +1484,9 @@ describe('a reviewer prompt matches its read-only toolset', () => {
       expect(prompt).toContain('### Verification Evidence');
       expect(prompt).toContain('Only an entry whose fingerprint equals `currentFingerprint` vouches for the current tree.');
       expect(prompt).not.toContain('### Verification Budget');
-      expect(prompt).not.toContain('Record every full-suite run');
+      expect(prompt).not.toContain('Record each run your report relies on');
       expect(prompt).not.toContain('`team_record_verification`');
+      expect(prompt).not.toContain('These rules replace the testing cadence in your role description.');
     });
 
     it(`the ${name} reviewer prompt keeps its tools table contiguous`, () => {

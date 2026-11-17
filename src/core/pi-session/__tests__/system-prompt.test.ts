@@ -140,22 +140,31 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
       }
     });
 
-    // The done-claim bullet on its own licenses a re-run at any moment, which is how a session ends up
-    // running the same suite repeatedly. The bound is that an unchanged tree returns the same answer.
+    // Sessions ran the same slow suite again and again: after small edits, after an unread failure, and
+    // to page through output. Each bullet names the behaviour that replaces one of those habits.
     it('bounds test cadence: narrowest command, one full-suite run, no repeat over an unchanged tree', () => {
       expect(prompt).toContain('# Running tests and checks');
-      expect(prompt).toContain('Run a test, type check, linter, or build when its result can change what you do next.');
-      expect(prompt).toContain('Run the narrowest command that answers the question');
-      expect(prompt).toContain("Save the full suite for the end of a change set and run it once");
-      expect(prompt).toContain('One passing run is the evidence a done-claim needs.');
-      expect(prompt).toContain('returns the same answer, so cite that run instead of repeating it');
-      expect(prompt).toContain('re-run only what failed');
+      expect(prompt).toContain('A test run costs the user time and some suites take minutes, so run one only when its result can change what you do next.');
+      expect(prompt).toContain('Run the narrowest command that covers your change');
+      expect(prompt).toContain('Run a whole suite once, at the end of a change set');
+      expect(prompt).toContain('Make a set of related edits, then run once.');
+      expect(prompt).toContain('gives the same answer, so cite it');
+      expect(prompt).toContain('change something before you run again');
+      expect(prompt).toContain('Send long output to a log file once and search the file');
       expect(prompt).toContain('Watch mode never exits and blocks the session.');
     });
 
-    // The done-claim rule stays: the cadence section limits repeats, it does not license unverified claims.
-    it('keeps the evidence-before-done rule alongside the cadence rules', () => {
-      expect(prompt).toContain("Don't claim a task is done, fixed, or working until you have run something that shows it.");
+    // The project's context files may ask the main chat for more runs; only replace-mode agents, whose
+    // role descriptions carry their own cadence, are told these rules take precedence.
+    it('gives the main chat no precedence line over other testing instructions', () => {
+      expect(prompt).not.toContain('These rules replace the testing cadence in your role description.');
+    });
+
+    // An order to run something before every done-claim drove repeat runs. The rule asks for a report of
+    // how a change was verified instead, and keeps barring claims made on a guess.
+    it('asks for a verification report rather than a run before every done-claim', () => {
+      expect(prompt).toContain('Report how you verified a change and name anything you did not verify.');
+      expect(prompt).not.toContain('until you have run something that shows it');
       expect(prompt.indexOf('# Doing tasks')).toBeLessThan(prompt.indexOf('# Running tests and checks'));
       expect(prompt.indexOf('# Running tests and checks')).toBeLessThan(prompt.indexOf('# Comments'));
     });
@@ -281,11 +290,10 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
       expect(prompt).toContain('drop "not just X, it\'s Y" framing');
     });
 
-    // The UI/frontend bullet already said "before claiming success", but only for UI work, so nothing
-    // covered a green type-check being reported as a working feature.
+    // Without a general rule, a green type-check could be reported as a working feature.
     it('bars unverified completion claims generally, not just for UI work', () => {
-      expect(prompt).toContain("Don't claim a task is done, fixed, or working until you have run something that shows it");
-      expect(prompt).toContain('name exactly what is unverified');
+      expect(prompt).toContain('Never call a change working on a guess.');
+      expect(prompt).toContain('For a UI change no test shows, check the behaviour in a browser');
     });
 
     // Claude Code's `includeCoAuthoredBy: false` is a harness setting a Damocles session never reads,
@@ -425,17 +433,15 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
          - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
          - Write secure code. Guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
-         - Don't claim a task is done, fixed, or working until you have run something that shows it. If you could not verify it, name exactly what is unverified rather than leaving the claim to stand.
-         - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness. If you can't test the UI, say so.
+         - Report how you verified a change and name anything you did not verify. Never call a change working on a guess.
+         - For a UI change no test shows, check the behaviour in a browser, since type checks and tests do not show how a page behaves. If you cannot, say so.
 
         # Running tests and checks
-        Run a test, type check, linter, or build when its result can change what you do next.
-         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
-         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
-         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
-         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
-         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
-         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+        A test run costs the user time and some suites take minutes, so run one only when its result can change what you do next. Read the code to learn what it does; a run only tells you whether it passes.
+         - Run the narrowest command that covers your change: the test file or test name, not the suite. Run a whole suite once, at the end of a change set, or when the project's workflow asks for it.
+         - Make a set of related edits, then run once. A run on a tree you have not changed since gives the same answer, so cite it. Edits to comments, docs or unrelated config cannot change a result.
+         - When a run fails, read its output (for a browser test, its trace or screenshot) and change something before you run again. Reproduce the failure with the fastest test that shows it, a unit test before a browser test, and return to the wider command once, after it passes.
+         - Send long output to a log file once and search the file, rather than running the command again to see another part of it.
          - Use the project's single-run command. Watch mode never exits and blocks the session.
 
         # Comments
@@ -599,17 +605,15 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
          - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
          - Write secure code. Guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
-         - Don't claim a task is done, fixed, or working until you have run something that shows it. If you could not verify it, name exactly what is unverified rather than leaving the claim to stand.
-         - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness. If you can't test the UI, say so.
+         - Report how you verified a change and name anything you did not verify. Never call a change working on a guess.
+         - For a UI change no test shows, check the behaviour in a browser, since type checks and tests do not show how a page behaves. If you cannot, say so.
 
         # Running tests and checks
-        Run a test, type check, linter, or build when its result can change what you do next.
-         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
-         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
-         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
-         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
-         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
-         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+        A test run costs the user time and some suites take minutes, so run one only when its result can change what you do next. Read the code to learn what it does; a run only tells you whether it passes.
+         - Run the narrowest command that covers your change: the test file or test name, not the suite. Run a whole suite once, at the end of a change set, or when the project's workflow asks for it.
+         - Make a set of related edits, then run once. A run on a tree you have not changed since gives the same answer, so cite it. Edits to comments, docs or unrelated config cannot change a result.
+         - When a run fails, read its output (for a browser test, its trace or screenshot) and change something before you run again. Reproduce the failure with the fastest test that shows it, a unit test before a browser test, and return to the wider command once, after it passes.
+         - Send long output to a log file once and search the file, rather than running the command again to see another part of it.
          - Use the project's single-run command. Watch mode never exits and blocks the session.
 
         # Comments

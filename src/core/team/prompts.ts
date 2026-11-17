@@ -1,5 +1,5 @@
 import type { AgentSpec } from "./types";
-import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rules";
+import { COMMENT_RULES_BODY, TEST_CADENCE_PRECEDENCE, TEST_RUN_RULES_BODY } from "../pi-session/code-rules";
 import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
 import { STEERING_PROTOCOL_BLOCK } from "../pi-session/steering-protocol";
 import { READ_ONLY_SHELL_LIMITS } from "../pi-session/read-only-shell-rules";
@@ -15,15 +15,16 @@ ${COMMENT_RULES_BODY}`;
 /**
  * The ledger is the team-strength version of the shared cadence: a fingerprint makes "nothing changed
  * since" a fact the extension computes rather than a judgement the agent makes. Stated as an addition
- * so the two never contradict each other.
+ * so the two never contradict each other. Every run a report relies on is recorded, scoped ones too,
+ * because the lead and reviewers judge only what the ledger holds.
  */
 const VERIFICATION_BUDGET = `${TEST_RUN_RULES_BODY}
+${TEST_CADENCE_PRECEDENCE}
 
-In a team, verification is shared through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state, and it changes the instant anyone edits a file, so an entry vouches for exactly the tree it was recorded against.
- - Scoped runs while you work are free. Take them.
- - Before any full-suite run, check the ledger (\`team_record_verification\` returns it, or read the \`verification\` section). A peer's entry at the CURRENT fingerprint makes your run provably redundant: cite it instead of re-running. Reading the \`verification\` section returns \`currentFingerprint\`; match entries against it.
- - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
- - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.`;
+In a team, the append-only \`verification\` scratchpad ledger is shared evidence. Each entry carries a tree fingerprint the extension computes from git state; any edit changes it, so an entry vouches only for the tree it was recorded on.
+ - Before running a suite, read the \`verification\` section with \`team_read_scratchpad\`, which also returns \`currentFingerprint\`. A passing entry for the same command at the current fingerprint already answers the question: cite it.
+ - Record each run your report relies on with \`team_record_verification\`: command, pass or fail, and the failing tests. The tool adds the fingerprint.
+ - In your report, point at ledger entries rather than describing results.`;
 
 /** A reviewer judges the ledger and never runs or records a suite itself. */
 const REVIEWER_VERIFICATION = `You do not run tests, type checks, linters or builds, and you do not record ledger entries: you judge the work from the evidence others recorded. Verification evidence comes from the append-only \`verification\` scratchpad ledger, where every entry carries a **tree fingerprint** the extension computes from git state.
@@ -205,7 +206,7 @@ When all specialists enter awaiting-review (or a terminal state), the system sen
 Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 
 1. Read their scratchpad section, including cross-review subsections, and review against quality standards (Section 7)
-1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it (\`team_record_verification\` returns it) and judge the recorded entries. Reading the section also returns \`currentFingerprint\`, the tree's fingerprint now: an entry vouches for the current tree only when its fingerprint equals it. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint. That fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
+1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it with \`team_read_scratchpad\` and judge the recorded entries. Reading the section also returns \`currentFingerprint\`, the tree's fingerprint now: an entry vouches for the current tree only when its fingerprint equals it. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint. That fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
 2. If work meets standards → call \`team_approve_specialist\` with their name (moves them to completed)
 3. If violations found → call \`team_request_revision\` with specific corrections
    - The specialist resumes with full context, applies fixes, and reports back
@@ -224,13 +225,13 @@ Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 ### Always include:
 - **Specific file paths and line numbers.** Not "the auth module" but "src/auth/validate.ts:42"
 - **What to change and why.** Not "fix the bug" but "add a null check before user.id access because Session.user is undefined when expired"
-- **Done criteria.** What "finished" looks like ("commit changes, run tests, report results via team_send_message")
+- **Done criteria.** The behaviour that must hold and the narrowed test command that covers it, so the specialist runs that and not a whole suite.
 - **Scratchpad reference.** "read the scratchpad section 'api-contract' for the interface you must implement"
 
 **Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` selects whether the specialist runs under the user's implementor or reviewer role settings (model + reasoning effort), configured in settings. You do not choose models. A reviewer is read-only: it cannot edit files, and any shell command beyond a plain read needs the user's approval, so it confirms test evidence from the \`verification\` ledger. Spawn any role that must run tests or change files as \`'implementor'\`.
 
 ### Good examples:
-- "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."
+- "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Its tests are in src/services/__tests__/user.test.ts."
 - "Research all files in src/auth/. Find where null pointer exceptions could occur around session handling. Report specific file paths, line numbers, and types involved. Do NOT modify any files."
 
 ### Anti-patterns (never do these):
@@ -275,7 +276,7 @@ When calling \`team_synthesize_result\`, include:
 1. **Summary.** What the team accomplished relative to the mission
 2. **Changes made.** Specific files modified, created, or deleted
 3. **Decisions.** Architecture choices, trade-offs, and rationale
-4. **Verification status.** What was tested and the results
+4. **Verification.** The ledger entries that cover the result, and what was not verified
 5. **Remaining work.** Anything that couldn't be completed and why
 
 \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released. The synthesis call also re-verifies that you have read the current version of every team-member-authored section. If anyone wrote a new version after you approved them, re-read it before synthesizing.
@@ -393,7 +394,7 @@ function reportContents(reviews: readonly string[] | undefined): string {
 
 function verificationToolRow(reviews: readonly string[] | undefined): string {
   return reviews === undefined
-    ? "| `team_record_verification` | Record a test-suite run in the shared verification ledger, and read what peers already verified |\n"
+    ? "| `team_record_verification` | Record a test run in the shared verification ledger, and read what peers already verified |\n"
     : "";
 }
 

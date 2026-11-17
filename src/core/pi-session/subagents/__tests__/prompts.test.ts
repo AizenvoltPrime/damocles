@@ -143,7 +143,7 @@ describe('buildAgentPrompt', () => {
     expect(writer).toContain('# Comments');
     expect(writer).toContain('A comment states a constraint the next editor would otherwise violate, then stops.');
     expect(writer).toContain('# Running tests and checks');
-    expect(writer).toContain('Run the narrowest command that answers the question');
+    expect(writer).toContain('Run the narrowest command that covers your change');
 
     const readOnly = buildAgentPrompt(cfg({ systemPrompt: 'BODY' }), '/ws', ENV);
     expect(readOnly).not.toContain('# Comments');
@@ -151,6 +151,18 @@ describe('buildAgentPrompt', () => {
 
     const appendMode = buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV, 'PARENT', { writesFiles: true });
     expect(appendMode).not.toContain('# Running tests and checks');
+  });
+
+  // Bundled profiles ask for "comprehensive tests"; without this line a profile's cadence and the shared
+  // one compete. Append mode inherits the panel's rules, where the project's context files may ask for more.
+  it('tells a replace-mode writer the shared test rules beat its role description, and no other agent', () => {
+    const precedence = 'These rules replace the testing cadence in your role description.';
+    const writer = buildAgentPrompt(cfg({ systemPrompt: 'BODY' }), '/ws', ENV, undefined, { writesFiles: true });
+    expect(writer).toContain(precedence);
+    expect(writer.indexOf('Watch mode never exits')).toBeLessThan(writer.indexOf(precedence));
+
+    expect(buildAgentPrompt(cfg({ systemPrompt: 'BODY' }), '/ws', ENV)).not.toContain(precedence);
+    expect(buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV, 'PARENT', { writesFiles: true })).not.toContain(precedence);
   });
 
   it('append mode with no parent prompt falls back to the generic base', () => {
