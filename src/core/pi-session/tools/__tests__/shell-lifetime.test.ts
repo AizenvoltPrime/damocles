@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { build, type BuildOptions, type Plugin } from 'esbuild';
 import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { alive } from '../../../../__mocks__/process-alive';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../../__mocks__/spawn-budget';
 import { createLauncherPool, installProcessLauncher, type Launcher, type SessionJob } from '../../../process-launcher';
 import type { PiCodingAgentModule } from '../../pi-loader';
@@ -81,21 +82,6 @@ function sessionJob(): SessionJob {
   const job = launcher.createSessionJob();
   jobs.push(job);
   return job;
-}
-
-// A zombie still answers signal 0, so on Linux its state decides.
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  if (process.platform !== 'linux') return true;
-  try {
-    return !/^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
-  } catch {
-    return false;
-  }
 }
 
 /** A backgrounded node process that keeps the shell's stdout open and records its own OS pid in `file`. */

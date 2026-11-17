@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { SHARE_ENV, Worker } from 'node:worker_threads';
 import { build, type BuildOptions, type Plugin } from 'esbuild';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { alive } from '../../../__mocks__/process-alive';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../__mocks__/spawn-budget';
 import { createLauncherPool, LauncherWorkerDiedError, type LaunchedProcess, type Launcher } from '../index';
 import { MAX_UNACKED_BYTES, type LauncherEvent } from '../protocol';
@@ -65,21 +66,6 @@ function collect(child: LaunchedProcess, stream: 'stdout' | 'stderr' = 'stdout')
   const chunks: Buffer[] = [];
   child.onData(stream, (chunk) => chunks.push(chunk));
   return { chunks, text: () => Buffer.concat(chunks).toString('utf8') };
-}
-
-// A zombie still answers signal 0, so on Linux its state decides.
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  if (process.platform !== 'linux') return true;
-  try {
-    return !/^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
-  } catch {
-    return false;
-  }
 }
 
 // A parent in its own process group (POSIX) that starts a long-lived child and prints its pid.

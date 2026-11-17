@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as mcp from '@earendil-works/pi-mcp';
+import { alive } from '../../../../__mocks__/process-alive';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../../__mocks__/spawn-budget';
 import { installProcessLauncher, type KillOptions, type LaunchedProcess, type ProcessExit } from '../../../process-launcher';
 import { launcherPipe } from '../launcher-transport';
@@ -67,15 +68,6 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
 
 async function until(check: () => boolean, ms: number): Promise<void> {
   const deadline = Date.now() + ms;
