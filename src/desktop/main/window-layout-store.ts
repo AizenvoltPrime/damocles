@@ -276,9 +276,9 @@ export function parseSectionOrder(raw: unknown): ShellLayout['sectionOrder'] | u
   return [...order.slice(0, scm + 1), 'graph', ...order.slice(scm + 1)];
 }
 
-// A repository root key: an absolute path with no NUL, as ScmRepoSummary.root gives it.
+// A repository root key: an absolute path in its host's rules (a remote host's may be either flavor) with no NUL, as ScmRepoSummary.root gives it.
 function isGraphRoot(key: string): boolean {
-  return key.length > 0 && key.length <= MAX_GRAPH_ROOT_LENGTH && !key.includes('\0') && path.isAbsolute(key);
+  return key.length > 0 && key.length <= MAX_GRAPH_ROOT_LENGTH && !key.includes('\0') && isAbsoluteFolderKey(key);
 }
 
 function parseGraphChoice(raw: unknown): GraphRefChoice | undefined {
@@ -335,14 +335,17 @@ export function parseRepositoryViewStates(raw: unknown, fileLog?: Log): Record<s
   return states;
 }
 
-/** Each project's selected repository root, the newest MAX_SCM_SELECTIONS kept; malformed and dropped entries are logged. */
+/**
+ * Each project's selected repository root, absolute in its host's rules (a remote host's may be either flavor), the newest
+ * MAX_SCM_SELECTIONS kept; malformed and dropped entries are logged.
+ */
 export function parseScmSelected(raw: unknown, log: Log): Record<string, string> {
   if (!isRecord(raw)) {
     log('[layout] dropping malformed source control selections');
     return {};
   }
   const valid = Object.entries(raw).filter(([key, root]) => {
-    const ok = key.length > 0 && key.length <= MAX_ID_LENGTH && typeof root === 'string' && root.length <= MAX_PATH_LENGTH && path.isAbsolute(root) && !root.includes('\0');
+    const ok = key.length > 0 && key.length <= MAX_ID_LENGTH && typeof root === 'string' && root.length <= MAX_PATH_LENGTH && isAbsoluteFolderKey(root) && !root.includes('\0');
     if (!ok) log('[layout] dropping a malformed source control selection');
     return ok;
   }) as Array<[string, string]>;

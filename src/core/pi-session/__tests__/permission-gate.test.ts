@@ -60,11 +60,12 @@ function makePanel(opts: {
   decide?: () => 'allow' | 'deny' | 'ask';
   rule?: () => Promise<'allow' | 'deny' | 'ask' | null>;
   mcpReadOnly?: (name: string) => boolean;
+  cwd?: string;
 }) {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
   const decide = vi.fn<PermissionHandler['decide']>(opts.decide ?? (() => 'allow' as const));
   const matchRule = vi.fn<PermissionHandler['matchRule']>(opts.rule ?? (async () => null));
-  const permissionHandler = { canUseTool, decide, matchRule, isPlanFile: isPlanFilePath, sessionCwd: () => path.resolve('/repo') } as unknown as PanelGateContext['permissionHandler'];
+  const permissionHandler = { canUseTool, decide, matchRule, isPlanFile: isPlanFilePath, sessionCwd: () => opts.cwd ?? path.resolve('/repo') } as unknown as PanelGateContext['permissionHandler'];
   const panel: PanelGateContext = {
     permissionHandler,
     isPlanMode: () => Boolean(opts.plan),
@@ -2484,23 +2485,26 @@ describe('the three readers of a shell call\'s read-only verdict agree (plan mod
     return { platform: 'win32', allowedNetworkHosts: () => Promise.resolve(new Set()), powerShellSearch: () => Promise.resolve({ path: folder, pathext: '.COM;.EXE;.BAT;.CMD', pwshHome: undefined }), lookupFolders: () => Promise.resolve([folder]) };
   }
 
+  // A win32 machine's working folder is a drive path on any host; a POSIX one names no drive and refuses every command.
+  const cwd = String.raw`C:\repo`;
+
   async function expectReadersAgree(cases: Array<[string, string, ChatMachine, boolean]>): Promise<void> {
     for (const [tool, command, machine, expected] of cases) {
-      const proven = (await provenReadOnlyShell(tool, { command }, machine, path.resolve('/repo'))).readOnly;
+      const proven = (await provenReadOnlyShell(tool, { command }, machine, cwd)).readOnly;
       expect(proven, `proven: ${tool} ${command}`).toBe(expected);
 
-      const plan = makePanel({ plan: true });
+      const plan = makePanel({ plan: true, cwd });
       plan.panel.machine = machine;
       await runPermissionGate(ev(tool, 'p1', { command }), plan.panel, undefined);
       expect(plan.canUseTool.mock.calls.length === 0, `plan mode: ${tool} ${command}`).toBe(proven);
 
-      const designed = makePanel({});
+      const designed = makePanel({ cwd });
       designed.panel.machine = machine;
       designed.panel.designScope = () => ({ folder: DESIGN, cwd: root });
       const result = await runPermissionGate(ev(tool, 'd1', { command }), designed.panel, undefined);
       expect(result?.block !== true, `design chat: ${tool} ${command}`).toBe(proven);
 
-      const waiting = makePanel({});
+      const waiting = makePanel({ cwd });
       waiting.panel.machine = machine;
       const waited: string[] = [];
       waiting.panel.checkpointBaseline = { folder: root, wait: async (_signal, toolName) => { waited.push(toolName); } };

@@ -951,4 +951,18 @@ describe('WindowLayoutStore.relocateProject', () => {
     expect(store.scmSelected(to.key)).toBe('/srv/moved/lib');
     expect(store.sidebar().graph).toEqual({ '/srv/moved': 'all', '/srv/moved/lib': 'auto', '/srv/ACME': 'auto' });
   });
+
+  it('keeps remote hosts\' repository roots in either path flavor across a reread, whatever this computer\'s', async () => {
+    const store = new WindowLayoutStore(dir, log);
+    store.setScmSelected('ssh+win|c:\\work\\acme', 'C:\\work\\acme\\lib');
+    store.setScmSelected('ssh+box|/srv/acme', '/srv/acme/lib');
+    const graph = { 'C:\\work\\acme': 'all', '/srv/acme': 'auto' } as const;
+    store.setSidebar({ ...DEFAULT_SHELL_LAYOUT, graph });
+    await store.flush();
+    const reread = new WindowLayoutStore(dir, log);
+    expect([reread.scmSelected('ssh+win|c:\\work\\acme'), reread.scmSelected('ssh+box|/srv/acme')]).toEqual(['C:\\work\\acme\\lib', '/srv/acme/lib']);
+    expect(reread.sidebar().graph).toEqual(graph);
+    expect(parseSidebarLayout(reread.sidebar())?.graph).toEqual(graph);
+    expect(lines).toEqual([]);
+  });
 });

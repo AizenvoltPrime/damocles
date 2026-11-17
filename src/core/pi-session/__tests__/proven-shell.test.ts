@@ -39,7 +39,10 @@ function windowsMachine(search: Partial<PowerShellSearch> & { path: string }): C
   };
 }
 
-const powershell = (command: string, machine: ChatMachine) => provenReadOnlyShell('PowerShell', { command }, machine, root);
+// A win32 machine's working folder is a drive path on any host; a POSIX one names no drive and refuses every command.
+const WINDOWS_CWD = String.raw`C:\work`;
+
+const powershell = (command: string, machine: ChatMachine) => provenReadOnlyShell('PowerShell', { command }, machine, WINDOWS_CWD);
 
 // The PATH folders are real folders of this host, which a POSIX host spells as relative ones under win32's rules.
 describe.runIf(process.platform === 'win32')('provenReadOnlyShell: what a PowerShell command runs on win32', () => {
@@ -127,7 +130,7 @@ describe('provenReadOnlyShell: the PowerShell lookup on any host', () => {
         return Promise.resolve({ path: pathFolder('rg.cmd'), pathext: undefined, pwshHome: undefined });
       },
     });
-    expect((await provenReadOnlyShell('Bash', { command: 'rg TODO src' }, counting('win32'), root)).readOnly).toBe(true);
+    expect((await provenReadOnlyShell('Bash', { command: 'rg TODO src' }, counting('win32'), WINDOWS_CWD)).readOnly).toBe(true);
     expect((await powershell('rg TODO src', counting('linux'))).readOnly).toBe(true);
     expect(lookups).toEqual([]);
   });
