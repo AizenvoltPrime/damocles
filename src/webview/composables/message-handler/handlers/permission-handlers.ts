@@ -67,8 +67,6 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         ...(parentToolUseId !== undefined && { parentToolUseId }),
         ...(agentDescription !== undefined && { agentDescription }),
         ...(msg.suggestions !== undefined && { suggestions: msg.suggestions }),
-        ...(msg.blockedPath !== undefined && { blockedPath: msg.blockedPath }),
-        ...(msg.decisionReason !== undefined && { decisionReason: msg.decisionReason }),
         ...(msg.title !== undefined && { title: msg.title }),
         ...(msg.subtitle !== undefined && { subtitle: msg.subtitle }),
         ...(msg.facts !== undefined && { facts: msg.facts }),

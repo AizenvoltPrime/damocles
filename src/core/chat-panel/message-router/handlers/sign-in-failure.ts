@@ -5,17 +5,17 @@ import { l } from "../../../l10n";
 const NETWORK_ERROR_CODES: ReadonlySet<unknown> = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH"]);
 
 // pi's own phrases, matched only at the start of its text before any punctuation, so a provider body quoted after
-// pi's ": " or "(" never classifies (device-code.js:2-3, xai.js:149,152, kimi-coding.js:160,163, meta.js:119,121 in pi-ai 1.4.0).
+// pi's ": " or "(" never classifies (device-code.js:2-3, xai.js:149,152, kimi-coding.js:142,145, meta.js:106,108 in pi-ai 1.5.2).
 const PI_EXPIRED = /^(?:Device flow timed out\b|[\w ]*\bdevice (?:code|authorization) expired\b)/;
 const PI_DENIED = /^[\w ]*\b(?:authorization|login) was denied\b/;
 // pi's whole text for a pasted link or code it refuses (anthropic.js:159,197, openai-chatgpt.js:38, openai-codex.js:304).
 const PI_OTHER_SIGN_IN = /^(?:OAuth state|State) mismatch$/;
 const PI_NO_CODE = /^Missing authorization code$/;
-// "(HTTP 400)" (xai.js:81, openrouter.js:91), "(status 400)" (kimi-coding.js:167, meta.js:147), "with status 400" (kimi-coding.js:62,
-// meta.js:73), "failed (400):" (openai-chatgpt.js:122, openai-codex.js:95) and "HTTP request failed. status=400;" (anthropic.js:81).
+// "(HTTP 400)" (xai.js:81, openrouter.js:91), "(status 400)" (kimi-coding.js:149, meta.js:134), "with status 400" (kimi-coding.js:49,
+// meta.js:60), "failed (400):" (openai-chatgpt.js:122, openai-codex.js:95) and "HTTP request failed. status=400;" (anthropic.js:81).
 const PI_STATUS = /^[\w ]*?(?:\((?:HTTP|status) (\d{3})\)|\bwith status (\d{3})\b| \((\d{3})\):)|^HTTP request failed\. status=(\d{3});/;
 
-/** The HTTP status pi's text names before any provider body: Copilot's leading "404 Not Found: …" (github-copilot.js:150) or one of pi's own forms. */
+/** The HTTP status pi's text names before any provider body: Copilot's leading "404 Not Found: …" (github-copilot.js:151) or one of pi's own forms. */
 function signInHttpStatus(message: string): number | undefined {
   // only the leading form: httpStatusOf's "(404):" form could find a status inside a body
   if (/^\d{3} /.test(message)) return httpStatusOf(message);

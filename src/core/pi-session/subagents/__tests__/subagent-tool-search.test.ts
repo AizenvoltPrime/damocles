@@ -18,6 +18,7 @@ import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { McpResourceRuleFilter } from '../../../permission-handler/mcp-resource-rule';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
 
@@ -370,7 +371,7 @@ function snapshot(descriptors: McpToolDescriptor[]): { mcp: NestedMcpToolset; ca
     callTool,
     resourceServers: () => [],
   } as unknown as McpClientManager;
-  const mcp = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(descriptors.map((d) => d.piName)) });
+  const mcp = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(descriptors.map((d) => d.piName)) });
   return { mcp, callTool };
 }
 
@@ -421,6 +422,7 @@ describe('nested ToolSearch — MCP discovery (criterion 3)', () => {
     const secrets = mcpDescriptor({ piName: 'mcp__secrets__read_env', serverName: 'secrets', description: 'Read env' });
     const denied = buildNestedMcpToolset(
       piStub,
+      piMcp,
       { getAllToolDescriptors: () => [...GIT_DESCRIPTORS, secrets], resourceServers: () => [] } as unknown as McpClientManager,
       {
         resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set([...GIT_DESCRIPTORS.map((d) => d.piName), secrets.piName]),

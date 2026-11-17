@@ -26,6 +26,7 @@ function retiredId(version: string, minor = false): RegExp {
 // through its first-party Anthropic lookup. The first matching row wins, so a version comes before the family that would
 // also match it.
 const RETIRED_MODELS: ReadonlyArray<{ id: RegExp; name: string | null; cutoff: string }> = [
+  { id: retiredId("claude-fable-5-1"), name: "Fable 5.1", cutoff: "June 2026" },
   { id: retiredId("claude-fable-5"), name: "Fable 5", cutoff: "January 2026" },
   { id: retiredId("claude-opus-5"), name: "Opus 5", cutoff: "May 2026" },
   { id: retiredId("claude-opus-4-8"), name: "Opus 4.8", cutoff: "January 2026" },

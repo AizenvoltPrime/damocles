@@ -14,6 +14,7 @@ import { FakeSession } from '../../team/__tests__/fake-session';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { AT_GATE, BASH, cardsOf, chatPage, fakeSession, joinMessages, liveChatSession, makeAdapter, promptEntryIds, PROMPT, TURN, watching, type FakeSession as ChatFakeSession, type Shown, type Turn } from './live-chat-page';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
@@ -323,9 +324,9 @@ describe('a joining view of a running subagent', () => {
         chat.pi.branch.push({ type: 'custom', customType: 'damocles-agent-invocation', id: `inv-${chat.pi.branch.length}`, parentId: null, timestamp: '2026-01-01T00:00:00.000Z', data } as unknown as SessionEntry);
       },
       parentBranch: () => chat.pi.branch,
-      assertResumableModel: () => undefined,
+      assertResumableModel: async () => undefined,
       parentFullToolNames: () => [],
-      buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
+      buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, piMcp, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
       disposeBrowserScope: () => undefined,
       cancelAgentDialogs: () => undefined,
       resolveModel: () => ({ modelLabel: 'claude-haiku-5-5' }),

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', async () => (await import('./fake-views-electron')).fakeViewsElectron());
 
 import type { PanelOptions } from '../../../platform/window-service';
+import type { ServedMapping } from '../../../shared/served-file-url';
 import { AS_TYPED, HTTP_AT_ONCE, REFUSED, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 import { BrowserTabs, isTypedAddress, type BrowserTabsEditor } from '../browser-tabs';
 import type { PanelStateStore } from '../panel-state-store';
@@ -26,6 +27,8 @@ let partSteps: number[];
 // the typed addresses a remote chat's page asked main to move to their forward, and what main answers
 let remoteAddresses: string[];
 let remoteAddressAnswer: (url: string) => string | undefined | Promise<string | undefined>;
+// the served roots local chats' views hold, as ServedRoots.mappings('local') lists them
+let served: ServedMapping[];
 
 // The editor pane as far as the browser tabs see it: one active tab, a file tab to fall back to, and the shell's focus requests.
 function fakeEditor(): BrowserTabsEditor & { active: string | null; focused: string[]; shown: number; republished: number; tabs: BrowserTabs | undefined; activateFile(): void; set(tabId: string | null): void } {
@@ -93,6 +96,7 @@ function setup(width = 1200) {
       return remoteAddressAnswer(url);
     },
     forwardedFrom: (_chat, url) => ({ hostId: 'host-1', hostName: 'prod-1', targetUrl: url.replace(':5174', ':5173') }),
+    servedMappings: () => served,
   });
   editor.tabs = tabs;
   const views = new PanelViews({
@@ -148,6 +152,7 @@ beforeEach(() => {
   partSteps = [];
   remoteAddresses = [];
   remoteAddressAnswer = (url) => url;
+  served = [];
 });
 
 describe('ownership', () => {
@@ -208,6 +213,39 @@ describe('ownership', () => {
     editor.set(first.panelId);
     expect(writes).toHaveBeenCalledTimes(2);
     expect(states.get(a.panelId)?.browser).toEqual({ pages: ['https://a.example/', 'https://b.example/next'], activePage: 0 });
+  });
+
+  it('saves and shows a local chat\'s page on a served root as its file:// address, and any other address as loaded', async () => {
+    served = [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: 'C:\\work\\my proj' }, { origin: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001', displayRoot: '/home/u/.damocles/designs/d1' }];
+    const { tabs, chat, page, editor } = setup();
+    const a = chat();
+    const project = page(a, 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/docs/a.html?tab=2#intro');
+    const design = page(a, 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001/screens/S1.html');
+    // a one-time open still in flight: the file it opens with its query and fragment, never its token
+    page(a, 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=secret&p=b.html&q=x%3D1#top');
+    // a user's own loopback server, and a served port no local chat holds
+    page(a, 'http://127.0.0.1:5173/app');
+    page(a, 'http://localhost:5002/x.html');
+    editor.set(design.panelId);
+    const saved = ['file:///C:/work/my%20proj/docs/a.html?tab=2#intro', 'file:///home/u/.damocles/designs/d1/screens/S1.html', 'file:///C:/work/my%20proj/b.html?x=1#top', 'http://127.0.0.1:5173/app', 'http://localhost:5002/x.html'];
+    expect(states.get(a.panelId)?.browser).toEqual({ pages: saved, activePage: 1 });
+    expect(tabs.tabs().map((tab) => [tab.displayPath, tab.browser?.url])).toEqual(saved.map((url) => [url, url]));
+    await tabs.action(project.panelId, 'copyUrl');
+    expect(copied).toEqual([saved[0]]);
+    // the address bar still refuses the file:// form it shows
+    const delivered: unknown[] = [];
+    project.onMessage((message) => delivered.push(message));
+    expect(await tabs.navigate(project.panelId, saved[0])).toBe(false);
+    expect(delivered).toEqual([]);
+  });
+
+  it('shows a remote chat\'s page on a local served port as loaded', () => {
+    served = [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: '/home/u/proj' }];
+    const { tabs, views, page } = setup();
+    const remote = views.create({ options: CHAT, authority: 'ssh+host-1' });
+    views.show(remote.panelId, { focus: true });
+    page(remote, 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/a.html');
+    expect(tabs.tabs()[0]?.browser?.url).toBe('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/a.html');
   });
 
   it('keeps the saved pages as they were while a host teardown closes them', () => {

@@ -28,6 +28,7 @@ import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ContentBlock, HistoryAgentMessage } from '../../../shared/types/content';
 import { parseAgentEntries, segmentForInvocation, type AgentTerminalStatus } from '../agent-records';
+import type { AgentStopReason } from '../../../shared/types/subagents';
 import { TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { joinResultText, resultImageCount } from '../tool-result-text';
@@ -80,6 +81,8 @@ export function buildAgentResultJson(opts: {
   responseText: string;
   agentId: string;
   agentStatus: AgentTerminalStatus;
+  /** Why a `stopped` agent stopped. */
+  agentStopReason?: AgentStopReason | undefined;
   totalDurationMs: number;
   totalTokens: number;
   totalToolUseCount: number;
@@ -92,6 +95,7 @@ export function buildAgentResultJson(opts: {
     agentId: opts.agentId,
     // Not `status`: the webview reads that key as the async_launched acknowledgement.
     agentStatus: opts.agentStatus,
+    ...(opts.agentStatus === 'stopped' && opts.agentStopReason ? { agentStopReason: opts.agentStopReason } : {}),
   });
 }
 
@@ -228,7 +232,7 @@ export class SubagentStreamBridge {
           queueMicrotask(() => this.emitUsage());
         }
         break;
-      // pi emits it after every error stop (`agent-loop.js:146-157`, `agent.js:380-382` in pi-agent-core 1.4.0).
+      // pi emits it after every error stop (`agent-loop.js:146-157`, `agent.js:380-382` in pi-agent-core 1.5.2).
       case 'turn_end':
         this.decideErrorStop();
         break;
@@ -309,8 +313,8 @@ export class SubagentStreamBridge {
 
   /**
    * Decide an error stop from the record a reload reads: `registerWindDownErrorRecord` names it at its `turn_end`
-   * boundary when the run was aborted then, and pi commits that record before this `turn_end` (`agent-session.js:514`,
-   * `:635-640` in pi-coding-agent 1.4.0). A named stop is the abort's wind-down, handled as an aborted stop.
+   * boundary when the run was aborted then, and pi commits that record before this `turn_end` (`agent-session.js:569`,
+   * `:690-695` in pi-coding-agent 1.5.2). A named stop is the abort's wind-down, handled as an aborted stop.
    */
   private decideErrorStop(): void {
     const pending = this.undecidedError;

@@ -23,8 +23,12 @@ import { leavesLocalDrives } from '../network-fs';
 export type ShellKind = 'bash' | 'powershell';
 
 export type ReadOnlyVerdict =
-  /** commandNames: under PowerShell, every command name PowerShell looks up for the command, a PATH script included; under bash, none. */
-  | { readOnly: true; commandNames: readonly string[] }
+  /**
+   * commandNames: under PowerShell, every command name PowerShell looks up for the command, a PATH script included; under bash,
+   * none. drives: the letters, upper case and sorted, of every drive the command may open or move to, which only Windows can place
+   * (`provenReadOnlyShell`). home: the command opens or moves to the shell's home folder.
+   */
+  | { readOnly: true; commandNames: readonly string[]; drives: readonly string[]; home: boolean }
   | { readOnly: false; reason: string }; // reason = category text, e.g. "redirection (`>`) is not allowed"
 
 export interface ShellCheckContext {
@@ -37,7 +41,7 @@ function deny(reason: string): ReadOnlyVerdict {
   return { readOnly: false, reason };
 }
 
-const ALLOW: ReadOnlyVerdict = { readOnly: true, commandNames: [] };
+const ALLOW: ReadOnlyVerdict = { readOnly: true, commandNames: [], drives: [], home: false };
 
 // ---------------------------------------------------------------------------
 // Command rule table (declarative; shared shape so Slice 3 can reuse it for PowerShell).
@@ -1082,7 +1086,11 @@ function pathParts(word: string): string[] {
   if (word.startsWith('@')) parts.push(word.slice(1));
   for (let i = word.indexOf('='); i >= 0; i = word.indexOf('=', i + 1)) parts.push(word.slice(i + 1));
   const letters = /^-[A-Za-z0-9]+/.exec(word);
-  if (letters && !word.startsWith('--')) parts.push(word.slice(letters[0].length));
+  if (letters && !word.startsWith('--')) {
+    parts.push(word.slice(letters[0].length));
+    // the cluster's last letter starts an attached drive path (`-fZ:\x`)
+    if (word[letters[0].length] === ':') parts.push(word.slice(letters[0].length - 1));
+  }
   return parts.filter((part) => part !== '');
 }
 
@@ -1131,16 +1139,91 @@ function segmentNames(segment: string, name: string, wildcards: boolean): boolea
 /**
  * Screen each argument for a network or device path (`leavesLocalDrives`): opening `\\host\share` sends the user's NTLM hash
  * to `host`. PowerShell also binds each element of a comma list as a path and reads a `FileSystem::` provider-qualified one.
+ * msys: the program is one of Git Bash's, which reads `/proc/sys` as the Windows object namespace (`namesObjectNamespace`).
  */
-function networkPathRefusal(args: readonly string[], context: ShellCheckContext, dialect: ShellKind): ReadOnlyVerdict | null {
+function networkPathRefusal(args: readonly string[], context: ShellCheckContext, dialect: ShellKind, msys: boolean, cwdMoved: boolean): ReadOnlyVerdict | null {
   for (const arg of args) {
     for (const part of argumentPaths(arg, dialect)) {
-      if (leavesLocalDrives(part, context.allowedNetworkHosts)) {
+      if (leavesLocalDrives(part, context.allowedNetworkHosts) || (msys && namesObjectNamespace(part, cwdMoved))) {
         return deny(`a network or device path (\`${arg}\`) is not allowed: opening it can send your Windows credentials to another computer`);
       }
     }
   }
   return null;
+}
+
+/** The segments of part other than empty and `.` ones, which name no folder. */
+function namedSegments(part: string): string[] {
+  return segmentsOf(part).filter((segment) => segment !== '' && segment !== '.');
+}
+
+// A process's links in Cygwin's procfs, which lead anywhere: its root (`/`, every drive), working folder, program and open files.
+const PROCESS_LINKS = /^(?:root|cwd|exe|fd|map_files)$/i;
+
+/**
+ * Whether Cygwin may read part in `/proc/sys`, the Windows object namespace, where `/proc/sys/Device/Mup/<host>` and
+ * `/proc/sys/DosDevices/Z:` open a share or drive like any device path, or through a process's link (`/proc/<pid>/root/z/x`,
+ * `/proc/<pid>/cwd`): a `sys` folder below `proc`, a process link two below `proc`, or either below `..` in a path that is
+ * absolute or read after a `cd` left the working folder (`/proc/self/../sys`, `/dev/fd/../root`).
+ */
+function namesObjectNamespace(part: string, cwdMoved: boolean): boolean {
+  const named = namedSegments(part);
+  const anywhere = segmentsOf(part)[0] === '' || cwdMoved;
+  const climbed = (i: number): boolean => anywhere && (named[i - 1] === '..' || named[i - 2] === '..');
+  return named.some((segment, i) =>
+    (segment.toLowerCase() === 'sys' && (named[i - 1]?.toLowerCase() === 'proc' || (anywhere && named[i - 1] === '..'))) ||
+    (PROCESS_LINKS.test(segment) && (named[i - 2]?.toLowerCase() === 'proc' || climbed(i))));
+}
+
+const EVERY_DRIVE: readonly string[] = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+// The mount tables Cygwin builds from every drive, each drive root asked first: `/proc/mounts`, `/proc/<pid>/mountinfo`, `/etc/mtab`.
+const MOUNT_TABLES: ReadonlySet<string> = new Set(['mounts', 'mountinfo', 'mtab']);
+
+/**
+ * The drive letters an argument part may open: `Z:\x`, drive-relative `Z:x` and `Z:`, and for a Git Bash program (msys) also
+ * `/z/x`, `/cygdrive/z` and `/proc/cygdrive/z`, a letter below `..` (`/c/x/../../z`), and the first segment of a relative path
+ * after a `cd` left the working folder (`cd / && cat z/x`); every letter for a path naming the list of drives (`/cygdrive`)
+ * or a mount table, which Cygwin builds by asking each drive.
+ */
+function partDrives(part: string, msys: boolean, cwdMoved: boolean): readonly string[] {
+  const drive = /^([a-z]):/i.exec(part);
+  if (drive) return [drive[1]!.toUpperCase()];
+  if (!msys) return [];
+  const named = namedSegments(part);
+  const last = named.at(-1)?.toLowerCase();
+  if (last !== undefined && (last === 'cygdrive' || MOUNT_TABLES.has(last))) return EVERY_DRIVE;
+  const underRoot = segmentsOf(part)[0] === '' || cwdMoved;
+  return named
+    .filter((segment, i) => /^[a-z]$/i.test(segment) && (i === 0 ? underRoot : named[i - 1] === '..' || named[i - 1]!.toLowerCase() === 'cygdrive'))
+    .map((letter) => letter.toUpperCase());
+}
+
+/** What the arguments of a command open that only the machine can place: drive letters (`partDrives`) and the home. */
+interface Places {
+  readonly drives: Set<string>;
+  home: boolean;
+}
+
+// `~` alone or before a separator, which every shell and Git Bash program reads as the home folder.
+const HOME_PATH = /^~(?:[\\/]|$)/;
+
+/**
+ * Adds to places what cmd's arguments open: their drives and home (`partDrives`, `HOME_PATH`), `cd` with no folder going
+ * home, every drive for `df` and for a `find` that reads a file system's type (`-fstype`, a `%F` directive), which list
+ * every mount, each drive root asked first.
+ */
+function addPlaces(places: Places, cmd: string, args: readonly string[], dialect: ShellKind, msys: boolean, cwdMoved: boolean): void {
+  const drives = [
+    ...args.flatMap((arg) => argumentPaths(arg, dialect)).flatMap((part) => partDrives(part, msys, cwdMoved)),
+    ...(cmd === 'df' || (cmd === 'find' && args.some((arg) => arg === '-fstype' || /%[-+ #0-9.]*F/.test(arg))) ? EVERY_DRIVE : []),
+  ];
+  for (const drive of drives) places.drives.add(drive);
+  places.home ||= (cmd === 'cd' && operands(args).length === 0) || args.flatMap((arg) => argumentPaths(arg, dialect)).some((part) => HOME_PATH.test(part));
+}
+
+/** The verdict proving a command that opens places, with the names PowerShell looks up for it. */
+function proven(commandNames: readonly string[], places: Places): ReadOnlyVerdict {
+  return { readOnly: true, commandNames, drives: [...places.drives].sort(), home: places.home };
 }
 
 const PS_FILESYSTEM_PROVIDER = /^(?:microsoft\.powershell\.core\\)?filesystem::/i;
@@ -1295,8 +1378,11 @@ function cdLeavesWorkingFolder(args: readonly string[]): boolean {
  * `cd` enters or a walker reads. `wildcards`: arguments are PowerShell wildcard patterns (a cmdlet's), not literal paths.
  */
 function nativePathRefusal(cmd: string, args: readonly string[], cwdMoved: boolean, context: ShellCheckContext, dialect: ShellKind): ReadOnlyVerdict | null {
-  const screened = networkPathRefusal(args, context, dialect) ?? environRefusal(args, dialect, false, cwdMoved) ?? registryEnvironmentRefusal(args, dialect, false, cwdMoved);
+  const screened = networkPathRefusal(args, context, dialect, true, cwdMoved) ?? environRefusal(args, dialect, false, cwdMoved) ?? registryEnvironmentRefusal(args, dialect, false, cwdMoved);
   if (screened) return screened;
+  // bash and Git Bash programs read `~name` as that user's home, which no environment variable of the shell names
+  const otherHome = args.find((arg) => argumentPaths(arg, dialect).some((part) => /^~/.test(part) && !HOME_PATH.test(part)));
+  if (otherHome !== undefined) return deny(`another user's home (\`${otherHome}\`) is not allowed: where it is cannot be checked`);
   if (cmd === 'cd') {
     const target = operands(args)[0];
     if (target !== undefined && segmentsOf(target).some((segment) => segmentNames(segment, 'proc', false))) {
@@ -1326,6 +1412,7 @@ function classifyBash(command: string, context: ShellCheckContext): ReadOnlyVerd
   // Stage 2 — segmentation; every segment must independently pass. A `cd` changes where the later segments' relative paths point.
   const segments = segment(scannable);
   let cwdMoved = false;
+  const places: Places = { drives: new Set(), home: false };
   for (const [index, { text: seg }] of segments.entries()) {
     const trimmed = seg.trim();
     if (trimmed === '') {
@@ -1362,6 +1449,7 @@ function classifyBash(command: string, context: ShellCheckContext): ReadOnlyVerd
     // Path screens run before the table lookup, so an allowlisted reader pointed at such a path is still denied.
     const pathRefusal = nativePathRefusal(cmd, args, cwdMoved, context, 'bash');
     if (pathRefusal) return pathRefusal;
+    addPlaces(places, cmd, args, 'bash', true, cwdMoved);
     if (cmd === 'cd' && cdLeavesWorkingFolder(args)) cwdMoved = true;
 
     const rule = BASH_RULES.get(cmd);
@@ -1376,7 +1464,7 @@ function classifyBash(command: string, context: ShellCheckContext): ReadOnlyVerd
     }
   }
 
-  return ALLOW;
+  return proven([], places);
 }
 
 // ===========================================================================
@@ -1794,6 +1882,7 @@ function classifyPowershell(command: string, context: ShellCheckContext): ReadOn
   const cwdMoved = stages.some((stage) => stage.cmd === 'cd' && cdLeavesWorkingFolder(stage.args));
   // PowerShell searches PATH for a command name before it loads the module of the cmdlet that name means.
   const commandNames: string[] = [];
+  const places: Places = { drives: new Set(), home: false };
   for (const stage of stages) {
     const { seg, cmd, args } = stage;
 
@@ -1827,6 +1916,8 @@ function classifyPowershell(command: string, context: ShellCheckContext): ReadOn
       }
       const pathRefusal = nativePathRefusal(cmd, args, cwdMoved, context, 'powershell');
       if (pathRefusal) return pathRefusal;
+      // a bash-table name may run a Git Bash program, which reads its arguments as Cygwin paths
+      addPlaces(places, cmd, args, 'powershell', true, cwdMoved);
       if (readsListing && !isPsContentReader(stage)) {
         const walk = walkRefusal(`\`${cmd}\` piped to a file reader`, args, 'powershell', cwdMoved, false);
         if (walk) return walk;
@@ -1848,8 +1939,9 @@ function classifyPowershell(command: string, context: ShellCheckContext): ReadOn
     }
     // A cmdlet matches its path arguments as wildcard patterns itself, so each screen tests the names it guards against them.
     const pathRefusal =
-      networkPathRefusal(args, context, 'powershell') ?? environRefusal(args, 'powershell', true, cwdMoved) ?? registryEnvironmentRefusal(args, 'powershell', true, cwdMoved);
+      networkPathRefusal(args, context, 'powershell', false, cwdMoved) ?? environRefusal(args, 'powershell', true, cwdMoved) ?? registryEnvironmentRefusal(args, 'powershell', true, cwdMoved);
     if (pathRefusal) return pathRefusal;
+    addPlaces(places, canonical, args, 'powershell', false, cwdMoved);
     if (readsListing && !isPsContentReader(stage)) {
       const walk = walkRefusal(`\`${cmd}\` piped to a file reader`, args, 'powershell', cwdMoved, true);
       if (walk) return walk;
@@ -1862,7 +1954,7 @@ function classifyPowershell(command: string, context: ShellCheckContext): ReadOn
     commandNames.push(canonical);
   }
 
-  return { readOnly: true, commandNames };
+  return proven(commandNames, places);
 }
 
 /** The cmdlets bash-table names are aliases of on Windows. */

@@ -58,6 +58,11 @@ export interface FolderTarget {
   ownerKey?: string;
 }
 
+/** Whether two targets are one folder in one role: a key open as a project may also be a working folder another project owns. */
+export function sameFolderRole(a: Pick<FolderTarget, "key" | "ownerKey">, b: Pick<FolderTarget, "key" | "ownerKey">): boolean {
+  return a.key === b.key && a.ownerKey === b.ownerKey;
+}
+
 export interface FolderChange {
   added: FolderTarget[];
   removed: FolderTarget[];
@@ -110,26 +115,41 @@ export class WorkspaceFolderRegistry implements Disposable {
     return this.snapshot.filter((t) => t.projectScope).length >= 2;
   }
 
-  /** A project, or a working folder a loaded chat holds. */
+  /** A project, or a working folder a loaded chat holds; a key open in both roles answers the project. */
   resolve(key: string): FolderTarget | undefined {
     return this.snapshot.find((t) => t.key === key) ?? this.owned.get(key)?.target;
   }
 
-  /** The project target holding `key`: itself for a project, its owner for an owned folder. */
-  projectOf(key: string): FolderTarget | undefined {
-    const target = this.resolve(key);
-    return target?.ownerKey !== undefined ? this.snapshot.find((t) => t.key === target.ownerKey) : target;
+  /** The working folder `key` loaded chats hold for its owner, whether or not the folder is also open as a project. */
+  ownedTarget(key: string): FolderTarget | undefined {
+    return this.owned.get(key)?.target;
+  }
+
+  /** `target` in its own role as it stands now: the owned working folder for one with an owner, else the project. */
+  current(target: Pick<FolderTarget, "key" | "ownerKey">): FolderTarget | undefined {
+    if (target.ownerKey === undefined) return this.snapshot.find((t) => t.key === target.key);
+    const owned = this.owned.get(target.key)?.target;
+    return owned?.ownerKey === target.ownerKey ? owned : undefined;
+  }
+
+  private project(key: string): FolderTarget | undefined {
+    return this.snapshot.find((t) => t.key === key);
+  }
+
+  /** The project a chat working in `target` belongs to: its owner for an owned working folder, else the project itself. */
+  projectOf(target: Pick<FolderTarget, "key" | "ownerKey">): FolderTarget | undefined {
+    return this.snapshot.find((t) => t.key === (target.ownerKey ?? target.key));
   }
 
   /**
    * Registers `fsPath` as a working folder owned by the open project `ownerKey`, counted per holder; the folder leaves
-   * when the last holder disposes. Throws when the owner is not an open project or the folder is a project itself.
+   * when the last holder disposes. A folder open as a project is registered beside that role, which it never replaces
+   * (docs/invariants.md "Worktree chats", Ownership). Throws when the owner is not an open project.
    */
   acquireOwned(fsPath: string, ownerKey: string): Disposable {
     const owner = this.snapshot.find((t) => t.key === ownerKey && t.projectScope);
     if (!owner) throw new Error(`The project ${ownerKey} is not open`);
     const key = folderKey(fsPath);
-    if (this.snapshot.some((t) => t.key === key)) throw new Error(`${fsPath} is open as a project`);
     const existing = this.owned.get(key);
     if (existing && existing.target.ownerKey !== ownerKey) throw new Error(`${fsPath} belongs to another project`);
     let entry = existing;
@@ -157,7 +177,7 @@ export class WorkspaceFolderRegistry implements Disposable {
     };
   }
 
-  /** The working folders loaded chats hold, each owned by an open project (slice 12a rule 5). */
+  /** The working folders loaded chats hold, each owned by an open project (slice 12a rule 5), one open as a project included. */
   ownedFolders(): readonly FolderTarget[] {
     return [...this.owned.values()].map((entry) => entry.target);
   }
@@ -178,12 +198,12 @@ export class WorkspaceFolderRegistry implements Disposable {
   defaultTarget(): FolderTarget {
     const stored = this.state.get<string>(DEFAULT_WORKSPACE_FOLDER_STATE_KEY);
     // A stored default that is not open stays stored, so re-adding that folder restores it.
-    return (stored !== undefined ? this.resolve(stored) : undefined) ?? this.firstTarget();
+    return (stored !== undefined ? this.project(stored) : undefined) ?? this.firstTarget();
   }
 
-  /** Returns false, storing nothing, when `key` is not an open target. */
+  /** Returns false, storing nothing, when `key` is not an open project. */
   async setDefault(key: string): Promise<boolean> {
-    if (!this.resolve(key)) return false;
+    if (!this.project(key)) return false;
     const before = this.defaultTarget().key;
     await this.state.update(DEFAULT_WORKSPACE_FOLDER_STATE_KEY, key);
     if (this.defaultTarget().key !== before) this.emit({ ...NO_FOLDER_CHANGE, defaultChanged: true });

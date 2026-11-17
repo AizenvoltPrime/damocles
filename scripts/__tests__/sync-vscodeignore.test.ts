@@ -68,6 +68,11 @@ describe('the generated .vscodeignore allowlist', () => {
     expect(allowPatterns('@anthropic-ai/sdk')).toContain('@anthropic-ai/sdk/**/LICENSE');
     expect(allowPatterns('patchright-core')).toContain('patchright-core/**/ThirdPartyNotices.txt');
     expect(block).toContain(`!node_modules/${piMcpLicense}`);
+    expect(block).toContain('!node_modules/@earendil-works/pi-schema/**/typebox-LICENSE');
+  });
+
+  it('ships no pi package whole', () => {
+    expect(block.filter((line) => /^!node_modules\/@earendil-works\/pi-[^/]+\/\*\*$/.test(line))).toEqual([]);
   });
 
   // The desktop app's runtime and its editor, fonts, test and packaging tooling never ship in the VSIX.

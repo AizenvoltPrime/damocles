@@ -1,10 +1,8 @@
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import { authorityKeyOfProject } from '../../../shared/project-location';
 
-/** An authority main holds no connection to; the message is localized and names the host. */
-export class NotConnectedError extends Error {
-  override readonly name = 'NotConnectedError';
-}
+// the served pages' reader answers its own class with 503, so main throws that class
+export { NotConnectedError } from '../../../core/not-connected-error';
 
 /** The workspace of each authority, by project. */
 export interface Workspaces {

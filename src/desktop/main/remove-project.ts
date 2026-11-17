@@ -8,15 +8,19 @@ import type { RemoveProjectResult } from '../preload/shell-channels';
 import type { AskMessage, MessageQuestion } from './message-dialog';
 import type { KillListEntry } from './terminal/terminal-service';
 
-/** A loaded chat of the project, its worktrees' included, holding its first prompt while its worktree is created or set up. */
-export interface WaitingChat {
-  readonly corePanelId: string;
+/**
+ * A chat of the project, its worktrees' included, holding its first prompt for its worktree: a loaded one while the worktree
+ * is created or set up, or a saved one its missing folder kept closed.
+ */
+export type WaitingChat = {
   // '' for a chat with no title yet
   readonly title: string;
   readonly prompt: readonly UserContentBlock[];
   // the worktree being set up for it, once created
   readonly worktreeId?: string;
-}
+} & ({ readonly corePanelId: string } | { readonly savedPanelId: string });
+
+const waitingId = (chat: WaitingChat): string => ('corePanelId' in chat ? `core:${chat.corePanelId}` : `saved:${chat.savedPanelId}`);
 
 type Translate = (message: string, ...args: string[]) => string;
 
@@ -33,7 +37,8 @@ export interface RemoveProjectDeps {
     readonly confirmKill: (ids: readonly string[]) => Promise<boolean>;
   };
   readonly ask: AskMessage;
-  // closes the chats, then settles once each unused worktree is discarded (stopped Setup terminal, released folder)
+  // closes the loaded chats, then settles once each unused worktree is discarded (stopped Setup terminal, released folder);
+  // a saved chat's entry is deleted
   readonly discard: (chats: readonly WaitingChat[]) => Promise<void>;
   // unloads the project's worktree chats and removes it from the list
   readonly remove: (key: string) => Promise<void>;
@@ -55,17 +60,17 @@ export async function removeProject(key: string, deps: RemoveProjectDeps): Promi
   if (await deps.busy(key)) return running();
   let waiting = deps.waitingChats(key);
   for (;;) {
-    if (!(await confirmRemoval(key, name, waiting, deps))) return { ok: true };
+    if (!(await confirmRemoval(key, name, waiting, deps))) return { ok: true, removed: false };
     // a turn may have started, or another chat held its first prompt, while the question was open
     if (await deps.busy(key)) return running();
-    const asked = new Set(waiting.map((chat) => chat.corePanelId));
+    const asked = new Set(waiting.map(waitingId));
     waiting = deps.waitingChats(key);
-    if (waiting.every((chat) => asked.has(chat.corePanelId))) break;
+    if (waiting.every((chat) => asked.has(waitingId(chat)))) break;
   }
   if (waiting.length > 0) await deps.discard(waiting);
   await deps.remove(key);
   await deps.forgetAccounts(key);
-  return { ok: true };
+  return { ok: true, removed: true };
 }
 
 async function confirmRemoval(key: string, name: string, waiting: readonly WaitingChat[], deps: RemoveProjectDeps): Promise<boolean> {

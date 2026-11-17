@@ -8,7 +8,7 @@ import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } fr
 import { AgentRegistry } from '../agent-types';
 import { nestedDesignGrantOf } from '../agent-toolset';
 import { designRuleSet } from '../../../design/rule-set';
-import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
+import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildRejectedResumePrompt, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
 import { FORGE_PI_TOOL_NAMES } from '../../tools/forge-tool-specs';
@@ -33,11 +33,13 @@ import { backgroundResultsDetails, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../backg
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
 import { recordResultText } from '../status-note';
 import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
+import { recordTerminatedCall, type TerminatedCall } from '../../terminated-calls';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../../__mocks__/fake-remote-host';
 import { installPlatform } from '../../../platform-host';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 import type { McpResourceRuleFilter } from '../../../permission-handler/mcp-resource-rule';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
 
@@ -164,14 +166,14 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
       branch.push(invocationEntry(data));
     },
     parentBranch: () => branch,
-    assertResumableModel: () => {},
+    assertResumableModel: async () => {},
     parentFullToolNames: () => ['read'],
     // The default engine has no MCP manager, which is the no-MCP workspace: the real builder returns
     // the real empty snapshot rather than a hand-written stand-in, so `mcp.names`/`mcp.tools` are the
     // production values and every `tools:`/`customTools` assertion below stays honest.
     buildAgentToolset: (input) => {
       buildAgentToolsetCalls.push(input);
-      return { customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) };
+      return { customTools: [], mcp: buildNestedMcpToolset(piStub, piMcp, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) };
     },
     disposeBrowserScope: () => {},
     // Slice 2: the subagent's MCP tools are handed an attributed dialog bridge, so teardown must
@@ -749,6 +751,75 @@ describe('AgentManager user stop of one subagent', () => {
   });
 });
 
+describe('AgentManager run that pi ended on a rejected call', () => {
+  type Posted = ExtensionToWebviewMessage;
+  const agentTool = (mgr: AgentManager) => buildSubagentTools(piStub, mgr, NO_USER_INPUT).find((t) => t.name === 'Agent')!;
+  const call = (mgr: AgentManager) => agentTool(mgr).execute('tc0', { description: 'd0', prompt: 'task 0', subagent_type: 'general-purpose' }, undefined, undefined, {} as never);
+  const resultJson = (result: { content: Array<{ type: string; text?: string }> }): unknown => JSON.parse(result.content[0]!.text!);
+
+  /** Each run ends on one tool batch of `batch`'s call ids, after the gate recorded `recorded` for the agent's session. */
+  function rejectingEngine(batch: string[], recorded: TerminatedCall[]): SubagentEngine {
+    const { engine } = makeEngine();
+    const create = engine.createSession;
+    engine.createSession = async (opts) => {
+      const session = (await create(opts)) as unknown as { prompt: unknown; messages: unknown[]; sessionId: string };
+      session.prompt = async () => {
+        for (const rejected of recorded) recordTerminatedCall(session.sessionId, rejected);
+        session.messages.push(
+          { role: 'assistant', content: [{ type: 'text', text: 'Running the tests' }, ...batch.map((id) => ({ type: 'toolCall', id, name: 'bash' }))] },
+          ...batch.map((id) => ({ role: 'toolResult', toolCallId: id })),
+        );
+      };
+      return session as unknown as AgentSession;
+    };
+    return engine;
+  }
+
+  it('a call the user rejected without a note stops a foreground agent as denied, naming the tool, and it stays resumable', async () => {
+    const engine = rejectingEngine(['c1'], [{ toolCallId: 'c1', toolName: 'Bash', cause: 'user' }]);
+    const posted: Posted[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 2);
+    const result = await call(mgr);
+    const id = (result.details as { agentId: string }).agentId;
+    const note = ` (STOPPED: the user rejected its Bash call and the run ended there; output is partial. Resume it with Agent({resume:"${id}"}) if the user asks to continue.)`;
+
+    expect(resultJson(result)).toMatchObject({ agentStatus: 'stopped', agentStopReason: 'denied', content: [{ text: `Running the tests${note}` }] });
+    expect(result.details).toEqual({ agentId: id, status: 'stopped', stopReason: 'denied' });
+    expect(customEntries).toContainEqual({ customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'stopped', stopReason: 'denied', result: `Running the tests${note}` } });
+    const card = posted.find((m): m is Extract<Posted, { type: 'toolCompleted' }> => m.type === 'toolCompleted' && m.toolUseId === 'tc0');
+    expect(JSON.parse(card!.result)).toMatchObject({ agentStatus: 'stopped', agentStopReason: 'denied' });
+    expect(mgr.liveStatus(id)).toEqual({ toolCallId: 'tc0', status: 'stopped', stopReason: 'denied' });
+    mgr.dispose();
+  });
+
+  it('a hook that rejected a call with terminate stops a background agent as hookDenied, delivered with its note', async () => {
+    const mgr = new AgentManager(rejectingEngine(['c1'], [{ toolCallId: 'c1', toolName: 'Bash', cause: 'hook' }]), 2);
+    const id = mgr.spawn(spec(0));
+    const record = mgr.getRecord(id)!;
+    await record.promise;
+
+    expect(record).toMatchObject({ status: 'stopped', stopReason: 'hookDenied' });
+    expect(mgr.deliverableLive()).toEqual([record]);
+    expect(backgroundResultsDetails([record]).agents[0]).toMatchObject({
+      status: 'stopped',
+      stopReason: 'hookDenied',
+      result: expect.stringContaining('(STOPPED: a hook rejected its Bash call and ended the run; output is partial.'),
+    });
+    mgr.dispose();
+  });
+
+  it('keeps a completed outcome when nothing was recorded, as for a rejection with a note, or when another call of the batch ran', async () => {
+    const noted = new AgentManager(rejectingEngine(['c1'], []), 2);
+    expect((await call(noted)).details).toMatchObject({ status: 'completed' });
+    noted.dispose();
+
+    const mixed = new AgentManager(rejectingEngine(['c1', 'c2'], [{ toolCallId: 'c1', toolName: 'Bash', cause: 'user' }]), 2);
+    expect((await call(mixed)).details).toMatchObject({ status: 'completed' });
+    mixed.dispose();
+  });
+});
+
 describe('AgentManager steer', () => {
   it('reports "failed" (not "steered") when delivery throws', async () => {
     const { engine } = makeEngine();
@@ -1021,7 +1092,7 @@ describe('AgentManager — per-subagent browser scope', () => {
     const builtWith: string[] = [];
     engine.buildAgentToolset = (input) => {
       builtWith.push(input.agentId);
-      return { customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) };
+      return { customTools: [], mcp: buildNestedMcpToolset(piStub, piMcp, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) };
     };
     const mgr = new AgentManager(engine, 2);
 
@@ -1513,7 +1584,7 @@ function makeMcpEngine(opts: {
     // The production derivation, verbatim in shape: ONE eligibility read, ONE snapshot, definitions
     // appended to the agent's customTools exactly as `PiSession.buildSubagentEngine` does.
     const eligible = new Set(fullActiveToolNames({ ...opts.deps, mcpToolNames: opts.panel.manager.allToolNames() } as never));
-    const mcp = buildNestedMcpToolset(piStub, opts.panel.manager, { eligible, disabledEntries: [], disallowed: input.mcpDisallowed, resourceRuleFilter: NO_RESOURCE_RULES });
+    const mcp = buildNestedMcpToolset(piStub, piMcp, opts.panel.manager, { eligible, disabledEntries: [], disallowed: input.mcpDisallowed, resourceRuleFilter: NO_RESOURCE_RULES });
     snapshots.push(mcp);
     return { customTools: [...mcp.tools], mcp };
   };
@@ -2120,6 +2191,21 @@ describe('AgentManager resume', () => {
     expect(invocations).toEqual([]);
   });
 
+  it("a reopen reads the agent's file under its run's stop, which ends the read", async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'error' } });
+    spawnOnBranch(spawnArgs, { agentId: AGENT, status: 'error' });
+    const mgr = new AgentManager(engine);
+
+    await mgr.resume(resumeReq('tc-r'));
+    await settle();
+    const read = sessionOpts[0]!.signal;
+    expect(read?.aborted).toBe(false);
+    mgr.abort(AGENT, 'user');
+    expect(read?.aborted).toBe(true);
+    mgr.dispose();
+  });
+
   it('an agent that failed reopens its file, as its result told the parent it could', async () => {
     const { engine, dir } = resumeEngine();
     const file = writeAgentFile(dir, { status: { status: 'error' } });
@@ -2129,6 +2215,19 @@ describe('AgentManager resume', () => {
     await expect(mgr.resume(resumeReq('tc-r'))).resolves.toMatchObject({ status: 'running' });
     await settle();
     expect(sessionOpts.map((o) => o.store)).toEqual([{ kind: 'reopen', path: file, agentId: AGENT }]);
+    mgr.dispose();
+  });
+
+  it.each([['denied', 'user'], ['hookDenied', 'hook']] as const)('an agent a rejected call stopped (%s) reopens its file, as its result told the parent it could, told not to repeat the call', async (stopReason, cause) => {
+    const { engine, dir } = resumeEngine();
+    const file = writeAgentFile(dir, { status: { status: 'stopped', stopReason } });
+    spawnOnBranch(spawnArgs, { agentId: AGENT, status: 'stopped', stopReason });
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r', 'use a narrower glob'))).resolves.toMatchObject({ status: 'running' });
+    await settle();
+    expect(sessionOpts.map((o) => o.store)).toEqual([{ kind: 'reopen', path: file, agentId: AGENT }]);
+    expect(prompts).toEqual([buildRejectedResumePrompt(cause, 'use a narrower glob')]);
     mgr.dispose();
   });
 
@@ -2148,7 +2247,7 @@ describe('AgentManager resume', () => {
     const error = `Cannot resume "${AGENT}": its model anthropic/claude is not configured or not signed in.`;
     let signedIn = false;
     const checked: string[] = [];
-    engine.assertResumableModel = (p) => {
+    engine.assertResumableModel = async (p) => {
       checked.push(p);
       if (!signedIn) throw new Error(error);
     };
@@ -2537,7 +2636,7 @@ describe('AgentManager resume', () => {
       (dir, engine) => {
         writeAgentFile(dir, stoppedByUser);
         spawnOnBranch(spawnArgs);
-        engine.assertResumableModel = () => {
+        engine.assertResumableModel = async () => {
           throw new Error(MODEL_ERROR);
         };
       },

@@ -1,3 +1,5 @@
+import type { Disposable } from '../../../platform/disposable';
+import type { HostTrust } from '../core-services/host-services';
 import type { AskMessage } from '../message-dialog';
 import type { HostStore } from './host-store';
 import type { Project } from '../../local-services/confine';
@@ -86,5 +88,54 @@ export function createRemoteTrust(deps: RemoteTrustDeps): RemoteTrust {
       prompts.set(target.key, asked);
       return asked;
     },
+  };
+}
+
+// A folder an authority's core may read as trusted while the host store trusts it.
+export interface HostTrustFolder {
+  readonly folderKey: string;
+  readonly fsPath: string;
+}
+
+export interface RemoteHostTrustDeps {
+  readonly authorityKey: string;
+  readonly store: Pick<HostStore, 'isTrusted' | 'onDidChange'>;
+  // the authority's listed projects and the new folder of each move its core's relocations mirror names
+  readonly folders: () => readonly HostTrustFolder[];
+  readonly onDidChangeFolders: (listener: () => void) => Disposable;
+  readonly requestTrust: (folderPath: string) => Promise<boolean>;
+}
+
+/**
+ * The authority's trust as its core reads it: the folders the host store trusts, each a listed project or the new folder of a
+ * move. A change that adds a key is a grant and one that takes a key out is a revoke, each republishing the whole set.
+ */
+export function remoteHostTrust(deps: RemoteHostTrustDeps): HostTrust {
+  const trusted = (): Map<string, string> => new Map(deps.folders().filter((folder) => deps.store.isTrusted(deps.authorityKey, folder.folderKey)).map((folder) => [folder.folderKey, folder.fsPath]));
+  const onChange = (listener: () => void): Disposable => {
+    const subscriptions = [deps.store.onDidChange(listener), deps.onDidChangeFolders(listener)];
+    return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); } };
+  };
+  return {
+    trustedKeys: () => [...trusted().keys()],
+    onDidGrant: (listener) => {
+      let before = trusted();
+      return onChange(() => {
+        const now = trusted();
+        const granted = [...now].filter(([key]) => !before.has(key)).map(([, fsPath]) => fsPath);
+        before = now;
+        if (granted.length > 0) listener(granted);
+      });
+    },
+    onDidRevoke: (listener) => {
+      let before = trusted();
+      return onChange(() => {
+        const now = trusted();
+        const revoked = [...before.keys()].some((key) => !now.has(key));
+        before = now;
+        if (revoked) listener();
+      });
+    },
+    requestTrust: deps.requestTrust,
   };
 }

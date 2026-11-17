@@ -17,6 +17,9 @@ export interface HostTrust {
   // the folder keys core names trusted folders by, as its own folderKey computes them
   trustedKeys(): readonly string[];
   onDidGrant(listener: (folderPaths: readonly string[]) => void): Disposable;
+  // a key left trustedKeys() (a relocated project's old path; on a remote authority also a removed project or a stopped move's
+  // new folder); absent where nothing revokes trust
+  onDidRevoke?(listener: () => void): Disposable;
   requestTrust(folderPath: string): Promise<boolean>;
 }
 
@@ -407,6 +410,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     // main posts to a page in this process, which queues nothing toward it
     endpoint.serve('views.drained', () => undefined);
     endpoint.serve('chats.showSession', ({ sessionId }) => deps.showSession(sessionId));
+    endpoint.serve('window.locateProjectFolder', ({ folderKey }) => platform.window.locateProjectFolder?.(folderKey));
     endpoint.serve('design.openPreview', ({ panelId, designId, relPath }) => deps.openDesignPreview(panelId, designId, relPath));
     endpoint.serve('design.capture', (params, signal) => deps.designRender.capture(params, signal));
     endpoint.serve('design.render', (params, signal) => deps.designRender.render(params, signal));
@@ -469,6 +473,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     platform.secrets.onDidChange((key) => endpoint.emit('secrets.changed', { key })),
     state.onDidUpdate((scope, key) => endpoint.publish('state', { scope, key, value: state[scope].get(key) })),
     trust.onDidGrant((granted) => endpoint.publish('trust', { keys: [...trust.trustedKeys()], granted })),
+    ...(trust.onDidRevoke ? [trust.onDidRevoke(() => endpoint.publish('trust', { keys: [...trust.trustedKeys()], granted: [] }))] : []),
     platform.workspaceFolders.onDidChange(() => endpoint.publish('folders', { folders: platform.workspaceFolders.folders() })),
     platform.editor.onDidChangeActiveContext((context) => endpoint.publish('editor', editorPatch(context))),
     deps.language.onDidChange(() => endpoint.publish('language', { language: deps.language.current() })),

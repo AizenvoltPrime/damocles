@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, SIDEBAR_SECTIONS, type ContentBounds, type DamoclesShellApi, type DesignFreeze, type ShellChat, type ShellEditorTab, type ShellHost, type ShellState } from '../../preload/shell-channels';
+import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, SIDEBAR_SECTIONS, type ContentBounds, type DamoclesShellApi, type DesignFreeze, type ShellChat, type ShellEditorTab, type ShellHost, type ShellProject, type ShellRelocation, type ShellState } from '../../preload/shell-channels';
 import type { OverlayRequest } from '../../preload/overlay-channels';
+import type { RelocationStepName } from '../../../core/project-relocation/types';
 import App from '../App.vue';
 import ChatsSection from '../components/ChatsSection.vue';
 import ProjectsSection from '../components/ProjectsSection.vue';
@@ -328,6 +329,121 @@ describe('a remote host that is not connected', () => {
     expect(wrapper.find('[data-testid="chat-placeholder-header"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="chat-slot"]').text()).toContain('No chat selected');
   });
+
+  it("says the selected project's folder is not there, with its path and Remove project, in English and Greek", async () => {
+    const { selectedChat: _chat, ...rest } = STATE;
+    const ABSENT: ShellState = { ...rest, projects: [{ ...STATE.projects[0]!, presence: 'missing' }, STATE.projects[1]!], selected: { projectKey: 'p1' }, chatViewShown: false };
+    const api = fakeShellApi([], { getState: vi.fn(async () => ABSENT), removeProject: vi.fn(async () => ({ ok: false as const, reason: 'a terminal is running' })) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const absent = wrapper.get('[data-testid="chat-slot"] [data-testid="absent-project"]');
+    expect(absent.text()).toContain("Damocles can't find alpha");
+    expect(absent.text()).toContain('Its folder may have been moved, renamed or deleted.');
+    expect(absent.get('[data-testid="absent-project-path"]').text()).toBe('/w/alpha');
+    expect(wrapper.get('[data-testid="chat-slot"]').text()).not.toContain('No chat selected');
+
+    await absent.get('[data-testid="absent-project-remove"]').trigger('click');
+    await flushPromises();
+    expect(api.removeProject).toHaveBeenCalledWith('p1');
+    expect(absent.get('[role="alert"]').text()).toBe('Could not remove project alpha: a terminal is running');
+
+    api.push({ ...ABSENT, locale: 'el', projects: [{ ...STATE.projects[0]!, presence: 'unavailable' }, STATE.projects[1]!] });
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="absent-project"]').text()).toContain('Το Damocles δεν βρίσκει το alpha'));
+    expect(wrapper.get('[data-testid="absent-project"]').text()).toContain('δεν είναι συνδεδεμένη ή δεν απάντησε');
+    expect(wrapper.get('[data-testid="absent-project-remove"]').text()).toBe('Αφαίρεση έργου');
+  });
+
+  const absentWith = (relocation?: ShellRelocation): ShellState => {
+    const { selectedChat: _chat, ...rest } = STATE;
+    return { ...rest, projects: [{ ...STATE.projects[0]!, presence: 'missing', ...(relocation ? { relocation } : {}) }, STATE.projects[1]!], selected: { projectKey: 'p1' }, chatViewShown: false };
+  };
+
+  it("keeps the chat area's Locate… focused while it locates and while the move runs, which it does not start again", async () => {
+    let answer!: () => void;
+    const api = fakeShellApi([], { getState: vi.fn(async () => absentWith()), locateProject: vi.fn(() => new Promise<void>((resolve) => { answer = resolve; })) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const locate = wrapper.get('[data-testid="absent-project-locate"]');
+    (locate.element as HTMLElement).focus();
+    await locate.trigger('click');
+    expect(api.locateProject).toHaveBeenCalledWith('p1');
+    expect(locate.attributes('disabled')).toBeUndefined();
+    expect(locate.attributes('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(locate.element);
+    await locate.trigger('click');
+    expect(api.locateProject).toHaveBeenCalledTimes(1);
+    answer();
+    await flushPromises();
+    expect(locate.attributes('aria-disabled')).toBeUndefined();
+
+    api.push(absentWith({ state: 'running', step: 'memory', done: 2, total: 2, reason: { code: 'memoryReadOnly', text: 'Memories move at a later start.' } }));
+    await flushPromises();
+    const running = wrapper.get('[data-testid="absent-project-locate"]');
+    expect(running.attributes('aria-disabled')).toBe('true');
+    expect(running.attributes('aria-busy')).toBe('true');
+    await running.trigger('click');
+    expect(api.locateProject).toHaveBeenCalledTimes(1);
+    // a running move's waiting reason is progress, not an error, and the row's notice speaks for the project
+    const reason = wrapper.get('[data-testid="absent-project-locate-reason"]');
+    expect(reason.attributes('role')).toBeUndefined();
+    expect(reason.classes()).not.toContain('text-(--d-danger-text)');
+  });
+
+  it("offers Retry and Stop moving… for a paused move in the chat area, which says it waits, not that it works", async () => {
+    const kept = { state: 'paused', step: 'sessions', done: 1, total: 3, reason: { code: 'conflict', text: 'The move paused.' }, to: '/w/alpha-new' } as const;
+    const paused: ShellRelocation = { ...kept, abandonable: true };
+    const api = fakeShellApi([], { getState: vi.fn(async () => absentWith(paused)) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const absent = wrapper.get('[data-testid="absent-project"]');
+    expect(absent.find('[data-testid="absent-project-locate"]').exists()).toBe(false);
+    expect(absent.find('[aria-busy]').exists()).toBe(false);
+    expect(absent.find('.d-spinning').exists()).toBe(false);
+    const reason = absent.get('[data-testid="absent-project-locate-reason"]');
+    expect(reason.attributes('role')).toBeUndefined();
+    expect(reason.classes()).toContain('text-(--d-danger-text)');
+    await absent.get('[data-testid="absent-project-retry"]').trigger('click');
+    await flushPromises();
+    expect(api.retryRelocation).toHaveBeenCalledWith('p1');
+    api.answerNext({ kind: 'confirm', confirmed: true });
+    await absent.get('[data-testid="absent-project-abandon"]').trigger('click');
+    await flushPromises();
+    expect(api.overlayRequests.at(-1)).toMatchObject({ kind: 'confirm', danger: true });
+    expect(api.abandonRelocation).toHaveBeenCalledWith('p1');
+
+    api.push(absentWith(kept));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="absent-project-abandon"]').exists()).toBe(false);
+
+    api.push(absentWith({ state: 'notLocatable', reason: { code: 'chatWorktree', text: 'A chat worktree.' } }));
+    await flushPromises();
+    const notLocatable = wrapper.get('[data-testid="absent-project-locate-reason"]');
+    expect(notLocatable.attributes('role')).toBeUndefined();
+    expect(notLocatable.classes()).not.toContain('text-(--d-danger-text)');
+  });
+
+  it('moves focus to the Projects list once Remove project in the chat area removed the project, and leaves it after a cancelled removal', async () => {
+    const api = fakeShellApi([], { getState: vi.fn(async () => absentWith()) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const remove = wrapper.get('[data-testid="absent-project-remove"]');
+    (remove.element as HTMLElement).focus();
+    vi.mocked(api.removeProject).mockImplementationOnce(async () => ({ ok: true, removed: false }));
+    await remove.trigger('click');
+    await flushPromises();
+    expect(api.removeProject).toHaveBeenCalledWith('p1');
+    expect(document.activeElement).toBe(remove.element);
+
+    // main's state without the project goes out before its answer
+    const { selectedChat: _chat, ...rest } = STATE;
+    vi.mocked(api.removeProject).mockImplementationOnce(async () => {
+      api.push({ ...rest, projects: [STATE.projects[1]!], selected: { projectKey: 'p2' }, chatViewShown: false });
+      return { ok: true, removed: true };
+    });
+    await remove.trigger('click');
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="projects-list"]').element);
+  });
 });
 
 describe("a design chat's header edge", () => {
@@ -638,6 +754,267 @@ describe('projects section', () => {
     expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Trust project', '-', 'Move up', 'Move down', '-', 'Remove project']);
     expect(api.removeProject).toHaveBeenCalledWith('p2');
     expect(wrapper.get('[role="alert"]').text()).toBe('Could not remove project beta: a chat is running');
+  });
+
+  it('marks a project whose folder is not there on its row, and offers only Locate, its order and Remove project', async () => {
+    const api = fakeShellApi();
+    api.answerNext({ kind: 'menu', itemId: 'remove' });
+    const projects = [{ ...STATE.projects[0]!, presence: 'missing' as const }, { ...STATE.projects[1]!, presence: 'unavailable' as const }];
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects, selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const [alpha, beta] = wrapper.findAll('[role="option"]');
+    expect(alpha!.get('[data-testid="presence-badge"]').text()).toBe('Folder not found');
+    expect(alpha!.attributes('title')).toBe('/w/alpha (folder not found)');
+    expect(beta!.get('[data-testid="presence-badge"]').text()).toBe('Not available');
+    expect(beta!.attributes('title')).toBe('/w/beta (not available)');
+    // the folder's trust can wait until it is back
+    expect(beta!.find('[data-testid="untrusted-badge"]').exists()).toBe(false);
+
+    await beta!.trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    const request = api.overlayRequests[0];
+    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Locate…', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(api.removeProject).toHaveBeenCalledWith('p2');
+  });
+
+  it('shows a missing project\'s Locate notice under its row: Locate…, the move\'s progress, a pause with Retry, a refusal', async () => {
+    const api = fakeShellApi();
+    const base = { ...STATE.projects[0]!, presence: 'missing' as const };
+    const mountWith = (project: ShellProject) => track(mount(ProjectsSection, {
+      props: { api, projects: [project], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const absent = mountWith(base).get('[data-testid="project-locate"]');
+    expect(absent.attributes('data-state')).toBe('absent');
+    await absent.get('[data-testid="project-locate-button"]').trigger('click');
+    expect(api.locateProject).toHaveBeenCalledWith('p1');
+
+    const running = mountWith({ ...base, relocation: { state: 'running', step: 'sessions', done: 2, total: 5 } }).get('[data-testid="project-locate"]');
+    expect(running.attributes('data-state')).toBe('running');
+    expect(running.get('[data-testid="project-locate-progress"]').text()).toBe('Moving chats: 2 of 5 chats');
+    expect(running.find('[data-testid="project-locate-button"]').exists()).toBe(false);
+
+    const paused = mountWith({ ...base, relocation: { state: 'paused', step: 'sessions', done: 2, total: 5, reason: { code: 'conflict', text: 'The move paused.' }, to: '/w/alpha-new' } }).get('[data-testid="project-locate"]');
+    expect(paused.get('[data-testid="project-locate-progress"]').text()).toBe('Paused. Moving chats: 2 of 5 chats');
+    expect(paused.find('[data-testid="project-locate-button"]').exists()).toBe(false);
+    expect(paused.get('[data-testid="project-locate-reason"]').attributes('data-code')).toBe('conflict');
+    await paused.get('[data-testid="project-locate-retry"]').trigger('click');
+    expect(api.retryRelocation).toHaveBeenCalledWith('p1');
+    // its core cannot abandon a move
+    expect(paused.find('[data-testid="project-locate-abandon"]').exists()).toBe(false);
+
+    const refused = mountWith({ ...base, relocation: { state: 'refused', reason: { code: 'sameFolder', text: 'You picked the project\'s own folder.' } } }).get('[data-testid="project-locate"]');
+    expect(refused.get('[data-testid="project-locate-reason"]').text()).toBe('You picked the project\'s own folder.');
+    expect(refused.find('[data-testid="project-locate-button"]').exists()).toBe(true);
+  });
+
+  it('names every step of a move on its row, one chat in the singular, a step with no chats to count by its name, and a step a newer core adds as moving', () => {
+    const api = fakeShellApi();
+    const base = { ...STATE.projects[0]!, presence: 'missing' as const };
+    const progress = (relocation: ShellRelocation) => track(mount(ProjectsSection, {
+      props: { api, projects: [{ ...base, relocation }], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    })).get('[data-testid="project-locate-progress"]').text();
+    expect(progress({ state: 'running', step: 'worktrees', done: 3, total: 3 })).toBe('Updating chat worktrees: 3 of 3 chats');
+    expect(progress({ state: 'paused', step: 'repair', done: 3, total: 3, reason: { code: 'registryUnreadable', text: 'The registry is unreadable.' }, to: '/w/alpha-new' })).toBe('Paused. Re-linking chat worktrees: 3 of 3 chats');
+    expect(progress({ state: 'running', step: 'sessions', done: 0, total: 1 })).toBe('Moving chats: 0 of 1 chat');
+    expect(progress({ state: 'running', step: 'checkpoints', done: 0, total: 0 })).toBe('Moving checkpoints');
+    expect(progress({ state: 'running', step: 'future' as RelocationStepName, done: 1, total: 2 })).toBe('Moving: 1 of 2 chats');
+  });
+
+  it('describes a missing project\'s option by the notice\'s text alone, and speaks a refusal or pause of any row from outside the listbox', async () => {
+    const api = fakeShellApi();
+    const base = { ...STATE.projects[1]!, presence: 'missing' as const };
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects: [STATE.projects[0]!, base], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const alert = () => document.querySelector('[role="alert"][data-testid="project-locate-alert"][data-project-key="p2"]');
+    const description = () => wrapper.get('[data-project-key="p2"][role="option"]').attributes('aria-describedby')!.split(' ').map((id) => document.getElementById(id)?.textContent?.trim()).join(' ');
+    expect(description()).toBe('Moved or renamed? Locate its folder to keep its chats.');
+    expect(alert()?.textContent?.trim()).toBe('');
+
+    await wrapper.setProps({ projects: [STATE.projects[0]!, { ...base, relocation: { state: 'refused', reason: { code: 'sameFolder', text: 'You picked the project\'s own folder.' } } }] });
+    expect(alert()?.textContent?.trim()).toBe('You picked the project\'s own folder.');
+    expect(description()).not.toContain('Locate…');
+
+    await wrapper.setProps({ projects: [STATE.projects[0]!, { ...base, relocation: { state: 'paused', step: 'sessions', done: 1, total: 3, reason: { code: 'conflict', text: 'The move paused.' }, to: '/w/beta-new' } }] });
+    expect(alert()?.textContent?.trim()).toBe('The move paused.');
+    expect(description()).not.toContain('Retry');
+
+    await wrapper.setProps({ projects: [STATE.projects[0]!, { ...base, relocation: { state: 'running', step: 'sessions', done: 1, total: 3, reason: { code: 'memoryReadOnly', text: 'Memories wait.' } } }] });
+    expect(alert()?.textContent?.trim()).toBe('');
+  });
+
+  it('offers Retry for a paused move in the project menu, and Locate… for a missing folder, each doing what the row\'s link does', async () => {
+    const api = fakeShellApi();
+    const paused: ShellProject = { ...STATE.projects[0]!, presence: 'missing', relocation: { state: 'paused', step: 'sessions', done: 1, total: 3, reason: { code: 'conflict', text: 'The move paused.' }, to: '/w/alpha-new' } };
+    const missing: ShellProject = { ...STATE.projects[1]!, presence: 'missing' };
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects: [paused, missing], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const [alpha, beta] = wrapper.findAll('[role="option"]');
+    api.answerNext({ kind: 'menu', itemId: 'retry' });
+    await alpha!.trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    const menu = api.overlayRequests.at(-1);
+    expect(menu?.kind === 'menu' && menu.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Retry', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(api.retryRelocation).toHaveBeenCalledWith('p1');
+
+    api.answerNext({ kind: 'menu', itemId: 'locate' });
+    await beta!.trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    expect(api.locateProject).toHaveBeenCalledWith('p2');
+  });
+
+  it('keeps a missing project\'s row and notice together until the notice has left, once the folder is back', async () => {
+    const api = fakeShellApi();
+    const missing: ShellProject = { ...STATE.projects[0]!, presence: 'missing' };
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects: [missing], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n], stubs: { transition: false } },
+      attachTo: document.body,
+    }));
+    const unit = () => wrapper.find('[role="none"][data-flip="p:p1"]');
+    expect(unit().exists()).toBe(true);
+    await wrapper.setProps({ projects: [STATE.projects[0]!] });
+    expect(unit().find('[data-testid="project-locate"]').exists()).toBe(true);
+    await vi.waitFor(() => expect(unit().exists()).toBe(false));
+    expect(wrapper.find('[data-testid="project-locate"]').exists()).toBe(false);
+    expect(wrapper.find('[role="option"][data-project-key="p1"]').exists()).toBe(true);
+  });
+
+  it('titles a missing remote project\'s row by its host, path and presence, and keeps its name room beside the host badge', () => {
+    const remote: ShellProject = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', fsPath: '/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'connected', trash: false, presence: 'missing' };
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api: fakeShellApi(), projects: [remote], selectedKey: remote.key, hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const row = wrapper.get('[role="option"]');
+    expect(row.attributes('title')).toBe('prod-1: /srv/app (folder not found)');
+    expect(row.get('[data-testid="presence-badge"] span').classes()).toContain('@max-[14.5rem]/row:sr-only');
+  });
+
+  it('offers Stop moving… on a paused move\'s row and in the project menu, which abandons it only once the danger confirmation naming both folders is accepted', async () => {
+    const api = fakeShellApi();
+    const project: ShellProject = { ...STATE.projects[0]!, presence: 'missing', relocation: { state: 'paused', step: 'sessions', done: 1, total: 3, reason: { code: 'conflict', text: 'The move paused.' }, to: '/w/alpha-new', abandonable: true } };
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects: [project], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const stop = wrapper.get('[data-testid="project-locate-abandon"]');
+    expect(stop.text()).toBe('Stop moving…');
+
+    // cancelled: nothing is abandoned
+    await stop.trigger('click');
+    await flushPromises();
+    const confirm = api.overlayRequests.at(-1);
+    expect(confirm).toMatchObject({ kind: 'confirm', danger: true, title: 'Stop moving alpha\'s chats?', confirmLabel: 'Stop Moving', cancelLabel: 'Cancel', detail: { label: 'New folder', text: '/w/alpha-new' } });
+    expect(confirm?.kind === 'confirm' && confirm.message).toBe('The chats already moved to /w/alpha-new stay there. The rest stay with /w/alpha, as do the memories and settings not moved yet, and you can locate it again. Nothing moves back.');
+    expect(api.abandonRelocation).not.toHaveBeenCalled();
+
+    api.answerNext({ kind: 'confirm', confirmed: true });
+    await stop.trigger('click');
+    await flushPromises();
+    expect(api.abandonRelocation).toHaveBeenCalledWith('p1');
+
+    api.answerNext({ kind: 'menu', itemId: 'abandon' });
+    api.answerNext({ kind: 'confirm', confirmed: true });
+    await wrapper.get('[role="option"]').trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    const menu = api.overlayRequests.find((request) => request.kind === 'menu');
+    expect(menu?.kind === 'menu' && menu.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Retry', 'Stop moving…', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(api.overlayRequests.at(-1)).toMatchObject({ kind: 'confirm', danger: true });
+    expect(api.abandonRelocation).toHaveBeenCalledTimes(2);
+  });
+
+  it('never offers Locate… for a missing folder in a chat worktree: its row, its menu and the chat area say why, Remove still offered', async () => {
+    const reason = { code: 'chatWorktree', text: 'C:\\wt is a chat worktree of C:\\acme.' };
+    const project: ShellProject = { ...STATE.projects[0]!, presence: 'missing', relocation: { state: 'notLocatable', reason } };
+    const api = fakeShellApi();
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects: [project], selectedKey: project.key, hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const notice = wrapper.get('[data-testid="project-locate"]');
+    expect(notice.attributes('data-state')).toBe('notLocatable');
+    expect(notice.get('[data-testid="project-locate-reason"]').attributes('data-code')).toBe('chatWorktree');
+    expect(notice.get('[data-testid="project-locate-reason"]').text()).toBe(reason.text);
+    expect(notice.find('[data-testid="project-locate-button"]').exists()).toBe(false);
+    api.answerNext({ kind: 'menu', itemId: 'remove' });
+    await wrapper.get('[role="option"]').trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    const request = api.overlayRequests.at(-1);
+    const labels = request?.kind === 'menu' ? request.items.map((item) => (item.kind === 'item' ? item.label : '-')) : [];
+    expect(labels).not.toContain('Locate…');
+    expect(labels).toContain('Remove project');
+
+    const { selectedChat: _chat, ...rest } = STATE;
+    const app = mountApp(fakeShellApi([], { getState: vi.fn(async () => ({ ...rest, projects: [project], selected: { projectKey: project.key }, chatViewShown: false })) }));
+    await flushPromises();
+    const absent = app.get('[data-testid="chat-slot"] [data-testid="absent-project"]');
+    expect(absent.find('[data-testid="absent-project-locate"]').exists()).toBe(false);
+    expect(absent.get('[data-testid="absent-project-locate-reason"]').text()).toBe(reason.text);
+    expect(absent.find('[data-testid="absent-project-remove"]').exists()).toBe(true);
+  });
+
+  it('offers Locate… on a missing remote project, and turns it off naming the update on a host whose server cannot move folders, Remove still offered', async () => {
+    const api = fakeShellApi();
+    const remote: ShellProject = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'connected', trash: false, presence: 'missing' };
+    const mountWith = (project: ShellProject) => track(mount(ProjectsSection, {
+      props: { api, projects: [project], selectedKey: project.key, hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const supported = mountWith(remote).get('[data-testid="project-locate"]');
+    expect(supported.find('[data-testid="project-locate-unsupported"]').exists()).toBe(false);
+    await supported.get('[data-testid="project-locate-button"]').trigger('click');
+    expect(api.locateProject).toHaveBeenCalledWith('ssh+h1|/srv/app');
+
+    vi.mocked(api.locateProject).mockClear();
+    const wrapper = mountWith({ ...remote, locateUnsupported: true });
+    const unsupported = wrapper.get('[data-testid="project-locate"]');
+    expect(unsupported.get('[data-testid="project-locate-unsupported"]').text()).toBe('Update Damocles on prod-1 to locate this folder.');
+    expect(unsupported.get('[data-testid="project-locate-button"]').attributes('disabled')).toBeDefined();
+    await unsupported.get('[data-testid="project-locate-button"]').trigger('click');
+    expect(api.locateProject).not.toHaveBeenCalled();
+    // a refusal from before the host's server was replaced still says why Locate… is off
+    const refused = mountWith({ ...remote, locateUnsupported: true, relocation: { state: 'refused', reason: { code: 'sameFolder', text: 'You picked the project\'s own folder.' } } }).get('[data-testid="project-locate"]');
+    expect(refused.get('[data-testid="project-locate-unsupported"]').text()).toBe('Update Damocles on prod-1 to locate this folder.');
+    expect(refused.get('[data-testid="project-locate-button"]').attributes('disabled')).toBeDefined();
+    api.answerNext({ kind: 'menu', itemId: 'remove' });
+    await wrapper.get('[role="option"]').trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    const request = api.overlayRequests.at(-1);
+    const labels = request?.kind === 'menu' ? request.items.map((item) => (item.kind === 'item' ? item.label : '-')) : [];
+    expect(labels).not.toContain('Locate…');
+    expect(labels).toContain('Remove project');
+    expect(api.removeProject).toHaveBeenCalledWith('ssh+h1|/srv/app');
+  });
+
+  it('turns the chat area\'s Locate… off with the update it needs on a host whose server cannot move folders, in English and Greek', async () => {
+    const { selectedChat: _chat, ...rest } = STATE;
+    const remote: ShellProject = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'connected', trash: false, presence: 'missing', locateUnsupported: true };
+    const ABSENT: ShellState = { ...rest, projects: [remote], selected: { projectKey: remote.key }, chatViewShown: false };
+    const api = fakeShellApi([], { getState: vi.fn(async () => ABSENT) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const absent = wrapper.get('[data-testid="chat-slot"] [data-testid="absent-project"]');
+    expect(absent.get('[data-testid="absent-project-locate"]').attributes('disabled')).toBeDefined();
+    expect(absent.get('[data-testid="absent-project-locate-unsupported"]').text()).toBe('Update Damocles on prod-1 to locate this folder.');
+    api.push({ ...ABSENT, locale: 'el' });
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="absent-project-locate-unsupported"]').text()).toBe('Ενημερώστε το Damocles στο prod-1 για να εντοπίσετε αυτόν τον φάκελο.'));
   });
 
   const PROD: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };

@@ -43,6 +43,20 @@ export class WorktreeRoots {
     return record ? worktreeRoot(project, record) : undefined;
   }
 
+  /**
+   * Whether the key names a chat worktree of an open project whose core has not published its registry yet, so whether it is
+   * a root cannot be told: this computer's core before it starts, a remote host's before it connects.
+   */
+  awaitsRegistry(key: unknown): boolean {
+    const root = parseRootKey(key);
+    if (root?.worktreeId === undefined || !this.deps.projects().some((candidate) => candidate.key === root.projectKey)) return false;
+    const registry = this.deps.registry(authorityKeyOfProject(root.projectKey));
+    if (registry?.known() !== true) return true;
+    // a live record naming another folder: only a relocation moves a worktree's project, and main applies it after core
+    const record = registry.get(root.worktreeId);
+    return record?.kind === 'chat' && record.deletedAt === undefined && !this.closing.has(record.id) && !this.holdsProject(root.projectKey, record.projectPath);
+  }
+
   /** The root of a live chat worktree of an open project of the authority whose core holds it. */
   ofWorktree(worktreeId: string, authority: string = 'local'): RootProject | undefined {
     const record = this.deps.registry(authority)?.get(worktreeId);

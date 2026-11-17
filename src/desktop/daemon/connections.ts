@@ -30,7 +30,7 @@ import {
 import type { AgentUpstream } from './agent-proxy';
 import { createAgentRelay, type AgentRelay } from './agent-relay';
 import type { ClientLink } from './core-routes';
-import type { MirrorWatches } from './mirror-server';
+import type { MirrorWatches, ProjectSessionFolders } from './mirror-server';
 import type { CoreConnection } from './remote-core-host';
 import type { WorkspaceHost } from './workspace-host';
 import type { PortsHost } from './ports/ports-host';
@@ -63,7 +63,10 @@ export interface ControlConnection {
 type ConnectionRequests = 'agent.relay' | 'agent.connect' | 'agent.refuse';
 
 export type ControlService = {
-  readonly [M in Exclude<keyof ControlRequests, ConnectionRequests>]: (params: Params<M>, connection: ControlConnection) => Result<M> | Promise<Result<M>>;
+  readonly [M in Exclude<keyof ControlRequests, ConnectionRequests | 'mirror.syncProject'>]: (params: Params<M>, connection: ControlConnection) => Result<M> | Promise<Result<M>>;
+} & {
+  // folders: what the connection's followProject read for this sync; undefined when it could not read them
+  readonly 'mirror.syncProject': (params: Params<'mirror.syncProject'>, connection: ControlConnection, folders: ProjectSessionFolders | undefined) => Result<'mirror.syncProject'> | Promise<Result<'mirror.syncProject'>>;
 };
 
 /** The daemon's Damocles Core as connections see it (remote-core-host.ts). */
@@ -253,22 +256,32 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         lost: () => protocol.lost(),
         onLostChange: lostChanged.add,
       });
-      // attach is served below, where it also learns whether the client watches the attached devices, and mirror.sync and
-      // mirror.syncSubcalls, which also follow what they read for mirror.changed and mirror.subcallsChanged
-      const methods = (Object.keys(CLIENT_TO_CONTROL.requests) as Array<keyof ControlRequests>).filter((method) => method !== 'attach' && method !== 'mirror.sync' && method !== 'mirror.syncSubcalls' && method !== 'agent.relay' && method !== 'agent.connect' && method !== 'agent.refuse');
+      // attach is served below, where it also learns whether the client watches the attached devices, and mirror.sync,
+      // mirror.syncProject and mirror.syncSubcalls, which also follow what they read for mirror.changed and mirror.subcallsChanged
+      const methods = (Object.keys(CLIENT_TO_CONTROL.requests) as Array<keyof ControlRequests>).filter((method) => method !== 'attach' && method !== 'mirror.sync' && method !== 'mirror.syncProject' && method !== 'mirror.syncSubcalls' && method !== 'agent.relay' && method !== 'agent.connect' && method !== 'agent.refuse');
       const endpoint = serveControl<ClientToControl>(id, accepted.hello.clientId, mux, claimStream, CLIENT_TO_CONTROL, methods, close, end, () => core);
       disposables.push(core, { dispose: () => endpoint.close('the connection closed') }, deps.core.onState((state) => endpoint.emit('coreState', state)));
       // a watch that fails costs only the change events: the listing still answers, and the next sync follows again
       const unwatched = (what: string) => (err: unknown): void => log(`[mirror] ${id}: watching ${what} failed, so its changes are not announced: ${err instanceof Error ? err.message : String(err)}`);
+      const watches = deps.mirrorWatches.forConnection(id);
+      disposables.push(watches);
       endpoint.serve('mirror.sync', async (params) => {
-        await deps.mirrorWatches.follow(id, params.projectKey, () => endpoint.emit('mirror.changed', { projectKey: params.projectKey })).catch(unwatched(params.projectKey));
+        await watches.follow(params.projectKey, () => endpoint.emit('mirror.changed', { projectKey: params.projectKey })).catch(unwatched(params.projectKey));
         return deps.control['mirror.sync'](params, { id, clientId: accepted.hello.clientId, mux, claimStream, core, close, end });
       });
+      endpoint.serve('mirror.syncProject', async (params) => {
+        const unwatchedProject = (err: unknown): void => log(`[mirror] ${id}: watching ${params.projectKey} and its worktree chats failed, so their changes are not announced: ${err instanceof Error ? err.message : String(err)}`);
+        const followed = await watches.followProject(params.projectKey, () => endpoint.emit('mirror.changed', { projectKey: params.projectKey })).catch((err: unknown) => {
+          unwatchedProject(err);
+          return undefined;
+        });
+        if (followed?.failed !== undefined) unwatchedProject(followed.failed);
+        return deps.control['mirror.syncProject'](params, { id, clientId: accepted.hello.clientId, mux, claimStream, core, close, end }, followed?.folders);
+      });
       endpoint.serve('mirror.syncSubcalls', async (params) => {
-        await deps.mirrorWatches.followSubcalls(id, () => endpoint.emit('mirror.subcallsChanged', {})).catch(unwatched('the sub-call ledger'));
+        await watches.followSubcalls(() => endpoint.emit('mirror.subcallsChanged', {})).catch(unwatched('the sub-call ledger'));
         return deps.control['mirror.syncSubcalls'](params, { id, clientId: accepted.hello.clientId, mux, claimStream, core, close, end });
       });
-      disposables.push({ dispose: () => deps.mirrorWatches.release(id) });
       const workspace = mux.messageChannel(CHANNEL.workspace, WORKSPACE_MAX_MESSAGE_BYTES);
       disposables.push(deps.workspace.serve(id, accepted.hello.clientId, channelTransport(workspace, WORKSPACE_MAX_MESSAGE_BYTES, close), close, claimStream, () => protocol.lost()));
       const ports = mux.messageChannel(CHANNEL.ports, PORTS_MAX_MESSAGE_BYTES);

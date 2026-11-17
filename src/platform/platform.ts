@@ -49,11 +49,13 @@ export interface Platform {
   readonly design?: DesignHost;
   // set only where a design opens in a preview tab (desktop, a daemon's core included)
   readonly designPreview?: DesignPreviewHost;
-  // set only for desktop's local core: main's loopback server of a chat's project and design roots, for its browser tools
+  // set where a chat's browser runs beside its core (desktop's local core, VS Code): the loopback servers of a chat's project and
+  // design roots, for its browser tools; never on a daemon's core, whose chats' roots the client serves
   readonly browserServedFiles?: BrowserServedFiles;
 }
 
 export interface BrowserServedFiles {
-  // the one-time URL that opens a root file of the chat's view, or why main serves none
-  url(chat: PanelHost, file: ServedFile): Promise<ServedFileAnswer>;
+  // the one-time URL that opens a root file of the chat, or why none is served; root: the root's path as the chat's core resolved
+  // it, which desktop main reads only for a folder the chat was granted, serving project and design roots from its own list
+  url(chat: PanelHost, file: ServedFile, root: string): Promise<ServedFileAnswer>;
 }

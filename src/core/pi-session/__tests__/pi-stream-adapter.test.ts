@@ -1430,11 +1430,11 @@ function replay(session: ReturnType<typeof fakeSession>, events: unknown[]): voi
 }
 
 /**
- * The model call pi makes under an aborted run signal fails its request setup (`model-runtime.js:456-460` in
- * pi-coding-agent 1.4.0), and pi-ai's lazy stream ends it on an error stop (`lazy.js:57-62` in pi-ai 1.4.0), whoever
- * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:753-767`), and the draft
- * `registerWindDownErrorRecord` returns at its `turn_end` boundary is committed, with its `entry_appended`, before the
- * listeners get that `turn_end` (`agent-session.js:514`, `:635-640`).
+ * The model call pi makes under an aborted run signal, on a provider that reports the abort as an error, ends on an
+ * error stop (pi-ai ends a request setup rejected under that signal aborted, `lazy.js:57-65` in pi-ai 1.5.2), whoever
+ * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:812-826` in pi-coding-agent
+ * 1.5.2), and the draft `registerWindDownErrorRecord` returns at its `turn_end` boundary is committed, with its
+ * `entry_appended`, before the listeners get that `turn_end` (`agent-session.js:569`, `:690-695`).
  */
 describe('PiStreamAdapter abort wind-down errors', () => {
   const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} };
@@ -1492,7 +1492,7 @@ describe('PiStreamAdapter abort wind-down errors', () => {
   const abandoned = (out: ExtensionToWebviewMessage[]) =>
     out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolAbandoned' }> => m.type === 'toolAbandoned').map((m) => [m.toolUseId, m.reason]);
 
-  // An extension's ctx.abort(), a manual compaction (agent-session.js:2231) or a session replacement aborts with no Stop.
+  // An extension's ctx.abort(), a manual compaction (agent-session.js:2327) or a session replacement aborts with no Stop.
   it('an abort that is not a Stop: the recorded wind-down error shows no card, the skipped call stops, the turn ends cancelled', () => {
     const t = setup();
     const windDown = errorStop('This operation was aborted');

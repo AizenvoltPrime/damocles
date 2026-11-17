@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import type { StoredSession } from '@shared/types/session';
+import type { IndexedSession } from '../metadata';
 import { log } from '../../../logger';
 import {
   SESSION_META_INDEX_WORKER_MARKER,
@@ -50,14 +50,14 @@ export interface SessionMetaIndexOptions {
 
 /** A list's first answer: the rows still valid and every session file it found. */
 export interface ListedSessions {
-  sessions: StoredSession[];
+  sessions: IndexedSession[];
   files: string[];
   /** Files being parsed; their rows arrive through `ListProgress.batch`. */
   parsing: number;
 }
 
 export interface ListProgress {
-  batch(sessions: StoredSession[]): void;
+  batch(sessions: IndexedSession[]): void;
   /** No batch follows; `complete` is false when the list failed after its first answer or a file it found yielded no row, both logged. */
   end(complete: boolean): void;
 }
@@ -148,7 +148,7 @@ export class SessionMetaIndex {
   }
 
   /** The file's row, from the index when its size and mtime match, else parsed; null when it yields none. */
-  meta(file: string): Promise<StoredSession | null> {
+  meta(file: string): Promise<IndexedSession | null> {
     return new Promise((resolve, reject) => {
       this.request({ type: 'meta', file }, (event) => {
         if (event.type !== 'meta') throw new Error(`unexpected ${event.type} answer to meta`);
@@ -159,7 +159,7 @@ export class SessionMetaIndex {
   }
 
   /** The row cached for the file as it is now (null: the file yields no row), or undefined; never reads the file. */
-  cachedRow(file: string): Promise<StoredSession | null | undefined> {
+  cachedRow(file: string): Promise<IndexedSession | null | undefined> {
     return new Promise((resolve, reject) => {
       this.request({ type: 'cachedRow', file }, (event) => {
         if (event.type !== 'cachedRow') throw new Error(`unexpected ${event.type} answer to cachedRow`);
@@ -187,6 +187,11 @@ export class SessionMetaIndex {
 
   forget(file: string): void {
     this.post({ type: 'forget', file });
+  }
+
+  /** Carries a relocated session file's row to its new path; ordered before every later request. */
+  move(from: string, to: string): void {
+    this.post({ type: 'move', from, to });
   }
 
   /** Commits pending puts and stops the worker, and one an idle close is still stopping, waiting at most `closeTimeoutMs` each. Requests still in flight reject. */

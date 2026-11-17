@@ -392,6 +392,25 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     expect(entries(svc).every((entry) => entry.chat === a)).toBe(true);
   });
 
+  it('reopens a saved file: page only at the served URL its chat resolves, and skips one its chat refuses with a log line', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    const navigated = answerNavigations(svc, loaded);
+    const a = chatHost();
+    const served = 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=docs%2Fa.html&q=tab%3D2#intro';
+    const asked: string[] = [];
+    const target = async (url: string): Promise<{ url: string } | { refused: string }> => {
+      asked.push(url);
+      return url.startsWith('file:///c:/proj/') ? { url: served } : { refused: 'its address is outside the chat\'s project and design folders' };
+    };
+    await svc.restoreChatPages(a, ['https://one.example/', 'file:///c:/secret', 'file:///c:/proj/docs/a.html?tab=2#intro', 'https://two.example/'], 2, target);
+    expect(asked).toEqual(['file:///c:/secret', 'file:///c:/proj/docs/a.html?tab=2#intro']);
+    expect(navigated).toEqual(['https://one.example/', served, 'https://two.example/']);
+    expect(svc.chatScope(a).listTabs().find((tab) => tab.active)?.url).toBe(served);
+    expect(logLines(logSpy)).toContain('[Browser] Not restoring a project or design page: its address is outside the chat\'s project and design folders');
+    logSpy.mockRestore();
+  });
+
   it('restores beside a page the chat already has open without navigating it away', async () => {
     const svc = service();
     const a = chatHost();

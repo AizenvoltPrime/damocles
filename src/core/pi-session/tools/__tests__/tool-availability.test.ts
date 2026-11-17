@@ -29,11 +29,11 @@ function fakePi(): PiCodingAgentModule {
 
 const permissionHandler = { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as unknown as PermissionHandler;
 
-type ToolNameOpts = Omit<Parameters<typeof buildCustomTools>[0], 'getShellOptions' | 'shellCancel' | 'deliverUserNote' | 'shellJob'>;
+type ToolNameOpts = Omit<Parameters<typeof buildCustomTools>[0], 'getShellOptions' | 'allowedNetworkHosts' | 'shellCancel' | 'deliverUserNote' | 'shellJob'>;
 
-/** The shell deps are required of every caller but say nothing here: this file asserts name sets. */
+/** The shell and host deps are required of every caller but say nothing here: this file asserts name sets. */
 function buildNames(opts: ToolNameOpts): string[] {
-  return buildCustomTools({ ...opts, getShellOptions: () => ({}), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined }).map((t) => t.name);
+  return buildCustomTools({ ...opts, getShellOptions: () => ({}), allowedNetworkHosts: () => Promise.resolve(new Set()), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined }).map((t) => t.name);
 }
 
 describe('buildCustomTools — build gate is service-presence, not enablement', () => {
@@ -85,7 +85,7 @@ describe('buildCustomTools — build gate is service-presence, not enablement', 
     const build = (relayed: boolean) => buildCustomTools({
       pi: fakePi(), cwd: '/cwd', permissionHandler, browserService, browserChat, browserScopeId: 'agent-7', getSessionId: () => 'sid',
       ...(relayed ? { browserRelay: fake.remote } : {}),
-      getShellOptions: () => ({}), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined,
+      getShellOptions: () => ({}), allowedNetworkHosts: () => Promise.resolve(new Set()), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined,
     }).find((tool) => tool.name === 'BrowserDownloads')!;
     const signal = new AbortController().signal;
     const answer = await build(true).execute('call-1', {} as never, signal, undefined, undefined as never);

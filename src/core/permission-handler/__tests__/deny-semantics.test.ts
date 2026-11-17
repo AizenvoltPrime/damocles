@@ -11,6 +11,7 @@ import * as path from 'path';
 import { PermissionHandler } from '../index';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 vi.mock('../../skills/utils', () => ({ loadSkillDescription: async () => undefined }));
 
@@ -216,7 +217,7 @@ describe("PermissionHandler.canUseTool applies only the panel folder's rules", (
   });
 
   function makeHandler(workspacePath: string): { handler: PermissionHandler; posted: ExtensionToWebviewMessage[] } {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     const posted: ExtensionToWebviewMessage[] = [];
     handler.setPostMessage((m) => posted.push(m));
     handler.setWorkspacePath(workspacePath);

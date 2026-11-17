@@ -1,3 +1,4 @@
+import * as http from 'node:http';
 import * as net from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -34,6 +35,7 @@ function occupy(): Promise<{ port: number; close: () => Promise<void> }> {
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   await stopCallbackServer();
 });
 
@@ -190,5 +192,66 @@ describe('MCP OAuth callback port of non-strict flows', () => {
     } finally {
       await release();
     }
+  });
+});
+
+/** A connection that sends nothing, as a browser's preconnect or spare keep-alive socket does; resolves once the server drops it. */
+async function spareConnection(port: number): Promise<{ socket: net.Socket; dropped: Promise<void> }> {
+  const socket = net.connect(port, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.on('error', () => undefined);
+  return { socket, dropped: new Promise<void>((resolve) => socket.once('close', () => resolve())) };
+}
+
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`not within ${ms} ms`)), ms))]);
+}
+
+describe('MCP OAuth callback server close with a spare browser connection', () => {
+  it('sends the whole success page, then drops the spare connection', async () => {
+    await ensureCallbackServer({ oauthState: 'spare', reserveState: true });
+    const code = waitForCallback('spare');
+    const port = getOAuthCallbackPort();
+    const spare = await spareConnection(port);
+
+    const page = await fetch(`http://127.0.0.1:${port}/callback?code=c&state=spare`);
+    expect(await page.text()).toMatch(/Authorization Successful[\s\S]*<\/html>$/);
+    await expect(code).resolves.toEqual({ code: 'c' });
+    expect(isCallbackServerRunning()).toBe(false);
+    await within(spare.dropped, 2_000);
+  });
+
+  it('drops a spare connection busy with a request when the browser drops the settling one before its page is sent', async () => {
+    await ensureCallbackServer({ oauthState: 'drop', reserveState: true });
+    const code = waitForCallback('drop');
+    const port = getOAuthCallbackPort();
+    const spare = await spareConnection(port);
+    // A request line begun is a request in flight, which close() waits for.
+    spare.socket.write('GET /callback HTTP/1.1\r\n');
+    const end = http.ServerResponse.prototype.end;
+    vi.spyOn(http.ServerResponse.prototype, 'end').mockImplementation(function (this: http.ServerResponse, ...args: unknown[]) {
+      const result = (end as (...a: unknown[]) => http.ServerResponse).apply(this, args);
+      if (this.req.url?.includes('state=drop')) this.socket?.destroy(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+      return result;
+    });
+
+    const settling = net.connect(port, '127.0.0.1', () => settling.write('GET /callback?code=c&state=drop HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n'));
+    settling.on('error', () => undefined);
+    await expect(code).resolves.toEqual({ code: 'c' });
+    await within(spare.dropped, 2_000);
+  });
+
+  it('stops without waiting for the spare connection', async () => {
+    await ensureCallbackServer({ oauthState: 'stop', reserveState: true });
+    const pending = waitForCallback('stop');
+    const rejected = expect(pending).rejects.toThrow('OAuth callback server stopped');
+    const spare = await spareConnection(getOAuthCallbackPort());
+
+    await within(stopCallbackServer(), 2_000);
+    await within(spare.dropped, 2_000);
+    await rejected;
   });
 });

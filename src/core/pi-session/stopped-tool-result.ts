@@ -7,8 +7,8 @@ import { isWindDownError } from './nested-call-failures';
 /**
  * Mark an error result that ended while its run was aborted, on the `details` pi persists, so every
  * transcript shows the call stopped rather than failed. pi runs `tool_result` only for a call it executed
- * (`agent-loop.js:604-645` in pi-agent-core 1.4.0), never for one its gate or an abort settled before
- * `execute`, and `ctx.signal` is the run's own signal (`agent-session.js:2818`).
+ * (`agent-loop.js:604-645` in pi-agent-core 1.5.2), never for one its gate or an abort settled before
+ * `execute`, and `ctx.signal` is the run's own signal (`agent-session.js:2914`).
  */
 export function registerStoppedToolResultMarker(pi: ExtensionAPI): void {
   pi.on('tool_result', (event, ctx) => {
@@ -23,7 +23,7 @@ export function registerStoppedToolResultMarker(pi: ExtensionAPI): void {
  * Record, as a turn-stopped entry, each call an aborted run settled before `execute` (no `durationMs`,
  * `agent-loop.js:506-510`, `:525-529`, `:441-444`). Nested sessions only: the main chat's Stop writes its own
  * record. pi appends it, and emits its `entry_appended`, before listeners get this `tool_execution_end`
- * (`agent-session.js:752-753`, `:2783-2788`), so a live transcript reads the same entry a reload does.
+ * (`agent-session.js:811-812`, `:2879-2884` in pi-coding-agent 1.5.2), so a live transcript reads the same entry a reload does.
  */
 export function registerAbortSettledCallRecord(pi: ExtensionAPI): void {
   pi.on('tool_execution_end', (event, ctx) => {
@@ -35,10 +35,11 @@ export function registerAbortSettledCallRecord(pi: ExtensionAPI): void {
 
 /**
  * Record, as a turn-stopped entry, an error stop whose `turn_end` arrives while its run's signal is aborted: the abort's
- * wind-down, such as the next call's request setup rejecting under that signal (`lazy.js:57-62` in pi-ai 1.4.0),
- * whatever aborted the run. pi dispatches `turn_end` once it persisted the message (`agent-session.js:755-767`,
- * `:523-525`), so the entry id is known, and commits the draft with its `entry_appended` before listeners get that
- * `turn_end` (`:514`, `:635-640`). Every transcript, live and reloaded, decides the stop from this entry alone
+ * wind-down, whatever aborted the run. pi-ai reports a request setup that rejects under that signal as an aborted stop
+ * (`lazy.js:57-65` in pi-ai 1.5.2), so this names only a provider that reports the abort as an error. pi dispatches
+ * `turn_end` once it persisted the message (`agent-session.js:814-826` in pi-coding-agent 1.5.2,
+ * `:578-580`), so the entry id is known, and commits the draft with its `entry_appended` before listeners get that
+ * `turn_end` (`:569`, `:690-695`). Every transcript, live and reloaded, decides the stop from this entry alone
  * (`windDownRecorded`, `stoppedOnBranch`), so they cannot disagree.
  */
 export function registerWindDownErrorRecord(pi: ExtensionAPI): void {

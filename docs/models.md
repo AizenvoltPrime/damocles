@@ -8,8 +8,8 @@ Sign-in for each provider is described in [Authentication](authentication.md).
 
 Switch models from the composer's model dropdown:
 
-- **Anthropic**: Fable 5.1, Opus 5.5 by default, Sonnet 5.5, Haiku 5.5
-- **OpenAI**: `gpt-6-astra` at the head of the group, `gpt-6.1-sol` the recommended default, `gpt-6-luna`
+- **Anthropic**: Fable 5.2, Opus 5.5 by default, Sonnet 5.5, Haiku 5.5
+- **OpenAI**: `gpt-6-astra` at the head of the group, `gpt-6.1-sol` the recommended default, `gpt-6.1-terra`, `gpt-6-luna`
 - **Custom providers**: StepFun **Step 5 Preview**, **DeepSeek V4 Pro / V4.1 Flash**, **MiniMax M3.1 Flash**, xAI **Grok 4.7**, Kimi Code **K3 / Kimi for Coding**, Meta **Muse Spark 1.3 / Muse Wonder 1.0**
 - **GitHub Copilot** models. Copilot models outside your plan stay listed, muted, as "Not in your plan", and cannot be picked.
 
@@ -52,8 +52,8 @@ Thinking configuration is model-aware and driven by model-reported capabilities.
 | Model | Effort levels |
 | --- | --- |
 | GPT-6 Astra, GPT-6.1 Sol | Low/Medium/High/Extra High/Max |
-| GPT-6 Luna | **None** (no reasoning) plus Low/Medium/High/Extra High/Max in chats and Defaults; team roles, Explore, Background and the memory judge never run at None |
-| Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 | Low/Medium/High/Extra High/Max plus **Ultracode** as a top tier above Max |
+| GPT-6.1 Terra, GPT-6 Luna | **None** (no reasoning) plus Low/Medium/High/Extra High/Max in chats and Defaults; team roles, Explore, Background and the memory judge never run at None |
+| Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 | Low/Medium/High/Extra High/Max plus **Ultracode** as a top tier above Max |
 | StepFun Step 5 Preview | Low/Medium/High |
 | DeepSeek V4 Pro | High/Max |
 | DeepSeek V4.1 Flash | Low/High/Max |
@@ -66,11 +66,11 @@ Thinking configuration is model-aware and driven by model-reported capabilities.
 
 Each panel has independent reasoning state: a `thinkingDisabled` flag plus a per-(panel, model) matrix of effort, so switching models within a panel preserves prior intent. A model with no stored effort runs at its catalog default where it has one (High on Opus 5.5 and Sonnet 5.5). Flip back to a previously configured model and its effort restores automatically.
 
-The disable-thinking switch has no effect on OpenAI models, which are driven by effort alone, or on Fable 5.1, Opus 5.5, Sonnet 5.5, Step 5 Preview, MiniMax M3.1 Flash, Grok 4.7, K3, Kimi for Coding, Muse Spark 1.3, Muse Wonder 1.0, GPT-6 Astra and GPT-6.1 Sol, which always think. Settings shows it disabled with a note that effort is the control.
+The disable-thinking switch has no effect on OpenAI models, which are driven by effort alone, or on Fable 5.2, Opus 5.5, Sonnet 5.5, Step 5 Preview, MiniMax M3.1 Flash, Grok 4.7, K3, Kimi for Coding, Muse Spark 1.3, Muse Wonder 1.0, GPT-6 Astra and GPT-6.1 Sol, which always think. Settings shows it disabled with a note that effort is the control.
 
 A resumed or restored conversation continues on the model and effort it last ran with, read from its session file (Ultracode comes back as Max, which runs the same), and one recorded on a retired model continues on its successor (Haiku 4.5 on Haiku 5.5, Step 3.7 Flash on Step 5 Preview, DeepSeek V4 Flash on V4.1 Flash). Permission mode and YOLO always start at your defaults.
 
-Settings' **This chat** and **Defaults for new chats** sections each have a reasoning block, and the two track different model dimensions independently, so switching the active model in This chat never drags the defaults section's effort capabilities along with it. Workspace defaults persist via `damocles.thinkingDisabled` / `damocles.effortByModel`. Thinking blocks are always visible (`display: 'summarized'` overrides the API's `omitted` default on Fable 5.1, Opus 5.5 and Sonnet 5.5).
+Settings' **This chat** and **Defaults for new chats** sections each have a reasoning block, and the two track different model dimensions independently, so switching the active model in This chat never drags the defaults section's effort capabilities along with it. Workspace defaults persist via `damocles.thinkingDisabled` / `damocles.effortByModel`. Thinking blocks are always visible (`display: 'summarized'` overrides the API's `omitted` default on Fable 5.2, Opus 5.5 and Sonnet 5.5).
 
 ## Effort badges
 

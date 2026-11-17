@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 // installed there. Chromium's namespace sandbox works under WSL's kernel, so no setuid helper (and no sudo) is needed.
 
 const E2E_DIR_NAME = 'damocles-e2e';
-// Kept inside the WSL copy: the previous run's file list (to delete files the tree no longer has) and the lockfile hash
-// of the last successful `npm ci`.
+// Kept inside the WSL copy: the previous run's file list (to delete files the tree no longer has) and the hash of the
+// lockfile and patches/ (which npm ci's postinstall applies) at the last successful `npm ci`.
 const PREVIOUS_MANIFEST = '.wsl-e2e-manifest';
-const LOCK_STAMP = '.wsl-e2e-lock.sha256';
+const INSTALL_STAMP = '.wsl-e2e-install.sha256';
+const INSTALL_HASH = `INSTALL_HASH="$(shopt -s nullglob; cat package-lock.json patches/*.patch | sha256sum | cut -d' ' -f1)"`;
 const SYNC_TIMEOUT_MS = 15 * 60_000;
 const BUILD_TIMEOUT_MS = 45 * 60_000;
 const TEST_TIMEOUT_MS = 3 * 60 * 60_000;
@@ -176,8 +177,8 @@ if (unit) {
       'set -euo pipefail',
       `cd "$HOME"/${E2E_DIR_NAME}`,
       ...NODE_SETUP,
-      `LOCK_HASH="$(sha256sum package-lock.json | cut -d' ' -f1)"`,
-      `if [ ! -d node_modules ] || [ "$(cat ${LOCK_STAMP} 2>/dev/null)" != "$LOCK_HASH" ]; then rm -f ${LOCK_STAMP}; npm ci; echo "$LOCK_HASH" > ${LOCK_STAMP}; fi`,
+      INSTALL_HASH,
+      `if [ ! -d node_modules ] || [ "$(cat ${INSTALL_STAMP} 2>/dev/null)" != "$INSTALL_HASH" ]; then rm -f ${INSTALL_STAMP}; npm ci; echo "$INSTALL_HASH" > ${INSTALL_STAMP}; fi`,
       ['npx', '--no', 'vitest', 'run', ...specs].map(sh).join(' '),
     ].join('\n'),
     { distro, timeoutMs: BUILD_TIMEOUT_MS, hint: keptHint },
@@ -192,13 +193,13 @@ wsl(
     'set -euo pipefail',
     `cd "$HOME"/${E2E_DIR_NAME}`,
     ...NODE_SETUP,
-    `LOCK_HASH="$(sha256sum package-lock.json | cut -d' ' -f1)"`,
-    `if [ ! -d node_modules ] || [ "$(cat ${LOCK_STAMP} 2>/dev/null)" != "$LOCK_HASH" ]; then`,
-    `  rm -f ${LOCK_STAMP}`,
+    INSTALL_HASH,
+    `if [ ! -d node_modules ] || [ "$(cat ${INSTALL_STAMP} 2>/dev/null)" != "$INSTALL_HASH" ]; then`,
+    `  rm -f ${INSTALL_STAMP}`,
     '  npm ci',
-    `  echo "$LOCK_HASH" > ${LOCK_STAMP}`,
+    `  echo "$INSTALL_HASH" > ${INSTALL_STAMP}`,
     'else',
-    '  echo "package-lock.json unchanged; skipping npm ci"',
+    '  echo "package-lock.json and patches unchanged; skipping npm ci"',
     'fi',
     'npx --no install-electron',
     'npm run build',

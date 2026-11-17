@@ -3,7 +3,7 @@
 import { session as electronSession, type Session } from 'electron';
 import { PREVIEW_SCHEME } from '../protocol';
 import { loggableUrl, restrictPermissions } from '../security';
-import type { PreviewAnswer } from './preview-reader';
+import type { PreviewAnswer } from '../../../core/served-pages/preview-reader';
 import { privateDestination, type ResolveHost } from './private-network';
 
 // No `persist:` prefix, so nothing a page stores outlives the run.

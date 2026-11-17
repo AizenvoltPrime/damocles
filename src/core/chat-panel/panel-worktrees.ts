@@ -12,7 +12,8 @@ import { visibleLines, visibleText } from '../../shared/visible-text';
 import { l } from '../l10n';
 import { englishText, LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { folderKey } from '../workspace-folders/folder-key';
-import type { FolderTarget, WorkspaceFolderRegistry } from '../workspace-folders/folder-registry';
+import { isRelocationPending } from '../project-relocation/current';
+import { sameFolderRole, type FolderTarget, type WorkspaceFolderRegistry } from '../workspace-folders/folder-registry';
 import { approveSetup, createChatWorktree, discardChatWorktree, gitFailureText, isSetupApproved, readSetupCommands, worktreeOptions } from '../worktrees/create';
 import { worktreeEnvironment } from '../worktrees/environment';
 import { filesToMove, HandOffMoveError, moveFilesToWorktree, readLatestWorktreeEntry } from '../worktrees/hand-off';
@@ -89,8 +90,8 @@ export interface PanelWorktreesDeps {
   readonly platform: PlatformWithWorktrees;
   readonly folderRegistry: WorkspaceFolderRegistry;
   readonly panels: () => Map<string, HostInstance>;
-  /** switchPanelFolder with the 'chatMove' reason. */
-  readonly moveTo: (panelId: string, key: string, afterSwitch?: (instance: HostInstance) => Promise<void>) => Promise<HostInstance | undefined>;
+  /** switchPanelFolder with the 'chatMove' reason, to `to` in its role. */
+  readonly moveTo: (panelId: string, to: FolderTarget, afterSwitch?: (instance: HostInstance) => Promise<void>) => Promise<HostInstance | undefined>;
   /** Posts to the panel's webview. */
   readonly post: (panelId: string, message: ExtensionToWebviewMessage) => void;
   /** Re-dispatches a held webview message to the panel's current session. */
@@ -151,6 +152,7 @@ export class PanelWorktrees implements Disposable {
       finishing: (worktreeId) => this.finishing.get(worktreeId),
       moving: () => this.movingPanels.has(panelId),
       projectName: (projectPath) => this.deps.folderRegistry.resolve(folderKey(projectPath))?.label,
+      holdsAsProject: () => instance.folder.ownerKey === undefined,
     });
     let placeKey: string | undefined;
     worktree.setListener((event) => {
@@ -203,6 +205,8 @@ export class PanelWorktrees implements Disposable {
     }
     const unused: WorktreeId[] = [];
     for (const project of this.deps.folderRegistry.targets()) {
+      // A relocation in flight moves the session files this decides on (docs/invariants.md "Project relocation").
+      if (isRelocationPending(project.fsPath)) continue;
       const deleted = registry.recordsOfProject(project.fsPath).filter((r) => r.deletedAt !== undefined);
       if (deleted.length === 0) continue;
       for (const stored of await this.deps.completeStoredSessionsOf(project.key)) if (stored.worktree) named.add(stored.worktree.worktreeId);
@@ -434,14 +438,22 @@ export class PanelWorktrees implements Disposable {
   private async bindTo(panelId: string, project: FolderTarget, record: ChatWorktreeRecord, afterSwitch?: (instance: HostInstance) => Promise<void>): Promise<HostInstance | undefined> {
     const key = folderKey(record.workingFolder);
     const hold = this.acquire(record.workingFolder, project.key);
+    const target = this.ownedTarget(record.workingFolder);
     let moved: HostInstance | undefined;
     try {
-      moved = await this.deps.moveTo(panelId, key, afterSwitch);
+      moved = await this.deps.moveTo(panelId, target, afterSwitch);
     } finally {
-      if (moved && moved.folder.key === key) this.setHold(panelId, key, hold);
+      if (moved && sameFolderRole(moved.folder, target)) this.setHold(panelId, key, hold);
       else this.release(key, hold);
     }
     return moved;
+  }
+
+  // The owned role of a working folder just acquired, which a folder also open as a project keeps apart from that role.
+  private ownedTarget(workingFolder: string): FolderTarget {
+    const target = this.deps.folderRegistry.ownedTarget(folderKey(workingFolder));
+    if (!target) throw new Error(`${workingFolder} is not registered`);
+    return target;
   }
 
   private setHold(panelId: string, key: string, hold: Disposable): void {
@@ -535,7 +547,7 @@ export class PanelWorktrees implements Disposable {
   /** Where the panel works now, for a webview waiting to hear it; the live publisher refines it once the session starts. */
   placeOf(panelId: string): WorktreeStateData | null {
     const instance = this.deps.panels().get(panelId);
-    const project = instance ? this.deps.folderRegistry.projectOf(instance.folder.key) : undefined;
+    const project = instance ? this.deps.folderRegistry.projectOf(instance.folder) : undefined;
     if (!instance || !project || !this.showsWorktreeState(project.fsPath)) return null;
     const view = this.optIns.get(panelId)?.view;
     if (instance.folder.ownerKey !== undefined) {
@@ -567,15 +579,30 @@ export class PanelWorktrees implements Disposable {
     if (record?.kind !== 'chat' || record.deletedAt !== undefined || folderKey(record.projectPath) !== project.key) throw new Error(`${worktreeId} is not a live chat worktree of ${project.fsPath}`);
     if (!fs.existsSync(record.workingFolder)) throw new LocalizedError(l("This chat's worktree was deleted"));
     if (this.finishing.has(record.id)) throw new LocalizedError(l('Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.'));
-    const key = folderKey(record.workingFolder);
-    this.setHold(panelId, key, this.acquire(record.workingFolder, project.key));
-    const target = this.deps.folderRegistry.resolve(key);
-    if (!target) throw new Error(`${record.workingFolder} is not registered`);
-    return target;
+    this.setHold(panelId, folderKey(record.workingFolder), this.acquire(record.workingFolder, project.key));
+    return this.ownedTarget(record.workingFolder);
+  }
+
+  /** A panel being set up in the working folder its source panel holds takes its own hold of it, for the same project. */
+  holdAsSource(panelId: string, sourcePanelId: string): void {
+    const held = this.holds.get(sourcePanelId);
+    if (!held) return;
+    const owned = this.deps.folderRegistry.ownedTarget(held.key);
+    if (owned?.ownerKey === undefined) return;
+    this.setHold(panelId, held.key, this.acquire(owned.fsPath, owned.ownerKey));
   }
 
   private isFinishing(worktreeId: WorktreeId | undefined): boolean {
     return worktreeId !== undefined && this.finishing.has(worktreeId);
+  }
+
+  /** The first of the worktrees a finish action holds or a hand-off moves a chat into or out of. */
+  activity(worktreeIds: readonly WorktreeId[]): { readonly worktreeId: WorktreeId; readonly kind: 'finishing' | 'handOff' } | undefined {
+    for (const worktreeId of worktreeIds) {
+      if (this.finishing.has(worktreeId)) return { worktreeId, kind: 'finishing' };
+      if (this.movingWorktrees.has(worktreeId)) return { worktreeId, kind: 'handOff' };
+    }
+    return undefined;
   }
 
   /**
@@ -636,7 +663,7 @@ export class PanelWorktrees implements Disposable {
       return reason !== undefined;
     };
     if (refused() || sessionId === null) return;
-    const projectTarget = this.deps.folderRegistry.projectOf(instance.folder.key);
+    const projectTarget = this.deps.folderRegistry.projectOf(instance.folder);
     if (!projectTarget || !this.deps.platform.trust.isTrusted(projectTarget.fsPath)) {
       this.warn(l('Trust this folder to use worktrees'));
       return;
@@ -767,7 +794,7 @@ export class PanelWorktrees implements Disposable {
       let resumed = false;
       let moved: HostInstance | undefined;
       try {
-        moved = await this.deps.moveTo(panelId, projectTarget.key, async (target) => {
+        moved = await this.deps.moveTo(panelId, projectTarget, async (target) => {
           resumed = await this.deps.resumeInto(target, sessionId, (session) => {
             session.worktree.appendPlace('project', reusable);
             session.noteWorkingFolder(projectTarget.fsPath);
@@ -778,7 +805,7 @@ export class PanelWorktrees implements Disposable {
       }
       if (!resumed) {
         await this.recoverMove(panelId, sessionId, reusable, l('The chat could not move to the project folder, so it stays in its worktree. Its changes were applied to {0}.', visibleText(projectTarget.fsPath)));
-      } else if (moved && moved.folder.key === projectTarget.key) {
+      } else if (moved && sameFolderRole(moved.folder, projectTarget)) {
         this.dropHold(panelId);
       }
     } finally {
@@ -803,17 +830,17 @@ export class PanelWorktrees implements Disposable {
    */
   private async recoverMove(panelId: string, sessionId: string, back: FolderTarget | ChatWorktreeRecord, message: LocalizedText): Promise<void> {
     const instance = this.deps.panels().get(panelId);
-    const backKey = 'kind' in back ? folderKey(back.workingFolder) : back.key;
-    if (instance && instance.folder.key !== backKey) {
+    const project = 'kind' in back ? this.deps.folderRegistry.targets().find((t) => t.key === folderKey(back.projectPath)) : undefined;
+    const backRole = 'kind' in back ? { key: folderKey(back.workingFolder), ...(project ? { ownerKey: project.key } : {}) } : back;
+    if (instance && !sameFolderRole(instance.folder, backRole)) {
       const resume = async (target: HostInstance): Promise<void> => {
         await this.deps.resumeInto(target, sessionId);
       };
       if ('kind' in back) {
-        const project = this.deps.folderRegistry.resolve(folderKey(back.projectPath));
         if (project) await this.bindTo(panelId, project, back, resume);
       } else {
-        const returned = await this.deps.moveTo(panelId, back.key, resume);
-        if (returned && returned.folder.key === back.key) this.dropHold(panelId);
+        const returned = await this.deps.moveTo(panelId, back, resume);
+        if (returned && sameFolderRole(returned.folder, back)) this.dropHold(panelId);
       }
     }
     await this.deps.platform.notifications.warn(message);
@@ -821,8 +848,9 @@ export class PanelWorktrees implements Disposable {
 
   /**
    * Rule 2 and AD12's resume binding: the folder a stored session resumes in is its latest entry's, a live chat worktree's
-   * working folder registered as owned; anything else (a deleted or vanished worktree, an adopted worktree's chat) binds to
-   * the project. The state is the stored file's, which the webview hears before the replay.
+   * working folder registered as owned by the project its record names, whichever list `project` is; anything else (a
+   * deleted or vanished worktree, one whose project is not open, an adopted worktree's chat) binds to `project`. The state is
+   * the stored file's, which the webview hears before the replay.
    */
   async resumeFolder(panelId: string, sessionId: string, project: FolderTarget): Promise<ResumeBinding> {
     const host = this.host();
@@ -833,7 +861,7 @@ export class PanelWorktrees implements Disposable {
     const none: WorktreeStateData | null = shown ? { phase: 'none', place: 'project', canHandOff: false } : null;
     const sessionFile = await resolvePiSessionFile(project.fsPath, sessionId);
     if (sessionFile === null) return inProject(none);
-    const entry = await readLatestWorktreeEntry(sessionFile);
+    const entry = (await readLatestWorktreeEntry(sessionFile))?.data;
     if (entry === undefined) {
       // A chat of a deleted adopted worktree is history only (rule 18), as SessionWorktree.readOnly reads it.
       const dir = folderKey(piSessionDir(project.fsPath));
@@ -843,17 +871,18 @@ export class PanelWorktrees implements Disposable {
     }
     const record = host.registry.get(entry.worktreeId);
     const chat = record?.kind === 'chat' ? record : undefined;
-    const projectName = project.label;
+    const owner = chat ? this.deps.folderRegistry.targets().find((t) => t.key === folderKey(chat.projectPath)) : undefined;
+    const projectName = owner?.label ?? (chat ? path.basename(chat.projectPath) : project.label);
     const branch = chat ? { branch: chat.branch } : {};
     if (entry.place === 'project') return inProject(shown ? { phase: 'none', place: 'project', canHandOff: false, projectName, ...branch } : null);
     // A working folder removed outside Damocles reads as deleted.
-    if (!chat || chat.deletedAt !== undefined || folderKey(chat.projectPath) !== project.key || !fs.existsSync(chat.workingFolder)) {
+    if (!chat || !owner || chat.deletedAt !== undefined || !fs.existsSync(chat.workingFolder)) {
       return inProject({ phase: 'deleted', place: 'worktree', canHandOff: false, projectName, ...branch });
     }
     const key = folderKey(chat.workingFolder);
     // Registered now, so the switch finds the folder; the panel's own hold changes only once it works there.
-    const hold = this.acquire(chat.workingFolder, project.key);
-    const folder = this.deps.folderRegistry.resolve(key);
+    const hold = this.acquire(chat.workingFolder, owner.key);
+    const folder = this.deps.folderRegistry.ownedTarget(key);
     if (!folder) {
       this.release(key, hold);
       throw new Error(`${chat.workingFolder} is not registered`);
@@ -862,7 +891,7 @@ export class PanelWorktrees implements Disposable {
     const settle = (landed: HostInstance | undefined): void => {
       if (settled) return;
       settled = true;
-      if (landed?.folder.key === key) this.setHold(panelId, key, hold);
+      if (landed && sameFolderRole(landed.folder, folder)) this.setHold(panelId, key, hold);
       else this.release(key, hold);
     };
     return { folder, state: shown ? { phase: 'ready', place: 'worktree', canHandOff: false, projectName, branch: chat.branch } : null, settle };

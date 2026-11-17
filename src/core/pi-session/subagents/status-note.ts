@@ -5,7 +5,7 @@
  */
 
 import { formatUserAnswerPrefix, formatUserSteerPrefix } from '../../../shared/steer';
-import type { AgentStopReason } from '../agent-records';
+import type { AgentStopReason } from '../../../shared/types/subagents';
 import type { AgentRecord } from './types';
 
 export function resumeSentence(agentId: string): string {
@@ -19,15 +19,21 @@ export function resumeSentence(agentId: string): string {
  *
  * `stopped` (a human aborted it) is deliberately distinct from `aborted` (the
  * turn limit was hit). Each stop reason names its cause, and only the resumable
- * ones (see `isResumableSubagentStatus`) name the resume call.
+ * ones (see `isResumableSubagentStatus`) name the resume call. `rejectedTool` names
+ * the call a `denied` or `hookDenied` run ended on.
  */
-export function getStatusNote(status: string, stopReason: AgentStopReason | undefined, agentId: string): string {
+export function getStatusNote(status: string, stopReason: AgentStopReason | undefined, agentId: string, rejectedTool?: string): string {
   const resume = resumeSentence(agentId);
+  const rejectedCall = rejectedTool !== undefined ? `its ${rejectedTool} call` : 'a tool call';
   switch (status) {
     case 'stopped':
       switch (stopReason) {
         case 'user':
           return ` (STOPPED BY THE USER before completion; output is partial. ${resume})`;
+        case 'denied':
+          return ` (STOPPED: the user rejected ${rejectedCall} and the run ended there; output is partial. ${resume})`;
+        case 'hookDenied':
+          return ` (STOPPED: a hook rejected ${rejectedCall} and ended the run; output is partial. ${resume})`;
         case 'shutdown':
           return ` (STOPPED before completion because its chat panel closed or the editor window reloaded; output is partial. ${resume})`;
         case 'budget':
@@ -58,7 +64,7 @@ export function recordOutcomeText(record: AgentRecord): string {
   const base = record.status === 'error'
     ? failureOutcomeText(record.error ?? 'Subagent failed', record.result)
     : record.result ?? '';
-  return base + getStatusNote(record.status, record.stopReason, record.id);
+  return base + getStatusNote(record.status, record.stopReason, record.id, record.rejectedTool);
 }
 
 /** The final-result text the parent model sees for a finished record. */

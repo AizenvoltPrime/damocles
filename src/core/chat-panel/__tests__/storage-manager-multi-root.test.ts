@@ -34,11 +34,11 @@ vi.mock('../../pi-session/session-store', async () => {
   };
   return {
     piSessionDir: sessionDir,
-    ensurePiSessionDir: (cwd: string) => {
+    ensurePiSessionDir: vi.fn((cwd: string) => {
       const dir = sessionDir(cwd);
       nodeFs.mkdirSync(dir, { recursive: true });
       return dir;
-    },
+    }),
     listPiSessions: vi.fn(async (_index: unknown, cwd: string, _onParsed: (rows: StoredSession[]) => void) => ({
       sessions: [...(H.store.get(cwd) ?? [])].sort((a, b) => b.timestamp - a.timestamp),
       parsed: Promise.resolve(true),
@@ -56,6 +56,12 @@ vi.mock('../../pi-session/session-store', async () => {
   };
 });
 
+// The folders here are names no test creates; a test makes one missing.
+vi.mock('../../pi-session/folder-presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../pi-session/folder-presence')>()),
+  folderPresent: vi.fn(async () => true),
+}));
+
 vi.mock('../../pi-session/checkpoints', async () => {
   const nodePath = await import('path');
   return {
@@ -65,12 +71,13 @@ vi.mock('../../pi-session/checkpoints', async () => {
   };
 });
 
-import { onListingChange, StorageManager } from '../storage-manager';
-import { WorktreeRegistry } from '../../worktrees/registry';
+import { onListingChange, StorageManager, type StoredSessionsChange } from '../storage-manager';
+import { recordsListedUnder, WorktreeRegistry, type WorktreeRecord } from '../../worktrees/registry';
 import { worktreeFolderFor } from '../../worktrees/records';
 import * as store from '../../pi-session/session-store';
 import { log } from '../../logger';
 import { pruneOrphanCheckpointRepos } from '../../pi-session/checkpoints';
+import { folderPresent } from '../../pi-session/folder-presence';
 import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { designStateDirOf } from '../../design/design-paths';
@@ -205,6 +212,32 @@ describe('StorageManager: one history over every open folder', () => {
 
     expect(scopesOf(C)).toHaveLength(1);
     expect(scopesOf(D)).toHaveLength(1);
+  });
+});
+
+describe('StorageManager: a folder that is gone', () => {
+  it('lists and watches the session dir it has, and creates none for it', async () => {
+    const E = folder('/work/epsilon');
+    const F = folder('/work/zeta');
+    H.store.set(E.fsPath, [session('e-1', 100)]);
+    fs.mkdirSync(store.piSessionDir(E.fsPath), { recursive: true });
+    vi.mocked(folderPresent).mockImplementation(async (candidate) => candidate !== E.fsPath && candidate !== F.fsPath);
+    try {
+      const { manager } = harness([E, F]);
+
+      expect((await manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['e-1']);
+      await manager.setupSessionWatcher(E.key);
+      await manager.setupSessionWatcher(F.key);
+      // the watch and the orphan prune of each folder asked
+      await vi.waitFor(() => expect(vi.mocked(folderPresent).mock.calls.length).toBeGreaterThanOrEqual(4));
+
+      expect(platform.fileWatchers.watchers).toHaveLength(1);
+      expect(vi.mocked(store.ensurePiSessionDir)).not.toHaveBeenCalled();
+      expect(fs.existsSync(store.piSessionDir(F.fsPath))).toBe(false);
+      expect(vi.mocked(pruneOrphanCheckpointRepos)).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(folderPresent).mockImplementation(async () => true);
+    }
   });
 });
 
@@ -688,8 +721,8 @@ describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
   beforeEach(() => {
     lookup = installWorktreeProjectLookup({
       projectOf: (folderPath) => (folderPath === W ? A.fsPath : undefined),
-      recordsOfProject: (projectPath) => (projectPath === A.fsPath ? [{ workingFolder: W }] : []),
-      get: () => undefined,
+      recordsOfProject: (projectPath) => (projectPath === A.fsPath ? [{ workingFolder: W, kind: 'chat' }] : []),
+      get: (id) => (id === 'aaaaaaaa' ? { workingFolder: W, projectPath: A.fsPath } : undefined),
       chatRecordFor: () => undefined,
     });
   });
@@ -728,19 +761,19 @@ describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
   });
 
   it("a row the project's own dir parses after the list replaces the row a registry folder listed for that session", async () => {
-    H.store.set(W, [session('dup', 100, { preview: 'listed from the worktree dir' })]);
+    H.store.set(W, [session('dup', 100, { preview: 'listed from the worktree dir', worktree: WORKTREE })]);
     // The project's own dir lists first, and its copy of the session is a miss the index parses later.
     const parsed = captureParsed();
     const { manager } = harness([A]);
     expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.listedFrom])).toEqual([['dup', W]]);
 
-    parsed()([session('dup', 100, { preview: 'own' })]);
+    parsed()([session('dup', 100, { preview: 'own', worktree: WORKTREE })]);
 
     await vi.waitFor(async () => expect((await manager.sessionsOf(A.key)).map((s) => [s.preview, s.listedFrom])).toEqual([['own', undefined]]));
   });
 
   it('watches a registry folder\'s session dir without creating it, and stops once its record is gone', async () => {
-    let records = [{ workingFolder: W }];
+    let records: Array<{ workingFolder: string; kind: 'chat' | 'adopted' }> = [{ workingFolder: W, kind: 'chat' }];
     lookup.dispose();
     lookup = installWorktreeProjectLookup({
       projectOf: (folderPath) => (folderPath === W ? A.fsPath : undefined),
@@ -758,6 +791,113 @@ describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
     await manager.reloadFolders();
     expect(watcher.disposed).toBe(true);
     expect(platform.fileWatchers.watcher(store.ensurePiSessionDir(A.fsPath), '*.jsonl').disposed).toBe(false);
+  });
+});
+
+// docs/invariants.md "Worktree chats", Ownership: a session belongs to the project its latest worktree entry's record names,
+// else to the folder its header names; these mocked rows name none, so each lists by its directory, a deleted adopted
+// worktree's under that record's project (rule 18).
+describe('StorageManager: a chat worktree open as a project itself (AD12 Listing)', () => {
+  const W = path.resolve('/work/worktrees/alpha/aaaaaaaa');
+  const W2 = path.resolve('/work/worktrees/alpha/bbbbbbbb');
+  const GONE = path.resolve('/work/alpha-adopted');
+  const AW = folder(W);
+  const records = [
+    { id: 'aaaaaaaa', kind: 'chat', projectPath: A.fsPath, workingFolder: W },
+    { id: 'bbbbbbbb', kind: 'chat', projectPath: A.fsPath, workingFolder: W2 },
+    { id: 'cccccccc', kind: 'adopted', projectPath: A.fsPath, workingFolder: GONE, deletedAt: 1 },
+  ] as unknown as WorktreeRecord[];
+  const inW = { worktreeId: 'aaaaaaaa', place: 'worktree' as const };
+  const inW2 = { worktreeId: 'bbbbbbbb', place: 'worktree' as const };
+  const resolveOriginal = vi.mocked(store.resolvePiSessionFile).getMockImplementation()!;
+  let lookup: { dispose(): void };
+  beforeEach(() => {
+    lookup = installWorktreeProjectLookup({
+      projectOf: (folderPath) => records.find((r) => r.kind === 'chat' && folderKey(r.workingFolder) === folderKey(folderPath))?.projectPath,
+      recordsOfProject: (projectPath) => recordsListedUnder(records, projectPath, () => true),
+      get: (id) => records.find((r) => r.id === id),
+      chatRecordFor: () => undefined,
+    });
+    // rule 1: a session of any folder of the project is found from each of them
+    vi.mocked(store.resolvePiSessionFile).mockImplementation(async (cwd: string, id: string) => {
+      const owner = H.store.has(cwd) && H.store.get(cwd)!.some((s) => s.id === id) ? cwd : [A.fsPath, W, W2, GONE].find((dir) => H.store.get(dir)?.some((s) => s.id === id));
+      return owner === undefined ? null : fileOf(owner, id);
+    });
+  });
+  afterEach(() => {
+    lookup.dispose();
+    vi.mocked(store.resolvePiSessionFile).mockImplementation(resolveOriginal);
+  });
+
+  it("lists the project's sessions in the folder's session directory under the project, and only the folder's own under the folder", async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    // w-cleared: a /clear of the project's chat working in the worktree
+    H.store.set(W, [session('w-own', 300), session('w-cleared', 400, { worktree: inW })]);
+    H.store.set(W2, [session('w2-1', 200, { worktree: inW2 }), session('w2-own', 250)]);
+    H.store.set(GONE, [session('gone-own', 50)]);
+    const { manager } = harness([A, AW]);
+    expect((await manager.sessionsOf(AW.key)).map((s) => s.id)).toEqual(['w-own']);
+    expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.listedFrom])).toEqual([['w-cleared', W], ['w2-1', W2], ['a-1', undefined], ['gone-own', GONE]]);
+  });
+
+  it('lists no session of its project while that project is not open, and watches only its own directory', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    H.store.set(W, [session('w-own', 300), session('w-cleared', 400, { worktree: inW })]);
+    H.store.set(W2, [session('w2-1', 200, { worktree: inW2 })]);
+    const { manager } = harness([AW]);
+    expect((await manager.sessionsOf(AW.key)).map((s) => s.id)).toEqual(['w-own']);
+    await manager.setupSessionWatcher();
+    expect(platform.fileWatchers.watchers.map((w) => w.base)).toEqual([store.piSessionDir(W)]);
+  });
+
+  it('names the project a session belongs to, whichever open folder finds its file, and none for a project that is not open', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    H.store.set(W, [session('w-own', 300), session('w-cleared', 400, { worktree: inW })]);
+    const both = harness([AW, A]).manager;
+    expect([await both.folderOf('a-1'), await both.folderOf('w-cleared'), await both.folderOf('w-own')]).toEqual([A, A, AW]);
+    const worktreeOnly = harness([AW]).manager;
+    expect([await worktreeOnly.folderOf('w-cleared'), await worktreeOnly.folderOf('w-own')]).toEqual([undefined, AW]);
+  });
+
+  // A chat handed off into the worktree keeps its file in the project's session directory; a /clear there makes one in the folder's.
+  it('lists a session the worktree folder announces under the project its entry names', async () => {
+    H.store.set(A.fsPath, [session('h-1', 100, { worktree: inW })]);
+    const { manager } = harness([A, AW]);
+    expect((await manager.sessionsOf(A.key)).map((s) => s.id)).toEqual(['h-1']);
+    H.store.set(A.fsPath, [session('h-1', 200, { customTitle: 'renamed', worktree: inW })]);
+    H.store.set(W, [session('w-cleared', 300, { worktree: inW })]);
+    await manager.addOrUpdateSession('h-1', AW.key);
+    await manager.addOrUpdateSession('w-cleared', AW.key);
+    expect(await manager.sessionsOf(AW.key)).toEqual([]);
+    expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.customTitle, s.listedFrom])).toEqual([['w-cleared', undefined, W], ['h-1', 'renamed', undefined]]);
+  });
+
+  it('announces both projects when an update moves a session from one project to the other', async () => {
+    H.store.set(W, [session('w-x', 300)]);
+    const { manager } = harness([A, AW]);
+    expect((await manager.sessionsOf(AW.key)).map((s) => s.id)).toEqual(['w-x']);
+    const changes: StoredSessionsChange[] = [];
+    manager.onDidChangeSessions((change) => changes.push(change));
+    // its latest entry now names the project's worktree, whose record makes it the project's
+    H.store.set(W, [session('w-x', 400, { worktree: inW })]);
+
+    await manager.addOrUpdateSession('w-x', AW.key);
+
+    expect(changes).toHaveLength(2);
+    expect(changes).toEqual(expect.arrayContaining([{ projectKey: A.key }, { projectKey: AW.key }]));
+    expect((await manager.sessionsOf(A.key)).map((s) => s.id)).toEqual(['w-x']);
+  });
+
+  it("files a session the folder's own directory reports under the project its entry names, and the folder's own chat under the folder", async () => {
+    const { manager } = harness([A, AW]);
+    await manager.getStoredSessions();
+    await manager.setupSessionWatcher();
+    H.store.set(W, [session('w-cleared', 400, { worktree: inW }), session('w-own', 300)]);
+    const watcher = platform.fileWatchers.watcher(store.piSessionDir(W), '*.jsonl');
+    watcher.fireCreate(fileOf(W, 'w-cleared'));
+    watcher.fireCreate(fileOf(W, 'w-own'));
+    await vi.waitFor(async () => expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.listedFrom])).toEqual([['w-cleared', W]]));
+    await vi.waitFor(async () => expect((await manager.sessionsOf(AW.key)).map((s) => s.id)).toEqual(['w-own']));
   });
 });
 
@@ -783,5 +923,76 @@ describe('re-listing after a worktree registry change', () => {
     expect(relist).toHaveBeenCalledTimes(2);
     subscription.dispose();
     registry.dispose();
+  });
+});
+
+describe('StorageManager: the listed session directories', () => {
+  const W = path.resolve('/work/worktrees/alpha/dddddddd');
+
+  it('reads the registry once per reload, never on a session update or a watcher event', async () => {
+    const recordsOfProject = vi.fn((projectPath: string) => (projectPath === A.fsPath ? [{ workingFolder: W, kind: 'chat' as const }] : []));
+    const lookup = installWorktreeProjectLookup({ projectOf: () => undefined, recordsOfProject, get: () => undefined, chatRecordFor: () => undefined });
+    try {
+      H.store.set(A.fsPath, [session('a-1', 100)]);
+      const { manager } = harness([A, B]);
+      await manager.reloadFolders();
+      expect(recordsOfProject).toHaveBeenCalledTimes(2);
+      recordsOfProject.mockClear();
+
+      H.store.set(A.fsPath, [session('a-1', 100), session('a-2', 300)]);
+      await manager.addOrUpdateSession('a-2', A.key);
+      await manager.setupSessionWatcher(A.key);
+      vi.mocked(store.currentCachedRow).mockResolvedValueOnce(session('a-1', 200, { customTitle: 'renamed' }));
+      platform.fileWatchers.watcher(store.ensurePiSessionDir(A.fsPath), '*.jsonl').fireCreate(fileOf(A.fsPath, 'a-1'));
+      await vi.waitFor(async () => expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.customTitle])).toEqual([['a-2', undefined], ['a-1', 'renamed']]));
+
+      expect(recordsOfProject).not.toHaveBeenCalled();
+    } finally {
+      lookup.dispose();
+    }
+  });
+
+  // An 8.3 short name or a link to the watched directory: the event's path need not spell the directory as it was watched.
+  it('applies a watcher event whose path spells the watched directory another way', async () => {
+    const inert = { dispose: () => undefined };
+    const created: Array<(filePath: string) => void> = [];
+    const fileWatchers = {
+      watch: () => ({ ready: Promise.resolve(), onDidCreate: (cb: (filePath: string) => void) => { created.push(cb); return inert; }, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
+      watchWorkspace: () => { throw new Error('unused'); },
+      onDidRenameFiles: () => inert,
+    };
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const manager = new StorageManager({
+      folders: () => [A],
+      isMultiRoot: () => false,
+      postMessage: () => undefined,
+      getPanels: () => new Map(),
+      liveSession: () => undefined,
+      fileWatchers,
+      metaIndex: { close: async () => undefined } as unknown as SessionMetaIndex,
+    });
+    expect((await manager.sessionsOf(A.key)).map((s) => s.customTitle)).toEqual([undefined]);
+    await manager.setupSessionWatcher();
+    vi.mocked(store.currentCachedRow).mockResolvedValueOnce(session('a-1', 200, { customTitle: 'renamed' }));
+
+    for (const onCreate of created) onCreate(path.join(H.tmpRoot, 'linked-sessions', path.basename(fileOf(A.fsPath, 'a-1'))));
+
+    await vi.waitFor(async () => expect((await manager.sessionsOf(A.key)).map((s) => s.customTitle)).toEqual(['renamed']));
+  });
+
+  // pi's encoding maps both folders to one session directory.
+  it('applies an update from either of two open projects whose session directories collide', async () => {
+    const first = folder('/a-b/c');
+    const second = folder('/a/b-c');
+    const shared: StoredSession[] = [];
+    H.store.set(first.fsPath, shared);
+    H.store.set(second.fsPath, shared);
+    const { manager } = harness([first, second]);
+    expect(await manager.getStoredSessions()).toMatchObject({ sessions: [] });
+    shared.push(session('second-new', 500));
+
+    await manager.addOrUpdateSession('second-new', second.key);
+
+    expect((await manager.storedSession('second-new'))?.id).toBe('second-new');
   });
 });

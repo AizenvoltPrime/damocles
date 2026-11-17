@@ -18,7 +18,7 @@ import { createFauxCore, fauxAssistantMessage, fauxToolCall, type AssistantMessa
 import { Type } from 'typebox';
 import { withSettingsPolicy } from '../../pi-session/settings-policy';
 import { installTurnDecider } from '../../pi-session/finish-turn';
-import { abortRunAtStart } from '../../pi-session/abort-run-at-start';
+import { RunRefused } from '../../pi-session/run-refusal';
 import { createSubagentExtensionFactory } from '../../pi-session/subagents/subagent-extension-factory';
 import { ShellCancelStore } from '../../pi-session/tools/shell-cancel-registry';
 import { installPlanModeChangeNotice, planModeNoticeAtPromptStart } from '../../pi-session/plan-mode-change';
@@ -29,7 +29,7 @@ import { teamPlanModeStatement } from '../prompts';
 import { BUSY_PROMPT_ERROR, FakeSession } from './fake-session';
 
 /**
- * Holds `FakeSession` to pi 1.4.0: each scenario runs against a real `AgentSession` on pi-ai's faux provider and
+ * Holds `FakeSession` to pi 1.5.2: each scenario runs against a real `AgentSession` on pi-ai's faux provider and
  * against the fake, and the two must report the same events, busy state and resolutions. The real session is built
  * the way `FolderRuntime.createSubagentSession` builds a team specialist's (steering drained whole, compaction off),
  * loading the extension `PiSession.buildTeamEngine` hands it: `createSubagentExtensionFactory` with hooks dispatch
@@ -428,7 +428,7 @@ async function contract(scenario: Scenario, options: SubjectOptions = {}): Promi
 const steer = { streamingBehavior: 'steer' } as const;
 const followUp = { streamingBehavior: 'followUp' } as const;
 
-describe('FakeSession matches pi 1.4.0', () => {
+describe('FakeSession matches pi 1.5.2', () => {
   it('runs an idle prompt busy from its start until agent_settled, and resolves prompt() after agent_settled', async () => {
     const log = await contract(async ({ subject, s, mark }) => {
       let resolved = false;
@@ -608,7 +608,7 @@ describe('FakeSession matches pi 1.4.0', () => {
     ]);
   });
 
-  it('aborts a run that is still starting at its agent_start, whose request then fails on the aborted signal', async () => {
+  it('aborts a run that is still starting at its agent_start, whose request then ends aborted on the aborted signal', async () => {
     const log = await contract(async ({ subject, s, mark }) => {
       let started = false;
       s.subscribe(((e: Event) => { if (e.type === 'agent_start') started = true; }) as never);
@@ -628,8 +628,8 @@ describe('FakeSession matches pi 1.4.0', () => {
       'message_start user "task" busy',
       'message_end user "task" busy',
       'message_start assistant busy',
-      'message_end assistant error "This operation was aborted" busy',
-      'turn_end error busy',
+      'message_end assistant aborted "This operation was aborted" busy',
+      'turn_end aborted busy',
       'agent_end willRetry=false busy',
       'agent_settled aborted=true idle',
       '# settled requests=0 idle',
@@ -667,7 +667,7 @@ describe('FakeSession matches pi 1.4.0', () => {
     ]);
   });
 
-  it('ends a tool an abort cuts short, delivers the queued steer, and fails the next request on the aborted signal', async () => {
+  it('ends a tool an abort cuts short, delivers the queued steer, and ends the next request aborted on the aborted signal', async () => {
     const log = await contract(async ({ subject, s }) => {
       const toolStarted = new Promise<void>((resolve) => {
         s.subscribe(((e: Event) => { if (e.type === 'tool_execution_start') resolve(); }) as never);
@@ -693,8 +693,8 @@ describe('FakeSession matches pi 1.4.0', () => {
       'message_start user "steer" busy',
       'message_end user "steer" busy',
       'message_start assistant busy',
-      'message_end assistant error "This operation was aborted" busy',
-      'turn_end error busy',
+      'message_end assistant aborted "This operation was aborted" busy',
+      'turn_end aborted busy',
       'agent_end willRetry=false busy',
       'agent_settled aborted=true idle',
     ]);
@@ -1043,7 +1043,7 @@ describe('FakeSession matches pi 1.4.0', () => {
     ]);
   });
 
-  it('stops before any request a run a held steer opens on a disposed session, when its start arms abortRunAtStart', async () => {
+  it('starts no run for a steer its input handler held across an abort and a dispose, when its start throws RunRefused, and rejects its prompt() with it', async () => {
     const log = await contract(async ({ subject, s, log, mark }) => {
       const held = subject.holdInput('late');
       const run = s.prompt('task');
@@ -1052,65 +1052,53 @@ describe('FakeSession matches pi 1.4.0', () => {
         ...steer,
         preflightResult: (disposition) => {
           mark(`late ${disposition}`);
-          if (disposition === 'started') void abortRunAtStart(s as unknown as AgentSession);
+          if (disposition === 'started') throw new RunRefused();
         },
-      });
+      }).then(() => 'resolved', (err: unknown) => (err instanceof RunRefused ? 'refused' : String(err)));
       await held.entered;
       await s.abort();
       await run;
       logAgentEvents(s, log);
       s.dispose();
       held.release();
-      await late;
-      mark(`late resolved requests=${subject.requests()} users=${JSON.stringify(userTexts(s))}`);
+      mark(`late ${await late} requests=${subject.requests()} users=${JSON.stringify(userTexts(s))}`);
     }, { input: true });
 
     expect(log.slice(log.indexOf('# late started busy'))).toEqual([
       '# late started busy',
-      'agent agent_start busy',
-      'agent turn_start busy',
-      'agent message_start user "late" busy',
-      'agent message_end user "late" busy',
-      'agent message_start assistant busy',
-      'agent message_end assistant error "This operation was aborted" busy',
-      'agent turn_end error busy',
-      'agent agent_end willRetry=undefined busy',
-      '# late resolved requests=1 users=["task"] idle',
+      '# late refused requests=1 users=["task"] idle',
     ]);
   });
 
-  it('stops before any request the run an idle prompt opens once its input handler returns on a disposed session, when its start arms abortRunAtStart', async () => {
+  it('starts no run for an idle prompt whose start throws RunRefused once its input handler returns, and leaves the session to the next prompt', async () => {
     const log = await contract(async ({ subject, s, log, mark }) => {
       const held = subject.holdInput('task');
       const run = s.prompt('task', {
         preflightResult: (disposition) => {
           mark(`task ${disposition}`);
-          if (disposition === 'started') void abortRunAtStart(s as unknown as AgentSession);
+          if (disposition === 'started') throw new RunRefused();
         },
-      });
+      }).then(() => 'resolved', (err: unknown) => (err instanceof RunRefused ? 'refused' : String(err)));
       await held.entered;
       await s.abort();
       mark('aborted');
       logAgentEvents(s, log);
-      s.dispose();
       held.release();
-      await run;
-      mark(`task resolved requests=${subject.requests()} users=${JSON.stringify(userTexts(s))}`);
+      mark(`task ${await run} requests=${subject.requests()} users=${JSON.stringify(userTexts(s))}`);
+      await s.waitForIdle();
+      const next = s.prompt('next');
+      await subject.called(1);
+      subject.reply('next reply');
+      await next;
+      mark(`next resolved users=${JSON.stringify(userTexts(s))}`);
     }, { input: true });
 
-    expect(log).toEqual([
+    expect(log.slice(0, 3)).toEqual([
       '# aborted idle',
       '# task started busy',
-      'agent agent_start busy',
-      'agent turn_start busy',
-      'agent message_start user "task" busy',
-      'agent message_end user "task" busy',
-      'agent message_start assistant busy',
-      'agent message_end assistant error "This operation was aborted" busy',
-      'agent turn_end error busy',
-      'agent agent_end willRetry=undefined busy',
-      '# task resolved requests=0 users=[] idle',
+      '# task refused requests=0 users=[] idle',
     ]);
+    expect(log.at(-1)).toBe('# next resolved users=["next"] idle');
   });
 
   it('settles a run an abort lands on while its agent_before_settle handler runs, though a steer is queued', async () => {

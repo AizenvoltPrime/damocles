@@ -56,13 +56,13 @@ describe("ConfigManager — cacheWarming", () => {
     return (msg.settings as ExtensionSettings).cacheWarming;
   }
 
-  it("defaults to streaming when the key is unset", async () => {
-    expect(await readBack()).toBe("streaming");
+  it("defaults to idle when the key is unset", async () => {
+    expect(await readBack()).toBe("idle");
   });
 
-  it("reads back idle", async () => {
-    record["cacheWarming"] = "idle";
-    expect(await readBack()).toBe("idle");
+  it("reads back streaming", async () => {
+    record["cacheWarming"] = "streaming";
+    expect(await readBack()).toBe("streaming");
   });
 
   it("reads back off", async () => {
@@ -71,15 +71,15 @@ describe("ConfigManager — cacheWarming", () => {
   });
 
   // A hand-edited settings.json reaches the panel as whatever string the user typed. pi coerces an
-  // unknown mode to "streaming", so the panel has to show the same thing pi will do.
+  // unknown mode to "idle", so the panel has to show the same thing pi will do.
   it("resolves a stored value outside the enum to the default", async () => {
     record["cacheWarming"] = "always";
-    expect(await readBack()).toBe("streaming");
+    expect(await readBack()).toBe("idle");
   });
 
   it("resolves a stored non-string to the default", async () => {
-    record["cacheWarming"] = { mode: "idle" };
-    expect(await readBack()).toBe("streaming");
+    record["cacheWarming"] = { mode: "streaming" };
+    expect(await readBack()).toBe("idle");
   });
 
   // Warming bills the user, so the write goes to the user-level settings file and never to a repo's

@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { ClassifierContext, ClassifierResult } from '@earendil-works/pi-ai';
 import { installLogSink } from '../../logger';
 import { PiRuntime, type ClassificationRequest } from '../pi-runtime';
-import { JEV_VIA_OPENROUTER, JEV_VIA_TYPESAFE, classifierFailureCause, memoryJudgeOf, pickClassifierModel } from '../classifier-model';
+import { DECISION_1_VIA_COPILOT, JEV_VIA_OPENROUTER, JEV_VIA_TYPESAFE, classifierFailureCause, memoryJudgeOf, pickClassifierModel } from '../classifier-model';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../paths';
 import { CLASSIFIER_PROBE_AFTER_MS } from '../classifier-breaker';
 import { PI_AGENT_DIR } from '../agent-dir';
@@ -23,6 +23,16 @@ describe('pickClassifierModel', () => {
     expect(pickClassifierModel((ref) => ref.provider !== 'typesafe')).toEqual({ provider: 'openrouter', id: '~typesafe/jev-latest' });
     expect(pickClassifierModel((ref) => ref.provider === 'openai')).toEqual({ provider: 'openai', id: 'gpt-6-luna' });
     expect(pickClassifierModel(() => false)).toBeNull();
+  });
+
+  it('never picks Microsoft-Decision-1, which runs only when chosen', () => {
+    expect(pickClassifierModel((ref) => ref.provider === 'github-copilot')).toBeNull();
+  });
+
+  it('serves Microsoft-Decision-1 from the pi-ai catalog through GitHub Copilot', () => {
+    const url = new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/github-copilot.json', import.meta.url);
+    const catalog = JSON.parse(fs.readFileSync(url, 'utf8')) as Record<string, Record<string, unknown>>;
+    expect(catalog['typesafe-system-one']?.['classifier:microsoft-decision-1']).toMatchObject({ type: 'classifier', provider: 'github-copilot', id: DECISION_1_VIA_COPILOT.id });
   });
 
   it('serves GPT-6 Luna from the pi-ai catalog on the Decisions API', () => {
@@ -66,6 +76,7 @@ describe('PiRuntime.runClassification', () => {
   function runtimeWith(configured: string[], classify: (ctx: ClassifierContext) => Partial<ClassifierResult>) {
     const runtime = PiRuntime.get();
     const fake = {
+      settleCredentialWrites: async () => undefined,
       hasConfiguredAuth: (p: string) => configured.includes(p),
       getModelOfType: (type: string, provider: string, id: string) => ({ type, provider, id, api: 'typesafe-system-one' }),
       classify: vi.fn(async (model: { provider: string; id: string }, ctx: ClassifierContext, _opts: unknown) => ({
@@ -342,6 +353,7 @@ describe('PiRuntime memory judge', () => {
     const configured = new Set(opts.configured);
     const sent: Array<{ model: string; reasoning: unknown }> = [];
     const fake = {
+      settleCredentialWrites: async () => undefined,
       hasConfiguredAuth: (p: string) => configured.has(p),
       getModel: (provider: string, id: string) => CHAT_MODELS.find((m) => m.provider === provider && m.id === id),
       getModelOfType: (type: string, provider: string, id: string) => ({ type, provider, id, api: provider === 'openai' ? 'openai-decisions' : 'typesafe-system-one' }),
@@ -389,7 +401,7 @@ describe('PiRuntime memory judge', () => {
 
   it('judges on GPT-6 Luna through the Decisions API with only an OpenAI API key, and bills it to openai/gpt-6-luna', async () => {
     const { runtime, fake } = judged({ configured: ['openai'], openaiKey: true });
-    expect(runtime.classifierCredentials()).toEqual({ typesafe: 'no-key', openrouter: 'no-key', openai: 'ok' });
+    expect(runtime.classifierCredentials()).toEqual({ typesafe: 'no-key', openrouter: 'no-key', openai: 'ok', 'github-copilot': 'signed-out' });
     expect(await runtime.runClassification(REQ)).toEqual(ANSWERS);
     expect(fake.classify.mock.calls[0]![0]).toMatchObject({ provider: 'openai', id: 'gpt-6-luna', api: 'openai-decisions' });
     expect(ledger()).toEqual([expect.objectContaining({ purpose: 'memory-rerank', provider: 'openai', model: 'gpt-6-luna' })]);
@@ -461,6 +473,20 @@ describe('PiRuntime memory judge', () => {
     const { runtime } = judged({ configured: ['github-copilot'] });
     expect(runtime.describeMemoryJudge()).toEqual({ kind: 'none' });
     expect(runtime.hasAuthedSubCallModel('memory-merge')).toBe(false);
+  });
+
+  it('judges on Microsoft-Decision-1 when chosen with a Copilot sign-in, and bills it to github-copilot', async () => {
+    const { runtime, fake } = judged({ configured: ['github-copilot'], settings: { 'damocles.memory.judge': 'decision-1-copilot' } });
+    expect(runtime.describeMemoryJudge()).toEqual({ kind: 'classifier', via: 'github-copilot' });
+    expect(await runtime.runClassification(REQ)).toEqual(ANSWERS);
+    expect(fake.classify.mock.calls[0]![0]).toMatchObject({ provider: 'github-copilot', id: 'microsoft-decision-1' });
+    expect(ledger()).toEqual([expect.objectContaining({ purpose: 'memory-rerank', provider: 'github-copilot', model: 'microsoft-decision-1' })]);
+  });
+
+  it('a chosen Microsoft-Decision-1 without a Copilot sign-in is no judge, reported as signed out', () => {
+    const { runtime } = judged({ configured: ['typesafe'], settings: { 'damocles.memory.judge': 'decision-1-copilot' } });
+    expect(runtime.classifierCredentials()['github-copilot']).toBe('signed-out');
+    expect(runtime.describeMemoryJudge()).toEqual({ kind: 'none', forced: { choice: 'decision-1-copilot', reason: 'signed-out' } });
   });
 
   it('a chosen GitHub Copilot model outside the plan of the stored sign-in is reported as not in the plan', () => {
@@ -553,5 +579,32 @@ describe('PiRuntime memory judge', () => {
       { model: 'anthropic/claude-haiku-5-5', reasoning: undefined },
       { model: 'anthropic/claude-sonnet-5-5', reasoning: 'high' },
     ]);
+  });
+
+  // a daemon's core reports these, so a Keep running close pushes their OAuth access tokens
+  describe('subCallProviders', () => {
+    const named = (runtime: PiRuntime): string[] => [...new Set(runtime.subCallProviders())].sort();
+
+    it('names a chosen Microsoft-Decision-1 as github-copilot, beside the Background model', () => {
+      const { runtime } = judged({ configured: ['github-copilot', 'anthropic'], settings: { 'damocles.memory.judge': 'decision-1-copilot' } });
+      expect(named(runtime)).toEqual(['anthropic', 'github-copilot']);
+    });
+
+    it("names Automatic's classifier and its fallback model", () => {
+      const { runtime } = judged({ configured: ['typesafe', 'anthropic'] });
+      expect(named(runtime)).toEqual(['anthropic', 'typesafe']);
+    });
+
+    it('names a model judge and a Background model on another provider', () => {
+      const { runtime } = judged({ configured: ['anthropic', 'github-copilot'], settings: { 'damocles.memory.judge': 'claude-sonnet-5-5', 'damocles.background.model': 'github-copilot/claude-haiku-5.5' } });
+      expect(named(runtime)).toEqual(['anthropic', 'github-copilot']);
+    });
+
+    it('names no classifier that cannot judge, and nothing with no sign-in', () => {
+      const { runtime, configured } = judged({ configured: ['anthropic'], settings: { 'damocles.memory.judge': 'jev-typesafe' } });
+      expect(named(runtime)).toEqual(['anthropic']);
+      configured.clear();
+      expect(named(runtime)).toEqual([]);
+    });
   });
 });

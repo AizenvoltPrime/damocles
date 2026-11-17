@@ -6,6 +6,8 @@ export const window = {
   }),
   showInformationMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),
+  // runs the task at once with a progress that reports nowhere, as a notification VS Code shows
+  withProgress: <T>(_options: unknown, task: (progress: { report: (value: unknown) => void }) => Promise<T>): Promise<T> => task({ report: () => {} }),
   showWarningMessage: () => Promise.resolve(undefined),
   showTextDocument: () => Promise.resolve(undefined),
   createStatusBarItem: () => ({
@@ -321,6 +323,7 @@ const workspaceMock = {
   workspaceFolders: [],
   onDidChangeConfiguration: (cb: ConfigCb) => __configEmitter.register(cb),
   onDidGrantWorkspaceTrust: (cb: TrustCb) => __trustEmitter.register(cb),
+  onDidChangeWorkspaceFolders: () => ({ dispose: () => {} }),
   onDidSaveTextDocument: () => ({ dispose: () => {} }),
   onDidRenameFiles: (cb: RenameCb) => __renameEmitter.register(cb),
   createFileSystemWatcher: (globPattern: GlobPattern) => {
@@ -464,6 +467,12 @@ export class MarkdownString {
   value: string;
   constructor(value?: string) { this.value = value ?? ''; }
 }
+
+export const ProgressLocation = {
+  SourceControl: 1,
+  Window: 10,
+  Notification: 15,
+} as const;
 
 export const StatusBarAlignment = {
   Left: 1,

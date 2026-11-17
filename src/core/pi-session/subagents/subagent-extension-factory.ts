@@ -43,7 +43,7 @@ export interface SubagentGateContext extends GatePermissionContext {
   hooks?: DispatchDeps;
   /**
    * Aborted by a Stop of this agent. The PostToolUse and SubagentStop hooks take it, because pi awaits them in the
-   * stopped run's wind-down and gives an `agent_settled` handler no signal (`agent.js:217-219` in pi-agent-core 1.4.0).
+   * stopped run's wind-down and gives an `agent_settled` handler no signal (`agent.js:217-219` in pi-agent-core 1.5.2).
    */
   stopSignal: AbortSignal;
   /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */
@@ -184,6 +184,7 @@ function registerSubagentHooks(
         hookCtx.cwd,
         buildAgentEndPayload(buildHookCommon(hookCtx), messages, { subagent: true, parentToolUseId: ctx.parentToolUseId }),
         ctx.stopSignal,
+        hookCtx.sessionManager.getSessionId(),
       );
     } catch (err) {
       log('[SubagentExtension] subagent_end (SubagentStop) hook failed: %O', err);
@@ -228,7 +229,7 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
           ? buildSubagentPreToolUseGate(ctx.hooks, hookCtx, preToolUseContextStash)
           : undefined;
       try {
-        return await runPermissionGate(event, ctx, hookCtx.signal, ctx.parentToolUseId, preToolUse);
+        return await runPermissionGate(event, ctx, hookCtx.signal, ctx.parentToolUseId, preToolUse, hookCtx.sessionManager.getSessionId());
       } catch (err) {
         log('[SubagentExtension] permission gate threw for %s: %O', event.toolName, err);
         return gateErrorFallback();

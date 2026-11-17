@@ -19,6 +19,9 @@ const H = vi.hoisted(() => {
     setRuntimeApiKey: vi.fn(async () => undefined),
     removeRuntimeApiKey: vi.fn(async () => undefined),
     getProviderAuthStatus: () => ({ configured: false }),
+    settleCredentialWrites: vi.fn(async (): Promise<void> => undefined),
+    stream: vi.fn(),
+    streamSimple: vi.fn(),
   };
   const fakePi = {
     createAgentSessionServices: createServicesSpy,
@@ -364,6 +367,32 @@ describe('PiRuntime.init lifecycle', () => {
     expect(runtime.modelRuntime).toBeNull();
     await expect(runtime.init()).rejects.toThrow(/disposed/);
     await expect(runtime.folder('/cwd')).rejects.toThrow(/disposed/);
+  });
+
+  it('ends its dispose only once a credential write in flight, such as an OAuth refresh a sub-call started, is written', async () => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    let releaseWrite!: () => void;
+    H.modelRuntime.settleCredentialWrites.mockClear();
+    H.modelRuntime.settleCredentialWrites.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseWrite = resolve; }));
+    let disposed = false;
+    const disposing = runtime.dispose().then(() => { disposed = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect([H.modelRuntime.settleCredentialWrites.mock.calls.length, disposed]).toEqual([1, false]);
+
+    releaseWrite();
+    await disposing;
+    expect(disposed).toBe(true);
+  });
+
+  it('sends every request of the runtime it creates without a server-side fallback list', async () => {
+    const sent = vi.fn();
+    H.modelRuntime.streamSimple = sent;
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    const model = { id: 'claude-fable-5-2', provider: 'anthropic', compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5' }] } };
+    runtime.modelRuntime!.streamSimple(model as never, { messages: [] });
+    expect(sent.mock.calls[0]?.[0]).toEqual({ id: 'claude-fable-5-2', provider: 'anthropic', compat: {} });
   });
 
   it('lets no secret or setting change made while it disposes reach the runtime', async () => {

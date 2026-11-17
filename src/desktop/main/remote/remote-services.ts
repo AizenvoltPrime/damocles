@@ -13,7 +13,7 @@ import type { HostPlatform, HostServicesDeps, HostState, HostTrust, HostUi, Host
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import type { ActiveEditorContext, DiffRequest } from '../../../platform/editor-service';
 import type { ChatReviewScope, SettingsFileScope } from '../../../shared/types/messages';
-import { authorityKeyOfProject, isAbsoluteOn, isInsideFolder } from '../../../shared/project-location';
+import { authorityKeyOfProject, isAbsoluteOn, isInsideFolder, targetFolderKeyOf } from '../../../shared/project-location';
 import type { SpawnSpec } from '../../../core/process-launcher';
 import { windowsExplorer } from '../../../core/system-tools';
 import type { PickOptions } from './remote-hosts';
@@ -196,7 +196,15 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
         if (unc !== undefined) await platform.shell.revealPath(unc);
       },
     },
-    window: platform.window,
+    window: {
+      ...platform.window,
+      // a remote core names the project by the target's folder key, which only a listed project of this authority maps to
+      locateProjectFolder: (folderKey) => {
+        const project = deps.projects().find((candidate) => targetFolderKeyOf(candidate.key) === folderKey);
+        if (project) platform.window.locateProjectFolder?.(project.key);
+        else deps.base.log(`[remote] ${deps.authority}'s core asked to locate a folder no project of it names`);
+      },
+    },
     lifecycle: { reload: () => refused('A reload') },
     workspaceFolders: folders,
     dialogs: {

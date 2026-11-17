@@ -117,6 +117,7 @@ export function startCoreForge(platform: CorePlatform, scm: CoreScm, log: (line:
   // the Choose account dialog goes through main: the CoreRequest forge.chooseAccount, its rows as forge.chooseAccountRows events
   endpoint.serve('forge.prepareGitOperation', (input, signal) => forge.prepareGitOperation(input, ui, signal));
   endpoint.serve('forge.forgetProject', ({ projectKey }) => forge.forgetProject(projectKey));
+  endpoint.serve('forge.relocateProject', ({ fromKey, toKey }) => forge.relocateProject(fromKey, toKey));
   endpoint.serve('forge.forgetHost', ({ authorityKey }) => forge.forgetHost(authorityKey));
   endpoint.serve('forge.keepHosts', ({ authorityKeys }) => forge.keepHosts(authorityKeys));
   // a terminal's helper (authorityKey 'local') or a target's takeover, which main relays

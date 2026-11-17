@@ -98,6 +98,7 @@ export interface ProjectAccounts {
   /** The Choose account dialog for a git credential request nothing else settled; the choice is bound to projectKey when there is one. */
   askForCredential(input: CredentialAskInput, ui: ChooseAccountUi, signal: AbortSignal): Promise<CredentialAsked>;
   forgetProject(projectKey: string): Promise<void>;
+  relocateProject(fromKey: string, toKey: string): Promise<void>;
   forgetHost(authorityKey: string): Promise<void>;
   /** Drops the bindings and host defaults of every remote authority outside kept; answers the authorities dropped. */
   keepHosts(kept: ReadonlySet<string>): Promise<readonly string[]>;
@@ -331,6 +332,11 @@ export function createProjectAccounts(deps: ProjectAccountsDeps): ProjectAccount
     async forgetProject(projectKey) {
       await deps.bindings.forgetProject(projectKey);
       deps.changed({ projectKeys: [projectKey] });
+    },
+
+    async relocateProject(fromKey, toKey) {
+      await deps.bindings.relocateProject(fromKey, toKey);
+      deps.changed({ projectKeys: [fromKey, toKey] });
     },
 
     async forgetHost(authorityKey) {

@@ -48,12 +48,19 @@ function mute(entry: Owned): void {
   if (entry.session) entry.session.sessionManager._persist = () => undefined;
 }
 
+function isUnder(dir: string, entry: Owned): boolean {
+  const relative = path.relative(dir, entry.dir);
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
 /** Before agent data is deleted: no session of this process, a held stopped run included, appends to a file under `dir` again. */
 export function muteAgentFilesUnder(dir: string): void {
-  for (const entry of owned.values()) {
-    const relative = path.relative(dir, entry.dir);
-    if (!relative.startsWith('..') && !path.isAbsolute(relative)) mute(entry);
-  }
+  for (const entry of owned.values()) if (isUnder(dir, entry)) mute(entry);
+}
+
+/** Whether a run of this process owns a file under `dir`, one pi has not written yet included. */
+export function agentFilesOwnedUnder(dir: string): boolean {
+  return [...owned.values()].some((entry) => isUnder(dir, entry));
 }
 
 const heldElsewhereError = (sessionId: string): Error =>

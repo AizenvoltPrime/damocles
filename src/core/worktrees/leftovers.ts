@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 import type { GitRunner } from '../scm/git-runner';
 import { findGitDir, GIT_FILE_READ_LIMIT, reachesAnotherHost, readBounded, readHead } from '../workspace-folders/git-head';
 import { folderKey } from '../workspace-folders/folder-key';
+import { isRelocationPending } from '../project-relocation/current';
 import { projectGit } from './create';
 import { REGISTRY_FILE, type ChatWorktreeRecord, type WorktreeRecord, type WorktreeRegistry } from './registry';
 import { folderContains } from './records';
@@ -104,7 +105,10 @@ export async function scanLeftovers(input: ScanInput): Promise<LeftoverFinding[]
   // AD12 Projects: the worktrees of a project that is not open are not reported.
   const open = new Set(input.projects.map(folderKey));
   const ofOpenProject = (record: WorktreeRecord): boolean => record.projectPath !== undefined && open.has(folderKey(record.projectPath));
+  // A relocation in flight re-points its project's records (docs/invariants.md "Project relocation").
+  const moving = (record: WorktreeRecord): boolean => isRelocationPending(record.worktreeRoot) || (record.projectPath !== undefined && isRelocationPending(record.projectPath));
   for (const record of registry.records()) {
+    if (moving(record)) continue;
     // A chat record is written before `git worktree add`, so a young record without its folder may be one being created.
     if (record.deletedAt !== undefined || now - record.createdAt < CREATION_GRACE_MS || (await exists(record.worktreeRoot))) continue;
     // An adopted worktree may sit on a drive that is not mounted now; only a folder gone from a parent that exists is deleted.
@@ -113,7 +117,7 @@ export async function scanLeftovers(input: ScanInput): Promise<LeftoverFinding[]
     if (ofOpenProject(record)) findings.push({ path: record.worktreeRoot, reason: 'missingFolder' });
   }
   for (const record of registry.records()) {
-    if (record.kind !== 'chat' || record.deletedAt !== undefined || record.usedAt !== undefined || now - record.createdAt < CREATION_GRACE_MS) continue;
+    if (record.kind !== 'chat' || record.deletedAt !== undefined || record.usedAt !== undefined || now - record.createdAt < CREATION_GRACE_MS || moving(record)) continue;
     if (!(await exists(record.worktreeRoot))) continue;
     // A record written before usedAt existed is marked once a session is found naming it.
     if (await sessionNames(record)) {
@@ -126,7 +130,7 @@ export async function scanLeftovers(input: ScanInput): Promise<LeftoverFinding[]
     const seen = new Set<string>();
     for (const project of input.projects) {
       // A project whose folder is gone has no worktree list to read, and git cannot start in it.
-      if (!input.isTrusted(project) || !(await exists(project))) continue;
+      if (!input.isTrusted(project) || isRelocationPending(project) || !(await exists(project))) continue;
       const git = projectGit(input.git, project);
       const listed = await git.run(project, ['worktree', 'list', '--porcelain', '-z'], { allowFailure: true });
       if (listed.exitCode !== 0) continue;

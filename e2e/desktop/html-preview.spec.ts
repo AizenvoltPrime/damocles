@@ -478,7 +478,7 @@ test('Remove Project closes its preview tab, which cannot load without its root,
   await expect.poll(async () => (await activeTab(app))?.htmlPreview?.status, { timeout: 60_000 }).toBe('ready');
 
   const projectKey = (await shellState(app)).projects.find((project) => project.fsPath === home.project)!.key;
-  expect(await shell.evaluate((key) => window.damoclesShell!.removeProject(key), projectKey)).toEqual({ ok: true });
+  expect(await shell.evaluate((key) => window.damoclesShell!.removeProject(key), projectKey)).toEqual({ ok: true, removed: true });
   await expect(previewTab(shell)).toHaveCount(0);
   await expect.poll(async () => (await previewViews(app)).length).toBe(0);
 

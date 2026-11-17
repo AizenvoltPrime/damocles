@@ -11,6 +11,7 @@ import type { SessionFileWrite } from '../../core/pi-session/session-store/sessi
 import type { AskpassPaths } from '../../core/scm/askpass/askpass-server';
 import type { CommitFailure } from '../../core/scm/repository';
 import type { ForgeMirror } from '../../core/forge';
+import { RELOCATION_STEPS, type Coded, type MovedFromCandidate, type PreflightAnswer, type PreflightRequest, type RelocationPauseAfter, type RelocationRequest, type RelocationView } from '../../core/project-relocation/types';
 import { FORGE_AVATAR_MAX_BYTES } from '../../shared/forge/accounts';
 import { MAX_FORGE_TOOL_TEXT_CHARS, type ForgeDescribeAnswer, type ForgeToolAnswer, type ForgeToolRequest, type RelayedForgeRequest } from '../../shared/forge/tools';
 import type { PermissionDetail, PermissionUpdate } from '../../shared/types/permissions';
@@ -54,7 +55,7 @@ import type { PageSpec } from '../../shared/panel-html';
 import { brokerEnvOf, CLIENT_PENDING_REASONS, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientMcp, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { RelayedServedFile, ServedFile, ServedFileAnswer } from '../../shared/served-file-url';
 import type { UserProfile } from '../../shared/types/memory';
-import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
+import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewAnswer, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
 import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_OUTLINE_CHARS, MAX_JOURNEY_STEPS, parseJourneySteps } from '../../shared/design-journey';
 import { MAX_TWEAK_CONTROLS, MAX_TWEAK_STOPS, MIN_TWEAK_CONTROLS, MIN_TWEAK_STOPS, TWEAK_TOKEN_NAME } from '../../shared/design-tweaks';
 import { MAX_CHANGED_PATHS, MAX_CONSOLE_ERRORS, MAX_FULL_PAGE_FRAMES, MAX_OVERFLOWING, MAX_PROBE_ELEMENTS, MAX_PROBE_LINE_CHARS, MAX_PROBE_PX, MAX_PROBE_WIDTHS, MAX_RENDER_IMAGE_SIDE, MAX_RENDER_SCALE, MAX_RENDER_SELECTOR_CHARS, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH, RENDER_FRAME_HEIGHT } from '../../shared/design-render';
@@ -90,6 +91,10 @@ export const PAGE_STATE_TYPES: ReadonlySet<string> = new Set(['urlChanged', 'nav
 export const DIFF_TITLE_NAME = '\u0000name\u0000';
 
 export type StateScope = 'global' | 'workspace';
+
+// The OSes a remote host runs; only win32 has path rules of its own.
+export const MIRROR_HOST_OSES = ['linux', 'darwin', 'win32'] as const;
+export type MirrorHostOs = (typeof MIRROR_HOST_OSES)[number];
 
 /**
  * A panel envelope's panelId is its view's id on both sides: core issues it for a panel core creates, main for a chat view
@@ -226,7 +231,8 @@ export interface CoreRequests {
   // (scope: CHAT_BROWSER_SCOPE for the chat's agent, else a subagent's or team member's scope id); served: BrowserOpen's or
   // BrowserNavigate's file:// address is the root file the core resolved, which the client serves (user.browser.servedFiles)
   'user.browser.tool': Call<{ readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown; readonly served?: RelayedServedFile }, BrowserToolAnswer>;
-  // this computer's core: the one-time URL of a root file of the chat view's project or design, from main's served root
+  // this computer's core: the one-time URL of a root file of the chat view's project or design, or of a folder its gate granted the
+  // chat, from main's served root
   'browser.servedFileUrl': Call<{ readonly viewId: string } & ServedFile, ServedFileAnswer>;
   // a daemon's core: a subagent's or team member's browser scope of the chat's view ended; the client showing the view
   // disposes that scope, closing its tabs when closeTabs (the agent succeeded)
@@ -276,6 +282,8 @@ export interface CoreRequests {
   'design.journey': Call<{ readonly designId: string; readonly relPath: string; readonly widths: readonly number[]; readonly state: string | null; readonly steps: readonly JourneyStep[]; readonly outline?: boolean }, DesignJourneyRun>;
   // the steps replayed in the live preview tab of relPath in design chat panelId, opened or shown; answers once the replay ended
   'design.replayJourney': Call<{ readonly panelId: string; readonly designId: string; readonly relPath: string; readonly state: string | null; readonly steps: readonly JourneyStep[]; readonly reducedMotion: boolean }, void>;
+  // runs the host's Locate flow for the listed project with this key, the core's own folderKey of its path
+  'window.locateProjectFolder': Call<{ readonly folderKey: string }, void>;
 }
 
 export type { BrokerAnswer, BrowserToolAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
@@ -337,7 +345,11 @@ export interface MainRequests {
   'chats.openTranscript': Call<{ readonly viewId: string; readonly hostId: string; readonly file: string }, void>;
   // a local core lists one project's chats of a host's session mirror (StoredSession rows, newest first), narrowed to query:
   // folder is <userData>/remote/<hostId>/mirror/<project folder>, which core checks again, and core writes nothing for it
-  'chats.listMirrored': Call<{ readonly hostId: string; readonly folder: string; readonly query?: string }, readonly unknown[]>;
+  /**
+   * `os`: the host's, whose path rules decide which folders its sessions name alike; this computer's when absent. `project`: the
+   * project's folder on the host, whose chats alone list from a session directory a colliding folder shares; absent, every chat there lists.
+   */
+  'chats.listMirrored': Call<{ readonly hostId: string; readonly folder: string; readonly query?: string; readonly os?: MirrorHostOs; readonly project?: string }, readonly unknown[]>;
   // settles once core set up a chat it created itself, registered or not
   'chats.whenSetUp': Call<{ readonly viewId: string }, void>;
   'chats.setWorktreeOptIn': Call<{ readonly panelId: string; readonly startRef: string; readonly bringChanges: boolean }, void>;
@@ -424,6 +436,8 @@ export interface MainRequests {
   'forge.setHostDefault': Call<{ readonly authorityKey: string; readonly serverId: string; readonly accountId: string | null }, boolean>;
   'forge.prepareGitOperation': Call<PrepareGitOperationInput, PrepareGitOperationResult>;
   'forge.forgetProject': Call<{ readonly projectKey: string }, void>;
+  // a moved project's bindings go to its new project key; idempotent
+  'forge.relocateProject': Call<{ readonly fromKey: string; readonly toKey: string }, void>;
   'forge.forgetHost': Call<{ readonly authorityKey: string }, void>;
   // the remote authorities this computer still holds, sent at each local core start: core drops the bindings and host defaults
   // of every other, which a Forget host made while the engine was halted left
@@ -483,6 +497,8 @@ export interface MainRequests {
   'forge.openOrgAccess': Call<{ readonly accountId: string; readonly org: string }, boolean>;
   // a held design's widths and one screen's declared states; nothing: not held, or the screen cannot be read
   'design.info': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewInfo | undefined>;
+  // design.info that also says a page is missing (no file there); main asks it only of a core listing design.infoMissing
+  'design.previewAnswer': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewAnswer>;
   // a preview's markup (PD-12) to design chat panelId: png is base64 with no data: prefix, json the shell's MarkupJsonInput,
   // both parsed by core; the markup's F<n>, or why core refused it
   'design.markup': Call<{ readonly panelId: string; readonly png: string; readonly json: unknown }, { readonly feedbackId: string } | { readonly refused: LocalizedText }>;
@@ -497,6 +513,23 @@ export interface MainRequests {
   'scm.repo': Call<{ readonly repoId: string; readonly method: RepositoryCall; readonly args: readonly unknown[] }, unknown>;
   // core's worktree git and registry work (scm-calls.ts WORKTREE_CALLS), records named by id
   'worktrees.call': Call<{ readonly method: WorktreeCall; readonly args: readonly unknown[] }, unknown>;
+  // a moved project folder's relocation (docs/invariants.md "Project relocation"); main sends them to a remote core only when its
+  // daemon lists projects.relocate
+  'projects.relocationPreflight': Call<PreflightRequest, PreflightAnswer>;
+  // settles once the journal record is written, before anything moves
+  'projects.relocate': Call<RelocationRequest, { readonly id: string } | { readonly refusal: Coded }>;
+  'projects.relocationRetry': Call<{ readonly id: string }, void>;
+  // Stop moving: abandons a paused relocation, what it moved staying where it landed; main sends it to a remote core only when
+  // its daemon lists projects.relocationAbandon
+  'projects.relocationAbandon': Call<{ readonly id: string }, { readonly abandoned: true } | { readonly refusal: Coded }>;
+  // coreDone relocations whose from-folder's key is in keys, the latest per key
+  'projects.relocationsFrom': Call<{ readonly keys: readonly string[] }, readonly RelocationView[]>;
+  // the hostState step again in this core, a no-op once nothing is left under the old key
+  'projects.applyHostState': Call<{ readonly id: string }, void>;
+  // the missing project folders of the same repository whose chats the folder may take over
+  'projects.movedFrom': Call<{ readonly to: string }, readonly MovedFromCandidate[]>;
+  // this computer's core: a host project moved from from to to (paths as the host spells them), for /stats; idempotent
+  'projects.addHostAlias': Call<{ readonly hostId: string; readonly from: string; readonly to: string; readonly startedAt?: number }, void>;
   // unpackaged builds with DAMOCLES_E2E_HOOKS=1 only
   'e2e.inputBox': Call<InputBoxOptions, string | undefined>;
   'e2e.routeBrowser': Call<{ readonly pattern: string; readonly toHost: string }, void>;
@@ -520,6 +553,8 @@ export interface MainRequests {
   'e2e.clientNetworkAnswers': Call<{ readonly answers: Readonly<Record<string, readonly (readonly string[])[]>> }, void>;
   // this computer's core signs in to a stub OAuth account whose tokens expire after expiresInMs; offline: its refresh fails
   'e2e.stubOAuth': Call<{ readonly account: string; readonly expiresInMs: number; readonly offline?: boolean }, void>;
+  // after this many sessions the sessions step commits, the relocation pauses as stopped, or hangs holding its lock; null clears
+  'e2e.relocationPauseAfter': Call<RelocationPauseAfter, void>;
   // this computer's core: a credential for a daemon's broker, resolved and refreshed by its own pi
   // force: refreshed under pi's lock even while the token is not expiring (Keep running)
   'user.resolveCredential': Call<{ readonly provider: string; readonly force?: boolean }, BrokerAnswer>;
@@ -595,6 +630,8 @@ export interface CoreEvents {
   'worktrees.newChatInProject': { readonly projectPath: string };
   // a daemon's core: the providers a chat's runs read through the token broker, for the daemon's run registry
   'chat.providers': { readonly panelId: string; readonly providers: readonly string[] };
+  // a daemon's core: the providers a chat's configuration names, sorted, each once; a report replaces the previous one
+  'chat.configuredProviders': { readonly panelId: string; readonly providers: readonly string[] };
   // this computer's core: a foreign proxy's post to a remote chat's view, which main delivers after its own checks
   'panel.foreignPost': { readonly viewId: string; readonly message: unknown };
   // this computer's core: a credential changed, so user.clientAuth answers differently
@@ -637,6 +674,8 @@ export interface CoreMirrorTopics {
   forge: ForgeMirror;
   // this computer's core: the commit authors' avatar keys main may serve besides the forge mirror's, whole on every change
   forgeAuthorAvatars: { readonly keys: readonly string[] };
+  // pending relocations and those that reached coreDone in this core's run, whole on every change
+  relocations: { readonly records: readonly RelocationView[] };
 }
 
 /** The facts main reads off an open repository; the paths and kind it acts on are parsed field by field, the snapshot as data. */
@@ -1062,6 +1101,30 @@ const scmRepository: Parser<ScmRepositoryEntry> = obj({
   snapshot: value,
 });
 const nullable = <T>(parser: Parser<T>): Parser<T | null> => (raw) => (raw === null ? null : parser(raw));
+const coded: Parser<Coded> = obj({ code: id, params: opt(dict(either<string, number>(label, finite), MAX_ID_CHARS, MAX_ACTIONS)) });
+const relocationMode = oneOf(['locate', 'merge'] as const);
+const relocationRequest: Parser<RelocationRequest> = obj({ from: filePath, to: filePath, listed: arr(filePath, MAX_ITEMS) });
+const relocationView: Parser<RelocationView> = obj({
+  id,
+  seq: int(1, Number.MAX_SAFE_INTEGER),
+  requestedBy: oneOf(['desktop', 'vscode', 'daemon'] as const),
+  mode: relocationMode,
+  from: filePath,
+  to: filePath,
+  state: oneOf(['running', 'paused', 'coreDone'] as const),
+  startedAt: opt(count),
+  step: oneOf(RELOCATION_STEPS),
+  progress: obj({ done: int(0, MAX_ITEMS), total: int(0, MAX_ITEMS) }),
+  failure: opt(coded),
+  waiting: opt(arr(coded, MAX_ACTIONS)),
+  chats: int(0, MAX_ITEMS),
+  worktrees: opt(arr(obj({ worktreeId: id, from: filePath, to: filePath }), MAX_ITEMS)),
+  repairFailures: opt(arr(obj({ worktreeId: id, failure: coded }), MAX_ITEMS)),
+});
+const preflightAnswer: Parser<PreflightAnswer> = either(
+  obj({ ok: yes, mode: relocationMode, chats: int(0, MAX_ITEMS), worktrees: int(0, MAX_ITEMS), notices: arr(coded, MAX_ACTIONS) }),
+  obj({ ok: (raw): false | typeof INVALID => (raw === false ? false : INVALID), refusal: coded }),
+);
 const REMOTE_OPS = Object.keys({ fetch: 0, pull: 0, push: 0, sync: 0, deleteRemoteBranch: 0, deleteRemoteTag: 0 } satisfies Record<RemoteOp, 0>) as readonly RemoteOp[];
 const REMOTE_OUTCOMES = Object.keys({ ok: 0, failed: 0, cancelled: 0 } satisfies Record<RemoteOutcomeKind, 0>) as readonly RemoteOutcomeKind[];
 const COMMIT_REFUSALS = Object.keys({ emptyMessage: 0, nothingToCommit: 0, unresolvedConflicts: 0, missingUserConfig: 0, cancelled: 0 } satisfies Record<Exclude<CommitFailure, 'failed'>, 0>) as ReadonlyArray<Exclude<CommitFailure, 'failed'>>;
@@ -1454,7 +1517,9 @@ const designJourneyRun: Parser<DesignJourneyRun> = obj({
 });
 const projectFile = { kind: oneOf(['project'] as const), relPath: filePath };
 const designFile = { kind: oneOf(['design'] as const), designId, relPath: filePath };
-const relayedServedFile: Parser<RelayedServedFile> = either(obj({ ...projectFile, displayRoot: filePath }), obj({ ...designFile, displayRoot: filePath }));
+// a folder the core's permission gate granted the chat, by its path on the core's machine (user.browser.servedFolders)
+const folderFile = { kind: oneOf(['folder'] as const), folder: filePath, relPath: filePath };
+const relayedServedFile: Parser<RelayedServedFile> = either(either(obj({ ...projectFile, displayRoot: filePath }), obj({ ...designFile, displayRoot: filePath })), obj({ ...folderFile, displayRoot: filePath }));
 const servedFileAnswer: Parser<ServedFileAnswer> = either(obj({ url: message, origin: label }), obj({ refused: message, unavailable: opt(bool) }));
 
 const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
@@ -1549,7 +1614,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.credentials': method(obj({ provider: id, clientId: id }), brokerAnswer),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
   'user.browser.tool': method(obj({ viewId: id, scope: id, tool: id, input: value, served: opt(relayedServedFile) }), browserToolAnswer),
-  'browser.servedFileUrl': method(either(obj({ viewId: id, ...projectFile }), obj({ viewId: id, ...designFile })), servedFileAnswer),
+  'browser.servedFileUrl': method(either(either(obj({ viewId: id, ...projectFile }), obj({ viewId: id, ...designFile })), obj({ viewId: id, ...folderFile })), servedFileAnswer),
   'user.browser.release': method(obj({ viewId: id, scope: id, closeTabs: bool, discard: opt(bool) }), done),
   'user.memory.search': method(obj({ clientId: id, query: text, k: searchCount, tiers: memoryTiers, injection: opt(bool), since: opt(memoryTime), until: opt(memoryTime), includeForgotten: opt(bool) }), searchedMemories),
   'user.memory.profile': method(obj({ clientId: id }), clientGlobalProfile),
@@ -1576,6 +1641,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'design.probe': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), sweepTo: opt(renderWidth) }), designProbeResult),
   'design.journey': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), steps: journeySteps, outline: opt(bool) }), designJourneyRun),
   'design.replayJourney': method(obj({ panelId: id, designId, relPath: filePath, state: nullable(id), steps: journeySteps, reducedMotion: bool }), done),
+  'window.locateProjectFolder': method(obj({ folderKey: filePath }), done),
 };
 
 const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
@@ -1604,7 +1670,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'chats.restore': method(obj({ viewId: id, folderKey: opt(filePath), permissions: opt(chatPermissions) }), done),
   'chats.startInWorktree': method(obj({ viewId: id, projectKey: filePath, worktreeId: id }), done),
   'chats.openTranscript': method(obj({ viewId: id, hostId: id, file: filePath }), done),
-  'chats.listMirrored': method(obj({ hostId: id, folder: filePath, query: opt(label) }), rows),
+  'chats.listMirrored': method(obj({ hostId: id, folder: filePath, query: opt(label), os: opt(oneOf(MIRROR_HOST_OSES)), project: opt(filePath) }), rows),
   'chats.whenSetUp': method(viewRef, done),
   'chats.setWorktreeOptIn': method(obj({ panelId: id, startRef: label, bringChanges: bool }), done),
   'chats.restoreDraft': method(obj({ panelId: id, content: rows }), done),
@@ -1662,6 +1728,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
     obj({ proceed: bool, signInServerId: opt(label), bind: opt(obj({ serverId: label, accountId: forgeAccountId })) }),
   ),
   'forge.forgetProject': method(obj({ projectKey: filePath }), done),
+  'forge.relocateProject': method(obj({ fromKey: filePath, toKey: filePath }), done),
   'forge.forgetHost': method(obj({ authorityKey: label }), done),
   'forge.keepHosts': method(obj({ authorityKeys: arr(label, MAX_ITEMS) }), done),
   'forge.gitCredential': method(obj({ request: gitCredentialRequest, origin: credentialOrigin, authorityKey: label, projectKey: opt(filePath), consentedAccountId: opt(label) }), forgeGitCredentialResult),
@@ -1736,12 +1803,21 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   ),
   'forge.openOrgAccess': method(obj({ accountId: label, org: label }), bool),
   'design.info': method(obj({ designId, relPath: filePath }), maybe(designPreviewInfo)),
+  'design.previewAnswer': method(obj({ designId, relPath: filePath }), maybe(either(designPreviewInfo, obj({ missing: yes })))),
   'design.markup': method(obj({ panelId: id, png: str(MAX_IMAGE_BASE64_LENGTH), json: data(MAX_MARKUP_JSON_CHARS) }), either(obj({ feedbackId: id }), obj({ refused: localizedMessage }))),
   'design.tweak': method(obj({ panelId: id, tweakId: id, value: tokenName }), either(obj({ kept: yes }), obj({ refused: localizedMessage }))),
   'design.previewScreen': method(obj({ path: filePath }), either(obj({ opened: yes }), obj({ refused: localizedMessage }))),
   'scm.generateMessage': method(obj({ repoId: id }), value),
   'scm.repo': method(obj({ repoId: id, method: oneOf(REPOSITORY_CALLS), args: callArgs }), value),
   'worktrees.call': method(obj({ method: oneOf(WORKTREE_CALLS), args: callArgs }), value),
+  'projects.relocationPreflight': method(obj({ from: filePath, to: filePath, listed: arr(filePath, MAX_ITEMS), heldHere: opt(oneOf(['ignore'] as const)) }), preflightAnswer),
+  'projects.relocate': method(relocationRequest, either(obj({ id }), obj({ refusal: coded }))),
+  'projects.relocationRetry': method(obj({ id }), done),
+  'projects.relocationAbandon': method(obj({ id }), either(obj({ abandoned: yes }), obj({ refusal: coded }))),
+  'projects.relocationsFrom': method(obj({ keys: arr(filePath, MAX_ITEMS) }), arr(relocationView, MAX_ITEMS)),
+  'projects.applyHostState': method(obj({ id }), done),
+  'projects.movedFrom': method(obj({ to: filePath }), arr(obj({ from: filePath, chats: int(0, MAX_ITEMS) }), MAX_ITEMS)),
+  'projects.addHostAlias': method(obj({ hostId: id, from: filePath, to: filePath, startedAt: opt(count) }), done),
   'e2e.inputBox': method(obj({ prompt: opt(label), placeholder: opt(label), password: opt(bool), ignoreFocusOut: opt(bool) }), maybe(message)),
   'e2e.routeBrowser': method(obj({ pattern: label, toHost: label }), done),
   'e2e.routedRequests': method(nothing, arr(message, MAX_ITEMS)),
@@ -1756,6 +1832,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   // each name takes its answers in turn, so a name has at least one
   'e2e.clientNetworkAnswers': method(obj({ answers: dict(arr(arr(nonEmpty(MAX_LABEL_CHARS), MAX_ACTIONS), MAX_ACTIONS, 1), MAX_KEY_CHARS, MAX_ACTIONS) }), done),
   'e2e.stubOAuth': method(obj({ account: (raw) => (typeof raw === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(raw) ? raw : INVALID), expiresInMs: int(1000, 3_600_000), offline: opt(bool) }), done),
+  'e2e.relocationPauseAfter': method(obj({ sessions: nullable(int(0, MAX_ITEMS)), mode: oneOf(['pause', 'hang'] as const) }), done),
   'user.resolveCredential': method(obj({ provider: id, force: opt(bool) }), brokerAnswer),
   'user.clientAuth': method(nothing, heldAuth),
   'user.credentials.push': method(obj({ provider: providerId, credential: pushedCredential }), done),
@@ -1799,6 +1876,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'worktrees.newChatInWorktree': obj({ projectPath: filePath, worktreeId: id }),
     'worktrees.newChatInProject': obj({ projectPath: filePath }),
     'chat.providers': obj({ panelId: id, providers: arr(id, MAX_ACTIONS) }),
+    'chat.configuredProviders': obj({ panelId: id, providers: arr(id, MAX_ACTIONS) }),
     'panel.foreignPost': obj({ viewId: id, message: value }),
     'user.clientAuthChanged': nothing,
     'user.mcpChanged': nothing,
@@ -1822,6 +1900,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
       avatarKeys: arr(avatarKeyParser, MAX_ITEMS),
     }),
     forgeAuthorAvatars: obj({ keys: arr(avatarKeyParser, MAX_AUTHOR_KEYS) }),
+    relocations: obj({ records: arr(relocationView, MAX_ITEMS) }),
   },
   panelOps: {
     create: panelCreate,

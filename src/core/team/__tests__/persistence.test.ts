@@ -663,6 +663,32 @@ describe('TeamPersistence.loadTeamState after a resume', () => {
     return persistence;
   }
 
+  it('shows the stop a rejected call ended a member or the team on, until a resume clears it', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'resume-rejected');
+    const persistence = new TeamPersistence(cwd, SESSION_ID);
+    persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({ type: 'team-created', teamId: TEAM_ID, title: 't', toolUseId: 'tu-create', agents: [{ name: 'lead', role: 'lead' }, { name: 'dev', role: 'specialist' }], timestamp: '2026-09-01T10:00:00.000Z' });
+    persistence.appendTeamEntry({ type: 'agent-spawned', teamId: TEAM_ID, agentId: 'lead-1', name: 'lead', specialization: 'Lead: t', model: 'opus', attempt: 0, timestamp: '2026-09-01T10:00:01.000Z' });
+    persistence.appendTeamEntry({ type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'dev', specialization: 'build it', model: 'sonnet', attempt: 0, timestamp: '2026-09-01T10:00:02.000Z' });
+    persistence.appendTeamEntry({ type: 'team-cancelled', teamId: TEAM_ID, run: { toolCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 }, stopReason: 'denied', timestamp: '2026-09-01T10:01:00.000Z' });
+    persistence.appendTeamEntry({ type: 'agent-completed', teamId: TEAM_ID, agentId: 'lead-1', name: 'lead', status: 'cancelled', result: null, toolCallCount: 1, stopReason: 'denied', timestamp: '2026-09-01T10:01:01.000Z' });
+    persistence.appendTeamEntry({ type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'dev', status: 'cancelled', result: null, toolCallCount: 1, stopReason: 'hookDenied', timestamp: '2026-09-01T10:01:02.000Z' });
+    persistence.appendTeamEntry({ type: 'team-completed', teamId: TEAM_ID, status: 'cancelled', synthesizedResult: 'partial', agentResults: [], timestamp: '2026-09-01T10:01:03.000Z' });
+
+    const stopped = await persistence.loadTeamState(TEAM_ID);
+    expect(stopped?.runs.map((r) => [r.status, r.stopReason])).toEqual([['cancelled', 'denied']]);
+    expect(stopped?.agents.map((a) => [a.name, a.status, a.stopReason])).toEqual([['lead', 'cancelled', 'denied'], ['dev', 'cancelled', 'hookDenied']]);
+
+    persistence.appendTeamEntry({ type: 'team-resumed', teamId: TEAM_ID, toolUseId: 'tu-resume', checkpoint: 1, timestamp: '2026-09-01T11:00:00.000Z' });
+    persistence.appendTeamEntry({ type: 'agent-resumed', teamId: TEAM_ID, agentId: 'lead-1', name: 'lead', attempt: 0, resumeCount: 1, mode: 'relaunch', status: 'running', timestamp: '2026-09-01T11:00:01.000Z' });
+    persistence.appendTeamEntry({ type: 'agent-resumed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'dev', attempt: 0, resumeCount: 1, mode: 'park', status: 'standby', stopReason: 'hookDenied', timestamp: '2026-09-01T11:00:02.000Z' });
+
+    const resumed = await persistence.loadTeamState(TEAM_ID);
+    expect(resumed?.runs.map((r) => [r.toolUseId, r.stopReason])).toEqual([['tu-create', 'denied'], ['tu-resume', undefined]]);
+    expect(resumed?.agents[0]).not.toHaveProperty('stopReason');
+    expect(resumed?.agents[1]).toMatchObject({ name: 'dev', stopReason: 'hookDenied' });
+  });
+
   it('shows a cancelled team as cancelled until it is resumed', async () => {
     const state = await cancelledTeam(join(DAMOCLES_HOME_DIR, 'resume-before')).loadTeamState(TEAM_ID);
 
@@ -922,6 +948,14 @@ describe('TeamPersistence checkpoint files', () => {
     expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'budget' })).toBe(false);
   });
 
+  it('accepts a stop on the lead\'s rejected call and the calls members ended on, and rejects a malformed call', () => {
+    const rejected = (rejectedCalls: unknown): unknown => ({ ...checkpoint(), stoppedBy: 'hookDenied', review: { ...checkpoint().review, rejectedCalls } });
+    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'denied' })).toBe(true);
+    expect(isTeamCheckpoint(rejected([['dev', { toolCallId: 'c1', toolName: 'Bash', cause: 'user' }]]))).toBe(true);
+    expect(isTeamCheckpoint(rejected([['dev', { toolCallId: 'c1', toolName: 'Bash', cause: 'model' }]]))).toBe(false);
+    expect(isTeamCheckpoint(rejected([['dev', { toolCallId: 'c1', cause: 'hook' }]]))).toBe(false);
+  });
+
   describe('live checkpoints', () => {
     const live = (cancelledAt = CANCELLED_AT): TeamCheckpoint => ({
       ...checkpoint(cancelledAt),
@@ -949,6 +983,13 @@ describe('TeamPersistence checkpoint files', () => {
 
     it.each([['a string', 'msg-7'], ['a number in the list', [7]], ['null', null]])('rejects delivery ids that are %s', (_label, ids) => {
       expect(isTeamCheckpoint({ ...live(), members: [{ ...live().members[0]!, undelivered: [{ text: 't', echoed: false, ids }] }] })).toBe(false);
+    });
+
+    it('accepts a message held behind a rejection, and rejects a held flag that is not true', () => {
+      const withHeld = (held: unknown): unknown => ({ ...live(), members: [{ ...live().members[0]!, undelivered: [{ text: 't', echoed: false, held }] }] });
+      expect(isTeamCheckpoint(withHeld(true))).toBe(true);
+      expect(isTeamCheckpoint(withHeld(false))).toBe(false);
+      expect(isTeamCheckpoint(withHeld('true'))).toBe(false);
     });
 
     it('reads a live checkpoint back exactly', async () => {

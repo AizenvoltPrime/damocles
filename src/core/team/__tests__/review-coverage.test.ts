@@ -13,10 +13,11 @@ const roster: RosterMember[] = [
 
 const statuses = (map: Record<string, TeamAgent['status']>) => (name: string): TeamAgent['status'] => map[name] ?? 'running';
 
-/** Unread sections are keyed `reviewer|implementor`; every other pair has read everything. */
-const view = (map: Record<string, TeamAgent['status']> = {}, unread: Record<string, StaleSectionInfo[]> = {}): CoverageView => ({
+/** Unread sections are keyed `reviewer|implementor`; every other pair has read everything. `waiting` names the members parked on a rejection. */
+const view = (map: Record<string, TeamAgent['status']> = {}, unread: Record<string, StaleSectionInfo[]> = {}, waiting: string[] = []): CoverageView => ({
   statusOf: statuses(map),
   staleReads: (reviewer, implementor) => unread[`${reviewer}|${implementor}`] ?? [],
+  waitingForLead: (name) => waiting.includes(name),
 });
 
 const backendApiV3: StaleSectionInfo = { section: 'backend-api', currentVersion: 3, lastReadVersion: 2, author: 'backend' };
@@ -355,6 +356,28 @@ describe('ReviewCoverage approval rules', () => {
       'Cannot approve "backend": its reviewer "appsec" has not signed off on backend\'s latest revision (revision 0; appsec covers no revision). ' +
       'appsec is running and still owes that review, so wait for its report, then approve backend before appsec.',
     );
+  });
+
+  it('names the lead\'s message or a cancel for a member parked on a rejected call, never a wait', () => {
+    const coverage = paired();
+    const parkedReviewer = view({ appsec: 'standby' }, {}, ['appsec']);
+    expect(coverage.checkApproval('backend', parkedReviewer)).toBe(
+      'Cannot approve "backend": its reviewer "appsec" has not signed off on backend\'s latest revision (revision 0; appsec covers no revision). ' +
+      'appsec stopped on a rejected tool call and waits for you: message it with team_send_message to review backend\'s current sections, or cancel it with team_cancel_specialist and dismiss the review.',
+    );
+    const [u] = coverage.unsatisfied(parkedReviewer);
+    expect(coverage.describeUnsatisfied(u!, parkedReviewer).move).toBe('message appsec with team_send_message, or cancel it with team_cancel_specialist and dismiss the review');
+
+    const parkedImplementor = view({ backend: 'standby' }, {}, ['backend']);
+    expect(coverage.checkApproval('appsec', parkedImplementor)).toBe(
+      'Cannot approve reviewer "appsec" yet: it reviews "backend", which stopped on a rejected tool call and waits for you. ' +
+      'Message backend with team_send_message to continue, or cancel it with team_cancel_specialist; approve appsec once backend is final and its review is satisfied.',
+    );
+    expect(coverage.noticeLines('appsec', parkedImplementor)).toEqual([
+      'reviews backend: waiting for you after a rejected tool call [approval blocked: message it with team_send_message or cancel it]',
+    ]);
+    // Synthesis stops it rather than completing it, so its review does not hold the synthesis.
+    expect(coverage.unsatisfied(parkedImplementor)).toEqual([]);
   });
 
   it('reviewer lines name the move for a completed implementor', () => {

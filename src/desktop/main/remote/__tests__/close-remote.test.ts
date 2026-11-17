@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({}));
-import type { Run } from '../../../daemon/control-messages';
+import type { OwnRun } from '../../../daemon/control-messages';
 import { MAX_OVERLAY_ITEMS, MAX_OVERLAY_LABEL_LENGTH, type CloseRemoteRow } from '../../../preload/overlay-channels';
 import { parseCloseRemoteRequest } from '../../overlay';
 import { askRemoteRuns, CLOSE_REMOTE_STEP_MS, closeRowId, listHostRuns, type CloseRemoteDeps, type CloseWithRunningAgents, type HostRuns } from '../close-remote';
-import { runKey, type TokenNote } from '../keep-running-refresh';
+import { runKey, type KeepRunningRun, type TokenNote } from '../keep-running-refresh';
 
 // the question, then its answer acted on as a close that passed every question does
 async function release(deps: CloseRemoteDeps, unattended: boolean): Promise<boolean> {
@@ -15,14 +15,15 @@ async function release(deps: CloseRemoteDeps, unattended: boolean): Promise<bool
   return true;
 }
 
-const run = (id: string, providers: readonly string[] = ['anthropic']): Run => ({ kind: 'chat', id, projectKey: '/srv/app', title: `chat ${id}`, state: 'running', providers });
+const run = (id: string, providers: readonly string[] = ['anthropic']): OwnRun => ({ kind: 'chat', id, projectKey: '/srv/app', title: `chat ${id}`, state: 'running', providers });
 
-function deps(options: { hosts?: readonly HostRuns[]; later?: readonly HostRuns[]; setting?: CloseWithRunningAgents; notes?: ReadonlyMap<string, TokenNote> } = {}) {
+function deps(options: { hosts?: readonly HostRuns[]; later?: readonly HostRuns[]; setting?: CloseWithRunningAgents; notes?: ReadonlyMap<string, TokenNote>; keyProviders?: ReadonlyMap<string, readonly string[]> } = {}) {
   const hosts = options.hosts ?? [{ hostId: 'h1', authorityKey: 'ssh+h1', runs: [run('host-1')] }];
   const listed: Array<readonly HostRuns[]> = [hosts, options.later ?? hosts];
   const recorded: Array<readonly HostRuns[]> = [];
   const events: string[] = [];
   const shown: Array<readonly CloseRemoteRow[]> = [];
+  const refreshed: Array<readonly KeepRunningRun[]> = [];
   let statusListener: ((authorityKey: string, panelId: string, status: CloseRemoteRow['status']) => void) | undefined;
   let hostListener: ((hostId: string) => void) | undefined;
   const linger = new Set<string>(['h1']);
@@ -62,7 +63,8 @@ function deps(options: { hosts?: readonly HostRuns[]; later?: readonly HostRuns[
     },
     startRefresh: (runs) => {
       events.push(`refresh ${runs.map((entry) => entry.panelId).join(',')}`);
-      return { notes: Promise.resolve(options.notes ?? new Map()), push: async (pushHosts) => { events.push(`push ${pushHosts.map((host) => host.hostId).join(',')}`); } };
+      refreshed.push(runs);
+      return { notes: Promise.resolve(options.notes ?? new Map()), keyProviders: Promise.resolve(options.keyProviders ?? new Map()), push: async (pushHosts) => { events.push(`push ${pushHosts.map((host) => host.hostId).join(',')}`); } };
     },
     keepAtShutdown: async (runs, pushHosts) => {
       events.push(`keep unattended ${runs.length} ${pushHosts.map((host) => host.hostId).join(',')}`);
@@ -85,7 +87,7 @@ function deps(options: { hosts?: readonly HostRuns[]; later?: readonly HostRuns[
     hostStore.set(hostId, { name, color });
     hostListener?.(hostId);
   };
-  return { value, events, shown, recorded, lingerEnabled, recolor, status: (...args: Parameters<NonNullable<typeof statusListener>>) => statusListener?.(...args), answer: (next: { choice: 'keep' | 'stop' | 'cancel'; dontAskAgain: boolean }) => answer(next), rows: () => rowsListener };
+  return { value, events, shown, refreshed, recorded, lingerEnabled, recolor, status: (...args: Parameters<NonNullable<typeof statusListener>>) => statusListener?.(...args), answer: (next: { choice: 'keep' | 'stop' | 'cancel'; dontAskAgain: boolean }) => answer(next), rows: () => rowsListener };
 }
 
 describe('the close\'s remote question', () => {
@@ -178,6 +180,40 @@ describe('the close\'s remote question', () => {
   });
 });
 
+describe('the providers a run\'s configuration names', () => {
+  const configured = (id: string): OwnRun => ({ ...run(id), configuredProviders: ['anthropic', 'openai', 'openai-codex'] });
+
+  it('reads configuredProviders only from a daemon whose welcome lists chat.configuredProviders, else as today', async () => {
+    const list = async (): Promise<readonly OwnRun[]> => [configured('host-1')];
+    const [reports, silent] = await listHostRuns([
+      { hostId: 'h1', authorityKey: 'ssh+h1', reportsConfigured: true, list },
+      { hostId: 'h2', authorityKey: 'ssh+h2', reportsConfigured: false, list },
+    ], () => undefined);
+    expect(reports!.runs).toEqual([configured('host-1')]);
+    expect(silent!.runs).toEqual([run('host-1')]);
+    const { value, refreshed } = deps({ hosts: [reports!, silent!], setting: 'keep' });
+    expect(await release(value, false)).toBe(true);
+    expect(refreshed).toEqual([[
+      { hostId: 'h1', panelId: 'host-1', providers: ['anthropic'], configured: ['anthropic', 'openai', 'openai-codex'] },
+      { hostId: 'h2', panelId: 'host-1', providers: ['anthropic'], configured: [] },
+    ]]);
+  });
+
+  it('shows on a row the API-key providers its run has not used once the refresh names them, within the overlay\'s bounds', async () => {
+    const { value, shown, answer } = deps({
+      hosts: [{ hostId: 'h1', authorityKey: 'ssh+h1', runs: [configured('host-1'), run('host-2')] }],
+      keyProviders: new Map([[runKey('h1', 'host-1'), ['openai']]]),
+    });
+    const released = release(value, false);
+    await vi.waitFor(() => expect(shown.length).toBeGreaterThan(1));
+    expect(shown[0]!.map((row) => row.keyProviders)).toEqual([[], []]);
+    expect(shown.at(-1)!.map((row) => row.keyProviders)).toEqual([['openai'], []]);
+    expect(parseCloseRemoteRequest(shown.at(-1))).toBeDefined();
+    answer({ choice: 'cancel', dontAskAgain: false });
+    expect(await released).toBe(false);
+  });
+});
+
 describe('the close\'s remote question, bounded and deferred', () => {
   it('acts on the answer only when the close calls back, so a later Cancel leaves the agents as they were', async () => {
     const { value, events, answer } = deps({ setting: 'ask' });
@@ -195,8 +231,8 @@ describe('the close\'s remote question, bounded and deferred', () => {
     try {
       const lines: string[] = [];
       const listed = listHostRuns([
-        { hostId: 'h1', authorityKey: 'ssh+h1', list: () => new Promise(() => undefined) },
-        { hostId: 'h2', authorityKey: 'ssh+h2', list: async () => [run('host-2'), { ...run('term-1'), kind: 'terminal' }] },
+        { hostId: 'h1', authorityKey: 'ssh+h1', reportsConfigured: true, list: () => new Promise(() => undefined) },
+        { hostId: 'h2', authorityKey: 'ssh+h2', reportsConfigured: true, list: async () => [run('host-2'), { ...run('term-1'), kind: 'terminal' }] },
       ], (line) => lines.push(line));
       let hosts: readonly HostRuns[] | undefined;
       void listed.then((value) => { hosts = value; });

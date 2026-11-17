@@ -3,7 +3,20 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from 'vitest';
-import { followsLocalLinksOnly, networkHostsOf, reachesNetwork } from '../local-links';
+import { followsLocalLinksOnly, networkHostsOf, networkReach } from '../local-links';
+
+// The QueryDosDeviceW answer for a drive a test maps, by name (`Q:`); a thrown Error for a failing call; any other asks Windows.
+const dosDevices = vi.hoisted(() => new Map<string, string | Error>());
+vi.mock('../dos-devices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../dos-devices')>();
+  return {
+    queryDosDevice: (name: string): string | undefined => {
+      const answer = dosDevices.get(name);
+      if (answer instanceof Error) throw answer;
+      return answer ?? actual.queryDosDevice(name);
+    },
+  };
+});
 
 let root: string;
 // the folder every "evil" link really leads to, while its readlink answers a share
@@ -49,6 +62,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  dosDevices.clear();
   vi.restoreAllMocks();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -316,16 +330,139 @@ describe.runIf(process.platform === 'win32')('shares and drives (win32)', () => 
     evil(path.join(project, 'unc'));
     fs.writeFileSync(path.join(project, 'a.ts'), '');
     // walked from the drive root, which fakeDisk would hide
-    expect(await reachesNetwork(path.join(project, 'unc', 'a.ts'), new Set(['nas']))).toBe(true);
-    expect(await reachesNetwork(path.join(project, 'a.ts'), new Set())).toBe(false);
-    expect(await reachesNetwork(path.join(project, 'missing', 'a.ts'), new Set())).toBe(false);
+    expect(await networkReach(path.join(project, 'unc', 'a.ts'), new Set(['nas']))).not.toBeNull();
+    expect(await networkReach(path.join(project, 'a.ts'), new Set())).toBeNull();
+    expect(await networkReach(path.join(project, 'missing', 'a.ts'), new Set())).toBeNull();
     for (const spelled of ['\\\\evil\\s\\x', '//evil/s/x', '\\\\?\\UNC\\evil\\s\\x', '\\\\evil@SSL\\s\\x', '\\\\?\\C:\\x', '\\\\.\\pipe\\x']) {
-      expect(await reachesNetwork(spelled, new Set(['nas']))).toBe(true);
+      expect(await networkReach(spelled, new Set(['nas']))).not.toBeNull();
     }
     expect(uncCalls).toEqual([]);
     fakeDisk(new Map([['\\\\nas\\proj\\', undefined], ['\\\\nas\\proj\\a.ts', undefined], ['\\\\wsl$\\Ubuntu\\', undefined], ['\\\\wsl$\\Ubuntu\\a.ts', undefined]]));
-    expect(await reachesNetwork('\\\\nas\\proj\\a.ts', new Set(['nas']))).toBe(false);
-    expect(await reachesNetwork('\\\\wsl$\\Ubuntu\\a.ts', new Set())).toBe(false);
+    expect(await networkReach('\\\\nas\\proj\\a.ts', new Set(['nas']))).toBeNull();
+    expect(await networkReach('\\\\wsl$\\Ubuntu\\a.ts', new Set())).toBeNull();
+  });
+
+  it('names the host a path reaches by its spelling, or by the target of the link on its walk, and marks a reach it cannot place', async () => {
+    const project = folder('p');
+    evil(path.join(project, 'unc'));
+    junction(path.join(project, 'nt'), marker);
+    fakeTargets.set(identity(path.join(project, 'nt')), '\\??\\UNC\\NAS\\data');
+    junction(path.join(project, 'volume'), marker);
+    fakeTargets.set(identity(path.join(project, 'volume')), '\\\\?\\Volume{0b1c}\\x');
+    junction(path.join(project, 'mup'), marker);
+    fakeTargets.set(identity(path.join(project, 'mup')), '\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\s');
+    // CreateSymbolicLinkW stores a \\?\ target as \??\, which readlink returns unchanged
+    junction(path.join(project, 'nt-mup'), marker);
+    fakeTargets.set(identity(path.join(project, 'nt-mup')), '\\??\\GLOBALROOT\\Device\\Mup\\evil\\s');
+    fs.writeFileSync(path.join(project, 'a.ts'), '');
+    expect(await networkReach('\\\\FileServer\\share\\a.txt', new Set(['nas']))).toEqual({ hosts: ['fileserver'], unplaced: false });
+    expect(await networkReach('\\\\?\\UNC\\evil\\s\\x', new Set())).toEqual({ hosts: ['evil'], unplaced: false });
+    expect(await networkReach('\\\\evil@SSL\\s\\x', new Set())).toEqual({ hosts: ['evil'], unplaced: false });
+    expect(await networkReach('\\\\?\\C:\\x', new Set())).toEqual({ hosts: [], unplaced: true });
+    expect(await networkReach('\\\\.\\pipe\\x', new Set())).toEqual({ hosts: [], unplaced: true });
+    expect(await networkReach('\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\s\\y', new Set())).toEqual({ hosts: [], unplaced: true });
+    expect(await networkReach(path.join(project, 'unc', 'a.ts'), new Set(['nas']))).toEqual({ hosts: ['attacker'], unplaced: false });
+    expect(await networkReach(path.join(project, 'nt', 'a.ts'), new Set())).toEqual({ hosts: ['nas'], unplaced: false });
+    expect(await networkReach(path.join(project, 'volume', 'a.ts'), new Set())).toEqual({ hosts: [], unplaced: true });
+    expect(await networkReach(path.join(project, 'mup', 'a.ts'), new Set())).toEqual({ hosts: [], unplaced: true });
+    expect(await networkReach(path.join(project, 'nt-mup', 'a.ts'), new Set())).toEqual({ hosts: [], unplaced: true });
+    expect(await networkReach(path.join(project, 'a.ts'), new Set())).toBeNull();
+    expect(await networkReach(path.join(project, 'missing', 'a.ts'), new Set())).toBeNull();
+    expect(uncCalls).toEqual([]);
+  });
+
+  // Windows opens one reading of an ambiguous link, which the walk cannot tell, so the card names the hosts of all of them.
+  it('names the host of every reading of an ambiguous link that leads off, not only the first', async (ctx) => {
+    const app = path.join(root, 'work', 'app');
+    junction(app, folder('src', 'repo', 'app'));
+    symlink(ctx, path.join(root, 'src', 'repo', 'app', 'x'), '..\\evil');
+    junction(path.join(root, 'work', 'evil'), marker);
+    fakeTargets.set(identity(path.join(root, 'work', 'evil')), '\\\\attacker\\share');
+    junction(path.join(root, 'src', 'repo', 'evil'), marker);
+    fakeTargets.set(identity(path.join(root, 'src', 'repo', 'evil')), '\\\\other\\share');
+    expect((await networkReach(path.join(app, 'x', 'a.ts'), new Set()))?.hosts).toEqual(['attacker', 'other']);
+    fakeTargets.set(identity(path.join(root, 'src', 'repo', 'evil')), '\\\\?\\GLOBALROOT\\Device\\Mup\\other\\share');
+    expect(await networkReach(path.join(app, 'x', 'b.ts'), new Set())).toEqual({ hosts: ['attacker'], unplaced: true });
+    // a reading that leads off decides the walk even when every other reading is missing
+    fs.rmdirSync(path.join(root, 'src', 'repo', 'evil'));
+    expect(await networkReach(path.join(app, 'x', 'c.ts'), new Set())).toEqual({ hosts: ['attacker'], unplaced: false });
+    expect(uncCalls).toEqual([]);
+  });
+
+  // Every read of a path on a drive a test maps: none may happen before the drive is placed.
+  const driveReads = (letter: string): string[] =>
+    [...vi.mocked(fs.promises.lstat).mock.calls, ...vi.mocked(fs.promises.realpath).mock.calls].map(([file]) => String(file)).filter((file) => file.toUpperCase().startsWith(`${letter}:`));
+
+  it('places a mapped network drive where Windows maps it, before touching any path on it', async () => {
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\Evil\data\sub`);
+    expect(await networkReach('Q:\\x\\a.ts', new Set(['nas']))).toEqual({ hosts: ['evil'], unplaced: false });
+    expect(await networkReach('q:\\a.ts', new Set())).toEqual({ hosts: ['evil'], unplaced: false });
+    dosDevices.set('Q:', String.raw`\Device\WebDavRedirector\;Q:0\evil@SSL@8443\DavWWWRoot`);
+    expect(await networkReach('Q:\\a.ts', new Set())).toEqual({ hosts: ['evil'], unplaced: false });
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a`);
+    expect(await networkReach('Q:\\a.ts', new Set(['nas']))).toEqual({ hosts: [], unplaced: true });
+    dosDevices.set('Q:', String.raw`\Device\Mup\evil\s`);
+    expect(await networkReach('Q:\\a.ts', new Set())).toEqual({ hosts: ['evil'], unplaced: false });
+    expect(driveReads('Q')).toEqual([]);
+  });
+
+  it('walks a mapped drive on an allowed host, or on WSL, as any local path, and a local volume as before', async () => {
+    fakeDisk(new Map([['Q:\\', undefined], ['Q:\\x', undefined], ['Q:\\x\\a.ts', undefined]]));
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\NAS\data`);
+    expect(await networkReach('Q:\\x\\a.ts', new Set(['nas']))).toBeNull();
+    dosDevices.set('Q:', String.raw`\Device\P9Rdr\;Q:0\wsl.localhost\Ubuntu`);
+    expect(await networkReach('Q:\\x\\a.ts', new Set())).toBeNull();
+    dosDevices.set('Q:', String.raw`\Device\HarddiskVolume9`);
+    expect(await networkReach('Q:\\x\\a.ts', new Set())).toBeNull();
+    expect(driveReads('Q')).toContain('Q:\\x');
+  });
+
+  it('places a subst drive by its target\'s own rules, links on the target\'s path included', async () => {
+    const project = folder('p');
+    evil(path.join(project, 'unc'));
+    folder('p', 'local');
+    dosDevices.set('Q:', `\\??\\${path.join(project, 'unc', 'dir')}`);
+    expect(await networkReach('Q:\\a.ts', new Set())).toEqual({ hosts: ['attacker'], unplaced: false });
+    dosDevices.set('Q:', String.raw`\??\UNC\Evil\s\dir`);
+    expect(await networkReach('Q:\\a.ts', new Set())).toEqual({ hosts: ['evil'], unplaced: false });
+    dosDevices.set('R:', String.raw`\Device\LanmanRedirector\;R:0\other\s`);
+    dosDevices.set('Q:', String.raw`\??\R:\dir`);
+    expect(await networkReach('Q:\\a.ts', new Set())).toEqual({ hosts: ['other'], unplaced: false });
+    expect(driveReads('Q')).toEqual([]);
+    expect(driveReads('R')).toEqual([]);
+    dosDevices.set('Q:', `\\??\\${path.join(project, 'local')}`);
+    expect(await networkReach('Q:\\a.ts', new Set())).toBeNull();
+    expect(uncCalls).toEqual([]);
+  });
+
+  it('rejects a subst drive that names itself through other drives, as Windows cannot open it', async () => {
+    dosDevices.set('Q:', String.raw`\??\R:\x`);
+    dosDevices.set('R:', String.raw`\??\Q:\y`);
+    await expect(networkReach('Q:\\a.ts', new Set())).rejects.toMatchObject({ code: 'ELOOP' });
+  });
+
+  it('places a drive a link on the walk leads onto before touching it, and only in a walk given the chat\'s hosts', async () => {
+    const project = folder('p');
+    junction(path.join(project, 'mapped'), marker);
+    fakeTargets.set(identity(path.join(project, 'mapped')), 'Q:\\data');
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\evil\s`);
+    expect(await networkReach(path.join(project, 'mapped', 'a.ts'), new Set(['nas']))).toEqual({ hosts: ['evil'], unplaced: false });
+    expect(await followsLocalLinksOnly(project, ['mapped', 'a.ts'], { allowedHosts: new Set() })).toBe(false);
+    expect(driveReads('Q')).toEqual([]);
+    fakeDisk(new Map([['Q:\\', undefined], ['Q:\\data', undefined], ['Q:\\data\\a.ts', undefined]]));
+    expect(await followsLocalLinksOnly(project, ['mapped', 'a.ts'], { allowedHosts: new Set(['evil']) })).toBe(true);
+    // the desktop's own walks take the user's mapping as theirs
+    expect(await followsLocalLinksOnly(project, ['mapped', 'a.ts'])).toBe(true);
+  });
+
+  it('blocks rather than places a path when Windows cannot say where a drive points', async () => {
+    dosDevices.set('Q:', new Error('QueryDosDeviceW(Q:) failed with Win32 error 5'));
+    await expect(networkReach('Q:\\a.ts', new Set())).rejects.toThrow('Win32 error 5');
+    const project = folder('p');
+    junction(path.join(project, 'mapped'), marker);
+    fakeTargets.set(identity(path.join(project, 'mapped')), 'Q:\\data');
+    await expect(networkReach(path.join(project, 'mapped', 'a.ts'), new Set())).rejects.toThrow('Win32 error 5');
+    expect(driveReads('Q')).toEqual([]);
   });
 
   it('takes a folder\'s hosts from its spelling and its realpath, as a mapped drive names its share', async () => {

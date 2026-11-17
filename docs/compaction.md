@@ -28,8 +28,10 @@ A warm request bills as a cache read of the full context plus one output token, 
 
 `damocles.cacheWarming` picks the mode:
 
-- `streaming` (the default) warms only while a run is in flight.
-- `idle` also warms for up to 30 minutes after the last request.
+- `idle` (the default) warms while a run is in flight and for up to 30 minutes after the last request. Between runs pi counts on a 15% chance that a request arrives before the cache expires, so it warms only when 0.15 times the cache-miss cost (a cache write of the prompt instead of a cache read), minus the warm request's cost (a cache read of the prompt and one output token), is at least $0.05 (pi-ai's `evaluateCacheWarming`). On Opus 5.5, the default, that means prompts above about 96K tokens; on Fable 5.2 about 39K, on Sonnet 5.5 about 192K.
+- `streaming` warms only while a run is in flight.
 - `off` lets the cache expire.
+
+On a Claude subscription, warm requests count against the subscription's 5-hour usage window like any other request.
 
 Warming stops when the panel closes or the session's budget cap fires, because it bills against that same cap. The setting is application-scoped, so it lives in user settings and a repository cannot turn it on from `.vscode/settings.json`.

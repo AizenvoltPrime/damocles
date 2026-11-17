@@ -27,6 +27,19 @@ export function projectWorktreesFolder(rootDir: string, projectPath: string, os?
   return flavor.join(rootDir, `${name || 'project'}-${hash}`);
 }
 
+/**
+ * The repository root of a project moved to `to`: `to` with the project's path inside its old repository root stripped.
+ * Undefined when `to` does not end with that path (the repository's layout changed).
+ */
+export function relocatedRepositoryRoot(repositoryRoot: string, projectPath: string, to: string): string | undefined {
+  const relation = path.relative(path.resolve(repositoryRoot), path.resolve(projectPath));
+  if (relation === '') return to;
+  if (relation === '..' || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation)) return undefined;
+  let root = path.resolve(to);
+  for (let depth = relation.split(path.sep).length; depth > 0; depth--) root = path.dirname(root);
+  return folderKey(path.join(root, relation)) === folderKey(to) ? root : undefined;
+}
+
 /** True when `child` is `parent` or lies inside it, compared with folderKey. */
 export function folderContains(parent: string, child: string, os?: NodeJS.Platform): boolean {
   const { flavor, key } = rulesOf(os);
@@ -43,6 +56,11 @@ export function liveChatRecordAt(records: readonly WorktreeRecord[], folder: str
   const { key } = rulesOf(os);
   const folderKeyed = key(folder);
   return records.find((r): r is ChatWorktreeRecord => r.kind === 'chat' && r.deletedAt === undefined && key(r.workingFolder) === folderKeyed);
+}
+
+/** The chat record, live or deleted, whose worktree holds `folder` (its root or a folder inside it). */
+export function chatRecordHolding(records: readonly WorktreeRecord[], folder: string, os?: NodeJS.Platform): ChatWorktreeRecord | undefined {
+  return records.find((r): r is ChatWorktreeRecord => r.kind === 'chat' && folderContains(r.worktreeRoot, folder, os));
 }
 
 /** Live chat records of the project. */
@@ -66,7 +84,7 @@ function validPendingBase(raw: unknown): PendingBase | undefined {
 
 /**
  * The record `raw` holds, or undefined when this version cannot use it. Any process can write registry.json, so a chat record
- * is valid only at the one folder its project and id name under `rootDir`.
+ * is valid only at the one folder its id and the project path it was named for name under `rootDir`.
  */
 export function validRecord(raw: unknown, rootDir: string, os?: NodeJS.Platform): WorktreeRecord | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
@@ -94,7 +112,9 @@ export function validRecord(raw: unknown, rootDir: string, os?: NodeJS.Platform)
     const pendingBase = r['pendingBase'] === undefined ? undefined : validPendingBase(r['pendingBase']);
     if (r['pendingBase'] !== undefined && pendingBase === undefined) return undefined;
     if (r['usedAt'] !== undefined && !isTime(r['usedAt'])) return undefined;
-    if (key(r['worktreeRoot']) !== key(worktreeFolderFor(rootDir, r['projectPath'], r['id'], os))) return undefined;
+    if (r['namedFor'] !== undefined && (!isAbsolute(r['namedFor']) || contains(rootDir, r['namedFor']))) return undefined;
+    const namedFor = r['namedFor'] as string | undefined;
+    if (key(r['worktreeRoot']) !== key(worktreeFolderFor(rootDir, namedFor ?? r['projectPath'], r['id'], os))) return undefined;
     if (contains(rootDir, r['projectPath']) || contains(rootDir, r['repositoryRoot'])) return undefined;
     // Apply writes into repositoryRoot, so it must hold the project, and the working folder the same subfolder of the worktree:
     // as deep, since the project keeps its own spelling (an 8.3 alias) and the working folder has git's names.
@@ -110,6 +130,7 @@ export function validRecord(raw: unknown, rootDir: string, os?: NodeJS.Platform)
       ...(r['lastAppliedTree'] !== undefined ? { lastAppliedTree: r['lastAppliedTree'] as string } : {}),
       ...(pendingBase !== undefined ? { pendingBase } : {}),
       ...(r['usedAt'] !== undefined ? { usedAt: r['usedAt'] as number } : {}),
+      ...(namedFor !== undefined ? { namedFor } : {}),
     };
   }
   if (r['kind'] === 'adopted') {

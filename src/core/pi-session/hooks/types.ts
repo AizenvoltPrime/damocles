@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { HookScope } from '../../../shared/types/wind-down';
 
 /**
  * One configured hook: a command to run plus optional filtering/timeout metadata. `command` is either a
@@ -18,6 +19,11 @@ export const hookEntrySchema: z.ZodType<HookEntry> = z.object({
   timeoutMs: z.number().int().positive().optional(),
   description: z.string().optional(),
 });
+
+/** A loaded hook entry and the hooks file that set it. */
+export interface ConfiguredHook extends HookEntry {
+  scope: HookScope;
+}
 
 /** Top-level `hooks.json` shape: a map of pi event key → ordered hook entries. Extra keys are ignored. */
 export interface HookConfig {

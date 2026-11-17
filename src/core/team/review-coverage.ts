@@ -18,6 +18,8 @@ export interface CoverageView {
   statusOf: StatusOf;
   /** The sections `implementor` authored that `reviewer` has not read at their current version. */
   staleReads: (reviewer: string, implementor: string) => readonly StaleSectionInfo[];
+  /** A live specialist whose latest run ended on a rejected call: it waits for the lead's message, and synthesis stops it. */
+  waitingForLead: (name: string) => boolean;
 }
 
 export interface RosterMember {
@@ -325,7 +327,9 @@ export class ReviewCoverage {
         const status = view.statusOf(reviewer);
         const move = status === 'awaiting-review'
           ? `Send ${reviewer} back with team_request_revision asking it to review ${implementor}'s current sections, then approve ${implementor} before ${reviewer}.`
-          : `${reviewer} is ${status} and still owes that review, so wait for its report, then approve ${implementor} before ${reviewer}.`;
+          : view.waitingForLead(reviewer)
+            ? `${reviewer} stopped on a rejected tool call and waits for you: message it with team_send_message to review ${implementor}'s current sections, or cancel it with team_cancel_specialist and dismiss the review.`
+            : `${reviewer} is ${status} and still owes that review, so wait for its report, then approve ${implementor} before ${reviewer}.`;
         const signed = state.unread.length > 0
           ? `APPROVED ${rev} but has not read ${formatUnread(state.unread)}`
           : state.covers ? `signed off on ${formatRevision(state.covers)}` : `no sign-off on ${rev}`;
@@ -352,6 +356,12 @@ export class ReviewCoverage {
       return {
         error: `${head} it reviews "${implementor}", which is still awaiting-review. Approve or revise ${implementor} first; ${then}`,
         line: `reviews ${implementor}: awaiting review [approval blocked: approve or revise ${implementor} first]`,
+      };
+    }
+    if (view.waitingForLead(implementor)) {
+      return {
+        error: `${head} it reviews "${implementor}", which stopped on a rejected tool call and waits for you. Message ${implementor} with team_send_message to continue, or cancel it with team_cancel_specialist; ${then}`,
+        line: `reviews ${implementor}: waiting for you after a rejected tool call [approval blocked: message it with team_send_message or cancel it]`,
       };
     }
     if (!isSpecialistFinal(status)) {
@@ -405,10 +415,10 @@ export class ReviewCoverage {
     return dismissal;
   }
 
-  /** The unsatisfied review of landed work that is neither cancelled nor failed, or null. */
+  /** The unsatisfied review of landed work that is neither cancelled nor failed nor stopped by synthesis while it waits for the lead, or null. */
   private unsatisfiedReview(reviewer: string, implementor: string, view: CoverageView): UnsatisfiedReview | null {
     const status = view.statusOf(implementor);
-    if (status === 'cancelled' || status === 'failed') return null;
+    if (status === 'cancelled' || status === 'failed' || view.waitingForLead(implementor)) return null;
     const state = this.reviewState(reviewer, implementor, view);
     return state && state.kind !== 'satisfied' ? { reviewer, implementor, state } : null;
   }
@@ -431,7 +441,9 @@ export class ReviewCoverage {
       const redispatch = state.status === 'completed' ? '' : `redispatch ${reviewer} or `;
       return { fact: `${head}: ${reviewer} is ${state.status} and ${missed ?? 'never reviewed it'}`, move: `${redispatch}dismiss with team_dismiss_review and a written reason` };
     }
-    const move = view.statusOf(reviewer) === 'awaiting-review' ? `send ${reviewer} back with team_request_revision` : `wait for ${reviewer}'s report`;
+    const move = view.statusOf(reviewer) === 'awaiting-review' ? `send ${reviewer} back with team_request_revision`
+      : view.waitingForLead(reviewer) ? `message ${reviewer} with team_send_message, or cancel it with team_cancel_specialist and dismiss the review`
+        : `wait for ${reviewer}'s report`;
     return { fact: `${head}: ${reviewer} ${missed ?? 'has not signed off on it'}`, move };
   }
 

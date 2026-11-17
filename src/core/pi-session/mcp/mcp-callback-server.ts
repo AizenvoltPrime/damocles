@@ -197,7 +197,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       pendingAuths.delete(state);
       setTimeout(() => pending.reject(new Error(errorMsg)), 0);
     }
-    closeWhenIdle();
+    closeWhenIdle(res);
     return;
   }
 
@@ -220,22 +220,26 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   res.writeHead(200, htmlHeaders());
   res.end(HTML_SUCCESS);
-  closeWhenIdle();
+  closeWhenIdle(res);
 }
 
 /**
  * Close the server once no authorization is pending or reserved. The bound port, host and path stay
  * as they were: a settled flow's token exchange still sends the redirect URI it was authorized with.
  * A bind in flight owns the server, and `ensureCallbackServer` re-checks when it finishes.
+ * `settling` is the response that settled the last authorization; connections are dropped once it is sent or its connection drops.
  */
-function closeWhenIdle(): void {
+function closeWhenIdle(settling?: ServerResponse): void {
   if (!server || bindingPromise || pendingAuths.size > 0 || reservedAuthStates.size > 0) return;
   const idle = server;
   server = undefined;
-  // In-flight responses finish first; close() stops the listener at once and idle keep-alives with it.
   idle.close((err) => {
     if (err) log('[McpCallbackServer] close failed: %O', err);
   });
+  // A browser may hold a spare connection open for minutes, which close() waits for (pi-mcp 1.5.2 `src/oauth/callback.ts:113-115`).
+  // 'close', not 'finish': a response whose connection drops before it is sent emits only 'close'.
+  if (settling && !settling.writableFinished) settling.once('close', () => idle.closeAllConnections());
+  else idle.closeAllConnections();
   log('[McpCallbackServer] closed after the last authorization settled');
 }
 
@@ -429,11 +433,15 @@ export function cancelPendingCallback(oauthState: string): void {
 /** Stop the callback server, reset bind config, and reject all pending authorizations. */
 export async function stopCallbackServer(): Promise<void> {
   if (server) {
-    await new Promise<void>((resolve) => {
-      server!.close(() => {
+    const stopping = server;
+    const closed = new Promise<void>((resolve) => {
+      stopping.close(() => {
         resolve();
       });
     });
+    // close() waits for every connection, and a browser may hold a spare one open for minutes.
+    stopping.closeAllConnections();
+    await closed;
     server = undefined;
   }
 

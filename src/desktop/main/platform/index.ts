@@ -49,6 +49,8 @@ export interface DesktopPlatformDeps {
   // the Toggle Terminal command, for the chat header's Terminal toggle
   readonly toggleTerminal: WindowService['toggleTerminal'];
   readonly terminalToggle: WindowService['terminalToggle'];
+  // Locate… for the listed project of this key, which a core's folder-not-found notice offers
+  readonly locateProjectFolder: NonNullable<WindowService['locateProjectFolder']>;
   // posts to a chat, opening one in the selected project when none is loaded
   readonly chatTabs: ChatTabMessenger;
   // the window-wide editor pane; it exists from the platform's creation on
@@ -123,7 +125,7 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     dialogs: createDesktopDialogService(deps.window, (text) => deps.localization.render(text)),
     nativeDialogs: createNativeDialogs(deps.window),
     editor: createDesktopEditorService(deps.chatTabs, deps.editorPane, deps.openAppSettings, deps.showChatReview, (text) => deps.localization.render(text)),
-    window: createDesktopWindowService(deps.openAppSettings, deps.toggleTerminal, deps.terminalToggle),
+    window: createDesktopWindowService(deps.openAppSettings, deps.toggleTerminal, deps.terminalToggle, deps.locateProjectFolder),
     lifecycle: createDesktopHostLifecycle(deps.reload),
     logSinks: deps.logSinks,
     flush: async () => {

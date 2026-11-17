@@ -27,6 +27,8 @@ const H = vi.hoisted(() => ({
   clientNetwork: [] as unknown[][],
   // each page open and restore: the authority whose context ran it, then its arguments
   pages: [] as unknown[][],
+  // the file: resolver each restore was given, under the authority whose context ran it
+  servedTargets: [] as Array<[string, (url: string) => Promise<unknown>]>,
   // each release main asked of the remote chats' browser relay, and the browser setting the relay reads
   browserReleases: [] as unknown[][],
   browserEnabled: undefined as (() => boolean) | undefined,
@@ -35,7 +37,10 @@ const H = vi.hoisted(() => ({
 // a context's page calls, recorded under its authority
 const browserOf = (authority: string) => ({
   openNewPageForChat: async (chat: unknown, url?: string) => void H.pages.push([authority, chat, url]),
-  restoreChatPages: async (chat: unknown, urls: readonly string[], active?: number) => void H.pages.push([authority, chat, urls, active]),
+  restoreChatPages: async (chat: unknown, urls: readonly string[], active?: number, servedTarget?: (url: string) => Promise<unknown>) => {
+    H.pages.push([authority, chat, urls, active]);
+    if (servedTarget) H.servedTargets.push([authority, servedTarget]);
+  },
   useClientCertificate: async (origin: string, filter: unknown) => void H.pages.push([authority, 'certificate', origin, filter]),
 });
 
@@ -87,6 +92,7 @@ vi.mock('../../../core/chat-panel', () => {
   const target = { key: '/p', fsPath: '/p', name: 'p', label: 'p', projectScope: false };
   const panelManager = {
     getPanels: () => H.panels,
+    whenReadied: async (panelId: string) => void H.order.push(`readied ${panelId}`),
     heldPrompt: () => undefined,
     onActivity: (listener: (panelId: string, activity: unknown) => void) => {
       H.activity.push(listener);
@@ -122,6 +128,7 @@ vi.mock('../../../core/chat-panel', () => {
       getVoiceService = () => ({});
       getBrowserService = () => ({ holdsPages: (chat: unknown) => H.holdsPages(chat), ...browserOf('local') });
       getMemoryService = () => ({});
+      getProjectRelocations = () => ({ views: () => [], onDidChange: none });
       onRelayedMcpChange = (listener: () => void) => {
         H.relayedMcpListeners.push(listener);
         return { dispose: () => undefined };
@@ -163,7 +170,7 @@ interface Chat {
     host: PanelHost;
     folder: typeof FOLDER;
     restoreRetry?: string;
-    session: { storedSessionId: string | null; hasConversation(): boolean; processing: boolean };
+    session: { storedSessionId: string | null; hasConversation(): boolean; processing: boolean; browserRestoreTarget?(url: string): Promise<unknown> };
     permissionHandler: { permissions: ChatPermissions; getPermissions(): ChatPermissions };
   };
 }
@@ -185,6 +192,7 @@ afterEach(() => {
   H.dispatched.length = 0;
   H.clientNetwork.length = 0;
   H.pages.length = 0;
+  H.servedTargets.length = 0;
   H.browserReleases.length = 0;
   H.disposeProvider = () => Promise.resolve();
   H.disposeRuntime = () => Promise.resolve();
@@ -532,6 +540,25 @@ describe('a chat\'s browser pages', () => {
       ['local', chat.host, ['https://a.test/'], undefined],
       ['ssh-h1', proxy, ['http://localhost:3000/', 'http://localhost:4000/'], 1],
     ]);
+  });
+
+  it('reopen a saved file: page of their own chat through its session once its first ready was handled, and give a remote chat\'s none', async () => {
+    const { main, addChat, foreign, authorities } = start();
+    const chat = addChat('panel-1', 'view-1');
+    chat.instance.session.browserRestoreTarget = async (url) => {
+      H.order.push(`target ${url}`);
+      return { url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=a.html' };
+    };
+    foreign.set('remote-view', {} as PanelHost);
+    authorities.set('remote-view', 'ssh-h1');
+    await main.request('chats.restorePages', { viewId: 'view-1', urls: ['file:///p/a.html'] });
+    await main.request('chats.restorePages', { viewId: 'remote-view', urls: ['file:///p/a.html'] });
+    expect(H.servedTargets.map(([authority]) => authority)).toEqual(['local']);
+    const [[, target]] = H.servedTargets as [[string, (url: string) => Promise<unknown>]];
+    expect(await target('file:///p/a.html')).toEqual({ url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=a.html' });
+    expect(H.order.filter((line) => !line.startsWith('log: '))).toEqual(['readied panel-1', 'target file:///p/a.html']);
+    H.panels.clear();
+    expect(await target('file:///p/a.html')).toEqual({ refused: 'its chat is not loaded' });
   });
 
   it('take a client certificate rule into local chats\' context only, as main sent it', async () => {

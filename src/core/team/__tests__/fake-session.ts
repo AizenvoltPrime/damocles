@@ -1,10 +1,10 @@
 /**
- * A fake of pi 1.4.0's `AgentSession` for the team suites, held to a real session by
+ * A fake of pi 1.5.2's `AgentSession` for the team suites, held to a real session by
  * `fake-session.contract.test.ts`. A plain `prompt()` on an idle session starts a run: the session is busy from
  * `_startRun` until `_emitAgentSettled` clears it, and `prompt()` resolves after `agent_settled`
- * (`agent-session.js:1423-1473`, `:683-706`). Each model call waits for the test to answer it (`endTurn`,
+ * (`agent-session.js:1487-1537`, `:738-761`). Each model call waits for the test to answer it (`endTurn`,
  * `callTools`, `failCall`, or an abort); the fake then makes pi-agent-core's turn decision (`agent-loop.js:84-213`)
- * and the session's continue-or-settle decision (`agent-session.js:1531-1589`) itself.
+ * and the session's continue-or-settle decision (`agent-session.js:1595-1653`) itself.
  */
 import type { AgentTurnContext, AgentTurnDecision, FinishTurn } from '@earendil-works/pi-agent-core';
 import { contentText, isRetryableAssistantError, type AssistantMessage, type ImageContent } from '@earendil-works/pi-ai';
@@ -29,6 +29,8 @@ export interface FakeSessionOptions {
   maxRetries?: number;
   /** An extension `turn_end` handler, given the run's signal: pi runs the boundary inside `agent.finishTurn`, before Damocles' deciders. */
   onTurnBoundary?: (turn: AgentTurnContext, fake: FakeSession, signal: AbortSignal | undefined) => void;
+  /** How a request made under an aborted signal stops: pi-ai's `aborted`, or `error` from a provider that reports the abort as one. */
+  abortedRequestStop?: 'aborted' | 'error';
 }
 
 type FakeTokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -48,6 +50,8 @@ type FakeMessage = {
 
 type Listener = (event: unknown) => void;
 
+let fakeSessionCount = 0;
+
 /** What a session file holds before a reopened run adds to it. */
 export interface FakeOpeningTotals {
   cost: number;
@@ -59,7 +63,7 @@ export interface FakePromptOptions {
   streamingBehavior?: 'steer' | 'followUp';
   expandPromptTemplates?: boolean;
   images?: ImageContent[];
-  /** Called once pi has queued the prompt, or right before the run it opens starts (`agent-session.js:1675`, `:1441`); never recorded. */
+  /** Called once pi has queued the prompt, or right before the run it opens starts (`agent-session.js:1759`, `:1505`); never recorded. */
   preflightResult?: (disposition: 'handled' | 'queued' | 'started') => void;
 }
 
@@ -105,42 +109,45 @@ export const endTurnAtOnce = (_call: FakeModelCall, fake: FakeSession): void => 
   void fake.endTurn();
 };
 
-/** The text pi matches a started user message against its queue mirror by (`agent-session.js:733`). */
+/** The text pi matches a started user message against its queue mirror by (`agent-session.js:788`). */
 const textOf = (content: unknown): string => contentText((content ?? []) as Parameters<typeof contentText>[0], '');
 
 const toolCallsOf = (message: FakeMessage): unknown[] =>
   (Array.isArray(message.content) ? message.content : []).filter((block: { type?: string }) => block.type === 'toolCall');
 
 export class FakeSession {
+  /** `AgentSession.sessionId`, which the permission gate records a terminated call under. */
+  readonly sessionId = `fake-session-${++fakeSessionCount}`;
   readonly prompts: string[] = [];
   /** Options for each prompt, index-aligned with `prompts`. */
   readonly promptOptions: Array<FakePromptOptions | undefined> = [];
   /**
    * Runs right after the before-settle boundary decided to settle the run. pi clears the busy flag a tick later, so a
-   * steer it accepts in that tick stays queued and undelivered (`agent-session.js:1457`, `:1566-1568`, `:685`).
+   * steer it accepts in that tick stays queued and undelivered (`agent-session.js:1521`, `:1630-1632`, `:740`).
    */
   atLastQueueCheck: (() => void) | null = null;
-  /** An `agent_before_settle` handler, which pi awaits after the run's last turn and before it settles (`agent-session.js:1566-1589`). */
+  /** An `agent_before_settle` handler, which pi awaits after the run's last turn and before it settles (`agent-session.js:1630-1653`). */
   beforeSettle: (() => Promise<void>) | null = null;
-  /** An extension `input` handler, which pi awaits in `prompt()` before it reads the busy flag (`agent-session.js:1652`, `:1665`). */
+  /** An extension `input` handler, which pi awaits in `prompt()` before it reads the busy flag (`agent-session.js:1736`, `:1749`). */
   inputHandler: ((text: string) => Promise<void>) | null = null;
   /** `AgentSession.model`, whose provider and id pi-ai writes on every assistant message (`AssistantMessage.provider`, `.model`). */
   model: { provider: string; id: string } | undefined = undefined;
 
   private readonly listeners = new Set<Listener>();
   private readonly agentListeners = new Set<AgentListener>();
-  /** `dispose()` disconnected the session from its agent (`agent-session.js:1001-1006`, `:1023`). */
+  /** `dispose()` disconnected the session from its agent (`agent-session.js:1060-1065`, `:1082`). */
   private disposed = false;
   private readonly onModelCall: FakeSessionOptions['onModelCall'];
   private readonly maxRetries: number;
   private readonly onTurnBoundary: FakeSessionOptions['onTurnBoundary'];
+  private readonly abortedRequestStop: 'aborted' | 'error';
 
   /** `_isAgentRunActive`: from `_startRun` until `_emitAgentSettled`. */
   private runActive = false;
   /** `_isBeforeSettle` and `_abortDuringBeforeSettle`. */
   private inBeforeSettle = false;
   private abortDuringBeforeSettle = false;
-  /** `_isEmittingAgentSettled` and `_deferredSettledActions` (`agent-session.js:683-706`, `:1632-1635`). */
+  /** `_isEmittingAgentSettled` and `_deferredSettledActions` (`agent-session.js:738-761`, `:1696-1699`). */
   private emittingSettled = false;
   private readonly deferredSettled: Array<() => Promise<void>> = [];
   private abortRequested = false;
@@ -168,6 +175,7 @@ export class FakeSession {
     this.onModelCall = opts.onModelCall;
     this.maxRetries = opts.maxRetries ?? 3;
     this.onTurnBoundary = opts.onTurnBoundary;
+    this.abortedRequestStop = opts.abortedRequestStop ?? 'aborted';
   }
 
   get isStreaming(): boolean { return this.runActive; }
@@ -202,7 +210,7 @@ export class FakeSession {
       this.deferredSettled.push(() => this.prompt(text, options));
       return;
     }
-    // pi awaits its input handlers (`agent-session.js:1652`) before it decides between queueing and a run (`:1665`).
+    // pi awaits its input handlers (`agent-session.js:1736`) before it decides between queueing and a run (`:1749`).
     if (this.inputHandler) await this.inputHandler(text);
     else await Promise.resolve();
     if (this.runActive) {
@@ -256,21 +264,21 @@ export class FakeSession {
     void this.answer({ kind: 'error', errorMessage, ...opts });
   }
 
-  /** A steer queued in pi as `_queueSteer` does (`agent-session.js:1795`), which `session.steer()` does even while idle. */
+  /** A steer queued in pi as `_queueSteer` does (`agent-session.js:1879`), which `session.steer()` does even while idle. */
   queueSteer(text: string, images?: ImageContent[]): void {
     this.steeringMirror.push(text);
     this.emitQueueUpdate();
     this.agentSteering.push(this.userMessage(text, images));
   }
 
-  /** A follow-up queued in pi as `_queueFollowUp` does (`agent-session.js:1811`). */
+  /** A follow-up queued in pi as `_queueFollowUp` does (`agent-session.js:1894`). */
   queueFollowUp(text: string, images?: ImageContent[]): void {
     this.followUpMirror.push(text);
     this.emitQueueUpdate();
     this.agentFollowUp.push(this.userMessage(text, images));
   }
 
-  /** A custom message queued the way a busy `sendCustomMessage` does: onto the agent, never the mirror (`agent-session.js:1862`). */
+  /** A custom message queued the way a busy `sendCustomMessage` does: onto the agent, never the mirror (`agent-session.js:1964`). */
   queueCustomMessage(text: string): void {
     this.agentSteering.push({ role: 'custom', customType: 'fake', content: [{ type: 'text', text }] });
   }
@@ -307,7 +315,7 @@ export class FakeSession {
     hasQueuedMessages: () => boolean;
     subscribe: (listener: AgentListener) => () => void;
     abort: () => void;
-    /** `Agent.state.isStreaming`: true while an agent loop runs (`runWithLifecycle`, `agent.js:355-386` in pi-agent-core 1.4.0). */
+    /** `Agent.state.isStreaming`: true while an agent loop runs (`runWithLifecycle`, `agent.js:355-386` in pi-agent-core 1.5.2). */
     readonly state: { readonly isStreaming: boolean };
   } = {
     state: Object.defineProperty({}, 'isStreaming', { get: () => this.agentRun !== null }) as { readonly isStreaming: boolean },
@@ -368,8 +376,9 @@ export class FakeSession {
     return '';
   }
 
+  /** `AgentSession.messages`: the messages pi committed, in order. */
   get messages(): unknown[] {
-    return [];
+    return this.branch.flatMap((entry) => ((entry as { type?: string }).type === 'message' ? [(entry as { message: unknown }).message] : []));
   }
 
   private accept(text: string, options: FakePromptOptions | undefined): void {
@@ -461,9 +470,9 @@ export class FakeSession {
   private async emitRunEvent(event: Record<string, unknown>): Promise<void> {
     await Promise.resolve();
     if (!this.disposed && event['type'] === 'agent_start' && this.abortRequested) this.agentRun?.abort();
-    // Only the session's copy of `agent_end` carries `willRetry` (`agent-session.js:753`).
+    // Only the session's copy of `agent_end` carries `willRetry` (`agent-session.js:812`).
     this.dispatch(event['type'] === 'agent_end' ? { ...event, willRetry: this.willRetry(event['messages'] as FakeMessage[]) } : event);
-    // The session subscribed to its agent first, so agent listeners hear each event after it (`agent-session.js:202`).
+    // The session subscribed to its agent first, so agent listeners hear each event after it (`agent-session.js:229`).
     for (const listener of [...this.agentListeners]) await listener(event);
   }
 
@@ -499,6 +508,13 @@ export class FakeSession {
       // `_prepareRun`, before the agent's run exists.
       await Promise.resolve();
       onStarted?.('started');
+    } catch (error) {
+      // A throw refuses the run (patches/README.md, 002): idle again, with no `agent_settled`.
+      this.runActive = false;
+      for (const resolve of this.idleWaiters.splice(0)) resolve();
+      throw error;
+    }
+    try {
       await this.agentLoop([prompt], false);
       while (!this.abortRequested) {
         if (await this.postAgentRun()) {
@@ -518,7 +534,7 @@ export class FakeSession {
 
   /**
    * `_runBeforeSettleBoundary`: pi awaits the `agent_before_settle` handlers, settles a run an abort landed on meanwhile,
-   * then checks its queues a last time (`agent-session.js:1566-1589`).
+   * then checks its queues a last time (`agent-session.js:1630-1653`).
    */
   private async beforeSettleBoundary(): Promise<boolean> {
     const continues = await this.beforeSettleDecision();
@@ -549,7 +565,8 @@ export class FakeSession {
       this.emittingSettled = false;
     }
     try {
-      for (const action of this.deferredSettled.splice(0)) await action();
+      // pi runs each deferred action on its own and reports a failure as an extension error, which the fake has no runner for (patches/README.md, 002).
+      for (const action of this.deferredSettled.splice(0)) await action().catch(() => undefined);
     } finally {
       // `_resolveIdleWaitIfIdle`: a run a late prompt started meanwhile keeps the waiters waiting for its own settle.
       if (!this.runActive) for (const resolve of this.idleWaiters.splice(0)) resolve();
@@ -630,7 +647,7 @@ export class FakeSession {
     const run = new AbortController();
     this.agentRun = run;
     this.runMessages = [];
-    // `createLoopConfig` (`agent.js:306-322` in pi-agent-core 1.4.0): a decider installed mid-loop applies from the next loop.
+    // `createLoopConfig` (`agent.js:306-322` in pi-agent-core 1.5.2): a decider installed mid-loop applies from the next loop.
     const finishTurn = this.agent.finishTurn;
     try {
       await this.emitRunEvent({ type: 'agent_start' });
@@ -696,11 +713,11 @@ export class FakeSession {
     texts: string[],
   ): Promise<{ message: FakeMessage; toolResults: FakeMessage[]; decided?: PendingCall['decided']; terminate?: boolean }> {
     const index = this.callCount++;
-    // The request's setup rejects on the aborted signal before any provider streams (`model-runtime.js:518-521`,
-    // pi-ai `lazy.js:45-65`), so it ends on an error stop rather than an aborted one.
+    // The request's setup rejects on the aborted signal before any provider streams, which pi-ai reports as an aborted
+    // stop (`model-runtime.js:525-529` in pi-coding-agent 1.5.2, `lazy.js:57-65` in pi-ai 1.5.2).
     if (signal.aborted) {
       this.notifyCallWaiters();
-      return { message: await this.endResponse(null, 'error', 'This operation was aborted'), toolResults: [] };
+      return { message: await this.endResponse(null, this.abortedRequestStop, 'This operation was aborted'), toolResults: [] };
     }
     const call: PendingCall = {
       answered: false, resolve: () => undefined, message: null, started: null, toolResults: [], running: new Map(), decided: () => undefined,
@@ -757,7 +774,7 @@ export class FakeSession {
       await this.emitRunEvent({ type: 'message_end', message: r });
       toolResults.push(r);
     }
-    // The batch ends the turn only when every result terminates (`agent-loop.js:172`, `:471-473` in pi-agent-core 1.4.0).
+    // The batch ends the turn only when every result terminates (`agent-loop.js:172`, `:471-473` in pi-agent-core 1.5.2).
     const terminate = calls.length > 0 && calls.every((c) => c.terminate === true);
     return { message, toolResults, decided: call.decided, terminate };
   }

@@ -53,6 +53,71 @@ describe('HostStore', () => {
     expect((await HostStore.open(userData, () => undefined)).projects()).toEqual([]);
   });
 
+  it('replaces a relocated remote project in its list and order slot, revokes the old trust, and writes nothing a second time', async () => {
+    const prod = 'ssh+prod';
+    const project = (folder: string) => ({ path: folder, folderKey: folder, os: 'linux' as const });
+    const key = (folder: string): string => `${prod}|${folder}`;
+    const store = await HostStore.open(userData, () => undefined);
+    await store.addProject(prod, project('/srv/a'), key('/srv/a'), () => []);
+    await store.addProject(prod, project('/srv/old'), key('/srv/old'), () => [key('/srv/a')]);
+    await store.addProject(prod, project('/srv/c'), key('/srv/c'), () => [key('/srv/a'), key('/srv/old')]);
+    await store.grantTrust(prod, '/srv/old');
+    await store.grantTrust(prod, '/srv/new');
+    const move = { id: 'r1', fromFolderKey: '/srv/old', fromKey: key('/srv/old'), to: project('/srv/new'), toKey: key('/srv/new') };
+    expect(store.relocated(prod, 'r1')).toBe(false);
+    await store.replaceProject(prod, move);
+    const listed = [key('/srv/a'), key('/srv/new'), key('/srv/c')];
+    expect(store.projects().map((entry) => entry.project.path)).toEqual(['/srv/a', '/srv/new', '/srv/c']);
+    expect(store.order([...listed].reverse())).toEqual(listed);
+    expect(store.isTrusted(prod, '/srv/old')).toBe(false);
+    expect(store.isTrusted(prod, '/srv/new')).toBe(true);
+    expect(store.relocated(prod, 'r1')).toBe(true);
+    const written = fs.readFileSync(store.filePath, 'utf8');
+    const changed = vi.fn();
+    store.onDidChange(changed);
+    await store.replaceProject(prod, move);
+    expect(changed).not.toHaveBeenCalled();
+    expect(fs.readFileSync(store.filePath, 'utf8')).toBe(written);
+    const reread = await HostStore.open(userData, () => undefined);
+    expect(reread.projects().map((entry) => entry.project.path)).toEqual(['/srv/a', '/srv/new', '/srv/c']);
+    expect([reread.relocated(prod, 'r1'), reread.relocated('ssh+other', 'r1')]).toEqual([true, false]);
+  });
+
+  it('names the new folder in the host\'s recent folders where they named the old one, once, in the same write', async () => {
+    const store = await HostStore.open(userData, () => undefined);
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod' }, name: 'prod' });
+    if (!added.ok) throw new Error('setup');
+    const prod = sshAuthorityKey(added.host.id);
+    const project = (folder: string) => ({ path: folder, folderKey: folder, os: 'linux' as const });
+    const key = (folder: string): string => `${prod}|${folder}`;
+    for (const folder of ['/srv/new', '/srv/a', '/srv/old/']) await store.touchHost(added.host.id, folder);
+    await store.addProject(prod, project('/srv/old'), key('/srv/old'), () => []);
+    const move = { id: 'r1', fromFolderKey: '/srv/old', fromKey: key('/srv/old'), to: project('/srv/new'), toKey: key('/srv/new') };
+    await store.replaceProject(prod, move);
+    expect(store.host(added.host.id)?.recentFolders).toEqual(['/srv/new', '/srv/a']);
+    const written = fs.readFileSync(store.filePath, 'utf8');
+    const changed = vi.fn();
+    store.onDidChange(changed);
+    await store.replaceProject(prod, move);
+    expect(changed).not.toHaveBeenCalled();
+    expect(fs.readFileSync(store.filePath, 'utf8')).toBe(written);
+    expect((await HostStore.open(userData, () => undefined)).host(added.host.id)?.recentFolders).toEqual(['/srv/new', '/srv/a']);
+  });
+
+  it('drops a relocated remote project merged into one its authority lists, keeping the target\'s slot', async () => {
+    const prod = 'ssh+prod';
+    const project = (folder: string) => ({ path: folder, folderKey: folder, os: 'linux' as const });
+    const key = (folder: string): string => `${prod}|${folder}`;
+    const store = await HostStore.open(userData, () => undefined);
+    await store.addProject(prod, project('/srv/new'), key('/srv/new'), () => []);
+    await store.addProject(prod, project('/srv/old'), key('/srv/old'), () => [key('/srv/new')]);
+    await store.grantTrust(prod, '/srv/old');
+    await store.replaceProject(prod, { id: 'r1', fromFolderKey: '/srv/old', fromKey: key('/srv/old'), to: project('/srv/new'), toKey: key('/srv/new') });
+    expect(store.projects().map((entry) => entry.project.path)).toEqual(['/srv/new']);
+    expect(store.order([key('/srv/new')])).toEqual([key('/srv/new')]);
+    expect(store.isTrusted(prod, '/srv/old')).toBe(false);
+  });
+
   it('reconciles the sidebar order with the listed projects: drops gone keys and appends unlisted ones', async () => {
     const [a, b, c] = ['a', 'b', 'c'].map((name) => folderKey(path.join(userData, name)));
     const remote = path.join(userData, 'remote');

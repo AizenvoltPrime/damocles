@@ -18,6 +18,7 @@ import { FORGE_PI_TOOL_NAMES } from '../tools/forge-tool-specs';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
 import type { DesignScope } from '../../design/design-write-rule';
 import { setLocalForgeAccounts } from '../../user-scope';
+import { getPiCodingAgent } from '../pi-loader';
 
 // The GitHub and GitLab tools at the gate (docs/invariants.md "Permissions and plan mode"): reads run in every mode, writes ask
 // in default and acceptEdits, run in YOLO, are blocked in plan mode, for read-only agents and team reviewers, and nothing of
@@ -74,7 +75,7 @@ interface Setup {
 }
 
 function gate(setup: Setup = {}) {
-  const handler = new PermissionHandler(createFakePlatform());
+  const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
   handler.setWorkspacePath(workspace);
   handler.setCwd(workspace);
   handler.setPermissionMode(setup.mode ?? 'default');

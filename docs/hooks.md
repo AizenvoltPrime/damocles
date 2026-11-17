@@ -353,6 +353,6 @@ The adapter fails closed. It steps aside only when Guard reports `classification
   back to the composer unsent. Stopping the turn or the command kills a running `tool_call` hook, and the
   tool does not run. A subagent's Stop also kills its `tool_call`, `tool_result` and `subagent_end` hooks,
   and a team member's Stop its `tool_call` hooks. The main chat's `agent_end` and the other observe-only
-  hooks get no stop signal, so a Stop waits for them, and after 3 seconds the chat says what it is still
-  waiting for.
+  hooks get no stop signal, so a Stop waits for them, and after 3 seconds the chat names the hook still
+  running by its script name and its hooks file (user or project), never its arguments.
 ```

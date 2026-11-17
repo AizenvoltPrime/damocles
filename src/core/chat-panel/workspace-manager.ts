@@ -20,6 +20,8 @@ import { errorTextOf, l } from "../l10n";
 import { isWithinRoot } from "../compass/util";
 import { isInsideFolder, isUncOrDevicePath } from "../../shared/project-location";
 import { LocalizedError } from "../../shared/localized-text";
+import { relocatedPath } from "../project-relocation/aliases";
+import { currentRelocations } from "../project-relocation/current";
 
 /** `~`, `~/…` (and `~\…` on Windows) name this machine's home, as pi's `normalizePath` reads them. */
 function expandHome(filePath: string): string {
@@ -146,7 +148,8 @@ export class WorkspaceManager {
     this.postMessage(host, await this.workspaceFilesMessage(folder));
   }
 
-  async openFile(filePath: string, line: number | undefined, folder: FolderTarget, panelId: string): Promise<void> {
+  /** `relocated`: the path was already mapped through the relocation aliases, which happens once. */
+  async openFile(filePath: string, line: number | undefined, folder: FolderTarget, panelId: string, relocated = false): Promise<void> {
     // Tool cards carry the path the agent used, which for pi's write/edit tools is cwd-relative with no
     // `./` prefix. The agent's cwd is the panel's folder, so a relative path resolves against it rather
     // than against the drive root (`\hello_world.ts`). Deliberately no containment
@@ -170,7 +173,12 @@ export class WorkspaceManager {
     const walkedFrom = holder?.fsPath ?? path.parse(absolute).root;
     const confined = await this.platform.confinement.confineExisting(walkedFrom, path.relative(walkedFrom, absolute).split(path.sep).join("/"));
     if (!confined.ok) {
-      if (confined.reason === "missing") throw new LocalizedError(l("Could not open file: {0}", filePath));
+      if (confined.reason === "missing") {
+        // A tool card of a chat whose project folder moved names the file where it was (docs/invariants.md "Project relocation").
+        const moved = relocated ? undefined : relocatedPath(currentRelocations().aliases, absolute);
+        if (moved !== undefined) return this.openFile(moved, line, folder, panelId, true);
+        throw new LocalizedError(l("Could not open file: {0}", filePath));
+      }
       await this.platform.editor.openFile(resolvedPath, editorOptions);
       return;
     }

@@ -1,0 +1,521 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js
+index 3172cae..f6661e5 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js
+@@ -131,7 +131,7 @@ export class AgentSessionRuntime {
+             return beforeResult;
+         }
+         const previousSessionFile = this.session.sessionFile;
+-        const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
++        const sessionManager = await SessionManager.openAsync(sessionPath, undefined, options?.cwdOverride);
+         assertSessionCwdExists(sessionManager, this.cwd);
+         await this.teardownCurrent("resume", sessionManager.getSessionFile());
+         this.apply(await this.createRuntime({
+@@ -216,8 +216,8 @@ export class AgentSessionRuntime {
+             if (!existsSync(currentSessionFile)) {
+                 throw new Error("This session has not been saved yet. Send a message before cloning or forking it.");
+             }
+-            const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
+-            const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
++            const sessionManager = await SessionManager.openAsync(currentSessionFile, sessionDir);
++            const forkedSessionPath = await sessionManager.createBranchedSessionAsync(targetLeafId);
+             if (!forkedSessionPath) {
+                 throw new Error("Failed to create forked session");
+             }
+@@ -281,7 +281,7 @@ export class AgentSessionRuntime {
+         if (!sourceAlreadyStored) {
+             copyFileSync(resolvedPath, destinationPath, constants.COPYFILE_EXCL);
+         }
+-        const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
++        const sessionManager = await SessionManager.openAsync(destinationPath, sessionDir, cwdOverride);
+         try {
+             assertSessionCwdExists(sessionManager, this.cwd);
+         }
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts
+index c042aaf..ff52d54 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts
+@@ -210,6 +210,11 @@ export declare function buildSessionContext(entries: SessionEntry[], leafId?: st
+ export declare function getDefaultSessionDir(cwd: string, agentDir?: string): string;
+ /** Exported for testing */
+ export declare function loadEntriesFromFile(filePath: string): FileEntry[];
++/**
++ * Same result and repair as loadEntriesFromFile(), read in chunks that yield to the event loop.
++ * Exported for testing.
++ */
++export declare function loadEntriesFromFileAsync(filePath: string, signal?: AbortSignal): Promise<FileEntry[]>;
+ /** Exported for testing */
+ export declare function findMostRecentSession(sessionDir: string, cwd?: string): string | null;
+ export type SessionListProgress = (loaded: number, total: number, 
+@@ -370,6 +375,19 @@ export declare class SessionManager {
+      * Returns the new session file path, or undefined if not persisting.
+      */
+     createBranchedSession(leafId: string): string | undefined;
++    /**
++     * Same as createBranchedSession(), but writes the new file without blocking the event loop.
++     * The branch is taken from the tree as it is at the call; the manager switches to it only after the file is
++     * complete, with the same entries, file bytes and state as createBranchedSession().
++     * If the write fails or `signal` aborts first, the promise rejects, the manager is unchanged and the new file is
++     * removed. The file is created exclusively and written through one handle: an existing file is never overwritten,
++     * and if the path is deleted or replaced during the write, nothing recreates it and the promise rejects.
++     */
++    createBranchedSessionAsync(leafId: string, options?: {
++        signal?: AbortSignal;
++    }): Promise<string | undefined>;
++    private _useBranchedSession;
++    private _prepareBranchedSession;
+     /**
+      * Create a new session.
+      * @param cwd Working directory (stored in session header)
+@@ -383,6 +401,13 @@ export declare class SessionManager {
+      * @param cwdOverride Optional cwd override instead of the session header cwd.
+      */
+     static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager;
++    /**
++     * Same as open(), but reads the file without blocking the event loop.
++     * @param options.signal Stops the read between chunks; the promise rejects with the abort reason.
++     */
++    static openAsync(path: string, sessionDir?: string, cwdOverride?: string, options?: {
++        signal?: AbortSignal;
++    }): Promise<SessionManager>;
+     /**
+      * Continue the most recent session, or create new if none.
+      * @param cwd Working directory
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js
+index 7ee0501..98f920a 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js
+@@ -1,7 +1,7 @@
+ import { getCurrentSystemMessage, uuidv7, } from "@earendil-works/pi-ai";
+ import { randomUUID } from "crypto";
+-import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeFileSync, } from "fs";
+-import { readdir, stat } from "fs/promises";
++import { appendFileSync, closeSync, createReadStream, existsSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeFileSync, writeSync, } from "fs";
++import { open as openFile, readdir, stat, unlink } from "fs/promises";
+ import { basename, join, resolve } from "path";
+ import { createInterface } from "readline";
+ import { StringDecoder } from "string_decoder";
+@@ -322,51 +322,234 @@ function parseSessionEntryLine(line) {
+         return null;
+     }
+ }
++/**
++ * Parses session file bytes into entries, one chunk at a time.
++ * Each chunk is scanned once, so a line spanning many chunks costs linear time.
++ */
++function createSessionEntryReader() {
++    const decoder = new StringDecoder("utf8");
++    const entries = [];
++    let linePieces = [];
++    const takeLines = (text) => {
++        let lineStart = 0;
++        let newlineIndex = text.indexOf("\n");
++        while (newlineIndex !== -1) {
++            linePieces.push(text.slice(lineStart, newlineIndex));
++            const entry = parseSessionEntryLine(linePieces.join(""));
++            if (entry)
++                entries.push(entry);
++            linePieces = [];
++            lineStart = newlineIndex + 1;
++            newlineIndex = text.indexOf("\n", lineStart);
++        }
++        if (lineStart < text.length)
++            linePieces.push(text.slice(lineStart));
++    };
++    return {
++        write(bytes) {
++            takeLines(decoder.write(bytes));
++        },
++        /** Returns no entries for a file that does not start with a session header. */
++        end() {
++            takeLines(decoder.end());
++            const unterminatedLine = linePieces.join("");
++            const finalEntry = parseSessionEntryLine(unterminatedLine);
++            if (finalEntry)
++                entries.push(finalEntry);
++            const header = entries[0];
++            if (header?.type !== "session" || typeof header.id !== "string") {
++                return { entries: [], needsTrailingNewline: false };
++            }
++            return { entries, needsTrailingNewline: unterminatedLine.length > 0 };
++        },
++    };
++}
+ /** Exported for testing */
+ export function loadEntriesFromFile(filePath) {
+     const resolvedFilePath = normalizePath(filePath);
+     if (!existsSync(resolvedFilePath))
+         return [];
+-    const entries = [];
+-    let pending = "";
++    const reader = createSessionEntryReader();
+     const fd = openSync(resolvedFilePath, "r");
+     try {
+-        const decoder = new StringDecoder("utf8");
+         const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
+         while (true) {
+             const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+             if (bytesRead === 0)
+                 break;
+-            pending += decoder.write(buffer.subarray(0, bytesRead));
+-            let lineStart = 0;
+-            let newlineIndex = pending.indexOf("\n", lineStart);
+-            while (newlineIndex !== -1) {
+-                const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
+-                if (entry)
+-                    entries.push(entry);
+-                lineStart = newlineIndex + 1;
+-                newlineIndex = pending.indexOf("\n", lineStart);
+-            }
+-            pending = pending.slice(lineStart);
++            reader.write(buffer.subarray(0, bytesRead));
+         }
+-        pending += decoder.end();
+-        const finalEntry = parseSessionEntryLine(pending);
+-        if (finalEntry)
+-            entries.push(finalEntry);
++        const { entries, needsTrailingNewline } = reader.end();
++        if (needsTrailingNewline)
++            appendNewlineToReadFile(fd, resolvedFilePath);
++        return entries;
+     }
+     finally {
+         closeSync(fd);
+     }
+-    // Validate session header before repairing the file.
+-    if (entries.length === 0)
++}
++/**
++ * Same result and repair as loadEntriesFromFile(), read in chunks that yield to the event loop.
++ * Exported for testing.
++ */
++export async function loadEntriesFromFileAsync(filePath, signal) {
++    const resolvedFilePath = normalizePath(filePath);
++    signal?.throwIfAborted();
++    let handle;
++    try {
++        handle = await openFile(resolvedFilePath, "r");
++    }
++    catch (error) {
++        if (error.code === "ENOENT")
++            return [];
++        throw error;
++    }
++    const reader = createSessionEntryReader();
++    try {
++        const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
++        while (true) {
++            signal?.throwIfAborted();
++            const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
++            if (bytesRead === 0)
++                break;
++            reader.write(buffer.subarray(0, bytesRead));
++        }
++        const { entries, needsTrailingNewline } = reader.end();
++        if (needsTrailingNewline)
++            await appendNewlineToReadFileAsync(handle, resolvedFilePath);
+         return entries;
+-    const header = entries[0];
+-    if (header.type !== "session" || typeof header.id !== "string") {
+-        return [];
+     }
+-    if (pending)
+-        appendFileSync(resolvedFilePath, "\n");
+-    return entries;
++    finally {
++        await handle.close();
++    }
++}
++function invalidSessionFileError(filePath) {
++    return new Error(`Session file is not a valid ${APP_NAME} session: ${filePath}`);
++}
++/** The file's size, or 0 when it does not exist. */
++async function fileSizeIfExists(filePath) {
++    try {
++        return (await stat(filePath)).size;
++    }
++    catch (error) {
++        if (error.code === "ENOENT")
++            return 0;
++        throw error;
++    }
++}
++// Append without O_CREAT: a session file deleted since the read must stay deleted, not become a file with no header.
++const APPEND_TO_EXISTING_FILE = fsConstants.O_WRONLY | fsConstants.O_APPEND;
++/**
++ * Completes the torn last line of the file open for reading as `readFd`, if `filePath` still names that file.
++ * The read stays open while both are compared, so the deleted file's inode cannot be reused by another file.
++ */
++function appendNewlineToReadFile(readFd, filePath) {
++    let repairFd;
++    try {
++        repairFd = openSync(filePath, APPEND_TO_EXISTING_FILE);
++    }
++    catch (error) {
++        if (error.code === "ENOENT")
++            return;
++        throw error;
++    }
++    try {
++        if (isSameFile(fstatSync(readFd, { bigint: true }), fstatSync(repairFd, { bigint: true }))) {
++            writeSync(repairFd, "\n");
++        }
++    }
++    finally {
++        closeSync(repairFd);
++    }
++}
++/** appendNewlineToReadFile() for a file read through a FileHandle. */
++async function appendNewlineToReadFileAsync(readHandle, filePath) {
++    let repairHandle;
++    try {
++        repairHandle = await openFile(filePath, APPEND_TO_EXISTING_FILE);
++    }
++    catch (error) {
++        if (error.code === "ENOENT")
++            return;
++        throw error;
++    }
++    try {
++        const [read, repair] = await Promise.all([
++            readHandle.stat({ bigint: true }),
++            repairHandle.stat({ bigint: true }),
++        ]);
++        if (isSameFile(read, repair))
++            await repairHandle.write("\n");
++    }
++    finally {
++        await repairHandle.close();
++    }
++}
++function isSameFile(a, b) {
++    return a.dev === b.dev && a.ino === b.ino;
++}
++/** Characters of serialized entries per write; a larger single entry is written whole. */
++const SESSION_WRITE_CHUNK_SIZE = 1024 * 1024;
++/** The bytes _rewriteFile() writes for `entries`, in chunks of about SESSION_WRITE_CHUNK_SIZE characters. */
++function* serializeSessionEntryChunks(entries) {
++    let lines = [];
++    let length = 0;
++    for (const entry of entries) {
++        const line = `${JSON.stringify(entry)}\n`;
++        lines.push(line);
++        length += line.length;
++        if (length >= SESSION_WRITE_CHUNK_SIZE) {
++            yield lines.join("");
++            lines = [];
++            length = 0;
++        }
++    }
++    if (lines.length > 0)
++        yield lines.join("");
++}
++/**
++ * Creates `filePath`, which must not exist, and writes `entries` to it in chunks that yield to the event loop.
++ * Every write goes through the one handle, so a path deleted during the write is never recreated.
++ * Resolves only if the path still names the written file; on any failure or abort the file is removed.
++ */
++async function writeNewSessionFileAsync(filePath, entries, signal) {
++    signal?.throwIfAborted();
++    const handle = await openFile(filePath, "wx");
++    try {
++        for (const chunk of serializeSessionEntryChunks(entries)) {
++            signal?.throwIfAborted();
++            await handle.writeFile(chunk);
++        }
++        signal?.throwIfAborted();
++        if (!(await pathNamesOpenFile(filePath, handle))) {
++            throw new Error(`Session file was deleted or replaced while it was written: ${filePath}`);
++        }
++    }
++    catch (error) {
++        // Removed while the handle is open, so the inode cannot belong to a file created in its place.
++        if (await pathNamesOpenFile(filePath, handle).catch(() => false)) {
++            await unlink(filePath).catch(() => { });
++        }
++        throw error;
++    }
++    finally {
++        await handle.close();
++    }
++}
++async function pathNamesOpenFile(filePath, handle) {
++    let current;
++    try {
++        current = await stat(filePath, { bigint: true });
++    }
++    catch (error) {
++        if (error.code === "ENOENT")
++            return false;
++        throw error;
++    }
++    return isSameFile(await handle.stat({ bigint: true }), current);
++}
++function hasConversation(entries) {
++    return entries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));
+ }
+ /**
+  * Inspect a physical line while searching for the first parsed session entry.
+@@ -672,7 +855,7 @@ export class SessionManager {
+             if (entries.length === 0) {
+                 const explicitPath = this.sessionFile;
+                 if (statSync(explicitPath).size > 0) {
+-                    throw new Error(`Session file is not a valid ${APP_NAME} session: ${explicitPath}`);
++                    throw invalidSessionFileError(explicitPath);
+                 }
+                 this.newSession();
+                 this.sessionFile = explicitPath;
+@@ -790,7 +973,7 @@ export class SessionManager {
+      * first assistant reply) keeps the prompt on disk if the first turn never completes (#10000).
+      */
+     _hasConversation() {
+-        return this.fileEntries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));
++        return hasConversation(this.fileEntries);
+     }
+     _persist(entry) {
+         if (!this.persist || !this.sessionFile)
+@@ -1215,6 +1398,51 @@ export class SessionManager {
+      * Returns the new session file path, or undefined if not persisting.
+      */
+     createBranchedSession(leafId) {
++        const branch = this._prepareBranchedSession(leafId);
++        this._useBranchedSession(branch);
++        if (!this.persist)
++            return undefined;
++        // Use the same rule as _persist(): write now if the branched path already
++        // has a conversation, otherwise let _persist() create the file later.
++        if (this._hasConversation()) {
++            this._rewriteFile();
++            this.flushed = true;
++        }
++        else {
++            this.flushed = false;
++        }
++        return branch.sessionFile;
++    }
++    /**
++     * Same as createBranchedSession(), but writes the new file without blocking the event loop.
++     * The branch is taken from the tree as it is at the call; the manager switches to it only after the file is
++     * complete, with the same entries, file bytes and state as createBranchedSession().
++     * If the write fails or `signal` aborts first, the promise rejects, the manager is unchanged and the new file is
++     * removed. The file is created exclusively and written through one handle: an existing file is never overwritten,
++     * and if the path is deleted or replaced during the write, nothing recreates it and the promise rejects.
++     */
++    async createBranchedSessionAsync(leafId, options) {
++        options?.signal?.throwIfAborted();
++        const branch = this._prepareBranchedSession(leafId);
++        let flushed = false;
++        if (branch.sessionFile !== undefined && hasConversation(branch.fileEntries)) {
++            await writeNewSessionFileAsync(branch.sessionFile, branch.fileEntries, options?.signal);
++            flushed = true;
++        }
++        this._useBranchedSession(branch);
++        if (!this.persist)
++            return undefined;
++        this.flushed = flushed;
++        return branch.sessionFile;
++    }
++    _useBranchedSession(branch) {
++        this.fileEntries = branch.fileEntries;
++        this.sessionId = branch.sessionId;
++        if (branch.sessionFile !== undefined)
++            this.sessionFile = branch.sessionFile;
++        this._buildIndex();
++    }
++    _prepareBranchedSession(leafId) {
+         const previousSessionFile = this.sessionFile;
+         const path = this.getBranch(leafId);
+         if (path.length === 0) {
+@@ -1267,58 +1495,27 @@ export class SessionManager {
+                 labelsToWrite.push({ targetId, label, timestamp: this.labelTimestampsById.get(targetId) });
+             }
+         }
+-        if (this.persist) {
+-            // Build label entries
+-            const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
+-            let parentId = lastEntryId;
+-            const labelEntries = [];
+-            for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
+-                const labelEntry = {
+-                    type: "label",
+-                    id: generateId(new Set(pathEntryIds)),
+-                    parentId,
+-                    timestamp: labelTimestamp,
+-                    targetId,
+-                    label,
+-                };
+-                pathEntryIds.add(labelEntry.id);
+-                labelEntries.push(labelEntry);
+-                parentId = labelEntry.id;
+-            }
+-            this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
+-            this.sessionId = newSessionId;
+-            this.sessionFile = newSessionFile;
+-            this._buildIndex();
+-            // Use the same rule as _persist(): write now if the branched path already
+-            // has a conversation, otherwise let _persist() create the file later.
+-            if (this._hasConversation()) {
+-                this._rewriteFile();
+-                this.flushed = true;
+-            }
+-            else {
+-                this.flushed = false;
+-            }
+-            return newSessionFile;
+-        }
+-        // In-memory mode: replace current session with the path + labels
++        // Build label entries
+         const labelEntries = [];
+         let parentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
+         for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
+             const labelEntry = {
+                 type: "label",
+-                id: generateId(new Set([...pathEntryIds, ...labelEntries.map((e) => e.id)])),
++                id: generateId(pathEntryIds),
+                 parentId,
+                 timestamp: labelTimestamp,
+                 targetId,
+                 label,
+             };
++            pathEntryIds.add(labelEntry.id);
+             labelEntries.push(labelEntry);
+             parentId = labelEntry.id;
+         }
+-        this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
+-        this.sessionId = newSessionId;
+-        this._buildIndex();
+-        return undefined;
++        return {
++            sessionId: newSessionId,
++            sessionFile: this.persist ? newSessionFile : undefined,
++            fileEntries: [header, ...pathWithoutLabels, ...labelEntries],
++        };
+     }
+     /**
+      * Create a new session.
+@@ -1358,6 +1555,25 @@ export class SessionManager {
+         const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
+         return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+     }
++    /**
++     * Same as open(), but reads the file without blocking the event loop.
++     * @param options.signal Stops the read between chunks; the promise rejects with the abort reason.
++     */
++    static async openAsync(path, sessionDir, cwdOverride, options) {
++        const resolvedPath = resolvePath(path);
++        const entries = await loadEntriesFromFileAsync(resolvedPath, options?.signal);
++        // No entries means a missing, empty or invalid file. Only the invalid one has bytes, and it is refused
++        // here: the constructor would read the whole file synchronously before refusing it.
++        if (entries.length === 0 && (await fileSizeIfExists(resolvedPath)) > 0) {
++            throw invalidSessionFileError(resolvedPath);
++        }
++        const firstEntry = entries[0];
++        const header = firstEntry?.type === "session" ? firstEntry : null;
++        const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
++        const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
++        // The entries go to the constructor even when there are none, so it never reads the file itself.
++        return new SessionManager(cwd, dir, resolvedPath, true, undefined, entries);
++    }
+     /**
+      * Continue the most recent session, or create new if none.
+      * @param cwd Working directory

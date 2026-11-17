@@ -50,7 +50,7 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
   const credentials = vi.fn(answer);
   const runProviders = vi.fn();
   const remote: RemoteHost = {
-    hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders, browserTool: vi.fn(), browserRelease: vi.fn(), browserDiscard: vi.fn(), shellOutput: () => ({ write: () => undefined, end: () => undefined }),
+    hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders, runConfiguredProviders: vi.fn(), browserTool: vi.fn(), browserRelease: vi.fn(), browserDiscard: vi.fn(), shellOutput: () => ({ write: () => undefined, end: () => undefined }),
     memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), memoryList: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(), forgeTool: vi.fn(), forgeDescribe: vi.fn(),
   };
   return {
@@ -247,6 +247,32 @@ describe('BrokeredCredentialStore', () => {
       await broker.read('openai');
     });
     expect(host.runProviders.mock.calls).toEqual([['p1', ['anthropic']], ['p1', ['anthropic', 'openai']]]);
+  });
+
+  // Keep running pushes the configured providers' tokens too, before the run first reads them
+  it('serves a token pushed for a provider no run read yet once its device is gone, asking it nothing, and the push records no used provider', async () => {
+    const host = remoteHost(async () => { throw new Error(CREDENTIAL_CLIENT_ABSENT); });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const signedIn = { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } as const;
+    host.setAuth('client-a', { providers: { anthropic: signedIn, 'openai-codex': signedIn } });
+    let goOn: (() => void) | undefined;
+    const turn = runPinnedTurn(host.remote, 'p1', async () => {
+      await new Promise<void>((resolve) => { goOn = resolve; });
+      return broker.read('openai-codex');
+    });
+    await vi.waitFor(() => expect(goOn).toBeDefined());
+    broker.push('client-a', 'openai-codex', { type: 'oauth', access: 'pushed', expiresIn: HOUR, refresh: '' });
+    expect(host.runProviders).not.toHaveBeenCalled();
+    // outside every run it stays out of the host's own availability, as any device credential does
+    expect(await broker.read('openai-codex')).toBeUndefined();
+    host.setAuth('client-a', undefined);
+    // a sub-call (memory, titles) reads it too while the kept turn holds the device's entries
+    expect(await runPinnedSubcall(host.remote, () => broker.read('openai-codex'))).toMatchObject({ access: 'pushed' });
+    goOn!();
+    expect(await turn).toMatchObject({ type: 'oauth', access: 'pushed', refresh: '' });
+    expect(host.credentials).not.toHaveBeenCalled();
+    expect(host.runProviders.mock.calls).toEqual([['p1', ['openai-codex']]]);
+    broker.dispose();
   });
 
   it('holds nothing once disposed: no credential, clientAuth, run providers or delta count, and no answer that arrives later', async () => {

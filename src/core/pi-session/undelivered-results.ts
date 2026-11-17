@@ -9,6 +9,7 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import {
   deliveredBackgroundResults,
+  endedOnRejection,
   indexAgentFiles,
   latestSubagentInvocations,
   readAgentFile,
@@ -46,7 +47,7 @@ export interface DeliveredResult {
   toolCallId: string;
 }
 
-/** `stopped` is absent: a file cannot tell a card stop from an abort kill, and the notice announces user and shutdown stops. */
+/** `stopped` is absent: a file cannot tell a card stop from an abort kill, and the notice announces user and shutdown stops. A run that ended on a rejected call (`endedOnRejection`) is deliverable. */
 const DELIVERABLE_FILE_STATUSES: ReadonlySet<AgentTerminalStatus> = new Set<AgentTerminalStatus>(['completed', 'steered', 'aborted', 'error']);
 
 export interface UndeliveredFileScan {
@@ -89,7 +90,7 @@ export async function collectUndeliveredFromFiles(sources: {
     }
     if (file?.launch.kind !== 'subagent') continue;
     const status = segmentForInvocation(file, inv)?.status;
-    if (status && DELIVERABLE_FILE_STATUSES.has(status.status)) {
+    if (status && (DELIVERABLE_FILE_STATUSES.has(status.status) || endedOnRejection(status))) {
       results.push({ agentId: inv.id, toolCallId: inv.toolCallId, launch: file.launch, status });
     }
   }

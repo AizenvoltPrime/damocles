@@ -19,9 +19,10 @@ const machine: ChatMachine = {
   platform: process.platform,
   allowedNetworkHosts: () => Promise.resolve(new Set<string>()),
   powerShellSearch: () => Promise.resolve({ path: '', pathext: undefined, pwshHome: undefined }),
+  lookupFolders: () => Promise.resolve([]),
 };
 const shell = async (tool: string, command: string, at: DesignScope = scope): Promise<string | undefined> =>
-  designWriteBlock(tool, { command }, at, { shellVerdict: await provenReadOnlyShell(tool, { command }, machine) });
+  designWriteBlock(tool, { command }, at, { shellVerdict: await provenReadOnlyShell(tool, { command }, machine, PROJECT) });
 
 const canLink = (() => {
   const probe = path.join(PROJECT, 'link-probe');

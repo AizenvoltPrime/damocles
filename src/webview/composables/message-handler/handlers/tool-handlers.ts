@@ -1,4 +1,5 @@
 import { TOOL_AGENT, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { isAgentStopReason } from "@shared/types/subagents";
 import type { HandlerRegistry } from "../types";
 import { extractDenialFeedback, refusedStatus } from "../utils";
 import { takeRejectedCancels } from "@/composables/useToolCancel";
@@ -91,10 +92,11 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           const parsed = JSON.parse(msg.result);
           if (parsed.status === 'async_launched') return;
           const agentStatus: unknown = parsed.agentStatus;
+          const agentStopReason: unknown = parsed.agentStopReason;
           const status = endedSubagentStatus(typeof agentStatus === "string" ? agentStatus : "completed");
           subagentStore.updateSubagentToolStatus(msg.toolUseId, status, msg.result, undefined, msg.durationMs, msg.imageCount);
           // Before setSubagentResult, which ends a card still running as completed.
-          subagentStore.endSubagent(msg.toolUseId, status);
+          subagentStore.endSubagent(msg.toolUseId, status, isAgentStopReason(agentStopReason) ? agentStopReason : undefined);
           const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
           const contentText =
             contentItems

@@ -43,14 +43,14 @@ function isNotFound(err: unknown): boolean {
  * pi session id. Writes nothing when that prefix holds no user or assistant message, the same as pi's own
  * deferred first write, so the copy then reads as an agent stopped before its task was committed.
  */
-function cutAgentSession(SessionManager: ForkAgentDataInput['SessionManager'], sourceFile: string, targetDir: string, forkPointMs: number): void {
-  const sm = SessionManager.open(sourceFile, targetDir);
+async function cutAgentSession(SessionManager: ForkAgentDataInput['SessionManager'], sourceFile: string, targetDir: string, forkPointMs: number): Promise<void> {
+  const sm = await SessionManager.openAsync(sourceFile, targetDir);
   let leafId: string | undefined;
   for (const entry of sm.getEntries()) {
     if (!(Date.parse(entry.timestamp) <= forkPointMs)) break;
     leafId = entry.id;
   }
-  if (leafId) sm.createBranchedSession(leafId);
+  if (leafId) await sm.createBranchedSessionAsync(leafId);
 }
 
 function lineTimestamp(line: string): number | undefined {

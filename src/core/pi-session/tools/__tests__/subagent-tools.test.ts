@@ -47,14 +47,18 @@ describe('Agent tool result details', () => {
     expect(result.details).toEqual({ agentId: 'agent-1', status: 'async_launched' });
   });
 
-  it('a foreground spawn carries its terminal status and stop reason, outside the model-visible text', async () => {
+  it('a foreground spawn carries its terminal status and stop reason in its details and beside agentStatus', async () => {
     const execute = agentTool({
       resolveRunInBackground: () => false,
-      spawnAndWait: async () => rec({ id: 'agent-2', status: 'stopped', stopReason: 'shutdown', result: 'partial' }),
+      spawnAndWait: async () => rec({ id: 'agent-2', status: 'stopped', stopReason: 'denied', rejectedTool: 'Bash', result: 'partial' }),
     });
     const result = await execute('tc2', params);
-    expect(result.details).toEqual({ agentId: 'agent-2', status: 'stopped', stopReason: 'shutdown' });
-    expect(result.content[0]!.text).not.toContain('shutdown');
+    expect(result.details).toEqual({ agentId: 'agent-2', status: 'stopped', stopReason: 'denied' });
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      agentStatus: 'stopped',
+      agentStopReason: 'denied',
+      content: [{ text: expect.stringContaining('(STOPPED: the user rejected its Bash call and the run ended there;') }],
+    });
   });
 
   it.each([
@@ -210,6 +214,32 @@ describe('GetSubagentResult wait', () => {
   });
 });
 
+describe('GetSubagentResult of an agent this manager no longer holds', () => {
+  const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+  type Exec = (id: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
+  const fetchFromFile = (stopReason: string): Promise<{ content: Array<{ text: string }>; details: unknown }> => {
+    const agent = {
+      state: { status: 'stopped', stopReason, latest: { kind: 'subagent', id: 'a1', toolCallId: 'tc1', resume: false } },
+      file: null,
+      status: { status: 'stopped', stopReason, result: 'half (STOPPED: rejected)' },
+    };
+    const manager = { getSpawnableAgents: () => [], branchRecord: () => undefined, readBranchAgent: async () => agent } as unknown as AgentManager;
+    return (buildSubagentTools(piStub, manager, NO_USER_INPUT)[1] as unknown as { execute: Exec }).execute('tc-get', { agent_id: 'a1' });
+  };
+
+  it('answers a run a rejected call ended with its recorded result and a fetch marker, so no other path delivers it', async () => {
+    const result = await fetchFromFile('denied');
+    expect(result.content[0]!.text).toBe('half (STOPPED: rejected)');
+    expect(result.details).toEqual({ agentId: 'a1', toolCallId: 'tc1', status: 'stopped' });
+  });
+
+  it('answers a user stop with how to resume it and no marker, leaving it to the interruption notice', async () => {
+    const result = await fetchFromFile('user');
+    expect(result.content[0]!.text).toContain('it was stopped before it finished');
+    expect(result.details).toBeUndefined();
+  });
+});
+
 describe('SteerSubagent arguments', () => {
   const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
   const steerTool = buildSubagentTools(piStub, { getSpawnableAgents: () => [] } as unknown as AgentManager, NO_USER_INPUT)[2] as unknown as Tool;
@@ -218,7 +248,7 @@ describe('SteerSubagent arguments', () => {
 
   // A blank message would deliver the bare marker, which the steering protocol reads as an image-only steer.
   it.each(['', '   ', '\n\t'])('pi rejects the blank message %j before execute, naming the field', (message) => {
-    expect(() => validate(message)).toThrow('- message: must match pattern');
+    expect(() => validate(message)).toThrow('- message: expected to match');
   });
 
   it('accepts a message with text', () => {

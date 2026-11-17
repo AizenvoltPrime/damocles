@@ -14,6 +14,7 @@ import { settingsViewHandlers } from '@/composables/message-handler/handlers/set
 import type { SettingsHandlerContext } from '@/composables/message-handler/handlers/settings-handlers';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
 import { specOf } from '../mcp/__tests__/fake-server-manager';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 /**
  * Slice 2 — nested MCP elicitation, end to end, with NOTHING faked between the tool definition and the
@@ -163,7 +164,7 @@ async function startManager(transport: ReturnType<typeof fakeTransport>, servers
 
 /** The nested toolset a spawn produces, built from the REAL manager's descriptors. */
 function nestedTools(mgr: McpClientManager, elicitationUi?: ElicitationUI) {
-  const toolset = buildNestedMcpToolset(piStub, mgr, {
+  const toolset = buildNestedMcpToolset(piStub, piMcp, mgr, {
     eligible: new Set(mgr.allToolNames()),
     disabledEntries: [],
     resourceRuleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }),
@@ -251,7 +252,7 @@ describe('criterion 2 — no UI means NO `elicitationUi` KEY (the no-op is never
     // Capture what the REAL `McpClientManager.callTool` RECEIVED (spyOn calls through to the real body).
     const callTool = vi.spyOn(mgr, 'callTool');
     const descriptor = mgr.getAllToolDescriptors().find((d) => d.piName === 'mcp__git__status')!;
-    const execute = buildMcpPiTool(piStub, descriptor, mgr, { resourceReach: () => async () => NO_RESOURCE_READ }).execute as unknown as ExecuteFn;
+    const execute = buildMcpPiTool(piStub, piMcp, descriptor, mgr, { resourceReach: () => async () => NO_RESOURCE_READ }).execute as unknown as ExecuteFn;
 
     const ctx = piContext() as { ui: unknown; hasUI: boolean };
     expect(ctx.ui, 'pi hands an unbound session a TRUTHY no-op UI — that is the trap').toBeTruthy();
@@ -282,7 +283,7 @@ describe('criterion 2 — no UI means NO `elicitationUi` KEY (the no-op is never
     const p = panel();
     const callTool = vi.spyOn(mgr, 'callTool');
     const descriptor = mgr.getAllToolDescriptors().find((d) => d.piName === 'mcp__git__status')!;
-    const execute = buildMcpPiTool(piStub, descriptor, mgr, { resourceReach: () => async () => NO_RESOURCE_READ }).execute as unknown as ExecuteFn;
+    const execute = buildMcpPiTool(piStub, piMcp, descriptor, mgr, { resourceReach: () => async () => NO_RESOURCE_READ }).execute as unknown as ExecuteFn;
 
     const call = execute('tc-1', {}, undefined, undefined, piContext(p.uiContext as unknown as ElicitationUI));
     const dialogs = await p.answerAll(['Continue', 'Enter value', 'README.md', 'Submit']);

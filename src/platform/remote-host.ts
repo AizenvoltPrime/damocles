@@ -64,6 +64,8 @@ export interface RemoteHost {
   speak(host: PanelHost, text: string): Promise<void>;
   // the providers a chat's runs read through the broker, for the daemon's run registry (control.listRuns)
   runProviders(panelId: string, providers: readonly string[]): void;
+  // the providers a chat's configuration names, sorted, each once, for the daemon's run registry (control.listOwnRuns)
+  runConfiguredProviders(panelId: string, providers: readonly string[]): void;
   // a browser tool of the chat's view, run by the client showing it in that view's browser scope; served: the root file a
   // BrowserOpen or BrowserNavigate names, which the client serves, rejected with CLIENT_FEATURE_MISSING by an app too old to
   browserTool(host: PanelHost, scope: string, tool: string, input: unknown, signal: AbortSignal | undefined, served?: RelayedServedFile): Promise<BrowserToolAnswer>;

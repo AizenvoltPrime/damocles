@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
@@ -10,8 +10,11 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { createPowerShellTool, createTrackedPowerShellOperations, powerShellSearch } from '../powershell-tool';
 import { createShellJob, killProcessTree } from '../process-tree';
-import { windowsPowerShell } from '../../../system-tools';
+import { findPwsh, windowsPowerShell, windowsSystemDirectory } from '../../../system-tools';
+import { resolveGitExecutable } from '../../../git-executable';
 import type { ShellCredentialLease } from '../shell-credentials';
+
+const installedPwsh = process.platform === 'win32' ? await findPwsh() : undefined;
 
 const jobState = vi.hoisted(() => ({ created: 0, terminated: 0, disposed: 0 }));
 
@@ -58,6 +61,9 @@ vi.mock('../process-tree', async (importOriginal) => {
 
 /** pi's own literal, mirrored because `powershell.js` keeps it module-local. */
 const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
+
+/** pi's own literal (pi-coding-agent 1.5.2 `dist/core/tools/powershell.js:11`), mirrored for the same reason. */
+const WINDOWS_POWERSHELL_EXIT_SUFFIX = '\n;\nif ($?) { exit 0 }\nif (($LASTEXITCODE -eq 0) -and ("$($Error[0].FullyQualifiedErrorId)" -like "NativeCommandError*")) { exit 0 }\nexit 1';
 
 const POWERSHELL_ARGS = [
   '-NoProfile',
@@ -255,6 +261,24 @@ describe('createTrackedPowerShellOperations', () => {
     await settled;
 
     expect(spawnControl.calls[0]?.args).toEqual([...POWERSHELL_ARGS, `${UTF8_OUTPUT_PREFIX}Get-ChildItem`]);
+  });
+
+  it.runIf(process.platform === 'win32')('appends the exit suffix for Windows PowerShell only, and never after a final backtick', async () => {
+    for (const command of ['git --version 2>&1 | Select-Object -Last 1', 'Write-Output done `']) {
+      spawnControl.calls = [];
+      spawnControl.fake = (exe) => {
+        const child = fakeChild(exe === plantedPwsh() ? null : 4242);
+        setImmediate(() => (exe === plantedPwsh() ? child.emit('error', enoent(exe)) : endShell(child, 0)));
+        return child;
+      };
+
+      await ops.exec(command, CWD, { onData: () => undefined, env: process.env });
+
+      expect(spawnControl.calls.map((call) => [call.exe, call.args.at(-1)])).toEqual([
+        [plantedPwsh(), `${UTF8_OUTPUT_PREFIX}${command}`],
+        [windowsPowerShell(), `${UTF8_OUTPUT_PREFIX}${command}${command.endsWith('`') ? '' : WINDOWS_POWERSHELL_EXIT_SUFFIX}`],
+      ]);
+    }
   });
 
   it('starts pwsh by its absolute path from PATH, then Windows PowerShell from System32, never by a bare name', async () => {
@@ -523,6 +547,24 @@ describe('the PowerShell tool result', () => {
     expect(message.endsWith('Command timed out after 1 seconds')).toBe(true);
   });
 
+  it("names the shell's exit when it exited before the deadline and only its background output held the call (pi #11613)", async () => {
+    vi.useFakeTimers();
+    const shell = armFakeShell();
+    const settled = start({ command: 'Start-Job { ... }', timeout: 1 });
+    await shell.spawned;
+
+    shell.child.stdout.emit('data', Buffer.from('tick\n'));
+    shell.child.emit('exit', 3, null);
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The deadline kills nothing once the shell exited, so the call ends when the output closes.
+    expect(killProcessTree).not.toHaveBeenCalled();
+    shell.child.emit('close', 3, null);
+
+    const message = await messageOf(settled);
+    expect(message).toContain('tick');
+    expect(message).toMatch(/Command timed out after 1 seconds\. The shell exited with code 3 after \d+(\.\d)? seconds, but background processes it started kept writing output until the timeout\.$/);
+  });
+
   it('throws "Command aborted" behind the partial output when the run signal fires mid-command', async () => {
     const shell = armFakeShell();
     const controller = new AbortController();
@@ -654,4 +696,71 @@ describe.runIf(process.platform === 'win32')('PowerShell process lifetime', () =
 
     expect(message.endsWith('Command exited with code 42')).toBe(true);
   }, 30_000);
+});
+
+/** pi #8842: both Windows shells report the exit codes PowerShell 7 reports (pi 1.5.2 `test/powershell-tool.test.ts:65`). */
+describe.runIf(process.platform === 'win32')('PowerShell exit codes', () => {
+  const stderrExit0 = 'cmd /c "echo progress 1>&2 & exit 0"';
+  const stderrExit7 = 'cmd /c "echo progress 1>&2 & exit 7"';
+  const cases: Array<[command: string, exitCode: number]> = [
+    [`${stderrExit0} 2>&1 | Select-Object -Last 3`, 0],
+    [`${stderrExit0} 2>&1`, 0],
+    [`${stderrExit0} 2>$null`, 0],
+    [`$output = ${stderrExit0} 2>&1`, 0],
+    [stderrExit0, 0],
+    [`Get-Item C:\\pi-missing-8842; ${stderrExit0} 2>&1`, 0],
+    [`${stderrExit7} 2>&1 | Select-Object -Last 3`, 1],
+    [stderrExit7, 1],
+    ['cmd /c "exit 3"', 1],
+    ['Get-Item C:\\pi-missing-8842', 1],
+    [`${stderrExit0} 2>&1; Get-Item C:\\pi-missing-8842`, 1],
+    ['Write-Error "failed"', 1],
+    ['throw "failed"', 1],
+    [`${stderrExit7}; Write-Output done`, 0],
+    ['Write-Output done # comment', 0],
+    [`Set-StrictMode -Version Latest; ${stderrExit0} 2>&1`, 0],
+    ['exit 5', 5],
+    ['git --version 2>&1 | Select-Object -Last 1', 0],
+  ];
+  // Unfinished commands are parse errors: nothing runs, not even the first statement.
+  const unfinished = ['Write-Output done `', 'Get-ChildItem |', '$true -and', 'Write-Output a,', '$x =', 'Write-Output (1 +', 'Write-Output "unclosed', 'if ($true) {'].map(
+    (statement) => `Write-Output ("pi-" + "ran"); ${statement}`,
+  );
+
+  const git = resolveGitExecutable();
+  const emptyProgramFiles = mkdtempSync(join(tmpdir(), 'damocles-pf-'));
+  afterAll(() => rmSync(emptyProgramFiles, { recursive: true, force: true }));
+  // No pwsh on PATH or in Program Files, so Windows PowerShell is the one that starts.
+  const windowsPowerShellOnly = (): NodeJS.ProcessEnv => ({
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH')),
+    PATH: [dirname(windowsPowerShell()), windowsSystemDirectory(), ...(git ? [dirname(git)] : [])].join(delimiter),
+    ProgramFiles: emptyProgramFiles,
+  });
+  const shells: Array<[name: string, major: string, env: (() => NodeJS.ProcessEnv) | undefined]> = [
+    ['powershell.exe', '5', git ? windowsPowerShellOnly : undefined],
+    ['pwsh.exe', '7', installedPwsh ? () => process.env : undefined],
+  ];
+
+  for (const [name, major, env] of shells) {
+    it.skipIf(!env)(`reports PowerShell 7 exit codes with ${name}`, async () => {
+      const ops = createTrackedPowerShellOperations(undefined);
+      const run = async (command: string): Promise<{ exitCode: number | null; output: string }> => {
+        let output = '';
+        const { exitCode } = await ops.exec(command, CWD, { onData: (data) => (output += data.toString()), env: env!() });
+        return { exitCode, output };
+      };
+      expect((await run('$PSVersionTable.PSVersion.Major')).output.trim()).toBe(major);
+
+      const results: Array<[string, number | null]> = [];
+      for (const [command] of cases) results.push([command, (await run(command)).exitCode]);
+      expect(results).toEqual(cases);
+
+      const unfinishedResults: Array<[string, number | null, boolean]> = [];
+      for (const command of unfinished) {
+        const { exitCode, output } = await run(command);
+        unfinishedResults.push([command, exitCode, output.includes('pi-ran')]);
+      }
+      expect(unfinishedResults).toEqual(unfinished.map((command) => [command, 1, false]));
+    }, 120_000);
+  }
 });

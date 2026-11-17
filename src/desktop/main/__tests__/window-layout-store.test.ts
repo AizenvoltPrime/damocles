@@ -909,3 +909,46 @@ describe('WindowLayoutStore', () => {
     expect(lines[1]).toMatch(/^\[layout\] ignoring unreadable /);
   });
 });
+
+describe('WindowLayoutStore.relocateProject', () => {
+  it('re-keys the moved project\'s tabs, recent files, terminal panes and source control state, keeping a merge target\'s own', async () => {
+    const from = { key: 'c:\\work\\acme', fsPath: 'C:\\work\\acme' };
+    const to = { key: 'd:\\acme', fsPath: 'D:\\acme' };
+    const store = new WindowLayoutStore(dir, log);
+    store.setEditor({ tabs: [{ kind: 'code', file: { projectKey: from.key, relativePath: 'src/a.ts' } }, { kind: 'code', file: { projectKey: 'c:\\other', relativePath: 'b.ts' } }], active: 0, recent: [{ projectKey: from.key, relativePath: 'src/a.ts' }] });
+    const pane: PersistedPane = { kind: 'local', profileId: 'pwsh', projectKey: from.key, name: null, customIcon: null, color: null };
+    store.setTerminals({ ...DEFAULT_PERSISTED_TERMINALS, groups: [{ panes: [pane], activePane: 0, sizes: [1] }], active: 0 });
+    store.setScmSelected(from.key, 'C:\\work\\acme\\lib');
+    store.setScmSelected(to.key, 'D:\\acme');
+    store.relocateProject(from, to, path.win32);
+    store.relocateProject(from, to, path.win32);
+    await store.flush();
+    const reread = new WindowLayoutStore(dir, log);
+    expect(reread.editor().tabs).toEqual([{ kind: 'code', file: { projectKey: to.key, relativePath: 'src/a.ts' } }, { kind: 'code', file: { projectKey: 'c:\\other', relativePath: 'b.ts' } }]);
+    expect(reread.editor().recent).toEqual([{ projectKey: to.key, relativePath: 'src/a.ts' }]);
+    expect(reread.terminals().groups[0]!.panes).toEqual([{ ...pane, projectKey: to.key }]);
+    expect([reread.scmSelected(from.key), reread.scmSelected(to.key)]).toEqual([undefined, 'D:\\acme']);
+  });
+
+  it('maps a selected sub-repository and the Graph\'s choices of every repository under the old folder, however the root is spelled', async () => {
+    const from = { key: 'c:\\work\\acme', fsPath: 'C:\\work\\acme' };
+    const to = { key: 'd:\\acme', fsPath: 'D:\\acme' };
+    const store = new WindowLayoutStore(dir, log);
+    store.setScmSelected(from.key, 'c:\\WORK\\acme\\lib\\');
+    store.setSidebar({ ...DEFAULT_SHELL_LAYOUT, graph: { 'C:\\work\\acme': 'all', 'c:\\work\\ACME\\lib': ['refs/heads/main'], 'C:\\work\\acme-other': 'auto' } });
+    store.relocateProject(from, to, path.win32);
+    expect(store.scmSelected(to.key)).toBe('D:\\acme\\lib');
+    expect(store.sidebar().graph).toEqual({ 'D:\\acme': 'all', 'D:\\acme\\lib': ['refs/heads/main'], 'C:\\work\\acme-other': 'auto' });
+  });
+
+  it('maps a remote project\'s repository roots by its host\'s POSIX path rules', async () => {
+    const from = { key: 'ssh+box|/srv/acme', fsPath: '/srv/acme' };
+    const to = { key: 'ssh+box|/srv/moved', fsPath: '/srv/moved' };
+    const store = new WindowLayoutStore(dir, log);
+    store.setScmSelected(from.key, '/srv/acme/lib');
+    store.setSidebar({ ...DEFAULT_SHELL_LAYOUT, graph: { '/srv/acme': 'all', '/srv/acme/lib': 'auto', '/srv/ACME': 'auto' } });
+    store.relocateProject(from, to, path.posix);
+    expect(store.scmSelected(to.key)).toBe('/srv/moved/lib');
+    expect(store.sidebar().graph).toEqual({ '/srv/moved': 'all', '/srv/moved/lib': 'auto', '/srv/ACME': 'auto' });
+  });
+});

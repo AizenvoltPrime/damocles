@@ -22,6 +22,7 @@ import type { CoverageView, ReviewCoverage } from '../review-coverage';
 import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
 import { FakeSession, type FakeOpeningTotals } from './fake-session';
+import { recordTerminatedCall } from '../../pi-session/terminated-calls';
 import { teamAgentToolset } from './team-mcp-fixture';
 import type { AgentMcpContext, AgentResult, AgentRunConfig, TeamAgent, TeamCheckpoint, TeamConfig, TeamEventLog, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -502,7 +503,7 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
       buildEngine: () => engine as never,
       recordInvocation: () => undefined,
       parentBranch: () => [invocation],
-      assertResumableModel: () => undefined,
+      assertResumableModel: async () => undefined,
       requestInterruptionCheck: () => undefined,
     });
     p.runner = () => (p.service as unknown as { activeRunner: TeamRunner }).activeRunner;
@@ -811,7 +812,7 @@ describe('TeamRunner restore rebuilds the scratchpad and bus from the event log'
 
 /**
  * A's opening turn is mid-tool when cancelled: still streaming, with every steer left in pi's queue. An abort that
- * lands in a tool lets pi deliver its queue on the way out (`agent-loop.js:191` in pi-agent-core 1.4.0).
+ * lands in a tool lets pi deliver its queue on the way out (`agent-loop.js:191` in pi-agent-core 1.5.2).
  */
 function midToolTeam(label: string): Harness {
   return makeTeam({
@@ -1133,6 +1134,157 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
         m.type === 'teamMessage' && m.message.recipientName === 'Lead' && m.message.content.includes('[REVIEW ROUND READY]') ? [m.message.content] : []);
       expect(rrr.at(-1)).toContain('  - B: no scratchpad section authored\n    user steer: "focus on the parser"');
     });
+
+    after.runner.cancel('user');
+    await done;
+  });
+});
+
+describe('TeamRunner.resume of a specialist parked on a rejected call', () => {
+  it('reopens it still parked for the lead, its card naming the cause, and the lead\'s message wakes it', async () => {
+    const teamId = crypto.randomUUID();
+    const cwd = newCwd('rejection-park');
+    const rejectOnce: Behaviour = (_t, s) => {
+      if (s.prompts.length > 1) { void s.endTurn(); return; }
+      recordTerminatedCall(s.sessionId, { toolCallId: 'c1', toolName: 'Bash', cause: 'user' });
+      void s.callTools([{ id: 'c1', name: 'bash', terminate: true }]);
+    };
+    const h = makeTeam({
+      cwd, teamId, specialists: ['A', 'B'],
+      behave: {
+        Lead: (_t, s, hh) => {
+          if (s.prompts.length === 1) {
+            hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
+            hh.runner.startSpecialist('B', 'Test label', 'task for B, described in full');
+          }
+          void s.endTurn();
+        },
+        A: rejectOnce,
+        B: holdTurn,
+      },
+    });
+    const run = h.runner.run();
+    await status(h, 'A', 'standby');
+    await vi.waitFor(() => expect(h.agent('Lead').status).toBe('monitoring'));
+    h.runner.cancel('user');
+    await run;
+
+    const persistence = persistenceOf(h);
+    const checkpoint = (await checkpointOf(persistence, teamId))!;
+    expect(checkpoint.review.rejectedCalls).toEqual([['A', { toolCallId: 'c1', toolName: 'Bash', cause: 'user' }]]);
+    expect(checkpoint.members.find((m) => m.name === 'A')).toMatchObject({ status: 'standby' });
+
+    const files = new Map(['Lead', 'A', 'B'].map((name) => [h.agent(name).agentId, h.session(name).sessionFile!]));
+    const after = makeTeam({ cwd, teamId, specialists: ['A', 'B'], behave: { Lead: holdTurn, A: endTurn, B: holdTurn } });
+    after.runner.restore(await persistence.readEventLog(teamId), checkpoint, files);
+    const done = after.runner.resume('tc-resume');
+    const a = await opened(after, 'A');
+
+    expect(logEntries(after).filter((e) => e['type'] === 'agent-resumed' && e['name'] === 'A')).toEqual([
+      expect.objectContaining({ mode: 'park', status: 'standby', stopReason: 'denied' }),
+    ]);
+    expect(after.runner.getTeamState().agents.find((m) => m.name === 'A')).toMatchObject({ status: 'standby', stopReason: 'denied' });
+
+    after.bus().send('B', 'A', 'are you there?');
+    after.bus().send('Lead', 'A', 'run it again with a narrower glob');
+    await a.whenPrompted(1);
+
+    expect(a.prompts).toEqual(['[Message from Lead]: run it again with a narrower glob']);
+    await status(after, 'A', 'running');
+
+    after.runner.cancel('user');
+    await done;
+  });
+
+  /** A's opening run ends on a Bash call the user rejected; with `peerBehind`, B's message reaches A while pi settles that run. */
+  const rejectingA = (peerBehind: boolean): Behaviour => (_t, s, hh) => {
+    if (s.prompts.length > 1) { void s.endTurn(); return; }
+    if (peerBehind) {
+      const off = s.subscribe((event) => {
+        if ((event as { type?: string }).type !== 'agent_settled') return;
+        off();
+        hh.bus().send('B', 'A', 'sent before the rejection was reported');
+      });
+    }
+    recordTerminatedCall(s.sessionId, { toolCallId: 'c1', toolName: 'Bash', cause: 'user' });
+    void s.callTools([{ id: 'c1', name: 'bash', terminate: true }]);
+  };
+
+  /** A team whose specialist A parked on a rejected call, still running. */
+  async function parkedTeam(label: string, peerBehind: boolean): Promise<{ h: Harness; run: Promise<unknown>; files: Map<string, string> }> {
+    const h = makeTeam({
+      cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A', 'B'],
+      behave: {
+        Lead: (_t, s, hh) => {
+          if (s.prompts.length === 1) {
+            hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
+            hh.runner.startSpecialist('B', 'Test label', 'task for B, described in full');
+          }
+          void s.endTurn();
+        },
+        A: rejectingA(peerBehind),
+        B: holdTurn,
+      },
+    });
+    const run = h.runner.run();
+    await status(h, 'A', 'standby');
+    await vi.waitFor(() => expect(h.agent('Lead').status).toBe('monitoring'));
+    const files = new Map(['Lead', 'A', 'B'].map((name) => [h.agent(name).agentId, h.session(name).sessionFile!]));
+    return { h, run, files };
+  }
+
+  it("stays parked when the log tail after a live snapshot holds only the lead's scratchpad write", async () => {
+    const { h, run, files } = await parkedTeam('rejection-park-tail', false);
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    const [key] = await checkpointTimes(h);
+    const snapshot = JSON.parse(fs.readFileSync(teamCheckpointPath(piSessionDir(h.cwd), SESSION, h.teamId, key!), 'utf-8')) as TeamCheckpoint;
+    expect(snapshot.live).toBe(true);
+    h.scratchpad().set('lead-plan', 'the plan, revised', 'Lead');
+    h.runner.cancel('user');
+    await run;
+
+    const after = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A', 'B'], behave: { Lead: holdTurn, A: endTurn, B: holdTurn } });
+    after.runner.restore(await persistenceOf(h).readEventLog(h.teamId), snapshot, files);
+    const done = after.runner.resume('tc-resume');
+    const a = await opened(after, 'A');
+
+    expect(logEntries(after).filter((e) => e['type'] === 'agent-resumed' && e['name'] === 'A')).toEqual([
+      expect.objectContaining({ mode: 'park', status: 'standby', stopReason: 'denied' }),
+    ]);
+    after.bus().send('Lead', 'A', 'go on');
+    await a.whenPrompted(1);
+    expect(a.prompts).toEqual(['[Message from Lead]: go on']);
+
+    after.runner.cancel('user');
+    await done;
+  });
+
+  it('stays parked on a message it held behind the rejection, and wakes on the next lead message with both', async () => {
+    const { h, run, files } = await parkedTeam('rejection-park-held', true);
+    const held = '[Message from B]: sent before the rejection was reported';
+    h.runner.cancel('user');
+    await run;
+
+    const persistence = persistenceOf(h);
+    const checkpoint = (await checkpointOf(persistence, h.teamId))!;
+    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([expect.objectContaining({ text: held, held: true })]);
+
+    const after = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A', 'B'], behave: { Lead: holdTurn, A: endTurn, B: holdTurn } });
+    after.runner.restore(await persistence.readEventLog(h.teamId), checkpoint, files);
+    const done = after.runner.resume('tc-resume');
+    const a = await opened(after, 'A');
+    await (await opened(after, 'Lead')).whenPrompted(1);
+
+    expect(logEntries(after).filter((e) => e['type'] === 'agent-resumed' && e['name'] === 'A')).toEqual([
+      expect.objectContaining({ mode: 'park', status: 'standby', stopReason: 'denied' }),
+    ]);
+    expect(after.agent('A').status).toBe('standby');
+    expect(a.prompts).toEqual([]);
+
+    after.bus().send('Lead', 'A', 'go on');
+    await a.whenPrompted(2);
+    expect(a.prompts).toEqual([held, '[Message from Lead]: go on']);
+    await status(after, 'A', 'running');
 
     after.runner.cancel('user');
     await done;

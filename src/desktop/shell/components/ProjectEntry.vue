@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { computed, useAttrs, useId } from 'vue';
+import { computed, ref, useAttrs, useId, watch } from 'vue';
 import type { DamoclesShellApi, ShellHost, ShellProject } from '../../preload/shell-channels';
 import ProjectRow from './ProjectRow.vue';
 import WslNotice from './WslNotice.vue';
+import LocateNotice from './LocateNotice.vue';
 
 defineOptions({ inheritAttrs: false });
 
-// A project's place in the Projects listbox: its option row, and for a folder in a WSL distro the row and its Reopen in WSL
-// notice as one unit that drags, reorders and enters together. The notice holds buttons, which an option's presentational
-// children may not, so it sits beside the option in a role="none" wrapper.
+// A project's place in the Projects listbox: its option row, with its WSL or Locate notice as one unit that drags, reorders and
+// enters together. The notices hold buttons, which an option's presentational children may not, so they sit beside the option in
+// a role="none" wrapper.
 const props = defineProps<{
   api: DamoclesShellApi;
   project: ShellProject;
@@ -16,7 +17,7 @@ const props = defineProps<{
   active: boolean;
   grouped: boolean;
   host?: ShellHost | undefined;
-  // the project may show a notice: the wrapper stays while it plays its exit
+  // the project may show a notice
   wrapped: boolean;
   // the notice's distro while it shows
   noticeDistro?: string | undefined;
@@ -27,13 +28,22 @@ const attrs = useAttrs();
 // The option keeps its id, the listbox's active descendant, and the drag mark its cursor keys on; the rest moves and lifts the unit.
 // The notice's text describes the option, since the listbox cannot own the notice's buttons.
 const noticeTextId = useId();
-const optionAttrs = computed(() => ({ id: attrs.id, 'data-dragging': attrs['data-dragging'], 'aria-describedby': props.noticeDistro === undefined ? undefined : noticeTextId }));
+const locateTextId = useId();
+const locating = computed(() => props.project.presence !== undefined || props.project.relocation !== undefined);
+// the wrapper stays while the Locate notice plays its exit
+const locateLeaving = ref(false);
+watch(locating, (now, before) => {
+  if (before && !now) locateLeaving.value = true;
+});
+const unit = computed(() => props.wrapped || locateLeaving.value);
+const describedBy = computed(() => [...(props.noticeDistro === undefined ? [] : [noticeTextId]), ...(locating.value ? [locateTextId] : [])].join(' ') || undefined);
+const optionAttrs = computed(() => ({ id: attrs.id, 'data-dragging': attrs['data-dragging'], 'aria-describedby': describedBy.value }));
 const unitAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter(([name]) => name !== 'id')));
 </script>
 
 <template>
   <ProjectRow
-    v-if="!wrapped"
+    v-if="!unit"
     v-bind="attrs"
     :project="project"
     :selected="selected"
@@ -73,6 +83,19 @@ const unitAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter
         :distro="noticeDistro"
         place="row"
         :text-id="noticeTextId"
+        class="mb-1"
+      />
+    </Transition>
+    <Transition
+      name="t-banner"
+      appear
+      @after-leave="locateLeaving = false"
+    >
+      <LocateNotice
+        v-if="locating"
+        :api="api"
+        :project="project"
+        :text-id="locateTextId"
         class="mb-1"
       />
     </Transition>

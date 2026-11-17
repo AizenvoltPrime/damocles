@@ -100,7 +100,7 @@ export interface HandlerDependencies {
    */
   switchPanelFolder: (
     panelId: string,
-    folderKey: string,
+    to: string | FolderTarget,
     reason: FolderSwitchReason,
     afterSwitch?: AfterFolderSwitch,
   ) => Promise<HostInstance | undefined>;

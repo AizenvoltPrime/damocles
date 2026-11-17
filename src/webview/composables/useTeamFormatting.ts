@@ -98,6 +98,22 @@ export function agentStatusChip(status: TeamAgentStatus, awaitingUser = false): 
   return awaitingUser ? NEEDS_YOU_CHIP : { ...AGENT_STATUS_CHIPS[status], attention: false, labelKey: `team.statusLabel.${status}` };
 }
 
+/** The i18n key of the line a stopped subagent's card shows for a rejected call that ended its run, else undefined. */
+export function subagentStopReasonKey(subagent: Pick<SubagentState, 'status' | 'stopReason'>): 'subagentDisplay.stoppedDenied' | 'subagentDisplay.stoppedHookDenied' | undefined {
+  if (subagent.status !== 'cancelled') return undefined;
+  if (subagent.stopReason === 'denied') return 'subagentDisplay.stoppedDenied';
+  if (subagent.stopReason === 'hookDenied') return 'subagentDisplay.stoppedHookDenied';
+  return undefined;
+}
+
+/** The i18n key of the line a team member's card shows when its latest run ended on a rejected call: parked for the lead, or stopped there. */
+export function teamAgentStopReasonKey(agent: Pick<TeamAgent, 'status' | 'stopReason'>): string | undefined {
+  if (!agent.stopReason) return undefined;
+  if (agent.status === 'standby') return agent.stopReason === 'denied' ? 'team.agentOverlay.waitingDenied' : 'team.agentOverlay.waitingHookDenied';
+  if (agent.status === 'cancelled') return agent.stopReason === 'denied' ? 'subagentDisplay.stoppedDenied' : 'subagentDisplay.stoppedHookDenied';
+  return undefined;
+}
+
 /** A subagent's chip: one waiting for a free slot is pending, as a team member that has not started is. */
 export function subagentStatusChip(subagent: Pick<SubagentState, 'status' | 'queued'>): AgentStatusChip {
   return agentStatusChip(subagent.status === 'running' && subagent.queued ? 'pending' : subagent.status);

@@ -5,6 +5,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import type { WriteDetails } from '../../../shared/types/file-patch';
 import { log } from '../../logger';
 import { FILE_PATCH_MAX_BYTES, filePatch } from './file-patch';
+import { queueKeyOf } from './local-file-operations';
 
 
 function isMissing(error: unknown): boolean {
@@ -43,9 +44,10 @@ export function createWriteTool(pi: PiCodingAgentModule, cwd: string): ToolDefin
     executionMode: 'sequential',
     execute: async (toolCallId, params: WriteToolInput, signal, onUpdate, ctx) => {
       let details: WriteDetails | undefined;
-      // pi's default local operations (`write.js`), built per call so the read lands in this call's slot.
+      // pi's default local operations (`write.js`) on the bundle's fs, built per call so the read lands in this call's slot.
       const write: AnyToolDefinition = pi.createWriteToolDefinition(cwd, {
         operations: {
+          realpath: queueKeyOf,
           mkdir: async (dir) => {
             await mkdir(dir, { recursive: true });
           },

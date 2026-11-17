@@ -82,7 +82,7 @@ function recordingHook(dir: string): { entry: HookEntry; ran: () => boolean } {
   return { entry: { command: [process.execPath, '-e', script] }, ran: () => fs.existsSync(ranFile) };
 }
 
-// Sequential (`agent-loop.js:372-416` in pi-agent-core 1.4.0), so an abort after the first call leaves the second unstarted.
+// Sequential (`agent-loop.js:372-416` in pi-agent-core 1.5.2), so an abort after the first call leaves the second unstarted.
 const sequentialTool = (name: string): ToolDefinition => ({
   name,
   label: name,

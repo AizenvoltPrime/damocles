@@ -8,6 +8,7 @@ import { FolderMcpView } from '../../mcp/folder-mcp-view';
 import { managerWithFake, specOf } from '../../mcp/__tests__/fake-server-manager';
 import type { McpToolDescriptor } from '../../mcp/types';
 import { buildNestedMcpToolset, EMPTY_NESTED_MCP_TOOLSET } from '../mcp-tools';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
@@ -86,7 +87,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     // is invisible at runtime, so the only guard is equality asserted in both directions here.
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT, CTX_QUERY]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
 
     const toolNames = toolset.tools.map((t) => t.name);
     expect(new Set(toolset.names)).toEqual(new Set(toolNames));
@@ -101,7 +102,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     // a nested agent, or the subagent becomes a bypass around the user's own switches.
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT, CTX_QUERY]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, CTX_QUERY) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, CTX_QUERY) });
 
     expect(toolset.names).toEqual(['mcp__git__status', 'mcp__ctx7__query_docs']);
     expect(toolset.tools.map((t) => t.name)).toEqual(['mcp__git__status', 'mcp__ctx7__query_docs']);
@@ -111,7 +112,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
   it('subtracts `disallowed` from BOTH names and tools (the agent-level opt-out)', () => {
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT, CTX_QUERY]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, {
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY),
       disallowed: new Set(['mcp__git__commit']),
     });
@@ -125,7 +126,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
 
   it('`manager === null` yields EMPTY_NESTED_MCP_TOOLSET without throwing (no-MCP workspaces)', () => {
     let toolset!: ReturnType<typeof buildNestedMcpToolset>;
-    expect(() => { toolset = buildNestedMcpToolset(piStub, null, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(['mcp__git__status']) }); }).not.toThrow();
+    expect(() => { toolset = buildNestedMcpToolset(piStub, piMcp, null, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(['mcp__git__status']) }); }).not.toThrow();
 
     expect(toolset).toBe(EMPTY_NESTED_MCP_TOOLSET);
     expect(toolset.names).toEqual([]);
@@ -142,7 +143,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     const direct = descriptor({ piName: 'mcp__git__log', rawToolName: 'log', exposure: 'direct' });
     const { manager, getAllToolDescriptors } = fakeManager([GIT_STATUS, direct, GIT_COMMIT, CTX_QUERY]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, direct, GIT_COMMIT) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, direct, GIT_COMMIT) });
 
     expect(toolset.names).toEqual(['mcp__git__status', 'mcp__git__log', 'mcp__git__commit']);
     expect(toolset.deferrable).toEqual(['mcp__git__status', 'mcp__git__commit']);
@@ -160,7 +161,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     const off = descriptor({ piName: 'mcp__git__push', rawToolName: 'push', exposure: 'off' });
     const { manager } = fakeManager([GIT_STATUS, off]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
 
     expect(toolset.names).toEqual(['mcp__git__status']);
     expect(toolset.deferrable).toEqual(['mcp__git__status']);
@@ -171,7 +172,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     const off = descriptor({ piName: 'mcp__git__push', rawToolName: 'push', exposure: 'off' });
     const { manager } = fakeManager([GIT_STATUS, off]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, off) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, off) });
 
     expect(toolset.names).toEqual(['mcp__git__status']);
     expect(toolset.tools.map((t) => t.name)).toEqual(['mcp__git__status']);
@@ -183,7 +184,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     const direct = descriptor({ piName: 'mcp__ctx7__resolve', serverName: 'ctx7', rawToolName: 'resolve', exposure: 'direct' });
     const { manager } = fakeManager([GIT_STATUS, direct]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, direct) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, direct) });
 
     expect([...toolset.directGroups]).toEqual(['ctx7']);
   });
@@ -191,7 +192,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
   it('carries each surviving descriptor\'s description, for the nested ToolSearch inventory', () => {
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
 
     expect(toolset.descriptions.get('mcp__git__status')).toEqual({ description: 'Show the working tree status', group: 'git' });
     expect(toolset.descriptions.get('mcp__git__commit')).toEqual({ description: 'Create a commit', group: 'git' });
@@ -202,7 +203,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     const hashed = descriptor({ piName: 'mcp__my_server__a_b_4f33a9a2', serverName: 'my-server', rawToolName: 'a-b', serverDescription: 'Team tools' });
     const { manager } = fakeManager([hashed]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(hashed) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(hashed) });
 
     expect(toolset.descriptions.get(hashed.piName)).toEqual({
       description: 'Show the working tree status',
@@ -218,7 +219,7 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     // call COUNT is the only way to catch a re-read that happens to return the same array in a test.
     const { manager, getAllToolDescriptors } = fakeManager([GIT_STATUS, GIT_COMMIT, CTX_QUERY]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
     // Touch every field: a lazily-derived field that re-reads the manager on first access would only
     // show up once the field is actually consumed.
     void toolset.names.length;
@@ -238,7 +239,7 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
     // It never filters the grant — the non-annotated tool is still in `names`/`tools`.
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
 
     expect(toolset.isReadOnly('mcp__git__status')).toBe(true);
     expect(toolset.isReadOnly('mcp__git__commit')).toBe(false);
@@ -251,7 +252,7 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
     // the snapshot never vetted. False here costs one approval prompt; true costs a silent execution.
     const { manager } = fakeManager([GIT_STATUS]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
 
     expect(toolset.isReadOnly('mcp__git__push')).toBe(false);
     expect(toolset.isReadOnly('mcp__unknown__thing')).toBe(false);
@@ -264,7 +265,7 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
     // to it — consistent with the unknown-name rule above rather than a second, divergent answer.
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, {
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT),
       disallowed: new Set(['mcp__git__status']),
     });
@@ -278,7 +279,7 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
     // stable universe for its whole life — a classifier that re-read the manager would let a server
     // reconnect mid-run and flip a tool the agent already reasoned about from prompt to auto-allow.
     const { manager, replace, getAllToolDescriptors } = fakeManager([GIT_STATUS, GIT_COMMIT]);
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
 
     // The server re-advertises `commit` as read-only, drops `status`, and adds a whole new server.
     replace([descriptor({ piName: 'mcp__git__commit', rawToolName: 'commit', readOnly: true }), CTX_QUERY]);
@@ -306,7 +307,7 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
     const { manager, setResourceServers, resourceServers } = fakeManager([GIT_STATUS]);
     setResourceServers([DOCS]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
 
     expect(toolset.names).toEqual(['mcp__git__status', ...MCP_RESOURCE_TOOL_NAMES]);
     expect(toolset.tools.map((t) => t.name)).toEqual(toolset.names);
@@ -319,7 +320,7 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
     const { manager, setResourceServers } = fakeManager([GIT_STATUS]);
     setResourceServers([DOCS, LIVE]);
 
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
 
     expect(toolset.direct).toEqual([...MCP_RESOURCE_TOOL_NAMES]);
     expect(toolset.deferrable).toEqual(['mcp__git__status']);
@@ -327,9 +328,9 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
 
   it('a spawn before a resource server appeared has none; a spawn after has them', () => {
     const { manager, setResourceServers } = fakeManager([GIT_STATUS]);
-    const before = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
+    const before = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
     setResourceServers([DOCS]);
-    const after = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
+    const after = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources(GIT_STATUS) });
 
     expect(before.names).toEqual(['mcp__git__status']);
     expect(after.names).toEqual(['mcp__git__status', ...MCP_RESOURCE_TOOL_NAMES]);
@@ -339,12 +340,12 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
     const { manager, setResourceServers } = fakeManager([]);
     setResourceServers([DOCS]);
 
-    const disallowed = buildNestedMcpToolset(piStub, manager, {
+    const disallowed = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [],
       eligible: eligibleWithResources(),
       disallowed: new Set(['read_mcp_resource']),
     });
-    const panelOff = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(['list_mcp_resources']) });
+    const panelOff = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(['list_mcp_resources']) });
 
     expect(disallowed.names).toEqual(['list_mcp_resources', 'list_mcp_resource_templates']);
     expect(panelOff.names).toEqual(['list_mcp_resources']);
@@ -353,7 +354,7 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
   it('a read passes the frozen server id, and a server outside the snapshot fails permanently without a request', async () => {
     const { manager, setResourceServers, readResource } = fakeManager([]);
     setResourceServers([DOCS]);
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources() });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleWithResources() });
     setResourceServers([DOCS, LIVE]);
 
     await read(toolset, { server: 'docs', uri: 'docs://a' });
@@ -367,7 +368,7 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
     const { manager, setResourceServers, readResource } = fakeManager([]);
     setResourceServers([DOCS]);
     const panelEntries = ['mcp__docs__read_mcp_resource(docs://panel/*)'];
-    const toolset = buildNestedMcpToolset(piStub, manager, {
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter: NO_RESOURCE_RULES,
       disabledEntries: panelEntries,
       eligible: eligibleWithResources(),
@@ -399,12 +400,12 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
       resourceDenied: (_server, uri) => uri === 'docs://denied',
     }));
 
-    const granted = buildNestedMcpToolset(piStub, manager, {
+    const granted = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter,
       disabledEntries: ['mcp__docs__read_mcp_resource(docs://off)'],
       eligible: eligibleWithResources(SEARCH),
     });
-    const withoutRead = buildNestedMcpToolset(piStub, manager, {
+    const withoutRead = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter,
       disabledEntries: [],
       eligible: eligibleWithResources(SEARCH),
@@ -431,7 +432,7 @@ describe('buildNestedMcpToolset — the MCP resource tools, frozen to the resour
     setResourceServers([DOCS]);
     callTool.mockResolvedValue({ content: [{ type: 'text', text: 'ran' }], isError: false } as never);
     const resourceRuleFilter = vi.fn(NO_RESOURCE_RULES);
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter, disabledEntries: [], eligible: eligibleWithResources(SEARCH) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter, disabledEntries: [], eligible: eligibleWithResources(SEARCH) });
 
     const result = await (toolset.tools.find((t) => t.name === 'mcp__docs__search')!.execute as unknown as Execute)('tc', {}, undefined, undefined, { tools: [{ name: 'read_mcp_resource' }] });
     expect(result.content).toEqual([{ type: 'text', text: 'ran' }]);
@@ -445,7 +446,7 @@ describe('buildNestedMcpToolset — the definitions are the REAL callable tools'
     // descriptor was closed over correctly — a builder that mixed up indices between `names` and
     // `tools` would still satisfy set-equality but call the wrong server tool here.
     const { manager, callTool } = fakeManager([GIT_STATUS, GIT_COMMIT]);
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
 
     const commit = toolset.tools.find((t) => t.name === 'mcp__git__commit')!;
     const result = await (commit.execute as unknown as (
@@ -462,7 +463,7 @@ describe('buildNestedMcpToolset — the definitions are the REAL callable tools'
     const { manager, callTool } = fakeManager([GIT_STATUS]);
     const full = `FIRST LINE\n${'log line\n'.repeat(5000)}LAST LINE`;
     callTool.mockResolvedValueOnce({ content: [{ type: 'text' as const, text: full }], isError: false });
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
 
     const result = await (toolset.tools[0]!.execute as unknown as (
       id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: unknown,
@@ -501,7 +502,7 @@ describe('buildNestedMcpToolset — `elicitationUi` reaches every tool in the sn
     // The loop builds one definition per descriptor; threading the option outside the loop (or into a
     // single shared `opts` that a later tool overwrites) would leave the second agent tool silent.
     const { manager, callTool } = fakeManager([GIT_STATUS, GIT_COMMIT]);
-    const toolset = buildNestedMcpToolset(piStub, manager, {
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, {
       resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS, GIT_COMMIT),
       elicitationUi: uiStub,
     });
@@ -519,7 +520,7 @@ describe('buildNestedMcpToolset — `elicitationUi` reaches every tool in the sn
     // which `runForm` reads as a user cancel. Passing it would answer the server "cancelled" and tell
     // the model nothing. Key absence — `elicitationUi: undefined` would still be pushed onto the stack.
     const { manager, callTool } = fakeManager([GIT_STATUS]);
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS) });
     const noOpUi = { select: async () => undefined, input: async () => undefined, notify: () => {} };
 
     await run(toolset.tools[0]!, { ui: noOpUi, hasUI: false });
@@ -533,7 +534,7 @@ describe('buildNestedMcpToolset — `elicitationUi` reaches every tool in the sn
     // round, a nested tool that happened to run under a bound context would attribute its prompt to the
     // panel instead of the agent — a wrong name, which is worse than none.
     const { manager, callTool } = fakeManager([GIT_STATUS]);
-    const toolset = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS), elicitationUi: uiStub });
+    const toolset = buildNestedMcpToolset(piStub, piMcp, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: eligibleOf(GIT_STATUS), elicitationUi: uiStub });
     const panelUi = { select: async () => undefined, input: async () => undefined, notify: () => {} };
 
     await run(toolset.tools[0]!, { ui: panelUi, hasUI: true });
@@ -558,7 +559,7 @@ describe('buildNestedMcpToolset — a nested agent sees only its own folder', ()
       await folderB.manager.reconcile({ beta: specOf({ command: 'beta' }) });
       const everything = new Set([...viewA.allToolNames(), ...viewB.allToolNames()]);
 
-      const toolset = buildNestedMcpToolset(piStub, viewB, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: everything });
+      const toolset = buildNestedMcpToolset(piStub, piMcp, viewB, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: everything });
 
       expect([...toolset.names].sort()).toEqual(['mcp__beta__b_run', 'mcp__shared__ping']);
       expect(toolset.tools.map((t) => t.name).sort()).toEqual(['mcp__beta__b_run', 'mcp__shared__ping']);
@@ -583,7 +584,7 @@ describe('buildNestedMcpToolset — a nested agent sees only its own folder', ()
     try {
       await user.manager.reconcile({});
       await folder.manager.reconcile({ 'my.server': specOf({ command: 'folder' }) });
-      const toolset = buildNestedMcpToolset(piStub, view, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(view.allToolNames()) });
+      const toolset = buildNestedMcpToolset(piStub, piMcp, view, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(view.allToolNames()) });
       expect(toolset.names).toEqual(['mcp__my_server__t']);
       expect(toolset.isReadOnly('mcp__my_server__t')).toBe(true);
 

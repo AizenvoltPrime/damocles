@@ -21,6 +21,8 @@ import {
   teamMembersDir,
   type PersistedAgentMessage,
 } from './agent-records';
+import { relocatedPath } from '../project-relocation/aliases';
+import { currentRelocations } from '../project-relocation/current';
 import {
   changeTotals,
   collectRecords,
@@ -309,7 +311,13 @@ export class ChatReview {
       }
       return { files, shellChangesNotListed: false, generation, watched: files.map((file) => file.absolute) };
     }
-    const records = collectRecords({ branch: session.branch, folder: session.initialFolder ?? session.cwd, handOffs: session.handOffs ?? [], agentMessages: await agentMessagesOf(session) });
+    const records = collectRecords({
+      branch: session.branch,
+      folder: session.initialFolder ?? session.cwd,
+      handOffs: session.handOffs ?? [],
+      agentMessages: await agentMessagesOf(session),
+      relocated: (recordedPath, recordedAt) => relocatedPath(currentRelocations().aliases, recordedPath, recordedAt) ?? recordedPath,
+    });
     const latestTurn = turnsOnBranch(session.branch).at(-1);
     const readers = createBlobReaders();
     this.readers.add(readers);

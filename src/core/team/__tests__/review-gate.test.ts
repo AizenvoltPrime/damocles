@@ -628,6 +628,7 @@ describe('formatReviewRoundReadyNotification coverage lines', () => {
   const viewOf = (status: Record<string, TeamAgent['status']>, scratchpad: Scratchpad): CoverageView => ({
     statusOf: statusOf(status),
     staleReads: (reviewer, implementor) => scratchpad.getStaleSectionsFor(reviewer, implementor),
+    waitingForLead: () => false,
   });
 
   function notify(coverage: ReviewCoverage, agents: TeamAgent[], status: Record<string, TeamAgent['status']> = {}, scratchpad = new Scratchpad()): string {

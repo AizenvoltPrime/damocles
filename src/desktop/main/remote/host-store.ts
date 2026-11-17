@@ -3,7 +3,9 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
+import { folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import type { ShellPlatform } from '../../preload/shell-channels';
+import { MAX_RELOCATED } from '../projects';
 import { HOST_SWITCH_KEYS, isAlwaysForgeAccount, MAX_HOST_NAME_LENGTH, MAX_OVERLAY_ID_LENGTH, type AlwaysForgeAccount, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
 import { HOST_ID } from '../../daemon/control-messages';
 import { authorityKeyOfProject, pathFor } from '../../../shared/project-location';
@@ -254,6 +256,17 @@ interface AuthorityRecord {
   readonly projects: readonly RemoteProjectRecord[];
   // target folder keys whose authors the user trusts, matched exactly as trusted-folders.json is
   readonly trusted: readonly string[];
+  // ids of the host core's relocations whose host part changed this list, oldest first, at most MAX_RELOCATED
+  readonly relocated?: readonly string[];
+}
+
+/** A remote project's relocation as the host store applies it: the old record's folder and key, and the new ones. */
+export interface RemoteRelocation {
+  readonly id: string;
+  readonly fromFolderKey: string;
+  readonly fromKey: string;
+  readonly to: RemoteProjectRecord;
+  readonly toKey: string;
 }
 
 interface HostFile {
@@ -418,7 +431,8 @@ function parseAuthority(value: unknown): AuthorityRecord {
   const projects = Array.isArray(listed) ? listed.flatMap((entry) => parseProject(entry) ?? []) : [];
   const unique = projects.filter((project, index) => projects.findIndex((other) => other.folderKey === project.folderKey) === index);
   const trusted = Array.isArray(trustedList) ? [...new Set(trustedList.filter(isText))] : [];
-  return { projects: unique, trusted };
+  const relocated = textSet(own(record, 'relocated')).slice(-MAX_RELOCATED);
+  return { projects: unique, trusted, ...(relocated.length > 0 ? { relocated } : {}) };
 }
 
 function parseDestination(value: unknown): SshHostDestination | undefined {
@@ -1197,11 +1211,66 @@ export class HostStore {
     });
   }
 
+  /**
+   * A relocated remote project: `to` takes the record of `fromFolderKey` in its authority's list and `toKey` its slot in the
+   * sidebar order, or the old record and slot go when the authority lists `to` already (a merge). The same write revokes the
+   * old folder's trust, names `to` in the host's recent folders where they named the old folder, and records the relocation
+   * as applied. A second call writes nothing.
+   */
+  async replaceProject(authorityKey: string, move: RemoteRelocation): Promise<void> {
+    const { id, fromFolderKey, fromKey, to, toKey } = move;
+    await this.change((file) => {
+      const record = file.authorities.get(authorityKey);
+      if (!record) return file;
+      const hosts = [...file.hosts.values()].filter((host) => authorityKeyOfHost(host) === authorityKey);
+      const recentOf = (host: HostRecord): readonly string[] => {
+        if (!host.recentFolders.some((folder) => folderKeyOn(to.os, folder) === fromFolderKey)) return host.recentFolders;
+        const named = host.recentFolders.map((folder) => (folderKeyOn(to.os, folder) === fromFolderKey ? to.path : folder));
+        return named.filter((folder, index) => named.findIndex((other) => folderKeyOn(to.os, other) === folderKeyOn(to.os, folder)) === index);
+      };
+      const listed = record.projects.some((project) => project.folderKey === fromFolderKey);
+      const recorded = record.relocated?.includes(id) === true;
+      const recentChanged = hosts.some((host) => recentOf(host) !== host.recentFolders);
+      if (recorded && !recentChanged && !listed && !record.trusted.includes(fromFolderKey) && !file.order.includes(fromKey)) return file;
+      const merged = record.projects.some((project) => project.folderKey === to.folderKey);
+      const projects = merged
+        ? record.projects.filter((project) => project.folderKey !== fromFolderKey)
+        : record.projects.map((project) => (project.folderKey === fromFolderKey ? to : project));
+      const order = file.order.includes(toKey) ? file.order.filter((key) => key !== fromKey) : file.order.map((key) => (key === fromKey ? toKey : key));
+      const relocated = recorded ? record.relocated! : [...(record.relocated ?? []), id].slice(-MAX_RELOCATED);
+      return {
+        ...file,
+        authorities: new Map(file.authorities).set(authorityKey, { ...record, projects, trusted: record.trusted.filter((key) => key !== fromFolderKey), relocated }),
+        order,
+        hosts: recentChanged ? new Map([...file.hosts].map(([hostId, host]) => [hostId, hosts.includes(host) ? { ...host, recentFolders: recentOf(host) } : host])) : file.hosts,
+      };
+    });
+  }
+
+  /** Whether a relocation of the authority's core changed its list here, as recorded by the write that changed it. */
+  relocated(authorityKey: string, id: string): boolean {
+    return this.file.authorities.get(authorityKey)?.relocated?.includes(id) === true;
+  }
+
   /** Drops a removed local project's key from the sidebar order and its dismissed notice, as removeProject does for a remote one. */
   async removeFromOrder(projectKey: string): Promise<void> {
     await this.change((file) => (file.order.includes(projectKey) || file.wslNoticeDismissed.includes(projectKey)
       ? { ...file, order: file.order.filter((key) => key !== projectKey), wslNoticeDismissed: file.wslNoticeDismissed.filter((key) => key !== projectKey) }
       : file));
+  }
+
+  /**
+   * A relocated local project: `toKey` takes `fromKey`'s slot in the sidebar order, or `fromKey` leaves it when `toKey` holds
+   * one already (a merge), and a dismissed Reopen in WSL notice stays dismissed. A second call writes nothing.
+   */
+  async relocateProject(fromKey: string, toKey: string): Promise<void> {
+    await this.change((file) => {
+      if (!file.order.includes(fromKey) && !file.wslNoticeDismissed.includes(fromKey)) return file;
+      const order = file.order.includes(toKey) ? file.order.filter((key) => key !== fromKey) : file.order.map((key) => (key === fromKey ? toKey : key));
+      const dismissed = file.wslNoticeDismissed.includes(fromKey);
+      const wslNoticeDismissed = [...file.wslNoticeDismissed.filter((key) => key !== fromKey), ...(dismissed && !file.wslNoticeDismissed.includes(toKey) ? [toKey] : [])];
+      return { ...file, order, wslNoticeDismissed };
+    });
   }
 
   /** Whether the local project's Reopen in WSL notice was dismissed. */

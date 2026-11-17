@@ -8,7 +8,7 @@ import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge'
 import { shellI18n } from '../i18n';
 import { FakeResizeObserver, fakeOverlayApi, opened, type FakeOverlayApi } from './fakes';
 
-const ROW: CloseRemoteRow = { hostId: 'h1', panelId: 'p1', title: 'Rotate logs', projectLabel: 'api', hostLabel: 'prod-1', status: 'running' };
+const ROW: CloseRemoteRow = { hostId: 'h1', panelId: 'p1', title: 'Rotate logs', projectLabel: 'api', hostLabel: 'prod-1', status: 'running', keyProviders: [] };
 
 let api: FakeOverlayApi;
 const mounted: VueWrapper[] = [];
@@ -113,6 +113,17 @@ describe('close dialog', () => {
     expect(rowsShown()[0]!.dataset.status).toBe('idle');
     await vi.waitFor(() => expect(document.querySelector('[data-testid="close-remote-status"]')!.textContent!.trim()).toBe('Finished'));
     expect(document.querySelector('[data-testid="close-remote-token-note"]')).toBeNull();
+  });
+
+  it('names the API-key providers a row\'s chat will wait for, by display name, once main reports them', async () => {
+    await open([ROW]);
+    expect(document.querySelector('[data-testid="close-remote-key-providers"]')).toBeNull();
+    api.closeRemoteRows([{ ...ROW, keyProviders: ['openai'] }]);
+    await flushPromises();
+    expect(document.querySelector('[data-testid="close-remote-key-providers"]')!.textContent!.trim()).toBe('OpenAI uses an API key from this computer, which the host gets only when the chat asks. Until you are back, a prompt on it waits with Sign-in needed, and memory, titles and classifiers on it fail.');
+    api.closeRemoteRows([{ ...ROW, keyProviders: ['openai', 'constructor'] }]);
+    await flushPromises();
+    expect(document.querySelector('[data-testid="close-remote-key-providers"]')!.textContent!.trim()).toMatch(/^OpenAI and constructor use API keys from this computer/);
   });
 
   it('names a provider it has no name for by its id, an Object.prototype key included', async () => {

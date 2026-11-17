@@ -12,7 +12,7 @@ export function sessionsRootIn(agentDir: string): string {
   return path.join(path.resolve(agentDir), 'sessions');
 }
 
-// pi names a session file `<timestamp>_<sessionId>.jsonl` and its timestamp holds no `_` (`session-manager.js:713`, `:1241`, `:1396` in pi 1.4.0).
+// pi names a session file `<timestamp>_<sessionId>.jsonl` and its timestamp holds no `_` (`session-manager.js:714`, `:1253`, `:1408` in pi 1.5.2).
 const SESSION_FILE_NAME = /^[^_]+_(.+)\.jsonl$/;
 
 /** The pi session id a file's name carries; undefined for a name pi does not give a session file. */

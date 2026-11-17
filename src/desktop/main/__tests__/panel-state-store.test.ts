@@ -429,3 +429,33 @@ describe('PanelStateStore batch', () => {
     }
   });
 });
+
+describe('PanelStateStore.relocate', () => {
+  it('re-keys the saved chats, the selection and the last chat of a moved project, once', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'p1', state: { sessionId: 's1', workspaceFolderKey: 'c:\\old' } });
+    store.set({ panelId: 'p2', state: { sessionId: 's2', workspaceFolderKey: 'c:\\other' } });
+    store.select({ projectKey: 'c:\\old', sessionId: 's1', panelId: 'p1' });
+    store.setLastChats([{ projectKey: 'c:\\old', sessionId: 's1' }, { projectKey: 'c:\\other', panelId: 'p2' }]);
+    store.relocate('c:\\old', 'd:\\new');
+    store.relocate('c:\\old', 'd:\\new');
+    await store.flush();
+    const reread = new PanelStateStore(dir, log);
+    expect(reread.get('p1')?.state).toEqual({ sessionId: 's1', workspaceFolderKey: 'd:\\new' });
+    expect(reread.get('p2')?.state).toEqual({ sessionId: 's2', workspaceFolderKey: 'c:\\other' });
+    expect(reread.selected()).toEqual({ projectKey: 'd:\\new', sessionId: 's1', panelId: 'p1' });
+    expect(reread.lastChats()).toEqual([{ projectKey: 'd:\\new', sessionId: 's1' }, { projectKey: 'c:\\other', panelId: 'p2' }]);
+  });
+
+  it('merging into a listed project keeps the target\'s last chat and moves the old chats\' saved entries into it', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'old', state: { sessionId: 's1', workspaceFolderKey: 'c:\\old' } });
+    store.set({ panelId: 'target', state: { sessionId: 's2', workspaceFolderKey: 'd:\\target' } });
+    store.setLastChats([{ projectKey: 'c:\\old', sessionId: 's1' }, { projectKey: 'd:\\target', sessionId: 's2' }]);
+    store.relocate('c:\\old', 'd:\\target');
+    await store.flush();
+    const reread = new PanelStateStore(dir, log);
+    expect(reread.list().map((chat) => chat.state)).toEqual([{ sessionId: 's1', workspaceFolderKey: 'd:\\target' }, { sessionId: 's2', workspaceFolderKey: 'd:\\target' }]);
+    expect(reread.lastChats()).toEqual([{ projectKey: 'd:\\target', sessionId: 's2' }]);
+  });
+});

@@ -32,6 +32,7 @@ export class TrustStore {
   private readonly filePath: string;
   private readonly trusted = new Map<string, string>();
   private readonly grantListeners = new Set<(folderPaths: readonly string[]) => void>();
+  private readonly revokeListeners = new Set<() => void>();
   private readonly prompts = new Map<string, Promise<boolean>>();
   private readonly ask: AskMessage;
   private readonly t: Translate;
@@ -79,6 +80,11 @@ export class TrustStore {
     return { dispose: () => { this.grantListeners.delete(listener); } };
   }
 
+  onDidRevoke(listener: () => void): Disposable {
+    this.revokeListeners.add(listener);
+    return { dispose: () => { this.revokeListeners.delete(listener); } };
+  }
+
   async grant(folderPath: string): Promise<void> {
     const key = folderKey(folderPath);
     if (this.trusted.has(key)) return;
@@ -93,6 +99,20 @@ export class TrustStore {
     // the listeners filter on the folders they hold, so the project's working folders are named too
     const granted = [folderPath, ...(this.worktrees?.workingFolders(folderPath) ?? [])];
     for (const listener of [...this.grantListeners]) listener(granted);
+  }
+
+  /** A relocated project's old folder: trusted no more, by exact folderKey, as grant trusts it; a second call writes nothing. */
+  async revoke(folderPath: string): Promise<void> {
+    const key = folderKey(folderPath);
+    if (!this.trusted.has(key)) return;
+    await writeJsonConfig(this.filePath, () => {
+      const folders = [...this.trusted].filter(([trustedKey]) => trustedKey !== key).map(([, folder]) => folder);
+      return `${JSON.stringify({ version: SCHEMA_VERSION, folders }, null, 2)}\n`;
+    });
+    // untrusted in memory only once the allowlist on disk says so, as grant does
+    this.trusted.delete(key);
+    this.log(`[trust] revoked ${folderPath}`);
+    for (const listener of [...this.revokeListeners]) listener();
   }
 
   /** Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it. */

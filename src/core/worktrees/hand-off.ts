@@ -10,7 +10,7 @@ import type { ChatWorktreeRecord } from './registry';
 import { folderContains } from './records';
 import { confinedTarget, copyLink, gitMessage, nulList, projectGit, repositoryOf, repositoryPathKey, uncommittedFiles, type WorktreeFile } from './create';
 import type { ChangeLetter } from '../scm/repository';
-import { worktreeEntryOf, type WorktreeEntryData } from './worktree-entry';
+import { entryTimeOf, worktreeEntryOf, type RecordedWorktreeEntry } from './worktree-entry';
 
 export const WORKTREE_ENTRY: string = DAMOCLES_WORKTREE_ENTRY;
 // A session file larger than this is not scanned for its entry; the chat then reads as a project-folder chat.
@@ -20,10 +20,10 @@ const BINARY_PROBE_LENGTH = 8000;
 const BATCH_HEADER_BYTES = 128;
 
 /** The latest worktree entry of a session file, read line by line without parsing lines that cannot hold one. */
-export async function readLatestWorktreeEntry(sessionFile: string): Promise<WorktreeEntryData | undefined> {
+export async function readLatestWorktreeEntry(sessionFile: string): Promise<RecordedWorktreeEntry | undefined> {
   const stat = await fs.stat(sessionFile);
   if (stat.size > MAX_ENTRY_SCAN_BYTES) return undefined;
-  let latest: WorktreeEntryData | undefined;
+  let latest: RecordedWorktreeEntry | undefined;
   const lines = createInterface({ input: createReadStream(sessionFile, { encoding: 'utf8' }), crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line.includes(WORKTREE_ENTRY)) continue;
@@ -34,7 +34,8 @@ export async function readLatestWorktreeEntry(sessionFile: string): Promise<Work
       // A torn last line of a file being written holds no complete entry.
       continue;
     }
-    latest = worktreeEntryOf(parsed) ?? latest;
+    const data = worktreeEntryOf(parsed);
+    if (data) latest = { data, recordedAt: entryTimeOf(parsed) };
   }
   return latest;
 }

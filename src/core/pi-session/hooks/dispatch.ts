@@ -2,6 +2,7 @@ import { log } from '../../logger';
 import type { HooksConfigService } from './config';
 import type { HookEntry } from './types';
 import { runHook, type RunHookContext } from './runner';
+import { trackRunningHook } from './running-hooks';
 import { isMcpResourceToolName } from '../../../shared/tool-names';
 import { createMcpToolName } from '../mcp/naming';
 import {
@@ -304,7 +305,8 @@ export async function dispatchContext(
  *
  * Entries run CONCURRENTLY: the result is discarded so order is irrelevant, and serializing them would
  * let one slow/hung hook stall the turn for the sum of every hook's timeout instead of just the slowest.
- * An abort of `signal` kills every running hook, and an already aborted one starts none.
+ * An abort of `signal` kills every running hook, and an already aborted one starts none. With `runningIn`, each hook
+ * is tracked as running for that session id until it ends (`running-hooks.ts`), for a stopped run's wind-down notice.
  */
 export async function dispatchObserveOnly(
   deps: DispatchDeps,
@@ -312,10 +314,18 @@ export async function dispatchObserveOnly(
   cwd: string,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
+  runningIn?: string,
 ): Promise<number> {
   const entries = deps.config.getEntries(eventKey);
-  if (entries.length === 0) return 0;
+  if (entries.length === 0 || signal?.aborted) return 0;
   const ctx = buildRunContext(deps, eventKey, cwd);
-  await Promise.all(entries.map((entry) => runHook(entry, payload, ctx, signal)));
+  await Promise.all(entries.map(async (entry) => {
+    const release = runningIn === undefined ? undefined : trackRunningHook(runningIn, entry);
+    try {
+      return await runHook(entry, payload, ctx, signal);
+    } finally {
+      release?.();
+    }
+  }));
   return entries.length;
 }

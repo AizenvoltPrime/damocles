@@ -4,7 +4,7 @@ import type {
   ExtensionAPI,
   ExtensionFactory,
   ModelRuntime,
-  SessionManager,
+  SessionContext,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { Model, Api } from '@earendil-works/pi-ai';
@@ -21,6 +21,7 @@ import { createDamoclesExtensionFactory, type PanelRegistryReader, type Checkpoi
 import { assetSourceDirs, assetSources, type AssetSourceName } from '../asset-sources';
 import { HooksConfigService, type DispatchDeps } from './hooks';
 import type { McpClientManager } from './mcp/mcp-client-manager';
+import type { McpModule } from './mcp/mcp-client-loader';
 import { FolderMcpView } from './mcp/folder-mcp-view';
 import type { McpToolSource, McpUserResourcePort } from './mcp/tool-source';
 import type { McpRenamedToolRuleNotice } from '../../shared/types/mcp';
@@ -55,6 +56,8 @@ import type { SettingInspection } from '../../platform/settings-store';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { worktreeWalkOf } from '../worktrees/personal-config';
 import { modelInPlan, notInPlanClause } from './pi-models';
+import { clearTerminatedCalls } from './terminated-calls';
+import { readSessionFileEntries } from './session-store/session-file-entries';
 
 /** An existing asset resource directory plus its source attribution (for pi's resource source info). */
 interface AssetResourceEntry {
@@ -108,6 +111,8 @@ export interface PiCreateSubagentSessionOptions {
   /** Where the nested session persists. `file` creates `<dir>/<ts>_<id>.jsonl`; `reopen` opens an
    *  existing session file. pi writes nothing until the session's first user or assistant message. */
   store: SubagentSessionStore;
+  /** The run's stop: it ends a `reopen`'s read of the file, which then rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 /** `reopen` takes model and thinking level from the file, so it must not be given `model`/`thinkingLevel`.
@@ -133,6 +138,7 @@ export interface ExtensionLoadError {
 
 export interface FolderRuntimeOptions {
   pi: PiCodingAgentModule;
+  mcpModule: McpModule;
   /** The raw folder path: session dirs and hook payloads keep this exact string. */
   cwd: string;
   agentDir: string;
@@ -168,6 +174,11 @@ function disposeSessionSafe(session: AgentSession): void {
   }
 }
 
+function disposeNestedSession(session: AgentSession): void {
+  clearTerminatedCalls(session.sessionId);
+  disposeSessionSafe(session);
+}
+
 /**
  * The pi services for one workspace folder. pi binds cwd, context files, skills and project settings to
  * the services object rather than the session, so every folder a panel targets needs its own loader.
@@ -180,6 +191,7 @@ export class FolderRuntime {
   readonly key: string;
   readonly cwd: string;
   private readonly _pi: PiCodingAgentModule;
+  private readonly _mcpModule: McpModule;
   private readonly _agentDir: string;
   private readonly _modelRuntime: ModelRuntime;
   private readonly _planModelIds: FolderRuntimeOptions['planModelIds'];
@@ -258,6 +270,7 @@ export class FolderRuntime {
     this.cwd = options.cwd;
     this.key = folderKey(options.cwd);
     this._pi = options.pi;
+    this._mcpModule = options.mcpModule;
     this._agentDir = options.agentDir;
     this._modelRuntime = options.modelRuntime;
     this._planModelIds = options.planModelIds;
@@ -276,7 +289,7 @@ export class FolderRuntime {
       trusted: options.trust.isTrusted(options.cwd),
     }));
     // A call from a session with no registered panel gets no read hint, so a link never names a tool its caller may lack.
-    this._mcpRegistrar = new McpToolRegistrar(options.pi, this._mcpView, (ctx) => {
+    this._mcpRegistrar = new McpToolRegistrar(options.pi, options.mcpModule, this._mcpView, (ctx) => {
       const sessionId = ctx?.sessionManager?.getSessionId();
       return async (server) => (sessionId ? await this._panelRegistry.get(sessionId)?.mcpResourceReach?.(server) : undefined) ?? NO_RESOURCE_READ;
     });
@@ -309,6 +322,11 @@ export class FolderRuntime {
   /** The MCP tools this folder's panels may use: its folder-scope servers plus the user servers visible here. */
   get mcp(): McpToolSource {
     return this._mcpView;
+  }
+
+  /** pi-mcp, which the MCP tools of this folder's panels and nested agents are built with. */
+  get mcpModule(): McpModule {
+    return this._mcpModule;
   }
 
   /** The MCP panel's own resource requests (D13); never an agent's. */
@@ -587,12 +605,12 @@ export class FolderRuntime {
    * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
    * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
    * source). pi aliases these arrays rather than copying them
-   * (`resource-loader.ts:390-391` in pi 1.4.0) and re-reads them per reload (`:600`, `:615`), which is what makes
+   * (`resource-loader.ts:418-419` in pi 1.5.2) and re-reads them per reload (`:632`, `:647`), which is what makes
    * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
    * loader on the stale one.
    *
    * This has to happen before the reload rather than after it. `extendResources` merges primary-first
-   * (`resource-loader.ts:480-484`), so a dir that reaches the loader only through that call lands
+   * (`resource-loader.ts:508-512`), so a dir that reaches the loader only through that call lands
    * BEHIND the base entries and loses a name collision it should win. That is reachable two ways: a
    * trust grant admitting the project dirs, and a project asset dir created after creation, which is the
    * case the asset watchers exist for.
@@ -660,7 +678,7 @@ export class FolderRuntime {
     try {
       await this._services.resourceLoader.reload();
     } finally {
-      // pi's loader reload re-reads the settings manager (resource-loader.js:368) before work that can still throw.
+      // pi's loader reload re-reads the settings manager (resource-loader.js:382 in pi-coding-agent 1.5.2) before work that can still throw.
       for (const reapply of this._settingsReappliers.values()) reapply();
     }
     // Only past here is the outgoing instance definitively superseded. On a throw we never arrive — pi
@@ -803,7 +821,7 @@ export class FolderRuntime {
         appendSystemPromptOverride: () => [],
         noContextFiles: true,
         // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
-        // (resource-loader.ts:646-654 in pi 1.4.0), so an override would repopulate the list `noContextFiles`
+        // (resource-loader.ts:678-686 in pi 1.5.2), so an override would repopulate the list `noContextFiles`
         // just emptied and hand `prompt_mode: replace` agents the context they must not see.
         noSkills: true,
         noPromptTemplates: true,
@@ -841,12 +859,12 @@ export class FolderRuntime {
     // Same cwd the services above were built with, so `getCwd()` and the agent's cwd agree.
     const sessionManager =
       store.kind === 'file' ? pi.SessionManager.create(opts.cwd, store.dir, { id: store.id })
-      : store.kind === 'reopen' ? pi.SessionManager.open(store.path, undefined, opts.cwd)
+      : store.kind === 'reopen' ? await pi.SessionManager.openAsync(store.path, undefined, opts.cwd, opts.signal ? { signal: opts.signal } : undefined)
       : pi.SessionManager.inMemory(opts.cwd);
     // Resolved here because pi, given no model, falls back to another one with only a
     // `modelFallbackMessage`; thinking signatures are model-specific, so a resume must not switch models.
     // With no `thinkingLevel`, pi restores the file's last thinking_level_change entry.
-    const model = store.kind === 'reopen' ? this.resolveRecordedModel(sessionManager, store.agentId) : opts.model;
+    const model = store.kind === 'reopen' ? this.resolveRecordedModel(sessionManager.buildSessionContext().model, store.agentId) : opts.model;
 
     const { session } = await pi.createAgentSessionFromServices({
       services,
@@ -876,14 +894,14 @@ export class FolderRuntime {
     // a name in `tools:` with no matching definition is dropped with no error at all.
     //
     // Residual fragility: with an allowlist set, `_refreshToolRegistry` takes the
-    // `if (allowedTools)` branch (agent-session.js:2928, pi 1.4.0) and force-activates every allowed
+    // `if (allowedTools)` branch (agent-session.js:3024, pi 1.5.2) and force-activates every allowed
     // `direct` tool, undoing this baseline. Verified it still cannot fire after this line in a nested session:
     //  - `customTools` are captured at construction (`this._customTools = config.customTools ?? []`,
-    //    agent-session.js:181) and merged into the registry INSIDE `_refreshToolRegistry` itself
-    //    (line 2879), which the constructor's `_buildRuntime` runs (line 2993). So the MCP tools are
+    //    agent-session.js:208) and merged into the registry INSIDE `_refreshToolRegistry` itself
+    //    (line 2975), which the constructor's `_buildRuntime` runs (line 3089). So the MCP tools are
     //    force-activated during construction and this `setActiveToolsByName` still lands LAST.
     //  - The only `registerTool` in a nested session is ToolSearch, during extension LOAD, where pi's
-    //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:131-132 "registerTool() is
+    //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:133-134 "registerTool() is
     //    valid during extension load; refresh is only needed post-bind").
     //  - There is no MCP registrar here by design: nested sessions never bind the Damocles extension
     //    factory, and MCP arrives as `customTools` precisely to keep it that way.
@@ -909,14 +927,18 @@ export class FolderRuntime {
     return session;
   }
 
-  /** Throw the resume error unless the model recorded in the agent session file `path` is usable. */
-  assertResumableModel(path: string, agentId: string): void {
-    this.resolveRecordedModel(this._pi.SessionManager.open(path, undefined, this.cwd), agentId);
+  /**
+   * Reject with the resume error unless the model recorded in the agent session file `path` is usable. Read without writing,
+   * since the file may still belong to a stopped run.
+   */
+  async assertResumableModel(path: string, agentId: string): Promise<void> {
+    const entries = await readSessionFileEntries(path);
+    const stored = this._pi.SessionManager.inMemory(this.cwd, undefined, entries as Parameters<typeof this._pi.SessionManager.inMemory>[2]);
+    this.resolveRecordedModel(stored.buildSessionContext().model, agentId);
   }
 
-  /** The model a session file last recorded (pi's own rule: last model change or assistant message). */
-  private resolveRecordedModel(sessionManager: SessionManager, agentId: string): Model<Api> {
-    const recorded = sessionManager.buildSessionContext().model;
+  /** The model a session file last recorded (pi's own rule: last model change or assistant message), checked for a resume. */
+  private resolveRecordedModel(recorded: SessionContext['model'], agentId: string): Model<Api> {
     if (!recorded) throw new Error(`Cannot resume "${agentId}": its session records no model.`);
     const model = this._modelRuntime.getModel(recorded.provider, recorded.modelId);
     if (!model || !this._modelRuntime.hasConfiguredAuth(model.provider)) {
@@ -931,7 +953,7 @@ export class FolderRuntime {
   /** Dispose and forget a nested subagent session (called on completion / manager dispose). */
   forgetSubagentSession(session: AgentSession): void {
     if (this._subagentSessions.delete(session)) {
-      disposeSessionSafe(session);
+      disposeNestedSession(session);
     }
   }
 
@@ -953,7 +975,7 @@ export class FolderRuntime {
     // A reload already queued returns early on `_disposed`; wait for one in flight so nothing re-adopts
     // an instance attachment after the registries below are cleared.
     await this._reloadSync;
-    for (const session of this._subagentSessions) disposeSessionSafe(session);
+    for (const session of this._subagentSessions) disposeNestedSession(session);
     this._subagentSessions.clear();
     this._workspaceAgents?.dispose();
     this._workspaceAgents = null;

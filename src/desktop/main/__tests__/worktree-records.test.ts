@@ -26,6 +26,23 @@ describe('core\'s worktree records as main reads them', () => {
     expect(lines).toEqual([]);
   });
 
+  it('is known once its core published, an empty registry included, and stays known across a restarted core\'s publications', () => {
+    const records = new WorktreeRecords(localRecord(ROOT), () => undefined);
+    let changes = 0;
+    records.onDidChange(() => changes++);
+    // a recheck judges only what a core published, so it makes nothing known
+    records.recheck();
+    expect(records.known()).toBe(false);
+    expect(changes).toBe(0);
+    records.apply([]);
+    expect(records.known()).toBe(true);
+    expect(changes).toBe(1);
+    records.apply([]);
+    records.recheck();
+    expect(records.known()).toBe(true);
+    expect(changes).toBe(1);
+  });
+
   it('drops a record that would map any other folder onto a project, and logs it', () => {
     const lines: string[] = [];
     const records = new WorktreeRecords(localRecord(ROOT), (line) => lines.push(line));
@@ -49,6 +66,32 @@ describe('a remote core\'s worktree records as main reads them', () => {
     records.apply([remoteRecord('abcd1234')]);
     expect(records.liveChatRecords(PROJECT).map((record) => record.id)).toEqual(['abcd1234']);
     expect(lines).toEqual([]);
+  });
+
+  it('keeps a record its core published before the host listed its project once a recheck judges it again', () => {
+    const lines: string[] = [];
+    let listed: string[] = [];
+    const records = new WorktreeRecords(remoteChatRecord(() => listed, () => process.platform), (line) => lines.push(line));
+    let changes = 0;
+    records.onDidChange(() => changes++);
+    records.apply([remoteRecord('abcd1234')]);
+    expect(records.records()).toEqual([]);
+    // the first publication, which makes the registry known
+    expect(changes).toBe(1);
+    listed = [PROJECT];
+    records.recheck();
+    expect(records.liveChatRecords(PROJECT).map((record) => record.id)).toEqual(['abcd1234']);
+    expect(changes).toBe(2);
+    expect(lines).toHaveLength(1);
+  });
+
+  it('judges a host with no listed project without asking its OS, which a disconnected host may not know', () => {
+    const lines: string[] = [];
+    const records = new WorktreeRecords(remoteChatRecord(() => [], () => { throw new Error('the host is not connected'); }), (line) => lines.push(line));
+    records.apply([remoteRecord('abcd1234')]);
+    records.recheck();
+    expect(records.records()).toEqual([]);
+    expect(lines).toHaveLength(2);
   });
 
   it('drops an adopted record, a chat of a project the host does not list, and one whose worktree is not where the registry rule puts it', () => {

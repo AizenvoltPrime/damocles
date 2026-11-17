@@ -13,6 +13,7 @@ import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { applyPatch, diffLines, parsePatch, reversePatch, structuredPatch, type StructuredPatchHunk } from 'diff';
 import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE } from '../../shared/tool-names';
 import { folderKey } from '../workspace-folders/folder-key';
+import { entryTimeOf } from '../worktrees/worktree-entry';
 import type { PersistedAgentMessage } from './agent-records';
 import { normalized } from './tools/file-patch';
 import { resolveToCwd } from './tools/search-tools';
@@ -54,11 +55,13 @@ export interface HandOff {
 
 export interface RecordsInput {
   readonly branch: readonly SessionEntry[];
-  // the chat's working folder before any hand-off
+  // the chat's working folder before any hand-off, where it is now (as are the hand-offs' folders)
   readonly folder: string;
   readonly handOffs: readonly HandOff[];
   // each agent invocation's messages, by the parent's tool call id that launched or resumed it (subagents and team members)
   readonly agentMessages: ReadonlyMap<string, readonly PersistedAgentMessage[]>;
+  // a path a tool recorded at recordedAt (epoch ms) where it is now: a relocation moved its folder since
+  readonly relocated?: (recordedPath: string, recordedAt: number | undefined) => string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -127,6 +130,12 @@ export function collectRecords(input: RecordsInput): ChangeRecord[] {
   let folder = input.folder;
   let turn: string | undefined;
   let reader = new RecordReader();
+  const relocated = input.relocated;
+  // A record's folder, and a path resolved under it, are current already; walking them by the record's time would apply moves
+  // of whatever project held that path before.
+  const push = (records: readonly ChangeRecord[], recordedAt: number | undefined): void => {
+    out.push(...(relocated ? records.map((record) => (holds(record.folder, record.file) ? record : { ...record, file: relocated(record.file, recordedAt) })) : records));
+  };
   for (const entry of input.branch) {
     folder = handOffs.get(entry.id) ?? folder;
     if (entry.type !== 'message') continue;
@@ -138,14 +147,20 @@ export function collectRecords(input: RecordsInput): ChangeRecord[] {
       continue;
     }
     if (turn === undefined) continue;
-    out.push(...reader.read(message, turn, folder));
+    const recordedAt = entryTimeOf(entry);
+    push(reader.read(message, turn, folder), recordedAt);
     if (message['role'] !== 'assistant' || !Array.isArray(message['content'])) continue;
     for (const block of message['content']) {
       const agent = isRecord(block) && block['type'] === 'toolCall' && typeof block['id'] === 'string' ? input.agentMessages.get(block['id']) : undefined;
-      if (agent) out.push(...recordsOfMessages(agent, turn, folder));
+      if (agent) push(recordsOfMessages(agent, turn, folder), recordedAt);
     }
   }
   return out;
+}
+
+function holds(folder: string, file: string): boolean {
+  const rel = path.relative(folderKey(folder), folderKey(file));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /** The turns of a branch, oldest first: each user message entry's id. */

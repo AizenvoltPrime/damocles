@@ -8,15 +8,24 @@ import type { ChatPlace, ExtensionToWebviewMessage, WorktreeFinishAction, Worktr
 import { folderKey } from '../workspace-folders/folder-key';
 import { log } from '../logger';
 import { worktreeEnvironment } from '../worktrees/environment';
-import { latestWorktreeEntry, worktreeEntryOf, type WorktreeEntryData } from '../worktrees/worktree-entry';
+import { entryTimeOf, worktreeEntryOf, type WorktreeEntryData } from '../worktrees/worktree-entry';
 import type { SetupStep, WorktreeHostServices } from '../worktrees/host';
 import { aheadBehind, isRewritten, settlePendingBase, targetBranch } from '../worktrees/integrate';
 import type { ChatWorktreeRecord } from '../worktrees/registry';
+import { chatRecordHolding } from '../worktrees/records';
 import { piSessionDir } from './session-store/session-dir';
 import { extractFirstUserMessage } from './session-store/metadata';
 import type { HandOff } from './chat-changes';
 import type { WorktreeIsolation } from './worktree-isolation';
 import type { LocalizedText } from '../../shared/localized-text';
+import { currentPathOf } from '../project-relocation/aliases';
+import { currentRelocations } from '../project-relocation/current';
+
+// An entry names its project as the folder was at the entry's time; a relocation since moved it (docs/invariants.md "Project relocation").
+function relocatedEntry(entry: unknown, data: WorktreeEntryData): WorktreeEntryData {
+  const projectPath = currentPathOf(currentRelocations().aliases, data.projectPath, entryTimeOf(entry));
+  return projectPath === data.projectPath ? data : { ...data, projectPath };
+}
 
 /** The panel's part of the state: an opt-in not yet created, or creation and setup under way (rule 4). */
 export interface PanelWorktreeView {
@@ -39,6 +48,11 @@ export interface PanelWorktreeBinding {
   /** A hand-off of the panel's chat is in flight. */
   moving(): boolean;
   projectName(projectPath: string): string | undefined;
+  /**
+   * The panel works in its folder as a project of its own, so a chat record of that folder is not this chat's: a chat worktree
+   * opened as a project (docs/invariants.md "Worktree chats", Ownership).
+   */
+  holdsAsProject(): boolean;
 }
 
 const UNBOUND: PanelWorktreeBinding = {
@@ -47,6 +61,7 @@ const UNBOUND: PanelWorktreeBinding = {
   finishing: () => undefined,
   moving: () => false,
   projectName: () => undefined,
+  holdsAsProject: () => false,
 };
 
 export interface WorktreeStateEvent {
@@ -134,8 +149,12 @@ export class SessionWorktree implements Disposable {
 
   /** The latest worktree entry, which decides where the chat works. */
   entry(): WorktreeEntryData | undefined {
-    const entries = this.deps.entries();
-    return entries ? latestWorktreeEntry(entries) : undefined;
+    const entries = this.deps.entries() ?? [];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const data = worktreeEntryOf(entries[i]);
+      if (data) return relocatedEntry(entries[i], data);
+    }
+    return undefined;
   }
 
   /** The chat record of this chat's worktree, live or deleted; undefined for a chat that never had one or without a registry. */
@@ -145,7 +164,7 @@ export class SessionWorktree implements Disposable {
     const id = this.entry()?.worktreeId;
     const byId = id !== undefined ? registry.get(id) : undefined;
     if (byId?.kind === 'chat') return byId;
-    return registry.liveChatRecordAt(this.deps.cwd);
+    return this.binding.holdsAsProject() ? undefined : registry.liveChatRecordAt(this.deps.cwd);
   }
 
   // The project the chat belongs to: its worktree's, its latest entry's, else its own folder.
@@ -153,15 +172,21 @@ export class SessionWorktree implements Disposable {
     return this.record()?.projectPath ?? this.entry()?.projectPath ?? this.deps.cwd;
   }
 
-  /** The chat works in its live worktree, which is this session's folder. */
+  /** The chat works in its live worktree, which is this session's folder held as its project's working folder. */
   inLiveWorktree(): ChatWorktreeRecord | undefined {
     const record = this.record();
-    if (!record || record.deletedAt !== undefined || this.entry()?.place === 'project') return undefined;
+    if (!record || record.deletedAt !== undefined || this.entry()?.place === 'project' || this.binding.holdsAsProject()) return undefined;
     return folderKey(record.workingFolder) === folderKey(this.deps.cwd) ? record : undefined;
   }
 
   place(): ChatPlace {
     return this.entry()?.place ?? (this.inLiveWorktree() ? 'worktree' : 'project');
+  }
+
+  /** Whether the folder lies in the worktree of a chat record, live or deleted. */
+  inChatWorktree(folder: string): boolean {
+    const registry = this.deps.host()?.registry;
+    return registry !== undefined && chatRecordHolding(registry.records(), folder) !== undefined;
   }
 
   /**
@@ -194,7 +219,7 @@ export class SessionWorktree implements Disposable {
     this.pendingPlace = undefined;
     if (pending) this.deps.append(pending);
     const registry = this.deps.host()?.registry;
-    const record = registry?.liveChatRecordAt(this.deps.cwd);
+    const record = this.binding.holdsAsProject() ? undefined : registry?.liveChatRecordAt(this.deps.cwd);
     if (!record) return;
     const entry = this.entry();
     if (entry?.worktreeId === record.id && entry.place === 'worktree') return;
@@ -289,8 +314,9 @@ export class SessionWorktree implements Disposable {
     let conversationSeen = false;
     for (const entry of entries) {
       if ((entry as { type?: string }).type === 'message') conversationSeen = true;
-      const data = worktreeEntryOf(entry);
-      if (!data) continue;
+      const recorded = worktreeEntryOf(entry);
+      if (!recorded) continue;
+      const data = relocatedEntry(entry, recorded);
       const folder = folderOf(data);
       if (folder === undefined) continue;
       if (initialFolder === undefined) {

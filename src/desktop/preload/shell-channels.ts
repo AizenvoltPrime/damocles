@@ -17,6 +17,7 @@ import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
 import type { DamoclesPortsApi } from './ports-channels';
 import type { DamoclesForgeShellApi } from './forge-channels';
 import type { CiState } from '../../shared/forge/ci';
+import type { RelocationStepName } from '../../core/project-relocation/types';
 import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
 import type { PROJECTS_VIEWS, SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
 
@@ -27,6 +28,9 @@ export const SHELL_CHANNELS = {
   getState: 'damocles:shell:get-state',
   addProject: 'damocles:shell:add-project',
   removeProject: 'damocles:shell:remove-project',
+  locateProject: 'damocles:shell:locate-project',
+  retryRelocation: 'damocles:shell:retry-relocation',
+  abandonRelocation: 'damocles:shell:abandon-relocation',
   selectProject: 'damocles:shell:select-project',
   grantTrust: 'damocles:shell:grant-trust',
   chatsList: 'damocles:shell:chats:list',
@@ -407,6 +411,29 @@ export interface ShellProject {
   readonly wslNoticeDismissed?: true;
   // a local project outside WSL or an SSH one: the devcontainer configuration its folder holds, as last read
   readonly devcontainerConfig?: string;
+  // a local project whose folder is gone (missing) or on a drive, share or distro that is not there or did not answer
+  // (unavailable), or a remote one its connected host does not find (missing): its chats are not opened; absent while the
+  // folder is there, and for a remote project while its host is not connected
+  readonly presence?: 'missing' | 'unavailable';
+  // a project's Locate: its move under way or paused, or why it was refused; absent otherwise
+  readonly relocation?: ShellRelocation;
+  // a remote project whose folder is not there, on a host whose Damocles server cannot move project folders: Locate is off
+  readonly locateUnsupported?: true;
+}
+
+// reason: a coded refusal or step failure and its text in main's language. running: the step (RELOCATION_STEPS) and the
+// chats moved of those to move; paused: Retry runs it on, and Stop moving abandons it when its core can (abandonable), to: the
+// folder its chats move to; refused: preflight's answer, until the next Locate or the folder is back; notLocatable: a folder in a chat worktree, which
+// stays where its record puts it, so Locate is not offered
+export type ShellRelocation =
+  | { readonly state: 'running'; readonly step: RelocationStepName; readonly done: number; readonly total: number; readonly reason?: ShellRelocationReason }
+  | { readonly state: 'paused'; readonly step: RelocationStepName; readonly done: number; readonly total: number; readonly reason: ShellRelocationReason; readonly to: string; readonly abandonable?: true }
+  | { readonly state: 'refused'; readonly reason: ShellRelocationReason }
+  | { readonly state: 'notLocatable'; readonly reason: ShellRelocationReason };
+
+export interface ShellRelocationReason {
+  readonly code: string;
+  readonly text: string;
 }
 
 // notWindowsFolder: the project is neither a WSL UNC folder nor on a Windows drive; wslpathFailed: wslpath -u failed or
@@ -810,7 +837,7 @@ export interface ShellDesignInfo {
 // updateServer: the host's daemon lacks design.read or design.info; failed: the screen could not be read
 // notFound: the view committed a document that is no page of the design (a path it does not serve, an error status); the tab
 // stays on its page and Back returns to it
-export type DesignPreviewStatus = 'loading' | 'ready' | 'reconnecting' | 'updateServer' | 'failed' | 'notFound';
+export type DesignPreviewStatus = 'loading' | 'ready' | 'reconnecting' | 'updateServer' | 'failed' | 'notFound' | 'removed';
 
 export const MIN_DESIGN_WIDTH = 320;
 export const MAX_DESIGN_WIDTH = 2560;
@@ -1842,7 +1869,8 @@ export interface BrowserPageArea extends ContentBounds {
   readonly radius: number;
 }
 
-export type RemoveProjectResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+// removed: false when the user cancelled a question, which changed nothing
+export type RemoveProjectResult = { readonly ok: true; readonly removed: boolean } | { readonly ok: false; readonly reason: string };
 
 export interface DamoclesShellApi {
   getState(): Promise<ShellState>;
@@ -1850,6 +1878,12 @@ export interface DamoclesShellApi {
   onState(listener: (state: ShellState) => void): () => void;
   addProject(): Promise<void>;
   removeProject(key: string): Promise<RemoveProjectResult>;
+  // Locate… on a missing or unavailable project; its outcome shows on the project's row (ShellProject.relocation)
+  locateProject(key: string): Promise<void>;
+  // Retry on a paused relocation of the project
+  retryRelocation(key: string): Promise<void>;
+  // Stop moving, once the user confirmed: abandons the project's paused relocation, leaving what moved where it landed
+  abandonRelocation(key: string): Promise<void>;
   // selects the project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; a new
   // chat in a project never viewed
   selectProject(key: string): Promise<void>;

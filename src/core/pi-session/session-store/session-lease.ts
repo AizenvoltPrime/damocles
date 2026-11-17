@@ -13,7 +13,7 @@ export const SESSION_LEASE_DIR: string = path.join(DAMOCLES_HOME_DIR, 'locks', '
 // A lease whose heartbeat stopped this long ago belongs to a dead process and is taken over.
 export const SESSION_LEASE_STALE_MS = 20_000;
 // Also the release-request poll: proper-lockfile itself polls mtimes because watchers are unreliable on network filesystems.
-const SESSION_LEASE_UPDATE_MS = 2_000;
+export const SESSION_LEASE_UPDATE_MS = 2_000;
 // A heartbeat this far behind means the holder stopped refreshing: it died or its event loop is wedged.
 const SESSION_LEASE_HEARTBEAT_STOPPED_MS = 3 * SESSION_LEASE_UPDATE_MS;
 /**

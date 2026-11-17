@@ -43,7 +43,38 @@ const jsonImportAttributes = {
     };
   },
 };
-const damoclesPlugin = { rules: { 'no-sync': noSync, 'json-import-attributes': jsonImportAttributes } };
+// pi's SessionManager.open reads and parses a whole session file on the calling thread (docs/invariants.md "Session store").
+// It sees `open` only on an expression named SessionManager: an alias (`const SM = pi.SessionManager; SM.open()`) passes.
+const sessionOpenAsync = {
+  meta: {
+    type: 'problem',
+    messages: {
+      sync: "pi's SessionManager.open reads the whole session file on this thread; use SessionManager.openAsync.",
+      branch: "pi's createBranchedSession writes the whole branch on this thread; use createBranchedSessionAsync.",
+    },
+    schema: [],
+  },
+  create(context) {
+    const isSessionManager = (node) => (node.type === 'Identifier' && node.name === 'SessionManager')
+      || (node.type === 'MemberExpression' && !node.computed && node.property.name === 'SessionManager');
+    const isOpenKey = (key, computed) => (computed ? key.type === 'Literal' && key.value === 'open' : key.type === 'Identifier' && key.name === 'open');
+    return {
+      MemberExpression: (node) => {
+        if (isOpenKey(node.property, node.computed) && isSessionManager(node.object)) context.report({ node, messageId: 'sync' });
+      },
+      'VariableDeclarator > ObjectPattern.id': (node) => {
+        if (!isSessionManager(node.parent.init ?? {})) return;
+        for (const prop of node.properties) {
+          if (prop.type === 'Property' && isOpenKey(prop.key, prop.computed)) context.report({ node: prop, messageId: 'sync' });
+        }
+      },
+      'CallExpression > MemberExpression.callee': (node) => {
+        if (!node.computed && node.property.name === 'createBranchedSession') context.report({ node, messageId: 'branch' });
+      },
+    };
+  },
+};
+const damoclesPlugin = { rules: { 'no-sync': noSync, 'json-import-attributes': jsonImportAttributes, 'session-open-async': sessionOpenAsync } };
 // Files only worker threads load, where a synchronous call blocks no UI or chat thread. Listed one by one, because a
 // folder can hold a file the host imports (compass/detect.ts); scripts/__tests__/no-sync-lint-scope.test.ts fails when
 // a host bundle includes one.
@@ -245,6 +276,8 @@ export const MAIN_CORE_IMPORTS = [
   // l() and verbatim(): text main hands a chat page, which renders it in its own language
   'l10n',
   'logger',
+  // the error main's workspaces throw for a host that is away, which a served root's reader answers 503
+  'not-connected-error',
   'paths',
   'pi-session/chat-changes',
   'pi-session/custom-providers',
@@ -258,6 +291,8 @@ export const MAIN_CORE_IMPORTS = [
   'pi-session/usage-thresholds',
   'platform-host',
   'process-launcher',
+  // the folder identities file's reader, for the mount point a POSIX project was recorded on
+  'project-relocation/identity-store',
   'quick-open/fuzzy-match',
   'resource-fs',
   'scm/artifacts',
@@ -271,10 +306,17 @@ export const MAIN_CORE_IMPORTS = [
   'scm/settings-keys',
   'scm/stash',
   'scm/worktrees',
+  // a served root's loopback server and its policy (Open in Browser, the agent's browser), which core runs for VS Code
+  'served-pages/preview-http-server',
+  'served-pages/preview-reader',
+  'served-pages/root-files',
+  'served-pages/serve-policy',
   'system-tools',
   'volatile-secrets-notice',
   'web-url',
   'workspace-folders/folder-key',
+  // the presence rule core shares, with main's own probe
+  'workspace-folders/folder-presence-probe',
   'workspace-folders/folder-registry',
   'worktrees/environment',
   'worktrees/slug',
@@ -723,6 +765,13 @@ export default [
     ignores: [...testsUnder('src'), ...WORKER_ONLY_FILES],
     plugins: { damocles: damoclesPlugin },
     rules: { 'damocles/no-sync': 'error' },
+  },
+  {
+    files: NO_SYNC_FILES,
+    // The metadata index's parse thread is the one synchronous opener: blocking it holds no request.
+    ignores: [...testsUnder('src'), ...WORKER_ONLY_FILES, 'src/core/pi-session/session-store/meta-index/parser.ts'],
+    plugins: { damocles: damoclesPlugin },
+    rules: { 'damocles/session-open-async': 'error' },
   },
   {
     files: ['**/*.{ts,tsx,vue,mjs}'],

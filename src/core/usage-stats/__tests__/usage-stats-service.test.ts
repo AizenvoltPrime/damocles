@@ -93,7 +93,7 @@ describe('UsageStatsService', () => {
     const models = [{ key: 'anthropic/m', label: 'M', inputRatePerToken: 0.000003 }];
     const pending = service.query(QUERY, models, () => {});
     expect(workers).toHaveLength(1);
-    expect(workers[0]!.posted[0]).toEqual({ type: 'query', id: 1, paths: { sessionsDir: '/s', ledgerPath: '/l', dbPath: '/d' }, models, query: QUERY });
+    expect(workers[0]!.posted[0]).toEqual({ type: 'query', id: 1, paths: { sessionsDir: '/s', ledgerPath: '/l', dbPath: '/d' }, models, aliases: { moves: [], hosts: [] }, query: QUERY });
     workers[0]!.emit({ type: 'result', id: 1, report: report(5), final: true });
     await expect(pending).resolves.toEqual(report(5));
   });

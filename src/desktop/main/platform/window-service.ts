@@ -10,6 +10,7 @@ export function createDesktopWindowService(
   openAppSettings: WindowService['openAppSettings'],
   toggleTerminal: WindowService['toggleTerminal'],
   terminalToggle: WindowService['terminalToggle'],
+  locateProjectFolder: NonNullable<WindowService['locateProjectFolder']>,
 ): WindowService {
   return {
     chatBrowserPane: true,
@@ -18,5 +19,6 @@ export function createDesktopWindowService(
     openAppSettings,
     toggleTerminal,
     terminalToggle,
+    locateProjectFolder,
   };
 }

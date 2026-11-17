@@ -463,9 +463,9 @@ describe('SubagentStreamBridge model and effort', () => {
 });
 
 /**
- * A failed model call in pi 1.4.0's order: `message_start` (`agent-loop.js:292`), a delta (`agent-loop.js:305`),
+ * A failed model call in pi 1.5.2's order: `message_start` (`agent-loop.js:292`), a delta (`agent-loop.js:305`),
  * `message_end` with `stopReason: 'error'` (`agent-loop.js:325`), `turn_end` and `agent_end`
- * (`agent-loop.js:156-157`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:753`).
+ * (`agent-loop.js:156-157`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:812`).
  */
 function emitFailedCall(session: FakeSession, errorMessage: string, opts: { partial?: string; willRetry: boolean; provider?: string; model?: string }): void {
   session.emit({ type: 'message_start', message: { role: 'assistant' } });
@@ -732,12 +732,12 @@ describe('SubagentStreamBridge provider failures', () => {
 });
 
 /**
- * An abort while a subagent runs a tool, in pi 1.4.0's order: the abort kills the call, which pi records with its
- * `durationMs` (`agent-loop.js:590-598`), and the loop makes its next call under the aborted signal (`:146`). That
- * call's request setup resolves auth with the signal (`model-runtime.js:456-460`), which rejects at once
- * (`raceWithAbortSignal`), and pi-ai's lazy stream ends it on an error stop whatever the signal says (`lazy.js:57-62`):
- * "This operation was aborted". `registerWindDownErrorRecord` names it at its `turn_end` boundary, which pi runs after
- * the `message_end` listeners and commits before the listeners' `turn_end` (`agent-session.js:514`, `:635-640`).
+ * An abort while a subagent runs a tool, in pi 1.5.2's order, on a provider that reports the abort as an error: the abort
+ * kills the call, which pi records with its `durationMs` (`agent-loop.js:590-598` in pi-agent-core 1.5.2), and the loop
+ * makes its next call under the aborted signal (`:146`), which ends on an error stop, "This operation was aborted" (pi-ai
+ * ends its own request setup rejected under the signal aborted, `lazy.js:57-65` in pi-ai 1.5.2).
+ * `registerWindDownErrorRecord` names it at its `turn_end` boundary, which pi runs after the `message_end` listeners and
+ * commits before the listeners' `turn_end` (`agent-session.js:569`, `:690-695` in pi-coding-agent 1.5.2).
  */
 describe('SubagentStreamBridge abort wind-down', () => {
   const ofType = <T extends ExtensionToWebviewMessage['type']>(sent: ExtensionToWebviewMessage[], type: T) =>

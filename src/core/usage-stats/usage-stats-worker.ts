@@ -73,6 +73,7 @@ export function createUsageStatsWorkerRuntime(
         ledgerPath: req.paths.ledgerPath,
         ...(req.paths.remoteMirrorsDir !== undefined ? { remoteMirrorsDir: req.paths.remoteMirrorsDir } : {}),
         models: req.models,
+        aliases: req.aliases,
         log,
         onProgress: (progress) => {
           current.last = progress;

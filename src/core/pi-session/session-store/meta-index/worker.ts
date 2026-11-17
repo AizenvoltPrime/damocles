@@ -1,7 +1,7 @@
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { isMainThread, parentPort, workerData } from 'node:worker_threads';
-import type { StoredSession } from '@shared/types/session';
+import type { IndexedSession } from '../metadata';
 import { installWorkerLogRelay, log } from '../../../logger';
 import { readFile } from '../../../resource-fs';
 import { isCorruption } from '../../../usage-stats/database';
@@ -176,7 +176,7 @@ export function createMetaIndexRuntime(send: (event: MetaIndexEvent) => void, op
     const stats = await Promise.all(names.map((name) => fsp.stat(path.join(dir, name)).catch(() => null)));
     const dirKey = metaCacheKey(dir);
     const misses: Array<{ file: string; key: string; size: number; mtimeMs: number }> = [];
-    const sessions: StoredSession[] = [];
+    const sessions: IndexedSession[] = [];
     const files: string[] = [];
     const gone = await useStore((s) => {
       const known = new Map(s.dirRows(dirKey).map((row) => [row.key, row]));
@@ -334,6 +334,22 @@ export function createMetaIndexRuntime(send: (event: MetaIndexEvent) => void, op
     void writeCache(`forgetting ${file}`, (s) => s.delete([key]));
   }
 
+  function move(from: string, to: string): void {
+    const fromKey = metaCacheKey(from);
+    const toKey = metaCacheKey(to);
+    if (fromKey === toKey) return;
+    const put = pending.get(fromKey);
+    if (put) {
+      pending.delete(fromKey);
+      pending.set(toKey, { ...put, key: toKey, dirKey: path.dirname(toKey) });
+    }
+    void writeCache(`moving ${from}`, (s) => {
+      const entry = s.entry(fromKey);
+      if (entry) s.write([{ key: toKey, dirKey: path.dirname(toKey), ...entry }]);
+      s.delete([fromKey]);
+    });
+  }
+
   function answer(id: number, run: Promise<void>): void {
     run.catch((err: unknown) => {
       if (!closing) send({ type: 'error', id, message: messageOf(err) });
@@ -346,6 +362,7 @@ export function createMetaIndexRuntime(send: (event: MetaIndexEvent) => void, op
       switch (msg.type) {
         case 'put': put(msg.file, msg.entry); return;
         case 'forget': forget(msg.file); return;
+        case 'move': move(msg.from, msg.to); return;
         case 'list': answer(msg.id, list(msg.id, msg.dir)); return;
         case 'meta': answer(msg.id, meta(msg.id, msg.file)); return;
         case 'cachedRow': answer(msg.id, cachedRow(msg.id, msg.file)); return;

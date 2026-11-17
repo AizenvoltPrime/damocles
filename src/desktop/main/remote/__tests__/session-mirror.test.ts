@@ -3,16 +3,19 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { piSessionDir } from '../../../../core/pi-session/session-store/session-dir';
-import { createMirrorWatches, syncMirror, syncSubcalls, type MirrorStream } from '../../../daemon/mirror-server';
+import { folderKey } from '../../../../core/workspace-folders/folder-key';
+import { worktreeFolderFor } from '../../../../core/worktrees/records';
+import { createMirrorWatches, syncMirror, syncProject, syncSubcalls, type MirrorStream } from '../../../daemon/mirror-server';
 import type { FileWatcherFactory } from '../../../../platform/file-watcher';
 import type { RemoteConnection } from '../connection';
 import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from '../../../daemon/control-messages';
-import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE } from '../../../../shared/remote-mirror';
-import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, isMirrorName, MIRROR_CHANGED_FEATURE, MIRROR_QUOTA_BYTES, MIRROR_SUBCALLS_FEATURE, mirrorPath, projectMirrorFolder, SessionMirror, type MirrorChannel } from '../session-mirror';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, mirrorWorktreeFolder } from '../../../../shared/remote-mirror';
+import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, isMirrorName, MIRROR_CHANGED_FEATURE, MIRROR_QUOTA_BYTES, MIRROR_SUBCALLS_FEATURE, MIRROR_WORKTREE_CHATS_FEATURE, mirrorPath, projectMirrorFolder, SessionMirror, type MirrorChannel } from '../session-mirror';
 
-// The daemon's own syncMirror and syncSubcalls over an in-memory stream hub that delivers like the connection's inbox:
-// buffered from the open until claimed, in order, then ended.
-function daemon(agentDir: string, ledgerPath = path.join(agentDir, '..', 'usage', 'subcalls.jsonl')) {
+
+// The daemon's own syncMirror, syncProject and syncSubcalls over an in-memory stream hub that delivers like the connection's
+// inbox: buffered from the open until claimed, in order, then ended.
+function daemon(agentDir: string, ledgerPath = path.join(agentDir, '..', 'usage', 'subcalls.jsonl'), worktreesRoot = path.join(agentDir, '..', 'worktrees')) {
   const streams = new Map<number, { chunks: Uint8Array[]; ended: boolean; sink?: (chunk: Uint8Array | null) => void }>();
   let next = 2;
   const slot = (id: number) => {
@@ -31,6 +34,7 @@ function daemon(agentDir: string, ledgerPath = path.join(agentDir, '..', 'usage'
   };
   const requests: Array<{ projectKey: string; budgetBytes: number; files: readonly MirrorFile[] }> = [];
   const answers: Array<readonly MirrorChange[]> = [];
+  const projectRequests: Array<{ projectKey: string; budgetBytes: number; files: readonly MirrorFile[] }> = [];
   const ledgerRequests: Array<{ budgetBytes: number; held?: MirrorHeld }> = [];
   const ledgerAnswers: Array<MirrorLedgerChange | undefined> = [];
   const streamDeps = {
@@ -42,6 +46,7 @@ function daemon(agentDir: string, ledgerPath = path.join(agentDir, '..', 'usage'
   return {
     requests,
     answers,
+    projectRequests,
     ledgerRequests,
     ledgerAnswers,
     syncSubcalls: async (request: { readonly budgetBytes: number; readonly held?: MirrorHeld }) => {
@@ -53,6 +58,12 @@ function daemon(agentDir: string, ledgerPath = path.join(agentDir, '..', 'usage'
     sync: async (request: { readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }) => {
       requests.push({ ...request });
       const answer = await syncMirror({ agentDir, ...streamDeps }, request);
+      answers.push(answer.changes);
+      return answer;
+    },
+    syncProject: async (request: { readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }) => {
+      projectRequests.push({ ...request });
+      const answer = await syncProject({ agentDir, worktreesRoot, ...streamDeps }, request);
       answers.push(answer.changes);
       return answer;
     },
@@ -110,6 +121,12 @@ describe('mirror names', () => {
     expect(mirrorPath(folder, 's1/subagents/a.jsonl')).toBe(path.join(folder, 's1', 'subagents', 'a.jsonl'));
     expect(mirrorPath(folder, '../../escape')).toBeUndefined();
     expect(mirrorPath(folder, '/etc/passwd')).toBeUndefined();
+  });
+
+  it('accepts the deepest agent layout under a worktree chat\'s folder, and nothing deeper', () => {
+    const deepest = `${mirrorWorktreeFolder('live0001', 'chat')}/s1/teams/t1/members/m1.a1.jsonl`;
+    expect(isMirrorName(deepest)).toBe(true);
+    expect(isMirrorName(`${deepest.slice(0, -'.jsonl'.length)}/x.jsonl`)).toBe(false);
   });
 });
 
@@ -447,6 +464,86 @@ describe('the sub-call ledger in the session mirror', () => {
   });
 });
 
+describe('worktree chats in the session mirror', () => {
+  // a project on the target with one chat worktree, as core's registry records it (records.ts validRecord)
+  function targetWithWorktreeChat() {
+    const project = path.join(base, 'target', 'app');
+    const worktreesRoot = path.join(base, 'target', 'worktrees');
+    const id = 'live0001';
+    const workingFolder = worktreeFolderFor(worktreesRoot, project, id);
+    fs.mkdirSync(worktreesRoot, { recursive: true });
+    fs.writeFileSync(path.join(worktreesRoot, 'registry.json'), JSON.stringify({
+      version: 1,
+      records: [{ id, kind: 'chat', projectPath: project, repositoryRoot: project, worktreeRoot: workingFolder, workingFolder, branch: `damocles/${id}`, index: 1, baseCommit: 'a'.repeat(40), createdAt: 1 }],
+    }));
+    const writeIn = (folder: string, name: string, text: string): void => {
+      const file = path.join(piSessionDir(folder, agentDir), ...name.split('/'));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    };
+    writeIn(project, '2026-01-01T00-00-00-000Z_plain.jsonl', 'plain\n');
+    writeIn(workingFolder, '2026-01-02T00-00-00-000Z_wt.jsonl', 'worktree\n');
+    writeIn(workingFolder, 'wt/subagents/a1.jsonl', 'agent\n');
+    return { key: folderKey(project), id, workingFolder };
+  }
+  const listed = (folder: string): string[] => (fs.readdirSync(folder, { recursive: true, encoding: 'utf8' }) as string[]).filter((name) => fs.statSync(path.join(folder, name)).isFile()).map((name) => name.split(path.sep).join('/')).sort();
+
+  it('keeps a project\'s worktree chats in its one mirror folder under worktree.<id>, finds their session files, and moves them with the project', async () => {
+    const { key, id } = targetWithWorktreeChat();
+    const target = daemon(agentDir);
+    const mirror = new SessionMirror({ root, channel: () => ({ sync: target.sync, syncProject: target.syncProject, receive: target.receive }), log: () => undefined });
+    await mirror.syncProject(key, MIRROR_QUOTA_BYTES);
+    const folder = projectMirrorFolder(root, key);
+    expect(listed(folder)).toEqual(['2026-01-01T00-00-00-000Z_plain.jsonl', `worktree.${id}/2026-01-02T00-00-00-000Z_wt.jsonl`, `worktree.${id}/wt/subagents/a1.jsonl`]);
+    expect(target.requests).toEqual([]);
+    expect(target.projectRequests.map((request) => request.projectKey)).toEqual([key]);
+    expect(await mirror.sessionFile(key, 'plain')).toBe(path.join(folder, '2026-01-01T00-00-00-000Z_plain.jsonl'));
+    expect(await mirror.sessionFile(key, 'wt')).toBe(path.join(folder, `worktree.${id}`, '2026-01-02T00-00-00-000Z_wt.jsonl'));
+    // an agent's file is no chat, and a folder that is no worktree's holds none
+    expect(await mirror.sessionFile(key, 'a1')).toBeUndefined();
+    fs.mkdirSync(path.join(folder, 'worktree.NOTANID'), { recursive: true });
+    fs.writeFileSync(path.join(folder, 'worktree.NOTANID', '2026-01-03T00-00-00-000Z_odd.jsonl'), 'odd\n');
+    expect(await mirror.sessionFile(key, 'odd')).toBeUndefined();
+    const movedKey = folderKey(path.join(base, 'target', 'app-moved'));
+    await mirror.relocateProject(key, movedKey);
+    expect(await mirror.sessionFile(movedKey, 'wt')).toBe(path.join(projectMirrorFolder(root, movedKey), `worktree.${id}`, '2026-01-02T00-00-00-000Z_wt.jsonl'));
+  });
+
+  it('syncs over the frozen mirror.sync with a daemon that lacks mirror.syncProject, which drops the worktree chats as before', async () => {
+    const { key, id } = targetWithWorktreeChat();
+    const target = daemon(agentDir);
+    const mirror = new SessionMirror({ root, channel: () => ({ sync: target.sync, syncProject: target.syncProject, receive: target.receive }), log: () => undefined });
+    await mirror.syncProject(key, MIRROR_QUOTA_BYTES);
+    const older = new SessionMirror({ root, channel: () => ({ sync: target.sync, receive: target.receive }), log: () => undefined });
+    await older.syncProject(key, MIRROR_QUOTA_BYTES);
+    expect(target.requests.map((request) => request.files.map((file) => file.file).sort())).toEqual([['2026-01-01T00-00-00-000Z_plain.jsonl', `worktree.${id}/2026-01-02T00-00-00-000Z_wt.jsonl`, `worktree.${id}/wt/subagents/a1.jsonl`]]);
+    expect(listed(projectMirrorFolder(root, key))).toEqual(['2026-01-01T00-00-00-000Z_plain.jsonl']);
+    expect(await older.sessionFile(key, 'wt')).toBeUndefined();
+  });
+
+  // docs/invariants.md "Worktree chats", Ownership: the offline list picks the project's sessions there by their entries.
+  it("mirrors a worktree chat's session folder under its project while the worktree is a project on the host too", async () => {
+    const { key, id, workingFolder } = targetWithWorktreeChat();
+    const worktreeKey = folderKey(workingFolder);
+    const target = daemon(agentDir);
+    const mirror = new SessionMirror({ root, channel: () => ({ sync: target.sync, syncProject: target.syncProject, receive: target.receive }), log: () => undefined });
+    await mirror.schedule(() => [key, worktreeKey]);
+    expect(listed(projectMirrorFolder(root, key))).toEqual(['2026-01-01T00-00-00-000Z_plain.jsonl', `worktree.${id}/2026-01-02T00-00-00-000Z_wt.jsonl`, `worktree.${id}/wt/subagents/a1.jsonl`]);
+    expect(listed(projectMirrorFolder(root, worktreeKey))).toEqual(['2026-01-02T00-00-00-000Z_wt.jsonl', 'wt/subagents/a1.jsonl']);
+  });
+
+  it('asks mirror.syncProject only over a connection whose daemon lists mirror.worktreeChats', async () => {
+    const request = vi.fn(async () => ({ changes: [] }));
+    const connection = (features: readonly string[]) => ({ features, skewMs: 0, control: { request }, receiveStream: async () => 0 }) as unknown as Parameters<typeof connectionMirrorChannel>[0];
+    const listedChannel = connectionMirrorChannel(connection([MIRROR_WORKTREE_CHATS_FEATURE]));
+    const params = { projectKey: '/srv/app', budgetBytes: 1, files: [] };
+    await listedChannel.syncProject!(params);
+    expect(request).toHaveBeenLastCalledWith('mirror.syncProject', params);
+    expect(connectionMirrorChannel(connection([])).syncProject).toBeUndefined();
+    expect(frozenMirrorChannel({ control: { request }, receiveStream: async () => 0 } as unknown as Parameters<typeof frozenMirrorChannel>[0]).syncProject).toBeUndefined();
+  });
+});
+
 describe('SessionMirror.schedule', () => {
   it('coalesces requests made during a sync into one more sync that reads the projects anew, and idle settles after it', async () => {
     const target = daemon(agentDir);
@@ -508,6 +605,50 @@ describe('SessionMirror.schedule', () => {
   });
 });
 
+describe('SessionMirror.relocateProject', () => {
+  const noChannel = (): MirrorChannel => { throw new Error('no channel in this test'); };
+  const write = (folderKey: string, name: string, text: string): void => {
+    const file = path.join(projectMirrorFolder(root, folderKey), name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+
+  it('renames the project\'s mirror folder to the new folder key\'s, and a second call moves nothing', async () => {
+    const mirror = new SessionMirror({ root, channel: noChannel, log: () => undefined });
+    write('/srv/old', 's1.jsonl', 'chat\n');
+    await mirror.relocateProject('/srv/old', '/srv/new');
+    expect(fs.existsSync(projectMirrorFolder(root, '/srv/old'))).toBe(false);
+    expect(fs.readFileSync(path.join(projectMirrorFolder(root, '/srv/new'), 's1.jsonl'), 'utf8')).toBe('chat\n');
+    await mirror.relocateProject('/srv/old', '/srv/new');
+    expect(fs.readdirSync(projectMirrorFolder(root, '/srv/new'))).toEqual(['s1.jsonl']);
+  });
+
+  it('deletes the old folder, a cache, when the new key\'s folder exists already', async () => {
+    const mirror = new SessionMirror({ root, channel: noChannel, log: () => undefined });
+    write('/srv/old', 's1.jsonl', 'old\n');
+    write('/srv/new', 's2.jsonl', 'new\n');
+    await mirror.relocateProject('/srv/old', '/srv/new');
+    expect(fs.existsSync(projectMirrorFolder(root, '/srv/old'))).toBe(false);
+    expect(fs.readdirSync(projectMirrorFolder(root, '/srv/new'))).toEqual(['s2.jsonl']);
+  });
+
+  it('waits for the sync running before it moves the folder', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const mirror = new SessionMirror({ root, channel: noChannel, log: () => undefined });
+    mirror.syncAll = async () => {
+      await gate;
+      write('/srv/old', 's1.jsonl', 'synced\n');
+    };
+    void mirror.schedule(() => ['/srv/old']);
+    const moved = mirror.relocateProject('/srv/old', '/srv/new');
+    release();
+    await moved;
+    expect(fs.existsSync(projectMirrorFolder(root, '/srv/old'))).toBe(false);
+    expect(fs.readFileSync(path.join(projectMirrorFolder(root, '/srv/new'), 's1.jsonl'), 'utf8')).toBe('synced\n');
+  });
+});
+
 describe('following the daemon\'s mirror.changed', () => {
   // the daemon's own mirror watches over a watcher factory the test fires, and the connection's control events
   function followedHost(features: readonly string[]) {
@@ -523,7 +664,7 @@ describe('following the daemon\'s mirror.changed', () => {
       watchWorkspace: () => { throw new Error('no workspace watch in this test'); },
       onDidRenameFiles: () => ({ dispose: () => undefined }),
     };
-    const watches = createMirrorWatches({ agentDir, ledgerPath: path.join(base, 'target', 'usage', 'subcalls.jsonl'), watchers: factory });
+    const watches = createMirrorWatches({ agentDir, ledgerPath: path.join(base, 'target', 'usage', 'subcalls.jsonl'), worktreesRoot: path.join(base, 'target', 'worktrees'), watchers: factory }).forConnection('connection-1');
     const listeners = new Set<(event: { projectKey: string }) => void>();
     const connection = {
       features,
@@ -531,7 +672,7 @@ describe('following the daemon\'s mirror.changed', () => {
     } as unknown as Pick<RemoteConnection, 'features' | 'control'>;
     // as connections.ts serves mirror.sync: the project is followed before it is listed
     const sync = async (request: Parameters<typeof target.sync>[0]) => {
-      await watches.follow('connection-1', request.projectKey, () => { for (const cb of [...listeners]) cb({ projectKey: request.projectKey }); });
+      await watches.follow(request.projectKey, () => { for (const cb of [...listeners]) cb({ projectKey: request.projectKey }); });
       return target.sync(request);
     };
     const mirror = new SessionMirror({ root, channel: () => ({ sync, receive: target.receive }), log: () => undefined });

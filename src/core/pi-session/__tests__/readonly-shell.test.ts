@@ -693,17 +693,112 @@ describe('classifyReadOnlyShellCommand — wildcards, network paths, environment
     ['date +%F', ['date', 'get-date']],
     ['node --version', ['node', 'get-node']],
   ] as const)('reports every command name PowerShell looks up: %s', (command, names) => {
-    expect(verdictOf('powershell', command)).toEqual({ readOnly: true, commandNames: names });
+    expect(verdictOf('powershell', command)).toEqual({ readOnly: true, commandNames: names, drives: [], home: false });
   });
 
   it('reports no command names for bash, which never runs a .cmd by bare name', () => {
-    expect(verdictOf('bash', 'git status | head -5')).toEqual({ readOnly: true, commandNames: [] });
+    expect(verdictOf('bash', 'git status | head -5')).toEqual({ readOnly: true, commandNames: [], drives: [], home: false });
   });
 
   it('never proves a form that runs a program it does not name as typed', () => {
     for (const command of ['& rg foo', 'rg.exe foo', 'write hello']) {
       expect(verdictOf('powershell', command).readOnly).toBe(false);
     }
+  });
+});
+
+describe('classifyReadOnlyShellCommand — the drives and the home a proven command opens', () => {
+  const verdictOf = (shell: 'bash' | 'powershell', command: string) => classifyReadOnlyShellCommand(shell, command, CONTEXT);
+  const EVERY_DRIVE = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+
+  it.each([
+    ['bash', String.raw`cat 'Q:\x'`, ['Q']],
+    ['bash', 'cat q:x', ['Q']],
+    ['bash', 'ls Q:', ['Q']],
+    ['bash', 'cat /q/x', ['Q']],
+    ['bash', 'ls /q', ['Q']],
+    ['bash', String.raw`cat '\q\x'`, ['Q']],
+    ['bash', 'cat /./q/x', ['Q']],
+    ['bash', 'cat /proc/cygdrive/q/x', ['Q']],
+    ['bash', 'cat /cygdrive/q/x', ['Q']],
+    ['bash', 'cd / && cat q/x', ['Q']],
+    ['bash', 'cat ../../q/x', ['Q']],
+    // bash reads cmd.exe's `/d` switch as Git Bash's drive D
+    ['bash', String.raw`cd /d 'Q:\' && ls`, ['D', 'Q']],
+    ['bash', 'grep -fQ:/p x', ['Q']],
+    ['bash', 'grep -ifQ:/p x', ['Q']],
+    ['bash', 'grep --file=Q:/p x', ['Q']],
+    ['bash', 'strings @Q:/x', ['Q']],
+    ['bash', 'cat Q:/x /r/y', ['Q', 'R']],
+    ['bash', 'cat a.txt src/q/x', []],
+    ['bash', 'tr q z', []],
+    ['bash', 'cat q/x', []],
+    ['powershell', String.raw`Get-Content Q:\x`, ['Q']],
+    ['powershell', String.raw`type Q:\x`, ['Q']],
+    ['powershell', 'dir Q:', ['Q']],
+    ['powershell', String.raw`cd Q:\x`, ['Q']],
+    ['powershell', 'Get-Content q:x', ['Q']],
+    ['powershell', String.raw`Get-Content FileSystem::Q:\x`, ['Q']],
+    ['powershell', String.raw`Get-Content Microsoft.PowerShell.Core\FileSystem::Q:\x`, ['Q']],
+    ['powershell', String.raw`Get-Content -LiteralPath Q:\x`, ['Q']],
+    ['powershell', String.raw`Resolve-Path Q:\x`, ['Q']],
+    ['powershell', String.raw`Test-Path Q:\x`, ['Q']],
+    ['powershell', String.raw`Get-ChildItem Q:\*`, ['Q']],
+    ['powershell', String.raw`Get-ChildItem x,Q:\y`, ['Q']],
+    ['powershell', String.raw`Select-String x Q:\y`, ['Q']],
+    ['powershell', 'head /q/x', ['Q']],
+    ['powershell', 'Get-Content /q/x', []],
+    ['bash', 'df', EVERY_DRIVE],
+    ['bash', 'df .', EVERY_DRIVE],
+    ['powershell', 'df', EVERY_DRIVE],
+    ['bash', 'find . -fstype ntfs', EVERY_DRIVE],
+    ['bash', "find . -printf '%-5F'", EVERY_DRIVE],
+    ['bash', "find . -printf '%p'", []],
+    ['bash', 'cat /proc/mounts', EVERY_DRIVE],
+    ['bash', 'cat /proc/self/mountinfo', EVERY_DRIVE],
+    ['bash', 'cat /etc/mtab', EVERY_DRIVE],
+    ['bash', 'ls /cygdrive', EVERY_DRIVE],
+    ['bash', 'ls /proc/cygdrive/', EVERY_DRIVE],
+  ] as const)('%s: %s opens the drives %j', (shell, command, drives) => {
+    expect(verdictOf(shell, command)).toMatchObject({ readOnly: true, drives });
+  });
+
+  it.each([
+    ['bash', 'cat ~/x'],
+    ['bash', 'cat ~'],
+    ['bash', 'cd && ls'],
+    ['bash', 'cd ~ && ls'],
+    ['bash', 'grep --file=~/p x'],
+    ['powershell', String.raw`Get-Content ~\x`],
+    ['powershell', 'Get-ChildItem ~'],
+    ['powershell', 'cd'],
+  ] as const)('%s: %s opens the home', (shell, command) => {
+    expect(verdictOf(shell, command)).toMatchObject({ readOnly: true, home: true });
+  });
+
+  it('opens no home for a command that names none', () => {
+    expect(verdictOf('bash', 'cat a.txt')).toMatchObject({ readOnly: true, home: false });
+  });
+
+  it.each([
+    ['bash', 'cat ~root/x', 'another user'],
+    ['bash', 'cat /proc/sys/DosDevices/Q:/x', 'device path'],
+    ['bash', 'ls /proc/sys', 'device path'],
+    ['bash', 'cat /proc/sys/Device/Mup/evil/s/f', 'device path'],
+    ['bash', 'cat /proc/self/../sys/Device/Mup/evil/s/f', 'device path'],
+    ['bash', 'cd / && cat proc/sys/Device/Mup/evil/s/f', 'device path'],
+    ['powershell', 'head /proc/sys/Device/Mup/evil/s/f', 'device path'],
+    // a process's root, working folder, program and open files are links Cygwin follows anywhere
+    ['bash', 'cat /proc/self/root/q/x', 'device path'],
+    ['bash', 'cat /proc/1/root/q/x', 'device path'],
+    ['bash', 'cat /proc/1234/cwd/x', 'device path'],
+    ['bash', 'cat /proc/1234/fd/3', 'device path'],
+    ['bash', 'ls /proc/1234/exe', 'device path'],
+    ['bash', 'cd / && cat proc/1/root/q/x', 'device path'],
+    ['bash', 'cat /dev/fd/../root/q/x', 'device path'],
+    ['powershell', 'head /proc/self/root/q/x', 'device path'],
+  ] as const)('refuses %s: %s', (shell, command, reason) => {
+    expect(verdictOf(shell, command)).toMatchObject({ readOnly: false, reason: expect.stringContaining(reason) });
   });
 });
 

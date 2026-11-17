@@ -38,8 +38,9 @@ function fakePi(): PiCodingAgentModule {
 }
 
 /** Required of every caller, and irrelevant to what this file asserts. */
-const shellDeps = (): { getShellOptions: () => Record<string, never>; shellCancel: ShellCancelStore; deliverUserNote: (text: string) => void; shellJob: undefined } => ({
+const shellDeps = (): { getShellOptions: () => Record<string, never>; allowedNetworkHosts: () => Promise<ReadonlySet<string>>; shellCancel: ShellCancelStore; deliverUserNote: (text: string) => void; shellJob: undefined } => ({
   getShellOptions: () => ({}),
+  allowedNetworkHosts: () => Promise.resolve(new Set()),
   shellCancel: new ShellCancelStore(),
   deliverUserNote: () => undefined,
   // The job object is win32-only and this file asserts tool composition, not process lifetime.
@@ -425,6 +426,7 @@ describe('cancel note delivery wiring', () => {
       permissionHandler: fakePermissionHandler(),
       getSessionId: () => 'sid',
       getShellOptions: () => ({}),
+      allowedNetworkHosts: () => Promise.resolve(new Set()),
       shellCancel,
       deliverUserNote,
       shellJob: undefined,

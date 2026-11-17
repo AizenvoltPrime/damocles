@@ -218,6 +218,30 @@ export async function withRepoLock<T>(repoDir: string, fn: (hold: LockHold) => P
   }
 }
 
+/**
+ * Moves a legacy per-session checkpoint repo to `toDir` under its own lock, which travels inside it and is removed at the new
+ * path. Nothing to do when `fromDir` is gone; the caller refuses a `toDir` that already exists.
+ */
+export async function moveLegacyCheckpointRepo(fromDir: string, toDir: string, rename: (from: string, to: string) => Promise<void>): Promise<void> {
+  const present = (target: string): Promise<boolean> => fs.promises.access(target).then(() => true, () => false);
+  if (!(await present(fromDir))) return;
+  let evicted = false;
+  await withRepoLock(fromDir, async () => {
+    // Age eviction may have removed it during the lock wait, and taking the lock made an empty dir in its place.
+    if (!(await present(path.join(fromDir, '.git')))) {
+      evicted = true;
+      return;
+    }
+    await fs.promises.mkdir(path.dirname(toDir), { recursive: true });
+    await rename(fromDir, toDir);
+    await removeLock(lockPath(toDir));
+  });
+  if (!evicted) return;
+  await fs.promises.rmdir(fromDir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== 'ENOENT' && err.code !== 'ENOTEMPTY' && err.code !== 'EEXIST') throw err;
+  });
+}
+
 async function withDirLock<T>(repoDir: string, fn: (hold: LockHold) => Promise<T>, options?: LockOptions): Promise<T> {
   const staleMs = options?.staleLockMs ?? STALE_LOCK_MS;
   const hardStaleMs = options?.hardStaleLockMs ?? HARD_STALE_LOCK_MS;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { FolderTree, ShieldAlert } from 'lucide-vue-next';
+import { FolderX, FolderTree, ShieldAlert } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import HostBadge from '@/components/HostBadge.vue';
 import { visibleText } from '@shared/visible-text';
@@ -28,6 +28,11 @@ const emit = defineEmits<{ trust: []; hostDetails: [badge: HTMLElement] }>();
 const { t } = useI18n();
 
 const remote = computed(() => props.project.authority.kind !== 'local');
+const title = computed(() => {
+  const { presence, fsPath } = props.project;
+  const path = presence ? t(`projects.presence.${presence}Title`, { path: fsPath }) : fsPath;
+  return remote.value ? t('projects.remoteTitle', { host: props.project.authority.name, path }) : path;
+});
 const detail = computed(() => (props.grouped && remote.value ? props.project.fsPath : props.project.branch));
 
 const badge = computed(() => {
@@ -54,7 +59,7 @@ function openDetails(event: MouseEvent): void {
     :aria-selected="selected"
     :data-project-key="project.key"
     :data-flip="flip ? `p:${project.key}` : undefined"
-    :title="remote ? t('projects.remoteTitle', { host: project.authority.name, path: project.fsPath }) : project.fsPath"
+    :title="title"
     class="group/row @container/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors select-none hover:bg-(--d-hover) data-dragging:cursor-grabbing"
     :class="[
       flip ? 'data-dragging:relative data-dragging:z-5 data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent)' : '',
@@ -89,7 +94,20 @@ function openDetails(event: MouseEvent): void {
       >{{ visibleText(detail) }}</span>
     </span>
     <Badge
-      v-if="!project.trusted"
+      v-if="project.presence"
+      variant="tone"
+      data-testid="presence-badge"
+      class="d-tone-warning flex shrink-0 rounded-5 border-0 bg-(--tone)/15 px-1.5 py-px text-10.5 font-normal"
+    >
+      <FolderX
+        aria-hidden="true"
+        class="size-2.75"
+      />
+      <!-- As the Untrusted badge's label, beside a host badge in a narrow row. -->
+      <span :class="remote && !grouped ? '@max-[14.5rem]/row:sr-only' : ''">{{ t(`projects.presence.${project.presence}`) }}</span>
+    </Badge>
+    <Badge
+      v-else-if="!project.trusted"
       variant="tone"
       data-testid="untrusted-badge"
       class="d-tone-warning flex shrink-0 rounded-5 border-0 bg-(--tone)/15 px-1.5 py-px text-10.5 font-normal"

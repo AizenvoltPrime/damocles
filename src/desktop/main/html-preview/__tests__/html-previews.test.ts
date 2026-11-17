@@ -99,9 +99,12 @@ function setUp(): Harness {
   };
   const served = new ServedRoots({
     projectOfView: () => undefined,
+    chatView: () => false,
     projects: () => h.projects,
-    files: deps.files,
+    // no chat view is granted a folder here
+    files: (rootKey) => ({ ...deps.files(rootKey), confineExisting: () => Promise.reject(new Error('no granted folder in a preview')) }),
     isTrusted: deps.isTrusted,
+    localDesignFolder: (designId) => `C:\\Users\\u\\.damocles\\designs\\${designId}`,
     designRead: async () => undefined,
     refusalText: () => 'Open this preview from Damocles.',
     log: () => undefined,

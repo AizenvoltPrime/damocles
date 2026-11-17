@@ -19,6 +19,7 @@ import { formatAgentConversation } from '../subagents/subagent-runner';
 import type { AgentManager, BranchAgent, SpawnRequest } from '../subagents/agent-manager';
 import type { AgentRecord } from '../subagents/types';
 import {
+  endedOnRejection,
   isAgentTerminalStatus,
   isResumableSubagentStatus,
   terminalAgentStatus,
@@ -108,6 +109,7 @@ function recordResultJson(record: AgentRecord): string {
     responseText: recordResultText(record),
     agentId: record.id,
     agentStatus: terminalAgentStatus(record.status),
+    agentStopReason: record.stopReason,
     totalDurationMs: (record.completedAt ?? Date.now()) - record.startedAt,
     totalTokens: getLifetimeTotal(record.lifetimeUsage),
     totalToolUseCount: record.toolUses,
@@ -266,7 +268,8 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
       const agent = await manager.readBranchAgent(id);
       if (!agent) return textResult(`No subagent with id "${id}" was launched in this conversation.`);
       const { state } = agent;
-      if (isResumableSubagentStatus(state) || !isAgentTerminalStatus(state.status)) return textResult(notRunningText(id, agent));
+      // A run that ended on a rejected call has a result, which its status entry holds with its note.
+      if ((isResumableSubagentStatus(state) && !endedOnRejection(state)) || !isAgentTerminalStatus(state.status)) return textResult(notRunningText(id, agent));
       const result = agent.status?.result ?? agent.branchResult ?? getStatusNote(state.status, state.stopReason, id).trim();
       const text = (params.verbose ? transcriptOr(agent, result) : result) || '(no output)';
       return fetchResult(text, { agentId: id, toolCallId: state.latest.toolCallId, status: state.status });

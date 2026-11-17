@@ -2,6 +2,7 @@ import { buildNestedMcpToolset, type NestedMcpToolset } from '../../pi-session/t
 import type { McpClientManager } from '../../pi-session/mcp/mcp-client-manager';
 import type { McpResourceRuleFilter } from '../../permission-handler/mcp-resource-rule';
 import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 /**
  * The MCP snapshot every team-engine fake hands over, and the reason it must NOT be empty.
@@ -60,7 +61,7 @@ const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverC
  * what lets object identity distinguish "the spawn threaded one snapshot" from "it read twice".
  */
 export function teamMcpSnapshot(): NestedMcpToolset {
-  return buildNestedMcpToolset(teamPiStub, teamMcpManager, { resourceRuleFilter: NO_RESOURCE_RULES, eligible: new Set(TEAM_MCP_NAMES), disabledEntries: [] });
+  return buildNestedMcpToolset(teamPiStub, piMcp, teamMcpManager, { resourceRuleFilter: NO_RESOURCE_RULES, eligible: new Set(TEAM_MCP_NAMES), disabledEntries: [] });
 }
 
 /** What a `TeamEngine.buildAgentToolset` fake returns: the real shape, over a real snapshot. */

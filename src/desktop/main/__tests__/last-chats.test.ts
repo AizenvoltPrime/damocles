@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { projectStays } from '../chat-project';
 import { LastChats, openProjectChat } from '../last-chats';
 import type { PersistedSelection } from '../panel-state-store';
 import type { RemoteSelection } from '../remote/remote-state';
@@ -70,6 +71,23 @@ describe('LastChats', () => {
     chats.forgetAuthority('ssh+h1');
     expect(chats.projects()).toEqual([Q]);
     expect(remote).toEqual([]);
+  });
+
+  it('a list change keeps a moved project\'s entry re-keyed before the list names its new key, and drops it once the old key left too', () => {
+    const { chats, remote } = lastChats();
+    const moved = 'ssh+h1|/srv/app-moved';
+    chats.seed([{ projectKey: REMOTE, sessionId: 's-r' }, { projectKey: P, sessionId: 's-1' }]);
+    const movedProjects = new Map([[moved, REMOTE]]);
+    chats.relocate(REMOTE, moved);
+    let listed = new Set([REMOTE]);
+    chats.forgetProjectsExcept((key) => projectStays(key, (candidate) => listed.has(candidate), movedProjects));
+    expect(chats.get(moved)).toBe('s-r');
+    expect(chats.projects()).toEqual([moved]);
+    expect(remote.at(-1)).toEqual(['ssh+h1', [{ projectKey: moved, sessionId: 's-r' }]]);
+
+    listed = new Set();
+    chats.forgetProjectsExcept((key) => projectStays(key, (candidate) => listed.has(candidate), movedProjects));
+    expect(chats.projects()).toEqual([]);
   });
 
   it('a new chat\'s first write renames its entry to the stored id, which keeps the entry', () => {

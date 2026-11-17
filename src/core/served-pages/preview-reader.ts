@@ -1,7 +1,5 @@
-// One preview request answered from a project root, for the damocles-preview scheme and the loopback server alike.
-import type { ReadRangeResult } from '../../workspace/transfer-ops';
-import { loggableUrl } from '../security';
-import { NotConnectedError } from '../workspace/workspaces';
+// One preview request answered from a project root, for desktop's damocles-preview scheme and every root's loopback server.
+import { NotConnectedError } from '../not-connected-error';
 import { CHARSET_PRESCAN_BYTES, declaresCharset, isDeniedResolvedPath, isHtmlType, previewContentType, previewHeaders, previewRequestPath, previewUrlPath, requestedRange, type ByteRangeSpec, type PreviewTarget } from './serve-policy';
 
 /** A preview response before it meets its transport; a body iterable is released (return()) by whoever drops it. */
@@ -22,10 +20,22 @@ export interface PreviewRequest {
   readonly ifRange: string | undefined;
 }
 
-// The root's confined reads (workspaces.forProject(rootKey).files); each throws NotConnectedError while its host is away.
+// size: the whole file's; chunks: the length bytes from offset, both clamped to the file; resolvedPath: the file's real path
+// relative to the root's real path, '/' separated; folder: the entry that is not a file is a folder
+export type PreviewRangeRead =
+  | { readonly ok: true; readonly size: number; readonly offset: number; readonly length: number; readonly resolvedPath: string; readonly chunks: AsyncIterable<Uint8Array> }
+  | { readonly ok: false; readonly reason: 'notAFile'; readonly folder: boolean }
+  | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed'; readonly code?: string };
+
+// The root's confined reads (desktop: workspaces.forProject(rootKey).files); each throws NotConnectedError while its host is away.
 export interface PreviewFileReads {
-  // files.readFileRange; it throws for a host that reads no range with a resolved path, whose files are never served
-  readonly range: (relativePath: string, offset: number, length: number) => Promise<ReadRangeResult>;
+  // desktop: files.readFileRange; it throws for a host that reads no range with a resolved path, whose files are never served
+  readonly range: (relativePath: string, offset: number, length: number) => Promise<PreviewRangeRead>;
+}
+
+/** A root-relative path as a log line names it: quoted and bounded, never the file's content. */
+export function loggablePath(relativePath: string): string {
+  return JSON.stringify(relativePath.slice(0, 500));
 }
 
 async function release(chunks: AsyncIterable<Uint8Array>): Promise<void> {
@@ -131,10 +141,10 @@ export async function answerPreview(request: PreviewRequest, reads: PreviewFileR
   const html = isHtmlType(contentType);
   const failed = (err: unknown): PreviewAnswer => {
     if (err instanceof NotConnectedError) return { status: 503, headers: { ...headers, 'Content-Type': 'text/plain; charset=utf-8' }, body: err.message };
-    log(`[html-preview] reading ${loggableUrl(path.relativePath)} failed: ${err instanceof Error ? err.message : String(err)}`);
+    log(`[html-preview] reading ${loggablePath(path.relativePath)} failed: ${err instanceof Error ? err.message : String(err)}`);
     return empty(500);
   };
-  let result: ReadRangeResult;
+  let result: PreviewRangeRead;
   try {
     const span = spanOf(request.method, range, html);
     result = await reads.range(path.relativePath, span.offset, span.length);
@@ -144,7 +154,7 @@ export async function answerPreview(request: PreviewRequest, reads: PreviewFileR
   if (!result.ok) {
     // a folder named without its '/' resolves its page's relative URLs one level up, so it moves to the folder's own path
     if (result.reason === 'notAFile' && result.folder && !path.folderIndex) return empty(308, { Location: `${previewUrlPath(path.relativePath)}/` });
-    if (result.reason === 'failed') log(`[html-preview] reading ${loggableUrl(path.relativePath)} failed${result.code !== undefined ? ` (${result.code})` : ''}`);
+    if (result.reason === 'failed') log(`[html-preview] reading ${loggablePath(path.relativePath)} failed${result.code !== undefined ? ` (${result.code})` : ''}`);
     return empty(result.reason === 'failed' ? 500 : 404);
   }
   if (isDeniedResolvedPath(result.resolvedPath)) {
@@ -168,7 +178,7 @@ export async function answerPreview(request: PreviewRequest, reads: PreviewFileR
         const start = await reads.range(path.relativePath, 0, need);
         if (!start.ok) {
           await release(chunks);
-          if (start.reason === 'failed') log(`[html-preview] reading the start of ${loggableUrl(path.relativePath)} failed${start.code !== undefined ? ` (${start.code})` : ''}`);
+          if (start.reason === 'failed') log(`[html-preview] reading the start of ${loggablePath(path.relativePath)} failed${start.code !== undefined ? ` (${start.code})` : ''}`);
           return empty(start.reason === 'failed' ? 500 : 404);
         }
         ({ head } = await peek(start.chunks, need));

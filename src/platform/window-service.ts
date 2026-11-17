@@ -89,6 +89,8 @@ export interface WindowService {
   // when windowLayout is true. clientId names the device on a daemon's core, whose devices each have their own window; a host
   // with one window ignores it.
   terminalToggle(clientId?: string): TerminalToggle;
+  // Runs the host's Locate flow for the listed project whose folderKey this is; a host with no such flow (VS Code) has none.
+  locateProjectFolder?(folderKey: string): void;
 }
 
 export interface TerminalToggle {

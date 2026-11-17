@@ -1,5 +1,5 @@
 /*
- * Ported from pi-coding-agent/src/extensions/mcp/resources.ts (pi 1.4.0): `list_mcp_resources`,
+ * Ported from pi-coding-agent/src/extensions/mcp/resources.ts (pi 1.5.2): `list_mcp_resources`,
  * `list_mcp_resource_templates` and `read_mcp_resource`, the names Codex and opencode use. Each takes a
  * `server` argument and reaches every server the caller sees with resources. Listings are pi's JSON;
  * MCP App resources (`ui://` URIs, `profile=mcp-app` HTML) and icons are left out. Reads become text,
@@ -15,7 +15,8 @@ import type { McpResourceServer, McpToolCallOptions, McpToolSource } from '../mc
 import type { ElicitationUI } from '../mcp/elicitation-handler';
 import type { ContentBlock } from '../mcp/types';
 import { McpResourceServerGoneError, printableServerName, quotedServerName } from '../mcp/resource-errors';
-import { formatSize, limitMcpContent, saveMcpBinaryToTempFile } from '../mcp/content';
+import type { McpModule } from '../mcp/mcp-client-loader';
+import { formatSize, saveMcpBinaryToTempFile, saveMcpOutputToTempFile } from '../mcp/content';
 import { failureForLog } from '../mcp/connect-failure';
 import { isAttachableImageMimeType, isTextMimeType } from '../../../shared/mcp-resource-mime';
 import { classifyInlineImage } from '../../../shared/inline-image';
@@ -34,6 +35,7 @@ export interface McpResourceToolDetails {
 }
 
 export interface McpResourceToolsOptions {
+  mcp: McpModule;
   /** The MCP source the tools call; null while the panel has none. */
   source: () => McpToolSource | null;
   /** Per list call, what the settings rules leave out of a list (`PermissionHandler.mcpResourceRuleFilter`). */
@@ -121,15 +123,16 @@ function leftOutNotice(servers: readonly string[], resourceCounts: ReadonlyMap<s
 }
 
 async function jsonResult(
+  mcp: McpModule,
   tool: McpResourceToolName,
   server: string | undefined,
   payload: Record<string, unknown>,
   notice: string | undefined,
 ): Promise<AgentToolResult<McpResourceToolDetails>> {
-  const { content, fullOutputPath } = await limitMcpContent([
+  const { content, fullOutputPath } = await mcp.limitMcpContent([
     { type: 'text', text: JSON.stringify(payload) },
     ...(notice ? [{ type: 'text' as const, text: notice }] : []),
-  ]);
+  ], saveMcpOutputToTempFile);
   return { content, details: { server: server ?? '', tool, ...(fullOutputPath ? { fullOutputPath } : {}) } };
 }
 
@@ -189,7 +192,7 @@ async function readResultToBlocks(
 
 /** The three resource tools over `options.source`, each wrapped in `abortableTool`. */
 export function createMcpResourceTools(options: McpResourceToolsOptions): ToolDefinition[] {
-  const { source, ruleFilter, disabledResource, frozenServers, elicitationUi: nestedUi } = options;
+  const { mcp, source, ruleFilter, disabledResource, frozenServers, elicitationUi: nestedUi } = options;
   const frozen = frozenServers !== undefined;
 
   const requireSource = (): McpToolSource => {
@@ -276,7 +279,7 @@ export function createMcpResourceTools(options: McpResourceToolsOptions): ToolDe
         [key]: asItems(result.items).filter(keep(serverName)).map((item) => listed(serverName, item)),
         ...(typeof result.nextCursor === 'string' ? { nextCursor: result.nextCursor } : {}),
       };
-      return jsonResult(tool, serverName, payload, leftOutNotice([], deniedCounts));
+      return jsonResult(mcp, tool, serverName, payload, leftOutNotice([], deniedCounts));
     }
     if (cursor !== undefined) throw new Error('cursor can only be used when a server is specified');
 
@@ -295,7 +298,7 @@ export function createMcpResourceTools(options: McpResourceToolsOptions): ToolDe
         errors.push({ server, error: errorMessage(permanent(result.reason)) });
       }
     });
-    return jsonResult(tool, undefined, { [key]: items, ...(errors.length > 0 ? { errors } : {}) }, leftOutNotice(covered, deniedCounts));
+    return jsonResult(mcp, tool, undefined, { [key]: items, ...(errors.length > 0 ? { errors } : {}) }, leftOutNotice(covered, deniedCounts));
   };
 
   const listResources: ToolDefinition<typeof listParameters, McpResourceToolDetails> = {
@@ -370,10 +373,10 @@ export function createMcpResourceTools(options: McpResourceToolsOptions): ToolDe
       const notice = leftOut > 0
         ? `[Left out because the user's permission settings cover them: ${leftOut} content${leftOut === 1 ? '' : 's'} of server ${printableServerName(serverName)}]`
         : undefined;
-      const { content, fullOutputPath } = await limitMcpContent([
+      const { content, fullOutputPath } = await mcp.limitMcpContent([
         ...(blocks.length > 0 || notice ? blocks : [{ type: 'text' as const, text: `Resource ${uri} is empty.` }]),
         ...(notice ? [{ type: 'text' as const, text: notice }] : []),
-      ]);
+      ], saveMcpOutputToTempFile);
       return {
         content,
         details: { server: serverName, tool: READ_MCP_RESOURCE_TOOL, ...(fullOutputPath ? { fullOutputPath } : {}) },

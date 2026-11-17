@@ -39,9 +39,9 @@ export interface ProjectedEntryView {
 /** The part of a pi `Model` the planner reads. */
 export interface ImageLimitSource {
   inputLimits?: {
-    maxRequestBytes?: number;
-    images?: { maxPerRequest?: number; maxPerMessage?: number };
-  };
+    maxRequestBytes?: number | undefined;
+    images?: { maxPerRequest?: number | undefined; maxPerMessage?: number | undefined } | undefined;
+  } | undefined;
 }
 
 /** One tool-result entry that must lose images, with the content its context edit will carry. */
@@ -146,7 +146,7 @@ export function planImagePruning(
       const next = Math.min(sites.length, boundary + batch);
       const gain = sites.slice(boundary, next).reduce((sum, site) => sum + site.bytes - PLACEHOLDER.length, 0);
       // Images shorter than the placeholder grow the payload, so escalating further cannot help.
-      // Reachable only through a user-defined maxRequestBytes (pi-ai 1.4.0 `dist/providers/model-schema.js:54` allows 1).
+      // Reachable only through a user-defined maxRequestBytes (pi-ai 1.5.2 `dist/providers/model-schema.js:65` allows 1).
       if (gain <= 0) break;
       freed += gain;
       boundary = next;

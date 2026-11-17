@@ -5,7 +5,7 @@ import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { CheckpointWriter } from './checkpoint-writer';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { TeamAgentHistoryMessage, TeamRunSummary } from '../../shared/types/team';
+import type { TeamAgentHistoryMessage, TeamRunSummary, TeamStopReason } from '../../shared/types/team';
 import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { ImageBlock } from '../../shared/types/content';
 import type { UserSteerNote } from '../../shared/steer';
@@ -13,6 +13,7 @@ import type { AgentUsageTotals } from '../../shared/usage-accounting';
 import type { EffortBadgeLevel } from '../../shared/effort-badge';
 import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
 import type { SubagentSessionStore } from '../pi-session/folder-runtime';
+import type { TerminatedCall } from '../pi-session/terminated-calls';
 
 /** Selects which role slot a spawned specialist runs under — `implementor` or `reviewer` role settings
  *  (model + reasoning effort), set by the lead on spawn. Re-exported from the resolver, which itself
@@ -62,6 +63,8 @@ export interface TeamSessionOptions {
   directMcpToolNames?: readonly string[];
   /** Where the member's pi session lives: one file per member attempt. */
   store: SubagentSessionStore;
+  /** The member's stop: it ends a `reopen`'s read of the file, which then rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -231,6 +234,8 @@ export interface UndeliveredMessage {
   images?: ImageBlock[];
   /** Delivery ids: a bus message's `messageId`, or a UUID minted when a steer or note was queued. Absent in checkpoints written before ids. */
   ids?: string[];
+  /** Queued before the rejection its run ended on, so it waits until a later message wakes the member. */
+  held?: true;
 }
 
 /** The data of a member session's `damocles-team-delivered` entry: the delivery ids of the message pi just committed. */
@@ -241,8 +246,11 @@ export interface TeamDeliveredData {
 /** A run's user-note sink: echoes the note and queues it for delivery, or returns false when the run cannot take it. */
 export type NoteSink = (text: string, images?: ImageBlock[]) => boolean;
 
-/** How a run starts: prompt the session, or wait for a message as if a turn had just ended. */
-export type AgentStart = { kind: 'prompt'; text: string } | { kind: 'park' };
+/**
+ * How a run starts: prompt the session, or wait for a message as if a turn had just ended. `heldBehind` counts the
+ * leading `redeliver` entries held behind a rejection, which wait until a later message arrives.
+ */
+export type AgentStart = { kind: 'prompt'; text: string } | { kind: 'park'; heldBehind?: number };
 
 export interface AgentRunConfig {
   agentId: string;
@@ -307,6 +315,8 @@ export interface AgentRunConfig {
   getReportedSummary?: () => string | null;
   /** Per-tool-call hook (drives the agent's live tool-count). */
   onToolCall?: (toolName: string, toolCallCount: number) => void;
+  /** A run of this agent that pi ended after a call the user or a hook rejected with `terminate` (`rejectionEndingRun`). */
+  onRunRejected?: (call: TerminatedCall) => void;
   /** Per-turn usage snapshot (token totals + session cost). */
   onUsageUpdate?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }) => void;
   /** Roll the agent session's cost delta (USD) into the panel budget meter. */
@@ -347,9 +357,10 @@ export interface TeamPersistenceWriter {
 
 /**
  * Why a team stopped before it finished: the user (Stop team or Esc), the parent model's `cancel_team`,
- * its panel closing or switching session, or a conversation clear. Every stop but 'reset' is resumable.
+ * its panel closing or switching session, a conversation clear, or a lead run pi ended on a call the user
+ * ('denied') or a hook ('hookDenied') rejected. Every stop but 'reset' is resumable.
  */
-export type TeamStop = 'user' | 'parent' | 'shutdown' | 'reset';
+export type TeamStop = 'user' | 'parent' | 'shutdown' | 'reset' | TeamStopReason;
 export type TeamResumableStop = Exclude<TeamStop, 'reset'>;
 /** Why a checkpoint was written: a resumable stop, or a lead that failed before any stop. */
 export type TeamCheckpointCause = TeamResumableStop | 'failed';
@@ -360,7 +371,7 @@ export type TeamCheckpointCause = TeamResumableStop | 'failed';
  */
 export type TeamRunResult =
   | { status: 'completed'; text: string }
-  | { status: 'cancelled'; text: string; stop: TeamStop; resumable: boolean }
+  | { status: 'cancelled'; text: string; stop: TeamStop; resumable: boolean; rejectedTool?: string }
   | { status: 'failed'; text: string; failure: AgentFailure; resumable: boolean };
 
 /** Reader name to its per-section read versions. Entry arrays, because names are model-chosen. */
@@ -423,6 +434,8 @@ export interface TeamCheckpoint {
     lastReviewRoundNotification: string | null;
     /** Absent in checkpoints written before review coverage existed; their logs declare no pairs. */
     coverage?: ReviewCoverageState;
+    /** By name, the call each member's latest run ended on (`TeamRunner.rejections`); absent before rejections were recorded. */
+    rejectedCalls?: Array<[string, TerminatedCall]>;
   };
   // `attempt` is optional because checkpoints written before steers recorded it must still load.
   operatorSteers: Array<Omit<OperatorSteer, 'attempt'> & { attempt?: number }>;

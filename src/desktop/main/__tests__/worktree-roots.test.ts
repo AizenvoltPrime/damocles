@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { ChatWorktreeRecord, WorktreeRecord, WorktreeRegistry } from '../../../core/worktrees/registry';
+import type { ChatWorktreeRecord, WorktreeRecord } from '../../../core/worktrees/registry';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { WorktreeStateData } from '../../../shared/types/messages';
 import { isFolderRoot, parseRootKey, rootKey } from '../../preload/folder-root';
@@ -10,7 +10,7 @@ import type { ShownFolder } from '../../preload/shell-channels';
 import { confineExisting } from '../../local-services/confine';
 import { chatRowWorktree } from '../worktrees/chat-rows';
 import { RootSet, WorktreeRoots } from '../worktrees/roots';
-import { remoteChatRecord, WorktreeRecords } from '../worktrees/records';
+import { remoteChatRecord, WorktreeRecords, type WorktreeRecordReader } from '../worktrees/records';
 import { worktreeFolderFor } from '../../../core/worktrees/records';
 import { projectKeyOf } from '../../../shared/project-location';
 import { setupArgs, setupShell } from '../worktrees/setup-terminal';
@@ -20,14 +20,14 @@ let dir: string;
 let alpha: string;
 let beta: string;
 
-function registryOf(records: () => WorktreeRecord[]): WorktreeRegistry {
-  const fake = {
+function registryOf(records: () => WorktreeRecord[]): WorktreeRecordReader {
+  return {
+    known: () => true,
     records,
     get: (id: string) => records().find((record) => record.id === id),
     liveChatRecords: (projectPath: string) => records().filter((record): record is ChatWorktreeRecord => record.kind === 'chat' && record.deletedAt === undefined && folderKey(record.projectPath) === folderKey(projectPath)),
     liveChatRecordAt: (folder: string) => records().find((record): record is ChatWorktreeRecord => record.kind === 'chat' && record.deletedAt === undefined && folderKey(record.workingFolder) === folderKey(folder)),
   };
-  return fake as unknown as WorktreeRegistry;
 }
 
 function chatRecord(id: string, projectPath: string, overrides: Partial<ChatWorktreeRecord> = {}): ChatWorktreeRecord {
@@ -99,7 +99,7 @@ describe('folder roots of several authorities', () => {
     const localKey = folderKey(alpha);
     const remoteKey = projectKeyOf({ kind: 'loopback' }, folderKey(alpha));
     const projects = [{ key: localKey, fsPath: alpha, name: 'alpha' }, { key: remoteKey, fsPath: alpha, name: 'alpha' }];
-    const registries: Record<string, WorktreeRegistry> = { local: registryOf(() => local), loopback: registryOf(() => remote) };
+    const registries: Record<string, WorktreeRecordReader> = { local: registryOf(() => local), loopback: registryOf(() => remote) };
     const roots = new WorktreeRoots({ projects: () => projects, registry: (authority) => registries[authority], osOf: () => process.platform });
     const localRoot = rootKey({ projectKey: localKey, worktreeId: 'aaaaaaaa' });
     const remoteRoot = rootKey({ projectKey: remoteKey, worktreeId: 'bbbbbbbb' });
@@ -111,6 +111,25 @@ describe('folder roots of several authorities', () => {
     expect(roots.ofWorktree('aaaaaaaa')?.key).toBe(localRoot);
     expect(roots.branchOf(remoteRoot)).toBe('damocles/bbbbbbbb');
     expect(roots.branchOf(rootKey({ projectKey: remoteKey, worktreeId: 'aaaaaaaa' }))).toBeUndefined();
+  });
+});
+
+describe('roots whose registry is not known yet', () => {
+  it('waits on a worktree root of an open project until its own core published, and never on a project folder or a closed project', () => {
+    const localKey = folderKey(alpha);
+    const remoteKey = projectKeyOf({ kind: 'loopback' }, folderKey(alpha));
+    const projects = [{ key: localKey, fsPath: alpha, name: 'alpha' }, { key: remoteKey, fsPath: alpha, name: 'alpha' }];
+    const local = new WorktreeRecords(() => undefined, () => undefined);
+    const roots = new WorktreeRoots({ projects: () => projects, registry: (authority) => (authority === 'local' ? local : undefined), osOf: () => process.platform });
+    const localRoot = rootKey({ projectKey: localKey, worktreeId: 'aaaaaaaa' });
+    const remoteRoot = rootKey({ projectKey: remoteKey, worktreeId: 'bbbbbbbb' });
+    expect(roots.awaitsRegistry(localRoot)).toBe(true);
+    expect(roots.awaitsRegistry(remoteRoot)).toBe(true);
+    expect(roots.awaitsRegistry(localKey)).toBe(false);
+    expect(roots.awaitsRegistry(rootKey({ projectKey: folderKey(beta), worktreeId: 'aaaaaaaa' }))).toBe(false);
+    local.apply([]);
+    expect(roots.awaitsRegistry(localRoot)).toBe(false);
+    expect(roots.awaitsRegistry(remoteRoot)).toBe(true);
   });
 });
 

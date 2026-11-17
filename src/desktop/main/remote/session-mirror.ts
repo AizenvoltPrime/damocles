@@ -3,7 +3,7 @@ import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 import { renameWithRetry } from '../../../core/config/json-config-write';
 import { isSafeAgentPathId } from '../../../shared/agent-path-id';
-import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, type MirrorClock } from '../../../shared/remote-mirror';
+import { isMirrorWorktreeFolder, MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, type MirrorClock } from '../../../shared/remote-mirror';
 import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from '../../daemon/control-messages';
 import type { Disposable } from '../../../platform/disposable';
 import type { OtherProtocolDaemon, RemoteConnection } from './connection';
@@ -12,14 +12,20 @@ import type { OtherProtocolDaemon, RemoteConnection } from './connection';
 export const MIRROR_QUOTA_BYTES: number = 1024 * 1024 * 1024;
 // The head hash covers the first 4 KiB of a file, the tail hash the 4 KiB before its size (the daemon's HASH_SPAN_BYTES).
 const HASH_SPAN_BYTES = 4096;
-// Segments of a mirrored name: a session file, or an agent or team file under its session's agent folder.
+// Segments of a mirrored name: the deepest agent layout (<parent>/teams/<id>/members/<file>, 5) under the daemon's
+// worktree.<id>/ or adopted.<id>/ prefix (mirrorWorktreeFolder).
 const MAX_NAME_SEGMENTS = 6;
 const TEMP_SUFFIX = '.mirror-partial';
 const SESSION_SUFFIX = '.jsonl';
 
+type SyncRequest = { readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] };
+
 /** One connection's mirror.sync and the streams its answer names; stream ids are per connection. */
 export interface MirrorChannel {
-  readonly sync: (request: { readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }) => Promise<{ readonly changes: readonly MirrorChange[] }>;
+  readonly sync: (request: SyncRequest) => Promise<{ readonly changes: readonly MirrorChange[] }>;
+  // mirror.sync with the project's worktree chats under worktree.<id>/; absent on a daemon that does not list
+  // mirror.worktreeChats
+  readonly syncProject?: (request: SyncRequest) => Promise<{ readonly changes: readonly MirrorChange[] }>;
   // the change's bytes from the stream it names, in order
   readonly receive: (stream: number, maxBytes: number, onChunk: (bytes: Uint8Array) => Promise<void>) => Promise<number>;
   // the target's sub-call ledger; absent on a daemon that does not list mirror.subcalls
@@ -31,11 +37,14 @@ export interface MirrorChannel {
 
 // The daemon serves control mirror.syncSubcalls and sends mirror.subcallsChanged.
 export const MIRROR_SUBCALLS_FEATURE = 'mirror.subcalls';
+// The daemon serves control mirror.syncProject.
+export const MIRROR_WORKTREE_CHATS_FEATURE = 'mirror.worktreeChats';
 
-/** A connection of this protocol as a mirror channel: the sub-call ledger only when its daemon lists it. */
+/** A connection of this protocol as a mirror channel: the sub-call ledger and worktree chats only when its daemon lists them. */
 export function connectionMirrorChannel(connection: Pick<RemoteConnection, 'control' | 'receiveStream' | 'features' | 'skewMs'>): MirrorChannel {
   return {
     sync: (request) => connection.control.request('mirror.sync', request),
+    ...(connection.features.includes(MIRROR_WORKTREE_CHATS_FEATURE) ? { syncProject: (request: SyncRequest) => connection.control.request('mirror.syncProject', request) } : {}),
     receive: (stream, maxBytes, onChunk) => connection.receiveStream(stream, maxBytes, onChunk),
     ...(connection.features.includes(MIRROR_SUBCALLS_FEATURE) ? { syncSubcalls: (request) => connection.control.request('mirror.syncSubcalls', request) } : {}),
     skewMs: connection.skewMs,
@@ -87,6 +96,16 @@ export function mirrorPath(folder: string, name: string): string | undefined {
 }
 
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+
+// a folder's entries, links never followed; none for a folder that is not there
+async function readFolder(folder: string): Promise<Dirent[]> {
+  try {
+    return await fs.readdir(folder, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
 
 async function readRange(file: string, offset: number, length: number): Promise<Uint8Array> {
   const handle = await fs.open(file, 'r');
@@ -229,14 +248,16 @@ export class SessionMirror {
 
   /**
    * One project's sync within budgetBytes over one channel, the only one that carries its answer's streams; resolves the bytes
-   * its mirror holds afterwards. A change that fails is logged and its stream drained, so no stream stays unclaimed.
+   * its mirror holds afterwards. A change that fails is logged and its stream drained, so no stream stays unclaimed. Every held
+   * file is named, so a daemon without mirror.syncProject answers deleted for the worktree chats' copies.
    */
   async syncProject(folderKey: string, budgetBytes: number): Promise<number> {
     const folder = projectMirrorFolder(this.deps.root, folderKey);
     const held = await heldFiles(folder);
     const byName = new Map(held.map((file) => [file.file, file]));
     const channel = this.deps.channel();
-    const { changes } = await channel.sync({ projectKey: folderKey, budgetBytes, files: held.map(({ file, size, headHash, tailHash }) => ({ file, size, headHash, tailHash })) });
+    const sync = channel.syncProject ?? channel.sync;
+    const { changes } = await sync({ projectKey: folderKey, budgetBytes, files: held.map(({ file, size, headHash, tailHash }) => ({ file, size, headHash, tailHash })) });
     const named = new Set<string>();
     for (const change of changes) await this.land(channel, change, JSON.stringify(change.file).slice(0, 200), (receive) => this.apply(folder, byName, named, change, receive));
     return this.heldBytes(folderKey);
@@ -331,19 +352,34 @@ export class SessionMirror {
     return projectMirrorFolder(this.deps.root, folderKey);
   }
 
-  /** The mirrored session file of a session, when the mirror holds it. */
+  /**
+   * A relocated project's mirror follows its folder key once no sync runs: renamed, or deleted when the new key's folder
+   * exists already, since the mirror is a cache the next sync fills. A second call finds nothing to move.
+   */
+  async relocateProject(fromFolderKey: string, toFolderKey: string): Promise<void> {
+    await this.idle();
+    const from = projectMirrorFolder(this.deps.root, fromFolderKey);
+    const to = projectMirrorFolder(this.deps.root, toFolderKey);
+    if (from === to) return;
+    const fromThere = await fs.lstat(from).then(() => true, (err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? false : Promise.reject(err)));
+    if (!fromThere) return;
+    const toThere = await fs.lstat(to).then(() => true, (err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? false : Promise.reject(err)));
+    if (toThere) await fs.rm(from, { recursive: true, force: true });
+    else await renameWithRetry(from, to);
+  }
+
+  /** The mirrored session file of a session, the project's own or a worktree chat's, when the mirror holds it. */
   async sessionFile(folderKey: string, sessionId: string): Promise<string | undefined> {
     if (!isSafeAgentPathId(sessionId)) return undefined;
     const folder = projectMirrorFolder(this.deps.root, folderKey);
-    let entries: Dirent[];
-    try {
-      entries = await fs.readdir(folder, { withFileTypes: true });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw err;
+    const entries = await readFolder(folder);
+    const own = entries.find((candidate) => candidate.isFile() && sessionIdOfFile(candidate.name) === sessionId);
+    if (own) return mirrorPath(folder, own.name);
+    for (const worktree of entries.filter((candidate) => candidate.isDirectory() && isMirrorWorktreeFolder(candidate.name))) {
+      const entry = (await readFolder(path.join(folder, worktree.name))).find((candidate) => candidate.isFile() && sessionIdOfFile(candidate.name) === sessionId);
+      if (entry) return mirrorPath(folder, `${worktree.name}/${entry.name}`);
     }
-    const entry = entries.find((candidate) => candidate.isFile() && sessionIdOfFile(candidate.name) === sessionId);
-    return entry ? mirrorPath(folder, entry.name) : undefined;
+    return undefined;
   }
 
   private async apply(folder: string, byName: ReadonlyMap<string, MirrorFile>, named: Set<string>, change: MirrorChange, receive: Receive): Promise<void> {

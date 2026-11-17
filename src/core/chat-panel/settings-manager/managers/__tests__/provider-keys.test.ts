@@ -23,6 +23,7 @@ function startedRuntime(classify: () => Record<string, unknown>) {
   const runtime = PiRuntime.get();
   const keys = new Map<string, string>();
   const fake = {
+    settleCredentialWrites: async () => undefined,
     hasConfiguredAuth: (p: string) => keys.has(p),
     getModelOfType: (type: string, provider: string, id: string) => ({ type, provider, id, api: 'typesafe-system-one' }),
     getProviderAuthStatus: (p: string): { configured: boolean; source?: string } => (keys.has(p) ? { configured: true, source: 'runtime' } : { configured: false }),

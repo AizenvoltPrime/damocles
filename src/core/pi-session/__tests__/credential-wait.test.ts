@@ -7,6 +7,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { credentialSourceOf, runPin, runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
 import { PermissionHandler } from '../../permission-handler';
 import { BrokeredCredentialStore, MIN_VALIDITY_MS } from '../credential-broker';
+import { getPiCodingAgent } from '../pi-loader';
 
 const HOUR = 60 * 60 * 1000;
 const signedIn: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false }, xai: { type: 'none', hasKey: false, flatFee: false } } };
@@ -27,7 +28,7 @@ function setUp() {
     return oauth(`${connection}-token`, MIN_VALIDITY_MS + 60_000);
   });
   const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn(), now: () => now });
-  const handler = new PermissionHandler({ ...createFakePlatform(), remote: host.remote });
+  const handler = new PermissionHandler({ ...createFakePlatform(), remote: host.remote }, getPiCodingAgent);
   handlers.push(handler);
   const posted: ExtensionToWebviewMessage[] = [];
   handler.setPostMessage((message) => posted.push(message));

@@ -89,8 +89,6 @@ export interface PendingPermissionInfo extends PermissionDetail {
   parentToolUseId?: string | null;
   agentDescription?: string;
   suggestions?: PermissionUpdate[];
-  blockedPath?: string;
-  decisionReason?: string;
 }
 
 export const ASK_USER_QUESTION_LIMITS = {

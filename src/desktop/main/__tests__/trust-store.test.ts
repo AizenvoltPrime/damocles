@@ -188,3 +188,20 @@ describe('TrustStore', () => {
     expect(onDisk).toEqual([true, true]);
   });
 });
+
+describe('TrustStore.revoke', () => {
+  it('untrusts the folder on disk and in memory, tells its listeners once, and leaves a child\'s own grant', async () => {
+    const child = path.join(project, 'packages', 'child');
+    const trust = store();
+    await trust.grant(project);
+    await trust.grant(child);
+    const revoked = vi.fn();
+    trust.onDidRevoke(revoked);
+    await trust.revoke(`${project}${path.sep}`);
+    await trust.revoke(project);
+    expect(revoked).toHaveBeenCalledTimes(1);
+    expect(trust.isTrusted(project)).toBe(false);
+    expect(store().isTrusted(project)).toBe(false);
+    expect(store().isTrusted(child)).toBe(true);
+  });
+});

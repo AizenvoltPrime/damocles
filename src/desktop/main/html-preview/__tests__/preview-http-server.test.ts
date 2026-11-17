@@ -1,12 +1,13 @@
 import * as http from 'node:http';
+import * as os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ protocol: {} }));
 
 import type { ReadRangeResult, ReadResult } from '../../../workspace/transfer-ops';
 import { NotConnectedError } from '../../workspace/workspaces';
-import { answerPreview } from '../preview-reader';
-import { OPEN_TOKEN_TTL_MS, PreviewHttpServer } from '../preview-http-server';
+import { answerPreview } from '../../../../core/served-pages/preview-reader';
+import { OPEN_TOKEN_TTL_MS, PreviewHttpServer, type PreviewGrant } from '../../../../core/served-pages/preview-http-server';
 import { syntheticFile, type SyntheticFile } from './synthetic-file';
 
 // the project root: its files, and those a read refuses
@@ -27,6 +28,8 @@ const BIG = 200 * 1024 * 1024;
 
 interface Harness {
   readonly server: PreviewHttpServer;
+  // Open in Browser's grant, on 127.0.0.1
+  readonly grant: PreviewGrant;
   now: number;
   offline: boolean;
   readonly big: SyntheticFile;
@@ -69,7 +72,7 @@ beforeEach(async () => {
     log: (line) => harness.logged.push(line),
     now: () => harness.now,
   });
-  Object.assign(harness, { server });
+  Object.assign(harness, { server, grant: server.grant('preview', 'loopback') });
   h = harness;
 });
 
@@ -147,7 +150,7 @@ async function steady(sample: () => number): Promise<number> {
 }
 
 function openPath(relativePath = 'index.html'): string {
-  const url = new URL(h.server.openUrl(relativePath));
+  const url = new URL(h.grant.openUrl(relativePath));
   expect(url.origin).toBe(`http://127.0.0.1:${h.server.port}`);
   return `${url.pathname}${url.search}`;
 }
@@ -434,6 +437,7 @@ describe('the preview loopback server', () => {
     await h.server.close();
     await expect(new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port, path: '/', agent: false }, resolve).on('error', reject))).rejects.toThrow(/ECONNREFUSED/);
     const next = await PreviewHttpServer.start({ serve: async () => ({ status: 200, headers: {} }), trusted: () => true, refusalText: () => 'Open this preview from Damocles.', log: () => undefined });
+    next.grant('preview', 'loopback');
     const stale = jar.replace(`damocles_preview_${port}=`, `damocles_preview_${next.port}=`);
     const answer = await new Promise<number>((resolve, reject) => {
       http.get({ host: '127.0.0.1', port: next.port, path: '/index.html', headers: { Cookie: stale }, agent: false }, (res) => {
@@ -445,5 +449,76 @@ describe('the preview loopback server', () => {
     expect(answer).toBe(403);
     // the afterEach closes it again
     h = { ...h, server: { close: async () => undefined } as unknown as PreviewHttpServer };
+  });
+});
+
+describe('grants of one served root', () => {
+  // the token exchange on a grant's own host: the cookie it sets
+  async function grantCookie(grant: PreviewGrant): Promise<string> {
+    const open = new URL(grant.openUrl('index.html'));
+    const exchanged = await request(`${open.pathname}${open.search}`, { Host: open.host });
+    expect(exchanged.status).toBe(303);
+    expect(exchanged.headers['set-cookie']![0]).not.toMatch(/domain=/i);
+    return exchanged.headers['set-cookie']![0]!.split(';')[0]!;
+  }
+
+  it('answers each holder only on its own host, with its own token and cookie', async () => {
+    const a = h.server.grant('view:a', 'own');
+    const b = h.server.grant('view:b', 'own');
+    for (const grant of [a, b]) expect(new URL(grant.origin).hostname).toMatch(/^[0-9a-f]{32}\.localhost$/);
+    expect(new URL(a.origin).port).toBe(String(h.server.port));
+    expect(b.origin).not.toBe(a.origin);
+    expect(h.server.grant('view:a', 'own').origin).toBe(a.origin);
+    const aHost = new URL(a.origin).host;
+    const bHost = new URL(b.origin).host;
+    // a token opens only on the host it was minted for
+    const minted = new URL(a.openUrl('index.html'));
+    for (const host of [bHost, `127.0.0.1:${h.server.port}`]) expect((await request(`${minted.pathname}${minted.search}`, { Host: host })).status, host).toBe(403);
+    expect((await request(`${minted.pathname}${minted.search}`, { Host: aHost })).status).toBe(303);
+    const aCookie = await grantCookie(a);
+    const bCookie = await grantCookie(b);
+    const preview = await cookie();
+    expect((await request('/index.html', { Host: aHost, Cookie: aCookie })).status).toBe(200);
+    expect((await request('/index.html', { Host: aHost.toUpperCase(), Cookie: aCookie })).status).toBe(200);
+    for (const jar of [bCookie, preview]) expect((await request('/index.html', { Host: aHost, Cookie: jar })).status).toBe(403);
+    for (const jar of [aCookie, bCookie]) expect((await request('/index.html', { Cookie: jar })).status).toBe(403);
+    // the same label on another port, with a trailing dot, or under another name answers nothing
+    const label = aHost.split('.')[0]!;
+    for (const host of [`${label}.localhost:${h.server.port + 1}`, `${label}.localhost.:${h.server.port}`, `${label}.example:${h.server.port}`, `${label}.localhost`]) {
+      expect((await request('/index.html', { Host: host, Cookie: aCookie })).status, host).toBe(421);
+    }
+    expect(() => h.server.grant('preview:other', 'loopback')).toThrow('one loopback grant');
+  });
+
+  it('refuses a revoked holder\'s host at once, on a connection it already holds too, and mints no token for it', async () => {
+    const a = h.server.grant('view:a', 'own');
+    const b = h.server.grant('view:b', 'own');
+    const aCookie = await grantCookie(a);
+    const bCookie = await grantCookie(b);
+    const host = new URL(a.origin).host;
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const before = await exchange(agent, '/index.html', { Host: host, Cookie: aCookie });
+    expect(before.status).toBe(200);
+    h.server.revoke('view:a');
+    const after = await exchange(agent, '/index.html', { Host: host, Cookie: aCookie });
+    agent.destroy();
+    expect(after.socket).toBe(before.socket);
+    expect(after.status).toBe(421);
+    expect(() => a.openUrl('index.html')).toThrow('revoked');
+    expect((await request('/index.html', { Host: new URL(b.origin).host, Cookie: bCookie })).status).toBe(200);
+    // a holder granted again gets a new host
+    expect(h.server.grant('view:a', 'own').origin).not.toBe(a.origin);
+  });
+
+  it.runIf(Object.values(os.networkInterfaces()).flat().some((info) => info?.address === '::1'))('holds its port on ::1 too, where Chrome connects a *.localhost name first', async () => {
+    const grant = h.server.grant('view:a', 'own');
+    const jar = await grantCookie(grant);
+    const status = await new Promise<number>((resolve, reject) => {
+      http.get({ host: '::1', port: h.server.port, path: '/index.html', headers: { Host: new URL(grant.origin).host, Cookie: jar }, agent: false }, (res) => {
+        res.resume();
+        resolve(res.statusCode!);
+      }).on('error', reject);
+    });
+    expect(status).toBe(200);
   });
 });

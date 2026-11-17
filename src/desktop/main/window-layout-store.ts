@@ -900,6 +900,55 @@ export class WindowLayoutStore {
     this.persist();
   }
 
+  /**
+   * A relocated project: its saved editor tabs, recent files, terminal panes, Search state, expanded Repositories rows,
+   * selected repository and Graph choices name `to` instead of `from`. A key `to` holds already (a merge) keeps the target's.
+   * `flavor` is the path rules of the project's machine. A second call changes nothing.
+   */
+  relocateProject(from: { readonly key: string; readonly fsPath: string }, to: { readonly key: string; readonly fsPath: string }, flavor: path.PlatformPath): void {
+    if (this.sealed) return;
+    const file = (ref: FileRef): FileRef => (ref.projectKey === from.key ? { ...ref, projectKey: to.key } : ref);
+    const tab = (saved: PersistedTab): PersistedTab => {
+      if ('file' in saved) return { ...saved, file: file(saved.file) };
+      return saved.kind === 'searchEditor' && saved.projectKey === from.key ? { ...saved, projectKey: to.key } : saved;
+    };
+    const pane = (saved: PersistedPane): PersistedPane => (saved.kind === 'local' && saved.projectKey === from.key ? { ...saved, projectKey: to.key } : saved);
+    // a repository root under the old folder, as source control names it: the same place under the new one
+    const root = (rootPath: string): string => {
+      const relative = flavor.relative(from.fsPath, rootPath);
+      if (relative === '') return to.fsPath;
+      return relative === '..' || relative.startsWith(`..${flavor.sep}`) || flavor.isAbsolute(relative) ? rootPath : flavor.join(to.fsPath, relative);
+    };
+    const rekeyed = <T>(record: Readonly<Record<string, T>>, map: (key: string) => string, value: (entry: T) => T = (entry) => entry): Record<string, T> => {
+      const entries = Object.entries(record);
+      const kept = new Set(entries.map(([key]) => key));
+      // fromEntries defines each key, so a "__proto__" key stays an entry and never sets the prototype
+      return Object.fromEntries(entries.flatMap(([key, entry]): Array<[string, T]> => {
+        const next = map(key);
+        if (next === key) return [[key, value(entry)]];
+        return kept.has(next) ? [] : [[next, value(entry)]];
+      }));
+    };
+    const projectKey = (key: string): string => (key === from.key ? to.key : key);
+    const editor: PersistedEditor = { ...this.editorLayout, tabs: this.editorLayout.tabs.map(tab), recent: this.editorLayout.recent.map(file) };
+    const { groups, editor: editorPanes } = this.terminalLayout;
+    const terminals: PersistedTerminals = { ...this.terminalLayout, groups: groups.map((group) => ({ ...group, panes: group.panes.map(pane) })), editor: editorPanes.map(pane) };
+    const sidebar: ShellLayout = {
+      ...this.sidebarLayout,
+      search: rekeyed(this.sidebarLayout.search, projectKey),
+      repositories: rekeyed(this.sidebarLayout.repositories, projectKey),
+      graph: rekeyed(this.sidebarLayout.graph, root),
+    };
+    const scmSelected = rekeyed(this.scmSelectedLayout, projectKey, root);
+    const unchanged = JSON.stringify([editor, terminals, sidebar, scmSelected]) === JSON.stringify([this.editorLayout, this.terminalLayout, this.sidebarLayout, this.scmSelectedLayout]);
+    if (unchanged) return;
+    this.editorLayout = editor;
+    this.terminalLayout = terminals;
+    this.sidebarLayout = sidebar;
+    this.scmSelectedLayout = scmSelected;
+    this.persist();
+  }
+
   setSidebar(layout: ShellLayout): void {
     if (this.sealed || JSON.stringify(this.sidebarLayout) === JSON.stringify(layout)) return;
     this.sidebarLayout = layout;

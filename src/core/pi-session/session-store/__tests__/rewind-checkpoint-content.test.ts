@@ -7,7 +7,7 @@ const H = vi.hoisted(() => ({
 vi.mock('../../pi-loader', () => ({
   initPiLoader: async () => ({
     SessionManager: {
-      open: () => ({
+      openAsync: async () => ({
         getLeafId: () => 'leaf',
         getBranch: () => [{ type: 'custom', customType: 'damocles-checkpoint', data: { userEntryId: 'u1', beforeCommit: 'a'.repeat(40) } }],
       }),

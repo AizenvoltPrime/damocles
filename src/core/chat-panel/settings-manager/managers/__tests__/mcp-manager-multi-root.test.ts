@@ -43,6 +43,8 @@ import {
 import type { FolderTarget } from "../../../../workspace-folders/folder-registry";
 import type { McpServerConfig } from "../../../../../shared/types/mcp";
 import { connectedIn, enabledConfigs, folderTarget } from "./mcp-folder-fixtures";
+import { folderKey } from "../../../../workspace-folders/folder-key";
+import { installWorktreeProjectLookup } from "../../../../worktrees/personal-config";
 
 const A = folderTarget(folderA);
 const B = folderTarget(folderB);
@@ -581,6 +583,28 @@ describe("a worktree chat's working folder overriding its own config's enabled:f
 
     expect(enabledConfigs(manager, A.key).folder).toHaveProperty("alpha");
     expect(enabledConfigs(manager, W.key).folder).toHaveProperty("alpha");
+  });
+
+  // docs/invariants.md "Worktree chats", Ownership: one MCP scope per folder, whichever role a chat holds it in.
+  it("keeps a worktree's toggles in its project's lists while the worktree is open as a project of its own", async () => {
+    const lookup = installWorktreeProjectLookup({
+      projectOf: (folder) => (folderKey(folder) === folderKey(worktreeDir) ? folderA : undefined),
+      recordsOfProject: () => [],
+      get: () => undefined,
+      chatRecordFor: () => undefined,
+    });
+    try {
+      writeMcpJson(worktreeDir, { omega: { command: "w-omega" } });
+      const state = memento();
+      const asProject = await loaded(state, () => [A, folderTarget(worktreeDir)]);
+      await asProject.setServerEnabled(W.key, "omega", false);
+      await asProject.loadConfig();
+      expect(enabledConfigs(asProject, W.key).folder).not.toHaveProperty("omega");
+      const held = await loaded(state, () => [A, W]);
+      expect(enabledConfigs(held, W.key).folder).not.toHaveProperty("omega");
+    } finally {
+      lookup.dispose();
+    }
   });
 });
 

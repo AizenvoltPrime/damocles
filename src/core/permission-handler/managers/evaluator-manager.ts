@@ -159,10 +159,11 @@ export class EvaluatorManager {
   /**
    * The verdict on a call under the current mode and YOLO, given `rule`, the settings rule it matches
    * (`matchRule`). Synchronous, so an open prompt can be decided again the moment the mode changes.
-   * `requiresUser`: only a deny rule or the user decides, so YOLO and an allow rule ask (PD-25). `reachesNetwork`: the call's
-   * file path may reach a network host the chat does not live on, so with no rule it asks, and nothing here touches the path.
+   * `requiresUser`: only a deny rule or the user decides, so YOLO and an allow rule ask (PD-25). `asksUnlessRuled`: the call's
+   * file path may reach a network host the chat does not live on, or it loads a page outside the chat's folders, so with no rule
+   * it asks in every mode, and nothing here touches the path.
    */
-  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null, requiresUser = false, reachesNetwork = false): PermissionBehavior {
+  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null, requiresUser = false, asksUnlessRuled = false): PermissionBehavior {
     if (requiresUser) {
       return rule === 'deny' ? 'deny' : 'ask';
     }
@@ -176,7 +177,7 @@ export class EvaluatorManager {
       return rule;
     }
 
-    if (reachesNetwork) {
+    if (asksUnlessRuled) {
       return 'ask';
     }
 

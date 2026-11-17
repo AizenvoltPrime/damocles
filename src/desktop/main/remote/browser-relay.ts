@@ -6,7 +6,8 @@ import type { ClientNetworkPolicy } from '../../../core/browser/client-network-p
 import { englishText, type LocalizedText } from '../../../shared/localized-text';
 import type { BrowserToolAnswer } from '../../../shared/remote-user';
 import { servedToFile, withAddressParts, type RelayedServedFile, type ServedMapping } from '../../../shared/served-file-url';
-import { servedPathRefusal, type ServedGrant, type ServedRoot } from '../html-preview/served-roots';
+import { servedPathRefusal, type ServedRoot } from '../../../core/served-pages/root-files';
+import type { GrantedRoot, ServedGrant } from '../html-preview/served-roots';
 import { checkClientNavigation } from './ports/client-network-guard';
 import { rewriteInbound, rewriteOutbound, type ForwardingTunnels, type RewriteTunnel } from './ports/url-rewrite';
 
@@ -25,8 +26,9 @@ export interface BrowserRelayDeps {
   readonly policy: () => ClientNetworkPolicy;
   // ServedRoots for this authority: a grant publishes its port into policy() before it resolves
   readonly served: {
-    grant(request: { readonly root: ServedRoot; readonly viewId: string; readonly displayRoot: string }): Promise<ServedGrant | { readonly refused: string }>;
-    mappings(): readonly ServedMapping[];
+    grant(request: { readonly root: GrantedRoot; readonly viewId: string; readonly displayRoot: string }): Promise<ServedGrant | { readonly refused: string }>;
+    // the view's own grants: another view's grant URL in an answer is written as a page the chat cannot open
+    mappings(viewId: string): readonly ServedMapping[];
   };
   readonly run: (params: { readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, signal: AbortSignal) => Promise<BrowserToolAnswer>;
 }
@@ -44,20 +46,21 @@ function onForward(url: string, tunnels: readonly RewriteTunnel[]): boolean {
   return FORWARD_HOSTS.has(parsed.hostname) && tunnels.some((tunnel) => String(tunnel.localPort) === port);
 }
 
-// whether the address's origin is one of the authority's served roots, which listen on 127.0.0.1 and take localhost as Host
-function onServedRoot(url: string, servedPorts: readonly number[]): boolean {
-  if (!URL.canParse(url)) return false;
-  const parsed = new URL(url);
-  return parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') && servedPorts.includes(Number(parsed.port));
+// whether the address's origin is one of the chat view's own grants of a served root; another view's grant host stays in target
+// form, as every *.localhost name does
+function onServedRoot(url: string, servedOrigins: readonly string[]): boolean {
+  return URL.canParse(url) && servedOrigins.includes(new URL(url).origin);
 }
 
 // The one-time URL of the root file a remote core resolved, on this authority's server of that root, carrying the query and
-// fragment of the file:// address the agent wrote; the file itself is only the one the core named.
+// fragment of the file:// address the agent wrote; the file itself is only the one the core named. A folder file is the core's
+// grant of that folder to this view: served from the host's folder through the authority's workspace, never this computer's.
 async function servedUrl(deps: BrowserRelayDeps, viewId: string, served: RelayedServedFile, address: string): Promise<{ readonly url: string } | { readonly refused: string }> {
-  const root: ServedRoot = served.kind === 'project' ? { kind: 'project' } : { kind: 'design', designId: served.designId };
+  const root: ServedRoot = served.kind === 'design' ? { kind: 'design', designId: served.designId } : { kind: served.kind };
   const refusal = servedPathRefusal(root, served.relPath);
   if (refusal !== undefined) return { refused: refusal };
-  const grant = await deps.served.grant({ root, viewId, displayRoot: served.displayRoot });
+  const granted: GrantedRoot = served.kind === 'folder' ? { kind: 'folder', folder: served.folder } : served.kind === 'design' ? { kind: 'design', designId: served.designId } : { kind: 'project' };
+  const grant = await deps.served.grant({ root: granted, viewId, displayRoot: served.displayRoot });
   return 'refused' in grant ? { refused: grant.refused } : { url: withAddressParts(grant.open(served.relPath), address) };
 }
 
@@ -88,11 +91,11 @@ export async function interceptPattern(pattern: string, authority: string, tunne
 
 /**
  * An address typed into a remote chat's page tab, in the local form the page opens: a target loopback address moves to its
- * forward, and the local address of a forward or of a served root (the page's own, entered again) stays there, not on a
- * target port of the same number; then the client-network guard.
+ * forward, and the local address of a forward or of the view's own served root grant (the page's own, entered again) stays
+ * there, not on a target port of the same number; then the client-network guard.
  */
-export async function typedRemoteAddress(url: string, authority: string, tunnels: ForwardingTunnels, policy: () => ClientNetworkPolicy, servedPorts: readonly number[]): Promise<{ readonly allowed: true; readonly url: string } | { readonly allowed: false; readonly reason: LocalizedText }> {
-  const local = onForward(url, tunnels.list(authority)) || onServedRoot(url, servedPorts) ? url : await rewriteInbound(url, authority, tunnels);
+export async function typedRemoteAddress(url: string, authority: string, tunnels: ForwardingTunnels, policy: () => ClientNetworkPolicy, servedOrigins: readonly string[]): Promise<{ readonly allowed: true; readonly url: string } | { readonly allowed: false; readonly reason: LocalizedText }> {
+  const local = onForward(url, tunnels.list(authority)) || onServedRoot(url, servedOrigins) ? url : await rewriteInbound(url, authority, tunnels);
   const verdict = await checkClientNavigation(local, policy());
   return verdict.allowed ? { allowed: true, url: local } : verdict;
 }
@@ -125,7 +128,7 @@ export async function relayBrowserTool(deps: BrowserRelayDeps, request: { readon
   if (typeof pattern === 'string') input = { ...(input as Record<string, unknown>), pattern: await interceptPattern(pattern, deps.authority, deps.tunnels()) };
   const answer = await deps.run({ authority: deps.authority, viewId: request.viewId, scope: request.scope, tool: request.tool, input }, signal);
   const tunnels = deps.tunnels().list(deps.authority);
-  const mappings = deps.served.mappings();
+  const mappings = deps.served.mappings(request.viewId);
   // served URLs first, while every port is still a local one: a target port in the rewritten text may equal a served port
   return { ...answer, content: answer.content.map((block) => (block.type === 'text' ? { type: 'text', text: rewriteOutbound(servedToFile(block.text, mappings), tunnels) } : block)) };
 }

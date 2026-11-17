@@ -71,6 +71,52 @@ describe('a new chat in a worktree: its first session starts in the working fold
   });
 });
 
+// docs/invariants.md "Worktree chats", Ownership: one folder in two roles, a project and its project's working folder.
+describe('a chat worktree open as a project of its own beside a chat of its project working there', () => {
+  it("keeps the project's chat in the worktree as the project's while the folder opens and closes, and moves only the folder's own chat off when it closes", async () => {
+    const { h, project, record } = await setup();
+    const worktreeKey = folderKey(record.workingFolder);
+    const projects = await h.manager.startInWorktree(makeFakeHost(), folderKey(project), record.id);
+    const projectsSession = h.instance(projects).session;
+    h.setFolders([folderEntry(project), folderEntry(record.workingFolder)]);
+    await vi.waitFor(() => expect(h.registry.resolve(worktreeKey)?.ownerKey).toBeUndefined());
+    const own = await h.manager.initializeHost(makeFakeHost(), { initialFolderKey: worktreeKey });
+    await vi.waitFor(() => expect(h.instance(projects).folder).toMatchObject({ key: worktreeKey, ownerKey: folderKey(project), label: 'project' }));
+    expect(h.instance(own).folder).toMatchObject({ key: worktreeKey });
+    expect(h.instance(own).folder.ownerKey).toBeUndefined();
+    const ownSession = h.instance(own).session;
+
+    h.setFolders([folderEntry(project)]);
+
+    await vi.waitFor(() => expect(h.instance(own).folder.key).toBe(folderKey(project)));
+    expect(h.instance(own).session).not.toBe(ownSession);
+    expect(h.instance(projects).session).toBe(projectsSession);
+    expect(h.instance(projects).folder).toMatchObject({ key: worktreeKey, ownerKey: folderKey(project) });
+    expect(h.released).not.toContain(worktreeKey);
+  });
+
+  it("moves the project's chats in the worktree off with the project and keeps the folder's own chat where it is", async () => {
+    const { h, project, record } = await setup();
+    const worktreeKey = folderKey(record.workingFolder);
+    h.setFolders([folderEntry(project), folderEntry(record.workingFolder)]);
+    await vi.waitFor(() => expect(h.registry.resolve(worktreeKey)).toBeDefined());
+    const projects = await h.manager.startInWorktree(makeFakeHost(), folderKey(project), record.id);
+    expect(h.instance(projects).folder).toMatchObject({ key: worktreeKey, ownerKey: folderKey(project) });
+    const own = await h.manager.initializeHost(makeFakeHost(), { initialFolderKey: worktreeKey });
+    const ownSession = h.instance(own).session;
+    const projectsSession = h.instance(projects).session;
+
+    h.setFolders([folderEntry(record.workingFolder)]);
+
+    await vi.waitFor(() => expect(h.instance(projects).session).not.toBe(projectsSession));
+    expect(h.instance(projects).folder).toMatchObject({ key: worktreeKey });
+    expect(h.instance(projects).folder.ownerKey).toBeUndefined();
+    expect(h.instance(own).session).toBe(ownSession);
+    expect(h.released).toContain(folderKey(project));
+    expect(h.released).not.toContain(worktreeKey);
+  });
+});
+
 describe('a chat that moves into its working folder (AD12 wrong-copy guard)', () => {
   it('drops the editor\'s project-folder file from its IDE context, and takes it again back in the project folder', async () => {
     const { h, project, record } = await setup();
@@ -86,6 +132,22 @@ describe('a chat that moves into its working folder (AD12 wrong-copy guard)', ()
     await h.manager.switchPanelFolder(panelId, folderKey(project), 'chatMove');
     expect(ide()).toMatchObject({ filePath: path.join(project, 'a.ts') });
     hold.dispose();
+  });
+});
+
+describe('a fork of a chat working in its worktree', () => {
+  it('holds the working folder itself, so closing its source releases nothing while the fork works there', async () => {
+    const { h, project, record } = await setup();
+    const sourceHost = makeFakeHost();
+    const source = await h.manager.startInWorktree(sourceHost, folderKey(project), record.id);
+    const forked = await h.manager.showForked({ sourcePanelId: source, sourceSdkSessionId: 's1', forkAtUuid: 'u1' } as never);
+    expect(forked?.folder).toMatchObject({ key: folderKey(record.workingFolder), ownerKey: folderKey(project) });
+
+    sourceHost.closeFromUser();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(h.released).not.toContain(folderKey(record.workingFolder));
+    expect(h.registry.resolve(folderKey(record.workingFolder))).toBeDefined();
   });
 });
 

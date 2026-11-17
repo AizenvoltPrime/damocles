@@ -43,7 +43,7 @@ function setup(world: Partial<World> = {}) {
       return w.answer;
     }),
     discard: vi.fn(async (chats: readonly WaitingChat[]) => {
-      w.trail.push(`discard:${chats.map((chat) => chat.corePanelId).join(',')}`);
+      w.trail.push(`discard:${chats.map((chat) => ('corePanelId' in chat ? chat.corePanelId : chat.savedPanelId)).join(',')}`);
     }),
     remove: vi.fn(async () => {
       w.trail.push('remove');
@@ -59,7 +59,7 @@ function setup(world: Partial<World> = {}) {
 describe('removeProject', () => {
   it('removes a project with no waiting first message after only the terminal question it always asked', async () => {
     const { w, deps } = setup({ terminals: new Map([['term-1', { name: 'PowerShell', command: 'npm run dev' }]]) });
-    expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });
     expect(deps.ask).not.toHaveBeenCalled();
     expect(w.killAsked).toEqual([['term-1']]);
     expect(w.trail).toEqual(['remove', 'forgetAccounts']);
@@ -67,14 +67,14 @@ describe('removeProject', () => {
 
   it('asks nothing and removes a project with no waiting message and no terminal', async () => {
     const { w, deps } = setup();
-    expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });
     expect(deps.ask).not.toHaveBeenCalled();
     expect(w.trail).toEqual(['remove', 'forgetAccounts']);
   });
 
   it('asks one question naming the project and its waiting chats, and Cancel changes nothing', async () => {
     const { w, deps } = setup({ waiting: [held('p1', 'Fix the login page'), held('p2', 'Ignored', { title: 'Release notes' })], answer: undefined });
-    expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: false });
     expect(w.asked).toHaveLength(1);
     expect(w.asked[0]).toMatchObject({
       severity: 'danger',
@@ -91,7 +91,7 @@ describe('removeProject', () => {
 
   it('discards the waiting chats\' worktrees before the project is removed when Remove Project is chosen', async () => {
     const { w, deps } = setup({ waiting: [held('p1', 'Fix the login page', { worktreeId: 'wt-1' })] });
-    expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });
     expect(w.asked[0]!.message).toBe('acme has a chat whose first message is waiting for its worktree. Do you want to remove the project?');
     expect(w.trail).toEqual(['discard:p1', 'remove', 'forgetAccounts']);
   });
@@ -102,7 +102,7 @@ describe('removeProject', () => {
       terminals: new Map([['term-setup', { name: 'Setup', command: 'npm ci' }], ['term-2', { name: 'bash', command: 'npm run dev' }]]),
       setups: new Map([['wt-1', 'term-setup']]),
     });
-    expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });
     expect(w.asked).toHaveLength(1);
     expect(w.asked[0]!.detail).toBe('Removing it discards the message and the worktree being prepared for it. It also terminates an active terminal session.');
     expect(deps.terminals.confirmKill).not.toHaveBeenCalled();
@@ -115,10 +115,22 @@ describe('removeProject', () => {
       w.duringQuestion = undefined;
       w.waiting = [held('p1', 'Late prompt')];
     };
-    expect(await removeProject('acme-key', deps)).toEqual({ ok: true });
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });
     expect(w.killAsked).toHaveLength(1);
     expect(w.asked.map((question) => question.preview)).toEqual([['Late prompt']]);
     expect(w.trail).toEqual(['discard:p1', 'remove', 'forgetAccounts']);
+  });
+
+  it('asks about a saved chat its missing folder kept closed, apart from a loaded chat of the same panel id', async () => {
+    const saved: WaitingChat = { savedPanelId: 'p1', title: '', prompt: [{ type: 'text', text: 'Kept while the folder is gone' }] };
+    const { w, deps } = setup({ waiting: [held('p1', 'Fix the login page')] });
+    w.duringQuestion = () => {
+      w.duringQuestion = undefined;
+      w.waiting = [held('p1', 'Fix the login page'), saved];
+    };
+    expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });
+    expect(w.asked.map((question) => question.preview)).toEqual([['Fix the login page'], ['Fix the login page', 'Kept while the folder is gone']]);
+    expect(w.trail).toEqual(['discard:p1,p1', 'remove', 'forgetAccounts']);
   });
 
   it('refuses while a conversation runs, before and after the question', async () => {

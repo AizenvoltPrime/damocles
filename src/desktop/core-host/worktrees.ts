@@ -3,8 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
-import * as path from 'node:path';
-import { DAMOCLES_HOME_DIR } from '../../core/paths';
+import { WORKTREES_ROOT_DIR } from '../../core/paths';
 import { l } from '../../core/l10n';
 import { LocalizedError } from '../../shared/localized-text';
 import { SCM_SETTING_KEYS } from '../../core/scm/settings-keys';
@@ -161,7 +160,7 @@ export function worktreeCalls(deps: WorktreeCallDeps): WorktreeCalls {
     mergeInto: async (id, hold, message) => mergeInto(held(id, hold), requireGit(), registry, message !== undefined ? { message } : {}),
     rebaseOnto: async (id, hold) => rebaseOnto(held(id, hold), requireGit(), registry),
     updateFrom: async (id, hold) => updateFrom(held(id, hold), requireGit(), registry),
-    folderState: async (id) => worktreeFolderState(liveChat(id).worktreeRoot),
+    folderState: async (id) => worktreeFolderState(liveChat(id)),
     deleteFacts: async (id) => {
       const record = liveChat(id);
       const git = requireGit();
@@ -207,7 +206,7 @@ export function worktreeCalls(deps: WorktreeCallDeps): WorktreeCalls {
 
 export function startCoreWorktrees(platform: CorePlatform, scm: CoreScm, holds: FinishHolds, log: (line: string) => void): CoreWorktrees {
   const { endpoint } = platform;
-  const registry = new WorktreeRegistry({ rootDir: path.join(DAMOCLES_HOME_DIR, 'worktrees'), watcherFactory: platform.fileWatchers, log, lastRecords: platform.init.worktreeRecords });
+  const registry = new WorktreeRegistry({ rootDir: WORKTREES_ROOT_DIR, watcherFactory: platform.fileWatchers, log, lastRecords: platform.init.worktreeRecords });
   removeAbandonedTempFolders(os.tmpdir(), Date.now()).catch((err: unknown) => log(`[worktrees] could not look for abandoned temp folders: ${err instanceof Error ? err.message : String(err)}`));
   const publish = (): void => endpoint.publish('worktrees', { records: [...registry.records()] });
   const changes = registry.onDidChange(publish);

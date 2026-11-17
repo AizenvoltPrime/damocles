@@ -21,6 +21,7 @@ import type { ChatAttachmentInfo } from '../shared/types/chat-attachment';
 import type { AgentSession, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { LiveSnapshot } from './pi-session/pi-stream-adapter';
 import type { AgentsLiveSnapshot } from './pi-session/subagents/agent-manager';
+import type { FolderAbsentError } from './pi-session/folder-presence';
 
 /** What the transcript shows for a sent message: the typed text, its images and the attachments sent with it. */
 export interface UserBroadcast {
@@ -79,7 +80,8 @@ export interface SendTicket {
  */
 export type ResumeOutcome =
   | { readonly kind: 'switched' }
-  | { readonly kind: 'failed'; readonly reason: LocalizedText }
+  // absent: the chat's folder is gone or does not answer, which the user is told with its own notice
+  | { readonly kind: 'failed'; readonly reason: LocalizedText; readonly absent?: FolderAbsentError }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'deferred' };
 
@@ -185,6 +187,11 @@ export interface ChatSession extends ActivitySource {
   eventSeqOf(message: object): number | undefined;
   /** Settles once no resume, restore or hand-off switch is pending (`openResumeTarget`'s outcome). */
   whenConversationSettled(): Promise<void>;
+  /**
+   * Where a page saved at a `file:` address reopens after a restart (`ChatServedFiles.restoreTarget`), read once the start under
+   * way bound the conversation, whose branch names the chat's design folders; ask after the panel's first `ready` was handled.
+   */
+  browserRestoreTarget(url: string): Promise<{ readonly url: string } | { readonly refused: string }>;
   /** The conversation pi holds with its in-memory branch and live snapshot, read in one step; undefined with no runtime. */
   liveConversation(): LiveConversation | undefined;
   /**

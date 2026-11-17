@@ -1,7 +1,8 @@
 import * as crypto from 'crypto';
+import { isAbsolute, relative as relativePath } from 'path';
 import { platform } from '../platform-host';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
-import { TeamRunner } from './team-runner';
+import { TeamRunner, isRejectionStop } from './team-runner';
 import { TeamPersistence } from './persistence';
 import type { AgentFailure, AgentFailureKind, TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog, TeamStop, MemberTranscript } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
@@ -26,16 +27,22 @@ export function isValidTeamId(id: string): boolean {
   return TEAM_ID.test(id);
 }
 
-const TEAM_STOP_CAUSE: Record<TeamStop, string> = {
-  user: 'TEAM STOPPED BY THE USER before completion',
-  parent: 'TEAM CANCELLED by your cancel_team call before completion',
-  shutdown: 'TEAM STOPPED before completion because its chat panel closed, switched session or the editor window reloaded',
-  reset: 'TEAM STOPPED before completion because the conversation was cleared',
+/** `call` names the lead's rejected call, which only a 'denied' or 'hookDenied' stop reads. */
+const TEAM_STOP_CAUSE: Record<TeamStop, (call: string) => string> = {
+  user: () => 'TEAM STOPPED BY THE USER before completion',
+  parent: () => 'TEAM CANCELLED by your cancel_team call before completion',
+  shutdown: () => 'TEAM STOPPED before completion because its chat panel closed, switched session or the editor window reloaded',
+  reset: () => 'TEAM STOPPED before completion because the conversation was cleared',
+  denied: (call) => `TEAM STOPPED: the user rejected ${call} and the run ended there`,
+  hookDenied: (call) => `TEAM STOPPED: a hook rejected ${call} and ended the run`,
 };
 
-/** Heads the result of a team that stopped on a cancel, so the parent knows why and whether it can offer to continue it. */
-export function teamCancelledHeader(teamId: string, stop: TeamStop, resumable: boolean): string {
-  const cause = TEAM_STOP_CAUSE[stop];
+/**
+ * Heads the result of a team that stopped on a cancel, so the parent knows why and whether it can offer to continue it.
+ * `rejectedTool` names the lead's call a 'denied' or 'hookDenied' stop ended on.
+ */
+export function teamCancelledHeader(teamId: string, stop: TeamStop, resumable: boolean, rejectedTool?: string): string {
+  const cause = TEAM_STOP_CAUSE[stop](rejectedTool !== undefined ? `the lead's ${rejectedTool} call` : "one of the lead's tool calls");
   if (stop === 'reset') return `(${cause}; results are partial and it cannot be resumed.)\n\n`;
   return resumable
     ? `(${cause}; results are partial. Resume it with resume_team({team_id:"${teamId}"}) if the user asks to continue.)\n\n`
@@ -72,6 +79,14 @@ export function isTeamRunningHere(cwd: string, sessionId: string, teamId: string
   return unsettledTeams.has(teamEventLogPath(piSessionDirOf(cwd, sessionId), sessionId, teamId));
 }
 
+/** Whether a run of this process, draining or still validating its resume included, holds a team whose event log lies under `dir`. */
+export function isTeamRunningUnder(dir: string): boolean {
+  return [...unsettledTeams].some((log) => {
+    const relative = relativePath(dir, log);
+    return !relative.startsWith('..') && !isAbsolute(relative);
+  });
+}
+
 /**
  * The interruption notice's cause for a team. A live checkpoint of a team this process runs is no interruption: it
  * reads 'running', which a later check decides, since a stop's seal may not have landed yet. A sealed cause is
@@ -106,7 +121,7 @@ export interface TeamServiceDeps {
   /** The parent session's current branch: the only index of the teams this conversation started. */
   parentBranch: () => readonly SessionEntry[];
   /** Throw the resume error unless the model recorded in the member session file at `path` is usable. */
-  assertResumableModel: (path: string, agentId: string) => void;
+  assertResumableModel: (path: string, agentId: string) => Promise<void>;
   /** Have the parent tell its model, before the next user prompt, which agents were interrupted. */
   requestInterruptionCheck: () => void;
 }
@@ -206,7 +221,7 @@ export class TeamService {
 
       const run = runner.run();
       this.lastRun = run;
-      return this.formatResult(teamId, runner, await run);
+      return this.formatResult(teamId, runner, this.afterRun(await run));
     } finally {
       unsettledTeams.delete(unsettledKey);
       if (this.activeRunner === runner) {
@@ -292,12 +307,12 @@ export class TeamService {
       }, (msg) => this.deps.onMessage(msg));
       candidate.restore(log, checkpoint, sessionFiles);
       await candidate.dropDeliveredMessages();
-      for (const [agentId, path] of candidate.reopenedSessionFiles()) this.deps.assertResumableModel(path, agentId);
       // Refused here, before the restored state is written, so the team stays resumable; the open's own check guards a later taker.
       const heldElsewhere = candidate.resumedMemberFiles().find(({ store }) => agentFileHeldElsewhere(store));
       if (heldElsewhere) {
         throw new Error(`Team "${teamId}" cannot resume yet: the session file of "${heldElsewhere.name}" is still open in another Damocles window, whose stopped run has not finished. Wait for that run to stop or close that window, then resume the team again.`);
       }
+      for (const [agentId, path] of candidate.reopenedSessionFiles()) await this.deps.assertResumableModel(path, agentId);
       // Before the first write: the checkpoint it came from stays the newest, as resumable as before, and nothing
       // under the session's folder is created after a delete removed it.
       if (stopSoFar() !== null) throw stoppedBeforeStart();
@@ -314,7 +329,7 @@ export class TeamService {
       }
       this.deps.recordInvocation({ kind: 'team', id: teamId, toolCallId, resume: true });
       this.activeRunner = candidate;
-      return this.formatResult(teamId, candidate, await candidate.resume(toolCallId, message));
+      return this.formatResult(teamId, candidate, this.afterRun(await candidate.resume(toolCallId, message)));
     } finally {
       unsettledTeams.delete(unsettledKey);
       if (this.resumeClaim === claim) {
@@ -324,8 +339,14 @@ export class TeamService {
     }
   }
 
+  /** A lead rejection stops the team from inside the run, so the interruption notice Stop team requests is requested here. */
+  private afterRun(result: TeamRunResult): TeamRunResult {
+    if (result.status === 'cancelled' && isRejectionStop(result.stop)) this.deps.requestInterruptionCheck();
+    return result;
+  }
+
   private formatResult(teamId: string, runner: TeamRunner, result: TeamRunResult): string {
-    const header = result.status === 'cancelled' ? teamCancelledHeader(teamId, result.stop, result.resumable)
+    const header = result.status === 'cancelled' ? teamCancelledHeader(teamId, result.stop, result.resumable, result.rejectedTool)
       : result.status === 'failed' ? teamFailedHeader(teamId, result.failure, result.resumable)
         : '';
     return header + formatTeamUserSteerPrefix(runner.getOperatorSteers()) + result.text;

@@ -1,19 +1,22 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { LocalizedError, type LocalizedText } from '../shared/localized-text';
-import { createFolderProbe } from './folder-probe';
+import { createFolderProbe, PROCESS_HUNG_GATE } from './folder-probe';
 import { l } from './l10n';
 import { leavesLocalDrives, networkPathHost } from './network-fs';
+import { mappedDrivePath } from './mapped-drives';
 
 // Windows follows at most 63 links in one open, each giving a folder one more name, so the walk refuses no chain Windows opens.
 const MAX_NAMES = 64;
 // The links one walk follows across every reading of the path; each path's lstat and readlink run once per walk.
 const MAX_LINK_STEPS = 4096;
+// Each drive a mapping names is another letter, so a chain longer than the alphabet repeats one: a loop Windows cannot open.
+const MAX_DRIVE_HOPS = 26;
 const DRIVE_ANSWER_MS = 1000;
 
 // Whether a drive or share root answers an lstat within DRIVE_ANSWER_MS. An offline one fails it only after about 21 s,
 // holding a thread of the pool every file system call shares, so it is asked once at a time, a check that never settles is
-// never repeated, and at most two hang at once: half of libuv's default pool of four.
+// never repeated, and none starts while the process's gate holds two hung checks.
 const driveAnswers = createFolderProbe(DRIVE_ANSWER_MS, 60_000, {
   access: async (root) => {
     const started = performance.now();
@@ -21,7 +24,7 @@ const driveAnswers = createFolderProbe(DRIVE_ANSWER_MS, 60_000, {
       if (performance.now() - started > DRIVE_ANSWER_MS) throw err;
     });
   },
-  maxHung: 2,
+  gate: PROCESS_HUNG_GATE,
 });
 
 // A link target as a local Windows path: \??\C:\ is how a junction names a drive; any other \??\ path, and a drive-relative
@@ -79,11 +82,14 @@ interface Reading {
   readonly share?: string;
 }
 
-// The file system answers of one walk, which its readings share. links: by exact path, a link's local target, undefined for a
-// target the walk refuses, null for an entry that is no link.
+// The file system answers of one walk, which its readings share. links: by exact path, a link's target as readlink gives it,
+// null for an entry that is no link. offHosts: the hosts of the link targets that led the walk off; offUnplaced: one of them
+// names no host.
 interface Seen {
-  readonly links: Map<string, Promise<string | undefined | null>>;
+  readonly links: Map<string, Promise<string | null>>;
   readonly realpaths: Map<string, Promise<string>>;
+  readonly offHosts: Set<string>;
+  offUnplaced: boolean;
   steps: number;
 }
 
@@ -93,8 +99,10 @@ interface Walk {
   readonly startIsReal: boolean;
   // the walk's base, whose roots, its path's and its realpath's, are the shares a reading may lead onto
   readonly owner: string;
-  // hosts whose shares a reading may also lead onto (leavesLocalDrives)
+  // hosts whose shares a reading may also lead onto (leavesLocalDrives); given, a drive is placed where Windows maps it
   readonly allowedHosts: ReadonlySet<string> | undefined;
+  // the drive mappings followed to reach this walk (driveReach)
+  readonly driveHops: number;
   readonly seen: Seen;
   readonly parsed: Map<string, Promise<readonly Name[] | false>>;
   // the readings being parsed, in the order they opened; tainted: one reached a reading opened before it, so its result holds
@@ -109,13 +117,28 @@ interface Walk {
  * error of a missing entry or a loop when every reading meets one, with a LocalizedError coded ELOOP past MAX_LINK_STEPS or
  * MAX_NAMES, and coded ETIMEDOUT when a drive other than base's that a link leads onto does not answer within
  * DRIVE_ANSWER_MS. baseIsReal: base is its own realpath; allowedHosts: hosts whose shares, and WSL's, a link may also lead
- * onto. Always true off win32.
+ * onto, and with them a drive other than base's that a link leads onto counts as where Windows maps it (driveReach), which
+ * rejects when Windows cannot be asked; without them such a drive is the user's own mapping. Always true off win32.
  */
 export async function followsLocalLinksOnly(base: string, segments: readonly string[], options: { readonly baseIsReal?: boolean; readonly allowedHosts?: ReadonlySet<string> } = {}): Promise<boolean> {
   if (process.platform !== 'win32') return true;
-  const seen: Seen = { links: new Map(), realpaths: new Map(), steps: 0 };
-  const walk: Walk = { start: base, startIsReal: options.baseIsReal ?? false, owner: base, allowedHosts: options.allowedHosts, seen, parsed: new Map(), parsing: new Map() };
-  return (await parse(walk, base, [{ path: base, origin: base }], segments)) !== false;
+  return (await hostsOffLocalLinks(base, segments, options)) === null;
+}
+
+// The walk of followsLocalLinksOnly on win32: null when it stays local, else the hosts of the link targets that led a reading
+// off, and whether one of them names no host (a device path). Each reading stops at its first such link.
+async function hostsOffLocalLinks(base: string, segments: readonly string[], options: { readonly baseIsReal?: boolean; readonly allowedHosts?: ReadonlySet<string>; readonly driveHops?: number }): Promise<{ hosts: ReadonlySet<string>; unplaced: boolean } | null> {
+  const seen: Seen = { links: new Map(), realpaths: new Map(), offHosts: new Set(), offUnplaced: false, steps: 0 };
+  const walk: Walk = { start: base, startIsReal: options.baseIsReal ?? false, owner: base, allowedHosts: options.allowedHosts, driveHops: options.driveHops ?? 0, seen, parsed: new Map(), parsing: new Map() };
+  return (await parse(walk, base, [{ path: base, origin: base }], segments)) === false ? { hosts: seen.offHosts, unplaced: seen.offUnplaced } : null;
+}
+
+// false for a reading that leads off through target, whose host the walk keeps.
+function ledOff(walk: Walk, target: string): false {
+  const host = networkPathHost(target);
+  if (host) walk.seen.offHosts.add(host);
+  else walk.seen.offUnplaced = true;
+  return false;
 }
 
 // The names of the folder segments lead to from start, whose names are startNames; false when a link leads off.
@@ -126,14 +149,15 @@ async function parse(walk: Walk, start: string, startNames: readonly Name[], seg
     const segment = segments[index]!;
     const next = path.join(current, segment);
     const below = names.map((name) => ({ ...name, path: path.join(name.path, segment) }));
-    const target = await linkAt(walk, next);
-    if (target === null) {
+    const linked = await linkAt(walk, next);
+    if (linked === null) {
       current = next;
       names = below;
       continue;
     }
     if (++walk.seen.steps > MAX_LINK_STEPS) throw tooManyLinks(walk);
-    if (target === undefined) return false;
+    const target = localLinkTarget(linked);
+    if (target === undefined) return ledOff(walk, linked);
     if (/^(?:[a-z]:\\|\\\\)/i.test(target)) {
       // a junction keeps the link's own name for what follows, a symlink takes its target's
       const targetNames = await parseFrom(walk, { path: target });
@@ -148,11 +172,11 @@ async function parse(walk: Walk, start: string, startNames: readonly Name[], seg
   return names;
 }
 
-function linkAt(walk: Walk, file: string): Promise<string | undefined | null> {
+function linkAt(walk: Walk, file: string): Promise<string | null> {
   const key = exact(file);
   let link = walk.seen.links.get(key);
   if (link === undefined) {
-    link = fs.lstat(file).then(async (stats) => (stats.isSymbolicLink() ? localLinkTarget(await fs.readlink(file)) : null));
+    link = fs.lstat(file).then(async (stats) => (stats.isSymbolicLink() ? fs.readlink(file) : null));
     walk.seen.links.set(key, link);
   }
   return link;
@@ -184,12 +208,37 @@ function parseFrom(walk: Walk, reading: Reading): Promise<readonly Name[] | fals
 
 async function parseReading(walk: Walk, reading: Reading): Promise<readonly Name[] | false> {
   const target = reading.path;
-  if (target.startsWith('\\\\') && rootKey(target) !== reading.share && !(await isOwnShare(walk, target)) && !allowedShare(walk, target)) return false;
+  if (target.startsWith('\\\\') && rootKey(target) !== reading.share && !(await isOwnShare(walk, target)) && !allowedShare(walk, target)) return ledOff(walk, target);
   const share = reading.share === undefined ? {} : { share: reading.share };
   if (isUnder(walk.start, target)) return parse(walk, walk.start, [{ path: walk.start, origin: walk.start, ...share }], segmentsUnder(walk.start, target));
   const root = rootOf(target);
-  if (/^[a-z]:\\$/i.test(root) && rootKey(root) !== rootKey(walk.start)) await requireAnswer(root.toUpperCase());
+  if (/^[a-z]:\\$/i.test(root) && rootKey(root) !== rootKey(walk.start)) {
+    if (walk.allowedHosts !== undefined) {
+      const drive = await driveReach(root, walk.allowedHosts, walk.driveHops);
+      if (drive !== null) return ledOffTo(walk, drive);
+    }
+    await requireAnswer(root.toUpperCase());
+  }
   return parse(walk, root, [{ path: root, origin: root, ...share }], segmentsUnder(root, target));
+}
+
+/**
+ * What a drive root reaches by where Windows maps its letter, asked before anything on it is touched: null for a local volume,
+ * a letter no drive has, or a mapping onto allowedHosts or WSL; else as networkReach answers for the mapped path (a network
+ * drive's share, a subst drive's target with its own walk). hops counts the drives followed so far.
+ */
+async function driveReach(root: string, allowedHosts: ReadonlySet<string>, hops: number): Promise<Reach | null> {
+  const mapped = mappedDrivePath(root);
+  if (mapped === null) return null;
+  if (hops >= MAX_DRIVE_HOPS) throw walkError(l('The path under {0} goes through too many links.', root), 'ELOOP');
+  return reachOf(mapped, allowedHosts, hops + 1);
+}
+
+// false for a reading that leads off onto what reach names, whose hosts the walk keeps.
+function ledOffTo(walk: Walk, reach: Reach): false {
+  for (const host of reach.hosts) walk.seen.offHosts.add(host);
+  walk.seen.offUnplaced ||= reach.unplaced;
+  return false;
 }
 
 // root: a drive root, 'X:\', or a share root, '\\server\share\'
@@ -214,9 +263,11 @@ export async function requireRootAnswers(target: string): Promise<void> {
   if (root.startsWith('\\\\') && !/^\\\\[?.]\\/.test(root)) await requireAnswer(root);
 }
 
+// Every reading is parsed, since Windows opens one the walk cannot tell, so the walk keeps the hosts of all that lead off.
 async function parseEach(walk: Walk, readings: readonly Reading[], rest: readonly string[]): Promise<readonly Name[] | false> {
   const found: Name[] = [];
   let missing: unknown;
+  let off = false;
   for (const reading of readings) {
     let names: readonly Name[] | false;
     try {
@@ -226,9 +277,10 @@ async function parseEach(walk: Walk, readings: readonly Reading[], rest: readonl
       missing ??= err;
       continue;
     }
-    if (names === false) return false;
-    found.push(...names);
+    if (names === false) off = true;
+    else found.push(...names);
   }
+  if (off) return false;
   if (found.length === 0) throw missing;
   return distinct(walk, found);
 }
@@ -263,7 +315,7 @@ function namesOfStart(walk: Walk): Promise<readonly Name[] | false> {
   const root = rootOf(walk.start);
   if (walk.startIsReal) return Promise.resolve([{ path: walk.start, origin: root }]);
   if (walk.startNames === undefined) {
-    const above: Walk = { start: root, startIsReal: false, owner: walk.owner, allowedHosts: walk.allowedHosts, seen: walk.seen, parsed: new Map(), parsing: new Map() };
+    const above: Walk = { start: root, startIsReal: false, owner: walk.owner, allowedHosts: walk.allowedHosts, driveHops: walk.driveHops, seen: walk.seen, parsed: new Map(), parsing: new Map() };
     walk.startNames = parse(above, root, [{ path: root, origin: root }], segmentsUnder(root, walk.start));
   }
   return walk.startNames;
@@ -326,20 +378,41 @@ export async function networkHostsOf(folders: readonly string[], asWritten: read
   return new Set([...spellings.flat(), ...asWritten].map(networkPathHost).filter((host): host is string => host !== undefined && host !== ''));
 }
 
+/** What a path may reach past this computer's drives: the hosts it names, and whether some reach names none. */
+export interface Reach {
+  readonly hosts: string[];
+  readonly unplaced: boolean;
+}
+
 /**
- * Whether opening target, an absolute path, may reach past this computer's drives on win32: its spelling leaves them
- * (`leavesLocalDrives`), or a link or junction on its walk leads onto a share or device path off allowedHosts. A missing
- * segment ends the walk, since nothing past it is followed; rejects as `followsLocalLinksOnly` does otherwise. Always false
+ * What opening target, an absolute path, may reach past this computer's drives on win32: null when it stays on them, else the
+ * hosts it names and whether some reach names none (`unplaced`). Its spelling leaves them (`leavesLocalDrives`), naming its
+ * own host; a drive letter it starts with, or one a link on its walk leads onto, is mapped by Windows (QueryDosDeviceW, asked
+ * before anything on the drive is touched) onto a share or a subst target that reaches; or a link or junction on its walk
+ * leads onto a share or device path off allowedHosts, naming the link target's host; a device path names none. Hosts come only
+ * from spellings and drive mappings, never from reading a remote path. A missing segment ends the walk, since nothing past it
+ * is followed; rejects as `followsLocalLinksOnly` does otherwise, and when Windows cannot be asked about a drive. Always null
  * off win32.
  */
-export async function reachesNetwork(target: string, allowedHosts: ReadonlySet<string>): Promise<boolean> {
-  if (process.platform !== 'win32') return false;
-  if (leavesLocalDrives(target, allowedHosts)) return true;
+export async function networkReach(target: string, allowedHosts: ReadonlySet<string>): Promise<Reach | null> {
+  if (process.platform !== 'win32') return null;
+  return reachOf(target, allowedHosts, 0);
+}
+
+// networkReach of target, reached through driveHops drive mappings.
+async function reachOf(target: string, allowedHosts: ReadonlySet<string>, driveHops: number): Promise<Reach | null> {
+  if (leavesLocalDrives(target, allowedHosts)) {
+    const host = networkPathHost(target);
+    return host ? { hosts: [host], unplaced: false } : { hosts: [], unplaced: true };
+  }
   const root = rootOf(target);
+  const drive = /^[a-z]:\\$/i.test(root) ? await driveReach(root, allowedHosts, driveHops) : null;
+  if (drive !== null) return drive;
   try {
-    return !(await followsLocalLinksOnly(root, segmentsUnder(root, target), { allowedHosts }));
+    const off = await hostsOffLocalLinks(root, segmentsUnder(root, target), { allowedHosts, driveHops });
+    return off === null ? null : { hosts: [...off.hosts], unplaced: off.unplaced };
   } catch (err) {
-    if (isMissing(err)) return false;
+    if (isMissing(err)) return null;
     throw err;
   }
 }

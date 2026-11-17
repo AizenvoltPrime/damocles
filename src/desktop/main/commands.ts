@@ -10,6 +10,7 @@ import type { DesktopLocalizationService } from '../local-services/localization-
 // Stable ids: tests find items with Menu.getApplicationMenu().getMenuItemById(id) and click() them; the palette runs them.
 export const MENU_IDS = {
   addProject: 'damocles.addProject',
+  locateProject: 'damocles.locateProjectFolder',
   newChat: 'damocles.newChat',
   openChat: 'damocles.openChat',
   openChatForProjectMenu: 'damocles.openChatForProject',
@@ -736,6 +737,8 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.save, title: t('Save'), category: file, accelerator: 'CmdOrCtrl+S', enabled: hasWritableDocument, keyWhen: editorFocus, run: () => actions.saveEditor() },
     { id: MENU_IDS.saveAs, title: t('Save As...'), category: file, accelerator: 'CmdOrCtrl+Shift+S', enabled: hasDocument, keyWhen: editorFocus, run: () => actions.saveEditorAs() },
     { id: MENU_IDS.addProject, title: t('Add Project...'), category: file, run: () => actions.addProject() },
+    // the selected project's folder is missing or unavailable
+    { id: MENU_IDS.locateProject, title: t('Locate Project Folder...'), category: file, enabled: (context) => context.locatableProject, palette: (context) => context.locatableProject, run: () => actions.locateProject() },
     { id: MENU_IDS.openSettings, title: t('Settings...'), category: file, accelerator: OPEN_SETTINGS_ACCELERATOR, inTerminal: true, run: () => actions.openSettings() },
     // the account chip's menu for the selected repository; with no chip it opens the accounts
     {

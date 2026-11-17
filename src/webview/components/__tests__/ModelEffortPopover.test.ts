@@ -192,7 +192,7 @@ describe('ModelEffortPopover provider filter', () => {
     pickerProviders(['anthropic']);
     await openMenu();
     expect(groupNames()).toEqual(['Anthropic']);
-    expect(modelOptions().map((option) => option.textContent?.trim())).toEqual(['Fable 5.1', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5']);
+    expect(modelOptions().map((option) => option.textContent?.trim())).toEqual(['Fable 5.2', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5']);
   });
 
   it('keeps the current model listed and checked when its group is hidden', async () => {

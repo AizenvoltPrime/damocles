@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { fauxAssistantMessage } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { runLifecycleOf, trackRunLifecycle, type RunLifecycle } from '../run-lifecycle';
+import { promptRefusable, RunRefused } from '../run-refusal';
 import { heldSettleSessions } from './held-settle-fixture';
 
 /**
- * The run lifecycle read against a real pi 1.4.0 session, whose user extension holds each window open: the
+ * The run lifecycle read against a real pi 1.5.2 session, whose user extension holds each window open: the
  * `agent_before_settle` handlers (pi still streams), the `agent_settled` handlers (pi is idle but defers a prompt,
- * agent-session.js:685-689, :1632-1634), and the run pi opens after a settle from a prompt it deferred into it (:695-703).
+ * agent-session.js:740-744, :1696-1698), and the run pi opens after a settle from a prompt it deferred into it (:750-758).
  */
 
 const sessions = heldSettleSessions();
@@ -103,6 +104,34 @@ describe('the run lifecycle of a real pi session', () => {
     expect(() => runLifecycleOf(held.session)).toThrow('No run lifecycle is bound to this pi session.');
     settle.release();
     await within(prompt, 10_000, 'the prompt');
+  }, 30_000);
+
+  it('ends a wait for the run pi is preparing when pi refuses that run, which publishes no agent_settled', async () => {
+    const held = await sessions.boot([fauxAssistantMessage('Second.')], { beforeAgentStart: true });
+    const run = trackRunLifecycle(held.session);
+    const order: string[] = [];
+    settledEvents(held.session, order);
+    const start = held.holdBeforeAgentStart();
+    const refused = promptRefusable(held.session, 'first', {
+      preflightResult: (disposition) => {
+        if (disposition === 'started') throw new RunRefused();
+      },
+    });
+    await within(start.waiting, 10_000, 'the before_agent_start handler');
+    expect(state(run)).toEqual({ phase: 'start', streaming: true, settling: false, mayQueue: true, busy: true });
+    const ended = run.untilRunEnds();
+    expect(ended).not.toBeNull();
+
+    start.release();
+    expect(await within(refused, 10_000, 'the refused prompt')).toBe(false);
+    await within(ended!, 1_000, 'the wait for the refused run');
+    expect(order).toEqual([]);
+    expect(state(run)).toEqual({ phase: 'start', streaming: false, settling: false, mayQueue: false, busy: false });
+    expect(run.untilRunEnds()).toBeNull();
+
+    await within(held.session.prompt('second'), 10_000, 'the next prompt');
+    expect(order).toEqual(['agent_settled']);
+    run.dispose();
   }, 30_000);
 
   it('is one per session: a second bind throws until the first is disposed', async () => {

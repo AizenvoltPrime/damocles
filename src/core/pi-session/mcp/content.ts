@@ -7,7 +7,6 @@ import { randomBytes } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { TextContent } from '@earendil-works/pi-ai';
 import type { McpContent, ContentBlock } from './types';
 import type { McpResourceToolName } from '../../../shared/tool-names';
 import type { BuiltinDeferredGroup } from '../tools/deferred-tools';
@@ -35,14 +34,14 @@ export interface ResourceLinkContext extends ResourceReadReach {
   server: string;
 }
 
-/** Ported from pi-coding-agent/src/core/tools/truncate.ts `formatSize`. */
+/** Ported from pi-coding-agent 1.5.2 `src/core/tools/truncate.ts:61-69` `formatSize`. */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/** Ported from pi-coding-agent/src/extensions/mcp/tools.ts: a resource link as one line naming the read tool. */
+/** Ported from pi-coding-agent 1.5.2 `src/extensions/mcp/tools.ts:178-187`: a resource link as one line naming the read tool. */
 function resourceLinkText(c: McpContent, links: ResourceLinkContext | undefined): string {
   const uri = c.uri ?? '(no URI)';
   const details = [c.mimeType, typeof c.size === 'number' ? formatSize(c.size) : undefined].filter(Boolean);
@@ -96,9 +95,6 @@ export function base64ByteLength(b64: string): number {
   return Math.max(0, Math.floor((len * 3) / 4) - padding);
 }
 
-/** Model-facing text of an MCP result beyond this many bytes is cut in the middle. */
-export const MCP_OUTPUT_MAX_BYTES: number = 20 * 1024;
-
 export interface MiddleTruncationResult {
   content: string;
   truncated: boolean;
@@ -114,7 +110,7 @@ function splitLinesForCounting(content: string): string[] {
   return lines;
 }
 
-/** Ported from pi-coding-agent/src/core/tools/truncate.ts `truncateMiddle`. */
+/** Ported from pi-mcp 1.5.2 `src/output-limit.ts:62-77` `truncateMiddle`, which pi-mcp does not export. */
 export function truncateMiddle(content: string, maxBytes: number): MiddleTruncationResult {
   const buf = Buffer.from(content, 'utf-8');
   const totalLines = splitLinesForCounting(content).length;
@@ -139,9 +135,6 @@ export function truncateMiddle(content: string, maxBytes: number): MiddleTruncat
   };
 }
 
-/** Saves the full text of a truncated result and returns the file path. */
-export type McpOutputSaver = (text: string) => Promise<string>;
-
 /** The files this module wrote in this process; an agent may read one until the runtime shuts down. */
 const savedOutputFiles = new Set<string>();
 
@@ -156,7 +149,8 @@ async function saveOutputFile(prefix: 'damocles-mcp' | 'damocles-forge', extensi
   return filePath;
 }
 
-export function saveMcpOutputToTempFile(text: string): Promise<string> {
+/** pi-mcp's `McpOutputSaver` for `limitMcpContent`, which saves only text, as `.txt` (pi-mcp 1.5.2 `src/output-limit.ts:36`). */
+export function saveMcpOutputToTempFile(text: string | Uint8Array): Promise<string> {
   return saveOutputFile('damocles-mcp', '.txt', text);
 }
 
@@ -175,39 +169,4 @@ export async function removeSavedMcpOutputs(): Promise<void> {
   const files = [...savedOutputFiles];
   savedOutputFiles.clear();
   await Promise.all(files.map((file) => rm(file, { force: true })));
-}
-
-function textOf(content: readonly ContentBlock[]): string {
-  return content
-    .filter((block): block is TextContent => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
-}
-
-/**
- * Ported from pi-coding-agent/src/extensions/mcp/tools.ts `limitMcpContent`. Text over
- * `MCP_OUTPUT_MAX_BYTES` becomes one text block cut in the middle, followed by the path of the file
- * holding the full text; images follow it.
- */
-export async function limitMcpContent(
-  content: ContentBlock[],
-  saveOutput: McpOutputSaver = saveMcpOutputToTempFile,
-): Promise<{ content: ContentBlock[]; fullOutputPath?: string }> {
-  const combined = textOf(content);
-  const truncation = truncateMiddle(combined, MCP_OUTPUT_MAX_BYTES);
-  if (!truncation.truncated) return { content };
-  let fullOutputPath: string | undefined;
-  let where: string;
-  try {
-    fullOutputPath = await saveOutput(combined);
-    where = `[Full output: ${fullOutputPath} (read it with offset/limit)]`;
-  } catch (error) {
-    where = `[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`;
-  }
-  const tokens = Math.ceil(truncation.totalBytes / 4);
-  const text = `Warning: truncated output (original token count: ${tokens})\nTotal output lines: ${truncation.totalLines}\n\n${truncation.content}\n\n${where}`;
-  return {
-    content: [{ type: 'text', text }, ...content.filter((block) => block.type === 'image')],
-    ...(fullOutputPath ? { fullOutputPath } : {}),
-  };
 }

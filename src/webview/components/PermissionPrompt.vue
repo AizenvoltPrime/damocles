@@ -43,8 +43,6 @@ const props = defineProps<{
   queuePosition?: number | undefined;
   queueTotal?: number | undefined;
   suggestions?: PermissionUpdate[] | undefined;
-  blockedPath?: string | undefined;
-  decisionReason?: string | undefined;
   /** A tool's own words for the request (a forge write: core's `approvalOf`, `forge/tools/run.ts`); absent, the generic prompt shows its input. */
   title?: LocalizedText | undefined;
   subtitle?: LocalizedText | undefined;
@@ -67,7 +65,9 @@ const pendingBehavior = ref<'allow' | 'deny'>('allow');
 
 const isShell = computed(() => isShellTool(props.toolName ?? ''));
 const isGenerateImage = computed(() => props.toolName === TOOL_GENERATE_IMAGE);
-const isFileChange = computed(() => props.toolName === TOOL_EDIT || props.toolName === TOOL_WRITE);
+const isEditOrWrite = computed(() => props.toolName === TOOL_EDIT || props.toolName === TOOL_WRITE);
+// An Edit or Write core titled (its path may reach a network host, so core read no file for a patch) shows core's card, not a diff.
+const isFileChange = computed(() => isEditOrWrite.value && props.title === undefined);
 // The card of the call this prompt approves reads the same source, so both show the same lines and numbers.
 const diffSource = computed(() => (isFileChange.value
   ? fileChangeSource(
@@ -92,7 +92,7 @@ const FORGE_WRITE_ICONS: Readonly<Record<string, Component>> = {
 const kindIcon = computed<Component>(() => {
   if (isShell.value) return SquareTerminal;
   if (isGenerateImage.value) return ImagePlus;
-  if (isGeneric.value) return FORGE_WRITE_ICONS[props.toolName ?? ''] ?? Wrench;
+  if (isGeneric.value && !isEditOrWrite.value) return FORGE_WRITE_ICONS[props.toolName ?? ''] ?? Wrench;
   return isNewFile.value ? FilePlus : PencilLine;
 });
 
@@ -173,8 +173,10 @@ const suggestionLabel = computed(() => {
   return rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName;
 });
 
-// Switches the whole chat to acceptEdits, which auto-approves exactly WRITE_TOOLS and changes something only from default.
+// Switches the whole chat to acceptEdits, which auto-approves exactly WRITE_TOOLS and changes something only from default; a
+// titled write's path may reach a network host, which acceptEdits still asks for.
 const offersAcceptAllEdits = computed(() => WRITE_TOOLS.has(props.toolName ?? '')
+  && props.title === undefined
   && settingsStore.currentSettings.permissionMode === 'default');
 
 const options = computed(() => {
@@ -373,7 +375,7 @@ watch(() => props.toolUseId, resetState);
     </header>
 
     <div
-      v-if="agentLine || isShell || isGeneric || isGenerateImage || decisionReason || blockedPath"
+      v-if="agentLine || isShell || isGeneric || isGenerateImage"
       class="space-y-2 px-3 pt-2.5 text-12.5"
     >
       <div
@@ -410,7 +412,10 @@ watch(() => props.toolUseId, resetState);
                 :avatar-key="showAvatars ? fact.avatar.key : undefined"
                 size="chip"
               />
-              <span dir="ltr">{{ fact.value }}</span>
+              <span
+                dir="ltr"
+                class="whitespace-pre-wrap"
+              >{{ fact.value }}</span>
               <span
                 v-if="fact.detail !== undefined"
                 class="font-sans text-(--d-faint-text)"
@@ -473,20 +478,6 @@ watch(() => props.toolUseId, resetState);
           {{ t('permission.imageBilled') }}
         </div>
       </template>
-      <div
-        v-if="decisionReason || blockedPath"
-        class="space-y-0.5 text-xs text-(--d-muted)"
-      >
-        <div v-if="decisionReason">
-          {{ decisionReason }}
-        </div>
-        <div
-          v-if="blockedPath"
-          class="font-mono break-all"
-        >
-          {{ blockedPath }}
-        </div>
-      </div>
     </div>
 
     <div class="px-1.5 pt-1 pb-1.5">

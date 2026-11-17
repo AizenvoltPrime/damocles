@@ -55,12 +55,19 @@ function parseCommandArgs(argsString: string): string[] {
   // A quote starts a token, so an empty quoted argument is kept.
   let hasToken = false;
   let inQuote: string | null = null;
-  for (const char of argsString) {
+  let quoteStart = 0;
+  for (let i = 0; i < argsString.length; i++) {
+    const char = argsString[i]!;
     if (inQuote) {
-      if (char === inQuote) inQuote = null;
+      if (char === '\\' && argsString[i + 1] === inQuote) {
+        current += inQuote;
+        i++;
+      } else if (char === inQuote) inQuote = null;
       else current += char;
-    } else if (char === '"' || char === "'") {
+    } else if ((char === '"' || char === "'") && !hasToken) {
+      // Only at the start of an argument, so an apostrophe inside a word stays text.
       inQuote = char;
+      quoteStart = i;
       hasToken = true;
     } else if (/\s/.test(char)) {
       if (hasToken) {
@@ -71,6 +78,12 @@ function parseCommandArgs(argsString: string): string[] {
     } else {
       current += char;
       hasToken = true;
+    }
+    if (inQuote && i === argsString.length - 1) {
+      // An unclosed quote is text: re-read what follows it unquoted.
+      inQuote = null;
+      current = argsString[quoteStart]!;
+      i = quoteStart;
     }
   }
   if (hasToken) args.push(current);

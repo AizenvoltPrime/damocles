@@ -10,6 +10,7 @@ import { MCP_METADATA_CACHE_DIR } from '../paths';
 import { specOf } from './fake-server-manager';
 import { createMcpResourceTools } from '../../tools/mcp-resource-tools';
 import { removeSavedMcpOutputs } from '../content';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 const fixtureDir = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures');
 const echoServer = join(fixtureDir, 'echo-server.mjs');
@@ -92,7 +93,7 @@ describe('MCP resources end-to-end (real stdio echo server)', () => {
     manager = live;
     live.initialize({ [SERVER]: specOf({ command: process.execPath, args: [echoServer] }) });
     await live.whenReady();
-    const tools = createMcpResourceTools({ source: () => live, disabledResource: () => () => false, ruleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }) });
+    const tools = createMcpResourceTools({ mcp: piMcp, source: () => live, disabledResource: () => () => false, ruleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }) });
     const run = (name: string, params: unknown): Promise<ToolResult> =>
       (tools.find((t) => t.name === name)!.execute as unknown as (id: string, p: unknown, s: undefined, u: undefined, c: unknown) => Promise<ToolResult>)('tc', params, undefined, undefined, {});
     return { manager: live, run };

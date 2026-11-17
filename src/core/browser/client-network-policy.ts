@@ -20,8 +20,18 @@ export interface ResolvedAddress {
 
 export type AddressResolver = (hostname: string) => Promise<readonly ResolvedAddress[]>;
 
-// getaddrinfo, as Chrome resolves without a proxy, so the hosts file and `localhost` answer as they would there.
-export const resolveAddresses: AddressResolver = (hostname) => dns.lookup(hostname, { all: true, verbatim: true });
+// Chrome answers localhost and every name under it with loopback itself and asks no resolver (RFC 6761 6.3), and getaddrinfo on
+// Windows answers no name under localhost, where a served grant's host is.
+const LOCALHOST_ANSWERS: readonly ResolvedAddress[] = [{ address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 }];
+
+function isLocalhostName(hostname: string): boolean {
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  return name === 'localhost' || name.endsWith('.localhost');
+}
+
+// As Chrome resolves without a proxy: localhost names as above, any other name through getaddrinfo, so the hosts file answers as
+// it would there.
+export const resolveAddresses: AddressResolver = (hostname) => (isLocalhostName(hostname) ? Promise.resolve(LOCALHOST_ANSWERS) : dns.lookup(hostname, { all: true, verbatim: true }));
 
 // The TunnelManager listens on 127.0.0.1 for every forward, so a forwarded port is always reached there.
 const FORWARD_ADDRESS = '127.0.0.1';

@@ -64,6 +64,9 @@ function makeServices(agentDir: string) {
   const runtimeKeys = new Map<string, string>();
   const modelRuntime = {
     runtimeKeys,
+    stream: vi.fn(),
+    streamSimple: vi.fn(),
+    settleCredentialWrites: async () => undefined,
     login: vi.fn(async (provider: string, type: 'oauth' | 'api_key', interaction: AuthInteraction, _options?: { getDeviceId?: () => string }) => {
       const state = readState();
       // pi's api_key login asks the interaction for the key and replaces the provider's one auth.json slot.

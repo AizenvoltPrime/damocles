@@ -1,6 +1,6 @@
 // The close's remote question: docs/invariants.md "Desktop host", the quit lifecycle, and "Remote daemon and wire", Keep running.
-import { MAX_OVERLAY_ITEMS, MAX_OVERLAY_LABEL_LENGTH, type CloseRemoteChoice, type CloseRemoteRow, type CloseRemoteStatus, type CloseRowHost } from '../../preload/overlay-channels';
-import type { Run } from '../../daemon/control-messages';
+import { MAX_CLOSE_KEY_PROVIDERS, MAX_OVERLAY_ITEMS, MAX_OVERLAY_LABEL_LENGTH, type CloseRemoteChoice, type CloseRemoteRow, type CloseRemoteStatus, type CloseRowHost } from '../../preload/overlay-channels';
+import type { OwnRun, Run } from '../../daemon/control-messages';
 import { runKey, type KeepRunningHost, type KeepRunningRefresh, type KeepRunningRun, type TokenNote } from './keep-running-refresh';
 
 export type CloseWithRunningAgents = 'ask' | 'keep' | 'stop';
@@ -12,15 +12,19 @@ export const CLOSE_REMOTE_STEP_MS = 3000;
 export interface HostRuns {
   readonly hostId: string;
   readonly authorityKey: string;
-  readonly runs: readonly Run[];
+  readonly runs: readonly OwnRun[];
 }
 
 /** A connected host the close reads: list resolves its runs this device started. */
 export interface ListedHost {
   readonly hostId: string;
   readonly authorityKey: string;
-  readonly list: () => Promise<readonly Run[]>;
+  // list answers listOwnRuns and the welcome lists CONFIGURED_PROVIDERS_FEATURE; otherwise a run's configuredProviders is dropped
+  readonly reportsConfigured: boolean;
+  readonly list: () => Promise<readonly OwnRun[]>;
 }
+
+export const CONFIGURED_PROVIDERS_FEATURE = 'chat.configuredProviders';
 
 export interface CloseRemoteDeps {
   // every usable connection's chat runs this device started; a host that does not list them is left out, logged
@@ -28,7 +32,7 @@ export interface CloseRemoteDeps {
   readonly setting: () => CloseWithRunningAgents;
   readonly saveSetting: (choice: 'keep' | 'stop') => Promise<void>;
   // a run's row as the dialog shows it (panelId closeRowId's), with the status the run reported until activity says otherwise
-  readonly row: (host: HostRuns, run: Run) => CloseRemoteRow;
+  readonly row: (host: HostRuns, run: Run) => Omit<CloseRemoteRow, 'keyProviders'>;
   // the closeRemote overlay request; onRows hands it every row whole whenever one changes
   readonly ask: (rows: readonly CloseRemoteRow[], onRows: (listener: (rows: readonly CloseRemoteRow[]) => void) => void) => Promise<{ readonly choice: CloseRemoteChoice; readonly dontAskAgain: boolean }>;
   // a remote chat's status from its activity while the dialog is open; the subscription ends with the dialog
@@ -53,7 +57,7 @@ export type RemoteRelease = () => Promise<void>;
 // A row's id: two daemons may hold panels under the same core id.
 export const closeRowId = (hostId: string, panelId: string): string => `${hostId}/${panelId}`;
 
-const keepRuns = (hosts: readonly HostRuns[]): KeepRunningRun[] => hosts.flatMap((host) => host.runs.map((run) => ({ hostId: host.hostId, panelId: run.id, providers: run.providers })));
+const keepRuns = (hosts: readonly HostRuns[]): KeepRunningRun[] => hosts.flatMap((host) => host.runs.map((run) => ({ hostId: host.hostId, panelId: run.id, providers: run.providers, configured: run.configuredProviders ?? [] })));
 
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -73,7 +77,8 @@ export async function listHostRuns(hosts: readonly ListedHost[], log: (line: str
   const listed = await Promise.all(hosts.map(async (host): Promise<HostRuns | undefined> => {
     try {
       const runs = await withinStep(host.list(), stepMs, `${host.authorityKey}'s run list`);
-      return { hostId: host.hostId, authorityKey: host.authorityKey, runs: runs.filter((run) => run.kind === 'chat') };
+      const chats = runs.filter((run) => run.kind === 'chat');
+      return { hostId: host.hostId, authorityKey: host.authorityKey, runs: host.reportsConfigured ? chats : chats.map(({ configuredProviders: _dropped, ...run }) => run) };
     } catch (err) {
       log(`[close] ${host.authorityKey} did not list its runs: ${errorText(err)}`);
       return undefined;
@@ -134,9 +139,9 @@ async function stopRuns(deps: CloseRemoteDeps, hosts: readonly HostRuns[]): Prom
 }
 
 async function ask(deps: CloseRemoteDeps, hosts: readonly HostRuns[], refresh: KeepRunningRefresh): Promise<CloseRemoteChoice> {
-  let rows = hosts.flatMap((host) => host.runs.map((run) => {
+  let rows: CloseRemoteRow[] = hosts.flatMap((host) => host.runs.map((run) => {
     const row = deps.row(host, run);
-    return { ...row, title: shownLabel(row.title), projectLabel: shownLabel(row.projectLabel) };
+    return { ...row, title: shownLabel(row.title), projectLabel: shownLabel(row.projectLabel), keyProviders: [] };
   })).slice(0, MAX_OVERLAY_ITEMS);
   const rowOf = new Map(hosts.flatMap((host) => host.runs.map((run) => [runKey(host.authorityKey, run.id), closeRowId(host.hostId, run.id)] as const)));
   const runOf = new Map(hosts.flatMap((host) => host.runs.map((run) => [closeRowId(host.hostId, run.id), runKey(host.hostId, run.id)] as const)));
@@ -168,6 +173,14 @@ async function ask(deps: CloseRemoteDeps, hosts: readonly HostRuns[], refresh: K
       return note === undefined ? row : { ...row, tokenNote: { provider: note.provider, minutesLeft: note.minutesLeft } };
     }));
   }).catch((err: unknown) => deps.log(`[close] the rows' token notes failed: ${errorText(err)}`));
+  refresh.keyProviders.then((byRun: ReadonlyMap<string, readonly string[]>) => {
+    if (byRun.size === 0) return;
+    changed(rows.map((row) => {
+      const key = runOf.get(row.panelId);
+      const waiting = key === undefined ? undefined : byRun.get(key);
+      return waiting === undefined ? row : { ...row, keyProviders: waiting.slice(0, MAX_CLOSE_KEY_PROVIDERS) };
+    }));
+  }).catch((err: unknown) => deps.log(`[close] the rows' API-key providers failed: ${errorText(err)}`));
   try {
     const answer = await deps.ask(rows, (next) => {
       listener = next;

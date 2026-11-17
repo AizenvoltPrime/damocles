@@ -42,6 +42,7 @@ A subagent or team stopped by ESC, a subagent's Stop button, Stop team, `cancel_
 
 - A resumed subagent keeps its conversation, model, reasoning level and foreground or background mode, and its new card carries a "Resumed" badge.
 - A resumed team restarts the lead and the specialists that were working, leaves specialists awaiting review parked, and delivers any message a member had not yet received.
+- A subagent whose tool call you rejected without a note, or a hook denied with `terminate`, ends stopped; its result names the tool and who rejected it, and `Agent({resume})` continues it. A team specialist stopped that way waits for the lead, whose next message resumes it, and the lead stopped that way stops the team as Stop team does.
 - A subagent whose model call still failed after pi's retries tells the model its error, what it wrote before failing and how to resume it, and resumes the same way.
 
 Damocles does not resume a subagent that the budget limit or a cleared conversation stopped, or an agent that finished. It offers no resume for a team whose lead failed to start, which would fail the same way.

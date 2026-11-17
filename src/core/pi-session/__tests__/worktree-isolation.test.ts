@@ -10,6 +10,13 @@ import { nativeShellPath, worktreeIsolationBlock, WORKTREE_ISOLATION_REASON, typ
 import { parseShellStructure } from '../readonly-shell';
 import { runPermissionGate, type GatePermissionContext } from '../permission-gate';
 
+// The QueryDosDeviceW answer for a drive a test maps, by name (`Q:`); any other drive asks Windows.
+const dosDevices = vi.hoisted(() => new Map<string, string>());
+vi.mock('../../dos-devices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../dos-devices')>();
+  return { queryDosDevice: (name: string): string | undefined => dosDevices.get(name) ?? actual.queryDosDevice(name) };
+});
+
 let base: string;
 let iso: WorktreeIsolation;
 let project: string;
@@ -80,6 +87,25 @@ describe('worktree isolation (D62)', () => {
     expect(ps('git -C \\\\evil\\s status')).toBeUndefined();
     expect(realpath.mock.calls.filter(([p]) => /evil/i.test(String(p)))).toEqual([]);
     expect(worktreeIsolationBlock('Write', { file_path: `\\\\?\\${path.join(project, 'src', 'a.ts')}` }, iso)).toContain(WORKTREE_ISOLATION_REASON);
+  });
+
+  it.runIf(process.platform === 'win32')('reads nothing on a drive Windows maps to a share off the chat\'s hosts, in any spelling, before any prompt', () => {
+    const lstat = vi.spyOn(nodeFs, 'lstatSync');
+    const realpath = vi.spyOn(fs.realpathSync, 'native');
+    syncBuiltinESMExports();
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\evil\s`);
+    onTestFinished(() => {
+      dosDevices.clear();
+      lstat.mockRestore();
+      realpath.mockRestore();
+      syncBuiltinESMExports();
+    });
+    expect(bash('git -C Q:/x status')).toBeUndefined();
+    expect(ps('git -C Q:\\x status')).toBeUndefined();
+    expect(ps('git -C \\\\?\\Q:\\x status')).toBeUndefined();
+    expect(worktreeIsolationBlock('Write', { file_path: 'Q:\\x\\a.ts' }, iso)).toBeUndefined();
+    const onQ = [...lstat.mock.calls, ...realpath.mock.calls].map(([p]) => String(p)).filter((p) => /^(?:[\\/]{2}[?.][\\/])?q:/i.test(p));
+    expect(onQ).toEqual([]);
   });
 
   it.runIf(process.platform === 'win32')('resolves no path whose walk meets a link to a share before any prompt', () => {

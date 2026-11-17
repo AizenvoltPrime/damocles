@@ -12,6 +12,7 @@ import { abortRunAtStart } from '../pi-session/abort-run-at-start';
 import { noticeWindDown } from '../pi-session/wind-down-notice';
 import { runLifecycleOf } from '../pi-session/run-lifecycle';
 import type { PromptDisposition } from '../pi-session/prompt-entry';
+import { promptRefusable, RunRefused } from '../pi-session/run-refusal';
 import { runUsageMeter, sameAgentUsage } from '../pi-session/session-usage';
 import { emptyAgentUsage } from '../../shared/usage-accounting';
 import { partialResultText } from '../pi-session/known-secret-masking';
@@ -25,6 +26,7 @@ import { DAMOCLES_TEAM_DELIVERED_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../p
 import { failureOutcomeText } from '../pi-session/subagents/status-note';
 import { assistantContentBlocks, memberHistoryMessages, skippedCallIds, toolResultBlock, type PiAssistantBlock } from './content-blocks';
 import { agentLaunchOf, parseAgentEntries } from '../pi-session/agent-records';
+import { rejectionEndingRun, takeTerminatedCalls } from '../pi-session/terminated-calls';
 
 /** A delivery handed to pi: its text as pi matches it, and the images and delivery ids it carries. */
 interface HandedMessage {
@@ -43,6 +45,8 @@ interface RunInbox {
   steeredIntoPi: HandedMessage[];
   /** Every delivery handed to pi, prompted or steered, whose user entry pi has not committed yet, in order. */
   uncommitted: HandedMessage[];
+  /** After a run pi ended on a rejected call: how many leading pending messages arrived before it, which wait until one arrives after it. */
+  heldBehind: number | null;
   onArrival: () => void;
 }
 
@@ -144,7 +148,13 @@ export class AgentRunner {
     if (config.abortSignal.aborted) return empty('cancelled', null);
 
     // Subscribed before the session opens, so a message sent while it opens is queued, not lost.
-    const inbox: RunInbox = { pending: [...(config.redeliver ?? [])], steeredIntoPi: [], uncommitted: [], onArrival: () => undefined };
+    const inbox: RunInbox = {
+      pending: [...(config.redeliver ?? [])],
+      steeredIntoPi: [],
+      uncommitted: [],
+      heldBehind: config.initial.kind === 'park' && config.initial.heldBehind ? config.initial.heldBehind : null,
+      onArrival: () => undefined,
+    };
     const accept = (message: UndeliveredMessage): void => {
       inbox.pending.push(message);
       inbox.onArrival();
@@ -173,10 +183,11 @@ export class AgentRunner {
     const undeliveredWith = (queued: readonly string[]): UndeliveredMessage[] => {
       const inTransit = [...inbox.uncommitted];
       for (const text of queued) spliceText(inTransit, text);
+      const held = inbox.heldBehind ?? 0;
       return [
         ...inTransit.map((m) => ({ ...m, echoed: true })),
         ...withSteeredImages(queued, inbox.steeredIntoPi),
-        ...inbox.pending.map((m) => ({ ...m })),
+        ...inbox.pending.map(({ held: _held, ...m }, i): UndeliveredMessage => (i < held ? { ...m, held: true } : m)),
       ];
     };
     const take = (): UndeliveredMessage[] => {
@@ -307,7 +318,7 @@ export class AgentRunner {
     // Per-run so a torn-down agent's pending frames can never fire into the next run's cards.
     const outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((msg) => config.onMessage(msg));
 
-    /** pi opened the opening prompt's run, whose first user message is that prompt (`agent-session.js:1505-1509`, `:1693` in pi 1.4.0). */
+    /** pi opened the opening prompt's run, whose first user message is that prompt (`agent-session.js:1569-1573`, `:1726` in pi 1.5.2). */
     let openingRunStarted = false;
     /** pi queued the opening prompt into a run already open, which commits it as a user message of that text. */
     let openingQueued: string | null = null;
@@ -362,24 +373,18 @@ export class AgentRunner {
 
     let released = false;
     /**
-     * pi opens a prompt's run only after its input handlers return (`agent-session.js:1652` in pi 1.4.0), which neither
-     * `abort()` (`:1971-1980`) nor the runner letting go of the session waits for.
+     * pi opens a prompt's run only after its input handlers return (`agent-session.js:1736` in pi 1.5.2), which neither
+     * `abort()` (`:2073-2082`) nor the runner letting go of the session waits for, so the prompt refuses that run then.
      */
-    const stopLateRun = (disposition: PromptDisposition): void => {
-      if (disposition !== 'started' || !(released || config.abortSignal.aborted)) return;
-      abortRunAtStart(session).catch((err: unknown) => {
-        console.error(`[AgentRunner] Stopping a run of "${config.name}" opened after it stopped failed:`, err);
-      });
-    };
+    const lateRun = (disposition: PromptDisposition): boolean => disposition === 'started' && (released || config.abortSignal.aborted);
 
     /** Every prompt handed to pi until it settles; `held` until pi queues it, handles it or opens its run with it. */
     const promptsInFlight = new Set<{ settled: Promise<void>; held: boolean }>();
     /** `settled` rejects only with what `onFailure` rethrows, and only `untilIdle` may await it. */
     const handOff = (send: (preflightResult: (disposition: PromptDisposition) => void) => Promise<void>, onFailure: (err: unknown) => void): void => {
       const handed = { settled: Promise.resolve(), held: true };
-      handed.settled = send((disposition) => {
+      handed.settled = send(() => {
         handed.held = false;
-        stopLateRun(disposition);
       }).catch(onFailure);
       const forget = (): void => { promptsInFlight.delete(handed); };
       handed.settled.then(forget, forget);
@@ -399,7 +404,7 @@ export class AgentRunner {
 
     inbox.onArrival = () => {
       // Mid-stream, each message joins pi's steering queue in delivery order; otherwise wake the
-      // idle-wait to re-prompt. A retry's backoff runs inside the run (`agent-session.js:3114` in pi 1.4.0),
+      // idle-wait to re-prompt. A retry's backoff runs inside the run (`agent-session.js:3216` in pi 1.5.2),
       // so a message arriving then steers.
       // A stopped run would commit a steer as delivered with no answer, so after a stop nothing more is handed to pi.
       if (config.abortSignal.aborted) return;
@@ -412,7 +417,7 @@ export class AgentRunner {
 
     let markAborted!: () => void;
     const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
-    // A run pi still prepares at the stop, whoever opened it, is stopped at its start even after the session is let go of.
+    // A run no prompt of the runner opens, a user's pi extension's, is stopped at its start even after the session is let go of.
     const onAbort = (): void => { markAborted(); wake('abort'); void abortRunAtStart(session).catch(() => {}); };
     config.abortSignal.addEventListener('abort', onAbort, { once: true });
 
@@ -429,22 +434,28 @@ export class AgentRunner {
     ): Promise<void> => {
       const handed = handedOf(message);
       inbox.uncommitted.push(handed);
-      return session.prompt(message.text, {
+      // Still uncommitted: pi refused it before committing anything, so it goes back first in line, already echoed.
+      const giveBack = (): void => {
+        const index = inbox.uncommitted.indexOf(handed);
+        if (index === -1) return;
+        inbox.uncommitted.splice(index, 1);
+        if (streamingBehavior === 'steer') spliceText(inbox.steeredIntoPi, message.text);
+        pendingMessages.unshift({ ...message, echoed: true });
+      };
+      return promptRefusable(session, message.text, {
         streamingBehavior,
         ...(message.images?.length ? { images: extractImages(message.images) } : {}),
         expandPromptTemplates: false,
         preflightResult: (disposition) => {
-          if (disposition === 'queued' && streamingBehavior === 'followUp') inbox.steeredIntoPi.push(handed);
           preflightResult(disposition);
+          if (lateRun(disposition)) {
+            giveBack();
+            throw new RunRefused();
+          }
+          if (disposition === 'queued' && streamingBehavior === 'followUp') inbox.steeredIntoPi.push(handed);
         },
-      }).catch((err: unknown) => {
-        const index = inbox.uncommitted.indexOf(handed);
-        // Still uncommitted: pi refused it before committing anything, so it goes back first in line, already echoed.
-        if (index !== -1) {
-          inbox.uncommitted.splice(index, 1);
-          if (streamingBehavior === 'steer') spliceText(inbox.steeredIntoPi, message.text);
-          pendingMessages.unshift({ ...message, echoed: true });
-        }
+      }).then(() => undefined, (err: unknown) => {
+        giveBack();
         throw err;
       });
     };
@@ -462,11 +473,11 @@ export class AgentRunner {
     };
 
     /**
-     * pi awaits a prompt's input handlers before it reads the busy flag (`agent-session.js:1652`, `:1665` in pi 1.4.0), so a
-     * steer that reads it after its settling run cleared it (`:685`) starts a run of its own, which its prompt awaits and
+     * pi awaits a prompt's input handlers before it reads the busy flag (`agent-session.js:1736`, `:1749` in pi 1.5.2), so a
+     * steer that reads it after its settling run cleared it (`:740`) starts a run of its own, which its prompt awaits and
      * which outlives the prompt the loop awaited. The loop decides only once every prompt settled and pi is idle, whoever
-     * opened the run. A stop lets go of a prompt pi still holds and of a run pi still prepares, both stopped at their start
-     * (`stopLateRun`, `onAbort`), and waits for a run pi opened, which it aborts.
+     * opened the run. A stop lets go of a prompt pi still holds, whose run it refuses (`lateRun`), and of a run pi still
+     * prepares, stopped at its start (`onAbort`), and waits for a run pi opened, which it aborts.
      */
     const untilIdle = async (): Promise<void> => {
       for (;;) {
@@ -481,6 +492,18 @@ export class AgentRunner {
         await open;
       }
     };
+    /**
+     * Reports a run pi ended after a rejected call; the record is read and cleared either way. Synchronous, run right after
+     * `await untilIdle()`, so the loop takes no extra hop in which an arrival's wake-up could be missed.
+     */
+    const reportRejection = (): void => {
+      const rejected = rejectionEndingRun(session.messages, takeTerminatedCalls(session.sessionId));
+      if (!rejected || config.abortSignal.aborted) return;
+      inbox.heldBehind = pendingMessages.length;
+      config.onRunRejected?.(rejected);
+    };
+    /** A message arrived after the rejection, which wakes the member as a parked run's message does. */
+    const wokenAfterRejection = (): boolean => inbox.heldBehind !== null && pendingMessages.length > inbox.heldBehind;
     /** A prompt made while another run is open joins that run (`agent-session.js:1665-1676`), so the loop prompts only once pi is idle; false once stopped. */
     const idleForPrompt = async (): Promise<boolean> => {
       await run.untilIdle(config.abortSignal);
@@ -494,15 +517,18 @@ export class AgentRunner {
         this.emitRunning(config);
         const opening = config.initial.text;
         // A run another prompt opens while pi's input handlers hold this one takes it as a follow-up instead of refusing it.
-        handOff((preflightResult) => session.prompt(opening, {
+        handOff((preflightResult) => promptRefusable(session, opening, {
           streamingBehavior: 'followUp',
           preflightResult: (disposition) => {
+            preflightResult(disposition);
+            // A held opening task never reaches the file, so the member restarts from it.
+            if (lateRun(disposition)) throw new RunRefused();
             if (disposition === 'started') openingRunStarted = true;
             if (disposition === 'queued') openingQueued = opening;
-            preflightResult(disposition);
           },
-        }), failLoop);
+        }).then(() => undefined), failLoop);
         await untilIdle();
+        reportRejection();
       }
 
       // Event-driven wait/re-prompt loop — no timers. After each turn: re-prompt with the next pending
@@ -517,30 +543,35 @@ export class AgentRunner {
             const texts = [...queued.steering, ...queued.followUp];
             for (const text of texts) spliceText(inbox.uncommitted, text);
             pendingMessages.push(...withSteeredImages(texts, inbox.steeredIntoPi));
+            if (inbox.heldBehind !== null) inbox.heldBehind += texts.length;
           }
           inbox.steeredIntoPi.length = 0;
           // One message opens the run; the rest of the queue joins it as steers on its `agent_start`.
-          const next = takeNext();
+          const next = inbox.heldBehind === null ? takeNext() : undefined;
           if (next !== undefined) {
             handOff((preflightResult) => promptQueued(next, preflightResult, 'followUp'), failLoop);
             await untilIdle();
+            reportRejection();
             continue;
           }
-          if (!config.keepAlive?.()) {
-            config.onReconcileBeforeEnd?.();   // specialist-only: may arm a grace hold
-            if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
+          if (!wokenAfterRejection()) {
+            if (!config.keepAlive?.()) {
+              config.onReconcileBeforeEnd?.();   // specialist-only: may arm a grace hold
+              if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
+            }
+            config.onTurnEnd?.();
+            // The turn-end hooks park the member after pi's last event, so no event boundary covers them.
+            config.onStateBoundary?.();
           }
-          config.onTurnEnd?.();
-          // The turn-end hooks park the member after pi's last event, so no event boundary covers them.
-          config.onStateBoundary?.();
         }
         // A parked run's first message goes through the wake below, so onKeepAliveResume sees it.
         parked = false;
         // Something queued before the wait is armed would never resolve it, so it skips the wait.
-        if (pendingMessages.length === 0) {
+        if (pendingMessages.length <= (inbox.heldBehind ?? 0)) {
           const reason = await new Promise<'message' | 'abort'>((resolve) => { waitResolve = resolve; });
           if (reason === 'abort' || config.abortSignal.aborted) break;
         }
+        inbox.heldBehind = null;
         // Re-check keepAlive after the wake: a message may have arrived together with a state change
         // (e.g. revision delivered) — but if keepAlive flipped false meanwhile, end rather than re-prompt.
         if (!config.keepAlive?.() && pendingMessages.length === 0) break;
@@ -551,6 +582,7 @@ export class AgentRunner {
         if (woken !== undefined) {
           handOff((preflightResult) => promptQueued(woken, preflightResult, 'followUp'), failLoop);
           await untilIdle();
+          reportRejection();
         }
       }
       // The session is let go of only once no run is open in it, whoever opened that run.
@@ -643,8 +675,8 @@ export class AgentRunner {
           queueMicrotask(cb.onUsage);
         }
         break;
-      // pi emits it after every error stop (`agent-loop.js:146-157`, `agent.js:380-382` in pi-agent-core 1.4.0), once it
-      // committed the record `registerWindDownErrorRecord` returns at that boundary (`agent-session.js:514`, `:635-640`).
+      // pi emits it after every error stop (`agent-loop.js:146-157`, `agent.js:380-382` in pi-agent-core 1.5.2), once it
+      // committed the record `registerWindDownErrorRecord` returns at that boundary (`agent-session.js:569`, `:690-695`).
       case 'turn_end': {
         const failed = cb.call.undecidedError;
         if (!failed) break;

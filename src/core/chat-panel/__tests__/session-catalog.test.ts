@@ -242,6 +242,16 @@ describe('SessionCatalog rename and tag', () => {
     expect(await catalog.delete('01a0e000-0000-7000-8000-0000000000ff')).toEqual({ ok: false, reason: 'missing' });
     expect(deletePiSession).not.toHaveBeenCalled();
   });
+
+  it('still finds the folder of a stored conversation the index cannot read, so rename and delete reach its file', async () => {
+    vi.spyOn(storage.metaIndex, 'meta').mockRejectedValue(new Error('the index worker stopped'));
+
+    expect(await catalog.rename(ID_OLD, 'Old work')).toEqual({ ok: true });
+    expect(await catalog.delete(ID_NEW)).toEqual({ ok: true });
+
+    expect(renamePiSession).toHaveBeenCalledWith(ALPHA.fsPath, ID_OLD, 'Old work');
+    expect(fs.existsSync(newFile)).toBe(false);
+  });
 });
 
 describe('SessionCatalog delete', () => {

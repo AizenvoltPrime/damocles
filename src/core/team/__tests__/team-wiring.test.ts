@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { TeamRunner, STRANDED_STANDBY_NUDGE, leadShouldDeliverMessage } from '../team-runner';
+import { TeamRunner, STRANDED_STANDBY_NUDGE, TERMINAL_CONTRACT_NUDGE, leadShouldDeliverMessage } from '../team-runner';
 import { STEER_INSTRUCTION_PREFIX, wrapSteerMessage } from '../../../shared/steer';
 import { AgentRunner } from '../agent-runner';
 import { Scratchpad, VERIFICATION_SECTION } from '../scratchpad';
@@ -18,6 +18,7 @@ import { teamEventLogPath, teamMembersDir } from '../../pi-session/agent-records
 import { piSessionDir } from '../../pi-session/session-store';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
 import { trackRunLifecycle } from '../../pi-session/run-lifecycle';
+import { recordTerminatedCall } from '../../pi-session/terminated-calls';
 
 /**
  * The runner<->agent SEAM suite. Every other team test stubs one side: `team-runner.test.ts` injects a
@@ -980,6 +981,86 @@ describe('team wiring: a team_standby call parks the specialist, which still wak
 
     expect(noticePrompts(b.session)).toHaveLength(1);
     expect(noticePrompts(b.session)[0]).toContain('"a-findings" updated by A');
+  });
+});
+
+/** A specialist whose opening turn ends on a Bash call the user rejected; with `ranAlongside`, a second call of its batch ran. */
+describe('team wiring: a specialist turn that pi ended on a rejected call', () => {
+  function startRejectingSpecialist(w: Wiring, name: string, ranAlongside = false): FakeSession {
+    const session = new FakeSession({
+      onModelCall: (call, s) => {
+        if (call.index > 0) { void s.endTurn(); return; }
+        recordTerminatedCall(s.sessionId, { toolCallId: 'c1', toolName: 'Bash', cause: 'user' });
+        void s.callTools([{ id: 'c1', name: 'bash', terminate: true }, ...(ranAlongside ? [{ id: 'c2', name: 'read' }] : [])]);
+      },
+    });
+    w.useSession(session);
+    w.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
+    return session;
+  }
+  const agentOf = (w: Wiring, name: string): TeamAgent => (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
+  const sentTo = (w: Wiring, name: string): string[] => w.messageBus.getAllMessages().filter((m) => m.to === name).map((m) => m.content);
+
+  it("parks it for the lead with no nudge, and the lead's message wakes it", async () => {
+    const w = makeWiring(['A']);
+    const a = startRejectingSpecialist(w, 'A');
+    await until(() => agentOf(w, 'A').status === 'standby');
+    await w.settle();
+
+    expect(a.prompts).toHaveLength(1);
+    expect(sentTo(w, 'A')).toEqual([]);
+    expect(sentTo(w, 'Lead')[0]).toMatch(/^Specialist "A": the user rejected its Bash call and its turn ended there./);
+
+    w.messageBus.send('Lead', 'A', 'retry it with a narrower command');
+    await a.whenPrompted(2);
+
+    expect(a.prompts[1]).toBe('[Message from Lead]: retry it with a narrower command');
+    expect(agentOf(w, 'A').status).toBe('running');
+  });
+
+  it('is not woken by a peer, whose message stays in its inbox', async () => {
+    const w = makeWiring(['A', 'B']);
+    const a = startRejectingSpecialist(w, 'A');
+    await until(() => agentOf(w, 'A').status === 'standby');
+
+    w.messageBus.send('B', 'A', 'can you run it again?');
+    w.messageBus.send('Lead', 'A', 'go on');
+    await a.whenPrompted(2);
+    await w.settle();
+
+    expect(a.prompts.slice(1)).toEqual(['[Message from Lead]: go on']);
+    expect(sentTo(w, 'A')).toContain('can you run it again?');
+  });
+
+  it("is not woken by the lead's scratchpad write or ledger append, which are notices and not the lead's message", async () => {
+    const w = makeWiring(['A']);
+    w.scratchpad.seedAppendOnly(VERIFICATION_SECTION);
+    const a = startRejectingSpecialist(w, 'A');
+    await until(() => agentOf(w, 'A').status === 'standby');
+    const statusesBefore = w.webviewMessages.filter((m) => m.type === 'teamAgentStatusUpdate').length;
+
+    w.scratchpad.set('lead-plan', 'the plan, revised', 'Lead');
+    recordVerificationAs(w, 'Lead', '- Lead | tree abc | full-suite | PASS');
+    await w.settle();
+
+    expect(agentOf(w, 'A').status).toBe('standby');
+    expect(w.runner.getTeamState().agents.find((m) => m.name === 'A')).toMatchObject({ status: 'standby', stopReason: 'denied' });
+    expect(w.webviewMessages.filter((m) => m.type === 'teamAgentStatusUpdate').slice(statusesBefore)).toEqual([]);
+
+    // The lead's own message is the first prompt after the park, so neither notice was delivered ahead of it.
+    w.messageBus.send('Lead', 'A', 'go on');
+    await a.whenPrompted(2);
+    await w.settle();
+    expect(a.prompts.slice(1)).toEqual(['[Message from Lead]: go on']);
+  });
+
+  it('a batch where another call ran is no rejection: the bare end is nudged as before', async () => {
+    const w = makeWiring(['A']);
+    const a = startRejectingSpecialist(w, 'A', true);
+    await a.whenPrompted(2);
+
+    expect(a.prompts[1]).toBe(`[Message from system]: ${TERMINAL_CONTRACT_NUDGE}`);
+    expect(sentTo(w, 'Lead')).toEqual([]);
   });
 });
 

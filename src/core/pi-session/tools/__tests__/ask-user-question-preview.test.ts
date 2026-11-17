@@ -18,6 +18,7 @@ import { cleanJudge, decisionEntry, entry, flaggingJudge, memoryLedger, record a
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
 import { formatUserAnswerPrefix, type UserAnswerNote } from '../../../../shared/steer';
 import type { QuestionAnnotations } from '../../../../shared/types/permissions';
+import { getPiCodingAgent } from '../../pi-loader';
 
 type AskTool = Tool & {
   prepareArguments: (args: unknown) => unknown;
@@ -36,7 +37,7 @@ const ask = (preview: unknown) => ({
 });
 
 function askTool(answer?: (toolUseId: string, handler: PermissionHandler) => void): AskTool {
-  const handler = new PermissionHandler(createFakePlatform());
+  const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
   handler.setPostMessage((msg) => {
     if (msg.type === 'requestQuestion') answer?.(msg.toolUseId, handler);
   });
@@ -81,7 +82,7 @@ describe('AskUserQuestion option previews', () => {
 });
 
 describe('AskUserQuestion design-kind previews (PD-18)', () => {
-  const tool = (designPreviews: boolean): AskTool => createAskUserQuestionTool(pi, new PermissionHandler(createFakePlatform()), undefined, designPreviews) as unknown as AskTool;
+  const tool = (designPreviews: boolean): AskTool => createAskUserQuestionTool(pi, new PermissionHandler(createFakePlatform(), getPiCodingAgent), undefined, designPreviews) as unknown as AskTool;
 
   it('names the design kind only in a design chat, in a description fixed when the tool is built', () => {
     expect(tool(false).description).not.toContain('"kind": "design"');
@@ -112,7 +113,7 @@ describe('AskUserQuestion design-kind previews (PD-18)', () => {
 describe('AskUserQuestion in a design chat (D99)', () => {
   it('runs in batch order only in design work, so a Write of its preview earlier in the batch lands first (acceptance)', () => {
     const mode = (tool: unknown): string | undefined => (tool as { executionMode?: string }).executionMode;
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     const decisions: QuestionDecisions = { record: async () => ({ records: [], notes: [] }) };
     expect(mode(askTool())).toBeUndefined();
     expect(mode(createAskUserQuestionTool(pi, handler, undefined, false, { agentId: 'sub-1', parentToolUseId: 'call-agent' }))).toBeUndefined();
@@ -121,7 +122,7 @@ describe('AskUserQuestion in a design chat (D99)', () => {
   });
 
   it('gives the model what the answers recorded, and keeps the records in details for the card', async () => {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setPostMessage((msg) => {
       if (msg.type === 'requestQuestion') handler.resolveQuestion(msg.toolUseId, { 'Which layout?': 'Grid' });
     });
@@ -163,7 +164,7 @@ describe('a design chat subagent\'s AskUserQuestion (D99, F3)', () => {
     const folder = tempFolder();
     const ledger = memoryLedger(folder, entries);
     const posted: ExtensionToWebviewMessage[] = [];
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setDesignQuestionFolder(() => folder);
     handler.setPostMessage((msg) => {
       posted.push(msg);
@@ -258,7 +259,7 @@ describe('a question that names a reference row (D96)', () => {
     fs.writeFileSync(path.join(folder, 'references', 'R1.json'), JSON.stringify({ schemaVersion: 1, image: 'references/R1.png', userEntryId: 'u1', sha256: 'x', mapping: [{ element: 'Carousel', mapsTo: null, status: 'needsDecision' }] }));
     const ledger = memoryLedger(folder, []);
     const posted: ExtensionToWebviewMessage[] = [];
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     if (designFolder) handler.setDesignQuestionFolder(() => folder);
     handler.setPostMessage((msg) => {
       posted.push(msg);
@@ -298,7 +299,7 @@ describe('[Write variants/a.html, AskUserQuestion(preview variants/a.html)] in o
   it('asks once the write landed, because AskUserQuestion makes pi run the batch in order (acceptance)', async () => {
     const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-ask-batch-'));
     try {
-      const handler = new PermissionHandler(createFakePlatform());
+      const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
       handler.setDesignQuestionFolder(() => folder);
       handler.setPostMessage((msg) => {
         if (msg.type === 'requestQuestion') handler.resolveQuestion(msg.toolUseId, { 'Which layout?': 'Grid' });

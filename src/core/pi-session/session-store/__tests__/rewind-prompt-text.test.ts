@@ -8,7 +8,7 @@ const H = vi.hoisted(() => ({ branch: [] as unknown[] }));
 vi.mock('../../pi-loader', () => ({
   initPiLoader: async () => ({
     SessionManager: {
-      open: () => ({ getLeafId: () => 'leaf', getBranch: () => H.branch, getEntries: () => H.branch }),
+      openAsync: async () => ({ getLeafId: () => 'leaf', getBranch: () => H.branch, getEntries: () => H.branch }),
     },
   }),
 }));

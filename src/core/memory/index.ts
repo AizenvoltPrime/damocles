@@ -38,7 +38,8 @@ import {
   type ConsolidationRunPass,
   type PendingConsolidationRequest,
 } from './consolidation';
-import { attributeFilesToWorkspace, listKnownWorkspaces, workspaceContaining } from './workspaces';
+import type { MemoryWaitReason } from '../project-relocation/types';
+import { attributeFilesToWorkspace, listKnownWorkspaces, relocateWorkspaceRows, workspaceContaining } from './workspaces';
 import { createFolderProbe } from '../folder-probe';
 import type {
   ConsolidationResult,
@@ -1053,6 +1054,25 @@ export class MemoryService {
     this._expandSearchTerms(targetId, { content, ...(tags ? { tags } : {}) });
     const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(targetId) as MemoryRow | undefined;
     return row ? rowToEntry(row) : null;
+  }
+
+  /**
+   * Moves a relocated project's rows from `from` to `to` in one write transaction. `waiting` says why it cannot run now
+   * (memory off, the store unavailable or read only); the caller tries again later.
+   */
+  async relocateWorkspace(from: string, to: string): Promise<{ readonly waiting?: MemoryWaitReason }> {
+    if (!this.isEnabled) return { waiting: 'disabled' };
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue;
+    if (!db) return { waiting: 'unavailable' };
+    if (!writeQueue) return { waiting: 'readOnly' };
+    try {
+      await writeQueue.run(() => relocateWorkspaceRows(db, from, to));
+    } catch (err) {
+      if (err instanceof MemoryReadOnlyError) return { waiting: 'readOnly' };
+      throw err;
+    }
+    return {};
   }
 
   async resetObservationStaleness(id: string): Promise<boolean> {

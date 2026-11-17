@@ -16,6 +16,8 @@ import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { WebviewPrompts } from "./webview-prompts";
 import { MemoryService } from "../memory";
+import { folderTrust, ProjectRelocations } from "../project-relocation";
+import { currentRelocations } from "../project-relocation/current";
 import { BrowserService } from "../browser";
 import type { CompassService } from "../compass";
 import { CompassRegistry } from "../compass/compass-registry";
@@ -134,6 +136,7 @@ export class ChatPanelProvider {
   private readonly usageStatsService: UsageStatsService;
   private readonly folderRegistry: WorkspaceFolderRegistry;
   private readonly webviewPrompts: WebviewPrompts;
+  private readonly relocations: ProjectRelocations;
 
   private readonly subscriptions: Disposable[];
   private readonly platform: PlatformWithWorktrees;
@@ -153,13 +156,22 @@ export class ChatPanelProvider {
       this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1], except);
     };
 
-    // MCP reads every folder a chat works in: the projects and the working folders loaded worktree chats hold (D34, rule 8).
+    // MCP reads every folder a chat works in: the projects and the working folders loaded worktree chats hold (D34, rule 8),
+    // each once, since a folder open as a project and held as a working folder has one MCP scope.
     this.settingsManager = new SettingsManager({
       postMessage,
       platform,
-      folders: () => [...this.folderRegistry.targets(), ...this.folderRegistry.ownedFolders()],
+      folders: () => {
+        const projects = this.folderRegistry.targets();
+        return [...projects, ...this.folderRegistry.ownedFolders().filter((owned) => !projects.some((project) => project.key === owned.key))];
+      },
     });
 
+    const metaIndex = new SessionMetaIndex({
+      workerPath: platform.paths.workerEntry("sessionMetaIndex"),
+      cacheDir: SESSION_META_CACHE_DIR,
+      piPackageDir: path.join(platform.paths.resourceRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
+    });
     this.storageManager = new StorageManager({
       folders: () => this.folderRegistry.targets(),
       isMultiRoot: () => this.folderRegistry.isMultiRoot,
@@ -167,11 +179,7 @@ export class ChatPanelProvider {
       getPanels: () => this.panelManager.getPanels(),
       liveSession: (sessionId) => PiRuntime.liveSessionMutator(sessionId),
       fileWatchers: platform.fileWatchers,
-      metaIndex: new SessionMetaIndex({
-        workerPath: platform.paths.workerEntry("sessionMetaIndex"),
-        cacheDir: SESSION_META_CACHE_DIR,
-        piPackageDir: path.join(platform.paths.resourceRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
-      }),
+      metaIndex,
     });
 
     this.historyManager = new HistoryManager({
@@ -195,6 +203,22 @@ export class ChatPanelProvider {
 
     this.memoryService = new MemoryService(platform);
     this.memoryService.setConsolidationBroadcast((msg) => this.panelManager.broadcast(msg));
+    this.relocations = new ProjectRelocations({
+      requestedBy: platform.remote ? "daemon" : platform.appInfo.host,
+      watcherFactory: platform.fileWatchers,
+      metaIndex,
+      memory: this.memoryService,
+      hostState: { mcp: { relocateFolders: (pairs) => this.settingsManager.relocateMcpFolders(pairs) }, ...(hostDeps.forge ? { forge: hostDeps.forge } : {}) },
+      ...(worktreeHost ? {
+        worktrees: worktreeHost.registry,
+        git: () => worktreeHost.git(),
+        worktreeActivity: (worktreeIds: readonly string[]) => this.panelManager.worktrees.activity(worktreeIds),
+      } : {}),
+      // VS Code's trust is the window's, so a moved folder counts as trusted only while this window has it open
+      trust: platform.appInfo.host === "vscode" ? folderTrust(platform.trust, platform.workspaceFolders) : platform.trust,
+      projectFolders: () => this.folderRegistry.targets().map((target) => target.fsPath),
+      log: (line) => log(line),
+    });
     this.sessionCatalog = createSessionCatalog({
       storage: this.storageManager,
       getPanels: () => this.panelManager.getPanels(),
@@ -323,6 +347,7 @@ export class ChatPanelProvider {
         ...(platform.paths.remoteMirrors !== undefined ? { remoteMirrorsDir: platform.paths.remoteMirrors } : {}),
       },
       notifications: platform.notifications,
+      aliases: () => currentRelocations().aliases,
     });
     this.compassRegistry = new CompassRegistry({ platform });
     this.compassRegistry.onStatusChange((folderKey, status) => {
@@ -411,8 +436,8 @@ export class ChatPanelProvider {
       voiceService: this.voiceService,
       usageStatsService: this.usageStatsService,
       folderRegistry: this.folderRegistry,
-      switchPanelFolder: (panelId, folderKey, reason, afterSwitch) =>
-        this.panelManager.switchPanelFolder(panelId, folderKey, reason, afterSwitch),
+      switchPanelFolder: (panelId, to, reason, afterSwitch) =>
+        this.panelManager.switchPanelFolder(panelId, to, reason, afterSwitch),
       postWorkspaceFolderState: (panelId) => this.panelManager.postWorkspaceFolderState(panelId),
       restoreRetryChanged: (panelId) => this.panelManager.restoreRetryChanged(panelId),
       webviewPrompts: this.webviewPrompts,
@@ -504,11 +529,16 @@ export class ChatPanelProvider {
     this.subscriptions.push(this.folderRegistry.onDidChange(({ added, removed, relabelled }) => {
       this.refreshCompassViews();
       if (added.length === 0 && removed.length === 0 && !relabelled) return;
+      if (added.length > 0) void this.relocations.recordIdentities();
       this.memoryService.setWorkspaceRoots(this.folderRegistry.targets().map((t) => t.fsPath));
       this.storageManager.reloadFolders().catch((err) => log("[ChatPanelProvider] Failed to re-list sessions: %O", err));
     }));
 
     void this.storageManager.setupSessionWatcher();
+    // An interrupted relocation finishes at the next start; the folder registry is built by now.
+    void this.relocations.resumeAtStart().catch((err: unknown) => log("[ChatPanelProvider] Resuming project relocations failed: %O", err));
+    // A folder's identity can be read only while it exists, so each one is recorded for a later clone or move to match.
+    void this.relocations.recordIdentities();
     // A new, deleted or adopted worktree changes which session dirs a project lists (AD12 Listing).
     if (worktreeHost) {
       const registry = worktreeHost.registry;
@@ -619,6 +649,10 @@ export class ChatPanelProvider {
 
   getMemoryService(): MemoryService {
     return this.memoryService;
+  }
+
+  getProjectRelocations(): ProjectRelocations {
+    return this.relocations;
   }
 
   /**
@@ -1048,15 +1082,17 @@ export class ChatPanelProvider {
    *
    * Resolves only once Chrome has exited (`BrowserService.dispose()`), so it does not outlive the host,
    * every panel's session is disposed, which releases its session lease, the memory database has
-   * flushed its queued writes and closed, and the session metadata worker has committed and closed (at most
-   * 2 s). Callers must await it. The synchronous disposals still run first and unconditionally.
+   * flushed its queued writes and closed, and, once no relocation step is running, the session metadata worker has
+   * committed and closed (at most 2 s). Callers must await it. The synchronous disposals still run first and unconditionally.
    */
   async dispose(): Promise<void> {
+    // No relocation step starts after this; a step in flight uses the session index, which closes once it ends.
+    this.relocations.dispose();
+    const storageClosed = this.storageManager.dispose(this.relocations.whenIdle());
     this.compassViews.dispose();
     this.compassRegistry.dispose().catch((err: unknown) => log("[ChatPanelProvider] compass dispose error: %O", err));
     const memoryClosed = this.memoryService.dispose();
     const browserClosed = this.browserService.dispose().catch((err: unknown) => log('[ChatPanelProvider] browser dispose error: %O', err));
-    const storageClosed = this.storageManager.dispose();
     this.workspaceManager.dispose();
     this.settingsManager.dispose();
     this.voiceService.dispose();

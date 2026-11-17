@@ -6,6 +6,8 @@ import { Emitter } from '../../local-services/emitter';
 
 /** The registry reads main makes (WorktreeRegistry's), answered from the records core last published. */
 export interface WorktreeRecordReader {
+  // its core published the records at least once; before that no worktree of it can be judged gone
+  known(): boolean;
   records(): readonly WorktreeRecord[];
   get(id: string): WorktreeRecord | undefined;
   liveChatRecordAt(folder: string): ChatWorktreeRecord | undefined;
@@ -25,17 +27,19 @@ export function localRecord(rootDir: string): (raw: unknown) => WorktreeRecord |
 export function remoteChatRecord(projectPaths: () => readonly string[], os: () => NodeJS.Platform): (raw: unknown) => WorktreeRecord | undefined {
   return (raw) => {
     const candidate = raw as { readonly kind?: unknown; readonly worktreeRoot?: unknown; readonly projectPath?: unknown } | null;
+    // the host's OS is asked only for a record of a listed project: a host with none listed may have no OS known
+    if (candidate?.kind !== 'chat' || !projectPaths().includes(candidate.projectPath as string)) return undefined;
     const target = os();
     const flavor = pathFor({ os: target });
-    if (candidate?.kind !== 'chat' || typeof candidate.worktreeRoot !== 'string' || !flavor.isAbsolute(candidate.worktreeRoot)) return undefined;
-    if (!projectPaths().includes(candidate.projectPath as string)) return undefined;
+    if (typeof candidate.worktreeRoot !== 'string' || !flavor.isAbsolute(candidate.worktreeRoot)) return undefined;
     return validRecord(raw, flavor.dirname(flavor.dirname(candidate.worktreeRoot)), target);
   };
 }
 
 /**
  * A core's worktree registry as main reads it: the records of that core's `worktrees` mirror, each checked by its rule and
- * looked up in the path rules of the OS that core runs on. They outlive a core: a restarted core's first delta replaces them.
+ * looked up in the path rules of the OS that core runs on. They outlive a core: a restarted core's first delta replaces them,
+ * and the registry stays known.
  */
 export class WorktreeRecords implements WorktreeRecordReader, Disposable {
   private readonly valid: (raw: unknown) => WorktreeRecord | undefined;
@@ -43,6 +47,9 @@ export class WorktreeRecords implements WorktreeRecordReader, Disposable {
   private readonly os: () => NodeJS.Platform | undefined;
   private current: readonly WorktreeRecord[] = [];
   private json = '[]';
+  private isKnown = false;
+  // what core published last, which recheck judges again
+  private published: readonly unknown[] = [];
   private readonly changed: Emitter<[]>;
 
   constructor(valid: (raw: unknown) => WorktreeRecord | undefined, log: (line: string) => void, os: () => NodeJS.Platform | undefined = () => undefined) {
@@ -54,16 +61,29 @@ export class WorktreeRecords implements WorktreeRecordReader, Disposable {
 
   /** Takes the records core published; one that fails the registry's rule is dropped, and logged. */
   apply(raw: readonly unknown[]): void {
+    // the first publication changes what the registry answers even when it holds no record
+    const first = !this.isKnown;
+    this.isKnown = true;
+    this.published = raw;
     const records = raw.flatMap((candidate) => {
       const record = this.valid(candidate);
       if (!record) this.log(`[worktrees] dropped a worktree record core published that the registry rule refuses: ${JSON.stringify(candidate)?.slice(0, 300)}`);
       return record ? [record] : [];
     });
     const json = JSON.stringify(records);
-    if (json === this.json) return;
+    if (json === this.json && !first) return;
     this.json = json;
     this.current = records;
     this.changed.fire();
+  }
+
+  /** The rule's inputs changed (a remote host's open projects): the records core published last are judged again. */
+  recheck(): void {
+    if (this.isKnown) this.apply(this.published);
+  }
+
+  known(): boolean {
+    return this.isKnown;
   }
 
   records(): readonly WorktreeRecord[] {

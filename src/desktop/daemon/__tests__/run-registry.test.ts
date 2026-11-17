@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVALID } from '../../core-protocol/schema';
-import { FROZEN_CLIENT_TO_CONTROL, MAX_RUN_TITLE_CHARS } from '../control-messages';
+import { CLIENT_TO_CONTROL, FROZEN_CLIENT_TO_CONTROL, MAX_RUN_TITLE_CHARS } from '../control-messages';
 import { createRunRegistry } from '../run-registry';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -122,6 +122,47 @@ describe('run registry, panels', () => {
     expect(registry.runs()[0]?.state).toBe('background');
     registry.removePanel('panel-1');
     expect(registry.isEmpty()).toBe(true);
+  });
+
+  // the frozen listRuns never carries configuredProviders, so its shape stays as every app reads it
+  it('lists the configured providers only for listOwnRuns, from the latest report, and omits them for a panel that never reported', () => {
+    const registry = createRunRegistry();
+    registry.panelActivity(panel, running, 'device-a');
+    registry.panelActivity({ ...panel, panelId: 'panel-2' }, running, 'device-a');
+    registry.panelProviders('panel-1', ['anthropic']);
+    registry.panelConfiguredProviders('panel-1', ['anthropic', 'openai-codex']);
+    registry.panelConfiguredProviders('panel-1', ['github-copilot']);
+    const own = registry.ownRuns('device-a');
+    expect(own).toEqual([
+      { kind: 'chat', id: 'panel-1', projectKey: '/srv/app', title: 'S1', state: 'running', providers: ['anthropic'], configuredProviders: ['github-copilot'] },
+      { kind: 'chat', id: 'panel-2', projectKey: '/srv/app', title: 'S1', state: 'running', providers: [] },
+    ]);
+    expect(own[1]).not.toHaveProperty('configuredProviders');
+    expect(CLIENT_TO_CONTROL.requests.listOwnRuns.result({ runs: own })).toEqual({ runs: own });
+    expect(registry.runs().some((run) => 'configuredProviders' in run)).toBe(false);
+    expect(FROZEN_CLIENT_TO_CONTROL.requests.listRuns.result({ runs: registry.runs() })).not.toBe(INVALID);
+  });
+
+  it('keeps the configured providers while the panel lives, and forgets them with the panel', () => {
+    const registry = createRunRegistry();
+    registry.panelConfiguredProviders('panel-1', ['openai-codex']);
+    registry.panelActivity(panel, running, 'device-a');
+    expect(registry.ownRuns('device-a')[0]?.configuredProviders).toEqual(['openai-codex']);
+    registry.panelSettled('panel-1');
+    registry.panelActivity(panel, running, 'device-a');
+    expect(registry.ownRuns('device-a')[0]?.configuredProviders).toEqual(['openai-codex']);
+    registry.removePanel('panel-1');
+    registry.panelActivity(panel, running, 'device-a');
+    expect(registry.ownRuns('device-a')[0]).not.toHaveProperty('configuredProviders');
+  });
+
+  it('listOwnRuns refuses configured providers past the bounds of providers', () => {
+    const entry = { kind: 'chat', id: 'panel-1', projectKey: '', title: '', state: 'running', providers: [] };
+    const parse = CLIENT_TO_CONTROL.requests.listOwnRuns.result;
+    expect(parse({ runs: [{ ...entry, configuredProviders: Array.from({ length: 256 }, (_, i) => `p${i}`) }] })).not.toBe(INVALID);
+    expect(parse({ runs: [{ ...entry, configuredProviders: Array.from({ length: 257 }, (_, i) => `p${i}`) }] })).toBe(INVALID);
+    expect(parse({ runs: [{ ...entry, configuredProviders: ['x'.repeat(129)] }] })).toBe(INVALID);
+    expect(parse({ runs: [{ ...entry, configuredProviders: [''] }] })).toBe(INVALID);
   });
 
   it('an idle panel is never a run', () => {

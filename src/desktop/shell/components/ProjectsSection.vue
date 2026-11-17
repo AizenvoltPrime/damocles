@@ -16,6 +16,7 @@ import ProjectGroup from './ProjectGroup.vue';
 import ViewModeToggle from './ViewModeToggle.vue';
 import { moveGroup, moveProject, moveProjectInGroup, stepGroup, stepProject, type OrderedProject, type ReorderResult } from './project-reorder';
 import { distroHint, offersReopenInWsl, reopenFailureText, wslNoticeDistro } from './wsl-reopen';
+import { confirmStopMoving } from '../stop-moving';
 
 const props = defineProps<{
   api: DamoclesShellApi;
@@ -164,6 +165,12 @@ function openConnect(): void {
   void props.api.openConnect();
 }
 
+// main shows a refusal or the move on the project's row
+async function locate(project: ShellProject): Promise<void> {
+  refusal.value = undefined;
+  await props.api.locateProject(project.key);
+}
+
 async function remove(project: ShellProject): Promise<void> {
   refusal.value = undefined;
   const result = await props.api.removeProject(project.key);
@@ -217,6 +224,8 @@ const moveItems = (up: ReorderResult, down: ReorderResult): OverlayMenuItem[] =>
 // A WSL folder reopens in its own distro; a Windows folder in the distro the user picks, through /mnt, after saying what that costs.
 // A rejected reopen is an error main has already shown as a toast.
 const wslWrapped = (project: ShellProject): boolean => project.authority.kind === 'local' && project.wsl !== undefined;
+// a folder that is not there, or one whose move is under way or was refused, shows its Locate notice under the row
+const wrapped = (project: ShellProject): boolean => wslWrapped(project) || project.presence !== undefined || project.relocation !== undefined;
 const reopening = ref<{ readonly name: string; readonly distro: string } | undefined>();
 
 async function reopenInWsl(project: ShellProject, distro: string, picked: boolean): Promise<void> {
@@ -280,13 +289,24 @@ async function reopenInContainer(project: ShellProject): Promise<void> {
 async function openProjectMenu(project: ShellProject, anchor: OverlayRect, element: HTMLElement | null): Promise<void> {
   activeId.value = `p:${project.key}`;
   const hostId = project.authority.hostId;
-  const wslDistro = wslWrapped(project) ? project.wsl?.distro : undefined;
-  const devcontainerConfig = wslWrapped(project) ? undefined : project.devcontainerConfig;
+  // a folder that is not there offers Locate…, or Retry and Stop moving… while its move is paused, and no Trust or Reopen item
+  const present = project.presence === undefined;
+  const locatable = !present && !project.locateUnsupported && project.relocation?.state !== 'running' && project.relocation?.state !== 'paused' && project.relocation?.state !== 'notLocatable';
+  const paused = project.relocation?.state === 'paused';
+  const abandonable = project.relocation?.state === 'paused' && project.relocation.abandonable === true;
+  const wslDistro = present && wslWrapped(project) ? project.wsl?.distro : undefined;
+  const devcontainerConfig = !present || wslWrapped(project) ? undefined : project.devcontainerConfig;
   const rebuildable = project.authority.kind === 'container' && hostOf(project.authority.key)?.container?.origin === 'devcontainer';
   const items: OverlayMenuItem[] = [
-    ...(project.trusted ? [] : [{ kind: 'item', id: 'trust', label: t('projects.trust'), icon: 'shield-check' } as const, { kind: 'separator' } as const]),
+    ...(locatable ? [{ kind: 'item', id: 'locate', label: t('projects.locate.action'), icon: 'folder-search' } as const, { kind: 'separator' } as const] : []),
+    ...(paused ? [
+      { kind: 'item', id: 'retry', label: t('projects.locate.retry'), icon: 'rotate-cw' } as const,
+      ...(abandonable ? [{ kind: 'item', id: 'abandon', label: t('projects.locate.abandon'), icon: 'circle-x', danger: true } as const] : []),
+      { kind: 'separator' } as const,
+    ] : []),
+    ...(project.trusted || !present ? [] : [{ kind: 'item', id: 'trust', label: t('projects.trust'), icon: 'shield-check' } as const, { kind: 'separator' } as const]),
     ...(wslDistro === undefined ? [] : [{ kind: 'item', id: 'reopenInWslDistro', label: t('wsl.notice.reopen'), icon: 'square-terminal', hint: wslDistro } as const, { kind: 'separator' } as const]),
-    ...(offersReopenInWsl(project, props.platform) ? [{ kind: 'item', id: 'reopenInWsl', label: t('projects.reopenInWsl'), icon: 'square-terminal' } as const, { kind: 'separator' } as const] : []),
+    ...(present && offersReopenInWsl(project, props.platform) ? [{ kind: 'item', id: 'reopenInWsl', label: t('projects.reopenInWsl'), icon: 'square-terminal' } as const, { kind: 'separator' } as const] : []),
     ...(devcontainerConfig === undefined ? [] : [{ kind: 'item', id: 'reopenInContainer', label: t('projects.container.reopen'), icon: 'box', hint: devcontainerConfig } as const, { kind: 'separator' } as const]),
     ...(rebuildable ? [{ kind: 'item', id: 'rebuildContainer', label: t('projects.container.rebuild'), icon: 'rotate-cw' } as const, { kind: 'separator' } as const] : []),
     ...(hostId === undefined ? [] : [
@@ -303,6 +323,9 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect, eleme
   if (answer.kind !== 'menu') return;
   const row = rows.value.find((candidate) => candidate.id === `p:${project.key}`);
   if (answer.itemId === 'trust') trust(project);
+  else if (answer.itemId === 'locate') await locate(project);
+  else if (answer.itemId === 'retry') await props.api.retryRelocation(project.key);
+  else if (answer.itemId === 'abandon') await confirmStopMoving(props.api, project, t);
   else if (answer.itemId === 'reopenInWsl') await reopenFolderInWsl(project, anchor);
   else if (answer.itemId === 'reopenInWslDistro' && wslDistro !== undefined) await reopenInWsl(project, wslDistro, false);
   else if (answer.itemId === 'reopenInContainer') await reopenInContainer(project);
@@ -806,7 +829,7 @@ defineExpose({
           :key="project.key"
           v-bind="dragAttrs(`p:${project.key}`)"
           :api="api"
-          :wrapped="wslWrapped(project)"
+          :wrapped="wrapped(project)"
           :notice-distro="wslNoticeDistro(project)"
           :project="project"
           :selected="project.key === selectedKey"
@@ -854,7 +877,7 @@ defineExpose({
               :key="project.key"
               v-bind="dragAttrs(`p:${project.key}`)"
               :api="api"
-              :wrapped="wslWrapped(project)"
+              :wrapped="wrapped(project)"
               :notice-distro="wslNoticeDistro(project)"
               :project="project"
               :selected="project.key === selectedKey"

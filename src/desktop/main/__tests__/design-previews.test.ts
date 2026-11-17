@@ -1,6 +1,6 @@
 import { parseHTML } from 'linkedom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DesignPreviewInfo } from '../../../shared/types/design';
+import type { DesignPreviewAnswer, DesignPreviewInfo } from '../../../shared/types/design';
 import type { DesignReplayProgress } from '../../preload/shell-channels';
 
 const webPreferences: unknown[] = vi.hoisted(() => []);
@@ -47,7 +47,7 @@ interface Harness {
   readonly closed: string[];
 }
 
-function setUp(infoOf: (relPath: string) => DesignPreviewInfo | undefined = (relPath) => info(relPath)): Harness {
+function setUp(infoOf: (relPath: string) => DesignPreviewAnswer = (relPath) => info(relPath)): Harness {
   webPreferences.length = 0;
   const window = fakeWindow(1600);
   const harness = { active: null as string | null, support: 'yes' as DesignSupport, saved: [] as Array<[string, unknown]>, revoked: [] as unknown[], logged: [] as string[], progress: [] as DesignReplayProgress[], closed: [] as string[] } as Harness;
@@ -374,10 +374,13 @@ describe('design preview views (PD-7)', () => {
   it('reloads the views of a design the designer wrote, and only reads the facts again when a chat only began to hold it', async () => {
     const { contents } = await shown(h, 'screens/S1.html');
     h.previews.designChanged('local', 'contacts-1a2b3c4d', []);
+    await flush();
     expect(contents.reload).not.toHaveBeenCalled();
     h.previews.designChanged('ssh:host', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    await flush();
     expect(contents.reload).not.toHaveBeenCalled();
     h.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    await flush();
     expect(contents.reload).toHaveBeenCalledOnce();
   });
 
@@ -422,9 +425,122 @@ describe('design preview views (PD-7)', () => {
   });
 });
 
+describe('a page the design removed', () => {
+  const present = new Set(['screens/S1.html', 'screens/S2.html']);
+  const statusOf = (harness: Harness, relPath: string): string | undefined => harness.previews.tabs().find((tab) => tab.designPreview?.relPath === relPath)?.designPreview?.status;
+  let r: Harness;
+  beforeEach(() => {
+    present.clear();
+    present.add('screens/S1.html').add('screens/S2.html');
+    r = setUp((relPath) => (present.has(relPath) ? info(relPath) : { missing: true }));
+    r.previews.chatSelected(chat);
+  });
+
+  // core answers nothing for a page over the size limit or reached through a link, for a design no chat of it holds, and an
+  // older daemon for a missing page too
+  it('says the page failed, and logs it, when core answers nothing rather than that the page is missing', async () => {
+    const { contents } = await shown(r, 'screens/S1.html');
+    (r.deps as { info: DesignPreviewsDeps['info'] }).info = async () => undefined;
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('failed');
+    expect(r.logged).toContain('[design] design contacts-1a2b3c4d has no readable screen screens/S1.html');
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', []);
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('failed');
+    expect(contents.reload).not.toHaveBeenCalled();
+  });
+
+  it('shows the page again once a chat holds the design whose facts failed', async () => {
+    const { view, contents } = await shown(r, 'screens/S1.html');
+    const answer = (r.deps as { info: DesignPreviewsDeps['info'] }).info;
+    (r.deps as { info: DesignPreviewsDeps['info'] }).info = async () => undefined;
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', []);
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('failed');
+    (r.deps as { info: DesignPreviewsDeps['info'] }).info = answer;
+    vi.mocked(contents.reload).mockImplementationOnce(() => undefined);
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', []);
+    await flush();
+    expect(contents.reload).toHaveBeenCalledOnce();
+    contents.emit('did-start-navigation', { url: contents.getURL(), isMainFrame: true, isSameDocument: false });
+    contents.emit('did-navigate', {}, contents.getURL(), 200);
+    contents.emit('did-finish-load');
+    expect(statusOf(r, 'screens/S1.html')).toBe('ready');
+    expect(view.getVisible()).toBe(true);
+  });
+
+  it('opens a tab whose page is missing as failed, as any page core cannot read', async () => {
+    present.delete('screens/S1.html');
+    r.previews.open(chat, 'contacts-1a2b3c4d', 'screens/S1.html');
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('failed');
+    expect(r.logged).toContain('[design] design contacts-1a2b3c4d has no readable screen screens/S1.html');
+  });
+
+  it('keeps the open tab and says the page was removed, with no reload and the view hidden', async () => {
+    const { view, contents } = await shown(r, 'screens/S1.html');
+    present.delete('screens/S1.html');
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('removed');
+    expect(contents.reload).not.toHaveBeenCalled();
+    expect(view.getVisible()).toBe(false);
+    // a 404 the view commits later never turns the notice into "no page at this address"
+    contents.emit('did-start-navigation', { url: contents.getURL(), isMainFrame: true, isSameDocument: false });
+    contents.emit('did-navigate', {}, contents.getURL(), 404);
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('removed');
+  });
+
+  it('says so on a hidden tab too, and leaves a tab whose page is still there alone', async () => {
+    await shown(r, 'screens/S1.html');
+    const second = await shown(r, 'screens/S2.html');
+    present.delete('screens/S1.html');
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('removed');
+    expect(statusOf(r, 'screens/S2.html')).toBe('ready');
+    expect(second.view.getVisible()).toBe(true);
+  });
+
+  it('shows the page again when a rewind brings it back', async () => {
+    const { view, contents } = await shown(r, 'screens/S1.html');
+    present.delete('screens/S1.html');
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    await flush();
+    present.add('screens/S1.html');
+    // the reload's load is driven by hand, to see the tab between its start and its finish
+    vi.mocked(contents.reload).mockImplementationOnce(() => undefined);
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html', 'screens/S2.html']);
+    await flush();
+    expect(contents.reload).toHaveBeenCalledOnce();
+    expect(statusOf(r, 'screens/S1.html')).toBe('loading');
+    contents.emit('did-start-navigation', { url: contents.getURL(), isMainFrame: true, isSameDocument: false });
+    contents.emit('did-navigate', {}, contents.getURL(), 200);
+    contents.emit('did-finish-load');
+    expect(statusOf(r, 'screens/S1.html')).toBe('ready');
+    expect(view.getVisible()).toBe(true);
+  });
+
+  it('decides from the newest answer when an older one lands after it', async () => {
+    const { contents } = await shown(r, 'screens/S1.html');
+    const answers: Array<(value: DesignPreviewAnswer) => void> = [];
+    (r.deps as { info: DesignPreviewsDeps['info'] }).info = () => new Promise((resolve) => answers.push(resolve));
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    r.previews.designChanged('local', 'contacts-1a2b3c4d', ['screens/S1.html']);
+    answers[1]!(info('screens/S1.html'));
+    await flush();
+    answers[0]!({ missing: true });
+    await flush();
+    expect(statusOf(r, 'screens/S1.html')).toBe('ready');
+    expect(contents.reload).toHaveBeenCalledOnce();
+  });
+});
+
 describe('links between screens', () => {
-  const screens = (relPath: string): DesignPreviewInfo | undefined => {
-    if (relPath === 'screens/gone.html') return undefined;
+  const screens = (relPath: string): DesignPreviewAnswer => {
+    if (relPath === 'screens/gone.html') return { missing: true };
     return relPath.startsWith('screens/S2') ? info(relPath, { screenId: 'S2', title: 'Detail', states: ['default', 'error'] }) : info(relPath);
   };
   const originOf = (contents: FakeContents): string => contents.getURL().slice(0, contents.getURL().indexOf('/screens/'));

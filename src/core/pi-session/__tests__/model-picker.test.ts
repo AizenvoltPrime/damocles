@@ -13,6 +13,7 @@ import type { HeldAuthEntry } from '../../../shared/remote-user';
 function runtimeWith(configured: string[]): PiRuntime {
   const runtime = PiRuntime.get();
   const modelRuntime = {
+    settleCredentialWrites: async () => undefined,
     hasConfiguredAuth: (provider: string) => configured.includes(provider),
     isUsingOAuth: () => false,
     getProviderAuthStatus: (provider: string) => (configured.includes(provider) ? { configured: true, source: 'environment' } : { configured: false }),

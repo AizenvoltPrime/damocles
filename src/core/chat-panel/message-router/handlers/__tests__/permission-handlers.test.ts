@@ -33,6 +33,7 @@ import { buildPlanImplementationMessage } from "../../utils";
 import { computePlanFilePath } from "../../../../paths";
 import type { HandlerContext, HandlerDependencies } from "../../types";
 import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
+import { getPiCodingAgent } from "../../../../pi-session/pi-loader";
 
 function setup() {
   H.events.length = 0;
@@ -313,7 +314,7 @@ describe("resolveDesignApproval", () => {
 
   function approvalPrompt() {
     const { deps, ctx } = setup();
-    const permissionHandler = new PermissionHandler(createFakePlatform());
+    const permissionHandler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     const posted: ExtensionToWebviewMessage[] = [];
     permissionHandler.setPostMessage((m) => posted.push(m));
     const answer = permissionHandler.requestDesignApproval(ask, new AbortController().signal);

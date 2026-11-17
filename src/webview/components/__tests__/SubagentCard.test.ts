@@ -174,3 +174,20 @@ describe('the subagent card status line', () => {
     expect(mountWith({}).get('[data-testid="subagent-status-line"]').text()).toBe('reading files');
   });
 });
+
+describe('the subagent card of a run a rejected call ended', () => {
+  const mountWith = (over: Partial<SubagentState>) => mount(SubagentCard, {
+    props: { subagent: { ...subagent('Explore'), ...over } },
+    global: { plugins: [i18n], stubs: { MarkdownRenderer: true } },
+  });
+
+  it('says who rejected the call', () => {
+    expect(mountWith({ status: 'cancelled', stopReason: 'denied' }).get('[data-testid="subagent-stop-reason"]').text()).toBe('Stopped: you rejected a tool call');
+    expect(mountWith({ status: 'cancelled', stopReason: 'hookDenied' }).get('[data-testid="subagent-stop-reason"]').text()).toBe('Stopped: a hook rejected a tool call');
+  });
+
+  it('shows no such line for another stop, or once the card runs again', () => {
+    expect(mountWith({ status: 'cancelled', stopReason: 'user' }).find('[data-testid="subagent-stop-reason"]').exists()).toBe(false);
+    expect(mountWith({ status: 'running', stopReason: 'denied' }).find('[data-testid="subagent-stop-reason"]').exists()).toBe(false);
+  });
+});

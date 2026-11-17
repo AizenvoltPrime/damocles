@@ -18,7 +18,11 @@ import {
   type LiveSessionMetaSource,
   type SessionMetaIndex,
 } from "../pi-session/session-store";
+import { listRow, type IndexedSession } from "../pi-session/session-store/metadata";
 import { pruneOrphanCheckpointRepos, getCheckpointsBaseDir, getWorkspaceCheckpointDir } from "../pi-session/checkpoints";
+import { folderPresent } from "../pi-session/folder-presence";
+import { currentRelocations, isRelocationPending } from "../project-relocation/current";
+import { currentPathOf } from "../project-relocation/aliases";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { SESSIONS_PAGE_SIZE, type HostInstance } from "./types";
 import type { PanelHost } from "../../platform/window-service";
@@ -26,7 +30,7 @@ import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
 import { perfSpan } from "../perf";
 import { folderKey } from "../workspace-folders/folder-key";
-import { worktreeSessionFolders } from "../worktrees/personal-config";
+import { listedWorktreeRecords, worktreeProjectById } from "../worktrees/personal-config";
 import type { WorktreeRegistry } from "../worktrees/registry";
 import { readDesignLink } from "../design/design-state";
 import { designStateDirOf } from "../design/design-paths";
@@ -60,6 +64,29 @@ export interface StorageManagerConfig {
 
 const newestFirst = (a: StoredSession, b: StoredSession): number => b.timestamp - a.timestamp;
 
+/**
+ * One session directory a Chats list reads (AD12 Listing): an open project's own, a registry record's of an open project, or
+ * both for a chat worktree open as a project itself.
+ */
+interface ListedDir {
+  /** folderKey of the directory. */
+  readonly key: string;
+  /** The first listed folder whose session directory it is. */
+  readonly folder: string;
+  /** Every listed folder whose session directory it is, by folderKey; pi's lossy encoding can give two folders one directory. */
+  readonly folders: ReadonlyMap<string, string>;
+  /** Every open project whose own directory it is, in folder order. */
+  readonly own: readonly FolderTarget[];
+  /** The open project whose registry record's directory it is, with that record's kind and working folder. */
+  readonly record?: { readonly project: FolderTarget; readonly kind: "chat" | "adopted"; readonly workingFolder: string };
+}
+
+/** Where a session lists: the open project it belongs to, and the folder its directory is when not that project's own. */
+interface Listing {
+  readonly folder: FolderTarget;
+  readonly listedFrom?: string;
+}
+
 /** A change to the stored sessions that a list of them shows; no key when every folder's list reloaded. */
 export interface StoredSessionsChange {
   readonly projectKey?: string;
@@ -85,7 +112,7 @@ function sameListing(a: StoredSession, b: StoredSession): boolean {
  * `rows` with each design chat marked `superseded` while its design's `link.json` names another chat (D70, as
  * `SessionDesign.standing` reads it), each link read once; a link that cannot be read leaves its rows unmarked.
  */
-async function withDesignStanding(rows: readonly StoredSession[]): Promise<StoredSession[]> {
+async function withDesignStanding<T extends StoredSession>(rows: readonly T[]): Promise<T[]> {
   const holders = new Map<string, Promise<string | null | undefined>>();
   const holderOf = (designId: string): Promise<string | null | undefined> => {
     let read = holders.get(designId);
@@ -136,6 +163,15 @@ function sameRow(a: StoredSession, b: StoredSession): boolean {
   return [...keys].every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
 }
 
+/**
+ * The folder a session with no worktree entry was started in, mapped through the relocations as of its start, while the session
+ * directory keyed `dirKey` is that folder's; undefined where that directory decides (docs/invariants.md "Worktree chats", Ownership).
+ */
+function startedFolderIn(origin: IndexedSession["origin"], dirKey: string): string | undefined {
+  const started = origin ? currentPathOf(currentRelocations().aliases, origin.cwd, origin.startedAt) : undefined;
+  return started !== undefined && folderKey(piSessionDir(started)) === dirKey ? started : undefined;
+}
+
 export class StorageManager {
   private allSessionsCache: StoredSession[] | null = null;
   /** The one list load in flight; every caller that finds the cache empty shares it. */
@@ -144,14 +180,14 @@ export class StorageManager {
   private sessionsGeneration = 0;
   private promptHistoryCache: string[] | null = null;
   private pendingPromptEntries: string[] = [];
-  /** Folder key to that folder's session-dir watcher. */
+  /** Each listed session directory's watcher, by the directory's folderKey. */
   private readonly sessionWatchers = new Map<string, FileWatcher>();
-  // registry folders' session dirs by folderKey, each watched for the project that lists them
-  private readonly registryWatchers = new Map<string, { readonly projectKey: string; readonly watcher: FileWatcher }>();
   private pendingChangeTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly prunedFolders = new Set<string>();
-  /** Session id to the key of the folder whose session dir holds it. */
+  /** Session id to the key of the open project it lists under. */
   private sessionFolder = new Map<string, string>();
+  /** The session directories the lists read, computed by `reloadFolders` so no update reads the registry. */
+  private listedDirSnapshot: readonly ListedDir[] | null = null;
   /** Sessions read or deleted since the list loaded; a row the list parsed earlier never replaces theirs. */
   private readonly readSinceList = new Set<string>();
   /** Parsed rows applied to the list and not yet pushed or announced, with the projects whose listing they changed. */
@@ -239,19 +275,83 @@ export class StorageManager {
     return this.folders().find((t) => t.key === key);
   }
 
-  /** The open project `key`'s sessions list under: the folder itself, or the project of a registry folder (a chat worktree). */
-  private listingOf(key: string): { folder: FolderTarget; listedFrom?: string } | undefined {
-    const own = this.openFolder(key);
-    if (own) return { folder: own };
-    for (const folder of this.folders()) {
-      const extra = this.registryFoldersOf(folder).find((candidate) => folderKey(candidate) === key);
-      if (extra !== undefined) return { folder, listedFrom: extra };
-    }
-    return undefined;
+  /** The session directories the open projects' lists read as of the last `reloadFolders`, each once: the projects' own first, in folder order. */
+  private listedDirs(): readonly ListedDir[] {
+    this.listedDirSnapshot ??= this.readListedDirs();
+    return this.listedDirSnapshot;
   }
 
-  private stamp(session: StoredSession, folder: FolderTarget): StoredSession {
-    return { ...session, workspaceFolder: { key: folder.key, label: folder.label } };
+  // Asks the registry, which checks each adopted record's folder on disk.
+  private readListedDirs(): ListedDir[] {
+    type Building = { key: string; folder: string; folders: Map<string, string>; own: FolderTarget[]; record?: NonNullable<ListedDir["record"]> };
+    const dirs = new Map<string, Building>();
+    const dirOf = (folder: string, key: string): Building => {
+      const dirKey = folderKey(piSessionDir(folder));
+      let dir = dirs.get(dirKey);
+      if (!dir) dirs.set(dirKey, (dir = { key: dirKey, folder, folders: new Map(), own: [] }));
+      if (!dir.folders.has(key)) dir.folders.set(key, folder);
+      return dir;
+    };
+    const projects = this.folders();
+    for (const own of projects) dirOf(own.fsPath, own.key).own.push(own);
+    for (const project of projects) {
+      for (const record of listedWorktreeRecords(project.fsPath)) dirOf(record.workingFolder, folderKey(record.workingFolder)).record ??= { project, kind: record.kind, workingFolder: record.workingFolder };
+    }
+    return [...dirs.values()];
+  }
+
+  /** The listed directory that is folder `key`'s session directory. */
+  private listedDirOfFolder(key: string): ListedDir | undefined {
+    return this.listedDirs().find((listed) => listed.folders.has(key));
+  }
+
+  /** The listed directory holding a session file's directory. */
+  private listedDirOf(dir: string): ListedDir | undefined {
+    const key = folderKey(dir);
+    return this.listedDirs().find((listed) => listed.key === key);
+  }
+
+  /**
+   * Where a session in `dir` lists (docs/invariants.md "Worktree chats", Ownership): under the project its latest worktree
+   * entry's record names, else under the folder its header names (`originOf`). Undefined when that project is not open.
+   */
+  private listingOf(session: Pick<IndexedSession, "worktree" | "origin">, dir: ListedDir): Listing | undefined {
+    const recorded = session.worktree ? worktreeProjectById(session.worktree.worktreeId) : undefined;
+    const folder = recorded !== undefined
+      ? this.folders().find((open) => folderKey(open.fsPath) === folderKey(recorded))
+      : this.originOf(session.origin, dir);
+    if (!folder) return undefined;
+    return dir.own.some((own) => own.key === folder.key) ? { folder } : { folder, listedFrom: dir.folder };
+  }
+
+  /**
+   * The open project a session with no worktree entry belongs to (docs/invariants.md "Worktree chats", Ownership): the folder its
+   * header names, mapped as of its start, while `dir` is that folder's session directory; else `dir`'s own or adopted project.
+   */
+  private originOf(origin: IndexedSession["origin"], dir: ListedDir): FolderTarget | undefined {
+    const adopted = dir.record?.kind === "adopted" ? dir.record : undefined;
+    const started = startedFolderIn(origin, dir.key);
+    if (started === undefined) return dir.own[0] ?? adopted?.project;
+    const key = folderKey(started);
+    return dir.own.find((own) => folderKey(own.fsPath) === key) ?? (adopted && folderKey(adopted.workingFolder) === key ? adopted.project : undefined);
+  }
+
+  /**
+   * Where the file of `sessionId` is found from `folder` (rule 1, which also searches the folder's project's worktree folders):
+   * `own` in the folder's own session directory and the folder's by the listing's rule (`startedFolderIn`), `other` in any
+   * other place, null when it is found nowhere.
+   */
+  async storedFileFrom(folder: string, sessionId: string): Promise<"own" | "other" | null> {
+    const file = await resolvePiSessionFile(folder, sessionId);
+    if (file === null) return null;
+    const dirKey = folderKey(path.dirname(file));
+    if (dirKey !== folderKey(piSessionDir(folder))) return "other";
+    const started = startedFolderIn((await getPiSessionMetadataByFile(this.metaIndex, file))?.origin, dirKey);
+    return started === undefined || folderKey(started) === folderKey(folder) ? "own" : "other";
+  }
+
+  private stamp(session: IndexedSession, folder: FolderTarget): StoredSession {
+    return { ...listRow(session), workspaceFolder: { key: folder.key, label: folder.label } };
   }
 
   /**
@@ -262,37 +362,33 @@ export class StorageManager {
   private async loadAllSessions(): Promise<StoredSession[]> {
     const generation = this.sessionsGeneration;
     const parsed: Promise<boolean>[] = [];
-    const list = async (folder: FolderTarget, listedFrom?: string): Promise<StoredSession[]> => {
+    const list = async (dir: ListedDir): Promise<StoredSession[]> => {
       const applied: Promise<unknown>[] = [];
-      const { sessions, parsed: listParsed } = await listPiSessions(this.metaIndex, listedFrom ?? folder.fsPath, (rows) => {
-        applied.push(this.upsertSessionsInCache(rows, folder.key, generation, { fromList: { listedFrom } })
-          .catch((err) => log("[StorageManager] applying parsed session rows failed for %s: %O", folder.fsPath, err)));
+      const { sessions, parsed: listParsed } = await listPiSessions(this.metaIndex, dir.folder, (rows) => {
+        applied.push(this.upsertSessionsInCache(rows, dir.key, generation, { fromList: true })
+          .catch((err) => log("[StorageManager] applying parsed session rows failed for %s: %O", dir.folder, err)));
       });
       // Every batch arrives before the list ends, so `applied` is complete by then.
       parsed.push(listParsed.then(async (complete) => {
         await Promise.all(applied);
         return complete;
       }));
-      return (await withDesignStanding(sessions)).map((s) => (listedFrom !== undefined ? { ...this.stamp(s, folder), listedFrom } : this.stamp(s, folder)));
+      return (await withDesignStanding(sessions)).flatMap((s) => {
+        const listing = this.listingOf(s, dir);
+        return listing ? [this.listed(s, listing)] : [];
+      });
     };
-    const perFolder = await Promise.all(this.folders().map(async (folder) => {
-      void this.pruneOrphanCheckpointReposOnce(folder);
-      const own = await list(folder);
-      const extras = this.registryFoldersOf(folder);
-      if (extras.length === 0) return own;
-      const listed = await Promise.all(extras.map((extra) => list(folder, extra)));
-      const unique = new Map<string, StoredSession>();
-      for (const session of [...own, ...listed.flat()]) if (!unique.has(session.id)) unique.set(session.id, session);
-      return [...unique.values()];
-    }));
+    for (const folder of this.folders()) void this.pruneOrphanCheckpointReposOnce(folder);
+    const perDir = await Promise.all(this.listedDirs().map(list));
     if (generation === this.sessionsGeneration) this.sessionsParsed = { generation, done: Promise.all(parsed).then((lists) => lists.every(Boolean)) };
-    return perFolder.flat().sort(newestFirst);
+    // each session once, the copy in its project's own directory first
+    const unique = new Map<string, StoredSession>();
+    for (const session of perDir.flat()) if (!unique.has(session.id)) unique.set(session.id, session);
+    return [...unique.values()].sort(newestFirst);
   }
 
-  /** The registry folders whose session dirs list under `folder`, less any open as a project itself. */
-  private registryFoldersOf(folder: FolderTarget): string[] {
-    const open = new Set(this.folders().map((t) => t.key));
-    return worktreeSessionFolders(folder.fsPath).filter((extra) => !open.has(folderKey(extra)));
+  private listed(session: IndexedSession, listing: Listing): StoredSession {
+    return listing.listedFrom !== undefined ? { ...this.stamp(session, listing.folder), listedFrom: listing.listedFrom } : this.stamp(session, listing.folder);
   }
 
   /** The cached session list, loading it once when empty. A load overtaken by an invalidation is discarded and redone. */
@@ -334,6 +430,11 @@ export class StorageManager {
     this.prunedFolders.add(folder.key);
     return (async () => {
       try {
+        // A missing folder gets no session dir, and is pruned once it is back; a relocation moves repos ahead of their session files.
+        if (isRelocationPending(folder.fsPath) || !(await folderPresent(folder.fsPath))) {
+          this.prunedFolders.delete(folder.key);
+          return;
+        }
         const dir = ensurePiSessionDir(folder.fsPath);
         const files = await fs.promises.readdir(dir);
         const liveBases = new Set(files.filter(isPiSessionFile).map((f) => path.basename(f, ".jsonl")));
@@ -415,36 +516,38 @@ export class StorageManager {
   }
 
   /**
-   * The open folder whose session dir holds `sessionId`, else undefined. The id is only ever matched
+   * The open project whose list holds `sessionId` (AD12 Listing), else undefined. The id is only ever matched
    * against directory entries of open folders, so a webview-supplied id cannot name another path.
    */
   async folderOf(sessionId: string): Promise<FolderTarget | undefined> {
-    const indexed = this.sessionFolder.get(sessionId);
+    const indexed = this.allSessionsCache?.find((s) => s.id === sessionId)?.workspaceFolder?.key ?? this.sessionFolder.get(sessionId);
     const known = indexed !== undefined ? this.openFolder(indexed) : undefined;
     if (known) return known;
     for (const folder of this.folders()) {
-      if ((await resolvePiSessionFile(folder.fsPath, sessionId)) !== null) {
-        this.sessionFolder.set(sessionId, folder.key);
-        return folder;
-      }
+      const file = await resolvePiSessionFile(folder.fsPath, sessionId);
+      if (file === null) continue;
+      // rule 1 finds the file from every folder of its project, while the session itself names the project it lists under
+      const dir = this.listedDirOf(path.dirname(file));
+      if (!dir) return undefined;
+      // A row the index cannot give (a worker error, a file that does not parse) lists by its directory alone.
+      const listing = this.listingOf((await getPiSessionMetadataByFile(this.metaIndex, file)) ?? {}, dir);
+      if (!listing) return undefined;
+      this.sessionFolder.set(sessionId, listing.folder.key);
+      return listing.folder;
     }
     return undefined;
   }
 
-  /** Follow folder adds, removes and relabels: one watcher per open folder, then a fresh list. */
+  /** Follow folder adds, removes and relabels: one watcher per listed session dir, then a fresh list. */
   async reloadFolders(): Promise<void> {
+    this.listedDirSnapshot = this.readListedDirs();
     const open = new Set(this.folders().map((t) => t.key));
+    // A registry folder's watcher goes with its project and with its record.
+    const listed = new Set(this.listedDirs().map((dir) => dir.key));
     for (const [key, watcher] of this.sessionWatchers) {
-      if (open.has(key)) continue;
+      if (listed.has(key)) continue;
       watcher.dispose();
       this.sessionWatchers.delete(key);
-    }
-    // A registry folder's watcher goes with its project, with its record and once the folder opens as a project itself.
-    const listed = new Set(this.folders().flatMap((folder) => this.registryFoldersOf(folder).map(folderKey)));
-    for (const [dirKey, entry] of this.registryWatchers) {
-      if (open.has(entry.projectKey) && listed.has(dirKey)) continue;
-      entry.watcher.dispose();
-      this.registryWatchers.delete(dirKey);
     }
     // A folder re-added later is pruned again, since its sessions may have changed while it was closed.
     for (const key of this.prunedFolders) if (!open.has(key)) this.prunedFolders.delete(key);
@@ -477,15 +580,20 @@ export class StorageManager {
     this.emitChange({ projectKey: folderKey });
   }
 
-  async addOrUpdateSession(sessionId: string, folderKey: string): Promise<void> {
-    const listing = this.listingOf(folderKey);
-    if (!listing) return;
+  /** A chat announces its session under its working folder; the file's directory and the session's entry decide its list. */
+  async addOrUpdateSession(sessionId: string, workingFolderKey: string): Promise<void> {
+    const named = this.listedDirOfFolder(workingFolderKey);
+    const workingFolder = named?.folders.get(workingFolderKey);
+    if (!named || workingFolder === undefined) return;
     const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
     const generation = this.sessionsGeneration;
+    const file = this.liveSession(sessionId)?.liveSessionFile() ?? (await resolvePiSessionFile(workingFolder, sessionId)) ?? undefined;
+    const dir = file !== undefined ? this.listedDirOf(path.dirname(file)) : named;
+    if (!dir) return;
     const live = this.liveMetadata(sessionId);
     const source = live !== undefined ? "live" : "file";
-    const metadata = live !== undefined ? live : await getPiSessionMetadata(this.metaIndex, listing.listedFrom ?? listing.folder.fsPath, sessionId);
-    const applied = metadata ? await this.upsertSessionsInCache([metadata], listing.folder.key, generation, listing.listedFrom !== undefined ? { listedFrom: listing.listedFrom } : undefined) : false;
+    const metadata = live !== undefined ? live : await getPiSessionMetadata(this.metaIndex, dir.folder, sessionId);
+    const applied = metadata ? await this.upsertSessionsInCache([metadata], dir.key, generation) : false;
     span.end({ source, applied });
   }
 
@@ -510,50 +618,36 @@ export class StorageManager {
     return { history: pageItems, hasMore };
   }
 
-  /** Watch `folderKey`'s session dir (its project's, for a registry folder), or every open folder's when omitted. Idempotent per folder. */
-  async setupSessionWatcher(folderKey?: string): Promise<void> {
-    const listed = folderKey !== undefined ? this.listingOf(folderKey)?.folder : undefined;
-    const targets = folderKey !== undefined ? (listed ? [listed] : []) : this.folders();
-    for (const folder of targets) await this.watchFolder(folder);
+  /** Watch the session dir of the folder `workingFolderKey` when a list reads it, or every listed one when omitted. Idempotent per dir. */
+  async setupSessionWatcher(workingFolderKey?: string): Promise<void> {
+    const dirs = this.listedDirs();
+    for (const dir of workingFolderKey !== undefined ? dirs.filter((listed) => listed.folders.has(workingFolderKey)) : dirs) await this.watchDir(dir);
   }
 
-  private async watchFolder(folder: FolderTarget): Promise<void> {
-    // Rule 1: the project's registry folders' session dirs are watched under the project's key.
-    for (const extra of this.registryFoldersOf(folder)) {
-      const dirKey = folderKey(extra);
-      if (this.registryWatchers.has(dirKey)) continue;
-      // Not created here: a watch on a missing directory starts once it appears, and only a session there creates it.
-      const watcher = this.fileWatchers.watch(piSessionDir(extra), "*.jsonl");
-      const key = folder.key;
-      watcher.onDidCreate((filePath) => {
-        this.handleSessionFileCreated(filePath, key).catch((err) => log("[StorageManager] session file create upsert failed for %s: %O", filePath, err));
-      });
-      watcher.onDidChange((filePath) => this.handleSessionFileChanged(filePath, key));
-      watcher.onDidDelete((filePath) => this.handleSessionFileDeleted(filePath));
-      this.registryWatchers.set(dirKey, { projectKey: key, watcher });
+  private async watchDir(dir: ListedDir): Promise<void> {
+    if (this.sessionWatchers.has(dir.key)) return;
+    let sessionDir = piSessionDir(dir.folder);
+    if (dir.own.length > 0) {
+      // pi writes to the Damocles-owned pi tree dir (created here so the watcher attaches even before
+      // the first session); a missing folder's existing one is watched, and none is created for it.
+      if (await folderPresent(dir.folder)) sessionDir = ensurePiSessionDir(dir.folder);
+      try {
+        await fs.promises.access(sessionDir);
+      } catch {
+        return;
+      }
+      // Re-checked after the await: a concurrent call may have attached one, or the folder may have closed.
+      if (this.sessionWatchers.has(dir.key) || !this.listedDirs().some((listed) => listed.key === dir.key)) return;
     }
-    if (this.sessionWatchers.has(folder.key)) return;
-
-    // pi writes to the Damocles-owned pi tree dir (created here so the watcher attaches even before
-    // the first session).
-    const sessionDir = ensurePiSessionDir(folder.fsPath);
-
-    try {
-      await fs.promises.access(sessionDir);
-    } catch {
-      return;
-    }
-    // Re-checked after the await: a concurrent call may have attached one, or the folder may have closed.
-    if (this.sessionWatchers.has(folder.key) || !this.openFolder(folder.key)) return;
-
-    const key = folder.key;
+    // A registry folder's is not created here: a watch on a missing directory starts once it appears, and only a session there creates it.
     const watcher = this.fileWatchers.watch(sessionDir, "*.jsonl");
+    // An event's path may spell the directory another way (an 8.3 name, a link), so updates go by the watched directory's key.
     watcher.onDidCreate((filePath) => {
-      this.handleSessionFileCreated(filePath, key).catch((err) => log("[StorageManager] session file create upsert failed for %s: %O", filePath, err));
+      this.handleSessionFileCreated(filePath, dir.key).catch((err) => log("[StorageManager] session file create upsert failed for %s: %O", filePath, err));
     });
-    watcher.onDidChange((filePath) => this.handleSessionFileChanged(filePath, key));
+    watcher.onDidChange((filePath) => this.handleSessionFileChanged(filePath, dir.key));
     watcher.onDidDelete((filePath) => this.handleSessionFileDeleted(filePath));
-    this.sessionWatchers.set(key, watcher);
+    this.sessionWatchers.set(dir.key, watcher);
   }
 
   pushSessionsToAllPanels(): void {
@@ -587,30 +681,30 @@ export class StorageManager {
     }
   }
 
-  async dispose(): Promise<void> {
+  /** Stops watching at once, and closes the session index once `indexReleased` settles. */
+  async dispose(indexReleased: Promise<void> = Promise.resolve()): Promise<void> {
     for (const watcher of this.sessionWatchers.values()) watcher.dispose();
     this.sessionWatchers.clear();
-    for (const entry of this.registryWatchers.values()) entry.watcher.dispose();
-    this.registryWatchers.clear();
     for (const timer of this.pendingChangeTimers.values()) {
       clearTimeout(timer);
     }
     this.pendingChangeTimers.clear();
     if (this.parsedRowsPush) clearTimeout(this.parsedRowsPush.timer);
     this.parsedRowsPush = null;
+    await indexReleased;
     await this.metaIndex.close();
   }
 
-  private async handleSessionFileCreated(filePath: string, folderKey: string): Promise<void> {
-    return this.handlePiSessionFileUpsert(filePath, folderKey);
+  private async handleSessionFileCreated(filePath: string, dirKey: string): Promise<void> {
+    return this.handlePiSessionFileUpsert(filePath, dirKey);
   }
 
-  private handleSessionFileChanged(filePath: string, folderKey: string): void {
-    return this.handlePiSessionFileChanged(filePath, folderKey);
+  private handleSessionFileChanged(filePath: string, dirKey: string): void {
+    return this.handlePiSessionFileChanged(filePath, dirKey);
   }
 
   /** A live session's metadata from its in-memory manager, or undefined when no live session here holds the file. */
-  private liveMetadata(sessionId: string, filePath?: string): StoredSession | null | undefined {
+  private liveMetadata(sessionId: string, filePath?: string): IndexedSession | null | undefined {
     const source = this.liveSession(sessionId);
     return source ? readLiveSessionMetadata(this.metaIndex, source, sessionId, filePath) : undefined;
   }
@@ -618,38 +712,36 @@ export class StorageManager {
   /**
    * Applied after the load too, because a shared load may have read the file before this change. Dropped
    * when the list was invalidated after `generation` (the list loaded since then read the file after the
-   * metadata was) or the folder closed. `fromList` marks rows the list parsed after it loaded, read when it
-   * listed: one never replaces a row read since, nor one listed from another dir (`listedFrom`, a registry
-   * folder's session dir). Returns whether any row was applied.
+   * metadata was) or no list reads the dir any more; a row whose project is not open is not listed. `fromList`
+   * marks rows the list parsed after it loaded, read when it listed: one never replaces a row read since, nor
+   * one listed from another dir (`listedFrom`, a registry folder's session dir). Returns whether any row was applied.
    */
   private async upsertSessionsInCache(
-    rows: readonly StoredSession[],
-    folderKey: string,
+    rows: readonly IndexedSession[],
+    dirKey: string,
     generation: number,
-    options?: { ifChanged?: boolean; fromList?: { listedFrom: string | undefined }; listedFrom?: string },
+    options?: { ifChanged?: boolean; fromList?: boolean },
   ): Promise<boolean> {
-    if (rows.length === 0 || generation !== this.sessionsGeneration || !this.openFolder(folderKey)) return false;
+    if (rows.length === 0 || generation !== this.sessionsGeneration) return false;
     const standing = await withDesignStanding(rows);
     const all = await this.ensureSessionsLoaded();
-    const folder = this.openFolder(folderKey);
-    if (generation !== this.sessionsGeneration || !folder) return false;
+    const dir = this.listedDirs().find((listed) => listed.key === dirKey);
+    if (generation !== this.sessionsGeneration || !dir) return false;
+    const changedProjects = new Set<string>();
     let applied = false;
-    let changed = false;
     for (const metadata of standing) {
+      const listing = this.listingOf(metadata, dir);
+      if (!listing) continue;
       const existingIndex = all.findIndex((s) => s.id === metadata.id);
       const existing = existingIndex >= 0 ? all[existingIndex]! : undefined;
-      const fromList = options?.fromList;
-      if (fromList) {
+      if (options?.fromList) {
         // The project's own dir wins over a registry folder's, as in `loadAllSessions`; between registry folders the first listed wins.
-        if (this.readSinceList.has(metadata.id) || (existing && existing.listedFrom !== fromList.listedFrom && fromList.listedFrom !== undefined)) continue;
+        if (this.readSinceList.has(metadata.id) || (existing && existing.listedFrom !== listing.listedFrom && listing.listedFrom !== undefined)) continue;
       } else {
         this.readSinceList.add(metadata.id);
       }
-      // A file stays in the session dir the list found it in, which its metadata does not name.
-      const stamped = this.stamp(metadata, folder);
-      const listedFrom = fromList ? fromList.listedFrom : (options?.listedFrom ?? existing?.listedFrom);
-      const row = listedFrom !== undefined ? { ...stamped, listedFrom } : stamped;
-      this.sessionFolder.set(metadata.id, folder.key);
+      const row = this.listed(metadata, listing);
+      this.sessionFolder.set(metadata.id, listing.folder.key);
       if (existing) {
         if (options?.ifChanged && sameRow(existing, row)) continue;
         all[existingIndex] = row;
@@ -657,21 +749,24 @@ export class StorageManager {
         all.push(row);
       }
       applied = true;
-      if (!existing || !sameListing(existing, row)) changed = true;
+      if (!existing || !sameListing(existing, row) || existing.workspaceFolder?.key !== row.workspaceFolder?.key) {
+        changedProjects.add(listing.folder.key);
+        if (existing?.workspaceFolder && existing.workspaceFolder.key !== listing.folder.key) changedProjects.add(existing.workspaceFolder.key);
+      }
     }
     if (!applied) return false;
     all.sort(newestFirst);
     if (options?.fromList) {
-      this.announceParsedRows(changed ? folder.key : undefined);
+      this.announceParsedRows(changedProjects);
       return true;
     }
     this.pushSessionsToAllPanels();
-    if (changed) this.emitChange({ projectKey: folder.key });
+    for (const projectKey of changedProjects) this.emitChange({ projectKey });
     return true;
   }
 
   /** A cold list delivers its parsed rows in many batches, so their pushes and change events go out once per `PARSED_ROWS_PUSH_MS`. */
-  private announceParsedRows(changedProject: string | undefined): void {
+  private announceParsedRows(changedProjects: ReadonlySet<string>): void {
     this.parsedRowsPush ??= {
       changed: new Set(),
       timer: setTimeout(() => {
@@ -682,7 +777,7 @@ export class StorageManager {
         for (const projectKey of pending.changed) this.emitChange({ projectKey });
       }, PARSED_ROWS_PUSH_MS),
     };
-    if (changedProject !== undefined) this.parsedRowsPush.changed.add(changedProject);
+    for (const projectKey of changedProjects) this.parsedRowsPush.changed.add(projectKey);
   }
 
   private handleSessionFileDeleted(filePath: string): void {
@@ -693,11 +788,11 @@ export class StorageManager {
   // pi session files are named `<timestamp>_<id>.jsonl`, so the file base is NOT the session id and
   // metadata is read from the file itself; debounce timers are keyed by file path.
 
-  private async handlePiSessionFileUpsert(filePath: string, folderKey: string): Promise<void> {
+  private async handlePiSessionFileUpsert(filePath: string, dirKey: string): Promise<void> {
     if (!isPiSessionFile(filePath)) return;
     // Let pi finish writing the header before the first read.
     await new Promise((resolve) => setTimeout(resolve, 150));
-    await this.upsertFromFile(filePath, folderKey);
+    await this.upsertFromFile(filePath, dirKey);
   }
 
   /**
@@ -705,29 +800,29 @@ export class StorageManager {
    * read: on Windows, reading a file can update its last-access time, which `fs.watch` reports as a
    * change, so the list's own reads would otherwise re-trigger it.
    */
-  private async upsertFromFile(filePath: string, folderKey: string): Promise<void> {
+  private async upsertFromFile(filePath: string, dirKey: string): Promise<void> {
     const generation = this.sessionsGeneration;
     const cached = await currentCachedRow(this.metaIndex, filePath);
     if (cached !== undefined) {
-      if (cached) await this.upsertSessionsInCache([cached], folderKey, generation, { ifChanged: true });
+      if (cached) await this.upsertSessionsInCache([cached], dirKey, generation, { ifChanged: true });
       return;
     }
     const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
     const live = this.liveMetadata(piSessionIdFromFile(filePath), filePath);
     const source = live !== undefined ? "live" : "file";
     const metadata = live !== undefined ? live : await getPiSessionMetadataByFile(this.metaIndex, filePath);
-    const applied = metadata ? await this.upsertSessionsInCache([metadata], folderKey, generation) : false;
+    const applied = metadata ? await this.upsertSessionsInCache([metadata], dirKey, generation) : false;
     span.end({ source, applied });
   }
 
-  private handlePiSessionFileChanged(filePath: string, folderKey: string): void {
+  private handlePiSessionFileChanged(filePath: string, dirKey: string): void {
     if (!isPiSessionFile(filePath)) return;
     const key = filePath;
     const existingTimer = this.pendingChangeTimers.get(key);
     if (existingTimer) clearTimeout(existingTimer);
     const timer = setTimeout(() => {
       this.pendingChangeTimers.delete(key);
-      this.upsertFromFile(filePath, folderKey).catch((err) => log("[StorageManager] session file change upsert failed for %s: %O", filePath, err));
+      this.upsertFromFile(filePath, dirKey).catch((err) => log("[StorageManager] session file change upsert failed for %s: %O", filePath, err));
     }, CHANGE_DEBOUNCE_MS);
     this.pendingChangeTimers.set(key, timer);
   }

@@ -13,6 +13,7 @@ import { createMcpToolName } from '../../pi-session/mcp/naming';
 import { DAMOCLES_PLANS_DIR, isPlanFilePath } from '../../paths';
 import { POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 const HOME = os.homedir();
 const WS = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-rule-ws-')));
@@ -26,7 +27,7 @@ const writeSettings = (dir: string, file: string, permissions: object): void => 
 const setUser = (p: object): void => writeSettings(path.join(HOME, '.damocles'), 'settings.json', p);
 const setProject = (p: object): void => writeSettings(path.join(WS, '.damocles'), 'settings.json', p);
 const handler = (): PermissionHandler => {
-  const h = new PermissionHandler(createFakePlatform());
+  const h = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
   h.setCwd(WS);
   h.setWorkspacePath(WS);
   return h;
@@ -253,7 +254,7 @@ const ctx = (signal?: AbortSignal): unknown => ({ sessionManager: { getSessionId
 describe('a permission check that throws blocks the call', () => {
   it('a read included, as a policy block that does not end the turn', async () => {
     setUser({ deny: ['Read(secret.txt)'] });
-    const h = new PermissionHandler(createFakePlatform());
+    const h = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     h.setWorkspacePath(WS);
     const result = await toolCallHandler(extensionPanel(h))(ev('read', { path: 'notes.txt' }), ctx());
     expect(result?.block).toBe(true);

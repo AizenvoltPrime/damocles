@@ -15,6 +15,7 @@ export function createTrustMirror(endpoint: CoreEndpoint, init: CoreInit, worktr
   const granted = new Listeners<[readonly string[]]>('trust grant');
   const subscription = endpoint.onMirror('trust', (patch) => {
     keys = new Set(patch.keys);
+    // a revoke fires with no folder, so a listener that read trust once at load reads it again
     granted.fire(patch.granted);
   });
   return {

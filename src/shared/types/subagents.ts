@@ -4,6 +4,15 @@ import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
 import type { AgentWindDown } from './wind-down';
 
+/** `denied` and `hookDenied`: pi ended the run after a call the user (with no note) or a PreToolUse hook rejected with `terminate`. */
+export type AgentStopReason = 'user' | 'budget' | 'shutdown' | 'reset' | 'denied' | 'hookDenied';
+
+const STOP_REASONS: ReadonlySet<string> = new Set<AgentStopReason>(['user', 'budget', 'shutdown', 'reset', 'denied', 'hookDenied']);
+
+export function isAgentStopReason(value: unknown): value is AgentStopReason {
+  return typeof value === 'string' && STOP_REASONS.has(value);
+}
+
 export interface SubagentResult {
   content: string;
   totalDurationMs?: number;
@@ -19,6 +28,8 @@ export interface SubagentState {
   description: string;
   prompt: string;
   status: "running" | "completed" | "failed" | "cancelled";
+  /** Why a cancelled agent stopped, when its result recorded one. */
+  stopReason?: AgentStopReason;
   startTime: number;
   endTime?: number;
   messages: ChatMessage[];

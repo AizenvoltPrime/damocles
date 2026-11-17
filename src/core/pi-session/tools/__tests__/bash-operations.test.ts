@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 // The REAL pi operations, because the point of these cases is parity with the implementation replaced.
-import { createLocalBashOperations, getShellConfig, type BashOperations } from '@earendil-works/pi-coding-agent';
+import { createBashToolDefinition, createLocalBashOperations, getShellConfig, type BashOperations, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { createTrackedBashOperations } from '../bash-tool';
+import { createBashTool, createTrackedBashOperations } from '../bash-tool';
 import { createShellJob, killProcessTree } from '../process-tree';
 import { spawn } from 'child_process';
 import { setInterval as timersSetInterval } from 'node:timers';
@@ -348,5 +348,44 @@ describe.runIf(process.platform === 'win32')("the reported repro, end to end", (
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     // Three backgrounded jobs whose parent link was severed within milliseconds of starting.
     expect(await countSleeps()).toBe(0);
+  }, 60_000);
+});
+
+/**
+ * pi #11613 (pi 1.5.2 `test/suite/regressions/11613-bash-timeout-after-shell-exit.test.ts:16`): a background process that keeps writing to the shell's
+ * pipes holds the call past the shell's exit, and a timeout that passes then names the shell's own exit, as pi's tool does.
+ */
+describe('a timeout after the shell exited', () => {
+  const tool = createBashTool({ getShellConfig, createBashToolDefinition } as unknown as PiCodingAgentModule, CWD, { getShellOptions: () => ({}), shellJob: undefined });
+  const pis = createBashToolDefinition(CWD);
+  // Writes about every 10 ms for 1.6 s, longer than the timeout and more often than the exit's output grace. The waits read
+  // bash's own clock (`EPOCHREALTIME`), so no process starts between writes that a loaded machine could stretch past the grace.
+  const TICKER = '(end=$(( ${EPOCHREALTIME/./} + 1600000 )); while (( ${EPOCHREALTIME/./} < end )); do echo tick; next=$(( ${EPOCHREALTIME/./} + 10000 )); while (( ${EPOCHREALTIME/./} < next )); do :; done; done) & sleep 0.2; echo boom >&2; exit 3';
+  const AFTER_EXIT = /Command timed out after 1 seconds\. The shell exited with code 3 after \d+(\.\d)? seconds, but background processes it started kept writing output until the timeout\.$/;
+
+  const messageOf = (definition: Pick<ToolDefinition, 'execute'>, command: string, timeout: number): Promise<string> =>
+    (definition.execute('t', { command, timeout } as never, undefined, undefined, undefined as never) as Promise<unknown>).then(
+      () => 'resolved',
+      (error: unknown) => (error as Error).message,
+    );
+
+  it('reports the exit code and time of a shell whose background processes kept writing until the timeout, as pi does', async () => {
+    const [ours, theirs] = [await messageOf(tool, TICKER, 1), await messageOf(pis as unknown as ToolDefinition, TICKER, 1)];
+
+    for (const message of [ours, theirs]) {
+      expect(message).toContain('boom');
+      expect(message).toMatch(AFTER_EXIT);
+    }
+  }, 60_000);
+
+  it('keeps the plain timeout message when the shell was still running at the deadline', async () => {
+    expect(await messageOf(tool, 'echo started; sleep 30', 0.3)).toMatch(/started\s+Command timed out after 0\.3 seconds$/);
+  }, 30_000);
+
+  it('keeps each call\'s exit to that call', async () => {
+    const [timedOut, plain] = await Promise.all([messageOf(tool, TICKER, 1), messageOf(tool, 'sleep 30', 1)]);
+
+    expect(timedOut).toMatch(AFTER_EXIT);
+    expect(plain).toMatch(/Command timed out after 1 seconds$/);
   }, 60_000);
 });

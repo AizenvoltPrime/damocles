@@ -4,6 +4,7 @@ import { PermissionState } from '../../state';
 import { PermissionHandler } from '../..';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
+import { getPiCodingAgent } from '../../../pi-session/pi-loader';
 
 const ASK: DesignApprovalAsk = {
   designId: 'contacts-abcd1234',
@@ -106,7 +107,7 @@ describe('DesignApprovalManager', () => {
 
 describe('PermissionHandler and the designApproval prompt', () => {
   function handlerWith() {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     const posted: ExtensionToWebviewMessage[] = [];
     handler.setPostMessage((m) => posted.push(m));
     return { handler, posted };

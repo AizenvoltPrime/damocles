@@ -17,12 +17,14 @@ import { scmSection, setSection } from './support/scm';
 import { activeTerminal, openTerminal, runInTerminal } from './support/terminal';
 import { addProject, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { holdFile, registryRecords, worktreeRepo, worktreesRoot } from './support/worktree-repo';
-import { clickSectionAction } from './support/shell-ui';
+import type { HermeticHome } from './support/hermetic';
+import { clickSectionAction, listChats } from './support/shell-ui';
 import { chatRow, edit, filesChip, HELD_SETUP, liveRecords, openRowWorktreeMenu, optIn, send, setupReview, shownFolder, withStub } from './support/worktree-chat';
 import { submenuItem } from './support/scm';
 
 // Worktree chats past the first send (plan slice 12a): MCP in a worktree chat, the held prompt, Delete
-// with a running terminal, Compare with Workspace, a restart, removing and re-adding the project, removing it while a first
+// with a running terminal, Compare with Workspace, a restart, removing and re-adding the project, a chat worktree opened as a
+// project beside its project's chats working there (a /clear there, removing the project), removing it while a first
 // message waits, the palette's hand-off commands, the leftover report, a worktree removed in a terminal, Delete of a leftover
 // or a watched worktree holding .asar archives, and the .asar files a new worktree gets.
 
@@ -32,6 +34,14 @@ const windows = process.platform === 'win32';
 const INTEGRATED = windows ? 'windows-powershell' : 'bash';
 const SKIP_PERMISSIONS = { 'damocles.dangerouslySkipPermissions': true };
 const messageDialog = (overlay: Page): Locator => overlay.getByTestId('overlay-message');
+
+// The one session file of `sessionId` under pi's agent folder, and its text.
+function sessionFileOf(h: HermeticHome, sessionId: string): string {
+  const found = (fs.readdirSync(h.agentDir, { recursive: true }) as string[]).filter((entry) => entry.endsWith(`_${sessionId}.jsonl`));
+  expect(found).toHaveLength(1);
+  return path.join(h.agentDir, found[0]!);
+}
+const sessionText = (h: HermeticHome, sessionId: string): string => fs.readFileSync(sessionFileOf(h, sessionId), 'utf8');
 
 async function turn(tab: Page, text: string, done: string): Promise<void> {
   await send(tab, text);
@@ -357,7 +367,7 @@ test('removing the project unloads its worktree chats and keeps their worktrees;
     const [record] = liveRecords(home);
     const shell = await shellPage(app);
     const projectKey = (await shellState(app)).selected.projectKey!;
-    expect(await shell.evaluate((key) => window.damoclesShell!.removeProject(key), projectKey)).toEqual({ ok: true });
+    expect(await shell.evaluate((key) => window.damoclesShell!.removeProject(key), projectKey)).toEqual({ ok: true, removed: true });
     await expect.poll(async () => (await shellState(app)).projects.some((project) => project.key === projectKey)).toBe(false);
     expect(liveRecords(home).map((each) => each.id)).toEqual([record!.id]);
     expect(fs.existsSync(record!.worktreeRoot)).toBe(true);
@@ -368,6 +378,135 @@ test('removing the project unloads its worktree chats and keeps their worktrees;
     await chatRow(shell, 'Outlive the project').click();
     const again = await activeChat(app);
     await expect(again.getByTestId('chat-header-worktree')).toContainText(record!.branch!);
+  });
+});
+
+// docs/invariants.md "Worktree chats", Ownership: a chat worktree open as a project lists only its own chats, which record no
+// worktree entry, and its project keeps the chats of it working there, loaded and stored, while the folder is open.
+test('a chat worktree opened as a project lists its own chats alone, and its project keeps its chats working there, loaded and stored (Ownership)', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'));
+  await withStub(home, {}, async (stub) => {
+    stub.replies.push({ chunks: ['Working in the worktree'] }, { chunks: ['The worktree\'s own reply'] });
+    const { app } = await launch();
+    await openProjectChat(app, repo.project);
+    const projectKey = (await shellState(app)).selected.projectKey!;
+    const tab = await optIn(app);
+    await turn(tab, 'In the worktree', 'Working in the worktree');
+    const [record] = liveRecords(home);
+    const worktreeChat = (await listChats(app, projectKey)).chats.find((chat) => chat.title === 'In the worktree')?.id;
+    expect(worktreeChat).toBeDefined();
+    const stored = async (key: string, title: string): Promise<string[]> => {
+      const shell = await shellPage(app);
+      const list = await shell.evaluate(async ([k, q]) => window.damoclesShell!.searchChats(k!, q!, (await window.damoclesShell!.getState()).revision), [key, title]);
+      return (list?.chats ?? []).map((chat) => chat.id);
+    };
+
+    const known = [await activeChat(app)];
+    await addProject(app, record!.workingFolder, true);
+    const state = await shellState(app);
+    const worktreeKey = state.selected.projectKey!;
+    expect(worktreeKey).not.toBe(projectKey);
+    expect(state.projects.find((project) => project.key === worktreeKey)?.name).toBe(path.basename(record!.workingFolder));
+    const ownTab = await nextChat(app, known);
+    await turn(ownTab, 'Own chat of the worktree', 'The worktree\'s own reply');
+    const ownChat = (await listChats(app, worktreeKey)).chats.find((chat) => chat.title === 'Own chat of the worktree')?.id;
+    expect(ownChat).toBeDefined();
+    await expect.poll(async () => (await listChats(app, worktreeKey)).chats.map((chat) => [chat.id, chat.loaded])).toEqual([[ownChat, true]]);
+    expect((await listChats(app, projectKey)).chats.filter((chat) => chat.id === worktreeChat).map((chat) => chat.loaded)).toEqual([true]);
+    expect((await listChats(app, projectKey)).chats.map((chat) => chat.id)).not.toContain(ownChat);
+    expect(await stored(projectKey, 'In the worktree')).toEqual([worktreeChat]);
+    expect(await stored(worktreeKey, 'In the worktree')).toEqual([]);
+    expect(await stored(worktreeKey, 'Own chat of the worktree')).toEqual([ownChat]);
+    expect(await stored(projectKey, 'Own chat of the worktree')).toEqual([]);
+    // the folder's own chat is no chat of the worktree: no worktree state, and its file records no worktree entry
+    await expect(ownTab.getByTestId('chat-header-worktree')).toHaveCount(0);
+    expect(sessionText(home, ownChat!)).not.toContain('damocles.worktree');
+
+    expect(await (await shellPage(app)).evaluate((key) => window.damoclesShell!.removeProject(key), worktreeKey)).toEqual({ ok: true, removed: true });
+    await expect.poll(async () => (await shellState(app)).projects.some((project) => project.key === worktreeKey)).toBe(false);
+    expect((await listChats(app, projectKey)).chats.filter((chat) => chat.id === worktreeChat).map((chat) => chat.loaded)).toEqual([true]);
+    expect(await stored(projectKey, 'Own chat of the worktree')).toEqual([]);
+    await expect(tab.getByTestId('chat-header-worktree')).toContainText(record!.branch!);
+  });
+});
+
+// A /clear of a chat working in its worktree makes the next file in the worktree's session directory (rule 1).
+test('a chat of the project that cleared in its worktree lists under the project while the worktree is open as a project, and opens live there after a restart', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'));
+  await withStub(home, SKIP_PERMISSIONS, async (stub) => {
+    stub.replies.push({ chunks: ['Before the clear'] }, { chunks: ['After the clear'] });
+    let desktop = await launch();
+    await openProjectChat(desktop.app, repo.project);
+    const projectKey = (await shellState(desktop.app)).selected.projectKey!;
+    const tab = await optIn(desktop.app);
+    await turn(tab, 'Start in the worktree', 'Before the clear');
+    const [record] = liveRecords(home);
+    await postFromWebview(tab, { type: 'clearSession' });
+    await expect(tab.getByText('Before the clear')).toHaveCount(0);
+    await turn(tab, 'Cleared in the worktree', 'After the clear');
+    const cleared = (await listChats(desktop.app, projectKey)).chats.find((chat) => chat.title === 'Cleared in the worktree')?.id;
+    expect(cleared).toBeDefined();
+    // pi names a folder's session directory by its path, which ends in the worktree's id
+    expect(path.basename(path.dirname(sessionFileOf(home, cleared!)))).toContain(record!.id);
+
+    await addProject(desktop.app, record!.workingFolder, true);
+    const worktreeKey = (await shellState(desktop.app)).selected.projectKey!;
+    await expect.poll(async () => (await listChats(desktop.app, projectKey)).chats.map((chat) => chat.id)).toContain(cleared);
+    expect((await listChats(desktop.app, worktreeKey)).chats.map((chat) => chat.id)).not.toContain(cleared);
+    await desktop.close();
+
+    desktop = await launch();
+    const shell = await shellPage(desktop.app);
+    await expect.poll(async () => (await shellState(desktop.app)).projects.map((project) => project.key).sort()).toEqual([projectKey, worktreeKey].sort());
+    await expect.poll(async () => (await listChats(desktop.app, worktreeKey)).chats.map((chat) => chat.id)).not.toContain(cleared);
+    await shell.evaluate((key) => window.damoclesShell!.selectProject(key), projectKey);
+    await chatRow(shell, 'Cleared in the worktree').click();
+    const resumed = await activeChat(desktop.app);
+    await expect(resumed.getByText('After the clear')).toBeVisible();
+    await expect(resumed.getByTestId('chat-header-worktree')).toContainText(record!.branch!);
+    stub.replies.push(edit(path.join(record!.workingFolder, 'a.ts'), 'a = 1', 'a = 4'), { chunks: ['Raised in the worktree'] });
+    await turn(resumed, 'Raise a in the worktree', 'Raised in the worktree');
+    expect(fs.readFileSync(path.join(record!.workingFolder, 'a.ts'), 'utf8')).toBe('export const a = 4;\n');
+    expect(fs.readFileSync(path.join(repo.project, 'a.ts'), 'utf8')).toBe('export const a = 1;\n');
+    expect((await listChats(desktop.app, projectKey)).chats.filter((chat) => chat.id === cleared).map((chat) => chat.loaded)).toEqual([true]);
+    expect((await listChats(desktop.app, worktreeKey)).chats.map((chat) => chat.id)).not.toContain(cleared);
+  });
+});
+
+test('Remove Project with its chat worktree open as a project closes the project\'s chats working there and keeps the worktree\'s own chat (Ownership)', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'));
+  await withStub(home, {}, async (stub) => {
+    stub.replies.push({ chunks: ['Working in the worktree'] }, { chunks: ['The worktree\'s own reply'] });
+    const { app } = await launch();
+    await openProjectChat(app, repo.project);
+    const projectKey = (await shellState(app)).selected.projectKey!;
+    const tab = await optIn(app);
+    await turn(tab, 'In the worktree', 'Working in the worktree');
+    const [record] = liveRecords(home);
+    const known = [await activeChat(app)];
+    await addProject(app, record!.workingFolder, true);
+    const worktreeKey = (await shellState(app)).selected.projectKey!;
+    const ownTab = await nextChat(app, known);
+    await turn(ownTab, 'Own chat of the worktree', 'The worktree\'s own reply');
+    const savedChats = (): string[] => {
+      const file = path.join(home.userData, 'panels.json');
+      return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { chats: Array<{ panelId: string }> }).chats.map((chat) => chat.panelId) : [];
+    };
+    const [projects, own] = [panelIdOf(tab), panelIdOf(ownTab)];
+    await expect.poll(savedChats).toEqual(expect.arrayContaining([projects, own]));
+
+    expect(await (await shellPage(app)).evaluate((key) => window.damoclesShell!.removeProject(key), projectKey)).toEqual({ ok: true, removed: true });
+
+    await expect.poll(async () => (await shellState(app)).projects.map((project) => project.key)).toEqual([worktreeKey]);
+    await expect.poll(() => tab.isClosed()).toBe(true);
+    await expect.poll(savedChats).not.toContain(projects);
+    expect(savedChats()).toContain(own);
+    await expect(ownTab.getByText('The worktree\'s own reply')).toBeVisible();
+    // the folder's list reloads once the folder set changed
+    await expect.poll(async () => (await listChats(app, worktreeKey)).chats.filter((chat) => chat.title === 'Own chat of the worktree').map((chat) => chat.loaded)).toEqual([true]);
+    expect((await listChats(app, worktreeKey)).chats.map((chat) => chat.title)).not.toContain('In the worktree');
+    expect(liveRecords(home).map((each) => each.id)).toEqual([record!.id]);
+    expect(fs.existsSync(record!.worktreeRoot)).toBe(true);
   });
 });
 
@@ -395,7 +534,7 @@ test('Remove Project while a chat\'s first message waits for its worktree asks f
     await expect(question).not.toContainText('terminal');
     await expect(question.getByTestId('overlay-message-cancel')).toBeFocused();
     await question.getByTestId('overlay-message-cancel').click();
-    expect(await cancelled).toEqual({ ok: true });
+    expect(await cancelled).toEqual({ ok: true, removed: false });
     await expect(question).toHaveCount(0);
     expect((await shellState(app)).projects.some((project) => project.key === projectKey)).toBe(true);
     await expect(tab.getByTestId('worktree-status')).toHaveAttribute('data-phase', 'settingUp');
@@ -406,7 +545,7 @@ test('Remove Project while a chat\'s first message waits for its worktree asks f
     const confirmed = removeProject();
     await expect(question).toBeVisible();
     await question.getByTestId('overlay-message-action-0').click();
-    expect(await confirmed).toEqual({ ok: true });
+    expect(await confirmed).toEqual({ ok: true, removed: true });
     expect((await shellState(app)).projects.some((project) => project.key === projectKey)).toBe(false);
     expect(fs.existsSync(record!.worktreeRoot)).toBe(false);
     expect(registryRecords(home)).toEqual([]);

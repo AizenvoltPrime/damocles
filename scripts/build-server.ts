@@ -90,7 +90,7 @@ export function serverRoots(spec: Pick<ServerTarget, 'platform'>): string[] {
   const roots = new Set(DESKTOP_EXTERNALS.filter((name) => !name.startsWith('node:')).map((name) => name.replace(/\/\*+$/, '')));
   roots.delete('electron');
   roots.delete('electron-updater');
-  // Windows never loads @parcel/watcher (file-watcher-factory.ts), and only Windows loads koffi (process-tree.ts).
+  // Windows never loads @parcel/watcher (file-watcher-factory.ts), and only Windows loads koffi (process-tree.ts, dos-devices.ts).
   if (spec.platform === 'win32') roots.delete('@parcel/watcher');
   else roots.delete('koffi');
   roots.add('node-pty');

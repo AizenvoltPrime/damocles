@@ -11,7 +11,7 @@ import type { SystemPromptEnv } from '../permission-gate';
 
 const env: SystemPromptEnv = {
   cwd: '/repo',
-  model: 'fable-5.1',
+  model: 'fable-5.2',
   isGitRepo: true,
   platform: 'win32',
   shell: 'pwsh',

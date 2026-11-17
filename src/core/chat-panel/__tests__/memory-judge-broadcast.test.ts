@@ -99,7 +99,7 @@ describe("memory judge status in open panels", () => {
     expect(judgeUpdates(posted)[0]).toEqual({
       type: "memoryJudgeStatus",
       memoryJudge: { kind: "unknown" },
-      classifierCredentials: { typesafe: "no-key", openrouter: "no-key", openai: "no-key" },
+      classifierCredentials: { typesafe: "no-key", openrouter: "no-key", openai: "no-key", "github-copilot": "signed-out" },
     });
   });
 
@@ -1009,6 +1009,7 @@ describe("key provider status in open panels", () => {
     const second = addPanel(panels, "p2");
     const runtime = PiRuntime.get();
     (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       getProviderAuthStatus: () => ({ configured: false }),
       hasConfiguredAuth: () => false,
       getModelsOfType: () => [],
@@ -1026,6 +1027,7 @@ describe("key provider status in open panels", () => {
   function keyedModelRuntime(environment: ReadonlySet<string> = new Set()) {
     const runtimeKeys = new Map<string, string>();
     return {
+      settleCredentialWrites: async () => undefined,
       getProviderAuthStatus: (provider: string) =>
         runtimeKeys.has(provider) ? { configured: true, source: "runtime" } : environment.has(provider) ? { configured: true, source: "environment" } : { configured: false },
       hasConfiguredAuth: (provider: string) => runtimeKeys.has(provider) || environment.has(provider),
@@ -1102,6 +1104,7 @@ describe("account state in panels that have not started", () => {
     // past its first sync, which republishes every panel on its own
     internals._customProvidersSynced = true;
     internals._modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       getProviderAuthStatus: () => ({ configured: false }),
       hasConfiguredAuth: () => false,
       getModelsOfType: () => [],
@@ -1253,7 +1256,7 @@ describe("account state on a daemon's core chat two devices show", () => {
     expect(judgeUpdates(view("view-b"))[0]).toEqual({
       type: "memoryJudgeStatus",
       memoryJudge: { kind: "unknown" },
-      classifierCredentials: { typesafe: "no-key", openrouter: "no-key", openai: "no-key" },
+      classifierCredentials: { typesafe: "no-key", openrouter: "no-key", openai: "no-key", "github-copilot": "signed-out" },
     });
   });
 
@@ -1577,6 +1580,7 @@ describe("account state on a daemon's core chat two devices show", () => {
     const runtime = PiRuntime.get();
     // pi's availability snapshot: the host holds none of its own; adopted as init adopts pi's
     const modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       hasConfiguredAuth: () => false,
       isUsingOAuth: () => false,
       getProviderAuthStatus: () => ({ configured: false }),

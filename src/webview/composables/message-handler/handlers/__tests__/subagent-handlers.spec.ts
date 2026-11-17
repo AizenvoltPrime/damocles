@@ -8,6 +8,8 @@ import { subagentStatusLine, useSubagentStore } from '@/stores/useSubagentStore'
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { createUIHandlers } from '../ui-handlers';
+import { createToolHandlers } from '../tool-handlers';
+import { subagentStopReasonKey } from '@/composables/useTeamFormatting';
 import { i18n } from '@/i18n';
 import { defined } from '@/__tests__/helpers';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
@@ -174,10 +176,38 @@ describe('subagentUsageUpdate', () => {
   });
 });
 
+describe('an Agent result for a run a rejected call ended', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('ends the card stopped with the stop reason the result carries, which the card names', () => {
+    const ctx = context();
+    const store = ctx.stores.subagentStore;
+    store.registerAgentTool('toolu_1', { subagent_type: 'general-purpose', description: 'run the tests', prompt: 'p' });
+    const result = JSON.stringify({ content: [{ type: 'text', text: 'partial' }], agentId: 'agent-1', agentStatus: 'stopped', agentStopReason: 'denied' });
+    defined(createToolHandlers().toolCompleted, 'toolCompleted')({ type: 'toolCompleted', toolUseId: 'toolu_1', toolName: 'Agent', result }, ctx);
+
+    const card = defined(store.subagents['toolu_1'], 'card');
+    expect(card).toMatchObject({ status: 'cancelled', stopReason: 'denied' });
+    expect(i18n.global.t(defined(subagentStopReasonKey(card), 'stop reason key'))).toBe('Stopped: you rejected a tool call');
+  });
+
+  it('keeps no stop reason on a card that completed', () => {
+    const ctx = context();
+    const store = ctx.stores.subagentStore;
+    store.registerAgentTool('toolu_2', { subagent_type: 'general-purpose', description: 'run the tests', prompt: 'p' });
+    const result = JSON.stringify({ content: [{ type: 'text', text: 'done' }], agentId: 'agent-2', agentStatus: 'completed' });
+    defined(createToolHandlers().toolCompleted, 'toolCompleted')({ type: 'toolCompleted', toolUseId: 'toolu_2', toolName: 'Agent', result }, ctx);
+
+    const card = defined(store.subagents['toolu_2'], 'card');
+    expect(card.status).toBe('completed');
+    expect(card.stopReason).toBeUndefined();
+  });
+});
+
 describe("a reloaded subagent card whose run core still holds", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
-  const SHOWN = { phase: 'settle' as const, events: ['agent_settled'], extensions: ['/agent/extensions/held.js'] };
+  const SHOWN = { phase: 'settle' as const, events: ['agent_settled'], extensions: ['/agent/extensions/held.js'], hooks: [{ label: 'notify.sh', scope: 'project' as const }] };
 
   it('runs again with its Background Tasks row and wind-down from what core replays, and drops the line on the clear', () => {
     const stores = { streamingStore: useStreamingStore(), subagentStore: useSubagentStore(), teamStore: useTeamStore(), backgroundTaskStore: useBackgroundTaskStore() };
@@ -203,7 +233,7 @@ describe("a reloaded subagent card whose run core still holds", () => {
     expect(card.status).toBe('running');
     expect(card.windDown).toEqual(SHOWN);
     expect(subagentStatusLine(card, (key, params) => i18n.global.t(key, params))).toBe(
-      "Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: /agent/extensions/held.js.",
+      'Stopping: waiting for the end-of-turn hook notify.sh (project hooks) to finish.',
     );
     expect(stores.backgroundTaskStore.activeTasks.map((task) => task.toolUseId)).toEqual(['toolu_1']);
 

@@ -289,7 +289,7 @@ describe('what the provider receives across a model switch or a folder move, thr
 
   /**
    * A chat that ran one prompt in one folder, then moved to another as a hand-off moves it: its session file resumed in a
-   * pi session on the new folder (`SessionManager.open(file, dir, cwd)`, `PiSession`'s reopen).
+   * pi session on the new folder (`SessionManager.open(file, dir, cwd)`, the file and folders `PiSession`'s reopen gives `openAsync`).
    */
   async function moveToAnotherFolder(env: SystemPromptEnv, turnsAfter: number): Promise<{ from: string; to: Awaited<ReturnType<typeof bootRecording>> }> {
     const first = await bootRecording(env, 1, { sessionManager: (cwd) => SessionManager.create(cwd, path.join(cwd, 'sessions')) });

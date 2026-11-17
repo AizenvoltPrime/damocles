@@ -13,6 +13,7 @@ import type { PiCodingAgentModule } from '../../pi-loader';
 import type { McpTool } from '../types';
 import { fakeServerManager, managerWithFake, specOf } from './fake-server-manager';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 // FolderRuntime migrates renamed-tool rules in ~/.damocles/settings*.json, so home points into a temp dir.
 const { fakeHome } = vi.hoisted(() => {
@@ -340,6 +341,7 @@ describe('FolderRuntime: one folder manager per folder over the one user manager
     const pool = fakeServerManager(tools);
     const runtime = new FolderRuntime({
       pi: {} as PiCodingAgentModule,
+      mcpModule: piMcp,
       cwd,
       agentDir: '/tmp/agent',
       modelRuntime: {} as ModelRuntime,

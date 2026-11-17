@@ -4,15 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ protocol: {} }));
 
 import { servedCsp } from '../../../../core/design/serve-policy';
-import { SERVED_OPEN_PATH } from '../../../../shared/served-file-url';
+import { previewCsp } from '../../../../core/served-pages/serve-policy';
+import { MAX_SERVED_FOLDERS_PER_CHAT, SERVED_OPEN_PATH } from '../../../../shared/served-file-url';
 import type { DesignPreviewFile } from '../../../../shared/types/design';
 import type { Project } from '../../../local-services/confine';
 import type { ReadRangeResult } from '../../../workspace/transfer-ops';
-import { PreviewHttpServer } from '../preview-http-server';
-import { MAX_DESIGN_ROOTS_PER_VIEW, servedPathRefusal, ServedRoots, type ServedGrant } from '../served-roots';
+import { PreviewHttpServer } from '../../../../core/served-pages/preview-http-server';
+import { servedPathRefusal } from '../../../../core/served-pages/root-files';
+import { MAX_DESIGN_ROOTS_PER_VIEW, ServedRoots, type ServedGrant } from '../served-roots';
 
 const LOCAL: Project = { key: '/home/u/proj', fsPath: '/home/u/proj', name: 'proj' };
 const REMOTE: Project = { key: 'ssh+box|/home/u/proj', fsPath: '/home/u/proj', name: 'proj' };
+// another local project, whose chats share the local browser profile with LOCAL's
+const OTHER: Project = { key: '/home/u/other', fsPath: '/home/u/other', name: 'other' };
 
 const FILES: Record<string, string> = {
   'docs/index.html': '<script type="module" src="app.js"></script>',
@@ -26,6 +30,12 @@ const FILES: Record<string, string> = {
 interface Harness {
   readonly served: ServedRoots;
   readonly views: Map<string, Project>;
+  // a chat view's authority, for a view with no project
+  readonly chatViews: Map<string, string>;
+  // the root key of every workspace read, so a read of the wrong authority shows
+  readonly fileKeys: string[];
+  // a folder's real path now, when a link replaced it
+  readonly realRoots: Map<string, string>;
   readonly trusted: Set<string>;
   readonly changes: string[];
   readonly designReads: Array<[string, string, string]>;
@@ -46,14 +56,25 @@ beforeEach(() => {
   const trusted = new Set<string>();
   const changes: string[] = [];
   const designReads: Array<[string, string, string]> = [];
+  const chatViews = new Map<string, string>();
+  const fileKeys: string[] = [];
+  const realRoots = new Map<string, string>();
   const served = new ServedRoots({
     projectOfView: (authority, viewId) => {
       const project = views.get(viewId);
-      return project && (project === LOCAL ? 'local' : 'ssh+box') === authority ? project : undefined;
+      return project && (project === REMOTE ? 'ssh+box' : 'local') === authority ? project : undefined;
     },
-    projects: () => [LOCAL, REMOTE],
-    files: () => ({ readFileRange: (_project: Project, relativePath: string, offset: number, length: number) => readRange(relativePath, offset, length) }),
+    chatView: (authority, viewId) => (chatViews.get(viewId) ?? (views.has(viewId) ? (views.get(viewId) === REMOTE ? 'ssh+box' : 'local') : undefined)) === authority,
+    projects: () => [LOCAL, REMOTE, OTHER],
+    files: (rootKey) => {
+      fileKeys.push(rootKey);
+      return {
+        readFileRange: (_project: Project, relativePath: string, offset: number, length: number) => readRange(relativePath, offset, length),
+        confineExisting: async (project: Project) => ({ ok: true as const, path: realRoots.get(project.fsPath) ?? project.fsPath }),
+      };
+    },
     isTrusted: (project) => trusted.has(project.key),
+    localDesignFolder: (designId) => `/home/u/.damocles/designs/${designId}`,
     designRead: async (authority, designId, relPath): Promise<DesignPreviewFile | undefined> => {
       designReads.push([authority, designId, relPath]);
       return relPath === 'screens/S2.html' ? { bytes: Buffer.from('<p>S2</p>'), fidelity: 'interactive' } : undefined;
@@ -62,7 +83,7 @@ beforeEach(() => {
     log: () => undefined,
   });
   served.onDidChange((authority) => changes.push(authority));
-  h = { served, views, trusted, changes, designReads };
+  h = { served, views, chatViews, fileKeys, realRoots, trusted, changes, designReads };
 });
 
 afterEach(() => {
@@ -96,7 +117,7 @@ async function cookieOf(grant: ServedGrant, relPath: string): Promise<string> {
   return answer.headers['set-cookie']![0]!.split(';')[0]!;
 }
 
-async function granted(viewId: string, project: Project, authority = project === LOCAL ? 'local' : 'ssh+box'): Promise<ServedGrant> {
+async function granted(viewId: string, project: Project, authority = project === REMOTE ? 'ssh+box' : 'local'): Promise<ServedGrant> {
   h.views.set(viewId, project);
   const grant = await h.served.grant({ authority, root: { kind: 'project' }, viewId });
   if ('refused' in grant) throw new Error(grant.refused);
@@ -160,10 +181,87 @@ describe('a project root served to a chat view', () => {
   });
 
   it('takes the project from the view, never one of another authority, and answers a view with none as unavailable', async () => {
-    expect(await h.served.grant({ authority: 'local', root: { kind: 'project' }, viewId: 'unknown' })).toEqual({ refused: expect.stringContaining('not open'), unavailable: true });
+    expect(await h.served.grant({ authority: 'local', root: { kind: 'project' }, viewId: 'unknown' })).toEqual({ refused: expect.stringContaining('not open') });
     h.views.set('v1', REMOTE);
-    expect(await h.served.grant({ authority: 'local', root: { kind: 'project' }, viewId: 'v1' })).toEqual({ refused: expect.stringContaining('not open'), unavailable: true });
+    expect(await h.served.grant({ authority: 'local', root: { kind: 'project' }, viewId: 'v1' })).toEqual({ refused: expect.stringContaining('not open') });
     expect(await h.served.grant({ authority: 'ssh+box', root: { kind: 'design', designId: '../x' }, viewId: 'v1' })).not.toHaveProperty('unavailable');
+  });
+});
+
+// The one browser profile every local chat shares: host-only cookies kept by host name and sent to every port of it (RFC 6265
+// 5.4), as Chrome keeps them; a navigation follows the one-time URL's redirect.
+class SharedProfile {
+  private readonly jar = new Map<string, Map<string, string>>();
+
+  async navigate(url: string, site = 'none'): Promise<Answer> {
+    let target = new URL(url);
+    for (;;) {
+      const cookies = this.jar.get(target.hostname);
+      const answer = await get(target.href, { 'sec-fetch-site': site, 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', ...(cookies ? { cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') } : {}) });
+      for (const set of answer.headers['set-cookie'] ?? []) {
+        const pair = set.split(';')[0]!;
+        const kept = this.jar.get(target.hostname) ?? new Map<string, string>();
+        kept.set(pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1));
+        this.jar.set(target.hostname, kept);
+      }
+      if (answer.status !== 303) return answer;
+      target = new URL(answer.headers.location!, target);
+    }
+  }
+}
+
+describe('grants of chat views that share one browser profile', () => {
+  it('opens a view\'s root on no host another view can name, while the page\'s own links work', async () => {
+    const profile = new SharedProfile();
+    const first = await granted('v1', LOCAL);
+    const second = await granted('v2', OTHER);
+    expect((await profile.navigate(first.open('docs/index.html'))).body).toBe(FILES['docs/index.html']);
+    // the page's root-absolute and relative links stay on its own origin
+    expect((await profile.navigate(`${first.origin}/docs/data.json`, 'same-origin')).status).toBe(200);
+    expect((await profile.navigate(new URL('app.js', `${first.origin}/docs/index.html`).href, 'same-origin')).status).toBe(200);
+    expect((await profile.navigate(second.open('docs/index.html'))).status).toBe(200);
+    // the second view's agent navigates to the first view's server on every host it can name
+    const port = new URL(first.origin).port;
+    for (const host of ['127.0.0.1', 'localhost', new URL(second.origin).hostname]) {
+      const answer = await profile.navigate(`http://${host}:${port}/docs/index.html`);
+      expect(answer.status, host).not.toBe(200);
+      expect(answer.body, host).not.toBe(FILES['docs/index.html']);
+    }
+  });
+
+  it('gives each view of one root a host of its own, closed with that view', async () => {
+    const profile = new SharedProfile();
+    const first = await granted('v1', LOCAL);
+    const again = await granted('v1', LOCAL);
+    const second = await granted('v2', LOCAL);
+    expect(again.origin).toBe(first.origin);
+    expect(new URL(second.origin).port).toBe(new URL(first.origin).port);
+    expect(second.origin).not.toBe(first.origin);
+    expect(new URL(first.origin).hostname).toMatch(/^[0-9a-f]{32}\.localhost$/);
+    expect(h.served.viewOrigins('local', 'v1')).toEqual([first.origin]);
+    expect(h.served.viewOrigins('ssh+box', 'v1')).toEqual([]);
+    expect(h.served.mappings('local')).toEqual([{ origin: first.origin, displayRoot: LOCAL.fsPath }, { origin: second.origin, displayRoot: LOCAL.fsPath }]);
+    expect(h.served.mappings('local', 'v2')).toEqual([{ origin: second.origin, displayRoot: LOCAL.fsPath }]);
+    expect((await profile.navigate(first.open('docs/index.html'))).status).toBe(200);
+    expect((await profile.navigate(second.open('docs/index.html'))).status).toBe(200);
+    h.served.release('v1');
+    expect(h.served.viewOrigins('local', 'v1')).toEqual([]);
+    expect(h.served.mappings('local')).toEqual([{ origin: second.origin, displayRoot: LOCAL.fsPath }]);
+    expect((await profile.navigate(`${first.origin}/docs/index.html`)).status).toBe(421);
+    expect((await profile.navigate(`${second.origin}/docs/index.html`)).status).toBe(200);
+  });
+
+  it('keeps an Open in Browser grant on 127.0.0.1 with a cookie of its own, which no view grant\'s cookie opens', async () => {
+    const view = await granted('v1', LOCAL);
+    const preview = await h.served.grantPreview(LOCAL);
+    expect(preview.origin).toBe(`http://127.0.0.1:${new URL(view.origin).port}`);
+    const viewCookie = await cookieOf(view, 'docs/index.html');
+    const previewCookie = await cookieOf(preview, 'docs/index.html');
+    expect(viewCookie.split('=')[0]).toBe(previewCookie.split('=')[0]);
+    expect((await get(`${preview.origin}/docs/index.html`, { cookie: previewCookie })).status).toBe(200);
+    expect((await get(`${preview.origin}/docs/index.html`, { cookie: viewCookie })).status).toBe(403);
+    expect((await get(`${view.origin}/docs/index.html`, { cookie: previewCookie })).status).toBe(403);
+    expect((await get(`${view.origin}/docs/index.html`, { cookie: viewCookie })).status).toBe(200);
   });
 });
 
@@ -192,6 +290,23 @@ describe('a design root', () => {
   });
 });
 
+describe('file:// mappings', () => {
+  it('maps a local view grant to main\'s own path of its root, and a remote one only to the path its core named', async () => {
+    const project = await granted('v1', LOCAL);
+    const design = await h.served.grant({ authority: 'local', root: { kind: 'design', designId: 'd1' }, viewId: 'v1' });
+    if ('refused' in design) throw new Error(design.refused);
+    const local = [{ origin: project.origin, displayRoot: '/home/u/proj' }, { origin: design.origin, displayRoot: '/home/u/.damocles/designs/d1' }];
+    expect(h.served.mappings('local')).toEqual(local);
+    // an Open in Browser grant serves no chat page
+    await h.served.grantPreview({ key: '/home/u/other', fsPath: '/home/u/other', name: 'other' });
+    expect(h.served.mappings('local')).toEqual(local);
+    await granted('v2', REMOTE);
+    expect(h.served.mappings('ssh+box')).toEqual([]);
+    h.served.release('v1');
+    expect(h.served.mappings('local')).toEqual([]);
+  });
+});
+
 describe('design roots a core names', () => {
   it('refuses a malformed design id and more design roots per view than a chat can see, starting no server', async () => {
     for (const designId of ['../x', '.state', 'a/b', '']) {
@@ -215,9 +330,9 @@ describe('lifecycle', () => {
   it('keeps one server per authority and root, and lists only view grants\' ports for their authority', async () => {
     const a = await granted('v1', REMOTE);
     const b = await granted('v2', REMOTE);
-    expect(b.origin).toBe(a.origin);
+    expect(new URL(b.origin).port).toBe(new URL(a.origin).port);
     const local = await granted('v3', LOCAL);
-    expect(local.origin).not.toBe(a.origin);
+    expect(new URL(local.origin).port).not.toBe(new URL(a.origin).port);
     const port = Number(new URL(a.origin).port);
     expect(h.served.servedPorts('ssh+box')).toEqual([port]);
     expect(h.served.servedPorts('local')).toEqual([Number(new URL(local.origin).port)]);
@@ -248,11 +363,13 @@ describe('lifecycle', () => {
   });
 
   it('closes the server with its last grant, and its port leaves the policy', async () => {
-    const grant = await granted('v1', REMOTE);
-    await granted('v2', REMOTE);
+    const first = await granted('v1', REMOTE);
+    const grant = await granted('v2', REMOTE);
+    const firstCookie = await cookieOf(first, 'docs/index.html');
     const cookie = await cookieOf(grant, 'docs/index.html');
     h.served.release('v1');
     expect(h.served.servedPorts('ssh+box')).toHaveLength(1);
+    expect((await get(`${first.origin}/docs/index.html`, { cookie: firstCookie })).status).toBe(421);
     expect((await get(`${grant.origin}/docs/index.html`, { cookie })).status).toBe(200);
     h.changes.length = 0;
     h.served.release('v2');
@@ -272,5 +389,74 @@ describe('lifecycle', () => {
     await expect(get(`${grant.origin}/`)).rejects.toThrow();
     const again = await granted('v1', REMOTE);
     expect(again.origin).not.toBe(grant.origin);
+  });
+});
+
+describe('a folder a chat\'s permission gate granted, served to that chat view', () => {
+  async function folderGrant(viewId: string, authority: string, folder: string): Promise<ServedGrant> {
+    h.chatViews.set(viewId, authority);
+    const grant = await h.served.grant({ authority, root: { kind: 'folder', folder }, viewId });
+    if ('refused' in grant) throw new Error(grant.refused);
+    return grant;
+  }
+
+  it('reads a remote core\'s folder through that authority\'s workspace only, never this computer\'s, with the deny list and no project trust', async () => {
+    h.trusted.add(REMOTE.key);
+    const grant = await folderGrant('v1', 'ssh+box', 'C:\\Users\\me\\reports');
+    const cookie = await cookieOf(grant, 'docs/index.html');
+    const page = await get(`${grant.origin}/docs/index.html`, { cookie });
+    expect(page.status).toBe(200);
+    expect(page.headers['content-security-policy']).toBe(previewCsp(false, 'browser'));
+    expect((await get(`${grant.origin}/.env`, { cookie })).status).toBe(404);
+    expect((await get(`${grant.origin}/link/config`, { cookie })).status).toBe(404);
+    expect(h.fileKeys.length).toBeGreaterThan(0);
+    expect(h.fileKeys.every((key) => key === 'ssh+box|c:\\users\\me\\reports')).toBe(true);
+    expect(h.served.mappings('ssh+box', 'v1')).toEqual([{ origin: grant.origin, displayRoot: 'C:\\Users\\me\\reports' }]);
+  });
+
+  it('serves a folder only to a live chat view of the asking authority, on that view\'s own host', async () => {
+    h.chatViews.set('local-view', 'local');
+    expect(await h.served.grant({ authority: 'ssh+box', root: { kind: 'folder', folder: '/home/u/reports' }, viewId: 'local-view' })).toEqual({ refused: expect.stringContaining('not one this chat may be served') });
+    expect(await h.served.grant({ authority: 'ssh+box', root: { kind: 'folder', folder: '/home/u/reports' }, viewId: 'unknown' })).toHaveProperty('refused');
+    const first = await folderGrant('v1', 'ssh+box', '/home/u/reports');
+    const second = await folderGrant('v2', 'ssh+box', '/home/u/reports');
+    expect(second.origin).not.toBe(first.origin);
+    const cookie = await cookieOf(first, 'docs/index.html');
+    // the first view's cookie opens nothing on the second's host, and its host goes with its view
+    expect((await get(`${second.origin}/docs/index.html`, { cookie })).status).toBe(403);
+    h.served.release('v1');
+    expect((await get(`${first.origin}/docs/index.html`, { cookie })).status).toBe(421);
+  });
+
+  it('refuses a folder that is no absolute path below a root in its host\'s form', async () => {
+    h.chatViews.set('v1', 'ssh+box');
+    for (const folder of ['reports', 'C:', 'C:\\', '/', '\\\\host\\share', '//host/share/', '\\\\?\\C:\\x', '/home/u/../root', 'C:\\a\\.\\b', '/home/u/a\0b', `/${'a'.repeat(5000)}`]) {
+      expect(await h.served.grant({ authority: 'ssh+box', root: { kind: 'folder', folder }, viewId: 'v1' }), JSON.stringify(folder)).toHaveProperty('refused');
+    }
+    expect(h.served.servedPorts('ssh+box')).toEqual([]);
+  });
+
+  it('serves at most a bounded number of folders to one view, starting no server past it', async () => {
+    for (let index = 0; index < MAX_SERVED_FOLDERS_PER_CHAT; index++) await folderGrant('v1', 'ssh+box', `/home/u/f${index}`);
+    const ports = h.served.servedPorts('ssh+box');
+    expect(await h.served.grant({ authority: 'ssh+box', root: { kind: 'folder', folder: '/home/u/more' }, viewId: 'v1' })).toEqual({ refused: expect.stringContaining(`${MAX_SERVED_FOLDERS_PER_CHAT} folders`) });
+    expect(h.served.servedPorts('ssh+box')).toEqual(ports);
+  });
+
+  it('serves a network folder granted as its real share path, and nothing once that path changes', async () => {
+    const share = '\\\\192.0.2.7\\data\\team\\week';
+    const grant = await folderGrant('v1', 'local', share);
+    const cookie = await cookieOf(grant, 'docs/index.html');
+    expect((await get(`${grant.origin}/docs/index.html`, { cookie })).status).toBe(200);
+    h.realRoots.set(share, '\\\\192.0.2.8\\other\\week');
+    expect((await get(`${grant.origin}/docs/data.json`, { cookie })).status).toBe(404);
+  });
+
+  it('serves nothing once the folder\'s real path is another, as when a link replaced it', async () => {
+    const grant = await folderGrant('v1', 'local', '/home/u/reports');
+    const cookie = await cookieOf(grant, 'docs/index.html');
+    expect((await get(`${grant.origin}/docs/index.html`, { cookie })).status).toBe(200);
+    h.realRoots.set('/home/u/reports', '/home/u/.ssh');
+    expect((await get(`${grant.origin}/docs/data.json`, { cookie })).status).toBe(404);
   });
 });

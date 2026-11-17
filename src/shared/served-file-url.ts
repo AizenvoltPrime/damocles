@@ -7,20 +7,26 @@ export const SERVED_OPEN_PATH = '/__damocles_preview/open';
 /** The one-time open URL's parameter that carries the opened address's query into the server's redirect. */
 export const SERVED_OPEN_QUERY = 'q';
 
-/** A file of one of a chat's roots, as its core resolved it: the root by kind, never by a path. */
-export type ServedFile = { readonly kind: 'project'; readonly relPath: string } | { readonly kind: 'design'; readonly designId: string; readonly relPath: string };
+/**
+ * A file of one of a chat's roots, as its core resolved it: a project or design root by kind, never by a path; a folder the
+ * permission gate granted to the chat by its path on the machine whose files it is.
+ */
+export type ServedFile =
+  | { readonly kind: 'project'; readonly relPath: string }
+  | { readonly kind: 'design'; readonly designId: string; readonly relPath: string }
+  | { readonly kind: 'folder'; readonly folder: string; readonly relPath: string };
+
+/** The most folders outside its project and design folders one chat's browser is served, each a loopback listener. */
+export const MAX_SERVED_FOLDERS_PER_CHAT = 8;
 
 /** What the remote core sends with a relayed BrowserOpen or BrowserNavigate of a root file; displayRoot is display only. */
 export type RelayedServedFile = ServedFile & { readonly displayRoot: string };
 
-/**
- * main's answer to a served file: the one-time URL that opens it and the origin its pages load from, or why it serves none;
- * `unavailable` when main lists no root or server for the view, as opposed to a file the deny list or confinement refuses.
- */
-export type ServedFileAnswer = { readonly url: string; readonly origin: string } | { readonly refused: string; readonly unavailable?: boolean };
+/** The served root's answer to a file: the one-time URL that opens it and the origin its pages load from, or why it serves none. */
+export type ServedFileAnswer = { readonly url: string; readonly origin: string } | { readonly refused: string };
 
 export interface ServedMapping {
-  // http://127.0.0.1:<port>, the origin of one served root
+  // http://<label>.localhost:<port>, the origin of one chat's grant of a served root
   readonly origin: string;
   // the root's path on the machine whose files it serves; display only, never used to read anything
   readonly displayRoot: string;
@@ -40,15 +46,16 @@ function decoded(text: string): string | undefined {
 /**
  * The path a file:// URL names, as the browser would load it: dot segments resolved by the WHATWG parser (`%2e` ones too,
  * never above a drive letter), then percent-decoded once. `/home/u/a` for POSIX, `C:/Users/a` for a Windows drive
- * (`file:///C:/`, `file:///c|/`, `file://C:/`). A query or fragment is dropped. Undefined for anything else: a UNC host, and
- * an encoded `/` or `\`, which Chromium refuses in a file URL.
+ * (`file:///C:/`, `file:///c|/`, `file://C:/`), `//server/share/a` for a host. A query or fragment is dropped. Undefined for
+ * anything else: an encoded `/` or `\`, which Chromium refuses in a file URL, a NUL and a bad escape.
  */
 export function fileUrlPath(url: string): string | undefined {
   if (!URL.canParse(url)) return undefined;
   const parsed = new URL(url);
-  if (parsed.protocol !== 'file:' || parsed.hostname !== '' || /%2f|%5c/i.test(parsed.pathname)) return undefined;
+  if (parsed.protocol !== 'file:' || /%2f|%5c/i.test(parsed.pathname)) return undefined;
   const path = decoded(parsed.pathname);
   if (path === undefined || path.includes('\0')) return undefined;
+  if (parsed.hostname !== '') return `//${parsed.hostname}${path}`;
   const drive = DRIVE_PATH.exec(path);
   return drive ? `${drive[1]!.toUpperCase()}:${path.slice(drive[0].length)}` : path;
 }
@@ -71,16 +78,29 @@ export function withAddressParts(openUrl: string, address: string): string {
   return open.href;
 }
 
-/** The file:// form of a root path, POSIX or Windows, each segment percent-encoded. */
+/** The file:// form of a root path, POSIX, Windows or UNC, each segment percent-encoded. */
 export function fileUrlOfRoot(displayRoot: string): string {
   const path = displayRoot.replace(/\\/g, '/').replace(/\/+$/, '');
   const drive = /^([A-Za-z]):/.exec(path);
   const segments = (drive ? path.slice(2) : path).split('/').map(encodeURIComponent).join('/');
-  return drive ? `file:///${drive[1]!.toUpperCase()}:${segments}` : `file://${segments}`;
+  if (drive) return `file:///${drive[1]!.toUpperCase()}:${segments}`;
+  // a UNC root's '//server' is the URL's host
+  return path.startsWith('//') ? `file:${segments}` : `file://${segments}`;
 }
 
-// http on a loopback name the served servers accept as Host; linear, and the port is never a prefix of a longer number
-const SERVED_ORIGIN = /\bhttp:\/\/(?:127\.0\.0\.1|localhost):(\d{1,5})(?!\d)/gi;
+// A chat's grant of a served root is a host of its own, `<label>.localhost`, so no other chat's cookie or page reaches it
+// (docs/invariants.md "Browser"); the label is 128 random bits in lowercase hex.
+// a trailing dot included, since Chrome loads that name too
+const GRANT_HOST = /^[0-9a-f]{32}\.localhost\.?$/;
+// a URL on a grant host, or the bare host (location.host), whatever its port, so none goes unmapped; linear
+const SERVED_ORIGIN = /(\bhttp:\/\/)?(?<![\w.-])([0-9a-f]{32})\.localhost(\.?)(?::(\d+))?(?![\w.-])/gi;
+// what a grant URL becomes in an answer to a chat that holds no mapping of it, so its host never reaches that chat
+export const UNMAPPED_SERVED_PAGE = '[a served page this chat cannot open]';
+
+/** Whether `hostname` (URL.hostname form) names a served grant's host the way Chrome loads it. */
+export function isServedGrantHost(hostname: string): boolean {
+  return GRANT_HOST.test(hostname);
+}
 // where a URL in prose ends
 const URL_END = /[\s"'<>`()[\]{}]/g;
 
@@ -104,17 +124,30 @@ function openedAddress(rest: string): string {
 /**
  * `text` with every URL on a mapped served origin in file:// form: the origin becomes `file://<displayRoot>`, its path, query
  * and fragment kept, and a one-time open URL becomes the file it opens with the query and fragment it carries, its token dropped.
+ * A URL on a grant origin no mapping names becomes UNMAPPED_SERVED_PAGE, and so does such a bare host; a mapped bare host stays.
  */
 export function servedToFile(text: string, mappings: readonly ServedMapping[]): string {
-  if (mappings.length === 0) return text;
-  const roots = new Map<number, string>();
-  for (const mapping of mappings) roots.set(Number(new URL(mapping.origin).port), fileUrlOfRoot(mapping.displayRoot));
+  const roots = new Map<string, string>();
+  for (const mapping of mappings) roots.set(new URL(mapping.origin).host, fileUrlOfRoot(mapping.displayRoot));
   const scan = new RegExp(SERVED_ORIGIN.source, 'gi');
   let out = '';
   let from = 0;
   for (let match = scan.exec(text); match !== null; match = scan.exec(text)) {
-    const root = roots.get(Number(match[1]));
-    if (root === undefined) continue;
+    // a trailing dot or a missing port names no grant's origin, whose server refuses it
+    const root = match[3] !== '' || match[4] === undefined ? undefined : roots.get(`${match[2]!.toLowerCase()}.localhost:${Number(match[4])}`);
+    if (match[1] === undefined) {
+      if (root !== undefined) continue;
+      out += text.slice(from, match.index) + UNMAPPED_SERVED_PAGE;
+      from = scan.lastIndex;
+      continue;
+    }
+    if (root === undefined) {
+      const stop = urlEnd(text, scan.lastIndex);
+      out += text.slice(from, match.index) + UNMAPPED_SERVED_PAGE;
+      from = stop;
+      scan.lastIndex = stop;
+      continue;
+    }
     let end = scan.lastIndex;
     let replacement = root;
     if (text.startsWith(SERVED_OPEN_PATH, end)) {

@@ -3,6 +3,7 @@ import {
   RESUME_NOTE_LABEL,
   RESUME_NOTE_RULES,
   STEER_INSTRUCTION_PREFIX,
+  buildRejectedResumePrompt,
   buildResumePrompt,
   withResumeNote,
   describeUserSteer,
@@ -120,6 +121,23 @@ describe('buildResumePrompt', () => {
     expect(buildResumePrompt('also run the tests')).toBe(`${CONTEXT}\n\n${RESUME_NOTE_RULES}\n\n${RESUME_NOTE_LABEL}\n> also run the tests`);
     expect(buildResumePrompt('x').startsWith(STEER_INSTRUCTION_PREFIX)).toBe(false);
     expect(buildResumePrompt('x')).not.toContain(STEER_INSTRUCTION_PREFIX);
+  });
+});
+
+describe('buildRejectedResumePrompt', () => {
+  it.each([
+    ['user', 'the user'],
+    ['hook', 'a hook'],
+  ] as const)('names who rejected the call (%s) and tells the agent not to repeat it unchanged', (cause, by) => {
+    const prompt = buildRejectedResumePrompt(cause);
+    expect(prompt).toContain(`Your previous run ended because ${by} rejected one of your tool calls, and you have been resumed.`);
+    expect(prompt).toContain('Do not repeat the rejected call unchanged');
+    expect(prompt).not.toContain('finish the steps you had planned');
+  });
+
+  it('quotes a note under its rules, as every resume prompt does', () => {
+    const bare = buildRejectedResumePrompt('user');
+    expect(buildRejectedResumePrompt('user', 'use a narrower glob')).toBe(`${bare}\n\n${RESUME_NOTE_RULES}\n\n${RESUME_NOTE_LABEL}\n> use a narrower glob`);
   });
 });
 

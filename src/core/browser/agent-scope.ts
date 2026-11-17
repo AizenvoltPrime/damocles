@@ -79,6 +79,10 @@ export class BrowserAgentScope {
     this.svc.stagePendingUpload(this.id, paths);
   }
 
+  newUploadFolder(): Promise<string> {
+    return this.svc.newUploadFolder(this.id);
+  }
+
   /** Bring this scope's current tab to the human's screencast focus. */
   reveal(): void {
     this.svc.revealScope(this.id);

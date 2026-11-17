@@ -104,7 +104,7 @@ export function createDesignScreenshotTool(pi: PiCodingAgentModule, deps: Design
     executionMode: 'sequential',
     description: DESCRIPTION,
     parameters: screenshotSchema,
-    prepareArguments: (args) => prepareScreenshotArguments(args) as never,
+    prepareArguments: (args) => prepareScreenshotArguments(args),
     execute: async (_toolCallId, params, signal) => {
       const role = activeRole(deps, TOOL_DESIGN_SCREENSHOT);
       const render = deps.render();

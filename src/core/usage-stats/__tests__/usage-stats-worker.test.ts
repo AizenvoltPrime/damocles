@@ -39,6 +39,7 @@ function setup() {
     id,
     paths: { sessionsDir, ledgerPath: path.join(root, 'subcalls.jsonl'), dbPath: path.join(root, 'usage.db') },
     models: [{ key: 'p/m', label: 'M', inputRatePerToken: 0.001 }],
+    aliases: { moves: [], hosts: [] },
     query: { startMs: 0, endMs: Date.parse('2030-01-01'), previous: null, modelKeys: [], projectKeys: [], bucket: 'day', timeZone: 'UTC', scan: true, ...query },
   });
   const finalFor = async (id: number) => {

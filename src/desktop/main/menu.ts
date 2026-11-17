@@ -118,6 +118,8 @@ export interface MenuState {
   readonly remoteHostSaved: boolean;
   // the active editor tab is a browser page showing an https address
   readonly clientCertificateSite: boolean;
+  // the selected project is a local one whose folder is missing or unavailable, with no move of it under way
+  readonly locatableProject: boolean;
 }
 
 // Search's part of the context: what main's search service and editor pane hold, never what a renderer reports.
@@ -154,6 +156,8 @@ export interface SearchMenuState {
 
 export interface MenuActions {
   addProject(): void;
+  // Locate… on the selected project
+  locateProject(): void;
   newChat(): void;
   openChat(): void;
   openChatForProject(fsPath: string): void;
@@ -350,6 +354,7 @@ export function installApplicationMenu(
       item(MENU_IDS.saveAs),
       { type: 'separator' },
       item(MENU_IDS.addProject),
+      item(MENU_IDS.locateProject),
       item(MENU_IDS.connectToHost),
       item(MENU_IDS.openFolderOnHost),
       item(MENU_IDS.disconnectHost),

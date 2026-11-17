@@ -451,10 +451,10 @@ SOFTWARE.
 
 ## pi (agent runtime)
 
-Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` and `@earendil-works/pi-mcp` packages ship in the VSIX and the desktop app as real `node_modules` (kept external and loaded via dynamic `import()`, not bundled into `dist/extension.cjs`). They are the agent engine behind every session — provider auth, the streaming agent loop, tool dispatch, the extension plumbing Damocles builds on, and (pi-mcp) the MCP client protocol, transports and OAuth. Listed here for attribution and MIT compliance because the published packages declare `"license": "MIT"` but do not carry their own `LICENSE` file.
+Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-mcp`, `@earendil-works/pi-schema`, `@earendil-works/pi-codemode` and `@earendil-works/pi-telemetry` packages ship in the VSIX and the desktop app as real `node_modules` (kept external and loaded via dynamic `import()`, not bundled into `dist/extension.cjs`). They are the agent engine behind every session — provider auth, the streaming agent loop, tool dispatch, the extension plumbing Damocles builds on, (pi-mcp) the MCP client protocol, transports and OAuth, (pi-schema) the validation of tool arguments, (pi-codemode) sandboxed JavaScript that calls injected tools, and (pi-telemetry) pi-ai's telemetry contracts. Listed here for attribution and MIT compliance because the published packages declare `"license": "MIT"` but do not carry their own `LICENSE` file. `@earendil-works/pi-schema` adapts TypeBox's string format checks (`dist/formats/typebox/`) and ships TypeBox's license as `THIRD_PARTY_NOTICES/typebox-LICENSE`, which the VSIX and the desktop app keep.
 
 - **Source**: https://github.com/earendil-works/pi
-- **Packages**: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-mcp`
+- **Packages**: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-mcp`, `@earendil-works/pi-schema`, `@earendil-works/pi-codemode`, `@earendil-works/pi-telemetry`
 - **Use**: the sole agent backend (`PiSession` / `PiRuntime` in `src/core/pi-session/`) and the MCP client layer under Damocles' host layer (`src/core/pi-session/mcp/`), redistributed as node_modules
 
 ```
@@ -742,7 +742,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## MCP TypeScript SDK
 
-`@earendil-works/pi-mcp` adapts OAuth code from the MCP TypeScript SDK and ships the SDK's license as `LICENSES/modelcontextprotocol-typescript-sdk.txt`, which the VSIX and the desktop app keep. Damocles also ports the SDK's stdio environment allowlist (`DEFAULT_INHERITED_ENV_VARS` and `getDefaultEnvironment()`, from `@modelcontextprotocol/sdk` 1.29.0 `dist/esm/client/stdio.js`) into `src/core/pi-session/mcp/stdio-env.ts`, which esbuild bundles into `dist/extension.cjs` and `dist/desktop/main.js`. The SDK package itself is a development dependency and does not ship.
+`@earendil-works/pi-mcp` adapts OAuth code from the MCP TypeScript SDK and ships the SDK's license as `THIRD_PARTY_NOTICES/modelcontextprotocol-typescript-sdk.txt`, which the VSIX and the desktop app keep. Damocles also ports the SDK's stdio environment allowlist (`DEFAULT_INHERITED_ENV_VARS` and `getDefaultEnvironment()`, from `@modelcontextprotocol/sdk` 1.29.0 `dist/esm/client/stdio.js`) into `src/core/pi-session/mcp/stdio-env.ts`, which esbuild bundles into `dist/extension.cjs` and `dist/desktop/main.js`. The SDK package itself is a development dependency and does not ship.
 
 - **Source**: https://github.com/modelcontextprotocol/typescript-sdk (`@modelcontextprotocol/sdk`)
 
@@ -774,7 +774,7 @@ SOFTWARE.
 
 ## pi-mcp-adapter
 
-Damocles' MCP host layer (`src/core/pi-session/mcp/`) began as a port of pi-mcp-adapter. The protocol client, the stdio and streamable-HTTP transports and the OAuth authorization flow now come from `@earendil-works/pi-mcp`. These files still carry code adapted from pi-mcp-adapter and say so in their headers: `server-manager.ts` (the connection pool: connect dedup, tool and resource discovery), `lifecycle.ts` (health checks, reconnect and idle shutdown), `metadata-cache.ts`, `npx-resolver.ts`, `mcp-auth.ts` (OAuth credential storage), `mcp-callback-server.ts` (the localhost OAuth callback), `content.ts`, `elicitation-handler.ts` and `utils.ts`. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
+Damocles' MCP host layer (`src/core/pi-session/mcp/`) began as a port of pi-mcp-adapter. The protocol client, the stdio framing (`PipeTransport`, over Damocles' own process pipe), the streamable-HTTP transport, the OAuth authorization flow, the output limit of tool results and the normalization of tool input schemas now come from `@earendil-works/pi-mcp`. These files still carry code adapted from pi-mcp-adapter and say so in their headers: `server-manager.ts` (the connection pool: connect dedup, tool and resource discovery), `lifecycle.ts` (health checks, reconnect and idle shutdown), `metadata-cache.ts`, `npx-resolver.ts`, `mcp-auth.ts` (OAuth credential storage), `mcp-callback-server.ts` (the localhost OAuth callback), `content.ts` (MCP content to text and image blocks), `elicitation-handler.ts` and `utils.ts`. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
 
 - **Source**: pi-mcp-adapter (`pi-mcp-adapter`)
 - **Ported patterns**: connect dedup + 60s failure backoff + health checks + idle shutdown + keep-alive reconnect, paginated `tools/list`/`resources/list` collection, on-disk metadata cache keyed by config hash with atomic temp+rename writes, `${VAR}`/`$env:VAR` interpolation, npx/npm-exec real-binary resolution, OAuth credential storage + localhost callback server, MCP content → text/image block transformation, resource-name → `get_*` tool slugging, form elicitation request handling
@@ -1184,7 +1184,7 @@ These npm packages ship inside the VSIX, the desktop app or both. esbuild bundle
   — releases proper-lockfile's locks on exit; bundled with it.
 - **retry** (v0.12.0) — MIT, Copyright (c) 2011: Tim Koschützki (tim@debuggable.com), Felix Geisendörfer (felix@debuggable.com) — https://github.com/tim-kos/node-retry
   — proper-lockfile's retry backoff; bundled with it.
-- **undici** (v8.10.2) — MIT, Copyright (c) Matteo Collina and Undici contributors — https://github.com/nodejs/undici
+- **undici** (v8.12.3) — MIT, Copyright (c) Matteo Collina and Undici contributors — https://github.com/nodejs/undici
   — the desktop app's process-wide HTTP dispatcher and proxy support; bundled into `dist/desktop/main.js`.
 - **picomatch** (v4.0.7) — MIT, Copyright (c) 2017-present, Jon Schlinkert. — https://github.com/micromatch/picomatch
   — glob matching for the desktop file watchers; bundled into `dist/desktop/main.js`.

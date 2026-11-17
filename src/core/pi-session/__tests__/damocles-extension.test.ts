@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as path from 'node:path';
 import { createDamoclesExtensionFactory, type CheckpointRegistryReader, type PanelRegistryReader } from '../damocles-extension';
 import { FolderRuntime } from '../folder-runtime';
 import type { PiCodingAgentModule } from '../pi-loader';
@@ -8,6 +9,7 @@ import { CheckpointService, type CheckpointProducer, type CheckpointTreeReader }
 import type { PanelGateContext } from '../permission-gate';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 /** Trust and watchers for the folder runtimes built here; trusted by default, as the host is. */
 const testPlatform = createFakePlatform();
@@ -82,6 +84,7 @@ function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
       matchRule: vi.fn(async () => null),
       decide: vi.fn(() => evaluate),
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
+      sessionCwd: () => path.resolve('/repo'),
     } as unknown as PanelGateContext['permissionHandler'],
     isPlanMode: () => plan,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
@@ -868,6 +871,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     it('a retired instance produces NO further wrap when the runtime republishes', async () => {
       const folder = new FolderRuntime({
         pi: {} as PiCodingAgentModule,
+        mcpModule: piMcp,
         cwd: '/tmp/ws',
         agentDir: '/tmp/agent',
         modelRuntime: {} as ModelRuntime,

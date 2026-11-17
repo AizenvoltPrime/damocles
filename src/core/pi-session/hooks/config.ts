@@ -3,7 +3,8 @@ import * as path from 'path';
 import { stripBom } from '../../config/bom';
 import { log } from '../../logger';
 import { DAMOCLES_HOME_DIR } from '../../paths';
-import { hookEntrySchema, type HookEntry } from './types';
+import { hookEntrySchema, type ConfiguredHook, type HookEntry } from './types';
+import type { HookScope } from '../../../shared/types/wind-down';
 import type { Disposable } from '../../../platform/disposable';
 import type { TrustService } from '../../../platform/trust-service';
 import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
@@ -102,6 +103,10 @@ export function parseHooksFile(filePath: string): Record<string, HookEntry[]> {
   return result;
 }
 
+function scoped(entries: Record<string, HookEntry[]>, scope: HookScope): Record<string, ConfiguredHook[]> {
+  return Object.fromEntries(Object.entries(entries).map(([eventKey, list]) => [eventKey, list.map((entry) => ({ ...entry, scope }))]));
+}
+
 /**
  * Loads, validates, watches, and trust-gates the global (`~/.damocles/hooks.json`) and project
  * (`<ws>/.damocles/hooks.json`) hook configs. Global is always honored; the project file is exposed only
@@ -109,8 +114,8 @@ export function parseHooksFile(filePath: string): Record<string, HookEntry[]> {
  * Disposable: tears down both watchers and the trust listener.
  */
 export class HooksConfigService {
-  private globalEntries: Record<string, HookEntry[]> = {};
-  private projectEntries: Record<string, HookEntry[]> = {};
+  private globalEntries: Record<string, ConfiguredHook[]> = {};
+  private projectEntries: Record<string, ConfiguredHook[]> = {};
   private readonly watchers: FileWatcher[] = [];
   private trustListener: Disposable | undefined;
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -140,9 +145,9 @@ export class HooksConfigService {
   }
 
   private loadAll(): void {
-    this.globalEntries = parseHooksFile(this.globalPath());
+    this.globalEntries = scoped(parseHooksFile(this.globalPath()), 'user');
     const dir = this.projectDir();
-    this.projectEntries = dir ? parseHooksFile(path.join(dir, HOOKS_FILE)) : {};
+    this.projectEntries = dir ? scoped(parseHooksFile(path.join(dir, HOOKS_FILE)), 'project') : {};
   }
 
   private setupWatchers(): void {
@@ -172,7 +177,7 @@ export class HooksConfigService {
   }
 
   /** The ordered entries for an event key: global first, then project (project only when trusted). */
-  getEntries(eventKey: string): HookEntry[] {
+  getEntries(eventKey: string): ConfiguredHook[] {
     const global = this.globalEntries[eventKey] ?? [];
     const project = this.projectTrusted() ? this.projectEntries[eventKey] ?? [] : [];
     return [...global, ...project];

@@ -32,7 +32,7 @@ function service(recorded: AgentInvocationData[]): TeamService {
       recorded.push(data);
     },
     parentBranch: () => [],
-    assertResumableModel: () => undefined,
+    assertResumableModel: async () => undefined,
     requestInterruptionCheck: () => undefined,
   });
 }

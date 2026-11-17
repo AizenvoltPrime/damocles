@@ -1,6 +1,6 @@
 // Host to session metadata worker and back (docs/invariants.md "Session store"). Pure: both sides import it.
 import * as path from 'node:path';
-import type { StoredSession } from '@shared/types/session';
+import type { IndexedSession } from '../metadata';
 
 export const SESSION_META_INDEX_WORKER_MARKER = 'damocles-session-meta-index-worker';
 
@@ -20,7 +20,7 @@ export interface SessionMetaIndexWorkerData {
 export interface SessionMetaEntry {
   size: number;
   mtimeMs: number;
-  stored: StoredSession | null;
+  stored: IndexedSession | null;
   /** Newest first, unique, capped: see `newestUniquePrompts`. */
   prompts: string[];
 }
@@ -49,18 +49,20 @@ export type MetaIndexRequest =
   | { type: 'promptHistory'; id: number; dirs: string[]; sessionIds: string[] }
   | { type: 'put'; file: string; entry: SessionMetaEntry }
   | { type: 'forget'; file: string }
+  /** A relocated session file's row, carried to its new path with the size and mtime it had (the file is unchanged). */
+  | { type: 'move'; from: string; to: string }
   /** Commits pending puts, closes the index and ends the worker. */
   | { type: 'close' };
 
 export type MetaIndexEvent =
   /** A list's still-valid rows, and every session file it found; `parsing` files follow in `listBatch` events. */
-  | { type: 'listed'; id: number; sessions: StoredSession[]; files: string[]; parsing: number }
-  | { type: 'listBatch'; id: number; sessions: StoredSession[] }
+  | { type: 'listed'; id: number; sessions: IndexedSession[]; files: string[]; parsing: number }
+  | { type: 'listBatch'; id: number; sessions: IndexedSession[] }
   /** `complete` false: a file the list found yielded no row, as its parse could not finish, or the dir could not be read. */
   | { type: 'listDone'; id: number; complete: boolean }
-  | { type: 'meta'; id: number; stored: StoredSession | null }
+  | { type: 'meta'; id: number; stored: IndexedSession | null }
   /** `found` false: nothing cached for the file as it is now. */
-  | { type: 'cachedRow'; id: number; found: boolean; stored: StoredSession | null }
+  | { type: 'cachedRow'; id: number; found: boolean; stored: IndexedSession | null }
   | { type: 'promptHistory'; id: number; prompts: string[]; opened: number }
   | { type: 'error'; id: number; message: string }
   | { type: 'log'; message: string };

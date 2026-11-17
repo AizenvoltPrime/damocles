@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import * as fs from "fs";
 import * as os from "os";
@@ -9,9 +9,15 @@ import { ConfigManager } from "../../../settings-manager/managers/config-manager
 import { PermissionHandler } from "../../../../permission-handler";
 import { runPermissionGate, type GatePermissionContext } from "../../../../pi-session/permission-gate";
 import { ShellCancelStore } from "../../../../pi-session/tools/shell-cancel-registry";
+import { getPiCodingAgent, initPiLoader } from "../../../../pi-session/pi-loader";
 import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import type { HandlerContext, HandlerDependencies } from "../../types";
+
+// An Edit's approval diff runs pi's edit.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 /**
  * "Yes, and accept all edits this session" posts `setPermissionMode` then `approveEdit` from any agent's edit
@@ -36,7 +42,7 @@ const bashEvent = (toolCallId: string): ToolCallEvent =>
 
 function chat() {
   const platform = createFakePlatform();
-  const handler = new PermissionHandler(platform);
+  const handler = new PermissionHandler(platform, getPiCodingAgent);
   handler.setWorkspacePath(workspace);
   handler.setCwd(workspace);
   handler.setPermissionMode("default");

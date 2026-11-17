@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { parseHTML } from 'linkedom';
 import { parse as parseYaml } from 'yaml';
-import type { DesignBreakpoint, DesignPreviewFile, DesignPreviewInfo, JourneyViewport } from '../../shared/types/design';
+import type { DesignBreakpoint, DesignPreviewAnswer, DesignPreviewFile, DesignPreviewInfo, JourneyViewport } from '../../shared/types/design';
 import { log } from '../logger';
 import { MAX_PROBE_WIDTHS, MAX_RENDER_WIDTH, MIN_RENDER_WIDTH } from '../../shared/design-render';
 import { DESIGN_NAME, designStateTokens } from '../../shared/design-paths';
@@ -112,11 +112,9 @@ export function resolveDesignViewports(breakpointValues: Readonly<Record<string,
   };
 }
 
-/** The screen's declared states, id and title; undefined when the file is not a readable screen of the folder. */
-async function screenOf(folder: string, relPath: string): Promise<Pick<DesignPreviewInfo, 'screenId' | 'title' | 'states'> | undefined> {
-  const file = await readDesignFile(folder, relPath, MAX_SCREEN_BYTES);
-  if (file.kind !== 'file') return undefined;
-  const { document } = parseHTML(file.bytes.toString('utf8')) as unknown as { document: { documentElement: { getAttribute(name: string): string | null } | null; title?: string } };
+/** The screen's declared states, id and title. */
+function screenOf(bytes: Buffer): Pick<DesignPreviewInfo, 'screenId' | 'title' | 'states'> {
+  const { document } = parseHTML(bytes.toString('utf8')) as unknown as { document: { documentElement: { getAttribute(name: string): string | null } | null; title?: string } };
   const root = document.documentElement;
   const states = [...new Set(designStateTokens(root?.getAttribute('data-ds-states')).filter((state) => DESIGN_NAME.test(state)))].slice(0, MAX_STATES);
   const screenId = root?.getAttribute('data-ds-screen')?.trim() ?? '';
@@ -126,12 +124,19 @@ async function screenOf(folder: string, relPath: string): Promise<Pick<DesignPre
 
 /** The preview's facts of screen `relPath` in design folder `folder`; undefined when the screen cannot be read. */
 export async function designPreviewInfo(folder: string, relPath: string): Promise<DesignPreviewInfo | undefined> {
-  const [screen, widths] = await Promise.all([screenOf(folder, relPath), designViewports(folder)]);
-  if (!screen) return undefined;
+  const answer = await designPreviewAnswer(folder, relPath);
+  return answer && 'missing' in answer ? undefined : answer;
+}
+
+/** `design.info`'s answer for screen `relPath` of design folder `folder`: the facts, missing, or nothing for a refused file. */
+export async function designPreviewAnswer(folder: string, relPath: string): Promise<DesignPreviewAnswer> {
+  const [file, widths] = await Promise.all([readDesignFile(folder, relPath, MAX_SCREEN_BYTES), designViewports(folder)]);
+  if (file.kind === 'missing') return { missing: true };
+  if (file.kind !== 'file') return undefined;
   return {
     // the real path, as a mention names a file (resolveMention)
     path: path.join(await fs.realpath(folder), ...relPath.split('/')),
-    ...screen,
+    ...screenOf(file.bytes),
     breakpoints: widths.breakpoints,
     primary: widths.primary,
     checked: widths.checked.map(({ width }) => width),

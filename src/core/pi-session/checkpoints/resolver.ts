@@ -1,7 +1,10 @@
-import { createHash } from 'crypto';
 import * as path from 'path';
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { folderKey } from '../../workspace-folders/folder-key';
+import { currentRelocations, type RelocationsSnapshot } from '../../project-relocation/current';
+import { folderIdFor } from './folder-id';
+
+export { folderIdFor } from './folder-id';
 
 /**
  * Root under which every session's private bare checkpoint repo lives. Kept entirely separate from
@@ -50,9 +53,19 @@ export function getFolderReposBaseDir(): string {
   return FOLDERS_BASE_DIR;
 }
 
-/** First 16 hex of sha256(folderKey(cwd)): the same folder always maps to the same repo, at a fixed path length. */
-export function folderIdFor(cwd: string): string {
-  return createHash('sha256').update(folderKey(cwd)).digest('hex').slice(0, 16);
+/** The folder repo new checkpoints of `cwd` go to: the one the relocation journal binds its path to, else its own. */
+export function folderRepoIdOf(cwd: string): string {
+  return currentRelocations().checkpointBindings.get(folderKey(cwd)) ?? folderIdFor(cwd);
+}
+
+/** Every folder repo whose entries belong to `cwd`: its own, its binding, and those of each folder that moved to it. */
+export function folderRepoIdsOf(cwd: string): Set<string> {
+  return folderRepoIdsIn(currentRelocations(), cwd);
+}
+
+/** folderRepoIdsOf as `snapshot` of the relocation journal places the folders. */
+export function folderRepoIdsIn(snapshot: Pick<RelocationsSnapshot, 'checkpointRepos'>, cwd: string): Set<string> {
+  return new Set(snapshot.checkpointRepos.get(folderKey(cwd)) ?? [folderIdFor(cwd)]);
 }
 
 export function isFolderId(id: string): boolean {

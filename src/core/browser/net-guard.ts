@@ -9,8 +9,8 @@ import { resolveAddresses, type AddressResolver, type ResolvedAddress } from './
  */
 
 /**
- * Whether `url` is safe to hand to `Page.navigate` from a panel-driven path (address bar, restored
- * tab).
+ * Whether `url` is safe to hand to `Page.navigate`: the one allowlist of the address bar, a restored tab and every agent
+ * navigation (`agentNavigationRefusal`).
  *
  * WHY A NAVIGATION NEEDS A SCHEME POLICY AT ALL. The browser drives the user's REAL profile, and
  * everything it loads flows onward to the agent through snapshots, screenshots and the collectors. So
@@ -26,9 +26,8 @@ import { resolveAddresses, type AddressResolver, type ResolvedAddress } from './
  * Anything that will not parse is rejected, so a malformed value can never fall through as "probably
  * fine".
  *
- * The agent's own `BrowserNavigate` is deliberately NOT bound by this: an agent asked to test a local
- * fixture has a legitimate reason to open `file://`, and it is acting under the operator's direction
- * with the permission gate in front of it.
+ * A file page the agent names opens only on its root's served http address or is refused
+ * (`ChatServedFiles.localTarget`), and BrowserService never navigates to one.
  */
 export function isNavigableUrl(url: string): boolean {
   if (url === 'about:blank') return true;
@@ -38,6 +37,19 @@ export function isNavigableUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Why an agent navigation to `url` is refused before Chrome sees it, naming its scheme; undefined for an address
+ * isNavigableUrl passes (docs/invariants.md "Browser").
+ */
+export function agentNavigationRefusal(url: string): string | undefined {
+  if (isNavigableUrl(url)) return undefined;
+  const instead = 'Open the page at its full http:// or https:// URL, or a file in this chat\'s project or design folder by its file:// address.';
+  if (!URL.canParse(url)) return `That address is not a complete URL; the browser opens only http and https URLs and about:blank. ${instead}`;
+  const scheme = new URL(url).protocol.slice(0, 40);
+  const script = scheme === 'javascript:' ? ' To run script in the page, use BrowserEvaluate.' : '';
+  return `The browser does not open ${scheme} addresses; it opens only http and https URLs and about:blank. ${instead}${script}`;
 }
 
 /**

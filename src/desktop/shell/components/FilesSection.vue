@@ -14,7 +14,7 @@ import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { ScmDecoration, ScmLetter, ScmResource, ScmTone } from '../../preload/scm-channels';
 import { parseRootKey } from '../../preload/folder-root';
 import { fileNameProblem } from '../../preload/file-names';
-import { isServablePreviewPath } from '../../main/html-preview/serve-policy';
+import { isServablePreviewPath } from '../../../core/served-pages/serve-policy';
 import { ancestorsOf, autoRevealExcluded, childPath, flattenTree, nameOf, parentOf, type Listing, type TreeEdit, type TreeRow } from '../files-tree';
 import FileIcon from './FileIcon.vue';
 import { tidyMenu } from '../../preload/overlay-channels';

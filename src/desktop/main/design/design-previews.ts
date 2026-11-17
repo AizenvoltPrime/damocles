@@ -9,7 +9,7 @@ import { JOURNEY_STEP_TIMEOUT_MS } from '../../../shared/design-journey';
 import { visibleText } from '../../../shared/visible-text';
 import { historyStepOf } from '../../../shared/history-keys';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
-import type { DesignPreviewImage, DesignPreviewInfo, JourneyStep, JourneyStepResult, TweaksDeclaration } from '../../../shared/types/design';
+import type { DesignPreviewAnswer, DesignPreviewImage, DesignPreviewInfo, JourneyStep, JourneyStepResult, TweaksDeclaration } from '../../../shared/types/design';
 import { isTweakColor, MAX_TWEAK_LABEL_CHARS, MAX_TWEAK_VALUE_CHARS, TWEAK_ID, TWEAK_TOKEN_NAME, tweakCss } from '../../../shared/design-tweaks';
 import {
   MAX_DESIGN_LAST_FRAME_CHARS,
@@ -57,7 +57,7 @@ export interface DesignPreviewsDeps {
   readonly onRestack: () => void;
   readonly support: (authority: string) => DesignSupport;
   // design.info on the authority's own core
-  readonly info: (target: DesignViewTarget, relPath: string) => Promise<DesignPreviewInfo | undefined>;
+  readonly info: (target: DesignViewTarget, relPath: string) => Promise<DesignPreviewAnswer>;
   readonly setTabs: (chatPanelId: string, tabs: readonly PersistedDesignTab[]) => void;
   // a host teardown closes every chat and leaves the saved tabs as they were
   readonly retainingStates: () => boolean;
@@ -620,9 +620,8 @@ export class DesignPreviews {
     }
     this.deps.info({ authority: tab.chat.authority, designId: tab.designId }, tab.relPath).then((info) => {
       if (run !== tab.infoRun || !this.tabExists(tab)) return;
-      if (!info) {
-        this.deps.log(`[design] design ${tab.designId} has no readable screen ${tab.relPath}`);
-        this.setStatus(tab, 'failed');
+      if (!info || 'missing' in info) {
+        this.unreadable(tab);
         return;
       }
       this.takeInfo(tab, info);
@@ -654,9 +653,14 @@ export class DesignPreviews {
     if (tab.status !== 'ready') tab.status = live?.loaded ? 'ready' : 'loading';
   }
 
+  private unreadable(tab: DesignTab): void {
+    this.deps.log(`[design] design ${tab.designId} has no readable screen ${tab.relPath}`);
+    this.setStatus(tab, 'failed');
+  }
+
   // The facts of `relPath`, or undefined when the design has no readable page there or its core did not answer.
   private infoOf(tab: DesignTab, relPath: string): Promise<DesignPreviewInfo | undefined> {
-    return this.deps.info({ authority: tab.chat.authority, designId: tab.designId }, relPath).catch((err: unknown) => {
+    return this.deps.info({ authority: tab.chat.authority, designId: tab.designId }, relPath).then((info) => (info && 'missing' in info ? undefined : info), (err: unknown) => {
       this.deps.log(`[design] design.info of ${tab.designId} failed: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     });
@@ -1045,18 +1049,49 @@ export class DesignPreviews {
   }
 
   /**
-   * The designer wrote `paths` of design `designId` on `authority`, or with none a chat there began to hold it: its tabs read
-   * their facts again, and after a write their views reload.
+   * The designer wrote or removed `paths` of design `designId` on `authority`, or with none a chat there began to hold it: its
+   * tabs read their facts again, and after a write their views reload.
    */
   designChanged(authority: string, designId: string, paths: readonly string[]): void {
     for (const tab of this.allTabs()) {
       if (tab.chat.authority !== authority || tab.designId !== designId) continue;
-      this.loadInfo(tab);
-      if (tab.live && paths.length > 0) {
-        tab.live.loaded = false;
-        tab.live.view.webContents.reload();
-      }
+      this.reread(tab, paths.length > 0);
     }
+  }
+
+  // The facts decide before any reload: a page core says is missing is removed, one it cannot read otherwise failed, and one
+  // back loads again (D74). Core's listing names every file of the design, so the change's paths cannot tell a removal.
+  private reread(tab: DesignTab, written: boolean): void {
+    const run = ++tab.infoRun;
+    const support = this.deps.support(tab.chat.authority);
+    if (support !== 'yes') {
+      this.setStatus(tab, support === 'updateServer' ? 'updateServer' : 'reconnecting');
+      return;
+    }
+    this.deps.info({ authority: tab.chat.authority, designId: tab.designId }, tab.relPath).then((info) => {
+      if (run !== tab.infoRun || !this.tabExists(tab)) return;
+      if (info && 'missing' in info) {
+        this.setStatus(tab, 'removed');
+        return;
+      }
+      // a core without design.infoMissing answers nothing for a missing page too
+      if (!info) {
+        this.unreadable(tab);
+        return;
+      }
+      // a hidden tab without a view builds one when it shows
+      const reload = tab.live && (written || tab.status === 'removed' || tab.status === 'failed' || tab.status === 'notFound') ? tab.live : undefined;
+      if (tab.status === 'removed') tab.status = 'loading';
+      if (reload) reload.loaded = false;
+      this.takeInfo(tab, info);
+      reload?.view.webContents.reload();
+      this.changed(tab);
+      this.layout();
+    }, (err: unknown) => {
+      if (run !== tab.infoRun || !this.tabExists(tab)) return;
+      this.deps.log(`[design] design.info of ${tab.designId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.setStatus(tab, this.deps.support(tab.chat.authority) === 'offline' ? 'reconnecting' : 'failed');
+    });
   }
 
   /**
@@ -1385,7 +1420,7 @@ export class DesignPreviews {
 
   private pageMissing(tab: DesignTab, live: LiveView): void {
     live.pageMissing = true;
-    if (tab.status === 'reconnecting' || tab.status === 'updateServer') return;
+    if (tab.status === 'reconnecting' || tab.status === 'updateServer' || tab.status === 'removed') return;
     const historyMoved = this.readHistory(tab, live);
     if (tab.status === 'notFound' && !historyMoved) return;
     tab.status = 'notFound';

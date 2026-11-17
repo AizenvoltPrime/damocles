@@ -5,7 +5,7 @@ import { log } from '../../logger';
 import { perfSpan } from '../../perf';
 import { ensurePiSessionDir, piSessionDir } from './session-dir';
 import { worktreeSessionFolders } from '../../worktrees/personal-config';
-import type { SessionFileMeta } from './metadata';
+import type { IndexedSession, SessionFileMeta } from './metadata';
 import type { SessionMetaIndex } from './meta-index/client';
 import { metaCacheKey, piSessionIdFromFile } from './meta-index/protocol';
 
@@ -20,18 +20,18 @@ function indexSessionFile(filePath: string): void {
 /** A list's first answer, and when the rows of the files it parses have all reached `onParsed`. */
 export interface PiSessionList {
   /** Newest first. */
-  sessions: StoredSession[];
+  sessions: IndexedSession[];
   /** Resolves once no parsed row follows: true when every file the list found yielded its row, false when the list ended early or a parse could not finish (logged); never rejects. */
   parsed: Promise<boolean>;
 }
 
 /**
- * List every pi session for a workspace as webview `StoredSession`s (FR-1) from the session metadata index: `sessions`
+ * List every pi session for a workspace as `IndexedSession` rows (FR-1) from the session metadata index: `sessions`
  * holds the rows whose file's size and mtime still match. The worker parses the other files with pi's full metadata
  * path, so in-tree custom entries (the rename marker and the tag) survive reloads, and hands their rows to `onParsed`
  * in batches after this resolves.
  */
-export async function listPiSessions(index: SessionMetaIndex, cwd: string, onParsed: (sessions: StoredSession[]) => void): Promise<PiSessionList> {
+export async function listPiSessions(index: SessionMetaIndex, cwd: string, onParsed: (sessions: IndexedSession[]) => void): Promise<PiSessionList> {
   const span = perfSpan('sessions.list');
   const parseSpan = perfSpan('sessions.listParsed');
   // Never created here: the worker lists a missing dir as empty, and a registry folder's dir is only ever created by its sessions (AD12).
@@ -57,7 +57,7 @@ export async function listPiSessions(index: SessionMetaIndex, cwd: string, onPar
 }
 
 /** Precise metadata for one pi session file (used by the watcher; cheaper than re-listing). */
-export async function getPiSessionMetadataByFile(index: SessionMetaIndex, filePath: string): Promise<StoredSession | null> {
+export async function getPiSessionMetadataByFile(index: SessionMetaIndex, filePath: string): Promise<IndexedSession | null> {
   try {
     const stored = await index.meta(filePath);
     if (stored) indexSessionFile(filePath);
@@ -88,7 +88,7 @@ export function readLiveSessionMetadata(
   source: LiveSessionMetaSource,
   sessionId: string,
   expectedFile?: string,
-): StoredSession | null | undefined {
+): IndexedSession | null | undefined {
   const file = source.liveSessionFile();
   if (!file || piSessionIdFromFile(file) !== sessionId) return undefined;
   if (expectedFile !== undefined && metaCacheKey(file) !== metaCacheKey(expectedFile)) return undefined;
@@ -115,7 +115,7 @@ export function readLiveSessionMetadata(
 
 /** The indexed row for a file whose size and mtime match the indexed read (null: the file yields no row),
  *  or undefined when nothing was indexed for the file as it is now. Never reads the file. */
-export function currentCachedRow(index: SessionMetaIndex, filePath: string): Promise<StoredSession | null | undefined> {
+export function currentCachedRow(index: SessionMetaIndex, filePath: string): Promise<IndexedSession | null | undefined> {
   return index.cachedRow(filePath);
 }
 
@@ -177,7 +177,8 @@ export async function resolvePiSessionFile(cwd: string, sessionId: string): Prom
 
 /**
  * The directory of an existing session's file, where its subagent, team and fork data live (AD12 Sessions), found as
- * resolvePiSessionFile finds it; a session with no file yet takes `cwd`'s own directory, where pi creates it.
+ * resolvePiSessionFile finds it; a session with no file yet takes `cwd`'s own directory, where pi creates it, created here
+ * only while `cwd` exists.
  */
 export function piSessionDirOf(cwd: string, sessionId: string): string {
   const dirs = sessionLookupDirs(cwd);
@@ -197,11 +198,13 @@ export function piSessionDirOf(cwd: string, sessionId: string): string {
       return dir;
     }
   }
-  return ensurePiSessionDir(cwd);
+  // A missing folder (moved, or its drive gone) gets no session dir; a relocation removed the old one.
+  // eslint-disable-next-line damocles/no-sync -- this lookup is synchronous for its callers, as its readdir above is
+  return fs.existsSync(cwd) ? ensurePiSessionDir(cwd) : piSessionDir(cwd);
 }
 
 /** Precise metadata for one pi session by id (marker-aware; used on rename/title/create upserts). */
-export async function getPiSessionMetadata(index: SessionMetaIndex, cwd: string, sessionId: string): Promise<StoredSession | null> {
+export async function getPiSessionMetadata(index: SessionMetaIndex, cwd: string, sessionId: string): Promise<IndexedSession | null> {
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return null;
   return getPiSessionMetadataByFile(index, filePath);

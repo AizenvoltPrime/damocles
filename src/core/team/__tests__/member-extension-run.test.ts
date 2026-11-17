@@ -198,8 +198,9 @@ describe("a run a user's pi extension opens in a member's session", () => {
     expect(member.order).toEqual(['agent_settled', 'forget']);
 
     start.release();
-    // The run's request setup rejects under the aborted signal before any request (`model-runtime.js:456-460` in pi-coding-agent 1.4.0).
-    await vi.waitFor(() => expect(ends).toEqual(['error: This operation was aborted']), { timeout: 10_000 });
+    // The run's request setup rejects under the aborted signal before any request, an aborted stop (`model-runtime.js:463-467`
+    // in pi-coding-agent 1.5.2, `lazy.js:57-65` in pi-ai 1.5.2).
+    await vi.waitFor(() => expect(ends).toEqual(['aborted: This operation was aborted']), { timeout: 10_000 });
   }, 30_000);
 
   it('a Stop waits for that run to end before the member lets go of its session', async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createFolderProbe } from '../folder-probe';
+import { createFolderProbe, createHungGate } from '../folder-probe';
 
 describe('createFolderProbe', () => {
   afterEach(() => {
@@ -47,11 +47,11 @@ describe('createFolderProbe', () => {
     expect(access).toHaveBeenCalledTimes(3);
   });
 
-  it('starts no check for another folder while maxHung checks hang, caches nothing for it, and checks it once one settles', async () => {
+  it('starts no check for another folder while its gate admits none, caches nothing for it, and checks it once one settles', async () => {
     let now = 0;
     const settles = new Map<string, () => void>();
     const access = vi.fn((folder: string) => (folder === 'P:\\' || folder === 'Q:\\' ? new Promise<void>((resolve) => settles.set(folder, resolve)) : Promise.resolve()));
-    const exists = createFolderProbe(1000, 60_000, { access, now: () => now, maxHung: 2 });
+    const exists = createFolderProbe(1000, 60_000, { access, now: () => now, gate: createHungGate(2, () => now) });
 
     void exists('P:\\');
     void exists('Q:\\');

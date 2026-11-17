@@ -1290,6 +1290,23 @@ export class DocumentService {
     }
   }
 
+  /**
+   * A root whose key changed while its folder stayed where it is (a chat worktree of a moved project): each document of it
+   * names the new key, keeping its id, buffer and backup. A second call changes nothing.
+   */
+  relocateRoot(fromKey: string, toKey: string): void {
+    for (const document of this.documents.values()) {
+      const searchEditor = document.kind === 'text' ? document.searchEditor : undefined;
+      const located = document.location?.projectKey === fromKey;
+      const searched = searchEditor?.projectKey === fromKey;
+      if (!located && !searched) continue;
+      if (located) document.location = { ...document.location!, projectKey: toKey };
+      if (searched) searchEditor!.projectKey = toKey;
+      if (document.kind === 'text' && isDirty(document)) this.deps.backups.changed(document, true);
+      this.emit(document.id, false);
+    }
+  }
+
   /** A hot-exit backup's text as the buffer of an opened document; it is dirty unless it equals the disk. */
   restoreBuffer(id: string, text: string, backupId: string): void {
     const document = this.text(id);

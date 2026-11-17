@@ -28,7 +28,7 @@ import { LocalizedError, type LocalizedText } from "../../../../shared/localized
 
 /** Sentinel thrown when the user dismisses the OAuth prompt — a benign cancel, not a failure. */
 const CHATGPT_SIGN_IN_CANCELLED = "__chatgpt_signin_cancelled__";
-// pi's own text when its loopback callback port is taken, read before any provider text (openai-chatgpt.js:202 in pi-ai 1.4.0)
+// pi's own text when its loopback callback port is taken, read before any provider text (openai-chatgpt.js:202 in pi-ai 1.5.2)
 const PI_PORT_IN_USE = /^Port (\d+) is in use\b/;
 
 const OPENAI_MODELS_PROBE_URL = "https://api.openai.com/v1/models";

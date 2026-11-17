@@ -203,6 +203,8 @@ export interface ForgeService {
   /** Before the user's own git operation: resolves each server it reaches and asks once (the Choose account dialog) where nothing settles it. */
   prepareGitOperation(input: PrepareGitOperationInput, ui: ChooseAccountUi, signal: AbortSignal): Promise<PrepareGitOperationResult>;
   forgetProject(projectKey: string): Promise<void>;
+  /** A moved project's bindings go to its new key, once the forge files were read (docs/invariants.md "Project relocation"). */
+  relocateProject(fromKey: string, toKey: string): Promise<void>;
   forgetHost(authorityKey: string): Promise<void>;
   /** Drops the bindings and host defaults of every remote authority not in authorityKeys, once the forge files were read. */
   keepHosts(authorityKeys: readonly string[]): Promise<void>;
@@ -716,6 +718,12 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
     if (!loaded) throw new ForgeSignInError('provider', notLoadedText());
   }
 
+  /** Whether the bindings can change: waits for the forge files only, never for the accounts' secrets a locked keychain holds. */
+  async function bindingsRead(): Promise<boolean> {
+    await filesRead;
+    return !loadFailed;
+  }
+
   function serverOrThrow(serverId: string): ForgeServer {
     const server = servers.get(serverId);
     if (!server) throw new ForgeSignInError('provider', l('This server is no longer in the list.'));
@@ -1075,17 +1083,22 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
     },
 
     async forgetProject(projectKey) {
-      requireLoaded();
+      if (!(await bindingsRead())) throw new ForgeSignInError('provider', notLoadedText());
       await projectAccounts.forgetProject(projectKey);
     },
 
+    async relocateProject(fromKey, toKey) {
+      if (!(await bindingsRead())) throw new ForgeSignInError('provider', notLoadedText());
+      await projectAccounts.relocateProject(fromKey, toKey);
+    },
+
     async forgetHost(authorityKey) {
-      requireLoaded();
+      if (!(await bindingsRead())) throw new ForgeSignInError('provider', notLoadedText());
       await projectAccounts.forgetHost(authorityKey);
     },
 
     async keepHosts(authorityKeys) {
-      if (!(await loadSettled)) {
+      if (!(await bindingsRead())) {
         log('[forge] the bindings were not read, so no forgotten host\'s bindings are dropped');
         return;
       }

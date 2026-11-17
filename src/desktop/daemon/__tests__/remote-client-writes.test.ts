@@ -246,6 +246,13 @@ describe('a daemon routes credential and transcript requests so no client\'s fil
     await expect(runPinnedTurn(host.remote, 'panel-1', () => broker.read('anthropic'))).resolves.toBeUndefined();
     host.setActing('client-2');
     await expect(runPinnedTurn(host.remote, 'panel-2', () => broker.read('anthropic'))).resolves.toMatchObject({ access: 'pushed-by-2' });
+    // Keep running pushes a configured provider no run has read: it lands like any other, and only an access token crosses
+    await pusherActors.run('client-2', () => pusher.request('user.credentials.push', { provider: 'openai-codex', credential: { ...credential, access: 'configured-by-2' } }));
+    await expect(runPinnedTurn(host.remote, 'panel-3', () => broker.read('openai-codex'))).resolves.toMatchObject({ access: 'configured-by-2' });
+    for (const refused of [{ ...credential, refresh: 'SECRET' }, { type: 'api_key', key: 'sk-client' }]) {
+      await expect(pusherActors.run('client-2', () => pusher.request('user.credentials.push', { provider: 'openai', credential: refused as never }))).rejects.toThrow();
+    }
+    expect(pushedBy).toEqual(['client-2', 'client-2']);
     broker.dispose();
   });
 

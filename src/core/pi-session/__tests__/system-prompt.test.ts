@@ -735,18 +735,28 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
     });
   });
 
-  describe('with Fable 5.1 selected', () => {
-    const prompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-1', compassEnabled: false });
+  describe('with Fable 5.2 selected', () => {
+    const prompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-2', compassEnabled: false });
 
-    it('reports the Fable 5.1 identity and June 2026 cutoff', () => {
-      expect(prompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1.');
+    it('reports the Fable 5.2 identity and June 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named Fable 5.2. The exact model ID is claude-fable-5-2.');
       expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
     });
 
     it('tolerates the pi-side 1M suffix Damocles never constructs', () => {
-      const onemPrompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-1[1m]', compassEnabled: false });
-      expect(onemPrompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1.');
+      const onemPrompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-2[1m]', compassEnabled: false });
+      expect(onemPrompt).toContain('You are powered by the model named Fable 5.2. The exact model ID is claude-fable-5-2.');
       expect(onemPrompt).toContain('Assistant knowledge cutoff is June 2026.');
+    });
+  });
+
+  describe('with the retired claude-fable-5-1 id', () => {
+    const prompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-1', compassEnabled: false });
+
+    it('still reports the Fable 5.1 identity and its June 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1.');
+      expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
+      expect(prompt).not.toContain('Fable 5.2');
     });
   });
 
@@ -764,8 +774,9 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
       expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
     });
 
-    it('does not claim to be Fable 5.1, whose cutoff and pricing differ', () => {
+    it('does not claim to be a later Fable, whose cutoff and pricing differ', () => {
       expect(prompt).not.toContain('Fable 5.1');
+      expect(prompt).not.toContain('Fable 5.2');
       expect(prompt).not.toContain('June 2026');
     });
   });

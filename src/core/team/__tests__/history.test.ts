@@ -76,6 +76,32 @@ describe('findTeamIdByToolUse', () => {
     expect(await findTeamIdByToolUse(cwd, sm.getSessionId(), 'tc-team')).toBeNull();
   });
 
+  // pi's open completes a torn last line in place, which would write to a file the panel holding it appends to.
+  it('reads the stored file without writing it: a torn last line stays torn', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'torn');
+    const sm = parentSession(cwd);
+    sm.appendMessage(user('build it with a team'));
+    sm.appendMessage(createTeamCall('tc-team'));
+    sm.appendCustomEntry(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'team', id: TEAM_ID, toolCallId: 'tc-team', resume: false });
+    sm.appendMessage(createTeamResult('tc-team'));
+    const file = sm.getSessionFile()!;
+    fs.appendFileSync(file, '{"type":"message","id":"torn"');
+    const bytes = fs.readFileSync(file);
+
+    expect(await findTeamIdByToolUse(cwd, sm.getSessionId(), 'tc-team')).toBe(TEAM_ID);
+    expect(fs.readFileSync(file).equals(bytes)).toBe(true);
+  });
+
+  it('reads the branch of the live session the panel holds, which may be ahead of its file', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'live');
+    const live = SessionManager.inMemory(cwd);
+    live.appendMessage(user('build it with a team'));
+    live.appendMessage(createTeamCall('tc-team'));
+    live.appendCustomEntry(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'team', id: TEAM_ID, toolCallId: 'tc-team', resume: false });
+
+    expect(await findTeamIdByToolUse(cwd, live.getSessionId(), 'tc-team', live.getBranch())).toBe(TEAM_ID);
+  });
+
   it('finds nothing in a session recorded before invocation entries, so its card shows the tool call only', async () => {
     const cwd = join(DAMOCLES_HOME_DIR, 'legacy');
     const sm = parentSession(cwd);

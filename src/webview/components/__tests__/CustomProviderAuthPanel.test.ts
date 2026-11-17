@@ -24,7 +24,7 @@ vi.mock('@/composables/usePlatformBridge', () => ({
   }),
 }));
 
-const CREDENTIALS = { typesafe: 'ok', openrouter: 'ok', openai: 'ok' } as const;
+const CREDENTIALS = { typesafe: 'ok', openrouter: 'ok', openai: 'ok', 'github-copilot': 'ok' } as const;
 
 function setStatus(provider: AccountProviderId, status: Partial<KeyProviderStatus>): void {
   useSettingsStore().setKeyProviderStatus(provider, { configured: false, external: null, signedIn: false, preferApiKey: false, ...status });

@@ -5,10 +5,18 @@ vi.mock('electron', () => ({ protocol: {} }));
 import type { BrowserToolAnswer } from '../../../../shared/remote-user';
 import { interceptPattern, relayBrowserTool, typedRemoteAddress, type BrowserRelayDeps } from '../browser-relay';
 import { PARITY_CAPTURE_TOOL } from '../../../../core/design/parity-capture';
-import type { ServedGrant } from '../../html-preview/served-roots';
+import { ServedRoots, type ServedGrant } from '../../html-preview/served-roots';
+import * as http from 'node:http';
+import type { RemoteHost } from '../../../../platform/remote-host';
+import type { PanelHost } from '../../../../platform/window-service';
+import { ChatServedFiles } from '../../../../core/browser/served-files';
+import { relayedBrowserTools } from '../../../../core/pi-session/tools/browser-relay';
+import type { Project } from '../../../local-services/confine';
 
 // a served root's local port, equal to the target port 51234 a forward moved to 51235
 const SERVED_PORT = 51234;
+// the chat view's grant origin of that root
+const SERVED = `http://${'a'.repeat(32)}.localhost:${SERVED_PORT}`;
 
 function relay(overrides: Partial<BrowserRelayDeps> = {}) {
   const forwards: Array<{ host: string; port: number }> = [];
@@ -17,9 +25,9 @@ function relay(overrides: Partial<BrowserRelayDeps> = {}) {
     content: [{ type: 'text', text: `Navigated to: ${(params.input as { url?: string }).url ?? ''}\n[URL] http://localhost:5174/app ws://127.0.0.1:5174/hmr` }, { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' }],
   }));
   const attached: string[] = [];
-  const grant = vi.fn(async (_request: Parameters<BrowserRelayDeps['served']['grant']>[0]): Promise<ServedGrant | { readonly refused: string; readonly unavailable?: boolean }> => ({
-    origin: `http://127.0.0.1:${SERVED_PORT}`,
-    open: (relPath: string) => `http://127.0.0.1:${SERVED_PORT}/__damocles_preview/open?${new URLSearchParams({ t: 'TOKEN', p: relPath }).toString()}`,
+  const grant = vi.fn(async (_request: Parameters<BrowserRelayDeps['served']['grant']>[0]): Promise<ServedGrant | { readonly refused: string }> => ({
+    origin: SERVED,
+    open: (relPath: string) => `${SERVED}/__damocles_preview/open?${new URLSearchParams({ t: 'TOKEN', p: relPath }).toString()}`,
   }));
   const deps: BrowserRelayDeps = {
     authority: 'ssh+host-1',
@@ -32,7 +40,7 @@ function relay(overrides: Partial<BrowserRelayDeps> = {}) {
       },
     }),
     policy: () => ({ allowedPorts: [5174, SERVED_PORT], allowLocalNetwork: false }),
-    served: { grant, mappings: () => [{ origin: `http://127.0.0.1:${SERVED_PORT}`, displayRoot: '/home/u/proj' }] },
+    served: { grant, mappings: () => [{ origin: SERVED, displayRoot: '/home/u/proj' }] },
     run,
     ...overrides,
   };
@@ -116,18 +124,18 @@ describe('a remote chat\'s browser tool on this computer', () => {
 
   it('opens a root file the remote core resolved on its served root, and answers with its file:// address', async () => {
     const { deps, run, grant } = relay();
-    run.mockImplementationOnce(async (params) => ({ content: [{ type: 'text', text: `Opened browser: ${(params.input as { url: string }).url}\n[URL] http://127.0.0.1:${SERVED_PORT}/docs/index.html\nconsole: http://localhost:${SERVED_PORT}/docs/app.js:3` }] }));
+    run.mockImplementationOnce(async (params) => ({ content: [{ type: 'text', text: `Opened browser: ${(params.input as { url: string }).url}\n[URL] ${SERVED}/docs/index.html\nconsole: ${SERVED}/docs/app.js:3` }] }));
     const answer = await relayBrowserTool(deps, { ...request('BrowserOpen', { url: 'file:///home/u/proj/docs/index.html' }), served: { kind: 'project', relPath: 'docs/index.html', displayRoot: '/home/u/proj' } }, new AbortController().signal);
     expect(grant).toHaveBeenCalledWith({ root: { kind: 'project' }, viewId: 'view-1', displayRoot: '/home/u/proj' });
-    expect(run.mock.calls[0]?.[0].input).toEqual({ url: `http://127.0.0.1:${SERVED_PORT}/__damocles_preview/open?t=TOKEN&p=docs%2Findex.html` });
+    expect(run.mock.calls[0]?.[0].input).toEqual({ url: `${SERVED}/__damocles_preview/open?t=TOKEN&p=docs%2Findex.html` });
     const text = (answer.content[0] as { text: string }).text;
     expect(text).toBe('Opened browser: file:///home/u/proj/docs/index.html\n[URL] file:///home/u/proj/docs/index.html\nconsole: file:///home/u/proj/docs/app.js:3');
-    expect(text).not.toMatch(/TOKEN|127\.0\.0\.1|localhost/);
+    expect(text).not.toMatch(/TOKEN|localhost/);
   });
 
   it('carries the address\'s query into the one-time open and its fragment onto it, and answers with both in file:// form', async () => {
     const { deps, run } = relay();
-    run.mockImplementationOnce(async (params) => ({ content: [{ type: 'text', text: `Opened browser: ${(params.input as { url: string }).url}\n[URL] http://127.0.0.1:${SERVED_PORT}/docs/index.html?tab=2&q=a%20b#intro` }] }));
+    run.mockImplementationOnce(async (params) => ({ content: [{ type: 'text', text: `Opened browser: ${(params.input as { url: string }).url}\n[URL] ${SERVED}/docs/index.html?tab=2&q=a%20b#intro` }] }));
     const answer = await relayBrowserTool(deps, { ...request('BrowserOpen', { url: 'file:///home/u/proj/docs/index.html?tab=2&q=a%20b#intro' }), served: { kind: 'project', relPath: 'docs/index.html', displayRoot: '/home/u/proj' } }, new AbortController().signal);
     const opened = new URL((run.mock.calls[0]?.[0].input as { url: string }).url);
     expect(opened.searchParams.get('p')).toBe('docs/index.html');
@@ -135,7 +143,7 @@ describe('a remote chat\'s browser tool on this computer', () => {
     expect(opened.hash).toBe('#intro');
     const text = (answer.content[0] as { text: string }).text;
     expect(text).toBe('Opened browser: file:///home/u/proj/docs/index.html?tab=2&q=a%20b#intro\n[URL] file:///home/u/proj/docs/index.html?tab=2&q=a%20b#intro');
-    expect(text).not.toMatch(/TOKEN|127\.0\.0\.1/);
+    expect(text).not.toMatch(/TOKEN|localhost:/);
   });
 
   it('refuses a served file whose port the policy lacks without naming the port', async () => {
@@ -160,7 +168,7 @@ describe('a remote chat\'s browser tool on this computer', () => {
     }
     expect(grant).not.toHaveBeenCalled();
     // a remote chat's file never opens from this computer's disk, even when no root here serves it
-    grant.mockResolvedValueOnce({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.', unavailable: true });
+    grant.mockResolvedValueOnce({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.' });
     expect(await relayBrowserTool(deps, { ...request('BrowserOpen', { url: 'file:///home/u/proj/a.html' }), served: { kind: 'project', relPath: 'a.html', displayRoot: '/home/u/proj' } }, new AbortController().signal)).toEqual({ isError: true, content: [{ type: 'text', text: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.' }] });
     expect(await relayBrowserTool(deps, { ...request('BrowserClick', { ref: 'e1' }), served: { kind: 'project', relPath: 'a.html', displayRoot: '/home/u/proj' } }, new AbortController().signal)).toMatchObject({ isError: true });
     expect(run).not.toHaveBeenCalled();
@@ -172,21 +180,101 @@ describe('a remote chat\'s browser tool on this computer', () => {
       tunnels: () => ({ list: () => [forwarded], forward: async () => forwarded }),
       policy: () => ({ allowedPorts: [51235, SERVED_PORT], allowLocalNetwork: false }),
     });
-    run.mockImplementationOnce(async () => ({ content: [{ type: 'text', text: `Navigated to: http://localhost:51235/ next to http://127.0.0.1:${SERVED_PORT}/docs/a.html` }] }));
+    run.mockImplementationOnce(async () => ({ content: [{ type: 'text', text: `Navigated to: http://localhost:51235/ next to ${SERVED}/docs/a.html` }] }));
     const answer = await relayBrowserTool(deps, request('BrowserNavigate', { url: `http://localhost:${SERVED_PORT}/` }), new AbortController().signal);
     expect(run.mock.calls[0]?.[0].input).toEqual({ url: 'http://localhost:51235/' });
     // the forward shows its target port and the served page its file, though the two ports are the same number
     expect(answer.content[0]).toEqual({ type: 'text', text: `Navigated to: http://localhost:${SERVED_PORT}/ next to file:///home/u/proj/docs/a.html` });
   });
 
-  it('keeps a typed address on a served root\'s port there', async () => {
-    const { deps } = relay();
-    expect(await typedRemoteAddress(`http://127.0.0.1:${SERVED_PORT}/docs/a.html`, 'ssh+host-1', deps.tunnels(), deps.policy, [SERVED_PORT])).toEqual({ allowed: true, url: `http://127.0.0.1:${SERVED_PORT}/docs/a.html` });
+  it('keeps a typed address on the view\'s own served root grant there, and reads any other name on its port in target form', async () => {
+    const forwarded = { localPort: 51235, remote: { host: 'localhost', port: SERVED_PORT } };
+    const { deps } = relay({ tunnels: () => ({ list: () => [forwarded], forward: async () => forwarded }), policy: () => ({ allowedPorts: [51235, SERVED_PORT], allowLocalNetwork: false }) });
+    expect(await typedRemoteAddress(`${SERVED}/docs/a.html`, 'ssh+host-1', deps.tunnels(), deps.policy, [SERVED])).toEqual({ allowed: true, url: `${SERVED}/docs/a.html` });
+    // another view's grant host, and the loopback names, on the served port are the target's port
+    for (const typed of [`http://${'b'.repeat(32)}.localhost:${SERVED_PORT}/docs/a.html`, `http://127.0.0.1:${SERVED_PORT}/docs/a.html`, `http://localhost:${SERVED_PORT}/docs/a.html`]) {
+      const verdict = await typedRemoteAddress(typed, 'ssh+host-1', deps.tunnels(), deps.policy, [SERVED]);
+      expect(verdict, typed).toMatchObject({ allowed: true, url: expect.stringMatching(/^http:\/\/(localhost|127\.0\.0\.1):51235\/docs\/a\.html$/) });
+    }
+  });
+
+  it('shows a grant URL of another view as a page this chat cannot open, never its host', async () => {
+    const { deps, run } = relay();
+    run.mockImplementationOnce(async () => ({ content: [{ type: 'text', text: `Downloads: report.pdf from http://${'b'.repeat(32)}.localhost:${SERVED_PORT}/out/report.pdf [completed]` }] }));
+    const answer = await relayBrowserTool(deps, request('BrowserDownloads', {}), new AbortController().signal);
+    expect(answer.content[0]).toEqual({ type: 'text', text: 'Downloads: report.pdf from [a served page this chat cannot open] [completed]' });
   });
 
   it('passes a tool without an address as it came', async () => {
     const { deps, run } = relay();
     await relayBrowserTool(deps, request('BrowserClick', { ref: 'e3' }), new AbortController().signal);
     expect(run.mock.calls[0]?.[0].input).toEqual({ ref: 'e3' });
+  });
+});
+
+describe('a remote chat\'s granted folder, from its core\'s gate to this computer\'s server', () => {
+  function get(url: string, headers: Record<string, string> = {}): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+    const parsed = new URL(url);
+    return new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port: Number(parsed.port), path: `${parsed.pathname}${parsed.search}`, headers: { host: parsed.host, ...headers }, agent: false }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString() }));
+      }).on('error', reject);
+    });
+  }
+
+  it('serves only what the host\'s core granted for that view, from that host\'s workspace, and maps it back to file://', async () => {
+    const reads: Array<[string, string]> = [];
+    const served = new ServedRoots({
+      projectOfView: () => undefined,
+      chatView: (authority, viewId) => authority === 'ssh+host-1' && viewId === 'view-1',
+      projects: () => [],
+      files: (rootKey) => ({
+        readFileRange: async (_project: Project, relativePath: string) => {
+          reads.push([rootKey, relativePath]);
+          const bytes = Buffer.from('<p>week</p>');
+          return relativePath === 'week/a.html' ? { ok: true, size: bytes.length, offset: 0, length: bytes.length, resolvedPath: relativePath, chunks: (async function* () { yield bytes; })() } : { ok: false, reason: 'missing' };
+        },
+        confineExisting: async (project: Project) => ({ ok: true as const, path: project.fsPath }),
+      }),
+      isTrusted: () => false,
+      localDesignFolder: (designId) => `/home/u/.damocles/designs/${designId}`,
+      designRead: async () => undefined,
+      refusalText: () => 'Open this preview from Damocles.',
+      log: () => undefined,
+    });
+    try {
+      const { deps, run } = relay({
+        served: { grant: (request) => served.grant({ authority: 'ssh+host-1', ...request }), mappings: (viewId) => served.mappings('ssh+host-1', viewId) },
+        policy: () => ({ allowedPorts: served.servedPorts('ssh+host-1'), allowLocalNetwork: false }),
+      });
+      let opened = '';
+      run.mockImplementation(async (params) => {
+        opened = (params.input as { url: string }).url;
+        return { content: [{ type: 'text', text: `Opened browser: ${opened}` }] };
+      });
+      const chat = {} as PanelHost;
+      const remote = { browserTool: (_host, scope, tool, input, signal, file) => relayBrowserTool(deps, { viewId: 'view-1', scope, tool, input, ...(file ? { served: file } : {}) }, signal ?? new AbortController().signal) } as RemoteHost;
+      const files = new ChatServedFiles({ roots: () => ({ project: '/home/u/proj', designs: [] }), relayed: true });
+      const tools = new Map((relayedBrowserTools([{ name: 'BrowserOpen', execute: vi.fn() }] as never[], remote, chat, 'chat', files) as unknown as Array<{ name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ text?: string }>; isError?: boolean }> }>).map((tool) => [tool.name, tool]));
+      const page = 'file:///home/u/reports/week/a.html';
+      // a folder its core did not grant never reaches this computer
+      expect(await tools.get('BrowserOpen')!.execute('t', { url: page })).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('asks the user') }] });
+      expect(run).not.toHaveBeenCalled();
+      files.grant('/home/u/reports');
+      const answer = await tools.get('BrowserOpen')!.execute('t', { url: page });
+      expect(answer.content[0]?.text).toBe(`Opened browser: ${page}`);
+      const exchange = await get(opened);
+      expect(exchange.status).toBe(303);
+      const cookie = exchange.headers['set-cookie']![0]!.split(';')[0]!;
+      const origin = new URL(opened).origin;
+      expect((await get(`${origin}${exchange.headers.location}`, { cookie })).body).toBe('<p>week</p>');
+      expect(reads).toEqual([['ssh+host-1|/home/u/reports', 'week/a.html']]);
+      // another view of the host holds nothing of it, and the core cannot grant it to a view this host does not have
+      expect(await served.grant({ authority: 'ssh+host-1', root: { kind: 'folder', folder: '/home/u/reports' }, viewId: 'view-2' })).toHaveProperty('refused');
+    } finally {
+      served.dispose();
+    }
   });
 });

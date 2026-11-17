@@ -93,8 +93,8 @@ export interface RequeuedFollowUp {
   inPi: () => void;
   /** pi gave its verdict on this re-queue, so a later withdraw takes the prompt back as usual. */
   dispatched: () => void;
-  /** Stops tracking the prompt without returning it, and gives its `onCommitted` for the entry a stopped run commits. */
-  release: () => (entry: PromptEntry) => void;
+  /** Stops tracking the prompt without returning it, once an input handler consumed it. */
+  release: () => void;
   /** Stops tracking the prompt and returns it to the composer, unless it already went back. */
   giveBack: () => void;
   /** As `giveBack`, with why the re-queue was refused. */
@@ -120,6 +120,14 @@ export interface QueuedPromptEntries {
   withdraw: (session?: AgentSession, keepRequeuing?: boolean) => void;
   /** Withdraws `queued` alone, once, however many prompts share its text. */
   withdrawOne: (queued: QueuedPrompt) => void;
+}
+
+/**
+ * pi normalizes the images of a message it delivers from its queue or opens a run with, appending their hints to its text
+ * (`agent-session.js:1907-1921` and `:1567-1568` in pi-coding-agent 1.5.2).
+ */
+export function deliveredAs(queued: { readonly text: string; readonly images: readonly ImageContent[] }, deliveredText: string): boolean {
+  return deliveredText === queued.text || (queued.images.length > 0 && deliveredText.startsWith(`${queued.text}\n\n[Image`));
 }
 
 /**
@@ -155,7 +163,7 @@ export function queuedPromptEntries(): QueuedPromptEntries {
     claim: (session, deliveredText, message) => {
       // A replaced session delivers nothing more to this panel.
       pending = pending.filter((queued) => queued.session === session);
-      const index = pending.findIndex((queued) => queued.text === deliveredText);
+      const index = pending.findIndex((queued) => deliveredAs(queued, deliveredText));
       const claimed = index === -1 ? undefined : pending.splice(index, 1)[0];
       if (claimed) whenCommitted(session, message, claimed.onCommitted);
       return claimed !== undefined;
@@ -166,7 +174,7 @@ export function queuedPromptEntries(): QueuedPromptEntries {
         const index = unmatched.findIndex((queued) => queued.text === text);
         const queued = index === -1 ? undefined : unmatched.splice(index, 1)[0];
         if (!queued) {
-          return { text, images: [], withdrawn: () => false, stopped: () => false, inPi: () => {}, dispatched: () => {}, release: () => () => {}, giveBack: () => {}, refuse: () => {} };
+          return { text, images: [], withdrawn: () => false, stopped: () => false, inPi: () => {}, dispatched: () => {}, release: () => {}, giveBack: () => {}, refuse: () => {} };
         }
         queued.stopped = false;
         return {
@@ -179,7 +187,6 @@ export function queuedPromptEntries(): QueuedPromptEntries {
           dispatched: () => { queued.requeuing = false; },
           release: () => {
             untrack(queued);
-            return queued.onCommitted;
           },
           giveBack: () => {
             if (untrack(queued)) queued.onWithdrawn();

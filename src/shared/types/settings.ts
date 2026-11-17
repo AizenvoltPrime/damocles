@@ -213,17 +213,17 @@ export type ProviderSignInState =
   | { phase: "browser"; paste: boolean; invalid?: true }
   | { phase: "finishing" };
 
-/** A provider that serves a memory-judge classifier: Jev on TypeSafe or OpenRouter, GPT-6 Luna on OpenAI. */
-export type ClassifierProvider = "typesafe" | "openrouter" | "openai";
+/** A provider that serves a memory-judge classifier: Jev on TypeSafe or OpenRouter, GPT-6 Luna on OpenAI, Microsoft-Decision-1 on GitHub Copilot. */
+export type ClassifierProvider = "typesafe" | "openrouter" | "openai" | "github-copilot";
 
 /** Why a classifier provider's credential was refused: HTTP 401, 402 or 403. */
 export type ClassifierRejection = "unauthorized" | "payment-required" | "forbidden";
 
-/** Why a classifier cannot serve the memory judges: no key, or ChatGPT is the active OpenAI credential. */
-export type ClassifierCredential = "ok" | "no-key" | "chatgpt-active";
+/** Why a classifier cannot serve the memory judges: no key, ChatGPT is the active OpenAI credential, or no sign-in (GitHub Copilot). */
+export type ClassifierCredential = "ok" | "no-key" | "chatgpt-active" | "signed-out";
 
 /** Why a Memory judge chosen in `damocles.memory.judge` cannot run; `unrecognized`: the stored value is no judge this version offers. */
-export type MemoryJudgeUnavailable = Exclude<ClassifierCredential, "ok"> | "rejected" | "signed-out" | "not-in-plan" | "unrecognized" | "not-in-catalog";
+export type MemoryJudgeUnavailable = Exclude<ClassifierCredential, "ok"> | "rejected" | "not-in-plan" | "unrecognized" | "not-in-catalog";
 
 /**
  * The model the memory contradiction judge and reranks run on. `model` is `<provider>/<id>`. `unknown`: no

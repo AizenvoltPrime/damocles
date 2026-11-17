@@ -103,6 +103,14 @@ describe('HooksConfigService', () => {
     svc.dispose();
   });
 
+  it('tags each entry with the hooks file that set it, whatever the file itself claims', () => {
+    writeGlobal(JSON.stringify({ hooks: { agent_end: [{ command: 'g' }] } }));
+    writeProject(workspaceRoot, JSON.stringify({ hooks: { agent_end: [{ command: 'p', scope: 'user' }] } }));
+    const svc = new HooksConfigService(workspaceRoot, fake.trust, fake.fileWatchers);
+    expect(svc.getEntries('agent_end').map((e) => [e.command, e.scope])).toEqual([['g', 'user'], ['p', 'project']]);
+    svc.dispose();
+  });
+
   it('ignores the project file when the workspace is untrusted', () => {
     writeProject(workspaceRoot, JSON.stringify({ hooks: { tool_call: [{ command: 'p' }] } }));
     fake.trust.setTrusted(false);

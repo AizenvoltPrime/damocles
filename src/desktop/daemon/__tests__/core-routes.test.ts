@@ -348,6 +348,78 @@ describe('core routes', () => {
     expect(MAIN_REQUEST_ROUTES['user.memory.list']).toBe('refused');
   });
 
+  it('ask a remote core\'s Locate only of the clicking device, and only when its attach listed projects.relocate', async () => {
+    const h = setUp();
+    const asked: unknown[] = [];
+    // an app that predates the feature would close its connection on the request's name
+    const older = h.client('c-old', { features: [] });
+    older.main.serve('window.locateProjectFolder', () => {
+      asked.push('c-old');
+    });
+    expect(await h.core.request('window.locateProjectFolder', { folderKey: '/srv/app' })).toBeUndefined();
+    expect(asked).toEqual([]);
+    const a = h.client('c-a', { features: ['projects.relocate'] });
+    const b = h.client('c-b', { features: ['projects.relocate'] });
+    a.main.serve('window.locateProjectFolder', (params) => {
+      asked.push(['c-a', params]);
+    });
+    b.main.serve('window.locateProjectFolder', (params) => {
+      asked.push(['c-b', params]);
+    });
+    await processActor.run('c-b', () => h.core.request('window.locateProjectFolder', { folderKey: '/srv/app' }));
+    expect(asked).toEqual([['c-b', { folderKey: '/srv/app' }]]);
+    // a click in the older app opens no folder picker on another device
+    expect(await processActor.run('c-old', () => h.core.request('window.locateProjectFolder', { folderKey: '/srv/app' }))).toBeUndefined();
+    expect(asked).toEqual([['c-b', { folderKey: '/srv/app' }]]);
+    expect(older.close).not.toHaveBeenCalled();
+    expect(CORE_REQUEST_ROUTES['window.locateProjectFolder']).toMatchObject({ to: 'client', needs: 'projects.relocate' });
+    expect(Object.keys(CORE_EVENT_ROUTES)).not.toContain('window.locateProjectFolder');
+  });
+
+  it('pass a remote project\'s relocation requests to the daemon\'s core, and never serve this computer\'s host alias or forge bindings there', async () => {
+    const h = setUp();
+    const served: string[] = [];
+    h.core.serve('projects.relocationsFrom', ({ keys }) => {
+      served.push(`relocationsFrom ${keys.join(',')}`);
+      return [];
+    });
+    h.core.serve('projects.addHostAlias', () => {
+      served.push('addHostAlias');
+    });
+    h.core.serve('forge.relocateProject', () => {
+      served.push('forge.relocateProject');
+    });
+    const client = h.client('c1', { features: ['projects.relocate'] });
+    expect(await client.main.request('projects.relocationsFrom', { keys: ['/srv/old'] })).toEqual([]);
+    await expect(client.main.request('projects.addHostAlias', { hostId: 'h1', from: '/srv/old', to: '/srv/new' })).rejects.toThrow('projects.addHostAlias is not available on this host');
+    await expect(client.main.request('forge.relocateProject', { fromKey: 'ssh+h1|/srv/old', toKey: 'ssh+h1|/srv/new' })).rejects.toThrow('forge.relocateProject is not available on this host');
+    expect(served).toEqual(['relocationsFrom /srv/old']);
+    for (const method of ['projects.relocationPreflight', 'projects.relocate', 'projects.relocationRetry', 'projects.relocationAbandon', 'projects.relocationsFrom', 'projects.applyHostState', 'projects.movedFrom'] as const) {
+      expect(MAIN_REQUEST_ROUTES[method]).toBe('core');
+    }
+    expect(MAIN_REQUEST_ROUTES['projects.addHostAlias']).toBe('refused');
+    expect(MAIN_REQUEST_ROUTES['forge.relocateProject']).toBe('refused');
+    expect(FEATURES).toContain('projects.relocate');
+  });
+
+  it('give a daemon core\'s relocations to an app that lists projects.relocate, at its attach and on each change, and never to one that does not', async () => {
+    const h = setUp();
+    const view = (state: 'running' | 'coreDone') => ({ records: [{ id: 'r1', seq: 1, requestedBy: 'daemon' as const, mode: 'locate' as const, from: '/srv/old', to: '/srv/new', state, step: 'sessions' as const, progress: { done: 0, total: 1 }, chats: 1 }] });
+    h.core.publish('relocations', view('running'));
+    await flush();
+    const seen: Array<[string, string]> = [];
+    // an app that predates the topic would close its connection on its name
+    const older = h.client('c-old', { features: [], before: (main) => main.onMirror('relocations', () => void seen.push(['c-old', 'any'])) });
+    const current = h.client('c1', { features: ['projects.relocate'], before: (main) => main.onMirror('relocations', ({ records }) => void seen.push(['c1', records[0]!.state])) });
+    await flush();
+    h.core.publish('relocations', view('coreDone'));
+    await flush();
+    expect(seen).toEqual([['c1', 'running'], ['c1', 'coreDone']]);
+    expect(older.close).not.toHaveBeenCalled();
+    expect(current.close).not.toHaveBeenCalled();
+    expect(CORE_MIRROR_ROUTES.relocations).toEqual({ to: 'materialized', needs: 'projects.relocate' });
+  });
+
   it('pass design.markup from a client to its core, which writes the markup into its own design folder', async () => {
     const h = setUp();
     const client = h.client('c1');
@@ -459,6 +531,34 @@ describe('core routes', () => {
     expect(await h.core.request('user.browser.tool', served)).toEqual({ content: [{ type: 'text', text: 'served' }] });
     expect(asked.at(-1)).toEqual(served);
     await expect(h.core.request('browser.servedFileUrl', { viewId: 'view-1', kind: 'project', relPath: 'docs/index.html' })).rejects.toThrow('not available on this host');
+  });
+
+  it('send a browser call with a granted folder\'s file only to a viewer that serves granted folders, a root file to one that serves root files', async () => {
+    const h = setUp();
+    h.core.serve('chats.restore', () => undefined);
+    const folder = { viewId: 'view-1', scope: 'chat', tool: 'BrowserOpen', input: { url: 'file:///home/u/reports/a.html' }, served: { kind: 'folder' as const, folder: '/home/u/reports', relPath: 'a.html', displayRoot: '/home/u/reports' } };
+    const root = { ...folder, input: { url: 'file:///srv/app/a.html' }, served: { kind: 'project' as const, relPath: 'a.html', displayRoot: '/srv/app' } };
+    // an app that serves root files but predates granted folders would refuse the field's kind, so it never gets one
+    const older = h.client('c-old', { features: ['user.browser.servedFiles'] });
+    const asked: unknown[] = [];
+    older.main.serve('user.browser.tool', (params) => {
+      asked.push(params);
+      return { content: [{ type: 'text' as const, text: 'ran' }] };
+    });
+    await older.main.request('chats.restore', { viewId: 'view-1' });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    await expect(h.core.request('user.browser.tool', folder)).rejects.toThrow(CLIENT_FEATURE_MISSING);
+    expect(asked).toEqual([]);
+    expect(await h.core.request('user.browser.tool', root)).toEqual({ content: [{ type: 'text', text: 'ran' }] });
+    older.detach();
+    const current = h.client('c-new', { features: ['user.browser.servedFiles', 'user.browser.servedFolders'] });
+    current.main.serve('user.browser.tool', (params) => {
+      asked.push(params);
+      return { content: [{ type: 'text' as const, text: 'served' }] };
+    });
+    await current.main.request('chats.restore', { viewId: 'view-1' });
+    expect(await h.core.request('user.browser.tool', folder)).toEqual({ content: [{ type: 'text', text: 'served' }] });
+    expect(asked.at(-1)).toEqual(folder);
   });
 
   it('send design.journey to a client that lists it and design.replayJourney to one that also shows the chat, refusing with the render text otherwise', async () => {
@@ -752,6 +852,32 @@ describe('core routes', () => {
     h.core.publish('chats', { panelId: 'panel-2', entry: entry('panel-2', 'view-2') });
     expect(seen['c1']).toEqual([{ panelId: 'panel-1', entry: entry('panel-1', 'view-1') }]);
     expect(seen['c2']).toEqual([{ panelId: 'panel-2', entry: entry('panel-2', 'view-2') }]);
+  });
+
+  it('publish the union of each client\'s latest trusted keys, so a key leaves once no client holds it, a detached client\'s included', async () => {
+    const h = setUp();
+    const published: unknown[] = [];
+    h.core.onMirror('trust', (patch) => published.push(patch));
+    const first = h.client('c1');
+    const second = h.client('c2');
+    first.main.publish('trust', { keys: ['/srv/a', '/srv/b'], granted: ['/srv/a', '/srv/b'] });
+    second.main.publish('trust', { keys: ['/srv/b', '/srv/c'], granted: ['/srv/b', '/srv/c'] });
+    await flush();
+    expect(h.mirrors.trust).toEqual(new Set(['/srv/a', '/srv/b', '/srv/c']));
+    // the first device revokes a, which no other holds, and b, which the second still trusts
+    first.main.publish('trust', { keys: [], granted: [] });
+    await flush();
+    expect(published.at(-1)).toEqual({ keys: ['/srv/b', '/srv/c'], granted: [] });
+    expect(h.mirrors.trust).toEqual(new Set(['/srv/b', '/srv/c']));
+    // a detached device's trust stays for its chats that keep running, until its next attach names its set again
+    second.detach();
+    first.main.publish('trust', { keys: ['/srv/a'], granted: ['/srv/a'] });
+    await flush();
+    expect(h.mirrors.trust).toEqual(new Set(['/srv/b', '/srv/c', '/srv/a']));
+    h.client('c2');
+    await flush();
+    expect(published.at(-1)).toEqual({ keys: ['/srv/a'], granted: [] });
+    expect(h.mirrors.trust).toEqual(new Set(['/srv/a']));
   });
 
   it('publish the latest folder set when an earlier one still asks whether a leaving folder is busy', async () => {

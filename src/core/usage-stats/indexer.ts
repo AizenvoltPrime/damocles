@@ -3,11 +3,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { StatementSync } from 'node:sqlite';
 import { isSafeAgentPathId } from '../../shared/agent-path-id';
-import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, parseMirrorClock } from '../../shared/remote-mirror';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, isMirrorWorktreeFolder, parseMirrorClock } from '../../shared/remote-mirror';
 import { hostNoProjectKey, hostProjectKey, NO_PROJECT_KEY } from '../../shared/types/usage-stats';
 import type { UsageDatabase } from './database';
 import { normalizeModelKey, parseLedgerLine, parseSessionLine, type UsageLine } from './entry-parser';
 import type { UsageStatsModel, UsageStatsProgress } from './worker-protocol';
+import { currentHostPathOf, currentPathOf, NO_ALIASES, type RelocationAliases } from '../project-relocation/aliases';
 
 export type FileKind = 'main' | 'subagent' | 'team' | 'background';
 
@@ -23,10 +24,12 @@ const SKIP_PATH: SessionPathClass = { kind: 'skip' };
  * Classify a file under pi's sessions dir by the layout `agent-records.ts` builds. Team event logs
  * (`<parent>/teams/<teamId>.jsonl`), checkpoints and anything else are skipped.
  */
-export function classifySessionPath(sessionsDir: string, filePath: string): SessionPathClass {
+export function classifySessionPath(sessionsDir: string, filePath: string, mirror = false): SessionPathClass {
   const relative = path.relative(sessionsDir, filePath);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return SKIP_PATH;
   const parts = relative.split(/[\\/]/);
+  // A host mirror keeps a project's worktree chats in its folder under worktree.<id>/ or adopted.<id>/, laid out as a session folder.
+  if (mirror && parts.length > 2 && isMirrorWorktreeFolder(parts[1]!)) parts.splice(1, 1);
   if (!parts[parts.length - 1]!.endsWith('.jsonl')) return SKIP_PATH;
   if (parts.length === 2) return { kind: 'main' };
   if (parts.length === 4 && parts[2] === 'subagents') return { kind: 'subagent', parentSessionId: parts[1]! };
@@ -49,6 +52,8 @@ export interface IndexUsageOptions {
   /** `<userData>/remote`: each `<hostId>/mirror` folder is indexed too, its projects keyed per host and its times moved onto this computer's clock. */
   remoteMirrorsDir?: string;
   models: readonly UsageStatsModel[];
+  /** Moved project folders: a recorded path, local or a host's, counts for the folder it moved to. */
+  aliases?: RelocationAliases;
   onProgress?: (progress: UsageStatsProgress) => void;
   log: (message: string) => void;
 }
@@ -121,7 +126,7 @@ function listSessionFiles(sessionsDir: string, host: Pick<Target, 'hostId' | 'cl
   for (const name of names) {
     if (!name.endsWith('.jsonl')) continue;
     const filePath = path.join(sessionsDir, name);
-    const cls = classifySessionPath(sessionsDir, filePath);
+    const cls = classifySessionPath(sessionsDir, filePath, host.hostId !== undefined);
     if (cls.kind === 'main') main.push({ path: filePath, kind: 'main', ...host });
     else if (cls.kind !== 'skip') nested.push({ path: filePath, kind: cls.kind, parentSessionId: cls.parentSessionId, ...host });
   }
@@ -195,6 +200,85 @@ function isRegularFile(filePath: string): boolean {
 /** A target's project key for a header or worktree path: a host's path as written, under its host; this computer's resolved. */
 function targetProjectKey(target: Target, cwd: string): string {
   return target.hostId === undefined ? projectKeyOf(cwd) : hostProjectKey(target.hostId, cwd);
+}
+
+const RELOCATIONS_META_KEY = 'relocations_applied';
+
+/** The journal and its last local and host move seqs whose re-key the index holds. */
+interface AppliedRelocations {
+  readonly journal?: string;
+  readonly local: number;
+  readonly host: number;
+}
+
+function journalThrough(aliases: RelocationAliases): AppliedRelocations {
+  return {
+    ...(aliases.journal !== undefined ? { journal: aliases.journal } : {}),
+    local: Math.max(aliases.localSeq ?? 0, ...aliases.moves.map((move) => move.seq)),
+    host: Math.max(0, ...aliases.hosts.map((move) => move.seq)),
+  };
+}
+
+function appliedRelocations(db: UsageDatabase): AppliedRelocations {
+  const stored = db.prepare('SELECT value FROM meta WHERE key = ?').get(RELOCATIONS_META_KEY) as { value: string } | undefined;
+  if (stored === undefined) return { local: 0, host: 0 };
+  const parsed = JSON.parse(stored.value) as Partial<AppliedRelocations>;
+  return { ...(typeof parsed.journal === 'string' ? { journal: parsed.journal } : {}), local: Number(parsed.local ?? 0), host: Number(parsed.host ?? 0) };
+}
+
+// Rows indexed after a move hold its mapping; an index whose re-key went past this journal's would get rows that miss it. Another
+// journal's seqs say nothing about this one's: it replaced that one, whose moves the rows already hold.
+function aheadOf(applied: AppliedRelocations, through: AppliedRelocations): boolean {
+  return applied.journal === through.journal && (applied.local > through.local || applied.host > through.host);
+}
+
+function sameRelocations(applied: AppliedRelocations, through: AppliedRelocations): boolean {
+  return applied.journal === through.journal && applied.local === through.local && applied.host === through.host;
+}
+
+/**
+ * Re-keys the rows the index holds to each move the index has not applied yet, in seq order, in one `BEGIN IMMEDIATE`
+ * transaction with the record of the moves applied: a row under the move's old folder, dated before the move began, goes to
+ * its new folder (docs/invariants.md "Project relocation", the alias rule; a row is dated by its session's start, a ledger row
+ * by its own time). Rows indexed while the move was known already hold it, so each move is applied once; every move of a
+ * journal that replaced the applied one is new. An old project row goes once nothing refers to it. False when the index
+ * applied moves this journal does not hold yet.
+ */
+function rekeyRelocatedProjects(db: UsageDatabase, aliases: RelocationAliases): boolean {
+  const through = journalThrough(aliases);
+  const seen = appliedRelocations(db);
+  if (aheadOf(seen, through)) return false;
+  if (sameRelocations(seen, through)) return true;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const applied = appliedRelocations(db);
+    if (aheadOf(applied, through)) {
+      db.exec('ROLLBACK');
+      return false;
+    }
+    const after = applied.journal === through.journal ? applied : { local: 0, host: 0 };
+    const moves = [
+      ...aliases.moves.filter((move) => move.seq > after.local).map(({ from, to, startedAt }) => ({ fromKey: projectKeyOf(from), toKey: projectKeyOf(to), to, startedAt, hostId: null })),
+      ...aliases.hosts.filter((move) => move.seq > after.host).map(({ hostId, from, to, startedAt }) => ({ fromKey: hostProjectKey(hostId, from), toKey: hostProjectKey(hostId, to), to, startedAt, hostId })),
+    ];
+    for (const { fromKey, toKey, to, startedAt, hostId } of moves) {
+      if (fromKey === toKey) continue;
+      const before = startedAt ?? Number.MAX_SAFE_INTEGER;
+      let moved = 0;
+      for (const [table, dated] of [['entries', 'session_started_ms'], ['sessions', 'started_ms'], ['files', 'session_started_ms']] as const) {
+        moved += Number(db.prepare(`UPDATE ${table} SET project_key = ? WHERE project_key = ? AND ${dated} < ?`).run(toKey, fromKey, before).changes);
+      }
+      if (moved > 0) db.prepare('INSERT INTO projects (project_key, cwd, host_id) VALUES (?, ?, ?) ON CONFLICT(project_key) DO NOTHING').run(toKey, to, hostId);
+      db.prepare(`DELETE FROM projects WHERE project_key = ? AND NOT EXISTS (SELECT 1 FROM entries WHERE project_key = ?)
+        AND NOT EXISTS (SELECT 1 FROM sessions WHERE project_key = ?) AND NOT EXISTS (SELECT 1 FROM files WHERE project_key = ?)`).run(fromKey, fromKey, fromKey, fromKey);
+    }
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(RELOCATIONS_META_KEY, JSON.stringify(through));
+    db.exec('COMMIT');
+    return true;
+  } catch (err) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 function tailHash(fd: number, end: number): string {
@@ -309,14 +393,28 @@ class Indexer {
   private readonly db: UsageDatabase;
   private readonly stmts: Statements;
   readonly registryKeys: ReadonlySet<string>;
+  private readonly aliases: RelocationAliases;
+  private readonly through: AppliedRelocations;
+  /** Set once another scan re-keyed the index to moves this scan's journal does not hold; the scan then writes nothing more. */
+  behind = false;
 
-  constructor(db: UsageDatabase, models: readonly UsageStatsModel[]) {
+  constructor(db: UsageDatabase, models: readonly UsageStatsModel[], aliases: RelocationAliases) {
     this.db = db;
     this.stmts = prepareStatements(db);
     this.registryKeys = new Set(models.map((m) => m.key));
+    this.aliases = aliases;
+    this.through = journalThrough(aliases);
   }
 
-  /** Returns false when the file vanished before it could be read. */
+  /**
+   * A path recorded at `recordedAt` (epoch ms, a host's on its own clock) as its folder is now: a project a relocation moved,
+   * here or on its host, counts for its new folder.
+   */
+  private recorded(target: Target, folder: string, recordedAt: number | undefined): string {
+    return target.hostId === undefined ? currentPathOf(this.aliases, folder, recordedAt) : currentHostPathOf(this.aliases, target.hostId, folder, recordedAt);
+  }
+
+  /** Returns false when the file vanished before it could be read, or another scan re-keyed the index to moves this scan's journal does not hold (`behind`). */
   indexFile(target: Target): boolean {
     let stat: fs.Stats;
     try {
@@ -334,6 +432,11 @@ class Indexer {
       this.db.exec('BEGIN IMMEDIATE');
       try {
         // Re-read the row and the size under the write lock: another window's scan may have indexed this file since the check above.
+        if (!sameRelocations(appliedRelocations(this.db), this.through)) {
+          this.behind = true;
+          this.db.exec('ROLLBACK');
+          return false;
+        }
         const locked = fs.fstatSync(fd);
         const existing = this.stmts.selectFile.get(target.path) as FileRow | undefined;
         if (!unchanged(existing, locked)) this.readInto(target, existing, fd, locked.size, Math.floor(locked.mtimeMs));
@@ -396,7 +499,7 @@ class Indexer {
         state.detail = parsed.detail;
         return;
       case 'project':
-        this.attributeToProject(parsed.projectPath, state, target);
+        this.attributeToProject(parsed.projectPath, parsed.recordedAt, state, target);
         return;
       case 'model':
         state.modelProvider = parsed.provider;
@@ -433,8 +536,9 @@ class Indexer {
   }
 
   private attribute(header: Extract<ReturnType<typeof parseSessionLine>, { kind: 'header' }>, state: FileState, fileId: number, target: Target): void {
-    const ownProjectKey = targetProjectKey(target, header.cwd);
-    this.stmts.upsertProject.run(ownProjectKey, header.cwd, target.hostId ?? null);
+    const cwd = this.recorded(target, header.cwd, header.startedMs);
+    const ownProjectKey = targetProjectKey(target, cwd);
+    this.stmts.upsertProject.run(ownProjectKey, cwd, target.hostId ?? null);
     state.attributed = true;
     if (target.kind === 'main') {
       state.sessionId = header.id;
@@ -453,8 +557,9 @@ class Indexer {
   }
 
   // A worktree chat's header names its working folder; its worktree entry names the project its spend belongs to.
-  private attributeToProject(projectPath: string, state: FileState, target: Target): void {
+  private attributeToProject(recordedPath: string, recordedAt: number | undefined, state: FileState, target: Target): void {
     if (target.kind !== 'main' || state.sessionId === null) return;
+    const projectPath = this.recorded(target, recordedPath, recordedAt);
     const projectKey = targetProjectKey(target, projectPath);
     if (state.projectKey === projectKey) return;
     this.stmts.upsertProject.run(projectKey, projectPath, target.hostId ?? null);
@@ -471,8 +576,9 @@ class Indexer {
       return;
     }
     if (parsed.kind !== 'usage') return;
-    const projectKey = parsed.cwd !== null ? targetProjectKey(target, parsed.cwd) : target.hostId === undefined ? NO_PROJECT_KEY : hostNoProjectKey(target.hostId);
-    this.stmts.upsertProject.run(projectKey, parsed.cwd, target.hostId ?? null);
+    const cwd = parsed.cwd !== null ? this.recorded(target, parsed.cwd, parsed.tsMs) : null;
+    const projectKey = cwd !== null ? targetProjectKey(target, cwd) : target.hostId === undefined ? NO_PROJECT_KEY : hostNoProjectKey(target.hostId);
+    this.stmts.upsertProject.run(projectKey, cwd, target.hostId ?? null);
     this.upsertEntry(parsed, {
       sessionId: parsed.sessionId,
       agentSessionId: null,
@@ -589,6 +695,7 @@ function rekeyModels(db: UsageDatabase, registryKeys: ReadonlySet<string>): void
  */
 export async function indexUsage(options: IndexUsageOptions): Promise<IndexUsageSummary> {
   const { db, sessionsDir, ledgerPath, remoteMirrorsDir, models, onProgress, log } = options;
+  const aliases = options.aliases ?? NO_ALIASES;
   const failSoft = (step: string, run: () => void) => {
     try {
       run();
@@ -599,8 +706,17 @@ export async function indexUsage(options: IndexUsageOptions): Promise<IndexUsage
   const targets = listSessionFiles(sessionsDir);
   if (remoteMirrorsDir !== undefined) targets.push(...listMirrorFiles(remoteMirrorsDir, log));
   if (fs.existsSync(ledgerPath)) targets.push({ path: ledgerPath, kind: 'background' });
-  const indexer = new Indexer(db, models);
+  const indexer = new Indexer(db, models, aliases);
   failSoft('re-key models for the current registry', () => rekeyModels(db, indexer.registryKeys));
+  let rekeyed: boolean | undefined;
+  failSoft('re-key moved projects', () => {
+    rekeyed = rekeyRelocatedProjects(db, aliases);
+  });
+  // A row indexed now holds every move of this journal, so it goes only into an index that applied exactly those.
+  if (rekeyed !== true) {
+    if (rekeyed === false) log('[UsageStats] The index holds project moves this scan\'s relocation journal does not yet; the next scan indexes');
+    return { filesTotal: targets.length, filesRead: 0, filesFailed: 0 };
+  }
   const seen = new Set<string>();
   const summary: IndexUsageSummary = { filesTotal: targets.length, filesRead: 0, filesFailed: 0 };
   let lastProgressAt = 0;
@@ -612,6 +728,9 @@ export async function indexUsage(options: IndexUsageOptions): Promise<IndexUsage
       if (indexer.indexFile(target)) {
         seen.add(target.path);
         summary.filesRead++;
+      } else if (indexer.behind) {
+        log('[UsageStats] Another scan applied project moves this scan\'s relocation journal does not hold yet; the next scan indexes the rest');
+        return summary;
       }
     } catch (err) {
       seen.add(target.path);

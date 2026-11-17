@@ -5,7 +5,9 @@ import { execSafe } from './exec';
 import { checkpointGitAvailability } from './git-availability';
 import { withRepoLock } from './lock';
 import { getCheckpointsBaseDir, getFolderReposBaseDir, getGitDir, getIndexPath, isFolderId } from './resolver';
-import { SESSION_REFS_ROOT, dropSessionRefsLocked, readSessionRegistration, reconcilePendingCopiesLocked, sessionIdOfRef } from './folder-repo';
+import { SESSION_REFS_ROOT, dropSessionRefsLocked, readSessionRegistration, reconcilePendingCopiesLocked, registeredFileGone, sessionIdOfRef } from './folder-repo';
+import { folderRepoIdsOf } from './resolver';
+import { currentRelocations } from '../../project-relocation/current';
 import { RepoManager } from './repo-manager';
 import { forceRemoveDir } from '../fs-remove';
 import { log } from '../../logger';
@@ -138,7 +140,13 @@ async function sweepFolderRepos(options: CheckpointMaintenanceOptions | undefine
   const retentionDays = options?.retentionDays;
   const retentionMs =
     typeof retentionDays === 'number' && Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays * 86_400_000 : null;
+  // A relocation in flight has re-pointed registrations at session files it has not moved yet.
+  const pendingIds = new Set([...currentRelocations().pendingKeys].flatMap((key) => [...folderRepoIdsOf(key)]));
   for (const folderId of names) {
+    if (pendingIds.has(folderId)) {
+      log('[Checkpoints] maintenance of folder repo %s skipped: a project relocation names it', folderId);
+      continue;
+    }
     const repoDir = path.join(baseDir, folderId);
     if (!fs.existsSync(path.join(getGitDir(repoDir), 'HEAD'))) continue;
     // The work tree is never read here, and the folder it names may be gone.
@@ -160,7 +168,7 @@ async function sweepFolderRepos(options: CheckpointMaintenanceOptions | undefine
             summary.sessionRefsEvicted++;
             continue;
           }
-          if (registration !== null && age > ORPHAN_SESSION_GRACE_MS && !fs.existsSync(registration.sessionFile)) {
+          if (registration !== null && age > ORPHAN_SESSION_GRACE_MS && (await registeredFileGone(registration.sessionFile, registration.registeredAtMs))) {
             await dropSessionRefsLocked(handle, sessionId);
             summary.orphanSessionsPruned++;
           }

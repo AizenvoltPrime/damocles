@@ -317,6 +317,18 @@ describe('ShellHost', () => {
     expect(vi.mocked(actions.showHostCard).mock.calls).toEqual([['h1', anchor]]);
   });
 
+  it('passes Retry and Stop moving of a project\'s paused move to main only with a well-formed key', async () => {
+    actions.retryRelocation = vi.fn(async () => undefined);
+    actions.abandonRelocation = vi.fn(async () => undefined);
+    host();
+    const call = (channel: string, ...args: unknown[]): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(channel)!(own, ...args));
+    await call(SHELL_CHANNELS.abandonRelocation, 'p1');
+    await call(SHELL_CHANNELS.retryRelocation, 'p1');
+    for (const key of ['', 3, 'x'.repeat(MAX_ID_LENGTH + 1)]) await expect(call(SHELL_CHANNELS.abandonRelocation, key)).rejects.toThrow('Malformed');
+    expect(vi.mocked(actions.abandonRelocation).mock.calls).toEqual([['p1']]);
+    expect(vi.mocked(actions.retryRelocation).mock.calls).toEqual([['p1']]);
+  });
+
   it('takes the Projects section calls only well-formed, and hands main copies of the lists', async () => {
     actions.setProjectsView = vi.fn(async () => undefined);
     actions.setProjectGroupCollapsed = vi.fn(async () => undefined);

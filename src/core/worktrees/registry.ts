@@ -8,7 +8,8 @@ import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { writeJsonConfig } from '../config/json-config-write';
 import { folderKey } from '../workspace-folders/folder-key';
-import { folderContains, isAbsolutePath, liveChatRecordAt, liveChatRecords, projectWorktreesFolder, validRecord } from './records';
+import { isRelocationPending } from '../project-relocation/current';
+import { folderContains, isAbsolutePath, liveChatRecordAt, liveChatRecords, relocatedRepositoryRoot, validRecord, worktreeFolderFor } from './records';
 
 export type WorktreeId = string;
 export const REGISTRY_FILE = 'registry.json';
@@ -35,6 +36,8 @@ export interface ChatWorktreeRecord extends RecordBase {
   pendingBase?: PendingBase;
   /** When a chat first worked in it, or the user chose to keep it without one; a worktree with neither is a leftover. */
   usedAt?: number;
+  /** The project path the worktree's folder was named for (worktreeFolderFor), once a relocation moved the project elsewhere. */
+  namedFor?: string;
 }
 
 /** `side` is the folder whose HEAD must contain `commit`: the project folder for Merge into, the worktree for Update and Rebase. */
@@ -153,13 +156,9 @@ export class WorktreeRegistry implements Disposable {
     return this.chatRecordFor(folder)?.projectPath;
   }
 
-  /** AD12 Listing: every chat record of the project, live or deleted, and every adopted record of it whose folder is gone. */
+  /** AD12 Listing: the records whose session directories the project's Chats list reads (recordsListedUnder). */
   recordsOfProject(projectPath: string): readonly WorktreeRecord[] {
-    const key = folderKey(projectPath);
-    return this.cache.filter((r) => {
-      if (r.projectPath === undefined || folderKey(r.projectPath) !== key) return false;
-      return r.kind === 'chat' || r.deletedAt !== undefined || !fs.existsSync(r.workingFolder);
-    });
+    return recordsListedUnder(this.cache, projectPath, (folder) => fs.existsSync(folder));
   }
 
   /** Live chat records of the project. */
@@ -221,15 +220,18 @@ export class WorktreeRegistry implements Disposable {
   /** Drops the deleted records among `ids` once no chat lists from or names them (AD12 Listing); a live one stays. */
   async removeDeleted(ids: readonly WorktreeId[]): Promise<void> {
     const named = new Set(ids);
-    await this.mutate((records) => records.filter((r) => !(named.has(r.id) && r.deletedAt !== undefined)));
+    // A relocation in flight moves the session files that keep a deleted record (docs/invariants.md "Project relocation").
+    const moving = (r: WorktreeRecord): boolean => isRelocationPending(r.workingFolder) || (r.projectPath !== undefined && isRelocationPending(r.projectPath));
+    await this.mutate((records) => records.filter((r) => !(named.has(r.id) && r.deletedAt !== undefined && !moving(r))));
   }
 
   /**
-   * Removes the project's folder under rootDir once it is empty. Taken under the registry's lock, where a creation writes its
-   * record before `git worktree add` makes a folder there, so a folder another process is about to fill is never removed.
+   * Removes the folder under rootDir that held the record's worktree once it is empty. Taken under the registry's lock, where a
+   * creation writes its record before `git worktree add` makes a folder there, so a folder another process is about to fill is
+   * never removed.
    */
-  async removeEmptyProjectFolder(projectPath: string): Promise<void> {
-    const folder = projectWorktreesFolder(this.rootDir, projectPath);
+  async removeEmptyProjectFolder(record: Pick<ChatWorktreeRecord, 'worktreeRoot'>): Promise<void> {
+    const folder = path.dirname(record.worktreeRoot);
     await this.mutate((records) => {
       if (records.some((r) => r.kind === 'chat' && r.deletedAt === undefined && folderContains(folder, r.worktreeRoot))) return records;
       try {
@@ -239,6 +241,50 @@ export class WorktreeRegistry implements Disposable {
         if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') throw err;
       }
       return records;
+    });
+  }
+
+  /**
+   * A relocated project's records (docs/invariants.md "Project relocation"), in one write: each chat record of a pair's `from`
+   * names `to` as its project, with its repository root, while its worktree stays where it is, `namedFor` the path its folder
+   * was named for; an adopted one names `to` as its project. A moved live record whose index a live record of `to` holds takes
+   * the smallest free one. A record already at `to` is left as it is, so a rerun writes nothing new. Throws, writing nothing,
+   * when a moved record would fail validRecord.
+   */
+  async relocateProject(pairs: ReadonlyArray<{ readonly from: string; readonly to: string }>): Promise<void> {
+    const targets = new Map(pairs.map((pair) => [folderKey(pair.from), pair.to]));
+    await this.mutate((records, foreign) => {
+      const moved = new Set<WorktreeId>();
+      const next = records.map((r): WorktreeRecord => {
+        const to = r.projectPath === undefined ? undefined : targets.get(folderKey(r.projectPath));
+        if (to === undefined) return r;
+        if (r.kind === 'adopted') return { ...r, projectPath: to };
+        const repositoryRoot = relocatedRepositoryRoot(r.repositoryRoot, r.projectPath, to);
+        if (repositoryRoot === undefined) throw new Error(`${to} does not lie in its repository as ${r.projectPath} did`);
+        moved.add(r.id);
+        const { namedFor: _named, ...rest } = r;
+        const namedFor = r.namedFor ?? r.projectPath;
+        return { ...rest, projectPath: to, repositoryRoot, ...(folderKey(worktreeFolderFor(this.rootDir, to, r.id)) === folderKey(r.worktreeRoot) ? {} : { namedFor }) };
+      });
+      for (const to of new Set(targets.values())) {
+        const key = folderKey(to);
+        const live = next.filter((r): r is ChatWorktreeRecord => r.kind === 'chat' && r.deletedAt === undefined && folderKey(r.projectPath) === key);
+        const taken = [...live.filter((r) => !moved.has(r.id)).map((r) => r.index), ...foreignIndexes(foreign, key)];
+        const colliding: ChatWorktreeRecord[] = [];
+        for (const record of live.filter((r) => moved.has(r.id)).sort((a, b) => a.index - b.index)) {
+          if (taken.includes(record.index)) colliding.push(record);
+          else taken.push(record.index);
+        }
+        // only a colliding index changes, so a re-pointed worktree keeps its DAMOCLES_WORKTREE_INDEX wherever it can
+        for (const record of colliding) {
+          record.index = smallestFreeIndex(taken);
+          taken.push(record.index);
+        }
+      }
+      for (const record of next) {
+        if (moved.has(record.id) && validRecord(record, this.rootDir) === undefined) throw new Error(`The relocated worktree record ${record.id} would not be valid`);
+      }
+      return next;
     });
   }
 
@@ -375,6 +421,20 @@ function foreignIndexes(foreign: readonly unknown[], projectKey: string): number
     if (typeof r['index'] === 'number' && Number.isInteger(r['index']) && r['index'] >= 1) out.push(r['index']);
   }
   return out;
+}
+
+/**
+ * AD12 Listing: the records whose session folders the project's Chats list reads, every chat record of it, live or deleted,
+ * whether or not its working folder is open as a project too, and every adopted record of it that is deleted or whose folder
+ * `exists` does not find. Which sessions there are the project's is per session (docs/invariants.md "Worktree chats",
+ * Ownership). The live list and the session mirror both read it.
+ */
+export function recordsListedUnder(records: readonly WorktreeRecord[], projectPath: string, exists: (folder: string) => boolean): WorktreeRecord[] {
+  const key = folderKey(projectPath);
+  return records.filter((r) => {
+    if (r.projectPath === undefined || folderKey(r.projectPath) !== key) return false;
+    return r.kind === 'chat' || r.deletedAt !== undefined || !exists(r.workingFolder);
+  });
 }
 
 function freshId(records: readonly WorktreeRecord[]): WorktreeId {

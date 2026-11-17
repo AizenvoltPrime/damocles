@@ -44,6 +44,18 @@ export function buildResumePrompt(message?: string): string {
   return withResumeNote(RESUME_CONTEXT, message);
 }
 
+const REJECTED_BY = { user: 'the user', hook: 'a hook' } as const;
+
+/** The prompt that continues an agent whose previous run ended on a tool call the user or a hook rejected. */
+export function buildRejectedResumePrompt(cause: keyof typeof REJECTED_BY, message?: string): string {
+  const context =
+    `Your previous run ended because ${REJECTED_BY[cause]} rejected one of your tool calls, and you have been resumed. ` +
+    'Do not repeat the rejected call unchanged: if the step still needs it, change the call or take another approach. ' +
+    'Then continue your task from where you left off, at the same depth as before, and report. ' +
+    'Check current state before redoing any step that may have been cut off.';
+  return withResumeNote(context, message);
+}
+
 /** Remove the priority marker for display (the raw instruction is shown; the UI labels it as steering). */
 export function stripSteerPrefix(text: string): string {
   if (!text.startsWith(STEER_INSTRUCTION_PREFIX)) return text;

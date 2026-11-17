@@ -5,9 +5,9 @@ import { wslVersionName } from '../overlay/connect-text';
 
 type Translate = (key: string, values?: Record<string, unknown>) => string;
 
-/** The distro a local project's Reopen in WSL notice names, while the notice was not dismissed. */
-export function wslNoticeDistro(project: Pick<ShellProject, 'authority' | 'wsl' | 'wslNoticeDismissed'>): string | undefined {
-  if (project.authority.kind !== 'local' || project.wslNoticeDismissed) return undefined;
+/** The distro a local project's Reopen in WSL notice names, while the notice was not dismissed and the folder is there. */
+export function wslNoticeDistro(project: Pick<ShellProject, 'authority' | 'wsl' | 'wslNoticeDismissed' | 'presence'>): string | undefined {
+  if (project.authority.kind !== 'local' || project.wslNoticeDismissed || project.presence) return undefined;
   return project.wsl?.distro;
 }
 

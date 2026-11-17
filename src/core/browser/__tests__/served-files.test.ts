@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChatServedFiles, outsideRootsRefusal, resolveServedFile, type ServedFileRoots } from '../served-files';
+import { UNMAPPED_SERVED_PAGE } from '../../../shared/served-file-url';
+import { ChatServedFiles, NO_SERVED_FILES_SERVER, outsideRootsRefusal, resolveServedFile, type ServedFileRoots } from '../served-files';
 
 const POSIX: ServedFileRoots = { project: '/home/u/proj', designs: [{ designId: 'd1', folder: '/home/u/.damocles/designs/d1' }] };
 const WINDOWS: ServedFileRoots = { project: 'C:\\Users\\u\\proj', designs: [] };
@@ -40,7 +41,7 @@ describe('resolveServedFile', () => {
       'file:///home/u/proj/docs%2Fx.html',
       'file:///home/u/proj/con.txt',
       'file:///Home/u/proj/a.html',
-      'file://server/home/u/proj/a.html',
+      'file://192.0.2.2/home/u/proj/a.html',
     ]) expect(resolveServedFile(url, POSIX), url).toBe('outside');
     expect(resolveServedFile('file:///D:/Users/u/proj/a.html', WINDOWS)).toBe('outside');
     expect(resolveServedFile('file:///home/u/proj/a.html', { designs: [] })).toBe('outside');
@@ -49,53 +50,110 @@ describe('resolveServedFile', () => {
 
 describe('outsideRootsRefusal', () => {
   it('names the roots and the path', () => {
-    expect(outsideRootsRefusal(POSIX, '/etc/hosts')).toBe("This chat's browser opens files only from its project (/home/u/proj) and its design folder (/home/u/.damocles/designs/d1); /etc/hosts is outside them.");
-    expect(outsideRootsRefusal(WINDOWS, 'D:/x')).toBe("This chat's browser opens files only from its project (C:\\Users\\u\\proj); D:/x is outside it.");
+    expect(outsideRootsRefusal(POSIX, '/etc/hosts')).toBe("This chat's browser opens files from its project (/home/u/proj), its design folder (/home/u/.damocles/designs/d1) and folders the user allowed; /etc/hosts is outside them. Opening a page outside them asks the user to allow its folder for this chat; this one was not allowed.");
+    expect(outsideRootsRefusal(WINDOWS, 'D:/x')).toBe("This chat's browser opens files from its project (C:\\Users\\u\\proj) and folders the user allowed; D:/x is outside them. Opening a page outside them asks the user to allow its folder for this chat; this one was not allowed.");
   });
 });
 
 describe('ChatServedFiles', () => {
   it('opens a local root file over its served URL and maps the answers back', async () => {
-    const serve = vi.fn(async () => ({ url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=docs%2Fa.html', origin: 'http://127.0.0.1:5000' }));
+    const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Fa.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
     const files = new ChatServedFiles({ roots: () => POSIX, serve });
-    expect(await files.localTarget('file:///home/u/proj/docs/a.html')).toEqual({ url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=docs%2Fa.html' });
-    expect(serve).toHaveBeenCalledWith({ kind: 'project', relPath: 'docs/a.html' });
-    expect(files.toFile('[URL] http://127.0.0.1:5000/docs/a.html')).toBe('[URL] file:///home/u/proj/docs/a.html');
+    expect(await files.localTarget('file:///home/u/proj/docs/a.html')).toEqual({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Fa.html' });
+    expect(serve).toHaveBeenCalledWith({ kind: 'project', relPath: 'docs/a.html' }, '/home/u/proj');
+    expect(files.toFile('[URL] http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/docs/a.html')).toBe('[URL] file:///home/u/proj/docs/a.html');
     // the root's server restarted on another port: the old port is no longer the root's
-    serve.mockResolvedValueOnce({ url: 'http://127.0.0.1:5001/__damocles_preview/open?t=y&p=b.html', origin: 'http://127.0.0.1:5001' });
+    serve.mockResolvedValueOnce({ url: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001/__damocles_preview/open?t=y&p=b.html', origin: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001' });
     await files.localTarget('file:///home/u/proj/b.html');
-    expect(files.toFile('http://127.0.0.1:5000/a http://127.0.0.1:5001/b')).toBe('http://127.0.0.1:5000/a file:///home/u/proj/b');
+    expect(files.toFile('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/a http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001/b')).toBe(`${UNMAPPED_SERVED_PAGE} file:///home/u/proj/b`);
   });
 
   it('carries the address\'s query into the one-time open and its fragment onto it', async () => {
-    const serve = vi.fn(async () => ({ url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=docs%2Findex.html', origin: 'http://127.0.0.1:5000' }));
+    const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Findex.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
     const files = new ChatServedFiles({ roots: () => POSIX, serve });
     const target = await files.localTarget('file:///home/u/proj/docs/?tab=2&q=a%20b#intro');
-    expect(serve).toHaveBeenCalledWith({ kind: 'project', relPath: 'docs/index.html' });
-    expect(target).toEqual({ url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=docs%2Findex.html&q=tab%3D2%26q%3Da%2520b#intro' });
+    expect(serve).toHaveBeenCalledWith({ kind: 'project', relPath: 'docs/index.html' }, '/home/u/proj');
+    expect(target).toEqual({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Findex.html&q=tab%3D2%26q%3Da%2520b#intro' });
     expect(files.toFile(`Opened browser: ${(target as { url: string }).url}`)).toBe('Opened browser: file:///home/u/proj/docs/index.html?tab=2&q=a%20b#intro');
-    expect(files.toFile('[URL] http://127.0.0.1:5000/docs/index.html?tab=2&q=a%20b#intro')).toBe('[URL] file:///home/u/proj/docs/index.html?tab=2&q=a%20b#intro');
+    expect(files.toFile('[URL] http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/docs/index.html?tab=2&q=a%20b#intro')).toBe('[URL] file:///home/u/proj/docs/index.html?tab=2&q=a%20b#intro');
   });
 
-  it('opens a root file from disk when main has no server for the chat\'s root, and never one main refuses', async () => {
-    const serve = vi.fn(async () => ({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.', unavailable: true }));
+  it('refuses a root file the server is unavailable for with its reason, and never opens it from disk', async () => {
+    const serve = vi.fn(async () => ({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.' }));
     const files = new ChatServedFiles({ roots: () => POSIX, serve });
-    expect(await files.localTarget('file:///home/u/proj/docs/a.html#x')).toEqual({ url: 'file:///home/u/proj/docs/a.html#x' });
-    serve.mockResolvedValueOnce({ refused: '.env is not opened.', unavailable: false });
+    expect(await files.localTarget('file:///home/u/proj/docs/a.html#x')).toEqual({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.' });
+    serve.mockResolvedValueOnce({ refused: '.env is not opened.' });
     expect(await files.localTarget('file:///home/u/proj/.env')).toEqual({ refused: '.env is not opened.' });
   });
 
-  it('opens a local file outside the roots from disk, and passes main\'s refusal on', async () => {
+  it('refuses a file outside the roots with the reason naming them, as a remote chat does, and passes any other URL on', async () => {
     const serve = vi.fn(async () => ({ refused: '.env is not served.' }));
     const files = new ChatServedFiles({ roots: () => POSIX, serve });
-    expect(await files.localTarget('file:///tmp/a.html')).toEqual({ url: 'file:///tmp/a.html' });
+    expect(await files.localTarget('file:///tmp/a.html')).toEqual({ refused: outsideRootsRefusal(POSIX, '/tmp/a.html') });
+    expect(await files.localTarget('file://192.0.2.1/share/a.html')).toEqual({ refused: outsideRootsRefusal(POSIX, '//192.0.2.1/share/a.html') });
     expect(await files.localTarget('https://example.com/')).toEqual({ url: 'https://example.com/' });
+    expect(await files.localTarget('about:blank')).toEqual({ url: 'about:blank' });
     expect(serve).not.toHaveBeenCalled();
     expect(await files.localTarget('file:///home/u/proj/.env')).toEqual({ refused: '.env is not served.' });
   });
 
-  it('opens every file from disk where no server is (VS Code)', async () => {
-    expect(await new ChatServedFiles({ roots: () => POSIX }).localTarget('file:///home/u/proj/a.html')).toEqual({ url: 'file:///home/u/proj/a.html' });
+  it('refuses every file where no server serves the chat\'s roots', async () => {
+    const files = new ChatServedFiles({ roots: () => POSIX });
+    expect(await files.localTarget('file:///home/u/proj/a.html')).toEqual({ refused: NO_SERVED_FILES_SERVER });
+    expect(await files.localTarget('file:///tmp/a.html')).toEqual({ refused: outsideRootsRefusal(POSIX, '/tmp/a.html') });
+    expect(await new ChatServedFiles({ roots: () => ({ designs: [] }) }).localTarget('file:///tmp/a.html')).toEqual({ refused: "This chat's browser opens files from a project, a design folder or a folder the user allowed; /tmp/a.html is outside them. Opening a page outside them asks the user to allow its folder for this chat; this one was not allowed." });
+  });
+
+  it('reads a Windows path, a UNC path and view-source: as the file Chrome loads for them, as the permission gate does', async () => {
+    const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=a.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
+    const files = new ChatServedFiles({ roots: () => WINDOWS, serve });
+    for (const url of ['C:\\Users\\u\\proj\\a.html', 'c|/Users/u/proj/a.html', ' view-source:file:///C:/Users/u/proj/a.html', 'view-source:C:\\Users\\u\\proj\\a.html', '\tfile:///C:/Users/u/proj/a.html\n']) {
+      expect(await files.localTarget(url), url).toEqual({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=a.html' });
+    }
+    expect(serve).toHaveBeenCalledTimes(5);
+    expect(serve).toHaveBeenLastCalledWith({ kind: 'project', relPath: 'a.html' }, 'C:\\Users\\u\\proj');
+    for (const [url, path] of [['D:\\secret.html', 'D:/secret.html'], ['\\\\192.0.2.1\\s\\x.html', '//192.0.2.1/s/x.html'], ['//192.0.2.1/s/x.html', '//192.0.2.1/s/x.html'], ['\\/192.0.2.1/s/x.html', '//192.0.2.1/s/x.html'], ['view-source:file://192.0.2.1/s/x.html', '//192.0.2.1/s/x.html']] as const) {
+      expect(await files.localTarget(url), url).toEqual({ refused: outsideRootsRefusal(WINDOWS, path) });
+    }
+    // a file: text the URL parser rejects names no path a root can hold
+    expect(await files.localTarget('file://ev il/x')).toEqual({ refused: outsideRootsRefusal(WINDOWS, 'file://ev il/x') });
+    expect(serve).toHaveBeenCalledTimes(5);
+  });
+
+  it('serves a file of a project on a share from that project', async () => {
+    const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Fa.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
+    const share: ServedFileRoots = { project: '\\\\192.0.2.10\\team\\proj', designs: [] };
+    const files = new ChatServedFiles({ roots: () => share, serve });
+    expect(await files.localTarget('file://192.0.2.10/team/proj/docs/a.html')).toEqual({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Fa.html' });
+    expect(await files.localTarget('\\\\192.0.2.10\\team\\proj\\docs\\a.html')).toEqual({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Fa.html' });
+    expect(serve).toHaveBeenCalledWith({ kind: 'project', relPath: 'docs/a.html' }, '\\\\192.0.2.10\\team\\proj');
+    expect(files.toFile('[URL] http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/docs/a.html')).toBe('[URL] file://192.0.2.10/team/proj/docs/a.html');
+    expect(await files.localTarget('file://192.0.2.10/team/other/a.html')).toEqual({ refused: outsideRootsRefusal(share, '//192.0.2.10/team/other/a.html') });
+  });
+
+  it('reopens a saved root page at its one-time served URL with its query and fragment, and maps the answers back', async () => {
+    const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=screens%2FS2.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
+    const files = new ChatServedFiles({ roots: () => POSIX, serve });
+    expect(await files.restoreTarget('file:///home/u/.damocles/designs/d1/screens/S2.html?state=empty#list')).toEqual({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=screens%2FS2.html&q=state%3Dempty#list' });
+    expect(serve).toHaveBeenCalledWith({ kind: 'design', designId: 'd1', relPath: 'screens/S2.html' }, '/home/u/.damocles/designs/d1');
+    expect(files.toFile('[URL] http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/screens/S2.html?state=empty')).toBe('[URL] file:///home/u/.damocles/designs/d1/screens/S2.html?state=empty');
+  });
+
+  it('never reopens a saved page outside the roots, one no root can hold, or one main does not serve, and never from disk', async () => {
+    const serve = vi.fn(async () => ({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.' }));
+    const files = new ChatServedFiles({ roots: () => POSIX, serve });
+    for (const url of ['file:///etc/passwd', 'file:///home/u/proj/../.ssh/id_rsa', 'file:///home/u/proj/docs%2F..%2F..%2Fx', 'file://192.0.2.2/share/a.html', 'file:///c:/secret']) {
+      expect(await files.restoreTarget(url), url).toEqual({ refused: 'its address is outside the chat\'s project and design folders' });
+    }
+    const windows = new ChatServedFiles({ roots: () => WINDOWS, serve });
+    for (const url of ['file:///c:/secret', 'file:///C:/Users/u/proj/a%5c..%5c..%5csecret', 'file://./C:/Users/u/proj/a.html', 'file:////192.0.2.2/share/a.html', 'file:///C:/Users/u/proj/con.txt']) {
+      expect(await windows.restoreTarget(url), url).toEqual({ refused: 'its address is outside the chat\'s project and design folders' });
+    }
+    expect(serve).not.toHaveBeenCalled();
+    expect(await files.restoreTarget('file:///home/u/proj/a.html')).toEqual({ refused: 'This chat\'s project is not open in Damocles on this computer, so its files are not served.' });
+    serve.mockResolvedValueOnce({ refused: '.env is not opened.' });
+    expect(await files.restoreTarget('file:///home/u/proj/.env')).toEqual({ refused: '.env is not opened.' });
+    expect(await new ChatServedFiles({ roots: () => POSIX }).restoreTarget('file:///home/u/proj/a.html')).toEqual({ refused: NO_SERVED_FILES_SERVER });
   });
 
   it('names what a remote chat relays, or refuses a path outside the roots', () => {
@@ -108,9 +166,13 @@ describe('ChatServedFiles', () => {
 
   it('refuses a remote chat\'s file URL no root can hold, naming the roots, rather than relay it', () => {
     const files = new ChatServedFiles({ roots: () => POSIX });
-    for (const url of ['file://server/share/a.html', 'file:///home/u/proj/docs%2Fx.html', 'file:///home/u/proj/a%5cb.html', 'file:///home/u/proj/a%00b', 'file:///home/u/proj/%E0%A4%A', 'FILE://server/x']) {
+    for (const url of ['file:///home/u/proj/docs%2Fx.html', 'file:///home/u/proj/a%5cb.html', 'file:///home/u/proj/a%00b', 'file:///home/u/proj/%E0%A4%A']) {
       expect(files.relayed(url), url).toEqual({ refused: outsideRootsRefusal(POSIX, url) });
     }
-    expect(outsideRootsRefusal(POSIX, 'file://server/share/a.html')).toContain('its project (/home/u/proj) and its design folder (/home/u/.damocles/designs/d1)');
+    for (const [url, path] of [['file://192.0.2.2/share/a.html', '//192.0.2.2/share/a.html'], ['FILE://192.0.2.2/x', '//192.0.2.2/x'], ['//192.0.2.2/share/a.html', '//192.0.2.2/share/a.html'], ['view-source:file:///etc/hosts', '/etc/hosts']] as const) {
+      expect(files.relayed(url), url).toEqual({ refused: outsideRootsRefusal(POSIX, path) });
+    }
+    expect(files.relayed('view-source:file:///home/u/proj/a.html')).toEqual({ kind: 'project', relPath: 'a.html', displayRoot: '/home/u/proj' });
+    expect(outsideRootsRefusal(POSIX, '//192.0.2.2/share/a.html')).toContain('its project (/home/u/proj), its design folder (/home/u/.damocles/designs/d1)');
   });
 });

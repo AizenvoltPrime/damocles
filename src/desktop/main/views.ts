@@ -655,6 +655,8 @@ export class PanelViews {
   private retainStates = false;
   // remote authorities whose chats close with their states kept while their core is replaced
   private readonly retainedAuthorities = new Set<string>();
+  // chats closed with their states kept while their project moves to a new folder
+  private readonly retainedPanels = new WeakSet<DesktopPanel>();
   // DIP rectangle of the chat slot; undefined until the shell first reports it
   private contentBounds: Rectangle | undefined;
   // The editor's focus overlay covers the window, so the chat view hides under the shell's scrim.
@@ -797,7 +799,13 @@ export class PanelViews {
   }
 
   retaining(panel: DesktopPanel): boolean {
-    return this.retainingAuthority(panel.authority);
+    return this.retainedPanels.has(panel) || this.retainingAuthority(panel.authority);
+  }
+
+  /** Closes the chat as a core restart does: its saved state stays, and core detaches it instead of closing it for good. */
+  closeKeepingState(panel: DesktopPanel): void {
+    this.retainedPanels.add(panel);
+    panel.close();
   }
 
   retainingAuthority(authority: string): boolean {

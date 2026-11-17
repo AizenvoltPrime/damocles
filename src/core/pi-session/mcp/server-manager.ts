@@ -30,7 +30,7 @@ import {
 import { resolveMcpServerValues } from './config-value';
 import { hasScopeChallenge } from './mcp-auth-flow';
 import { failureForLog, McpServerConnectError } from './connect-failure';
-import { LauncherStdioTransport } from './launcher-transport';
+import { launcherPipe } from './launcher-transport';
 import { resolveNpxBinary } from './npx-resolver';
 import { stdioEnvironment } from './stdio-env';
 import { stripBidiControls, stripControlChars } from '../untrusted-text';
@@ -42,6 +42,8 @@ export type ConnectionStatus = 'connected' | 'closed' | 'needs-auth';
 export const DEFAULT_MCP_TIMEOUT_MS = 120_000;
 /** Health checks ping servers one after another, so one hung server delays the rest by at most this. */
 export const HEALTH_PING_TIMEOUT_MS = 10_000;
+/** After a stdio server's stdin closes, how long it may take to exit before its pipe stops its tree. */
+const STDIN_CLOSE_GRACE_MS = 500;
 // MCP caps one completion reply at 100 values.
 const MAX_COMPLETION_VALUES = 100;
 
@@ -268,7 +270,7 @@ export class McpServerManager {
         if (errorInfo) connection.errorInfo = errorInfo;
         return connection;
       }
-      const stderrTail = transport instanceof LauncherStdioTransport ? sanitizeStderrTail(transport.stderr) : undefined;
+      const stderrTail = transport instanceof this.bundle.mcp.PipeTransport ? sanitizeStderrTail(transport.stderr) : undefined;
       const message = error instanceof Error ? error.message : String(error);
       throw new McpServerConnectError(message, { ...(stderrTail ? { stderrTail } : {}), logText: failureForLog(error) });
     }
@@ -306,7 +308,7 @@ export class McpServerManager {
 
     // The host resolved `cwd` to an absolute directory when it read the config (`McpManager` `serverSpec`).
     const cwd = definition.cwd;
-    return new LauncherStdioTransport(this.bundle.mcp, {
+    const open = launcherPipe({
       command,
       args,
       // Only the allowlisted host variables plus the server's own env: never the host's provider keys.
@@ -314,6 +316,7 @@ export class McpServerManager {
       stderr: definition.debug ? 'inherit' : 'pipe',
       ...(cwd !== undefined ? { cwd } : {}),
     });
+    return new this.bundle.mcp.PipeTransport({ open, closeTimeoutMs: STDIN_CLOSE_GRACE_MS });
   }
 
   private createHttpTransport(serverName: string, definition: McpServerDefinition, authProvider: AuthProvider | undefined): McpTransport {

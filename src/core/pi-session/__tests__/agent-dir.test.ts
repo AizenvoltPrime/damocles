@@ -157,9 +157,9 @@ describe('ensurePiAgentDir (B3 + FR-9)', () => {
 });
 
 describe('cacheWarmingSetting', () => {
-  // pi coerces an unknown mode to "streaming"; the extension must seed the same value rather than a
+  // pi coerces an unknown mode to "idle"; the extension must seed the same value rather than a
   // mode pi will silently ignore.
-  it('falls back to streaming when damocles.cacheWarming is unset', () => {
-    expect(cacheWarmingSetting()).toBe('streaming');
+  it('falls back to idle when damocles.cacheWarming is unset', () => {
+    expect(cacheWarmingSetting()).toBe('idle');
   });
 });

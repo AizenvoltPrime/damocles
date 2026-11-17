@@ -1,0 +1,173 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
+index 5c7609a..6c6a8a9 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
+@@ -185,7 +185,12 @@ export interface PromptOptions {
+     streamingBehavior?: "steer" | "followUp";
+     /** Source of input for extension input event handlers. Defaults to "interactive". */
+     source?: InputSource;
+-    /** Internal hook used by RPC mode to observe how an accepted prompt was dispatched. Not called if the prompt is rejected. */
++    /**
++     * Internal hook used by RPC mode to observe how an accepted prompt was dispatched. Not called if the prompt is rejected.
++     * Throwing on "started" refuses the prompt: its run does not start and prompt() rejects with the error.
++     * A prompt made while agent_settled handlers run is deferred and its prompt() has already resolved, so
++     * its refusal rejects nothing.
++     */
+     preflightResult?: (disposition: PromptDisposition) => void;
+ }
+ /** Options for model/thinking mutations. */
+@@ -544,7 +549,8 @@ export declare class AgentSession {
+      * Start a run from a user or custom message. The session counts as busy from here on, so
+      * messages sent while before_agent_start handlers run are queued into this run instead of
+      * starting another, and an abort requested meanwhile aborts the run as soon as it exists.
+-     * @param onStarted Called once the run's messages are prepared, before the first request.
++     * @param onStarted Called once the run's messages are prepared, before the first request. If it
++     * throws, the run does not start: the session is idle again and the error is rethrown.
+      */
+     private _startRun;
+     /**
+@@ -568,6 +574,11 @@ export declare class AgentSession {
+      * @throws Error if no model selected or no API key available (when not streaming)
+      */
+     prompt(text: string, options?: PromptOptions): Promise<void>;
++    /**
++     * Run a prompt that was deferred past agent_settled. A throw from its own preflightResult, such as a
++     * refusal on "started", is the caller's decision, so it is not rethrown to be reported as an error.
++     */
++    private _promptDeferred;
+     /**
+      * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+      * Returns the run trigger, or undefined when the prompt was handled or queued.
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+index 0aa9e8a..2693bbd 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+@@ -750,8 +750,21 @@ export class AgentSession {
+         const deferred = this._deferredSettledActions.splice(0);
+         if (deferred.length > 0) {
+             try {
+-                for (const action of deferred)
+-                    await action();
++                // A deferred action's caller already returned, so its error is reported here and must not
++                // reject the settling run's caller or stop the actions after it.
++                for (const action of deferred) {
++                    try {
++                        await action();
++                    }
++                    catch (error) {
++                        this._extensionRunner.emitError({
++                            extensionPath: "<agent_settled>",
++                            event: "agent_settled",
++                            error: error instanceof Error ? error.message : String(error),
++                            stack: error instanceof Error ? error.stack : undefined,
++                        });
++                    }
++                }
+             }
+             finally {
+                 this._resolveIdleWaitIfIdle();
+@@ -1482,27 +1495,33 @@ export class AgentSession {
+      * Start a run from a user or custom message. The session counts as busy from here on, so
+      * messages sent while before_agent_start handlers run are queued into this run instead of
+      * starting another, and an abort requested meanwhile aborts the run as soon as it exists.
+-     * @param onStarted Called once the run's messages are prepared, before the first request.
++     * @param onStarted Called once the run's messages are prepared, before the first request. If it
++     * throws, the run does not start: the session is idle again and the error is rethrown.
+      */
+     async _startRun(trigger, onStarted) {
+         this._isAgentRunActive = true;
+         this._agentRunAbortRequested = false;
+-        let messages;
++        let prepared;
+         try {
+-            messages = await this._prepareRun(trigger);
++            prepared = await this._prepareRun(trigger);
++            // Messages held while the run was starting go before its starting messages, as they would
++            // have while idle. No run exists yet, so they cannot split a tool call from its result.
++            this._flushPendingBashMessages();
++            this._flushPendingCustomMessages();
++            onStarted?.();
+         }
+         catch (error) {
++            // No run started: its nextTurn messages wait for the next run, and its prompt options are dropped.
++            if (prepared)
++                this._pendingNextTurnMessages.unshift(...prepared.nextTurnMessages);
++            this._runSystemPromptOptions = undefined;
+             this._isAgentRunActive = false;
+             this._flushPendingBashMessages();
+             this._flushPendingCustomMessages();
+             this._resolveIdleWaitIfIdle();
+             throw error;
+         }
+-        // Messages held while the run was starting go before its starting messages, as they would
+-        // have while idle. No run exists yet, so they cannot split a tool call from its result.
+-        this._flushPendingBashMessages();
+-        this._flushPendingCustomMessages();
+-        onStarted?.();
++        const { messages } = prepared;
+         // Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
+         this._failedResponse = undefined;
+         this._recordSelection();
+@@ -1573,7 +1592,8 @@ export class AgentSession {
+             });
+         }
+         // Inject any pending "nextTurn" messages as context alongside the starting message
+-        messages.push(...this._pendingNextTurnMessages);
++        const nextTurnMessages = this._pendingNextTurnMessages;
++        messages.push(...nextTurnMessages);
+         this._pendingNextTurnMessages = [];
+         for (const msg of result.messages) {
+             messages.push({
+@@ -1590,7 +1610,7 @@ export class AgentSession {
+         this._runSystemPromptOptions = result.systemPromptOptions;
+         if (updateMessage)
+             messages.unshift(updateMessage);
+-        return messages;
++        return { messages, nextTurnMessages };
+     }
+     async _handlePostAgentRun() {
+         const message = this._lastAssistantMessage;
+@@ -1694,7 +1714,7 @@ export class AgentSession {
+      */
+     async prompt(text, options) {
+         if (this._isEmittingAgentSettled) {
+-            this._deferredSettledActions.push(async () => await this.prompt(text, options));
++            this._deferredSettledActions.push(async () => await this._promptDeferred(text, options));
+             return;
+         }
+         const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+@@ -1732,6 +1752,34 @@ export class AgentSession {
+         }
+         await this._startRun(trigger, () => preflightResult?.("started"));
+     }
++    /**
++     * Run a prompt that was deferred past agent_settled. A throw from its own preflightResult, such as a
++     * refusal on "started", is the caller's decision, so it is not rethrown to be reported as an error.
++     */
++    async _promptDeferred(text, options) {
++        const preflightResult = options?.preflightResult;
++        if (!preflightResult)
++            return await this.prompt(text, options);
++        let callerError;
++        try {
++            await this.prompt(text, {
++                ...options,
++                preflightResult: (disposition) => {
++                    try {
++                        preflightResult(disposition);
++                    }
++                    catch (error) {
++                        callerError = { error };
++                        throw error;
++                    }
++                },
++            });
++        }
++        catch (error) {
++            if (!callerError || callerError.error !== error)
++                throw error;
++        }
++    }
+     /**
+      * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+      * Returns the run trigger, or undefined when the prompt was handled or queued.

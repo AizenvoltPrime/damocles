@@ -15,7 +15,7 @@ import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
 import FileIcon from '../components/FileIcon.vue';
 import { tidyMenu } from '../../preload/overlay-channels';
-import { isServablePreviewPath } from '../../main/html-preview/serve-policy';
+import { isServablePreviewPath } from '../../../core/served-pages/serve-policy';
 import { EDITOR_STORE } from './editor-store';
 import { placeChipFolds, placeOf, tabPlaces } from './editor-place';
 import TabPlaceChip from './TabPlaceChip.vue';

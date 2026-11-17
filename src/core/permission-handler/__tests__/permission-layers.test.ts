@@ -27,6 +27,7 @@ import { PermissionState } from '../state';
 import { PermissionHandler } from '../index';
 import { runPinnedTurn } from '../../client-snapshots';
 import type { PermissionRuleLists } from '../../../shared/remote-user';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 const ws = path.join(tmpRoot, 'app');
 const clientHome = path.join(tmpRoot, 'client-home');
@@ -151,21 +152,21 @@ describe('YOLO on a daemon\'s core while the policy refuses it', () => {
   };
 
   it('a settings file that turns it on (the target\'s machine file or a trusted project file) is refused', () => {
-    const handler = new PermissionHandler(remotePlatform({ 'damocles.dangerouslySkipPermissions': true }, false));
+    const handler = new PermissionHandler(remotePlatform({ 'damocles.dangerouslySkipPermissions': true }, false), getPiCodingAgent);
     expect(handler.getDangerouslySkipPermissions()).toBe(false);
     handler.resetForNewConversation(undefined);
     expect(handler.getPermissions().dangerouslySkipPermissions).toBe(false);
   });
 
   it('the setter refuses turning it on and still turns it off', () => {
-    const handler = new PermissionHandler(remotePlatform({}, false));
+    const handler = new PermissionHandler(remotePlatform({}, false), getPiCodingAgent);
     expect(handler.setDangerouslySkipPermissions(true)).toBe(false);
     expect(handler.getDangerouslySkipPermissions()).toBe(false);
     expect(handler.setDangerouslySkipPermissions(false)).toBe(true);
   });
 
   it('applies where the policy allows it, and on this computer\'s core', () => {
-    expect(new PermissionHandler(remotePlatform({ 'damocles.dangerouslySkipPermissions': true }, true)).getDangerouslySkipPermissions()).toBe(true);
-    expect(new PermissionHandler(createFakePlatform({ settings: { user: { 'damocles.dangerouslySkipPermissions': true } } })).getDangerouslySkipPermissions()).toBe(true);
+    expect(new PermissionHandler(remotePlatform({ 'damocles.dangerouslySkipPermissions': true }, true), getPiCodingAgent).getDangerouslySkipPermissions()).toBe(true);
+    expect(new PermissionHandler(createFakePlatform({ settings: { user: { 'damocles.dangerouslySkipPermissions': true } } }), getPiCodingAgent).getDangerouslySkipPermissions()).toBe(true);
   });
 });

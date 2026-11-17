@@ -1,12 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
+import { dirname } from 'node:path';
 import { access, readFile, writeFile } from 'fs/promises';
 import { Type } from 'typebox';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
-import type { ToolDefinition, EditToolDetails, EditToolInput } from '@earendil-works/pi-coding-agent';
+import type { ToolDefinition, EditOperations, EditToolDetails, EditToolInput } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { FilePatch } from '../../../shared/types/file-patch';
 import { TOOL_EDIT } from '../../../shared/tool-names';
+import { applyReplacementsToOriginal, generateEditDiff, normalizeToLF, type TextReplacement } from './edit-diff';
 import { filePatch } from './file-patch';
+import { editOperations, onFileQueue } from './local-file-operations';
 import { resolveToCwd } from './search-tools';
 
 /**
@@ -33,33 +37,54 @@ type EditParams = { file_path: string; old_string: string; new_string: string; r
 /** pi's `EditToolDetails`, with the patch bounded as a write's is. */
 type EditDetails = Pick<EditToolDetails, 'diff' | 'firstChangedLine'> & FilePatch;
 
-const toLF = (s: string): string => s.replace(/\r\n/g, '\n');
-
-/** pi's `normalizeToLF`, `detectLineEnding` and `restoreLineEndings` (`edit-diff.js`), which its package does not export. */
-const normalizeToLF = (s: string): string => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-function detectLineEnding(content: string): '\r\n' | '\n' {
-  const crlf = content.indexOf('\r\n');
-  const lf = content.indexOf('\n');
-  return lf !== -1 && crlf !== -1 && crlf < lf ? '\r\n' : '\n';
+/** A `replace_all` Edit of a file's text. */
+export interface ExactEdit {
+  /** The text before and after, BOM split off and line endings LF, as pi's edit diffs them. */
+  baseContent: string;
+  newContent: string;
+  replacements: TextReplacement[];
+  /** The file's new text: its BOM and each untouched line's own ending kept, as pi's edit writes it. */
+  written: string;
 }
 
-/** `replace_all` on LF text: every exact occurrence of `oldString` replaced, or null when there is none. The approval diff shows this same result. */
-export function replaceEveryOccurrence(content: string, oldString: string, newString: string): string | null {
-  const oldText = toLF(oldString);
-  return content.includes(oldText) ? content.split(oldText).join(toLF(newString)) : null;
+/**
+ * Every occurrence of `oldString` replaced, matched exactly on pi's edit's normalization (BOM split off, CRLF and lone CR
+ * as LF). Null when `oldString` is empty or absent. `replace_all` writes this result, and its approval diff shows it.
+ */
+export function exactEdit(raw: string, oldString: string, newString: string): ExactEdit | null {
+  const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const content = raw.slice(bom.length);
+  const baseContent = normalizeToLF(content);
+  const oldText = normalizeToLF(oldString);
+  const newText = normalizeToLF(newString);
+  if (oldText === '' || !baseContent.includes(oldText)) return null;
+  const replacements = everyOccurrence(baseContent, oldText, newText);
+  const newContent = baseContent.split(oldText).join(newText);
+  // Spliced into the original text, so untouched lines keep their own line endings.
+  const written = bom + (content === baseContent ? newContent : applyReplacementsToOriginal(content, replacements));
+  return { baseContent, newContent, replacements, written };
+}
+
+/** The non-overlapping occurrences of a non-empty `oldText` in `content`, left to right, as `split` finds them. */
+function everyOccurrence(content: string, oldText: string, newText: string): TextReplacement[] {
+  const replacements: TextReplacement[] = [];
+  for (let index = content.indexOf(oldText); index !== -1; index = content.indexOf(oldText, index + oldText.length)) {
+    replacements.push({ matchIndex: index, matchLength: oldText.length, newText });
+  }
+  return replacements;
 }
 
 /**
  * `replace_all`, which pi's edit lacks (it requires each `oldText` to be unique). The read, the replacement and the write all
- * run in one mutation queue slot, so a write or edit queued on the file lands wholly before or after it. The bytes, result
- * text and errors are those of pi's edit given the whole file as one edit; `edit-tool.test.ts` holds them to it.
+ * run in one mutation queue slot, so a write or edit queued on the file lands wholly before or after it. The bytes and diff
+ * are those of pi's edit given every occurrence as its own edit, the result text and errors those of pi's edit given the
+ * whole file as one edit; `edit-tool.test.ts` holds them to both.
  * It matches exactly, where the single-edit path takes pi's whitespace-tolerant matching: a global replace must be exact.
  */
 function replaceAll(pi: PiCodingAgentModule, cwd: string, params: EditParams, signal: AbortSignal | undefined): Promise<AgentToolResult<EditDetails>> {
   const path = params.file_path;
   const absolutePath = resolveToCwd(path, cwd);
-  return pi.withFileMutationQueue(absolutePath, async () => {
+  return onFileQueue(pi, absolutePath, async () => {
     // As pi's edit: no rejection from an abort listener, which would release the slot while a write may still land.
     const throwIfAborted = (): void => {
       if (signal?.aborted) throw new Error('Operation aborted');
@@ -75,35 +100,72 @@ function replaceAll(pi: PiCodingAgentModule, cwd: string, params: EditParams, si
     throwIfAborted();
     const raw = (await readFile(absolutePath)).toString('utf-8');
     throwIfAborted();
-    const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
-    const content = raw.slice(bom.length);
-    const replaced = replaceEveryOccurrence(toLF(content), params.old_string, params.new_string);
-    if (replaced === null) throw new Error(`String to replace not found in file: ${path}`);
-    const baseContent = normalizeToLF(content);
-    const newContent = normalizeToLF(replaced);
+    const edit = exactEdit(raw, params.old_string, params.new_string);
+    if (!edit) throw new Error(`String to replace not found in file: ${path}`);
+    const { baseContent, newContent, replacements, written } = edit;
     if (baseContent === newContent) {
       throw new Error(`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`);
     }
-    const ending = detectLineEnding(content);
-    await writeFile(absolutePath, bom + (ending === '\r\n' ? newContent.replace(/\n/g, '\r\n') : newContent), 'utf-8');
+    // Before the write, so neither can fail after it.
+    const { diff, firstChangedLine } = generateEditDiff(path, baseContent, newContent, replacements);
+    const patch = filePatch(path, baseContent, newContent);
     throwIfAborted();
-    const { diff, firstChangedLine } = pi.generateDiffString(baseContent, newContent);
+    await writeFile(absolutePath, written, 'utf-8');
+    throwIfAborted();
     return {
       content: [{ type: 'text', text: `Successfully replaced 1 block(s) in ${path}.` }],
-      details: { diff, ...(firstChangedLine === undefined ? {} : { firstChangedLine }), ...filePatch(path, baseContent, newContent) },
+      details: { diff, ...(firstChangedLine === undefined ? {} : { firstChangedLine }), ...patch },
     };
   });
 }
 
+/** A single replacement in pi's edit's input shape. */
+function piEditInput(filePath: string, oldString: string, newString: string): EditToolInput {
+  return { path: filePath, edits: [{ oldText: oldString, newText: newString }] };
+}
+
+/** What pi's edit writes for a single replacement, and the first line it changes in the new text. */
+export interface EditPreview {
+  written: string;
+  firstChangedLine: number | undefined;
+}
+
+/**
+ * pi's edit of a file holding `original`, run on an in-memory copy: the text it would write, or pi's own message where it refuses
+ * the edit (old_string empty, absent or found more than once, or a change that changes nothing).
+ */
+export async function previewEdit(pi: PiCodingAgentModule, filePath: string, original: string, oldString: string, newString: string): Promise<EditPreview | { refused: string }> {
+  let written: string | undefined;
+  const queueKey = `damocles-edit-preview:${randomUUID()}`;
+  const operations: EditOperations = {
+    access: () => Promise.resolve(),
+    readFile: () => Promise.resolve(Buffer.from(original, 'utf-8')),
+    writeFile: (_path, content) => {
+      written = content;
+      return Promise.resolve();
+    },
+    // No file's key, so the preview neither waits behind nor holds up a write queued on the file.
+    realpath: () => Promise.resolve(queueKey),
+  };
+  const piEdit = pi.createEditTool(dirname(filePath), { operations });
+  // pi's edit rejects exactly where it refuses the edit; its message goes to the model unread.
+  const result: AgentToolResult<EditToolDetails | undefined> | { refused: string } = await piEdit
+    .execute('edit-preview', piEditInput(filePath, oldString, newString))
+    .then((value: AgentToolResult<EditToolDetails | undefined>) => value, (error: unknown) => ({ refused: error instanceof Error ? error.message : String(error) }));
+  if ('refused' in result) return result;
+  if (written === undefined) throw new Error('pi\'s edit returned without writing');
+  return { written, firstChangedLine: result.details?.firstChangedLine };
+}
+
 /**
  * Build the custom `Edit` tool. A single replacement is delegated to pi's
- * `createEditToolDefinition(cwd).execute(...)` translated to pi's shape, which reuses pi's `details.diff/patch`
+ * `createEditToolDefinition` on pi's default operations written here (`editOperations`), translated to pi's shape, which reuses pi's `details.diff/patch`
  * (FR-4: no bespoke file-editing logic); `replace_all` runs here (`replaceAll`). The central gate
  * (`canUseTool` → diff approval) runs before `execute`, so this just performs the approved write.
  * Sequential, so pi runs any batch holding an Edit one call at a time, in the model's order ("Tool overrides").
  */
 export function createEditTool(pi: PiCodingAgentModule, cwd: string): ToolDefinition {
-  const piEdit = pi.createEditToolDefinition(cwd);
+  const piEdit = pi.createEditToolDefinition(cwd, { operations: editOperations });
   return pi.defineTool<typeof editSchema, EditToolDetails | EditDetails | undefined>({
     name: TOOL_EDIT,
     label: 'Edit',
@@ -119,8 +181,7 @@ export function createEditTool(pi: PiCodingAgentModule, cwd: string): ToolDefini
         throw new Error('Edit cannot create a file: old_string is empty. Use the Write tool to create a new file.');
       }
       if (params.replace_all) return replaceAll(pi, ctx?.cwd || cwd, params, signal);
-      const input: EditToolInput = { path: params.file_path, edits: [{ oldText: params.old_string, newText: params.new_string }] };
-      return piEdit.execute(toolCallId, input, signal, onUpdate, ctx);
+      return piEdit.execute(toolCallId, piEditInput(params.file_path, params.old_string, params.new_string), signal, onUpdate, ctx);
     },
   });
 }

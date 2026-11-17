@@ -4,11 +4,12 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { CanUseToolContext } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PermissionMode } from '../../../shared/types/settings';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 const INPUT = { prompt: 'a red fox in the snow', file_path: 'assets/fox.png' };
 
 function handlerWith(mode: PermissionMode = 'default', yolo = false): { handler: PermissionHandler; messages: ExtensionToWebviewMessage[] } {
-  const handler = new PermissionHandler(createFakePlatform({ settings: { user: { 'damocles.imageGeneration.model': 'openai/gpt-image-1' } } }));
+  const handler = new PermissionHandler(createFakePlatform({ settings: { user: { 'damocles.imageGeneration.model': 'openai/gpt-image-1' } } }), getPiCodingAgent);
   handler.setCwd(process.cwd());
   handler.setPermissionMode(mode);
   handler.setDangerouslySkipPermissions(yolo);
@@ -47,7 +48,7 @@ describe('GenerateImage approval', () => {
 
   it('binds the call to the model its prompt showed, even when the setting changes before the user answers', async () => {
     const platform = createFakePlatform({ settings: { user: { 'damocles.imageGeneration.model': 'openai/gpt-image-1' } } });
-    const handler = new PermissionHandler(platform);
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
     const messages: ExtensionToWebviewMessage[] = [];
     handler.setPostMessage((msg) => messages.push(msg));
     const pending = handler.canUseTool('GenerateImage', INPUT, ctx('g9'));

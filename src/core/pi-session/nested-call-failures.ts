@@ -27,7 +27,7 @@ export function nestedRunError(session: Pick<AgentSession, 'model'> | undefined,
 /**
  * An error stop that ended while its run's signal was aborted: the abort's wind-down, which every transcript treats as
  * an aborted stop, with no error card. `runSignal` is the extension context's signal at the stop's `turn_end`, the
- * run's own (`agent.js:217-219` in pi-agent-core 1.4.0). Only `registerWindDownErrorRecord` reads it; transcripts read
+ * run's own (`agent.js:217-219` in pi-agent-core 1.5.2). Only `registerWindDownErrorRecord` reads it; transcripts read
  * the record it writes, so live and reload decide from one observation.
  */
 export function isWindDownError(stopReason: unknown, runSignal: AbortSignal | undefined): boolean {

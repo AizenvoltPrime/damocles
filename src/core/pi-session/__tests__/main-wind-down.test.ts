@@ -13,6 +13,7 @@ import type { PiSession } from '../pi-session';
 import { DAMOCLES_MID_STREAM_ENTRY, DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY } from '../session-store/constants';
 import { nextPromptIndex } from '../session-store/prompt-index';
 import { WIND_DOWN_NOTICE_MS } from '../wind-down-notice';
+import { trackRunningHook } from '../hooks/running-hooks';
 import type { RunLifecycle } from '../run-lifecycle';
 import { HELD_DRAFT_ENTRY, heldSettleSessions, type HeldSettleSession } from './held-settle-fixture';
 import { panelSession, seatPiRuntime } from './real-pi-fixtures';
@@ -104,7 +105,7 @@ function dispositionsOf(session: AgentSession): string[] {
   const seen: string[] = [];
   const observed = new WeakSet<NonNullable<PromptOptions['preflightResult']>>();
   const prompt = session.prompt.bind(session);
-  // pi's deferred prompt calls `this.prompt` again with the same options (agent-session.js:1633 in pi 1.4.0).
+  // pi's deferred prompt calls `this.prompt` again with the same options (agent-session.js:1697 in pi 1.5.2).
   session.prompt = (text: string, options?: PromptOptions) => {
     const original = options?.preflightResult;
     if (!original || observed.has(original)) return prompt(text, options);
@@ -140,7 +141,7 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
 
     await sleep(WIND_DOWN_NOTICE_MS - 1_000);
     expect(shownWindDowns(emitted)).toEqual([]);
-    // pi ended the run before the Stop, so only its agent_settled handlers are left (agent-session.js:685-690 in pi 1.4.0).
+    // pi ended the run before the Stop, so only its agent_settled handlers are left (agent-session.js:740-745 in pi 1.5.2).
     const shown: AgentWindDown = { phase: 'settle', events: ['agent_settled'], extensions: [] };
     await vi.waitFor(() => expect(shownWindDowns(emitted)).toEqual([shown]), { timeout: 3_000 });
     expect(emitted.filter((m) => m.type === 'sessionStateChanged').at(-1)).toMatchObject({ state: 'idle', windDown: shown });
@@ -154,6 +155,30 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
     expect(userTextsInFile(held.session)).toEqual(['first', 'second']);
   }, 30_000);
 
+  it('names the Stop hook the wind-down waits for, and drops it once that hook ends while the settle goes on', async () => {
+    const held = await sessions.boot([fauxAssistantMessage('First.')], { store: onFile(), mainChat: true });
+    const settle = held.hold();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = boundPanel(held, emitted);
+
+    const first = panel.sendMessage('first', held.session.sessionId, 'c1', { content: 'first' });
+    await within(settle.waiting, 10_000, 'the agent_settled handler');
+    // As the configured Stop hooks' agent_settled handler tracks the hook it runs (`dispatchObserveOnly`).
+    const hookEnds = trackRunningHook(held.session.sessionManager.getSessionId(), { command: `bash ./scripts/notify.sh --token=${'x'.repeat(8)}`, scope: 'project' });
+    await panel.interrupt();
+
+    const withHook: AgentWindDown = { phase: 'settle', events: ['agent_settled'], extensions: [], hooks: [{ label: 'notify.sh', scope: 'project' }] };
+    await vi.waitFor(() => expect(shownWindDowns(emitted)).toEqual([withHook]), { timeout: WIND_DOWN_NOTICE_MS + 2_000 });
+
+    hookEnds();
+    const afterHook: AgentWindDown = { phase: 'settle', events: ['agent_settled'], extensions: [] };
+    expect(shownWindDowns(emitted)).toEqual([withHook, afterHook]);
+
+    settle.release();
+    await within(first, 10_000, 'the stopped send');
+    await vi.waitFor(() => expect(shownWindDowns(emitted)).toEqual([withHook, afterHook, null]));
+  }, 30_000);
+
   it('says the next send waits for the agent_before_settle and agent_settled handlers when the Stop came after the run ended', async () => {
     const held = await sessions.boot([fauxAssistantMessage('First.'), fauxAssistantMessage('Second.')], { store: onFile(), beforeSettle: true, mainChat: true });
     const beforeSettle = held.holdBeforeSettle();
@@ -163,7 +188,7 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
 
     const first = panel.sendMessage('first', target, 'c1', { content: 'first' });
     await within(beforeSettle.waiting, 10_000, 'the agent_before_settle handler');
-    // pi's abort() waits for the held handler (agent-session.js:1971-1981 in pi 1.4.0), and the turn shows stopped at once.
+    // pi's abort() waits for the held handler (agent-session.js:2073-2083 in pi 1.5.2), and the turn shows stopped at once.
     const stopping = panel.interrupt();
     expect(emitted).toContainEqual({ type: 'sessionCancelled' });
     const second = panel.sendMessage('second', target, 'c2', { content: 'second' });
@@ -275,7 +300,7 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
       const emitted: ExtensionToWebviewMessage[] = [];
       const panel = boundPanel(held, emitted);
 
-      // An extension's `pi.sendMessage` with `triggerTurn` on an idle session (agent-session.js:3619, :1865-1870 in pi 1.4.0).
+      // An extension's `pi.sendMessage` with `triggerTurn` on an idle session (agent-session.js:3726, :1967-1972 in pi 1.5.2).
       void held.session.sendCustomMessage({ customType: 'extension-turn', content: 'go', display: false }, { triggerTurn: true });
       await within(settle.waiting, 10_000, 'the agent_settled handler');
       panel.cancel();
@@ -294,7 +319,7 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
       expect(shownWindDowns(emitted)).toEqual([shown, null]);
     }, 30_000);
 
-    it('shows it for the run pi opens after the Stop with the send it held before that run, and clears it as pi settles that run', async () => {
+    it('shows none for a send the Stop caught in pi\'s input handlers, whose run pi refuses, and the send after it then runs', async () => {
       const held = await sessions.boot([fauxAssistantMessage('Second.')], { store: onFile(), mainChat: true, input: true });
       const input = held.holdInput();
       const emitted: ExtensionToWebviewMessage[] = [];
@@ -303,23 +328,19 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
 
       const first = panel.sendMessage('first', target, 'c1', { content: 'first' });
       await within(input.waiting, 10_000, 'the input handler');
-      const settle = held.hold();
       await panel.interrupt();
       const second = panel.sendMessage('second', target, 'c2', { content: 'second' });
-      // pi opens the run once the handler returns, and the Stop's `stopRunAtStart` aborts it at agent_start.
-      input.release();
-      await within(settle.waiting, 10_000, 'the agent_settled handler of the run pi opened');
-
-      await sleep(WIND_DOWN_NOTICE_MS - 1_000);
+      await sleep(WIND_DOWN_NOTICE_MS + 500);
       expect(shownWindDowns(emitted)).toEqual([]);
-      await vi.waitFor(() => expect(shownWindDowns(emitted)).toEqual([shown]), { timeout: 3_000 });
       expect(userMessageSent(emitted, 'c2')).toBe(false);
 
-      settle.release();
+      // The run pi would open once the handler returns is refused, so nothing of the first send is written.
+      input.release();
+      expect(await within(first, 10_000, 'the stopped send')).toBe('withdrawn');
       expect(await within(second, 10_000, 'the waiting send')).toBe('sent');
-      await within(first, 10_000, 'the stopped send');
-      expect(shownWindDowns(emitted)).toEqual([shown, null]);
-      expect(userTextsInFile(held.session)).toEqual(['first', 'second']);
+      expect(emitted).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'first' });
+      expect(shownWindDowns(emitted)).toEqual([]);
+      expect(userTextsInFile(held.session)).toEqual(['second']);
     }, 30_000);
 
     it('publishes no wind-down for a Stop that finds no run in pi', async () => {

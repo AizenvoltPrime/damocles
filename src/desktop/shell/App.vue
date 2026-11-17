@@ -48,6 +48,11 @@ const selectedHost = computed(() => {
 // The shell cannot see the chat page's design header; a design chat has one for its whole life, so the edge follows its role.
 const designEdgeShown = computed(() => state.value?.selectedChat?.design !== undefined && state.value.chatViewShown && !editor.focusOverlay.value);
 
+// The placeholder's Remove project took its focused button away with the project; a cancelled removal leaves it listed.
+function projectRemoved(): void {
+  sidebar.value?.focusProjects();
+}
+
 // Reveals waiting for main to show the sidebar they asked for.
 let sidebarWaiters: Array<() => void> = [];
 
@@ -211,6 +216,7 @@ onBeforeUnmount(() => {
             :api="api"
             :project="selectedProject"
             :host="selectedHost"
+            @removed="projectRemoved"
           />
         </template>
         <template #editor>

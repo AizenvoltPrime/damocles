@@ -1,7 +1,7 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, ToolAbandonReason, ToolCall } from '@shared/types/session';
-import type { SubagentState, SubagentResult } from '@shared/types/subagents';
+import { isAgentStopReason, type AgentStopReason, type SubagentState, type SubagentResult } from '@shared/types/subagents';
 import type { AgentUsageTotals } from '@shared/usage-accounting';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
@@ -293,7 +293,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     const subagent = subagents.value[toolId];
     if (!subagent) return;
     // The stale end time is dropped, not set to undefined, so a later spread cannot resurrect it.
-    const { endTime: _clearedEndTime, ...withoutEndTime } = withoutLiveState(subagent);
+    const { endTime: _clearedEndTime, stopReason: _clearedStopReason, ...withoutEndTime } = withoutLiveState(subagent);
     subagents.value = {
       ...subagents.value,
       [toolId]: {
@@ -305,7 +305,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     };
   }
 
-  function endSubagent(agentToolId: string, status: EndedSubagentStatus): void {
+  function endSubagent(agentToolId: string, status: EndedSubagentStatus, stopReason?: AgentStopReason): void {
     const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
       subagents.value = {
@@ -313,6 +313,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         [agentToolId]: {
           ...withoutLiveState(subagent),
           status,
+          ...(status === 'cancelled' && stopReason !== undefined ? { stopReason } : {}),
           endTime: Date.now(),
         },
       };
@@ -778,6 +779,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         description: description || subagentType || '',
         prompt,
         status,
+        ...(status === 'cancelled' && isAgentStopReason(tool.agentStopReason) ? { stopReason: tool.agentStopReason } : {}),
         startTime,
         // A card's clock stops at its end time, so a running one has none.
         ...(status === 'running' ? {} : { endTime: tool.agentEndTimestamp ?? Date.now() }),

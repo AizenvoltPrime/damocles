@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as path from 'node:path';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { CanUseToolContext } from '../../permission-handler/types';
@@ -89,6 +90,9 @@ const H = vi.hoisted(() => {
         isProjectTrusted: vi.fn(() => true),
       },
       modelRuntime: {
+        stream: vi.fn(),
+        streamSimple: vi.fn(),
+        settleCredentialWrites: async () => undefined,
         getAvailableSnapshot: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         getModel: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-opus-4-8'
           ? { id, name: 'Opus', api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
@@ -168,6 +172,13 @@ vi.mock('../pi-loader', async () => {
 
 vi.mock('../session-title', () => ({ generateSessionTitle: async () => null }));
 
+// The chats here work in a folder no test creates.
+vi.mock('../folder-presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../folder-presence')>()),
+  assertFolderPresent: async () => undefined,
+  folderFailure: async (_folder: string, err: unknown) => err,
+}));
+
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({
@@ -192,6 +203,7 @@ import { TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE
 import { runPermissionGate, type GatePermissionContext } from '../permission-gate';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
+import { getPiCodingAgent } from '../pi-loader';
 
 type StateMessage = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>;
 type UiRequest = Extract<ExtensionToWebviewMessage, { type: 'extensionUiRequest' }>;
@@ -230,8 +242,10 @@ async function startPanel(extra: Partial<SessionOptions> = {}): Promise<{
 }> {
   const messages: ExtensionToWebviewMessage[] = [];
   const platform = createFakePlatform();
-  const permissionHandler = new PermissionHandler(platform);
+  const permissionHandler = new PermissionHandler(platform, getPiCodingAgent);
   permissionHandler.setPostMessage((m) => messages.push(m));
+  // a panel sets its folder before any tool runs
+  permissionHandler.setCwd(path.resolve('/cwd'));
   const options: SessionOptions = {
     cwd: '/cwd',
     settingsFolder: undefined,
@@ -1060,7 +1074,7 @@ describe('panel activity, from the same publisher', () => {
     expect(turnOutcomeOfError(verbatim('429 {"type":"rate_limit_error"}'))).toEqual({ kind: 'rateLimit' });
     expect(turnOutcomeOfError(verbatim('Too Many Requests'))).toEqual({ kind: 'rateLimit' });
     expect(turnOutcomeOfError(verbatim('subscription_sharing_usage_limit_exceeded'))).toEqual({ kind: 'rateLimit' });
-    // pi 1.4.0 appends its workspace hint to a ChatGPT Business per-user limit and does not retry it.
+    // pi 1.5.2 appends its workspace hint to a ChatGPT Business per-user limit and does not retry it (pi-ai api/openai-responses.js:183-184, utils/retry.js:24).
     expect(turnOutcomeOfError(verbatim(
       'OpenAI API error: subscription_sharing_workplace_individual_usage_limit_exceeded\n' +
         "You've reached your ChatGPT workspace's usage limit. Ask your workspace admin to increase it at admin.openai.com → Workspace → Usage limits.",

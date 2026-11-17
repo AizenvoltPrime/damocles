@@ -7,6 +7,8 @@ import type { PermissionHandler, PermissionResult } from '../../../permission-ha
 import { createSubagentExtensionFactory } from '../subagent-extension-factory';
 import { isPlanFilePath } from '../../../paths';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
+import { takeTerminatedCalls } from '../../terminated-calls';
+import type { PreToolUseHookGate } from '../../permission-gate';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
   return { type: 'tool_call', toolName, toolCallId, input } as unknown as ToolCallEvent;
@@ -102,5 +104,32 @@ describe('nested shell cancel entries', () => {
     handlers['tool_execution_end']!({ type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash', result: { content: [] }, isError: true }, hookCtx);
 
     expect(store.cancel('b1')).toBe(false);
+  });
+});
+
+describe('terminating blocks recorded for the nested run', () => {
+  const edit = ev('Edit', 'e1', { file_path: '/a', old_string: 'a', new_string: 'b' });
+
+  it('records a rejection the user left without a note, under the nested session, and not one with a note', async () => {
+    const { ctx, canUseTool } = makeGate(false);
+    canUseTool.mockResolvedValueOnce({ behavior: 'deny', message: 'User denied', interrupt: true });
+    expect(await runPermissionGate(edit, ctx, undefined, 'agent-parent-1', undefined, 'nested')).toMatchObject({ block: true, terminate: true });
+    expect(takeTerminatedCalls('nested')).toEqual([{ toolCallId: 'e1', toolName: 'Edit', cause: 'user' }]);
+
+    canUseTool.mockResolvedValueOnce({ behavior: 'deny', message: 'use the other file' });
+    expect(await runPermissionGate(edit, ctx, undefined, 'agent-parent-1', undefined, 'nested')).not.toHaveProperty('terminate');
+    expect(takeTerminatedCalls('nested')).toEqual([]);
+  });
+
+  it('records a PreToolUse deny that opted in to terminate as a hook rejection', async () => {
+    const { ctx } = makeGate(false);
+    const preToolUse: PreToolUseHookGate = {
+      run: async () => ({ decision: 'deny', terminate: true, reason: 'no edits today', finalInput: {}, mutated: false, anyFailed: false, systemMessages: [] }),
+      onDecision: () => {},
+      notify: () => {},
+      stashContext: () => {},
+    };
+    expect(await runPermissionGate(edit, ctx, undefined, 'agent-parent-1', preToolUse, 'nested')).toMatchObject({ block: true, terminate: true });
+    expect(takeTerminatedCalls('nested')).toEqual([{ toolCallId: 'e1', toolName: 'Edit', cause: 'hook' }]);
   });
 });

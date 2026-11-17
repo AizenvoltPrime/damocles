@@ -8,7 +8,7 @@
 
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import type { AgentStopReason } from '../agent-records';
+import type { AgentStopReason } from '../../../shared/types/subagents';
 import type { LifetimeUsage } from './usage';
 import type { ImageBlock } from '../../../shared/types/content';
 import type { UserAnswerNote, UserSteerNote } from '../../../shared/steer';
@@ -128,6 +128,8 @@ export interface AgentRecord {
   toolCallId: string;
   /** Why a `stopped` agent was stopped. */
   stopReason?: AgentStopReason | undefined;
+  /** The tool of the rejected call a `denied` or `hookDenied` run ended on. */
+  rejectedTool?: string | undefined;
   /** Path of the agent's pi session file. pi creates it at the first user or assistant message. */
   outputFile?: string | undefined;
   /** Set once the `damocles-agent-status` entry has been appended to the agent's session. */

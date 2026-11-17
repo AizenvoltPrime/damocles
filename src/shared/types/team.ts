@@ -7,6 +7,8 @@ import type { LocalizedText } from '../localized-text';
 
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
 export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
+/** A run pi ended after a call the user rejected with no note (`denied`) or a hook rejected with `terminate` (`hookDenied`). */
+export type TeamStopReason = 'denied' | 'hookDenied';
 
 export interface TeamAgent {
   agentId: string;
@@ -41,6 +43,8 @@ export interface TeamAgent {
   progressSummary: string | null;
   result: string | null;
   logFilePath: string | null;
+  /** A work field of the current attempt: its latest run ended on a rejected call, so it waits for the lead (`standby`) or stopped there. */
+  stopReason?: TeamStopReason;
 }
 
 export interface TeamMessage {
@@ -94,6 +98,8 @@ export interface TeamRunSummary {
   toolCount: number;
   /** The run's tokens by kind and its cost, counted as an agent's usage is. */
   usage: AgentUsageTotals;
+  /** A `cancelled` run the lead's rejected call stopped. */
+  stopReason?: TeamStopReason;
   /**
    * Set only for a run read from a log that recorded its tokens as one input-plus-output figure. The token
    * kinds in `usage` are then zero, because the log never recorded them.

@@ -53,6 +53,25 @@ describe('TeamRunLog', () => {
     ]);
   });
 
+  it("marks a run its lead's rejected call stopped, whether its team-completed landed or a reload cut it short", () => {
+    const runs = runsOf([
+      { type: 'team-created', toolUseId: 'tc-create', timestamp: at(0) },
+      { type: 'team-cancelled', stopReason: 'hookDenied', timestamp: at(1) },
+      { type: 'team-completed', status: 'cancelled', timestamp: at(2) },
+      { type: 'team-resumed', toolUseId: 'tc-resume', timestamp: at(10) },
+      { type: 'team-cancelled', stopReason: 'denied', timestamp: at(11) },
+      { type: 'team-resumed', toolUseId: 'tc-last', timestamp: at(20) },
+      { type: 'team-cancelled', stopReason: 'user', timestamp: at(21) },
+      { type: 'team-completed', status: 'cancelled', timestamp: at(22) },
+    ]);
+
+    expect(runs.map((r) => [r.toolUseId, r.status, r.stopReason])).toEqual([
+      ['tc-create', 'cancelled', 'hookDenied'],
+      ['tc-resume', 'cancelled', 'denied'],
+      ['tc-last', 'cancelled', undefined],
+    ]);
+  });
+
   it('keeps the input-plus-output tokens an older log recorded apart, with no token kinds and no cache', () => {
     const runs = runsOf([
       { type: 'team-created', toolUseId: 'tc-create', timestamp: at(0) },

@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 // Every lease and agent file stays out of ~/.damocles.
 vi.mock('../../../paths', async () => {
@@ -110,9 +111,9 @@ function harness(scripts: Array<{ responses: FauxResponseStep[]; holdBeforeSettl
     parentBranch: () => invocations.map((data, i) => ({
       type: 'custom', id: `e${i}`, parentId: null, timestamp: new Date().toISOString(), customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data,
     }) as unknown as SessionEntry),
-    assertResumableModel: () => {},
+    assertResumableModel: async () => {},
     parentFullToolNames: () => [],
-    buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
+    buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, piMcp, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
     disposeBrowserScope: () => {},
     cancelAgentDialogs: () => {},
     resolveModel: () => ({}),
@@ -243,6 +244,9 @@ describe("a subagent's session file while a pi extension holds its stopped run",
     const lock = sessionLeasePath(agentFileSessionId(h.opened[0]!.booted.session.sessionManager.getSessionFile()!));
     fs.mkdirSync(SESSION_LEASE_DIR, { recursive: true });
     const unlock = lockfile.lockSync(lock, { lockfilePath: lock, realpath: false, stale: 20_000, update: 2_000 });
+    // The model check reads the file, which the other window's run owns, so it runs only once that refusal passed.
+    const validated: string[] = [];
+    h.engine.assertResumableModel = async (file) => { validated.push(file); };
     try {
       await expect(manager.resume({ kind: 'resume', agentId: id, toolCallId: 'tc-2' })).rejects.toThrow(
         `Subagent "${id}" cannot be resumed yet: its session file is still open in another Damocles window, whose stopped run has not finished. Wait for that run to stop or close that window, then resume it again.`,
@@ -251,8 +255,10 @@ describe("a subagent's session file while a pi extension holds its stopped run",
       unlock();
     }
     expect(h.events).toEqual(['open:file']);
+    expect(validated).toEqual([]);
 
     const record = await manager.resume({ kind: 'resume', agentId: id, toolCallId: 'tc-3' });
+    expect(validated).toHaveLength(1);
     expect(await within(record.promise!, 10_000, 'the resumed subagent')).toContain('Resumed and done.');
     manager.dispose();
   }, 60_000);

@@ -48,7 +48,10 @@ const progressLine = computed(() => {
   const waiting = awaitingAgents.value.size;
   if (isRunning.value && waiting > 0) return t('cards.team.activeWaitingOf', { active: activeAgentCount.value, total: totalAgentCount.value, waiting }, waiting);
   if (isRunning.value) return t('cards.team.activeOf', { active: activeAgentCount.value, total: totalAgentCount.value });
-  return props.run.status === 'completed' ? t('cards.team.finished') : t('cards.team.stopped');
+  if (props.run.status === 'completed') return t('cards.team.finished');
+  if (props.run.stopReason === 'denied') return t('cards.team.stoppedDenied');
+  if (props.run.stopReason === 'hookDenied') return t('cards.team.stoppedHookDenied');
+  return t('cards.team.stopped');
 });
 
 // Each agent carries its own flag and a reload restores it, so the total is labelled from the agents

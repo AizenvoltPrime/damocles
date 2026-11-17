@@ -21,6 +21,7 @@ import type { DesignApprovalAnswer } from '../../permission-handler/types';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { designTurnEnds } from '../../pi-session/finish-turn';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 const DESIGN = 'contacts-abcd1234';
 const FOLDER = designFolderOf(DESIGN);
@@ -60,7 +61,7 @@ const versionFiles = (): string[] => (fs.existsSync(path.join(designStateDirOf(D
 
 /** FinishDesign with its approval raised on a real PermissionHandler, as a session wires it. */
 function onHandler(overrides: Partial<DesignChatToolDeps> = {}) {
-  const handler = new PermissionHandler(createFakePlatform());
+  const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
   const posted: ExtensionToWebviewMessage[] = [];
   handler.setPostMessage((m) => posted.push(m));
   const d = deps({ requestApproval: (ask, signal) => handler.requestDesignApproval(ask, signal), ...overrides });

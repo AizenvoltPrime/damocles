@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
   protocol: { handle: vi.fn() },
 }));
 
-import { answerPreview } from '../preview-reader';
+import { answerPreview } from '../../../../core/served-pages/preview-reader';
 import { createPreviewSession, HTML_PREVIEW_PARTITION, previewResponse } from '../preview-session';
 import { SYNTHETIC_CHUNK_BYTES, syntheticFile, type SyntheticFile } from './synthetic-file';
 

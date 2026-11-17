@@ -31,3 +31,5 @@ resources/server-bin/remote-cli/damocles text eol=lf
 resources/server-bin/helpers/*.sh text eol=lf
 resources/server-bin/helpers/*.c text eol=lf
 resources/server-bin/**/*.cmd text eol=crlf
+# patch-package applies each patch to node_modules' LF files; a CRLF checkout would not apply.
+patches/*.patch text eol=lf

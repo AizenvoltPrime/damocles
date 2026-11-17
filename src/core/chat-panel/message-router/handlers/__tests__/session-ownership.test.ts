@@ -6,7 +6,7 @@ import { createChatHandlers } from "../chat-handlers";
 import { createSessionHandlers } from "../session-handlers";
 import { createSessionCatalog } from "../../../session-catalog";
 import { findStoredSessionHolder } from "../../../session-ownership";
-import { renamePiSession, tagPiSession } from "../../../../pi-session/session-store";
+import { renamePiSession, resolvePiSessionFile, tagPiSession } from "../../../../pi-session/session-store";
 import type { FolderTarget } from "../../../../workspace-folders/folder-registry";
 import type { HandlerContext, HandlerDependencies } from "../../types";
 import type { HostInstance } from "../../../types";
@@ -18,9 +18,22 @@ import { IdeContextManager } from "../../../ide-context-manager";
 // a panel's IDE context over an editor with no file open
 const ideContext = (): IdeContextManager => new IdeContextManager(createFakePlatform().editor, () => undefined);
 
-vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn(), resolvePiSessionFile: vi.fn(async (_cwd: string, id: string) => `/sessions/${id}.jsonl`) }));
+// Each folder's session directory is `<folder>/sessions`, and a session is found in the directory of the folder asked.
+vi.mock("../../../../pi-session/session-store", () => ({
+  renamePiSession: vi.fn(),
+  deletePiSession: vi.fn(),
+  tagPiSession: vi.fn(),
+  piSessionDir: (cwd: string) => `${cwd}/sessions`,
+  resolvePiSessionFile: vi.fn(async (cwd: string, id: string) => `${cwd}/sessions/${id}.jsonl`),
+}));
 vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
+
+// StorageManager.storedFileFrom over the mocked session store, whose headers name no folder
+const storedFileFrom = async (folder: string, id: string): Promise<"own" | "other" | null> => {
+  const file = await resolvePiSessionFile(folder, id);
+  return file === null ? null : file.startsWith(`${folder}/sessions/`) ? "own" : "other";
+};
 
 const MESSAGE = "This conversation is already open in another panel.";
 const NOT_SHOWN = "The chat could not be shown on this device.";
@@ -76,10 +89,11 @@ function harness(...panels: Panel[]) {
   /** Mirrors PanelManager: a fresh session in the target folder on the same instance. */
   const switchPanelFolder = vi.fn(async (
     panelId: string,
-    key: string,
+    to: string | FolderTarget,
     _reason: string,
     afterSwitch?: (instance: HostInstance) => Promise<void>,
   ): Promise<HostInstance | undefined> => {
+    const key = typeof to === "string" ? to : to.key;
     const panel = byId.get(panelId)!;
     const instance = panel.instance as unknown as { session: unknown; folder: FolderTarget };
     if (instance.folder.key !== key) {
@@ -93,6 +107,7 @@ function harness(...panels: Panel[]) {
   });
   const getPanels = () => new Map(panels.map((p) => [p.panelId, p.instance]));
   const storageManager = {
+    storedFileFrom,
     folderOf: async (id: string) => folderOfSession.get(id),
     getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
     getPromptHistory: async () => ({ history: [], hasMore: false }),
@@ -310,7 +325,7 @@ describe("resuming a conversation stored under another folder", () => {
 
     await h.chat.resumeSession!(resume("sess-b"), mine.ctx);
 
-    expect(h.switchPanelFolder).toHaveBeenCalledWith("host-1", FOLDER_B.key, "resume", expect.any(Function));
+    expect(h.switchPanelFolder).toHaveBeenCalledWith("host-1", FOLDER_B, "resume", expect.any(Function));
     const now = mine.instance.session as unknown as ReturnType<typeof makeSession>;
     expect(now).not.toBe(mine.session);
     expect(now.target()).toBe("sess-b");
@@ -361,9 +376,23 @@ describe("resuming a conversation stored under another folder", () => {
 
     await h.chat.resumeSession!(resume("sess-x"), mine.ctx);
 
-    expect(h.switchPanelFolder).toHaveBeenCalledWith("host-1", FOLDER_B.key, "resume", expect.any(Function));
+    expect(h.switchPanelFolder).toHaveBeenCalledWith("host-1", FOLDER_B, "resume", expect.any(Function));
     expect(h.order).not.toContain(`switch:${FOLDER_A.key}`);
     expect(h.loadSessionHistory).toHaveBeenCalledWith("/b", "sess-x", mine.host, mine.session);
+  });
+
+  // rule 1 finds a session of another folder from this one, and opening it here would make a second writable copy.
+  it("refuses a session no open project lists whose file is in another folder's session directory", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    vi.mocked(resolvePiSessionFile).mockResolvedValueOnce("/w/sessions/sess-w.jsonl");
+
+    await h.chat.resumeSession!(resume("sess-w"), mine.ctx);
+
+    expect(platform.notifications.calls.map((c) => [c.level, c.message])).toEqual([["error", "This conversation could not be opened: its project is not open"]]);
+    expect(h.switchPanelFolder).not.toHaveBeenCalled();
+    expect(mine.session.setResumeSession).not.toHaveBeenCalled();
+    expect(h.loadSessionHistory).not.toHaveBeenCalled();
   });
 
   it("reveals the holder before any switch when the session is already open elsewhere", async () => {

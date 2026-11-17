@@ -18,12 +18,13 @@ import { ASSET_SOURCE_PRECEDENCE_SETTING, assetSources } from '../asset-sources'
 import { renamePiSession, type LiveSessionMetaSource } from './session-store';
 import { writeUnderSessionLease } from './session-store/session-lease';
 import { McpClientManager } from './mcp/mcp-client-manager';
+import { loadMcpClient } from './mcp/mcp-client-loader';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { removeSavedMcpOutputs } from './mcp/content';
 import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNoticeEntry, ToolNameList } from './mcp/tool-name-migration';
 import type { DesignPreviewOpening } from '../design/session-design';
 import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
-import { piSupportedModels, type ModelLookup } from './pi-models';
+import { piSupportedModels, stripServerSideFallbacks, type ModelLookup } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
 import { flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
 import {
@@ -42,7 +43,7 @@ import { CREDENTIAL_REFUSED, isPiCredentialError, runStructuredCompletion, UNREA
 import { appendSubCallUsage, type SubCallAttribution, type SubCallPurpose } from '../usage-stats/subcall-ledger';
 import { httpStatusOf, isInputRefusal } from './http-status';
 import {
-  CLASSIFIER_MODELS,
+  CLASSIFIER_PROVIDERS,
   classifierCredential,
   classifierFailureCause,
   classifierModelOf,
@@ -963,9 +964,12 @@ export class PiRuntime {
   private async _createFolder(cwd: string, isCurrent: () => boolean): Promise<FolderRuntime> {
     if (this._disposed) throw new Error('PiRuntime has been disposed');
     const pi = getPiCodingAgent();
-    if (!pi || !this._modelRuntime || !this._userMcp) throw new Error('PiRuntime.folder: runtime not initialized');
+    // pi imports pi-mcp itself, so this resolves whenever pi loaded.
+    const mcpClient = await loadMcpClient();
+    if (!pi || !mcpClient || !this._modelRuntime || !this._userMcp) throw new Error('PiRuntime.folder: runtime not initialized');
     const folder = new FolderRuntime({
       pi,
+      mcpModule: mcpClient.mcp,
       cwd,
       agentDir: this._agentDir,
       modelRuntime: this._modelRuntime,
@@ -1326,6 +1330,7 @@ export class PiRuntime {
       this._allowanceUnavailable = shaped === undefined;
       modelRuntime.registerProvider('anthropic', allowanceProvider(remote, await builtinAnthropicTransport(), shaped));
     }
+    stripServerSideFallbacks(modelRuntime);
     this._throwIfDisposed();
     this._adoptModelRuntime(modelRuntime);
     for (const resolve of this._modelRuntimeWaiters) resolve(modelRuntime);
@@ -2706,6 +2711,13 @@ export class PiRuntime {
     return judge.effort === undefined ? { model: judge.model } : { model: judge.model, effort: judge.effort };
   }
 
+  /** The providers the Memory judge and the Background model run on now: their sub-call models and the judge's classifier. */
+  subCallProviders(): string[] {
+    const judge = this.resolveMemoryJudge();
+    const providers = [this.subCallModelFor('memory-merge'), this.subCallModelFor('memory-audit')].flatMap((choice) => (choice === null ? [] : [choice.model.provider]));
+    return judge.kind === 'classifier' ? [...providers, judge.model.provider] : providers;
+  }
+
   /** Whether a sub-call of `purpose` has a signed-in model (lets callers tell no-auth from a transient miss). */
   hasAuthedSubCallModel(purpose: StructuredSubCallPurpose): boolean {
     return this.subCallModelFor(purpose) !== null;
@@ -2856,7 +2868,7 @@ export class PiRuntime {
   /** Each classifier provider's credential, for the Memory judge choices. */
   classifierCredentials(): Record<ClassifierProvider, ClassifierCredential> {
     const openai = this._openaiAuthInputs();
-    return Object.fromEntries(CLASSIFIER_MODELS.map(({ provider }) => [provider, this._classifierCredential(provider, openai)])) as Record<ClassifierProvider, ClassifierCredential>;
+    return Object.fromEntries(CLASSIFIER_PROVIDERS.map((provider) => [provider, this._classifierCredential(provider, openai)])) as Record<ClassifierProvider, ClassifierCredential>;
   }
 
   /**
@@ -2913,7 +2925,7 @@ export class PiRuntime {
     const openai = this._openaiAuthInputs();
     const judge = this._resolveMemoryJudge((provider) => !this._classifierBreakers.admits(provider), openai);
     const judgedBy = judge.kind === 'classifier' ? judge.ref.provider : undefined;
-    const rejected = CLASSIFIER_MODELS.flatMap(({ provider }) => {
+    const rejected = CLASSIFIER_PROVIDERS.flatMap((provider) => {
       if (provider === judgedBy || this._classifierCredential(provider, openai) !== 'ok') return [];
       const reason = this._classifierBreakers.rejection(provider);
       return reason ? [{ via: provider, reason }] : [];
@@ -3012,6 +3024,9 @@ export class PiRuntime {
       }
       await folder.dispose();
     }
+    // pi waits for credential writes only in AgentSessionRuntime.dispose (agent-session-runtime.js:317); this model runtime
+    // also serves sub-calls with no session open, and a refresh one started has spent its single-use refresh token.
+    await this._modelRuntime?.settleCredentialWrites();
     if (this._userMcp) {
       try {
         await this._userMcp.dispose();

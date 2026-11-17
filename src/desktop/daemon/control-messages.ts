@@ -41,6 +41,12 @@ export interface Run {
   readonly providers: readonly string[];
 }
 
+// listOwnRuns only: listRuns is frozen, so its Run never carries configuredProviders
+export interface OwnRun extends Run {
+  // the providers the chat's configuration names (chat.configuredProviders); absent until its core reported them
+  readonly configuredProviders?: readonly string[];
+}
+
 export interface MirrorFile {
   // relative to the project's session folder, '/'-separated
   readonly file: string;
@@ -157,11 +163,17 @@ export interface ControlRequests {
   sharedHome: Call<object, { readonly hosts: readonly string[] }>;
   // listRuns' chat runs whose turn this connection's client started; called only when welcome.features lists
   // control.listOwnRuns
-  listOwnRuns: Call<object, { readonly runs: readonly Run[] }>;
+  listOwnRuns: Call<object, { readonly runs: readonly OwnRun[] }>;
   // the target's sub-call ledger (~/.damocles/usage/subcalls.jsonl) by mirror.sync's rules for one file: kept only while it
   // fits budgetBytes, else deleted when held; no change when the client holds it whole. Called only when welcome.features
   // lists mirror.subcalls
   'mirror.syncSubcalls': Call<{ readonly budgetBytes: number; readonly held?: MirrorHeld }, { readonly change?: MirrorLedgerChange }>;
+  // mirror.sync over every session folder the project's Chats list reads: its own, and those of the records the daemon's own
+  // worktree registry lists under it (recordsListedUnder), a working folder its core holds open as a project included, each
+  // such file named under worktree.<worktree id>/ for a chat record and adopted.<worktree id>/ for an adopted one; a registry
+  // that does not parse lists the own folder alone and answers no change for a held name under either. Called only when
+  // welcome.features lists mirror.worktreeChats
+  'mirror.syncProject': Call<{ readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }, { readonly changes: readonly MirrorChange[] }>;
   // a daemon in WSL: its loopback probe listener's port and nonce (port-probe.ts); called only when welcome.features lists
   // control.portProbe, and refused outside WSL
   portProbe: Call<object, { readonly port: number; readonly nonce: string }>;
@@ -238,7 +250,9 @@ export interface ControlEvents {
   // the attached clients, on every attach, detach and replacement; sent only to a client whose attach asked (watchClients)
   clients: { readonly clients: readonly AttachedClient[] };
   // a file under the session folder of a project this connection mirrors changed since its last mirror.sync of that project
-  // began; once per such sync (welcome.features lists mirror.changed)
+  // began; once per such sync (welcome.features lists mirror.changed). After mirror.syncProject also a file under one of its
+  // worktree chats' session folders or the worktree registry file, which names the first project this connection followed it
+  // for
   'mirror.changed': { readonly projectKey: string };
   // the target's sub-call ledger changed since this connection's last mirror.syncSubcalls began; once per such sync
   // (welcome.features lists mirror.subcalls)
@@ -279,14 +293,17 @@ const PROBE_NONCE = /^[0-9a-f]{32}$/;
 const hex: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
 const nothing = obj({});
 const mirrorFile: Parser<MirrorFile> = obj({ file: nonEmpty(MAX_PATH_CHARS), size: count, headHash: hex, tailHash: hex });
-const run: Parser<Run> = obj({
+const runProviders = arr(nonEmpty(128), 256);
+const runShape = {
   kind: oneOf(['chat', 'terminal'] as const),
   id: nonEmpty(128),
   projectKey: str(MAX_PATH_CHARS),
   title: str(MAX_RUN_TITLE_CHARS),
   state: oneOf(['running', 'waiting', 'background'] as const),
-  providers: arr(nonEmpty(128), 256),
-});
+  providers: runProviders,
+};
+const run: Parser<Run> = obj(runShape);
+const ownRun: Parser<OwnRun> = obj({ ...runShape, configuredProviders: opt(runProviders) });
 const change: Parser<MirrorChange> = obj({ file: nonEmpty(MAX_PATH_CHARS), kind: oneOf(['append', 'full', 'deleted'] as const), offset: count, length: count, stream: count });
 const mirrorHeld: Parser<MirrorHeld> = obj({ size: count, headHash: hex, tailHash: hex });
 const ledgerChange: Parser<MirrorLedgerChange> = obj({ kind: oneOf(['append', 'full', 'deleted'] as const), offset: count, length: count, stream: count });
@@ -382,8 +399,9 @@ export const CLIENT_TO_CONTROL: Tables<ClientToControl> = {
     'ssh.installAuthorizedKey': method(obj({ publicKey }), installKeyResult),
     shutdownForRemoval: method(nothing, obj({ runKey: (raw) => (typeof raw === 'string' && RUN_KEY.test(raw) ? raw : INVALID) })),
     sharedHome: method(nothing, obj({ hosts: arr((raw) => (typeof raw === 'string' && OTHER_HOSTNAME.test(raw) ? raw : INVALID), MAX_SHARED_HOME_HOSTS) })),
-    listOwnRuns: method(nothing, obj({ runs: arr(run, MAX_ITEMS) })),
+    listOwnRuns: method(nothing, obj({ runs: arr(ownRun, MAX_ITEMS) })),
     'mirror.syncSubcalls': method(obj({ budgetBytes: count, held: opt(mirrorHeld) }), obj({ change: opt(ledgerChange) })),
+    'mirror.syncProject': FROZEN_REQUESTS['mirror.sync'],
     portProbe: method(nothing, obj({ port: int(1, 65535), nonce: (raw) => (typeof raw === 'string' && PROBE_NONCE.test(raw) ? raw : INVALID) })),
     ...CONTAINER_REQUESTS,
     'agent.relay': method(nothing, none),

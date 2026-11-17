@@ -10,6 +10,7 @@ import {
   type DispatchDeps,
   type ToolCallHookResult,
 } from '../dispatch';
+import { onRunningHooksChange } from '../running-hooks';
 import type { HookEntry } from '../types';
 import type { HooksConfigService } from '../config';
 import type { HookCommon } from '../payload';
@@ -362,5 +363,19 @@ describe('dispatchObserveOnly', () => {
   it('is a no-op when no entry is configured', async () => {
     const n = await dispatchObserveOnly(mkDeps({}), 'turn_end', common.cwd, {});
     expect(n).toBe(0);
+  });
+
+  it('runs and tracks no hook when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const changed = vi.fn();
+    const unwatch = onRunningHooksChange(changed);
+    try {
+      const n = await dispatchObserveOnly(mkDeps({ agent_end: [nodeEntry('')] }), 'agent_end', common.cwd, {}, controller.signal, 'stopped-session');
+      expect(n).toBe(0);
+      expect(changed).not.toHaveBeenCalled();
+    } finally {
+      unwatch();
+    }
   });
 });

@@ -366,6 +366,8 @@ function restoringPanel(platform: FakePlatform) {
     historyManager: { loadSessionHistory: async (_cwd: string, id: string) => { loaded.push(id); return []; } },
     storageManager: {
       folderOf: async () => FOLDER,
+      // the conversation's file is in FOLDER's own session directory, started there
+      storedFileFrom: async () => 'own' as const,
       getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
       getPromptHistory: async () => ({ history: [], hasMore: false }),
     },

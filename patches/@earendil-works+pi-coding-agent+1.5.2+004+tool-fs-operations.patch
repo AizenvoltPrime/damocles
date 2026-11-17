@@ -1,0 +1,287 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.d.ts
+index fd996f1..f14c2f7 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.d.ts
+@@ -33,6 +33,11 @@ export interface EditOperations {
+     writeFile: (absolutePath: string, content: string) => Promise<void>;
+     /** Check if file is readable and writable (throw if not) */
+     access: (absolutePath: string) => Promise<void>;
++    /**
++     * Resolve symlinks, rejecting with code ENOENT or ENOTDIR for a missing path. Mutations of one file are
++     * serialized by its resolved path; without it, by the absolute path.
++     */
++    realpath?: (absolutePath: string) => Promise<string>;
+ }
+ export interface EditToolOptions {
+     /** Custom operations for file editing. Default: local filesystem */
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js
+index 45337c1..0e7688a 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js
+@@ -1,5 +1,5 @@
+ import { constants } from "fs";
+-import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
++import { access as fsAccess, readFile as fsReadFile, realpath as fsRealpath, writeFile as fsWriteFile, } from "fs/promises";
+ import { Type } from "typebox";
+ import { splitBom } from "../../utils/text.js";
+ import { applyEditsToNormalizedContent, applyReplacementsToOriginal, generateEditDiff, normalizeToLF, } from "./edit-diff.js";
+@@ -37,6 +37,7 @@ const defaultEditOperations = {
+     readFile: (path) => fsReadFile(path),
+     writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+     access: (path) => fsAccess(path, constants.R_OK | constants.W_OK),
++    realpath: (path) => fsRealpath(path),
+ };
+ function prepareEditArguments(input) {
+     if (!input || typeof input !== "object") {
+@@ -77,6 +78,8 @@ function validateEditInput(input) {
+ }
+ export function createEditToolDefinition(cwd, options) {
+     const ops = options?.operations ?? defaultEditOperations;
++    // Without a realpath operation the queue keys on the absolute path, so node:fs never sees the operations' files.
++    const realpath = ops.realpath ?? (async (absolutePath) => absolutePath);
+     return {
+         name: "edit",
+         label: "edit",
+@@ -90,7 +93,7 @@ export function createEditToolDefinition(cwd, options) {
+         async execute(_toolCallId, input, signal, _onUpdate, ctx) {
+             const { path, edits } = validateEditInput(input);
+             const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+-            return withFileMutationQueue(absolutePath, async () => {
++            const mutation = async () => {
+                 // Do not reject from an abort event listener here: that would release the
+                 // mutation queue while an in-flight filesystem operation may still finish.
+                 // Checking signal.aborted after each await observes the same aborts while
+@@ -135,7 +138,8 @@ export function createEditToolDefinition(cwd, options) {
+                     ],
+                     details: editDiff,
+                 };
+-            });
++            };
++            return withFileMutationQueue(absolutePath, mutation, realpath);
+         },
+         ...editRenderers,
+     };
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.d.ts
+index 40eabfe..db926fb 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.d.ts
+@@ -1,6 +1,8 @@
+ /**
+  * Serialize file mutation operations targeting the same file.
+  * Operations for different files still run in parallel.
++ * @param realpath Resolves symlinks for the queue key, rejecting with code ENOENT or ENOTDIR for a missing
++ * path. Default: the local file system.
+  */
+-export declare function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T>;
++export declare function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>, realpath?: (absolutePath: string) => Promise<string>): Promise<T>;
+ //# sourceMappingURL=file-mutation-queue.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.js
+index c223839..2b1824c 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/file-mutation-queue.js
+@@ -1,4 +1,4 @@
+-import { realpath } from "node:fs/promises";
++import { realpath as fsRealpath } from "node:fs/promises";
+ import { resolve } from "node:path";
+ const fileMutationQueues = new Map();
+ let registrationQueue = Promise.resolve();
+@@ -8,7 +8,7 @@ function isMissingPathError(error) {
+         "code" in error &&
+         (error.code === "ENOENT" || error.code === "ENOTDIR"));
+ }
+-async function getMutationQueueKey(filePath) {
++async function getMutationQueueKey(filePath, realpath) {
+     const resolvedPath = resolve(filePath);
+     try {
+         return await realpath(resolvedPath);
+@@ -23,10 +23,12 @@ async function getMutationQueueKey(filePath) {
+ /**
+  * Serialize file mutation operations targeting the same file.
+  * Operations for different files still run in parallel.
++ * @param realpath Resolves symlinks for the queue key, rejecting with code ENOENT or ENOTDIR for a missing
++ * path. Default: the local file system.
+  */
+-export async function withFileMutationQueue(filePath, fn) {
++export async function withFileMutationQueue(filePath, fn, realpath = fsRealpath) {
+     const registration = registrationQueue.then(async () => {
+-        const key = await getMutationQueueKey(filePath);
++        const key = await getMutationQueueKey(filePath, realpath);
+         const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
+         let releaseNext;
+         const nextQueue = new Promise((resolveQueue) => {
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.d.ts
+index 5df8b6b..3569582 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.d.ts
+@@ -6,5 +6,10 @@ export declare function expandPath(filePath: string): string;
+  */
+ export declare function resolveToCwd(filePath: string, cwd: string): string;
+ export declare function resolveReadPath(filePath: string, cwd: string): string;
+-export declare function resolveReadPathAsync(filePath: string, cwd: string): Promise<string>;
++/**
++ * Resolve a path to read relative to cwd, trying the variants macOS uses in file names when the path
++ * does not exist.
++ * @param exists Checks a candidate. Default: the local file system.
++ */
++export declare function resolveReadPathAsync(filePath: string, cwd: string, exists?: (absolutePath: string) => Promise<boolean> | boolean): Promise<string>;
+ //# sourceMappingURL=path-utils.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js
+index 47382b5..bb8e201 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js
+@@ -69,29 +69,34 @@ export function resolveReadPath(filePath, cwd) {
+     }
+     return resolved;
+ }
+-export async function resolveReadPathAsync(filePath, cwd) {
++/**
++ * Resolve a path to read relative to cwd, trying the variants macOS uses in file names when the path
++ * does not exist.
++ * @param exists Checks a candidate. Default: the local file system.
++ */
++export async function resolveReadPathAsync(filePath, cwd, exists = pathExists) {
+     const resolved = resolveToCwd(filePath, cwd);
+-    if (await pathExists(resolved)) {
++    if (await exists(resolved)) {
+         return resolved;
+     }
+     // Try macOS AM/PM variant (narrow no-break space before AM/PM)
+     const amPmVariant = tryMacOSScreenshotPath(resolved);
+-    if (amPmVariant !== resolved && (await pathExists(amPmVariant))) {
++    if (amPmVariant !== resolved && (await exists(amPmVariant))) {
+         return amPmVariant;
+     }
+     // Try NFD variant (macOS stores filenames in NFD form)
+     const nfdVariant = tryNFDVariant(resolved);
+-    if (nfdVariant !== resolved && (await pathExists(nfdVariant))) {
++    if (nfdVariant !== resolved && (await exists(nfdVariant))) {
+         return nfdVariant;
+     }
+     // Try curly quote variant (macOS uses U+2019 in screenshot names)
+     const curlyVariant = tryCurlyQuoteVariant(resolved);
+-    if (curlyVariant !== resolved && (await pathExists(curlyVariant))) {
++    if (curlyVariant !== resolved && (await exists(curlyVariant))) {
+         return curlyVariant;
+     }
+     // Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
+     const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
+-    if (nfdCurlyVariant !== resolved && (await pathExists(nfdCurlyVariant))) {
++    if (nfdCurlyVariant !== resolved && (await exists(nfdCurlyVariant))) {
+         return nfdCurlyVariant;
+     }
+     return resolved;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.d.ts
+index 0180ab2..d26b916 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.d.ts
+@@ -38,6 +38,11 @@ export interface ReadOperations {
+     readFile: (absolutePath: string) => Promise<Buffer>;
+     /** Check if file is readable (throw if not) */
+     access: (absolutePath: string) => Promise<void>;
++    /**
++     * Check if a path exists. Used to find the file a path names when it differs in ways macOS file names
++     * do (for example a narrow no-break space before AM/PM). Without it, a path exists when access succeeds.
++     */
++    exists?: (absolutePath: string) => Promise<boolean> | boolean;
+     /** Detect image MIME type, return null or undefined for non-images */
+     detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
+     /**
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.js
+index 675a099..4c02b2e 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.js
+@@ -4,7 +4,7 @@ import { Type } from "typebox";
+ import { TextDecoder } from "util";
+ import { processImage } from "../../utils/image-process.js";
+ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.js";
+-import { resolveReadPathAsync } from "./path-utils.js";
++import { pathExists, resolveReadPathAsync } from "./path-utils.js";
+ import { readRenderers } from "./renderers/read.js";
+ import { wrapToolDefinition } from "./tool-definition-wrapper.js";
+ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "./truncate.js";
+@@ -31,6 +31,7 @@ const defaultReadOperations = {
+     readFile: (path) => fsReadFile(path),
+     createReadStream: readLocalFileChunks,
+     access: (path) => fsAccess(path, constants.R_OK),
++    exists: pathExists,
+     detectImageMimeType: detectSupportedImageMimeTypeFromFile,
+ };
+ /**
+@@ -174,6 +175,8 @@ export function createReadToolDefinition(cwd, options) {
+     const autoResizeImages = options?.autoResizeImages ?? true;
+     const fallbackResizeOptions = options?.resizeOptions;
+     const ops = options?.operations ?? defaultReadOperations;
++    const exists = ops.exists ??
++        ((absolutePath) => ops.access(absolutePath).then(() => true, () => false));
+     return {
+         name: "read",
+         label: "read",
+@@ -197,7 +200,7 @@ export function createReadToolDefinition(cwd, options) {
+                 signal?.addEventListener("abort", onAbort, { once: true });
+                 (async () => {
+                     try {
+-                        const absolutePath = await resolveReadPathAsync(path, ctx?.cwd || cwd);
++                        const absolutePath = await resolveReadPathAsync(path, ctx?.cwd || cwd, exists);
+                         if (aborted)
+                             return;
+                         // Check if file exists and is readable.
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.d.ts
+index 1c17eea..c9cad1f 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.d.ts
+@@ -19,6 +19,11 @@ export interface WriteOperations {
+     writeFile: (absolutePath: string, content: string) => Promise<void>;
+     /** Create directory recursively */
+     mkdir: (dir: string) => Promise<void>;
++    /**
++     * Resolve symlinks, rejecting with code ENOENT or ENOTDIR for a missing path. Mutations of one file are
++     * serialized by its resolved path; without it, by the absolute path.
++     */
++    realpath?: (absolutePath: string) => Promise<string>;
+ }
+ export interface WriteToolOptions {
+     /** Custom operations for file writing. Default: local filesystem */
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js
+index a1e20c8..6225632 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js
+@@ -1,4 +1,4 @@
+-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
++import { mkdir as fsMkdir, realpath as fsRealpath, writeFile as fsWriteFile } from "fs/promises";
+ import { dirname } from "path";
+ import { Type } from "typebox";
+ import { withFileMutationQueue } from "./file-mutation-queue.js";
+@@ -16,9 +16,12 @@ export const writeToolSystemPromptContribution = {
+ const defaultWriteOperations = {
+     writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+     mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => { }),
++    realpath: (path) => fsRealpath(path),
+ };
+ export function createWriteToolDefinition(cwd, options) {
+     const ops = options?.operations ?? defaultWriteOperations;
++    // Without a realpath operation the queue keys on the absolute path, so node:fs never sees the operations' files.
++    const realpath = ops.realpath ?? (async (absolutePath) => absolutePath);
+     return {
+         name: "write",
+         label: "write",
+@@ -30,7 +33,7 @@ export function createWriteToolDefinition(cwd, options) {
+         async execute(_toolCallId, { path, content }, signal, _onUpdate, ctx) {
+             const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+             const dir = dirname(absolutePath);
+-            return withFileMutationQueue(absolutePath, async () => {
++            const mutation = async () => {
+                 // Do not reject from an abort event listener here: that would release the
+                 // mutation queue while an in-flight filesystem operation may still finish.
+                 // Checking signal.aborted after each await observes the same aborts while
+@@ -50,7 +53,8 @@ export function createWriteToolDefinition(cwd, options) {
+                     content: [{ type: "text", text: `Successfully wrote to ${path}` }],
+                     details: undefined,
+                 };
+-            });
++            };
++            return withFileMutationQueue(absolutePath, mutation, realpath);
+         },
+         ...writeRenderers,
+     };

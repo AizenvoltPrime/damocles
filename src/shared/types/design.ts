@@ -504,6 +504,12 @@ export interface DesignPreviewInfo {
   readonly tweaks?: TweaksDeclaration | null;
 }
 
+/**
+ * `design.info`'s answer: the facts; `{ missing: true }` when the held design has no file at the path (feature
+ * `design.infoMissing`); nothing when the design is not held or the file is refused (outside the folder, too large).
+ */
+export type DesignPreviewAnswer = DesignPreviewInfo | { readonly missing: true } | undefined;
+
 /** `swatch`: every stop's value is a CSS color, so the panel shows color swatches; `segment` otherwise. */
 export type TweakControlKind = 'swatch' | 'segment';
 

@@ -39,6 +39,9 @@ node_modules/**
 !node_modules/@earendil-works/pi-mcp/**/*.js
 !node_modules/@earendil-works/pi-mcp/**/*.json
 !node_modules/@earendil-works/pi-mcp/**/modelcontextprotocol-typescript-sdk.txt
+!node_modules/@earendil-works/pi-schema/**/*.js
+!node_modules/@earendil-works/pi-schema/**/*.json
+!node_modules/@earendil-works/pi-schema/**/typebox-LICENSE
 !node_modules/@earendil-works/pi-telemetry/**/*.js
 !node_modules/@earendil-works/pi-telemetry/**/*.json
 !node_modules/@earendil-works/pi-tui/**/*.js
@@ -51,6 +54,7 @@ node_modules/**
 !node_modules/@google/genai/**/*.json
 !node_modules/@google/genai/**/*.mjs
 !node_modules/@google/genai/**/LICENSE
+!node_modules/@isaacs/nonrecursive-glob-match/**
 !node_modules/@koromix/koffi-*/**
 !node_modules/@protobufjs/**
 !node_modules/@smithy/**
@@ -88,6 +92,7 @@ node_modules/**
 !node_modules/jws/**
 !node_modules/koffi/**
 !node_modules/long/**
+!node_modules/lovely-mermaid/**
 !node_modules/marked-cjk-friendly/**
 !node_modules/ms/**
 !node_modules/node-domexception/**

@@ -27,7 +27,8 @@ const PROMPT = 'Run Start-Sleep -Seconds 60; echo done in PowerShell.';
 const NOTE = 'skip it';
 const QUEUED = 'also check the logs';
 const LOOK = 'what is in this screenshot?';
-const PNG_DATA = 'iVBORw0KGgo=';
+// a 1x1 PNG pi can decode, so it keeps the image of a queued prompt as sent
+const PNG_DATA = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const SCREENSHOT = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: PNG_DATA } };
 
 interface Internals {
@@ -140,7 +141,7 @@ describe('the mid-run queue against pi', () => {
     expect(contexts[1]?.slice(-2)).toEqual(['toolResult: call-1', 'user: first\n\nsecond']);
   });
 
-  it("sends and stops a batch ESC overtook in pi's hands when another extension's input handler returns after the run has ended", async () => {
+  it("returns a batch ESC overtook in pi's hands whole when another extension's input handler returns after the run has ended, and writes nothing of it", async () => {
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];
     const panel = panelSession(emitted);
@@ -174,25 +175,21 @@ describe('the mid-run queue against pi', () => {
     await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
     await session.waitForIdle();
 
-    // pi opened a run with the batch, and the run stopped at its start: the batch is a sent, stopped turn.
+    // pi would open a run with the batch, which is refused: nothing of it is written, and its chip goes back.
     expect(session.isStreaming).toBe(false);
     expect(session.pendingMessageCount).toBe(0);
     expect(contexts).toHaveLength(1);
     expect(contexts.flat()).not.toContain(`user: ${QUEUED}`);
-    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
-    expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
-    expect(emitted.some((m) => m.type === 'queueCancelled')).toBe(false);
-    // A reload shows it as the queued batch it was live, not as a prompt of its own.
-    const branch = session.sessionManager.getBranch();
-    const batchEntry = branch.find((e) => e.type === 'message' && e.message.role === 'user' && userContent(session, QUEUED) === e.message.content);
-    expect(branch.some((e) => e.type === 'custom' && e.customType === DAMOCLES_MID_STREAM_ENTRY && (e.data as { userEntryId: string }).userEntryId === batchEntry?.id)).toBe(true);
+    expect(userTexts(session)).toEqual([PROMPT]);
+    expect(session.sessionManager.getBranch().some((e) => e.type === 'custom' && e.customType === DAMOCLES_MID_STREAM_ENTRY)).toBe(false);
+    expect(emitted.filter((m) => m.type === 'queueCancelled' || m.type === 'queueBatchProcessed')).toEqual([{ type: 'queueCancelled', messageId: 'q1', returnToInput: true }]);
 
     expect(await panel.sendMessage('Start over.', undefined, 'c1', { content: 'Start over.' })).toBe('sent');
     expect(contexts).toHaveLength(2);
     expect(contexts.at(-1)?.at(-1)).toBe('user: Start over.');
   });
 
-  it('stops the run a withdrawn batch opens, before any request, when ESC lands after every input handler returned', async () => {
+  it('refuses the run a withdrawn batch would open and returns the batch, when ESC lands after every input handler returned', async () => {
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];
     const panel = panelSession(emitted);
@@ -230,13 +227,12 @@ describe('the mid-run queue against pi', () => {
     await stopped;
     await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
 
-    // pi aborts the run at `agent_start`, so the batch is a sent, stopped turn that reached no model.
+    // The run is refused at its start, so the batch reached no model and nothing of it is written.
     expect(session.isStreaming).toBe(false);
     expect(contexts).toHaveLength(2);
     expect(contexts.flat()).not.toContain(`user: ${QUEUED}`);
-    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
-    expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
-    expect(emitted.some((m) => m.type === 'queueCancelled')).toBe(false);
+    expect(userTexts(session)).toEqual([PROMPT]);
+    expect(emitted.filter((m) => m.type === 'queueCancelled' || m.type === 'queueBatchProcessed')).toEqual([{ type: 'queueCancelled', messageId: 'q1', returnToInput: true }]);
 
     expect(await panel.sendMessage('Start over.', undefined, 'c1', { content: 'Start over.' })).toBe('sent');
     expect(contexts).toHaveLength(3);
@@ -517,12 +513,13 @@ describe('the mid-run queue against pi', () => {
 
     expect(withdrawn).toHaveBeenCalledOnce();
     expect(contexts).toHaveLength(1);
-    // The batch the stop left in pi's hands opens a run of its own once the run ended, which stops at its start.
-    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
-    expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
+    // The batch the stop left in pi's hands would open a run of its own once the run ended, which is refused.
+    expect(userTexts(session)).toEqual([PROMPT]);
+    expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    expect(emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
   });
 
-  it('sends and stops the first of the prompts ESC overtook in pi\'s hands to open a run of its own after the run ended, and returns the one that queues into it', async () => {
+  it('returns both prompts ESC overtook in pi\'s hands: the first refused the run it would open after the run ended, and the one that queued into that run\'s start', async () => {
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];
     const panel = panelSession(emitted);
@@ -565,18 +562,18 @@ describe('the mid-run queue against pi', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await session.waitForIdle();
 
-    // The run it opens stops at its start: no request, and the prompt stays as a sent, stopped turn.
+    // The run it would open is refused: no request and nothing written, and each goes back to the composer once.
     expect(contexts).toHaveLength(1);
-    expect(typedTexts(session)).toEqual([PROMPT, opened]);
-    // The one that queued into that run goes back to the composer, once; the sent one does not.
-    if (opened === LOOK) {
-      expect(withdrawn).not.toHaveBeenCalled();
-      expect(emitted.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'q1', returnToInput: true }]);
-    } else {
-      expect(withdrawn).toHaveBeenCalledOnce();
-      expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
-      expect(emitted.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'c1', returnToInput: true }]);
-    }
+    expect(typedTexts(session)).toEqual([PROMPT]);
+    expect(session.pendingMessageCount).toBe(0);
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
+    const cancelled = emitted.filter((m) => m.type === 'queueCancelled');
+    expect(cancelled).toHaveLength(2);
+    expect(cancelled).toEqual(expect.arrayContaining([
+      { type: 'queueCancelled', messageId: 'q1', returnToInput: true },
+      { type: 'queueCancelled', messageId: 'c1', returnToInput: true },
+    ]));
     expect(await panel.sendMessage('Start over.', undefined, 'c2', { content: 'Start over.' })).toBe('sent');
     expect(contexts).toHaveLength(2);
     expect(contexts.at(-1)?.at(-1)).toBe('user: Start over.');
@@ -787,7 +784,7 @@ describe('the mid-run queue against pi', () => {
   });
 
   it.each([
-    ['reaches no model in the run pi still opens with it', false],
+    ['is refused the run pi would open with it', false],
     ['never reaches the running run', true],
   ])("a folder switch returns a typed prompt pi's input handlers hold to the input once, with its text, image and chips, and it %s", async (_what, running) => {
     const shell = blockingShell();
@@ -829,7 +826,7 @@ describe('the mid-run queue against pi', () => {
     expect(returned()).toHaveLength(1);
     expect(session.pendingMessageCount).toBe(0);
     expect(contexts.flat()).not.toContain(`user: ${LOOK}`);
-    // pi still opens a run with it on the disposed session, which reaches no model and, disconnected, records nothing.
+    // pi refuses the run it would open with it on the disposed session, so nothing of it is recorded.
     expect(typedTexts(session)).toEqual(running ? [PROMPT] : []);
     expect(contexts).toHaveLength(running ? 1 : 0);
   });
@@ -858,9 +855,68 @@ describe('the mid-run queue against pi', () => {
       context: session.agent.state.messages.filter((m) => m.role === 'custom' && m.customType === customType).length,
     });
 
-    it('a Stop stops the run before any request, the prompt stays sent and is not returned, and the next send runs to completion', async () => {
+    it('a Stop refuses the run, so nothing is written, the prompt returns whole, and the next send runs to completion', async () => {
       const emitted: ExtensionToWebviewMessage[] = [];
       const panel = panelSession(emitted);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session, contexts } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+      const withdrawn = vi.fn();
+      const typed = [{ type: 'text' as const, text: FIRST }, SCREENSHOT];
+
+      const sending = panel.sendMessage(typed, undefined, 'c1', { content: FIRST, contentBlocks: typed }, withdrawn);
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      const stopped = panel.interrupt();
+      gate.shift()!();
+      expect(await sending).toBe('withdrawn');
+      await stopped;
+      expect(session.isIdle).toBe(true);
+      expect(contexts).toHaveLength(0);
+      expect(session.sessionManager.getBranch().filter((e) => e.type === 'message')).toEqual([]);
+      expect(emitted.filter((m) => m.type === 'interruptRecovery')).toEqual([{ type: 'interruptRecovery', correlationId: 'c1', promptContent: FIRST, contentBlocks: typed }]);
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(await panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND })).toBe('sent');
+
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]?.at(-1)).toBe(`user: ${SECOND}`);
+      expect(userTexts(session)).toEqual([SECOND]);
+      expect(session.isIdle).toBe(true);
+    });
+
+    it('a Stop that refuses the run records no thinking level change, and the next send records it ahead of its own prompt', async () => {
+      const panel = panelSession([]);
+      // The panel's effort (medium) differs from the session's starting level, so a send records the change.
+      (panel as unknown as { options: { resolveThinking: () => unknown } }).options.resolveThinking = () => ({ thinkingDisabled: false, effort: null });
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+      const levelChanges = () => session.sessionManager.getBranch().filter((e) => e.type === 'thinking_level_change');
+      const before = session.sessionManager.getBranch();
+      const created = levelChanges().length;
+      const startLevel = session.thinkingLevel;
+      expect(startLevel).not.toBe('medium');
+
+      const sending = panel.sendMessage(FIRST, undefined, 'c1', { content: FIRST });
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      const stopped = panel.interrupt();
+      gate.shift()!();
+      expect(await sending).toBe('withdrawn');
+      await stopped;
+      expect(session.sessionManager.getBranch()).toEqual(before);
+      expect(session.thinkingLevel).toBe(startLevel);
+
+      expect(await panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND })).toBe('sent');
+      expect(levelChanges()).toHaveLength(created + 1);
+      const branch = session.sessionManager.getBranch();
+      expect(branch.indexOf(levelChanges().at(-1)!)).toBeLessThan(branch.findIndex((e) => e.type === 'message' && e.message.role === 'user'));
+      expect(session.thinkingLevel).toBe('medium');
+    });
+
+    it('a Stop drops what joined the start of the run it refuses, so the next run starts with its own prompt alone', async () => {
+      const EXTRA = 'from another extension';
+      const panel = panelSession([]);
       const { gate, extend } = holdingStart([FIRST]);
       const { session, contexts } = await boot(blockingShell().definition, replies(), extend);
       bindPanel(panel, session);
@@ -869,23 +925,46 @@ describe('the mid-run queue against pi', () => {
       const sending = panel.sendMessage(FIRST, undefined, 'c1', { content: FIRST });
       await vi.waitFor(() => expect(gate).toHaveLength(1));
       const stopped = panel.interrupt();
+      // pi counts the starting run as busy, so this joins it; pi keeps it queued when that run is refused.
+      await session.sendUserMessage(EXTRA, { deliverAs: 'followUp' });
+      expect([...session.getFollowUpMessages()]).toEqual([EXTRA]);
       gate.shift()!();
-      expect(await sending).toBe('sent');
+      expect(await sending).toBe('withdrawn');
       await stopped;
-      expect(session.isIdle).toBe(true);
-      expect(contexts).toHaveLength(0);
-      expect(userTexts(session)).toEqual([FIRST]);
-      expect(emitted.some((m) => m.type === 'interruptRecovery' || m.type === 'queueCancelled')).toBe(false);
-      expect(emitted).toContainEqual(expect.objectContaining({ type: 'userMessage', correlationId: 'c1', content: FIRST }));
-      expect(await panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND })).toBe('sent');
+      expect(session.pendingMessageCount).toBe(0);
 
+      expect(await panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND })).toBe('sent');
       expect(contexts).toHaveLength(1);
-      expect(contexts[0]?.at(-1)).toBe(`user: ${SECOND}`);
-      expect(userTexts(session)).toEqual([FIRST, SECOND]);
-      expect(session.isIdle).toBe(true);
+      expect(contexts.flat()).not.toContain(`user: ${EXTRA}`);
+      expect(userTexts(session)).toEqual([SECOND]);
     });
 
-    it("a send right after a Stop that caught a prompt in pi's input handlers waits for that prompt's stopped run, then runs", async () => {
+    it('a Stop refuses a message queued while the run it refuses was still starting, so the next send is delivered as itself, not as that batch', async () => {
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session, contexts } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      internals(panel).adapter.subscribe(session);
+      readyToSend(panel);
+
+      const sending = panel.sendMessage(FIRST, undefined, 'c1', { content: FIRST });
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      const stopped = panel.interrupt();
+      // A queued message the webview sent before the Stop reached it.
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('runEnded');
+      gate.shift()!();
+      expect(await sending).toBe('withdrawn');
+      await stopped;
+
+      expect(await panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND })).toBe('sent');
+      expect(contexts).toHaveLength(1);
+      expect(userTexts(session)).toEqual([SECOND]);
+      expect(emitted.filter((m) => m.type === 'queueBatchProcessed')).toEqual([]);
+      expect(session.sessionManager.getBranch().filter((e) => e.type === 'custom' && e.customType === DAMOCLES_MID_STREAM_ENTRY)).toEqual([]);
+    });
+
+    it("a send right after a Stop that caught a prompt in pi's input handlers waits for that prompt's refused run, then runs", async () => {
       const emitted: ExtensionToWebviewMessage[] = [];
       const panel = panelSession(emitted);
       const hooks: Array<() => void> = [];
@@ -906,12 +985,13 @@ describe('the mid-run queue against pi', () => {
       const second = panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND });
       hooks.shift()!();
 
-      expect(await first).toBe('sent');
+      expect(await first).toBe('withdrawn');
       expect(await second).toBe('sent');
       expect(contexts).toHaveLength(1);
       expect(contexts[0]?.at(-1)).toBe(`user: ${SECOND}`);
-      expect(userTexts(session)).toEqual([FIRST, SECOND]);
-      expect(emitted.some((m) => m.type === 'error' || m.type === 'interruptRecovery')).toBe(false);
+      expect(userTexts(session)).toEqual([SECOND]);
+      expect(emitted.some((m) => m.type === 'error')).toBe(false);
+      expect(emitted.filter((m) => m.type === 'interruptRecovery')).toEqual([{ type: 'interruptRecovery', correlationId: 'c1', promptContent: FIRST }]);
       expect(session.isIdle).toBe(true);
     });
 
@@ -1073,6 +1153,38 @@ describe('the mid-run queue against pi', () => {
       expect(notices(emitted)).toEqual([]);
     });
 
+    it('is recognised when pi appends a note for its image on delivery, never taken for the batch steered behind it', async () => {
+      const shell = blockingShell();
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const bound: { session?: AgentSession } = {};
+      const { tool, store } = wire(shell, () => bound.session, panel);
+      const { session } = await boot(tool, [callPowerShell, fauxAssistantMessage('Done.')]);
+      bound.session = session;
+      bindPanel(panel, session);
+      internals(panel).adapter.subscribe(session);
+      readyToSend(panel);
+      const folder = asDesignChat(panel);
+      // A model whose image limit the preview exceeds, so pi replaces the image with a note on delivery.
+      const model = session.model!;
+      session.agent.state.model = { ...model, inputLimits: { ...model.inputLimits, images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 50, jpegQuality: 80 } } } };
+
+      const run = panel.sendMessage(PROMPT, undefined, 'c0', { content: PROMPT });
+      await shell.started;
+      expect(await panel.sendDesignMarkup(PNG, MARKUP)).toEqual({ feedbackId: 'F1' });
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([markupText(1), QUEUED]));
+      store.cancel('call-1');
+      shell.release();
+      await run;
+
+      expect(userTexts(session)).toContain(`${markupText(1)}\n\n[Image omitted: could not be resized below the inline image size limit.]`);
+      const batches = emitted.filter((m) => m.type === 'queueBatchProcessed');
+      expect(batches.map((m) => m.messageIds)).toEqual([[chipOf(emitted, markupText(1))], ['q1']]);
+      expect(batches[0]).toMatchObject({ designMarkup: { feedbackId: 'F1', markup: VIEW } });
+      await vi.waitFor(() => expect(feedbackFiles(folder)).toEqual(['F1.json', 'F1.png']));
+    });
+
     /** Holds the screening of every message the panel queues (pi's input handlers on `interactive` input) until `release`; the first prompt passes. */
     function screeningHold(): { extend: (pi: ExtensionAPI) => void; release: () => void } {
       let release!: () => void;
@@ -1195,7 +1307,7 @@ describe('the mid-run queue against pi', () => {
       expect(notices(emitted)).toEqual([]);
     });
 
-    it("sends and stops a markup a Stop overtook in pi's hands when its run opens after the stopped run ended, with its files", async () => {
+    it("drops a markup a Stop overtook in pi's hands when pi would open its run after the stopped run ended: no file, its chip goes, and the user is told", async () => {
       let releaseSteer!: () => void;
       const steerHeld = new Promise<void>((resolve) => { releaseSteer = resolve; });
       let held!: () => void;
@@ -1221,14 +1333,16 @@ describe('the mid-run queue against pi', () => {
       expect(emitted.filter((m) => m.type === 'queueCancelled' || m.type === 'queueBatchProcessed')).toEqual([]);
 
       releaseSteer();
-      await vi.waitFor(() => expect(typedTexts(session)).toEqual([PROMPT, markupText(1)]));
+      await vi.waitFor(() => expect((panel as unknown as { designInPi: unknown }).designInPi).toBeNull());
       await session.waitForIdle();
-      // pi opened a run with it, which stopped at its start: a sent, stopped turn that reached no model, with its card and files
+      // pi would open a run with it, which is refused: nothing of it is written and it reached no model
+      expect(typedTexts(session)).toEqual([PROMPT]);
       expect(contexts.flat().some((line) => line.includes('Markup F1'))).toBe(false);
-      expect(emitted).toContainEqual(expect.objectContaining({ type: 'queueBatchProcessed', messageIds: [chipOf(emitted, markupText(1))], designMarkup: { feedbackId: 'F1', markup: VIEW } }));
-      expect(emitted.some((m) => m.type === 'queueCancelled')).toBe(false);
-      await vi.waitFor(() => expect(feedbackFiles(folder)).toEqual(['F1.json', 'F1.png']));
-      expect(notices(emitted)).toEqual([]);
+      expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: chipOf(emitted, markupText(1)) });
+      expect(emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
+      expect(notices(emitted)).toContain('The markup F1 was not sent: the chat stopped before it could run.');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(feedbackFiles(folder)).toEqual([]);
     });
 
     it('a Stop drops a steered markup: no file is written, its chip goes, and the user is told', async () => {
@@ -1343,8 +1457,7 @@ describe('the mid-run queue against pi', () => {
     expect(results[1]).not.toContain('The user sent a message while you waited');
   });
 
-  // A stopped run that opens with the batch still streams an aborted assistant message, whose start begins the batch's turn.
-  it('starts the checkpoint turn of a batch a Stop left to pi inside the run it opened, before any later prompt', async () => {
+  it('starts no checkpoint turn for a batch a Stop left to pi whose run is refused, and the next prompt starts its own', async () => {
     setCheckpointGitAvailability({ available: true });
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];
@@ -1404,12 +1517,12 @@ describe('the mid-run queue against pi', () => {
     await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
     await session.waitForIdle();
     await service.drain(2_000);
-    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
-    expect(turns).toEqual([[entryOf(PROMPT)], [entryOf(QUEUED)]]);
+    expect(userTexts(session)).toEqual([PROMPT]);
+    expect(turns).toEqual([[entryOf(PROMPT)]]);
 
     expect(await panel.sendMessage('Start over.', undefined, 'c1', { content: 'Start over.' })).toBe('sent');
     await service.drain(2_000);
-    expect(turns).toEqual([[entryOf(PROMPT)], [entryOf(QUEUED)], [entryOf('Start over.')]]);
+    expect(turns).toEqual([[entryOf(PROMPT)], [entryOf('Start over.')]]);
   });
 
   it('names each prompt by its own user entry, not the one before it', async () => {

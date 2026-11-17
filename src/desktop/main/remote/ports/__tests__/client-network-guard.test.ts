@@ -1,3 +1,4 @@
+import { promises as dns } from 'node:dns';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ protocol: {} }));
@@ -91,9 +92,11 @@ describe('a served root in the client network policy', () => {
     const project: Project = { key: 'ssh+host-1|/srv/app', fsPath: '/srv/app', name: 'app' };
     const served = new ServedRoots({
       projectOfView: (authority, viewId) => (authority === AUTHORITY && viewId === 'v1' ? project : undefined),
+      chatView: (authority, viewId) => authority === AUTHORITY && viewId === 'v1',
       projects: () => [project],
-      files: () => ({ readFileRange: async () => ({ ok: false, reason: 'missing' }) }),
+      files: () => ({ readFileRange: async () => ({ ok: false, reason: 'missing' }), confineExisting: async () => ({ ok: false, reason: 'missing' }) }),
       isTrusted: () => false,
+      localDesignFolder: (designId) => `/home/u/.damocles/designs/${designId}`,
       designRead: async () => undefined,
       refusalText: () => 'Open this preview from Damocles.',
       log: () => undefined,
@@ -119,11 +122,24 @@ describe('a served root in the client network policy', () => {
       // published before the grant resolved, so the proxy has it before the browser navigates
       expect(order).toEqual(['changed', 'resolved']);
       expect(published.at(-1)).toEqual({ authority: AUTHORITY, allowedPorts: [port], allowLocalNetwork: false });
-      expect(await checkClientNavigation(`${grant.origin}/index.html`, policyOf(AUTHORITY), resolver)).toEqual({ allowed: true });
-      expect(await checkClientNavigation(`${grant.origin}/index.html`, policyOf('ssh+host-2'), resolver)).toMatchObject({ allowed: false });
+      // the grant's host resolves to loopback as Chrome resolves it, with no OS lookup, which would answer nothing on Windows
+      const lookup = vi.spyOn(dns, 'lookup');
+      expect(new URL(grant.origin).hostname).toMatch(/^[0-9a-f]{32}.localhost$/);
+      expect(await checkClientNavigation(`${grant.origin}/index.html`, policyOf(AUTHORITY))).toEqual({ allowed: true });
+      expect(await checkClientNavigation(`${grant.origin}/index.html`, policyOf('ssh+host-2'))).toMatchObject({ allowed: false });
+      expect(await checkClientNavigation(`http://${new URL(grant.origin).hostname}.:${port}/`, policyOf('ssh+host-2'))).toMatchObject({ allowed: false });
+      expect(lookup).not.toHaveBeenCalled();
+      lookup.mockRestore();
       served.release('v1');
       expect(policyOf(AUTHORITY).allowedPorts).toEqual([]);
       expect(published.at(-1)).toEqual({ authority: AUTHORITY, allowedPorts: [], allowLocalNetwork: false });
+      // a folder the chat was granted on that host enters only that authority's policy, and leaves it with the view
+      const folder = await served.grant({ authority: AUTHORITY, root: { kind: 'folder', folder: '/srv/reports' }, viewId: 'v1' });
+      if ('refused' in folder) throw new Error(folder.refused);
+      expect(policyOf(AUTHORITY).allowedPorts).toEqual([Number(new URL(folder.origin).port)]);
+      expect(policyOf('ssh+host-2').allowedPorts).toEqual([]);
+      served.release('v1');
+      expect(policyOf(AUTHORITY).allowedPorts).toEqual([]);
     } finally {
       served.dispose();
       ports.dispose();

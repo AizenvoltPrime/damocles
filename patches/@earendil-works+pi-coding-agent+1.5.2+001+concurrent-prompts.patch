@@ -1,0 +1,84 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
+index 8b6a584..5c7609a 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts
+@@ -607,6 +607,8 @@ export declare class AgentSession {
+     followUp(text: string, images?: ImageContent[], options?: {
+         source?: InputSource;
+     }): Promise<QueuedInputDisposition>;
++    /** Queue a prepared prompt into the active run via steer() or followUp(), per its streamingBehavior. */
++    private _queueIntoActiveRun;
+     /**
+      * Internal: Queue a steering message (already expanded, no extension command check).
+      */
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+index d67feeb..0aa9e8a 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js
+@@ -1713,7 +1713,7 @@ export class AgentSession {
+             throw new Error("Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.");
+         }
+         // Reserve the context through async input hooks and auth checks so tree navigation cannot
+-        // start meanwhile (#9154). _startRun marks the run active synchronously, so there is no gap.
++        // start meanwhile (#9154).
+         this._promptPreflightCount++;
+         let trigger;
+         try {
+@@ -1722,8 +1722,15 @@ export class AgentSession {
+         finally {
+             this._promptPreflightCount--;
+         }
+-        if (trigger)
+-            await this._startRun(trigger, () => preflightResult?.("started"));
++        if (!trigger)
++            return;
++        // Another prompt may have started a run while this one awaited. This check and _startRun's
++        // synchronous start share one tick, so prompts reaching an idle session together start one run.
++        if (this.isStreaming) {
++            await this._queueIntoActiveRun(trigger.prompt, trigger.images, options);
++            return;
++        }
++        await this._startRun(trigger, () => preflightResult?.("started"));
+     }
+     /**
+      * Run input hooks, expand templates, queue while streaming, and validate model and auth.
+@@ -1745,18 +1752,8 @@ export class AgentSession {
+             expandedText = this._expandSkillCommand(expandedText);
+             expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+         }
+-        // If streaming, queue via steer() or followUp() based on option
+         if (this.isStreaming) {
+-            if (!options?.streamingBehavior) {
+-                throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
+-            }
+-            if (options.streamingBehavior === "followUp") {
+-                await this._queueFollowUp(expandedText, currentImages);
+-            }
+-            else {
+-                await this._queueSteer(expandedText, currentImages);
+-            }
+-            preflightResult?.("queued");
++            await this._queueIntoActiveRun(expandedText, currentImages, options);
+             return undefined;
+         }
+         // Validate model
+@@ -1873,6 +1870,19 @@ export class AgentSession {
+     async followUp(text, images, options) {
+         return this._queueUserInput(text, images, "followUp", options?.source ?? "interactive");
+     }
++    /** Queue a prepared prompt into the active run via steer() or followUp(), per its streamingBehavior. */
++    async _queueIntoActiveRun(text, images, options) {
++        if (!options?.streamingBehavior) {
++            throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
++        }
++        if (options.streamingBehavior === "followUp") {
++            await this._queueFollowUp(text, images);
++        }
++        else {
++            await this._queueSteer(text, images);
++        }
++        options.preflightResult?.("queued");
++    }
+     /**
+      * Internal: Queue a steering message (already expanded, no extension command check).
+      */

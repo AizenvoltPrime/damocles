@@ -8,18 +8,29 @@ import type { HistoryToolCall } from '@shared/types/content';
 
 // Hermetic fixtures for driving loadPiSessionHistory without the real pi runtime. Agent files are real
 // JSONL under a temp session dir, parsed by pi's own `parseSessionEntries`.
-const hoisted = vi.hoisted(() => ({ branch: [] as unknown[], sessionDir: '/fake/dir', entries: null as unknown[] | null, headerTimestamp: undefined as string | undefined }));
+const hoisted = vi.hoisted(() => ({
+  branch: [] as unknown[],
+  sessionDir: '/fake/dir',
+  entries: null as unknown[] | null,
+  headerTimestamp: undefined as string | undefined,
+  // Runs as the file is read, with the read's signal.
+  reading: undefined as ((signal: AbortSignal | undefined) => void) | undefined,
+}));
 vi.mock('../../pi-loader', async () => {
   const real = await import('@earendil-works/pi-coding-agent');
   return {
     initPiLoader: vi.fn(async () => ({
       SessionManager: {
-        open: () => ({
-          getLeafId: () => 'leaf',
-          getBranch: () => hoisted.branch,
-          getEntries: () => hoisted.entries ?? hoisted.branch,
-          getHeader: () => (hoisted.headerTimestamp ? { timestamp: hoisted.headerTimestamp } : null),
-        }),
+        openAsync: async (_file: string, _dir: string, _cwd: string | undefined, options?: { signal?: AbortSignal }) => {
+          hoisted.reading?.(options?.signal);
+          options?.signal?.throwIfAborted();
+          return {
+            getLeafId: () => 'leaf',
+            getBranch: () => hoisted.branch,
+            getEntries: () => hoisted.entries ?? hoisted.branch,
+            getHeader: () => (hoisted.headerTimestamp ? { timestamp: hoisted.headerTimestamp } : null),
+          };
+        },
       },
       parseSessionEntries: real.parseSessionEntries,
     })),
@@ -39,6 +50,7 @@ import { resolvePiSessionFile } from '../reading';
 import { getCheckpointEntries } from '../../checkpoints';
 import { getCheckpointEntries as realGetCheckpointEntries } from '../../checkpoints/checkpoint-entry';
 import { readAgentFile } from '../../agent-records';
+import { log } from '../../../logger';
 import { storedTypedText } from '../prompt-context';
 import { inGreek } from '../../../../__mocks__/greek-locale';
 import { englishText, type LocalizedText } from '../../../../shared/localized-text';
@@ -707,7 +719,7 @@ describe('loadPiSessionHistory — rewindable ids', () => {
     expect(posts.map((m) => m.type)).toEqual(['sessionCleared', 'userReplay']);
   });
 
-  it('a replay superseded while it resolved the file posts no error and no done', async () => {
+  it('a replay superseded while it resolved the file rejects with the abort and posts no error and no done', async () => {
     const controller = new AbortController();
     vi.mocked(resolvePiSessionFile).mockImplementationOnce(async () => {
       controller.abort();
@@ -715,8 +727,29 @@ describe('loadPiSessionHistory — rewindable ids', () => {
     });
     const posts: ExtensionToWebviewMessage[] = [];
 
-    expect(await loadPiSessionHistory('/cwd', 'sess-old', (m) => posts.push(m), controller.signal)).toBeNull();
+    await expect(loadPiSessionHistory('/cwd', 'sess-old', (m) => posts.push(m), controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(posts.map((m) => m.type)).toEqual(['sessionCleared']);
+  });
+
+  it('a replay superseded while it reads the file stops the read, rejects with the abort and posts no error and no done', async () => {
+    hoisted.branch = [userMsg('u1', 'one'), assistantMsg('a1', 'r1')];
+    vi.mocked(log).mockClear();
+    const controller = new AbortController();
+    let read: AbortSignal | undefined;
+    hoisted.reading = (signal) => {
+      read = signal;
+      controller.abort();
+    };
+    const posts: ExtensionToWebviewMessage[] = [];
+    try {
+      await expect(loadPiSessionHistory('/cwd', 'sess-read', (m) => posts.push(m), controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      hoisted.reading = undefined;
+    }
+
+    expect(read?.aborted).toBe(true);
+    expect(posts.map((m) => m.type)).toEqual(['sessionCleared']);
+    expect(vi.mocked(log).mock.calls.some(([format]) => String(format).includes('failed'))).toBe(false);
   });
 
   it('resolves to null when the session file is missing', async () => {
@@ -1175,6 +1208,26 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     const [tool] = await replayedAgentTools();
     expect(tool).toMatchObject({ sdkAgentId: 'agent-2', agentStatus: 'error', agentResultText: 'Model x is not signed in.' });
     expect(tool!.agentMessages).toBeUndefined();
+  });
+
+  it('a background agent a rejected call stopped replays with the stop reason its injection records', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'test in the background'),
+      agentCall('a1', 'tc6', true),
+      invocation('agent-6', 'tc6'),
+      agentResult('tc6', '{"status":"async_launched","agentId":"agent-6"}', { agentId: 'agent-6', status: 'async_launched' }),
+      {
+        id: 'inj',
+        type: 'custom_message',
+        customType: 'damocles-subagent-results',
+        content: 'The background subagent you launched has finished.',
+        display: false,
+        details: { agents: [{ agentId: 'agent-6', toolCallId: 'tc6', status: 'stopped', stopReason: 'denied', result: 'half (STOPPED: rejected)' }] },
+      } as unknown as SessionEntry,
+    ];
+
+    const [tool] = await replayedAgentTools();
+    expect(tool).toMatchObject({ sdkAgentId: 'agent-6', agentStatus: 'stopped', agentStopReason: 'denied', agentResultText: 'half (STOPPED: rejected)' });
   });
 
   it('an agent killed before any status was recorded replays as interrupted', async () => {

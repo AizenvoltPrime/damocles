@@ -73,6 +73,7 @@ describe('migrateLegacyModelValue', () => {
     expect(migrateLegacyModelValue('gpt-5.2')).toBe('gpt-6-luna');
     expect(migrateLegacyModelValue('gpt-5.6-sol')).toBe('gpt-6.1-sol');
     expect(migrateLegacyModelValue('gpt-5.6-luna')).toBe('gpt-6-luna');
+    expect(migrateLegacyModelValue('gpt-5.6-terra')).toBe('gpt-6.1-terra');
     expect(migrateLegacyModelValue('gpt-6-sol')).toBe('gpt-6.1-sol');
   });
 
@@ -85,7 +86,8 @@ describe('migrateLegacyModelValue', () => {
   });
 
   it('maps every retired Anthropic id to its successor', () => {
-    expect(migrateLegacyModelValue('claude-fable-5')).toBe('claude-fable-5-1');
+    expect(migrateLegacyModelValue('claude-fable-5')).toBe('claude-fable-5-2');
+    expect(migrateLegacyModelValue('claude-fable-5-1')).toBe('claude-fable-5-2');
     expect(migrateLegacyModelValue('claude-opus-5')).toBe('claude-opus-5-5');
     expect(migrateLegacyModelValue('claude-opus-4-8')).toBe('claude-opus-5-5');
     expect(migrateLegacyModelValue('claude-sonnet-5')).toBe('claude-sonnet-5-5');
@@ -97,16 +99,15 @@ describe('migrateLegacyModelValue', () => {
     expect(migrateLegacyModelValue('step-3.7-flash')).toBe('step-5-preview');
   });
 
-  it('covers exactly the fifteen retired ids and nothing else', () => {
+  it('covers exactly the seventeen retired ids and nothing else', () => {
     expect(Object.keys(LEGACY_MODEL_MAP).sort()).toEqual(
-      ['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'deepseek-v4-flash', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-sol', 'step-3.7-flash'],
+      ['claude-fable-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'deepseek-v4-flash', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-sol', 'step-3.7-flash'],
     );
   });
 
   it('is identity for non-legacy values (new ids, Anthropic, empty string)', () => {
     expect(migrateLegacyModelValue('gpt-6.1-sol')).toBe('gpt-6.1-sol');
-    // No GPT-6 Terra exists and Terra is deliberately left unmapped.
-    expect(migrateLegacyModelValue('gpt-5.6-terra')).toBe('gpt-5.6-terra');
+    expect(migrateLegacyModelValue('gpt-6.1-terra')).toBe('gpt-6.1-terra');
     expect(migrateLegacyModelValue('gpt-6-luna')).toBe('gpt-6-luna');
     expect(migrateLegacyModelValue('claude-opus-5-5')).toBe('claude-opus-5-5');
     expect(migrateLegacyModelValue('')).toBe('');
@@ -197,13 +198,13 @@ describe('migrateLegacyModelSetting — damocles.team.*Model rewrite', () => {
     ]);
   });
 
-  // Terra has no successor, so the stored value stays for the user to replace.
+  // A model of the user's own provider is no retired id, so the stored value stays.
   it('leaves current, unset and unmapped team role models untouched', async () => {
     const { settings, updates } = stub({
       team: {
         'team.leadModel': { global: 'gpt-6.1-sol' },
         'team.implementorModel': { global: '' },
-        'team.reviewerModel': { global: 'gpt-5.6-terra' },
+        'team.reviewerModel': { global: 'qwen3-coder-next' },
       },
     });
     await migrateLegacyModelSetting(settings);
@@ -440,39 +441,39 @@ describe('migrateLegacyModelSetting — DeepSeek effort-value migration (xhigh �
   });
 });
 
-describe('migrateLegacyModelSetting: Fable 5 to Fable 5.1', () => {
+describe('migrateLegacyModelSetting: Fable 5 and Fable 5.1 to Fable 5.2', () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it('rewrites a stored damocles.model of claude-fable-5 to claude-fable-5-1', async () => {
-    const { settings, updates } = stub({ model: { global: 'claude-fable-5' } });
+  it.each(['claude-fable-5', 'claude-fable-5-1'])('rewrites a stored damocles.model of %s to claude-fable-5-2', async (retired) => {
+    const { settings, updates } = stub({ model: { global: retired } });
     await migrateLegacyModelSetting(settings);
 
     expect(updates.filter((u) => u.key === 'model')).toEqual([
-      { key: 'model', value: 'claude-fable-5-1', target: G },
+      { key: 'model', value: 'claude-fable-5-2', target: G },
     ]);
   });
 
-  it('re-keys the effortByModel entry to claude-fable-5-1 with its value intact', async () => {
+  it.each(['claude-fable-5', 'claude-fable-5-1'])('re-keys the %s effortByModel entry to claude-fable-5-2 with its value intact', async (retired) => {
     const { settings, updates } = stub({
-      model: { global: 'claude-fable-5' },
-      effortByModel: { global: { 'claude-fable-5': 'high' } },
+      model: { global: retired },
+      effortByModel: { global: { [retired]: 'high' } },
     });
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
     expect(effortUpdate?.target).toBe(G);
-    expect(effortUpdate?.value).toEqual({ 'claude-fable-5-1': 'high' });
-    expect(effortUpdate?.value).not.toHaveProperty('claude-fable-5');
+    expect(effortUpdate?.value).toEqual({ 'claude-fable-5-2': 'high' });
+    expect(effortUpdate?.value).not.toHaveProperty(retired);
   });
 
   it('carries a stored ultracode through the clamp unchanged', async () => {
-    // Fable 5.1 advertises the same six levels as Fable 5, so nothing needs a value rename.
-    const { settings, updates } = stub({ effortByModel: { global: { 'claude-fable-5': 'ultracode' } } });
+    // Fable 5.2 advertises the same six levels as Fable 5 and 5.1, so nothing needs a value rename.
+    const { settings, updates } = stub({ effortByModel: { global: { 'claude-fable-5-1': 'ultracode' } } });
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
-    expect(effortUpdate?.value).toEqual({ 'claude-fable-5-1': 'ultracode' });
+    expect(effortUpdate?.value).toEqual({ 'claude-fable-5-2': 'ultracode' });
   });
 
   it('carries a stored xhigh through the clamp unchanged', async () => {
@@ -480,13 +481,13 @@ describe('migrateLegacyModelSetting: Fable 5 to Fable 5.1', () => {
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
-    expect(effortUpdate?.value).toEqual({ 'claude-fable-5-1': 'xhigh' });
+    expect(effortUpdate?.value).toEqual({ 'claude-fable-5-2': 'xhigh' });
   });
 
-  it('leaves an already-migrated claude-fable-5-1 entry alone, with no writes at all', async () => {
+  it('leaves an already-migrated claude-fable-5-2 entry alone, with no writes at all', async () => {
     const { settings, updates } = stub({
-      model: { global: 'claude-fable-5-1' },
-      effortByModel: { global: { 'claude-fable-5-1': 'ultracode' } },
+      model: { global: 'claude-fable-5-2' },
+      effortByModel: { global: { 'claude-fable-5-2': 'ultracode' } },
     });
     await migrateLegacyModelSetting(settings);
 

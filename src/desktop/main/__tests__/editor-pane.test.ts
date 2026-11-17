@@ -18,12 +18,19 @@ import { projectKeyOf } from '../../../shared/project-location';
 import { englishText, LocalizedError } from '../../../shared/localized-text';
 import { visibleText } from '../../../shared/visible-text';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import { worktreeFolderFor } from '../../../core/worktrees/records';
+import { localRecord, remoteChatRecord, WorktreeRecords } from '../worktrees/records';
+import { WorktreeRoots } from '../worktrees/roots';
 
 let root: string;
 let projectDir: string;
 let project: Project;
 // every root the documents and the pane name files in
 let roots: Project[];
+// what the documents and the pane read as the roots: `roots`, or main's WorktreeRoots
+let rootsOf: () => readonly Project[];
+// whether a root key waits on a registry its core has not published yet
+let awaitsRegistry: (key: string) => boolean;
 let platform: FakePlatform;
 let documents: DocumentService;
 let pane: EditorPane;
@@ -64,6 +71,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
   project = { key: folderKey(projectDir), fsPath: projectDir, name: 'proj' };
   roots = [project];
+  rootsOf = () => roots;
+  awaitsRegistry = () => false;
   platform = createFakePlatform();
   events = [];
   asked = [];
@@ -101,7 +110,7 @@ beforeEach(() => {
     warn: (message) => warnings.push(message),
     reopen: (document) => pane.showHeld(document),
     authorityOs: (authority) => (authority === 'loopback' ? hostOs : process.platform),
-    projects: () => roots,
+    projects: () => rootsOf(),
     workspaces: testWorkspaces({
       watchers: platform.fileWatchers,
       remote: (authorityKey) => {
@@ -146,7 +155,8 @@ beforeEach(() => {
     showPane: () => events.push('showPane'),
     hidePane: () => events.push('hidePane'),
     showPaneBeside: () => events.push('showPaneBeside'),
-    projects: () => roots,
+    projects: () => rootsOf(),
+    awaitsRegistry: (key) => awaitsRegistry(key),
     copy: async (text) => { events.push(`copy:${text}`); },
     reveal: async (target) => {
       if (revealError) throw revealError;
@@ -683,6 +693,169 @@ describe('restoring a backup whose file cannot be reopened as it was', () => {
     const tabs = pane.state().tabs;
     expect(tabs.map((tab) => [tab.kind, textOf(tab.id).text, textOf(tab.id).backupId])).toEqual([['code', 'first', first.backupId], ['untitled', 'second', second.backupId]]);
     expect(removedOf([first, second])).toEqual([]);
+  });
+});
+
+describe('restoring a chat worktree\'s tabs before its core published the registry', () => {
+  const ID = 'abcd1234';
+  let records: WorktreeRecords;
+  let worktreeDir: string;
+  let worktreeKey: string;
+  let registriesRead: Promise<void> | undefined;
+  const chatRecord = (overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+    ({ id: ID, kind: 'chat', projectPath: projectDir, repositoryRoot: projectDir, worktreeRoot: worktreeDir, workingFolder: worktreeDir, branch: 'damocles/fix', index: 1, baseCommit: 'a'.repeat(40), createdAt: 1, ...overrides });
+  const backup = (id: string, projectKey: string, relativePath: string, text: string): BackupRecord =>
+    ({ backupId: `${id}f8fad5b-d9cb-469f-a165-70867728950e`, name: path.posix.basename(relativePath), languageId: 'typescript', encoding: 'utf8', bom: false, eol: '\n', text, target: { kind: 'project', projectKey, relativePath } });
+  // core publishes its registry, and main's worktreesChanged follows the change
+  const published = async (raw: readonly unknown[]): Promise<void> => {
+    records.apply(raw);
+    await registriesRead;
+  };
+  const titles = (): string[] => pane.state().tabs.map((tab) => tab.title);
+  const persistedNow = async (): Promise<PersistedEditor | undefined> => {
+    await new Promise((resolve) => setImmediate(resolve));
+    return persisted;
+  };
+
+  beforeEach(() => {
+    const registryDir = path.join(root, 'worktrees');
+    worktreeDir = worktreeFolderFor(registryDir, projectDir, ID);
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    fs.writeFileSync(path.join(worktreeDir, 'b.ts'), 'in the worktree');
+    fs.writeFileSync(path.join(worktreeDir, 'index.html'), '<p>hi</p>');
+    worktreeKey = rootKey({ projectKey: project.key, worktreeId: ID });
+    records = new WorktreeRecords(localRecord(registryDir), (line) => paneLog.push(line));
+    const worktreeRoots = new WorktreeRoots({ projects: () => roots, registry: (authority) => (authority === 'local' ? records : undefined), osOf: () => process.platform });
+    rootsOf = () => worktreeRoots.all();
+    awaitsRegistry = (key) => worktreeRoots.awaitsRegistry(key);
+    registriesRead = undefined;
+    records.onDidChange(() => {
+      registriesRead = pane.registriesChanged();
+    });
+  });
+
+  it('brings a saved tab of a live worktree back in its saved place, active as saved, and keeps it in the layout meanwhile', async () => {
+    write('a.ts', 'a');
+    write('c.ts', 'c');
+    const saved: PersistedEditor = {
+      tabs: [
+        { kind: 'code', file: { projectKey: project.key, relativePath: 'a.ts' } },
+        { kind: 'code', file: { projectKey: worktreeKey, relativePath: 'b.ts' } },
+        { kind: 'htmlPreview', file: { projectKey: worktreeKey, relativePath: 'index.html' } },
+        { kind: 'code', file: { projectKey: project.key, relativePath: 'c.ts' } },
+      ],
+      active: 1,
+      recent: [],
+    };
+    await pane.restore(saved, []);
+    expect(titles()).toEqual(['a.ts', 'c.ts']);
+    expect(paneLog.filter((line) => line.includes('dropping'))).toEqual([]);
+    await pane.tabAction('close', pane.state().tabs[0]!.id);
+    // a quit before core published keeps them in their saved place
+    expect(await persistedNow()).toEqual({ tabs: saved.tabs.slice(1), active: 0, recent: [] });
+
+    await published([chatRecord()]);
+    expect(titles()).toEqual(['b.ts', 'Preview index.html', 'c.ts']);
+    const state = pane.state();
+    expect(state.activeTabId).toBe(state.tabs[0]!.id);
+    expect(textOf(state.tabs[0]!.id).text).toBe('in the worktree');
+    expect(state.tabs[0]!.projectKey).toBe(worktreeKey);
+    expect(paneLog.filter((line) => line.includes('dropping'))).toEqual([]);
+  });
+
+  it('drops a saved tab of a worktree the registry no longer holds as live, and logs it, once core published it, an empty registry included', async () => {
+    write('a.ts', 'a');
+    await pane.restore({
+      tabs: [{ kind: 'code', file: { projectKey: project.key, relativePath: 'a.ts' } }, { kind: 'code', file: { projectKey: worktreeKey, relativePath: 'b.ts' } }, { kind: 'htmlPreview', file: { projectKey: worktreeKey, relativePath: 'index.html' } }],
+      active: 1,
+      recent: [],
+    }, []);
+    expect(paneLog.filter((line) => line.includes('dropping'))).toEqual([]);
+    await published([]);
+    expect(titles()).toEqual(['a.ts']);
+    expect(paneLog.filter((line) => line.includes('dropping a saved'))).toHaveLength(2);
+    expect((await persistedNow())?.tabs).toEqual([{ kind: 'code', file: { projectKey: project.key, relativePath: 'a.ts' } }]);
+  });
+
+  it('restores a worktree file\'s backup into its tab once core published it, and a deleted worktree\'s as an untitled buffer that says why', async () => {
+    const live = backup('0', worktreeKey, 'b.ts', 'unsaved in the worktree');
+    const deleted = backup('1', rootKey({ projectKey: project.key, worktreeId: 'bbbbbbbb' }), 'x.ts', 'unsaved in a deleted worktree');
+    await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: worktreeKey, relativePath: 'b.ts' }, backupId: live.backupId }], active: 0, recent: [] }, [live, deleted]);
+    expect(titles()).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect((await persistedNow())?.tabs).toEqual([{ kind: 'code', file: { projectKey: worktreeKey, relativePath: 'b.ts' }, backupId: live.backupId }]);
+
+    await published([chatRecord(), chatRecord({ id: 'bbbbbbbb', worktreeRoot: worktreeFolderFor(path.join(root, 'worktrees'), projectDir, 'bbbbbbbb'), workingFolder: worktreeFolderFor(path.join(root, 'worktrees'), projectDir, 'bbbbbbbb'), deletedAt: 5 })]);
+    const tabs = pane.state().tabs;
+    expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['code', 'b.ts', true], ['untitled', 'x.ts', true]]);
+    expect(tabs.map((tab) => textOf(tab.id).text)).toEqual(['unsaved in the worktree', 'unsaved in a deleted worktree']);
+    expect(textOf(tabs[0]!.id).backupId).toBe(live.backupId);
+    expect(warnings).toEqual(['The unsaved changes to x.ts are in an untitled editor: Its worktree no longer exists.']);
+  });
+
+  it('keeps a tab and backup of a worktree whose project is moving waiting until main applies the move, then under the new key', async () => {
+    const live = backup('0', worktreeKey, 'b.ts', 'unsaved in the worktree');
+    await pane.restore({
+      tabs: [{ kind: 'code', file: { projectKey: worktreeKey, relativePath: 'b.ts' }, backupId: live.backupId }, { kind: 'htmlPreview', file: { projectKey: worktreeKey, relativePath: 'index.html' } }],
+      active: 0,
+      recent: [],
+    }, [live]);
+    const movedDir = path.join(root, 'moved');
+    fs.mkdirSync(movedDir);
+    const moved: Project = { key: folderKey(movedDir), fsPath: movedDir, name: 'moved' };
+    const movedKey = rootKey({ projectKey: moved.key, worktreeId: ID });
+
+    // core moved the worktree's project before main lists the new folder
+    await published([chatRecord({ projectPath: movedDir, repositoryRoot: movedDir, namedFor: projectDir })]);
+    expect(titles()).toEqual([]);
+    expect(paneLog.filter((line) => line.includes('dropping'))).toEqual([]);
+    pane.relocateRoot(worktreeKey, movedKey);
+    roots = [moved];
+    expect((await persistedNow())?.tabs).toEqual([{ kind: 'code', file: { projectKey: movedKey, relativePath: 'b.ts' }, backupId: live.backupId }, { kind: 'htmlPreview', file: { projectKey: movedKey, relativePath: 'index.html' } }]);
+    // the list change reaches the pane through worktreesChanged
+    await pane.registriesChanged();
+
+    const tabs = pane.state().tabs;
+    expect(tabs.map((tab) => [tab.kind, tab.title, tab.projectKey, tab.dirty])).toEqual([['code', 'b.ts', movedKey, true], ['htmlPreview', 'Preview index.html', movedKey, false]]);
+    expect(textOf(tabs[0]!.id).text).toBe('unsaved in the worktree');
+    expect(warnings).toEqual([]);
+  });
+
+  it('waits on a remote host\'s registry the same way until that host\'s core published it', async () => {
+    const remoteKey = projectKeyOf({ kind: 'loopback' }, folderKey(projectDir));
+    const remoteWorktreeKey = rootKey({ projectKey: remoteKey, worktreeId: ID });
+    // the host's registry, which main reads only once the host's core attached
+    const host: { records?: WorktreeRecords } = {};
+    const hostRoots = new WorktreeRoots({
+      projects: () => [project, { key: remoteKey, fsPath: projectDir, name: 'proj' }],
+      registry: (authority) => (authority === 'local' ? records : host.records),
+      osOf: () => process.platform,
+    });
+    rootsOf = () => hostRoots.all();
+    awaitsRegistry = (key) => hostRoots.awaitsRegistry(key);
+    await published([]);
+    await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: remoteWorktreeKey, relativePath: 'b.ts' } }], active: 0, recent: [] }, []);
+    expect(titles()).toEqual([]);
+    expect(paneLog.filter((line) => line.includes('dropping'))).toEqual([]);
+
+    const hostRecords = new WorktreeRecords(remoteChatRecord(() => [projectDir], () => process.platform), (line) => paneLog.push(line), () => process.platform);
+    host.records = hostRecords;
+    hostRecords.onDidChange(() => {
+      registriesRead = pane.registriesChanged();
+    });
+    hostRecords.apply([chatRecord()]);
+    await registriesRead;
+    expect(titles()).toEqual(['b.ts']);
+    expect(pane.state().tabs[0]!.projectKey).toBe(remoteWorktreeKey);
+    expect(textOf(pane.state().tabs[0]!.id).text).toBe('in the worktree');
+  });
+
+  it('restores at once once the registry is known, and a restarted core\'s first publication keeps it known', async () => {
+    await published([chatRecord()]);
+    // a restarted core publishes its registry again before main restores anything more
+    records.apply([chatRecord()]);
+    await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: worktreeKey, relativePath: 'b.ts' } }], active: 0, recent: [] }, []);
+    expect(titles()).toEqual(['b.ts']);
   });
 });
 
@@ -1394,6 +1567,43 @@ describe('Search Editor tabs', () => {
       ['Search: q', 'saved', undefined, project.key],
       ['Search: backed', 'backed', undefined, undefined],
     ]);
+  });
+});
+
+describe('a chat worktree root whose project moved', () => {
+  it('names the new root key on its tabs, unsaved text, saved layout and recent files, keeping each tab and document, and a second call changes nothing', async () => {
+    const oldRoot = rootKey({ projectKey: project.key, worktreeId: 'abcd1234' });
+    const newRoot = rootKey({ projectKey: folderKey(path.join(root, 'moved')), worktreeId: 'abcd1234' });
+    // the worktree's folder stays where it is: only its root key changes with its project's
+    roots = [project, { key: oldRoot, fsPath: projectDir, name: 'proj' }];
+    write('b.ts', 'worktree copy');
+    write('a.ts', 'project copy');
+    const inWorktree = await pane.openFromUser(oldRoot, 'b.ts');
+    const inProject = await pane.openFromUser(project.key, 'a.ts');
+    if (!inWorktree.ok || !inProject.ok) throw new Error('not opened');
+    const document = textOf(inWorktree.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'unsaved', overReload: false });
+    roots = [project, { key: newRoot, fsPath: projectDir, name: 'proj' }];
+
+    pane.relocateRoot(oldRoot, newRoot);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pane.state().tabs.map((tab) => [tab.id, tab.projectKey, tab.relativePath, tab.dirty])).toEqual([
+      [inWorktree.tabId, newRoot, 'b.ts', true],
+      [inProject.tabId, project.key, 'a.ts', false],
+    ]);
+    expect(textOf(inWorktree.tabId)).toBe(document);
+    expect(document.text).toBe('unsaved');
+    expect(persisted?.tabs.map((tab) => ('file' in tab ? tab.file.projectKey : undefined))).toEqual([newRoot, project.key]);
+    expect(pane.recentFiles()).toEqual([{ projectKey: project.key, relativePath: 'a.ts' }, { projectKey: newRoot, relativePath: 'b.ts' }]);
+    expect(pane.closeRoot(oldRoot, new Map())).toBe(true);
+    expect(pane.state().tabs).toHaveLength(2);
+
+    const saved = persisted;
+    states.length = 0;
+    pane.relocateRoot(oldRoot, newRoot);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(states).toEqual([]);
+    expect(persisted).toBe(saved);
   });
 });
 

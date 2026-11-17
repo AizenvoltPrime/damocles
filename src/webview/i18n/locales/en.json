@@ -267,11 +267,13 @@
       "classifier": {
         "typesafe": "Jev (TypeSafe)",
         "openrouter": "Jev (OpenRouter)",
-        "openai": "GPT-6 Luna (Decisions API)"
+        "openai": "GPT-6 Luna (Decisions API)",
+        "github-copilot": "Microsoft-Decision-1 (GitHub Copilot)"
       },
       "unavailable": {
         "no-key": "No key saved",
-        "chatgpt-active": "Needs the OpenAI API key, not ChatGPT"
+        "chatgpt-active": "Needs the OpenAI API key, not ChatGPT",
+        "signed-out": "Sign in to GitHub Copilot"
       }
     },
     "imageGeneration": {
@@ -532,10 +534,12 @@
     "requiresAction": "Waiting for your answer",
     "retrying": "Provider error, retrying ({attempt}/{max})...",
     "windDown": {
-      "run": "Stopping: waiting for the run's tool calls and event handlers to end.",
-      "handlers": "Stopping: waiting for pi's {events} handlers to return. pi gives them no abort signal.",
-      "loaded": "pi extensions loaded: {extensions}.",
-      "withHandler": "pi extensions with such a handler: {extensions}."
+      "hook": "Stopping: waiting for the end-of-turn hook {hook} ({scope}) to finish.",
+      "userHooks": "user hooks",
+      "projectHooks": "project hooks",
+      "extension": "Stopping: waiting for the end-of-turn step of the extension {extension}.",
+      "run": "Stopping: waiting for running tools to finish.",
+      "finishing": "Stopping: finishing the turn."
     }
   },
   "subagent": {
@@ -1465,7 +1469,9 @@
     "steered": "Steered",
     "resuming": "Resuming {id}",
     "resumed": "Resumed",
-    "queued": "Waiting for a free slot (Subagents at once)"
+    "queued": "Waiting for a free slot (Subagents at once)",
+    "stoppedDenied": "Stopped: you rejected a tool call",
+    "stoppedHookDenied": "Stopped: a hook rejected a tool call"
   },
   "steerTool": {
     "title": "Steer subagent",
@@ -1767,7 +1773,9 @@
     "agentOverlay": {
       "noConversationData": "No conversation data available",
       "openLogFile": "Open agent log file",
-      "cancelAgent": "Cancel agent"
+      "cancelAgent": "Cancel agent",
+      "waitingDenied": "Waiting for the lead: you rejected a tool call",
+      "waitingHookDenied": "Waiting for the lead: a hook rejected a tool call"
     },
     "indicator": {
       "label": "Team ({n})"
@@ -3332,7 +3340,9 @@
       "activeOf": "{active} of {total} active",
       "activeWaitingOf": "{active} of {total} active, {waiting} needs you | {active} of {total} active, {waiting} need you",
       "finished": "finished",
-      "stopped": "stopped"
+      "stopped": "stopped",
+      "stoppedDenied": "stopped: you rejected the lead's tool call",
+      "stoppedHookDenied": "stopped: a hook rejected the lead's tool call"
     },
     "subagent": {
       "open": "Open subagent {name}"

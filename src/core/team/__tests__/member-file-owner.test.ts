@@ -29,6 +29,8 @@ import { deletePiSession } from '../../pi-session/session-store/mutations';
 import { initPiLoader } from '../../pi-session/pi-loader';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../../pi-session/session-store/constants';
 import { HELD_DRAFT_ENTRY, heldSettleSessions, type HeldSettleSession } from '../../pi-session/__tests__/held-settle-fixture';
+import { runSessionsStep } from '../../project-relocation/steps/sessions';
+import { defaultSessionsStepDeps } from '../../project-relocation/steps/session-fs';
 
 /**
  * A team member's session file has one writer. A Stop whose wind-down a user pi extension's `agent_before_settle` handler holds
@@ -91,6 +93,10 @@ interface Panel {
   opened: Opened[];
   events: string[];
   webview: ExtensionToWebviewMessage[];
+  /** The member files a resume's model check read. */
+  validated: string[];
+  /** Holds each resume's model check until it settles. */
+  validationGate?: Promise<void>;
 }
 
 /**
@@ -99,7 +105,7 @@ interface Panel {
  */
 function panel(scripts: Array<{ responses: FauxResponseStep[]; holdBeforeSettle?: boolean; customTools?: ToolDefinition[] }>): Panel & { held: Array<ReturnType<HeldSettleSession['holdBeforeSettle']>> } {
   const cwd = path.join(DAMOCLES_HOME_DIR, crypto.randomUUID().slice(0, 8));
-  const p = { cwd, invocations: [], opened: [], events: [], webview: [], held: [] } as unknown as Panel & { held: Array<ReturnType<HeldSettleSession['holdBeforeSettle']>> };
+  const p = { cwd, invocations: [], opened: [], events: [], webview: [], held: [], validated: [] } as unknown as Panel & { held: Array<ReturnType<HeldSettleSession['holdBeforeSettle']>> };
   const forgets = new Map<AgentSession, () => void>();
   const engine = {
     createSession: async (opts: TeamSessionOptions) => {
@@ -141,7 +147,10 @@ function panel(scripts: Array<{ responses: FauxResponseStep[]; holdBeforeSettle?
     parentBranch: () => p.invocations.map((data, i) => ({
       type: 'custom', id: `e${i}`, parentId: null, timestamp: new Date().toISOString(), customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data,
     }) as unknown as SessionEntry),
-    assertResumableModel: () => undefined,
+    assertResumableModel: async (file) => {
+      p.validated.push(file);
+      await p.validationGate;
+    },
     requestInterruptionCheck: () => undefined,
   });
   return p;
@@ -329,10 +338,13 @@ describe("a team member's session file while a pi extension holds its stopped ru
       unlock();
     }
     expect(p.events).toEqual(['open:file']);
+    // The model check reads the file, which the other window's run owns, so it runs only once that refusal passed.
+    expect(p.validated).toEqual([]);
     expect(await listTeamCheckpoints(teamCheckpointsDir(piSessionDir(p.cwd), SESSION, teamId))).toEqual(checkpoints);
 
     expect(await within(p.service.resumeTeam(teamId, undefined, 'tc-resume-2'), 5_000, 'the resumed team')).toContain('Resumed and done.');
     expect(p.events).toEqual(['open:file', 'open:reopen']);
+    expect(p.validated).toHaveLength(1);
   }, 30_000);
 
   it('a Stop nothing holds ends at once and its resume opens the file with no wait', async () => {
@@ -358,6 +370,60 @@ describe("a team member's session file while a pi extension holds its stopped ru
     expect(Date.now() - resumedAt).toBeLessThan(3_000);
     expect(p.events).toEqual(['open:file', 'open:reopen']);
     expect(parentChainBreaks(entriesOf(p.opened[0]!.booted.session.sessionManager.getSessionFile()!))).toEqual([]);
+  }, 30_000);
+});
+
+/** The parent conversation's file in its folder's session dir, as the relocation's sessions step finds it, and that step moving the folder. */
+function relocation(p: Panel): () => ReturnType<typeof runSessionsStep> {
+  fs.mkdirSync(piSessionDir(p.cwd), { recursive: true });
+  fs.writeFileSync(path.join(piSessionDir(p.cwd), `2026-01-01T00-00-00-000Z_${SESSION}.jsonl`), JSON.stringify({ type: 'session', version: 3, id: SESSION, timestamp: '2026-01-01T00:00:00.000Z', cwd: p.cwd }) + '\n');
+  const to = `${p.cwd}-moved`;
+  return () => runSessionsStep({ from: p.cwd, to, owners: [p.cwd], currentPathOf: (folder) => folder, log: () => undefined }, defaultSessionsStepDeps({ move: () => undefined }));
+}
+
+describe("a relocation of the conversation's folder while its team's files are held", () => {
+  it('pauses while a stopped member run still owns its file after the team ended, and moves the team once that run let go', async () => {
+    const p = panel([{ responses: [fauxAssistantMessage('On it.')], holdBeforeSettle: true }]);
+    const { memberFile } = await stoppedWhileHeld(p);
+    const relocate = relocation(p);
+
+    expect(await relocate()).toEqual({ kind: 'paused', failure: { code: 'agentRunning', params: { sessionId: SESSION } } });
+    expect(fs.existsSync(memberFile)).toBe(true);
+    p.held[0]!.release();
+    await within(p.opened[0]!.forgotten, 10_000, 'the old member session');
+
+    expect(await relocate()).toEqual({ kind: 'done' });
+    expect(fs.existsSync(teamsDir(piSessionDir(p.cwd), SESSION))).toBe(false);
+    expect(fs.existsSync(path.join(teamsDir(piSessionDir(`${p.cwd}-moved`), SESSION), path.relative(teamsDir(piSessionDir(p.cwd), SESSION), memberFile)))).toBe(true);
+  }, 60_000);
+
+  it('pauses while a team run of it has not settled, a resume still validating with no member file open, and moves it once the run ended', async () => {
+    const tool = untilAborted();
+    const p = panel([
+      { responses: [fauxAssistantMessage(fauxToolCall('wait_for_stop', {}, { id: 'w1' }), { stopReason: 'toolUse' })], customTools: [tool.definition] },
+      { responses: [fauxAssistantMessage('Resumed and done.')] },
+    ]);
+    p.service.setPendingToolUseId('tc-create');
+    const created = p.service.createTeam(LEAD_ONLY);
+    await within(tool.started, 10_000, 'the lead tool call');
+    const teamId = p.invocations.at(-1)!.id;
+    expect(p.service.stopTeam(teamId)).toBe(true);
+    await within(created, 5_000, 'the stopped team');
+    await within(p.opened[0]!.forgotten, 1_000, 'the old member session');
+    const relocate = relocation(p);
+
+    let validate!: () => void;
+    p.validationGate = new Promise<void>((resolve) => { validate = resolve; });
+    const resumed = p.service.resumeTeam(teamId, undefined, 'tc-resume');
+    await vi.waitFor(() => expect(p.validated).toHaveLength(1), { timeout: 5_000 });
+    expect(await relocate()).toEqual({ kind: 'paused', failure: { code: 'agentRunning', params: { sessionId: SESSION } } });
+    expect(fs.existsSync(teamsDir(piSessionDir(p.cwd), SESSION))).toBe(true);
+
+    validate();
+    expect(await within(resumed, 10_000, 'the resumed team')).toContain('Resumed and done.');
+    await within(p.opened[1]!.forgotten, 5_000, 'the resumed member session');
+    expect(await relocate()).toEqual({ kind: 'done' });
+    expect(fs.existsSync(teamsDir(piSessionDir(`${p.cwd}-moved`), SESSION))).toBe(true);
   }, 30_000);
 });
 

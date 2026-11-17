@@ -1,7 +1,6 @@
 import type { HandlerDependencies } from "../types";
 import type { HostInstance } from "../../types";
 import { announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor, revealHolder } from "../../session-ownership";
-import { resolvePiSessionFile } from "../../../pi-session/session-store";
 import { log } from "../../../logger";
 import { l } from "../../../l10n";
 
@@ -30,18 +29,25 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   // The session file lives under its folder's session dir, so the panel moves there first. The claim
   // runs inside the switch, so a message the webview sent meanwhile reaches only the conversation it names.
   // An unknown session stays on the panel's folder as it is now, which may differ from the folder at dispatch.
-  const listed = (await storageManager.folderOf(sessionId)) ?? deps.getPanels().get(panelId)?.folder;
+  const owner = await storageManager.folderOf(sessionId);
+  const listed = owner ?? deps.getPanels().get(panelId)?.folder;
   if (!listed) return;
   // The switch disposes the panel's conversation, so a file already gone is refused here; the open inside it guards the race.
-  if ((await resolvePiSessionFile(listed.fsPath, sessionId)) === null) {
+  const stored = await storageManager.storedFileFrom(listed.fsPath, sessionId);
+  if (stored === null) {
     void platform.notifications.error(l("This conversation could not be opened: {0}", l("its file was not found")));
+    return;
+  }
+  // A conversation no open project lists opens in the panel's folder only from that folder's own session directory, never as another folder's copy.
+  if (!owner && stored === "other") {
+    void platform.notifications.error(l("This conversation could not be opened: {0}", l("its project is not open")));
     return;
   }
   // A worktree chat resumes in its working folder, from its latest entry rather than the folder that listed it (AD12).
   const binding = await deps.worktrees().resumeFolder(panelId, sessionId, listed);
   let heldBy: HostInstance | undefined;
   try {
-    await deps.switchPanelFolder(panelId, binding.folder.key, "resume", async (instance) => {
+    await deps.switchPanelFolder(panelId, binding.folder, "resume", async (instance) => {
       // Another panel or process can claim the session while this one switches; the claim then refuses.
       const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId, { revealsHolder: true });
       if (refusal) {

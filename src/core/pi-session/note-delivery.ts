@@ -1,6 +1,7 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { log } from '../logger';
 import type { PromptDisposition } from './prompt-entry';
+import { promptRefusable } from './run-refusal';
 
 /**
  * How a shell-cancel note reaches the agent that ran the command. One builder per context
@@ -27,7 +28,8 @@ import type { PromptDisposition } from './prompt-entry';
  * session those tools were built for, never to whatever session replaced it.
  *
  * `onPreflight` gets pi's disposition of the note: `queued` into the running run, `started` right before
- * pi opens a run for it, or `handled` when an input handler consumed it and pi neither queued nor ran it.
+ * pi opens a run for it, which `onPreflight` may refuse by throwing `RunRefused`, or `handled` when an
+ * input handler consumed it and pi neither queued nor ran it.
  */
 export function sessionNoteDelivery(
   session: () => AgentSession | undefined,
@@ -35,7 +37,7 @@ export function sessionNoteDelivery(
   return async (text, onPreflight) => {
     const target = session();
     if (!target) throw new Error('the pi session these tools were built for was never created');
-    await target.prompt(text, {
+    await promptRefusable(target, text, {
       expandPromptTemplates: false,
       streamingBehavior: 'steer',
       source: 'extension',

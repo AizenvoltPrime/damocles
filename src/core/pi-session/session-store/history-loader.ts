@@ -26,9 +26,9 @@ import {
   type AgentInvocationData,
 } from '../agent-records';
 import { TOOL_AGENT, TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
-import * as fs from 'fs';
 import * as path from 'path';
 import { piSessionDirOf, resolvePiSessionFile } from './reading';
+import { readSessionFileEntries } from './session-file-entries';
 import { promptUserIdsOnBranch, rewindableUserIdsOnBranch } from './rewind';
 import { promptTest } from './prompt-index';
 import { extractOriginalInputs } from './original-input';
@@ -499,6 +499,7 @@ async function hydrateSubagentCards(
         injection: injected.get(tool.id),
       });
       tool.agentStatus = resolved.status;
+      if (resolved.status === 'stopped' && resolved.stopReason) tool.agentStopReason = resolved.stopReason;
       if (resolved.result !== undefined) tool.agentResultText = resolved.result;
     }
   }
@@ -516,7 +517,8 @@ const unpaced = (): Promise<void> => Promise.resolve();
  * the live post-compaction view (preceding messages hidden, summary marker shown).
  * Resolves to the user entry ids with a rewind control, or null when the file was not read: those with a
  * checkpoint (`rewindableUserIdsOnBranch`), or every prompt when `fileCheckpoints` is false (a chat with no
- * project folder, which can rewind only its conversation).
+ * project folder, which can rewind only its conversation). Rejects with `signal`'s reason when it aborts before the
+ * file was read, so the caller neither shows the conversation nor lets go of it.
  */
 export async function loadPiSessionHistory(
   cwd: string,
@@ -532,47 +534,45 @@ export async function loadPiSessionHistory(
     const filePath = await resolvePiSessionFile(cwd, sessionId);
     resolveSpan.end();
     if (!filePath) return l("This conversation's file could not be found. It may have been deleted.");
-    return { open: () => pi.SessionManager.open(filePath, path.dirname(filePath)), sessionDir: () => piSessionDirOf(cwd, sessionId) };
-  });
-}
-
-/** A session file's entries as text read for viewing only, for pi's in-memory session; a malformed line is skipped. */
-export function sessionFileEntries(text: string): unknown[] {
-  return text.split('\n').flatMap((line): unknown[] => {
-    if (line.trim() === '') return [];
-    try {
-      return [JSON.parse(line) as unknown];
-    } catch {
-      // pi skips a malformed line the same way; a mirror copy mid-append ends in a torn one
-      return [];
-    }
+    return {
+      open: (stop) => pi.SessionManager.openAsync(filePath, path.dirname(filePath), undefined, stop ? { signal: stop } : undefined),
+      sessionDir: () => piSessionDirOf(cwd, sessionId),
+    };
   });
 }
 
 /**
- * The replay of a session file read for viewing only, a session mirror's copy: pi's SessionManager.open repairs a torn last
- * line and migrates an old file in place, so the entries are read here and handed to an in-memory session that never writes.
- * Its subagent cards come from the agent files beside it. Resolves whether the file was read.
+ * The replay of a session file read for viewing only, a session mirror's copy: pi's open repairs a torn last line and
+ * migrates an old file in place, so the entries are read here and handed to an in-memory session that never writes.
+ * Its subagent cards come from the agent files beside it. Resolves whether the file was read; rejects as `loadPiSessionHistory`
+ * does once `signal` aborts.
  */
 export async function replaySessionFileReadOnly(filePath: string, sessionId: string, post: (m: ExtensionToWebviewMessage) => void, signal: AbortSignal, modelReasons?: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined>): Promise<boolean> {
   const ids = await replaySession(sessionId, post, signal, modelReasons, false, unpaced, async (pi) => {
-    let text: string;
+    let entries: unknown[];
     try {
-      text = await fs.promises.readFile(filePath, 'utf8');
+      entries = await readSessionFileEntries(filePath, signal);
     } catch (err) {
+      signal.throwIfAborted();
       log('[session-store] reading the transcript %s failed: %O', filePath, err);
       return l("This conversation's file could not be found. It may have been deleted.");
     }
-    const entries = sessionFileEntries(text);
     const sessionDir = path.dirname(filePath);
-    return { open: () => pi.SessionManager.inMemory(sessionDir, undefined, entries as Parameters<typeof pi.SessionManager.inMemory>[2]), sessionDir: () => sessionDir };
+    return {
+      open: async () => pi.SessionManager.inMemory(sessionDir, undefined, entries as Parameters<typeof pi.SessionManager.inMemory>[2]),
+      sessionDir: () => sessionDir,
+    };
   });
   return ids !== null;
 }
 
 type PiLoaded = NonNullable<Awaited<ReturnType<typeof initPiLoader>>>;
-// What a replay reads: the session, opened once the loader is up, and the folder its agent files sit in; or why it cannot.
-type SessionSource = { readonly open: () => ReturnType<PiLoaded['SessionManager']['open']>; readonly sessionDir: () => string } | LocalizedText;
+// What a replay reads: the session, opened once the loader is up and stopped by the replay's signal, and the folder its agent
+// files sit in; or why it cannot.
+type SessionSource = {
+  readonly open: (signal: AbortSignal | undefined) => ReturnType<PiLoaded['SessionManager']['openAsync']>;
+  readonly sessionDir: () => string;
+} | LocalizedText;
 
 async function replaySession(
   sessionId: string,
@@ -584,7 +584,7 @@ async function replaySession(
   source: (pi: PiLoaded) => Promise<SessionSource>,
 ): Promise<string[] | null> {
   // A superseding replay already aborted us — leave the panel to the newer load, don't blank it.
-  if (signal?.aborted) return null;
+  signal?.throwIfAborted();
   const totalSpan = perfSpan('replay.total');
   // Named, so a send made while the replay runs still names the conversation it replays.
   post({ type: 'sessionCleared', sessionId });
@@ -595,7 +595,7 @@ async function replaySession(
   const finish = (): void => post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });
   const fail = (reason: LocalizedText): void => {
     // Checked here because every call follows an await, during which a newer replay may have taken the panel.
-    if (signal?.aborted) return;
+    signal?.throwIfAborted();
     // Every failure comes before any replayed message: the panel shows none of the conversation, so sends stop naming it.
     post({ type: 'sessionCleared' });
     post({ type: 'errorReplay', content: reason });
@@ -623,7 +623,7 @@ async function replaySession(
   let checkpointUserIds: string[];
   try {
     const openSpan = perfSpan('replay.open');
-    const sm = resolved.open();
+    const sm = await resolved.open(signal);
     openSpan.end();
     const reconstructSpan = perfSpan('replay.reconstruct');
     const leafId = sm.getLeafId();
@@ -637,6 +637,7 @@ async function replaySession(
     // session. The userEntryId is the same pi entry id used as `userReplay.sdkMessageId`, so the webview links them.
     checkpointUserIds = fileCheckpoints ? rewindableUserIdsOnBranch(branch) : promptUserIdsOnBranch(branch);
   } catch (err) {
+    signal?.throwIfAborted();
     log('[session-store] loadPiSessionHistory failed for %s: %O', sessionId, err);
     fail(l('This conversation could not be opened: {0}', errorTextOf(err)));
     return null;

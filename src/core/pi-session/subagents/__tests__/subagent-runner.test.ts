@@ -2,13 +2,14 @@ import { describe, it, expect, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { formatAgentConversation, runSubagent, normalizeMaxTurns } from '../subagent-runner';
 import { trackRunLifecycle } from '../../run-lifecycle';
+import { recordTerminatedCall, takeTerminatedCalls } from '../../terminated-calls';
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 /**
  * A fake session that lets the test drive turn_end events and observe steer/abort. A prompt holds the session busy
  * until `finishPrompt`, which ends a run whose `agent_start` the test emitted as pi does: `agent_end`, then
- * `agent_settled` once the busy flag dropped, before `prompt()` resolves (`agent-session.js:683-706`, `:1423-1473` in pi 1.4.0).
+ * `agent_settled` once the busy flag dropped, before `prompt()` resolves (`agent-session.js:738-761`, `:1487-1537` in pi 1.5.2).
  */
 function makeSession() {
   const cbs: ((e: unknown) => void)[] = [];
@@ -21,6 +22,8 @@ function makeSession() {
   let started = false;
   let idleWaiters: Array<() => void> = [];
   let resolvePrompt!: () => void;
+  let rejectPrompt!: (err: unknown) => void;
+  let promptOptions: { preflightResult?: (disposition: string) => void } | undefined;
 
   const session = {
     subscribe: (fn: (e: unknown) => void) => {
@@ -38,10 +41,14 @@ function makeSession() {
       },
       abort: () => { agentAborts++; },
     },
-    prompt: () => {
+    prompt: (_text: string, options?: { preflightResult?: (disposition: string) => void }) => {
       prompted++;
       busy = true;
-      return new Promise<void>((r) => (resolvePrompt = r));
+      promptOptions = options;
+      return new Promise<void>((resolve, reject) => {
+        resolvePrompt = resolve;
+        rejectPrompt = reject;
+      });
     },
     messages: [] as unknown[],
     steer: async (m: string) => {
@@ -52,15 +59,31 @@ function makeSession() {
     },
   };
   const emit = (event: { type: string }): void => cbs.forEach((fn) => fn(event));
+  const emitAgentStart = (): void => {
+    started = true;
+    [...agentCbs].forEach((fn) => fn({ type: 'agent_start' }));
+    emit({ type: 'agent_start' });
+  };
 
   return {
     session: session as unknown as AgentSession,
     emit: (event: unknown) => cbs.forEach((fn) => fn(event)),
     emitTurnEnd: () => emit({ type: 'turn_end' }),
-    emitAgentStart: () => {
-      started = true;
-      [...agentCbs].forEach((fn) => fn({ type: 'agent_start' }));
-      emit({ type: 'agent_start' });
+    emitAgentStart,
+    /** pi reports `started` and opens the run, unless the preflight throws, which refuses it (patches/README.md, 002); true when it opened. */
+    openRun: (): boolean => {
+      try {
+        promptOptions?.preflightResult?.('started');
+      } catch (err) {
+        busy = false;
+        const waiters = idleWaiters;
+        idleWaiters = [];
+        for (const resolve of waiters) resolve();
+        rejectPrompt(err);
+        return false;
+      }
+      emitAgentStart();
+      return true;
     },
     finishPrompt: () => {
       if (started) {
@@ -170,7 +193,7 @@ describe('runSubagent turn-limit enforcement', () => {
     expect(await p).toEqual({ responseText: '', session: f.session, aborted: false, steered: false });
   });
 
-  it('stops the run at its start when an abort landed during prompt() preflight', async () => {
+  it('refuses the run pi would open with the task when an abort landed while pi held it, and reports the task never ran', async () => {
     const f = makeSession();
     const controller = new AbortController();
     const p = runSubagent({ createSession: async () => f.session, onSessionCreated: bind, prompt: 'go', signal: controller.signal });
@@ -178,12 +201,10 @@ describe('runSubagent turn-limit enforcement', () => {
 
     controller.abort(); // pi has no active run yet, so this abort marks nothing there
     expect(f.abortCount()).toBe(1);
+    expect(f.openRun()).toBe(false);
     expect(f.agentAbortCount()).toBe(0);
-    f.emitAgentStart();
-    expect(f.agentAbortCount()).toBe(1);
 
-    f.finishPrompt();
-    await p;
+    expect(await p).toEqual({ responseText: '', session: f.session, aborted: false, steered: false });
   });
 
   it('does not abort at run start when the signal never fired', async () => {
@@ -264,6 +285,47 @@ describe('runSubagent provider failures', () => {
     f.emit(ended('error', '529 overloaded_error'));
     f.finishPrompt();
     expect((await p).responseText).toBe('');
+  });
+});
+
+// pi ends a run after a batch only when every result terminates (`shouldTerminateToolBatch`), and stores no `terminate`.
+describe('runSubagent rejected-call outcome', () => {
+  async function runEndingOn(batch: unknown[], recorded: Array<{ toolCallId: string; toolName: string; cause: 'user' | 'hook' }>) {
+    const f = makeSession();
+    Object.assign(f.session, { sessionId: 'agent-session' });
+    const messages = (f.session as unknown as { messages: unknown[] }).messages;
+    const p = runSubagent({ createSession: async () => f.session, onSessionCreated: bind, prompt: 'go' });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+    for (const call of recorded) recordTerminatedCall('agent-session', call);
+    messages.push({ role: 'assistant', content: [{ type: 'toolCall', id: 'c1', name: 'bash' }, { type: 'toolCall', id: 'c2', name: 'read' }] }, ...batch);
+    f.finishPrompt();
+    return p;
+  }
+
+  it('names the rejected call when every result of the last batch is a recorded one, and clears the record', async () => {
+    const res = await runEndingOn(
+      [{ role: 'toolResult', toolCallId: 'c1' }, { role: 'toolResult', toolCallId: 'c2' }],
+      [{ toolCallId: 'c1', toolName: 'Bash', cause: 'user' }, { toolCallId: 'c2', toolName: 'Read', cause: 'hook' }],
+    );
+    expect(res.rejected).toEqual({ toolCallId: 'c1', toolName: 'Bash', cause: 'user' });
+    expect(takeTerminatedCalls('agent-session')).toEqual([]);
+  });
+
+  it('reports nothing when another call of the batch ran, and still clears the record', async () => {
+    const res = await runEndingOn(
+      [{ role: 'toolResult', toolCallId: 'c1' }, { role: 'toolResult', toolCallId: 'c2' }],
+      [{ toolCallId: 'c1', toolName: 'Bash', cause: 'user' }],
+    );
+    expect(res.rejected).toBeUndefined();
+    expect(takeTerminatedCalls('agent-session')).toEqual([]);
+  });
+
+  it('reports nothing when the run went on past the rejected batch', async () => {
+    const res = await runEndingOn(
+      [{ role: 'toolResult', toolCallId: 'c1' }, { role: 'toolResult', toolCallId: 'c2' }, { role: 'assistant', content: [{ type: 'text', text: 'done' }] }],
+      [{ toolCallId: 'c1', toolName: 'Bash', cause: 'user' }, { toolCallId: 'c2', toolName: 'Read', cause: 'user' }],
+    );
+    expect(res.rejected).toBeUndefined();
   });
 });
 

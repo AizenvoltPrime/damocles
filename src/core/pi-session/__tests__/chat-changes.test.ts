@@ -24,6 +24,7 @@ import { checkpointCommitOf } from '../chat-review';
 import { filePatch } from '../tools/file-patch';
 import { MAX_DIFF_BYTES } from '../../scm/repository';
 import type { PersistedAgentMessage } from '../agent-records';
+import { foldAliases, relocatedPath, type RelocationAliases } from '../../project-relocation/aliases';
 
 /** D60's file set and baselines (docs/invariants.md "Chat review"), over hand-built branches and file systems. */
 
@@ -381,5 +382,36 @@ describe('what the tab offers and reloads', () => {
     expect(atB!.revision).not.toBe(atC!.revision);
     const [again] = await projectChatChanges(records(second), 'chat', 't1', ROOT, fakeIo({ disk: { [at('a.txt')]: 'c\n' }, checkpoints }));
     expect(again!.revision).toBe(atC!.revision);
+  });
+});
+
+describe('records of a chat whose project folder moved', () => {
+  const relocatedBy = (aliases: RelocationAliases) => (recorded: string, recordedAt: number | undefined): string => relocatedPath(aliases, recorded, recordedAt) ?? recorded;
+
+  it('names each file a tool recorded where it is now, in the folder the chat works in now', () => {
+    const moved = path.resolve('/work/moved');
+    const relocated = relocatedBy(foldAliases([{ seq: 1, startedAt: 1_000, folders: [{ from: ROOT, to: moved }] }]));
+    const branch = [user('t1'), ...edit('e1', at('src/a.ts'), 'a\n', 'A\n'), ...writeNew('w1', 'src/b.ts', 'new\n'), ...edit('e2', path.resolve('/elsewhere/c.ts'), 'c\n', 'C\n')];
+    const out = collectRecords({ branch, folder: moved, handOffs: [], agentMessages: new Map(), relocated });
+    expect(out.map((record) => [record.folder, record.file])).toEqual([
+      [moved, path.join(moved, 'src', 'a.ts')],
+      [moved, path.join(moved, 'src', 'b.ts')],
+      [moved, path.resolve('/elsewhere/c.ts')],
+    ]);
+  });
+
+  // P at ROOT located to /work/p-moved, then Q located from /work/q into a re-created ROOT; Q's turn predates both.
+  it('keeps a chat\'s records in its folder when another project left that folder\'s path', () => {
+    const q = path.resolve('/work/q');
+    const relocated = relocatedBy(foldAliases([
+      { seq: 1, startedAt: 1_000, folders: [{ from: ROOT, to: path.resolve('/work/p-moved') }] },
+      { seq: 2, startedAt: 2_000, folders: [{ from: q, to: ROOT }] },
+    ]));
+    const branch = [user('t1'), ...edit('e1', at('x.ts', q), 'x\n', 'X\n'), ...writeNew('w1', 'y.ts', 'new\n')];
+    const out = collectRecords({ branch, folder: ROOT, handOffs: [], agentMessages: new Map(), relocated });
+    expect(out.map((record) => [record.folder, record.file])).toEqual([
+      [ROOT, at('x.ts')],
+      [ROOT, at('y.ts')],
+    ]);
   });
 });

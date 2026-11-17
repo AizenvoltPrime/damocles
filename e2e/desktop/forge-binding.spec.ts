@@ -419,7 +419,7 @@ test('forgetting: removing the project and signing out drop its binding', async 
   await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: work-alexios on ${GITLAB}, chosen by you`);
 
   const key = await selectedProjectKey(run.app);
-  expect(await shell.evaluate((projectKey) => window.damoclesShell!.removeProject(projectKey), key)).toEqual({ ok: true });
+  expect(await shell.evaluate((projectKey) => window.damoclesShell!.removeProject(projectKey), key)).toEqual({ ok: true, removed: true });
   shell = await openScmProject(run.app, dir);
   await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: ${GITLAB}, no account chosen`, CHECKED);
 

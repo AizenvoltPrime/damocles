@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { TeamState, TeamRunSummary, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock, TeamAgentHistoryMessage } from '@shared/types/team';
+import type { TeamState, TeamRunSummary, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock, TeamAgentHistoryMessage, TeamStopReason } from '@shared/types/team';
 import type { ToolCall } from '@shared/types/session';
 import { isImageBlock, type ImageBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
@@ -244,7 +244,7 @@ export const useTeamStore = defineStore('team', () => {
   // A specialist's billing flag is only known once its role model resolves at spawn, which is after the
   // team list was sent, so an absent field here keeps the agent's current value rather than resetting it.
   // Agent times come only from the extension's stopwatch, never from this clock.
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null, description?: string | null, task?: string | null): void {
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null, description?: string | null, task?: string | null, stopReason?: TeamStopReason | null): void {
     const team = teams.value[teamId];
     if (!team) return;
     // Dropped, not left stale, because a resumed or redispatched member can return to the status it was stopped in.
@@ -254,8 +254,11 @@ export const useTeamStore = defineStore('team', () => {
       kept.delete(agentId);
       agentCancelRequested.value = kept;
     }
-    const agents = team.agents.map(a => {
-      if (a.agentId !== agentId) return a;
+    const agents = team.agents.map(previous => {
+      if (previous.agentId !== agentId) return previous;
+      // `stopReason` is a work field: null ends a rejection's park, and a new attempt starts with none.
+      const { stopReason: heldReason, ...a } = previous;
+      const keptReason = stopReason === undefined && !(attempt !== undefined && attempt > a.attempt) ? heldReason : stopReason ?? undefined;
       // A redispatch reuses the agentId, so the fields describing the current run start over while the
       // usage totals keep every attempt's spend. This reset outranks the deltas above it, and the update's own stopwatch outranks the reset.
       // The new attempt's effort arrives once its session exists, in a later update.
@@ -275,6 +278,7 @@ export const useTeamStore = defineStore('team', () => {
         ...(task !== undefined ? { task } : {}),
         ...relaunched,
         ...(stopwatch ? { activeMs: stopwatch.activeMs, runningSince: stopwatch.runningSince } : {}),
+        ...(keptReason ? { stopReason: keptReason } : {}),
       };
     });
     const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);

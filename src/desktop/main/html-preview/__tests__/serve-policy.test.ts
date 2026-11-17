@@ -9,8 +9,8 @@ import type { Project } from '../../../local-services/confine';
 import { createTransferOps, type ReadRangeResult } from '../../../workspace/transfer-ops';
 import { RangedReadsUnsupportedError } from '../../workspace/remote-workspace';
 import { NotConnectedError } from '../../workspace/workspaces';
-import { answerPreview, exactBytes, type PreviewAnswer, type PreviewFileReads } from '../preview-reader';
-import { declaresCharset, isServablePreviewPath, previewContentType, previewCsp, previewHeaders, previewRequestPath, previewUrlPath, requestedRange } from '../serve-policy';
+import { answerPreview, exactBytes, type PreviewAnswer, type PreviewFileReads } from '../../../../core/served-pages/preview-reader';
+import { declaresCharset, isServablePreviewPath, previewContentType, previewCsp, previewHeaders, previewRequestPath, previewUrlPath, requestedRange } from '../../../../core/served-pages/serve-policy';
 import { syntheticFile } from './synthetic-file';
 
 describe('previewRequestPath', () => {

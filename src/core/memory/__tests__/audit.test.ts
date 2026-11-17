@@ -11,6 +11,7 @@ import type { DatabaseInstance, MemoryRow } from '../types';
 import type { MemorySubCallRequest } from '../subcall-runner';
 import { EPISODE_TTL_MS, applyDecaySweep, promoteEpisodes, purgeForgottenRows } from '../dedup-decay';
 import { RUBRIC_VERSION } from '../rubric';
+import { relocateWorkspaceRows } from '../workspaces';
 import {
   AUDIT_BATCH_MAX_MEMORIES,
   AUDIT_BATCH_MAX_TOKENS,
@@ -561,6 +562,21 @@ describe('memory quality audit', () => {
       expect(await revertAuditRun(applyDeps(), runId)).toEqual({ reverted: 2, skipped: 0 });
       expect(row(db, promoted)).toEqual(beforeP);
       expect(row(db, decayed)).toEqual(beforeD);
+    });
+
+    it('reverts into the new folder once the project moved after apply', async () => {
+      const WS_MOVED = '/ws/alpha-moved';
+      const episode = seed(db, { kind: 'fact', content: 'working on the parser this week', workspace: WS_A });
+      const rescoped = seed(db, { kind: 'fact', content: 'beta builds with make', workspace: WS_A });
+      const beforeE = row(db, episode);
+      const beforeR = row(db, rescoped);
+      const runId = await audit(scriptedRunner({ [episode]: { verdict: 'episode' }, [rescoped]: { verdict: 'rescope', targetScope: 'project', targetWorkspace: WS_B } }));
+      await applyAuditDecisions(applyDeps(), runId, proposals(runId).map(p => p.id), []);
+      await writeQueue.run(() => relocateWorkspaceRows(db, WS_A, WS_MOVED));
+
+      expect(await revertAuditRun(applyDeps(), runId)).toEqual({ reverted: 2, skipped: 0 });
+      expect(row(db, episode)).toEqual({ ...beforeE, workspace: WS_MOVED });
+      expect(row(db, rescoped)).toEqual({ ...beforeR, workspace: WS_MOVED });
     });
 
     it('to_episode resets the promotion evidence, so maintenance keeps the TTL, and revert restores it', async () => {

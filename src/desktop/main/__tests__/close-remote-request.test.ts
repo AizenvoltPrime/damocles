@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', async () => (await import('./fake-overlay-electron')).fakeOverlayElectron());
 
-import { OVERLAY_CHANNELS, type CloseRemoteRow } from '../../preload/overlay-channels';
+import { MAX_CLOSE_KEY_PROVIDERS, OVERLAY_CHANNELS, type CloseRemoteRow } from '../../preload/overlay-channels';
 import { closeRemoteResult, OverlayHost, parseCloseRemoteRequest, parseCloseRemoteRows, parseOverlayAnswer } from '../overlay';
 import { OVERLAY_PAGE_URL } from '../protocol';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
 import { DESKTOP_CONFIGURATION, REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING } from '../../local-services/desktop-configuration';
 import schema from '../../../shared/generated/settings-schema.json' with { type: 'json' };
 
-const ROW: CloseRemoteRow = { hostId: 'h1', panelId: 'p1', title: 'Rotate logs', projectLabel: 'api', hostLabel: 'prod-1', status: 'running' };
+const ROW: CloseRemoteRow = { hostId: 'h1', panelId: 'p1', title: 'Rotate logs', projectLabel: 'api', hostLabel: 'prod-1', status: 'running', keyProviders: [] };
 
 let host: OverlayHost;
 let lines: string[];
@@ -50,6 +50,19 @@ describe('closeRemote request', () => {
     expect(parseCloseRemoteRows([{ ...ROW, tokenNote: { provider: 'anthropic', minutesLeft: 2.5 } }])).toBeUndefined();
     expect(parseCloseRemoteRows([{ ...ROW, lingerWarning: false }])).toBeUndefined();
     expect(parseCloseRemoteRows([{ ...ROW, title: 'x'.repeat(201) }])).toBeUndefined();
+  });
+
+  it('takes a row\'s API-key providers only as unique provider ids within the bound', () => {
+    const row = { ...ROW, keyProviders: ['openai', 'deepseek'] };
+    expect(parseCloseRemoteRows([row])).toEqual([row]);
+    const { keyProviders: _absent, ...missing } = ROW;
+    expect(parseCloseRemoteRows([missing])).toBeUndefined();
+    expect(parseCloseRemoteRows([{ ...ROW, keyProviders: 'openai' }])).toBeUndefined();
+    expect(parseCloseRemoteRows([{ ...ROW, keyProviders: ['openai', 'openai'] }])).toBeUndefined();
+    expect(parseCloseRemoteRows([{ ...ROW, keyProviders: ['sk-live key'] }])).toBeUndefined();
+    expect(parseCloseRemoteRows([{ ...ROW, keyProviders: [{ provider: 'openai' }] }])).toBeUndefined();
+    expect(parseCloseRemoteRows([{ ...ROW, keyProviders: Array.from({ length: MAX_CLOSE_KEY_PROVIDERS }, (_unused, index) => `p${index}`) }])).toBeDefined();
+    expect(parseCloseRemoteRows([{ ...ROW, keyProviders: Array.from({ length: MAX_CLOSE_KEY_PROVIDERS + 1 }, (_unused, index) => `p${index}`) }])).toBeUndefined();
   });
 
   it('answers keep or stop with Don\'t ask again, and cancel only without it; dismissed is Cancel', () => {

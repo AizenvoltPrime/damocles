@@ -34,7 +34,7 @@ import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { cacheHitPercent } from '@/utils/cacheHitPercent';
 import { formatClock } from '@/utils/clock';
 import { windDownText } from '@/utils/windDownText';
-import { agentStatusChip, formatElapsed, formatTokenCount, getAgentColor } from '@/composables/useTeamFormatting';
+import { agentStatusChip, formatElapsed, formatTokenCount, getAgentColor, teamAgentStopReasonKey } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useStopTeam, useStopTeamAgent } from '@/composables/useStopTeam';
 
@@ -57,6 +57,7 @@ const agentIndex = computed(() => {
 const color = computed(() => getAgentColor(agentIndex.value));
 const awaitingUser = computed(() => Boolean(selectedTeam.value && selectedAgent.value && sessionStore.teamAgentsAwaitingUser.get(selectedTeam.value.teamId)?.has(selectedAgent.value.agentId)));
 const chip = computed(() => (selectedAgent.value ? agentStatusChip(selectedAgent.value.status, awaitingUser.value) : null));
+const stopReasonKey = computed(() => (selectedAgent.value ? teamAgentStopReasonKey(selectedAgent.value) : undefined));
 const model = computed(() => modelIdentity(selectedAgent.value?.model));
 
 const lightboxImageUrl = ref<string | null>(null);
@@ -410,7 +411,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
             class="size-3.5"
             aria-hidden="true"
           />
-          {{ selectedAgent.progressSummary || t(chip.labelKey) }}
+          {{ stopReasonKey ? t(stopReasonKey) : selectedAgent.progressSummary || t(chip.labelKey) }}
         </div>
         <div
           v-else-if="selectedAgent.status === 'cancelled' && !selectedAgent.result && chip"
@@ -423,7 +424,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
             class="size-3.5"
             aria-hidden="true"
           />
-          {{ t('overlays.agent.stoppedBeforeReporting') }}
+          {{ stopReasonKey ? t(stopReasonKey) : t('overlays.agent.stoppedBeforeReporting') }}
         </div>
       </div>
 

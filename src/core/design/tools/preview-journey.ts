@@ -97,7 +97,7 @@ export function createPreviewJourneyTool(pi: PiCodingAgentModule, deps: DesignCh
     executionMode: 'sequential',
     description: DESCRIPTION,
     parameters: previewJourneySchema,
-    prepareArguments: (args) => prepareJourneyArguments(args) as never,
+    prepareArguments: (args) => prepareJourneyArguments(args),
     execute: async (_toolCallId, params, signal) => {
       const role = activeRole(deps, TOOL_PREVIEW_JOURNEY);
       if (!designRuleSetById(role.ruleSet).gate.journeys) throw new Error('PreviewJourney runs only in the Damocles app.');

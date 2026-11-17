@@ -4,6 +4,7 @@
 import * as path from 'node:path';
 import { canonicalPath, MAX_LINK_HOPS, rememberedPathQueries, spelledPath, type PathQueries } from '../canonical-path';
 import { leavesLocalDrives, networkPathHost } from '../network-fs';
+import { mappedDrivePath } from '../mapped-drives';
 import { TOOL_BASH, TOOL_POWERSHELL, WRITE_TOOLS } from '../../shared/tool-names';
 import { folderContains } from '../worktrees/records';
 import { COMPUTED_TEXT, DECLARATION_BUILTINS, MAX_COMMAND_LENGTH, parseShellStructure, type ShellLoop, type ShellPart, type ShellSegment, type ShellStructure } from './readonly-shell';
@@ -1016,11 +1017,15 @@ function byNesting<L extends LoopRange>(ranges: L[]): L[] {
   return ranges.sort((a, b) => a.head - b.head || b.end - a.end);
 }
 
+// A drive's root, in its own spelling or its `\\?\` and `\\.\` device forms; the group is the drive (`C:`).
+const DRIVE_ROOT = /^(?:[\\/]{2}[?.][\\/])?([a-z]:)[\\/]?$/i;
+
 /**
- * `queries` with no answer for a path that leaves this computer's drives for a host none of `folders` is on, by its spelling or
- * through a link on its walk, which no protected area holds: reading it would send the user's Windows credentials there before
- * any prompt. The walk reads links with lstat and readlink alone; a link it cannot read counts as leaving. A drive's device
- * path (`\\?\C:\`) is still read, since it may name a protected area.
+ * `queries` with no answer for a path that leaves this computer's drives for a host none of `folders` is on, by its spelling,
+ * through a drive Windows maps to a share or a subst target (QueryDosDeviceW, asked before the drive is read; a failed call
+ * throws), or through a link on its walk, which no protected area holds: reading it would send the user's Windows credentials
+ * there before any prompt. The walk reads links with lstat and readlink alone; a link it cannot read counts as leaving. A local
+ * drive's device path (`\\?\C:\`) is still read, since it may name a protected area.
  */
 function onChatHosts(queries: PathQueries, folders: readonly string[]): PathQueries {
   const hosts = new Set(folders.map(networkPathHost).filter((host): host is string => host !== undefined && host !== ''));
@@ -1032,6 +1037,13 @@ function onChatHosts(queries: PathQueries, folders: readonly string[]): PathQuer
       if (offDrives(current)) return true;
       const { root } = path.parse(current);
       const segments = current.slice(root.length).split(path.sep).filter(Boolean);
+      // a drive Windows maps elsewhere leads there before any of its paths is read, as a link at its root would
+      const drive = process.platform === 'win32' ? DRIVE_ROOT.exec(root)?.[1] : undefined;
+      const mapped = drive === undefined ? null : mappedDrivePath(drive);
+      if (mapped !== null) {
+        current = path.join(mapped, ...segments);
+        continue;
+      }
       let prefix = root;
       let next: string | undefined;
       for (let index = 0; index < segments.length - (last ? 0 : 1); index++) {

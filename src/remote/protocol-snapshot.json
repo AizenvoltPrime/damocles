@@ -209,7 +209,27 @@
   "askpass.credential.shellCall",
   "forge.gitCredentialConsent",
   "forge.keepHosts",
-  "client.pending"
+  "client.pending",
+  "account.memoryJudgeCopilot",
+  "chat.windDownHooks",
+  "chat.subagentStopReason",
+  "chat.configuredProviders",
+  "projects.relocate.local",
+  "projects.relocate.worktrees",
+  "projects.movedFrom",
+  "projects.relocate",
+  "mirror.worktreeChats",
+  "chat.teamStopReason",
+  "permission.reasonFieldsRemoved",
+  "worktrees.namedFor",
+  "projects.relocationStartedAt",
+  "projects.relocationWaiting",
+  "projects.relocationAbandon",
+  "chats.listMirroredHostOs",
+  "design.infoMissing",
+  "chats.listMirroredProject",
+  "browser.servedFileUnavailableRemoved",
+  "user.browser.servedFolders"
  ],
  "contracts": {
   "CoreRequests": {
@@ -470,6 +490,26 @@
             }
            }
           },
+          "\"folder\"": {
+           "object": {
+            "folder": {
+             "optional": false,
+             "type": "string"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"folder\""
+            },
+            "relPath": {
+             "optional": false,
+             "type": "string"
+            },
+            "viewId": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
           "\"project\"": {
            "object": {
             "kind": {
@@ -510,10 +550,6 @@
             "refused": {
              "optional": false,
              "type": "string"
-            },
-            "unavailable": {
-             "optional": true,
-             "type": "boolean"
             }
            }
           }
@@ -3088,6 +3124,26 @@
                }
               }
              },
+             "\"folder\"": {
+              "object": {
+               "displayRoot": {
+                "optional": false,
+                "type": "string"
+               },
+               "folder": {
+                "optional": false,
+                "type": "string"
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"folder\""
+               },
+               "relPath": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             },
              "\"project\"": {
               "object": {
                "displayRoot": {
@@ -4950,6 +5006,28 @@
       }
      }
     },
+    "window.locateProjectFolder": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "folderKey": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "worktrees.confirmHandOff": {
      "optional": false,
      "type": {
@@ -5836,6 +5914,20 @@
            "optional": false,
            "type": "string"
           },
+          "os": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"darwin\"",
+             "\"linux\"",
+             "\"win32\""
+            ]
+           }
+          },
+          "project": {
+           "optional": true,
+           "type": "string"
+          },
           "query": {
            "optional": true,
            "type": "string"
@@ -6633,6 +6725,192 @@
       }
      }
     },
+    "design.previewAnswer": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "designId": {
+           "optional": false,
+           "type": "string"
+          },
+          "relPath": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          "undefined",
+          {
+           "object": {
+            "breakpoints": {
+             "optional": false,
+             "type": {
+              "array": {
+               "object": {
+                "name": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "width": {
+                 "optional": false,
+                 "type": "number"
+                }
+               }
+              }
+             }
+            },
+            "checked": {
+             "optional": false,
+             "type": {
+              "array": "number"
+             }
+            },
+            "journey": {
+             "optional": false,
+             "type": {
+              "array": "number"
+             }
+            },
+            "path": {
+             "optional": false,
+             "type": "string"
+            },
+            "primary": {
+             "optional": false,
+             "type": "number"
+            },
+            "screenId": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "string"
+              ]
+             }
+            },
+            "states": {
+             "optional": false,
+             "type": {
+              "array": "string"
+             }
+            },
+            "title": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "string"
+              ]
+             }
+            },
+            "tweaks": {
+             "optional": true,
+             "type": {
+              "union": [
+               "null",
+               {
+                "object": {
+                 "controls": {
+                  "optional": false,
+                  "type": {
+                   "array": {
+                    "object": {
+                     "id": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "kind": {
+                      "optional": false,
+                      "type": {
+                       "union": [
+                        "\"segment\"",
+                        "\"swatch\""
+                       ]
+                      }
+                     },
+                     "label": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "locked": {
+                      "optional": false,
+                      "type": {
+                       "union": [
+                        "null",
+                        {
+                         "object": {
+                          "decisionId": {
+                           "optional": false,
+                           "type": "string"
+                          },
+                          "value": {
+                           "optional": false,
+                           "type": "string"
+                          }
+                         }
+                        }
+                       ]
+                      }
+                     },
+                     "property": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "stops": {
+                      "optional": false,
+                      "type": {
+                       "array": {
+                        "object": {
+                         "token": {
+                          "optional": false,
+                          "type": "string"
+                         },
+                         "value": {
+                          "optional": false,
+                          "type": "string"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 },
+                 "toolCallId": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "missing": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
     "design.previewScreen": {
      "optional": false,
      "type": {
@@ -6947,6 +7225,42 @@
           "undefined"
          ]
         }
+       }
+      }
+     }
+    },
+    "e2e.relocationPauseAfter": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "mode": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"hang\"",
+             "\"pause\""
+            ]
+           }
+          },
+          "sessions": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "number"
+            ]
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
        }
       }
      }
@@ -12333,6 +12647,32 @@
       }
      }
     },
+    "forge.relocateProject": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "fromKey": {
+           "optional": false,
+           "type": "string"
+          },
+          "toKey": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "forge.repoAccounts": {
      "optional": false,
      "type": {
@@ -12937,6 +13277,620 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "projects.addHostAlias": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "from": {
+           "optional": false,
+           "type": "string"
+          },
+          "hostId": {
+           "optional": false,
+           "type": "string"
+          },
+          "startedAt": {
+           "optional": true,
+           "type": "number"
+          },
+          "to": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "projects.applyHostState": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "id": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "projects.movedFrom": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "to": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "chats": {
+            "optional": false,
+            "type": "number"
+           },
+           "from": {
+            "optional": false,
+            "type": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "projects.relocate": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "from": {
+           "optional": false,
+           "type": "string"
+          },
+          "listed": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "to": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "id": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "refusal": {
+             "optional": false,
+             "type": {
+              "object": {
+               "code": {
+                "optional": false,
+                "type": "string"
+               },
+               "params": {
+                "optional": true,
+                "type": {
+                 "object": {},
+                 "index": [
+                  {
+                   "key": "string",
+                   "value": {
+                    "union": [
+                     "number",
+                     "string"
+                    ]
+                   }
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "projects.relocationAbandon": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "id": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "abandoned": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          },
+          {
+           "object": {
+            "refusal": {
+             "optional": false,
+             "type": {
+              "object": {
+               "code": {
+                "optional": false,
+                "type": "string"
+               },
+               "params": {
+                "optional": true,
+                "type": {
+                 "object": {},
+                 "index": [
+                  {
+                   "key": "string",
+                   "value": {
+                    "union": [
+                     "number",
+                     "string"
+                    ]
+                   }
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "projects.relocationPreflight": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "from": {
+           "optional": false,
+           "type": "string"
+          },
+          "heldHere": {
+           "optional": true,
+           "type": "\"ignore\""
+          },
+          "listed": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "to": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "chats": {
+             "optional": false,
+             "type": "number"
+            },
+            "mode": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"locate\"",
+               "\"merge\""
+              ]
+             }
+            },
+            "notices": {
+             "optional": false,
+             "type": {
+              "array": {
+               "object": {
+                "code": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "params": {
+                 "optional": true,
+                 "type": {
+                  "object": {},
+                  "index": [
+                   {
+                    "key": "string",
+                    "value": {
+                     "union": [
+                      "number",
+                      "string"
+                     ]
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "true"
+            },
+            "worktrees": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "refusal": {
+             "optional": false,
+             "type": {
+              "object": {
+               "code": {
+                "optional": false,
+                "type": "string"
+               },
+               "params": {
+                "optional": true,
+                "type": {
+                 "object": {},
+                 "index": [
+                  {
+                   "key": "string",
+                   "value": {
+                    "union": [
+                     "number",
+                     "string"
+                    ]
+                   }
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "projects.relocationRetry": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "id": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "projects.relocationsFrom": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "keys": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "chats": {
+            "optional": false,
+            "type": "number"
+           },
+           "failure": {
+            "optional": true,
+            "type": {
+             "object": {
+              "code": {
+               "optional": false,
+               "type": "string"
+              },
+              "params": {
+               "optional": true,
+               "type": {
+                "object": {},
+                "index": [
+                 {
+                  "key": "string",
+                  "value": {
+                   "union": [
+                    "number",
+                    "string"
+                   ]
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            }
+           },
+           "from": {
+            "optional": false,
+            "type": "string"
+           },
+           "id": {
+            "optional": false,
+            "type": "string"
+           },
+           "mode": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"locate\"",
+              "\"merge\""
+             ]
+            }
+           },
+           "progress": {
+            "optional": false,
+            "type": {
+             "object": {
+              "done": {
+               "optional": false,
+               "type": "number"
+              },
+              "total": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           },
+           "repairFailures": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "failure": {
+                "optional": false,
+                "type": {
+                 "object": {
+                  "code": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "params": {
+                   "optional": true,
+                   "type": {
+                    "object": {},
+                    "index": [
+                     {
+                      "key": "string",
+                      "value": {
+                       "union": [
+                        "number",
+                        "string"
+                       ]
+                      }
+                     }
+                    ]
+                   }
+                  }
+                 }
+                }
+               },
+               "worktreeId": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           },
+           "requestedBy": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"daemon\"",
+              "\"desktop\"",
+              "\"vscode\""
+             ]
+            }
+           },
+           "seq": {
+            "optional": false,
+            "type": "number"
+           },
+           "startedAt": {
+            "optional": true,
+            "type": "number"
+           },
+           "state": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"coreDone\"",
+              "\"paused\"",
+              "\"running\""
+             ]
+            }
+           },
+           "step": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"checkpoints\"",
+              "\"compass\"",
+              "\"hostState\"",
+              "\"memory\"",
+              "\"repair\"",
+              "\"sessions\"",
+              "\"worktrees\""
+             ]
+            }
+           },
+           "to": {
+            "optional": false,
+            "type": "string"
+           },
+           "waiting": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "code": {
+                "optional": false,
+                "type": "string"
+               },
+               "params": {
+                "optional": true,
+                "type": {
+                 "object": {},
+                 "index": [
+                  {
+                   "key": "string",
+                   "value": {
+                    "union": [
+                     "number",
+                     "string"
+                    ]
+                   }
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           },
+           "worktrees": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "from": {
+                "optional": false,
+                "type": "string"
+               },
+               "to": {
+                "optional": false,
+                "type": "string"
+               },
+               "worktreeId": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
        }
       }
      }
@@ -16176,6 +17130,23 @@
       }
      }
     },
+    "chat.configuredProviders": {
+     "optional": false,
+     "type": {
+      "object": {
+       "panelId": {
+        "optional": false,
+        "type": "string"
+       },
+       "providers": {
+        "optional": false,
+        "type": {
+         "array": "string"
+        }
+       }
+      }
+     }
+    },
     "chat.providers": {
      "optional": false,
      "type": {
@@ -18014,6 +18985,224 @@
            "queueId": {
             "optional": false,
             "type": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "relocations": {
+     "optional": false,
+     "type": {
+      "object": {
+       "records": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "chats": {
+            "optional": false,
+            "type": "number"
+           },
+           "failure": {
+            "optional": true,
+            "type": {
+             "object": {
+              "code": {
+               "optional": false,
+               "type": "string"
+              },
+              "params": {
+               "optional": true,
+               "type": {
+                "object": {},
+                "index": [
+                 {
+                  "key": "string",
+                  "value": {
+                   "union": [
+                    "number",
+                    "string"
+                   ]
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            }
+           },
+           "from": {
+            "optional": false,
+            "type": "string"
+           },
+           "id": {
+            "optional": false,
+            "type": "string"
+           },
+           "mode": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"locate\"",
+              "\"merge\""
+             ]
+            }
+           },
+           "progress": {
+            "optional": false,
+            "type": {
+             "object": {
+              "done": {
+               "optional": false,
+               "type": "number"
+              },
+              "total": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           },
+           "repairFailures": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "failure": {
+                "optional": false,
+                "type": {
+                 "object": {
+                  "code": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "params": {
+                   "optional": true,
+                   "type": {
+                    "object": {},
+                    "index": [
+                     {
+                      "key": "string",
+                      "value": {
+                       "union": [
+                        "number",
+                        "string"
+                       ]
+                      }
+                     }
+                    ]
+                   }
+                  }
+                 }
+                }
+               },
+               "worktreeId": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           },
+           "requestedBy": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"daemon\"",
+              "\"desktop\"",
+              "\"vscode\""
+             ]
+            }
+           },
+           "seq": {
+            "optional": false,
+            "type": "number"
+           },
+           "startedAt": {
+            "optional": true,
+            "type": "number"
+           },
+           "state": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"coreDone\"",
+              "\"paused\"",
+              "\"running\""
+             ]
+            }
+           },
+           "step": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"checkpoints\"",
+              "\"compass\"",
+              "\"hostState\"",
+              "\"memory\"",
+              "\"repair\"",
+              "\"sessions\"",
+              "\"worktrees\""
+             ]
+            }
+           },
+           "to": {
+            "optional": false,
+            "type": "string"
+           },
+           "waiting": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "code": {
+                "optional": false,
+                "type": "string"
+               },
+               "params": {
+                "optional": true,
+                "type": {
+                 "object": {},
+                 "index": [
+                  {
+                   "key": "string",
+                   "value": {
+                    "union": [
+                     "number",
+                     "string"
+                    ]
+                   }
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           },
+           "worktrees": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "from": {
+                "optional": false,
+                "type": "string"
+               },
+               "to": {
+                "optional": false,
+                "type": "string"
+               },
+               "worktreeId": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
            }
           }
          }
@@ -25750,6 +26939,12 @@
            "type": {
             "array": {
              "object": {
+              "configuredProviders": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
               "id": {
                "optional": false,
                "type": "string"
@@ -25948,6 +27143,95 @@
      }
     },
     "mirror.sync": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "budgetBytes": {
+           "optional": false,
+           "type": "number"
+          },
+          "files": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "file": {
+               "optional": false,
+               "type": "string"
+              },
+              "headHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "size": {
+               "optional": false,
+               "type": "number"
+              },
+              "tailHash": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
+           }
+          },
+          "projectKey": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "changes": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "file": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"append\"",
+                 "\"deleted\"",
+                 "\"full\""
+                ]
+               }
+              },
+              "length": {
+               "optional": false,
+               "type": "number"
+              },
+              "offset": {
+               "optional": false,
+               "type": "number"
+              },
+              "stream": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "mirror.syncProject": {
      "optional": false,
      "type": {
       "object": {
@@ -27681,6 +28965,10 @@
            "type": "number"
           },
           "agentStatus": {
+           "optional": true,
+           "type": "string"
+          },
+          "agentStopReason": {
            "optional": true,
            "type": "string"
           },
@@ -37583,13 +38871,25 @@
        "optional": false,
        "type": {
         "object": {
+         "github-copilot": {
+          "optional": false,
+          "type": {
+           "union": [
+            "\"chatgpt-active\"",
+            "\"no-key\"",
+            "\"ok\"",
+            "\"signed-out\""
+           ]
+          }
+         },
          "openai": {
           "optional": false,
           "type": {
            "union": [
             "\"chatgpt-active\"",
             "\"no-key\"",
-            "\"ok\""
+            "\"ok\"",
+            "\"signed-out\""
            ]
           }
          },
@@ -37599,7 +38899,8 @@
            "union": [
             "\"chatgpt-active\"",
             "\"no-key\"",
-            "\"ok\""
+            "\"ok\"",
+            "\"signed-out\""
            ]
           }
          },
@@ -37609,7 +38910,8 @@
            "union": [
             "\"chatgpt-active\"",
             "\"no-key\"",
-            "\"ok\""
+            "\"ok\"",
+            "\"signed-out\""
            ]
           }
          }
@@ -37646,6 +38948,7 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"github-copilot\"",
                   "\"openai\"",
                   "\"openrouter\"",
                   "\"typesafe\""
@@ -37660,6 +38963,7 @@
             "optional": false,
             "type": {
              "union": [
+              "\"github-copilot\"",
               "\"openai\"",
               "\"openrouter\"",
               "\"typesafe\""
@@ -37697,6 +39001,7 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"github-copilot\"",
                   "\"openai\"",
                   "\"openrouter\"",
                   "\"typesafe\""
@@ -37759,6 +39064,7 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"github-copilot\"",
                   "\"openai\"",
                   "\"openrouter\"",
                   "\"typesafe\""
@@ -37796,6 +39102,7 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"github-copilot\"",
                   "\"openai\"",
                   "\"openrouter\"",
                   "\"typesafe\""
@@ -40827,10 +42134,6 @@
         }
        }
       },
-      "blockedPath": {
-       "optional": true,
-       "type": "string"
-      },
       "command": {
        "optional": true,
        "type": "string"
@@ -40878,10 +42181,6 @@
          }
         }
        }
-      },
-      "decisionReason": {
-       "optional": true,
-       "type": "string"
       },
       "editLineNumber": {
        "optional": true,
@@ -42585,6 +43884,28 @@
            "array": "string"
           }
          },
+         "hooks": {
+          "optional": true,
+          "type": {
+           "array": {
+            "object": {
+             "label": {
+              "optional": false,
+              "type": "string"
+             },
+             "scope": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"project\"",
+                "\"user\""
+               ]
+              }
+             }
+            }
+           }
+          }
+         },
          "phase": {
           "optional": false,
           "type": {
@@ -43726,6 +45047,28 @@
               "optional": false,
               "type": {
                "array": "string"
+              }
+             },
+             "hooks": {
+              "optional": true,
+              "type": {
+               "array": {
+                "object": {
+                 "label": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "scope": {
+                  "optional": false,
+                  "type": {
+                   "union": [
+                    "\"project\"",
+                    "\"user\""
+                   ]
+                  }
+                 }
+                }
+               }
               }
              },
              "phase": {
@@ -45671,6 +47014,16 @@
         ]
        }
       },
+      "stopReason": {
+       "optional": true,
+       "type": {
+        "union": [
+         "\"denied\"",
+         "\"hookDenied\"",
+         "null"
+        ]
+       }
+      },
       "stopwatch": {
        "optional": true,
        "type": {
@@ -45994,6 +47347,15 @@
             "\"completed\"",
             "\"failed\"",
             "\"running\""
+           ]
+          }
+         },
+         "stopReason": {
+          "optional": true,
+          "type": {
+           "union": [
+            "\"denied\"",
+            "\"hookDenied\""
            ]
           }
          },
@@ -46328,6 +47690,15 @@
                ]
               }
              },
+             "stopReason": {
+              "optional": true,
+              "type": {
+               "union": [
+                "\"denied\"",
+                "\"hookDenied\""
+               ]
+              }
+             },
              "task": {
               "optional": false,
               "type": {
@@ -46463,6 +47834,15 @@
                ]
               }
              },
+             "stopReason": {
+              "optional": true,
+              "type": {
+               "union": [
+                "\"denied\"",
+                "\"hookDenied\""
+               ]
+              }
+             },
              "toolCount": {
               "optional": false,
               "type": "number"
@@ -46585,6 +47965,28 @@
                 "optional": false,
                 "type": {
                  "array": "string"
+                }
+               },
+               "hooks": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "object": {
+                   "label": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "scope": {
+                    "optional": false,
+                    "type": {
+                     "union": [
+                      "\"project\"",
+                      "\"user\""
+                     ]
+                    }
+                   }
+                  }
+                 }
                 }
                },
                "phase": {

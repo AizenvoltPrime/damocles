@@ -42,7 +42,8 @@ beforeAll(() => {
   outside = path.join(base, 'outside');
   root = path.join(base, 'outside', 'repo');
   bundle = path.join(base, 'confine-modules.cjs');
-  buildSync({ entryPoints: [path.join(__dirname, '..', 'confine-modules.ts')], bundle: true, platform: 'node', format: 'cjs', target: 'node24', outfile: bundle, logLevel: 'silent' });
+  // koffi stays external, as in the formatter host's own bundle (esbuild.config.ts)
+  buildSync({ entryPoints: [path.join(__dirname, '..', 'confine-modules.ts')], bundle: true, platform: 'node', format: 'cjs', target: 'node24', outfile: bundle, external: ['koffi'], logLevel: 'silent' });
   put(path.join(root, 'node_modules', 'inside-plugin', 'package.json'), '{"name":"inside-plugin","main":"index.js"}');
   put(path.join(root, 'node_modules', 'inside-plugin', 'index.js'), `require('fs'); require('node:path'); module.exports = 'inside';\n`);
   // Hoisted to the parent's node_modules, as in a monorepo whose root is not the trusted folder.

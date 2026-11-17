@@ -26,6 +26,7 @@ import ignore from 'ignore';
 import { loadPermissionsByPriority, usableGitignorePattern } from '../permission-settings';
 import { PermissionHandler } from '../index';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 /** The eight read locations, most-specific first — mirrors the order under test. */
 const ORDERED_FILES = [
@@ -270,7 +271,7 @@ describe('PermissionHandler follows the panel folder', () => {
   const npmTest = { command: 'npm test' };
 
   function makeHandler(): PermissionHandler {
-    return new PermissionHandler(createFakePlatform());
+    return new PermissionHandler(createFakePlatform(), getPiCodingAgent);
   }
 
   beforeEach(() => {

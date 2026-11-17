@@ -125,7 +125,8 @@ export interface WorkspaceFileSystem extends TransferOps {
   // deletes for good only while the entry is still the one confirmed
   deleteEntry(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<DeleteResult>;
   trash(entryPath: string): Promise<void>;
-  isDirectory(target: string): Promise<boolean>;
+  // a signal that aborts cancels a host's request; a local stat runs on
+  isDirectory(target: string, signal?: AbortSignal): Promise<boolean>;
   // each '/'-separated relative path's mtime under folder, joined on this host; undefined when it cannot be read for any reason
   mtimes(folder: string, relativePaths: readonly string[]): Promise<ReadonlyArray<number | undefined>>;
   browse(folder: string): Promise<BrowseResult>;

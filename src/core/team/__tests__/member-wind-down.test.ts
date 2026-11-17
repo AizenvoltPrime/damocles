@@ -10,6 +10,7 @@ import type { AgentWindDown } from '../../../shared/types/wind-down';
 import { WIND_DOWN_NOTICE_MS } from '../../pi-session/wind-down-notice';
 import { trackRunLifecycle } from '../../pi-session/run-lifecycle';
 import { heldSettleSessions } from '../../pi-session/__tests__/held-settle-fixture';
+import { trackRunningHook } from '../../pi-session/hooks/running-hooks';
 
 /**
  * A member's Stop whose run a pi extension's `agent_settled` handler holds, on a real pi session driven by the real
@@ -82,13 +83,35 @@ describe("a member's Stop while a pi extension holds its run's wind-down", () =>
     stop.abort();
     await sleep(WIND_DOWN_NOTICE_MS - 1_000);
     expect(published).toEqual([]);
-    // pi already ended the run, so only its agent_settled handlers are left (agent-session.js:685-690 in pi 1.4.0).
+    // pi already ended the run, so only its agent_settled handlers are left (agent-session.js:740-745 in pi 1.5.2).
     await vi.waitFor(() => expect(published).toEqual([{ phase: 'settle', events: ['agent_settled'], extensions: [held.extensionPath] }]), { timeout: 3_000 });
 
     settle.release();
     const result = await within(run, 10_000, 'the stopped member');
     expect(result.status).toBe('cancelled');
     expect(published).toEqual([{ phase: 'settle', events: ['agent_settled'], extensions: [held.extensionPath] }, null]);
+  }, 30_000);
+
+  it('names a SubagentStop hook still running ahead of the extension, and the extension once the hook ends', async () => {
+    const held = await sessions.boot([fauxAssistantMessage('Done.')]);
+    const settle = held.hold();
+    const stop = new AbortController();
+    const messages: ExtensionToWebviewMessage[] = [];
+    const published: Array<AgentWindDown | null> = [];
+    const run = runMember(held.session, stop, messages, published);
+    await within(settle.waiting, 10_000, 'the agent_settled handler');
+    const hookEnds = trackRunningHook(held.session.sessionManager.getSessionId(), { command: ['bash', './scripts/notify.sh'], scope: 'user' });
+
+    stop.abort();
+    const extensionOnly: AgentWindDown = { phase: 'settle', events: ['agent_settled'], extensions: [held.extensionPath] };
+    const withHook: AgentWindDown = { ...extensionOnly, hooks: [{ label: 'notify.sh', scope: 'user' }] };
+    await vi.waitFor(() => expect(published).toEqual([withHook]), { timeout: WIND_DOWN_NOTICE_MS + 2_000 });
+
+    hookEnds();
+    expect(published).toEqual([withHook, extensionOnly]);
+    settle.release();
+    expect((await within(run, 10_000, 'the stopped member')).status).toBe('cancelled');
+    expect(published).toEqual([withHook, extensionOnly, null]);
   }, 30_000);
 
   it('follows the run from its tool call to its settle handlers, which pi runs without agent_before_settle after the stop', async () => {
@@ -105,7 +128,7 @@ describe("a member's Stop while a pi extension holds its run's wind-down", () =>
     await within(tool.started, 10_000, 'the tool call');
 
     stop.abort();
-    await vi.waitFor(() => expect(published).toEqual([{ phase: 'run', events: [], extensions: [held.extensionPath] }]), { timeout: WIND_DOWN_NOTICE_MS + 2_000 });
+    await vi.waitFor(() => expect(published).toEqual([{ phase: 'run', events: [], extensions: [] }]), { timeout: WIND_DOWN_NOTICE_MS + 2_000 });
 
     tool.release();
     await within(settle.waiting, 10_000, 'the agent_settled handler');
@@ -114,7 +137,7 @@ describe("a member's Stop while a pi extension holds its run's wind-down", () =>
     settle.release();
     await within(run, 10_000, 'the stopped member');
     expect(published).toEqual([
-      { phase: 'run', events: [], extensions: [held.extensionPath] },
+      { phase: 'run', events: [], extensions: [] },
       { phase: 'settle', events: ['agent_settled'], extensions: [held.extensionPath] },
       null,
     ]);

@@ -3,6 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DAMOCLES_WORKTREE_ENTRY } from './constants';
 import { worktreeFolderOf } from '../../worktrees/personal-config';
+import { entryTimeOf } from '../../worktrees/worktree-entry';
+import { currentPathOf } from '../../project-relocation/aliases';
+import { currentRelocations } from '../../project-relocation/current';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { RestorePoint, RewindHistoryItem, SkippedFile, SkippedFilesTarget, SkippedSummary } from '@shared/types/session';
 import type { CheckpointEntry, FileChange, Result } from '../checkpoints';
@@ -11,7 +14,7 @@ import {
   BULK_ADD_CONFIG,
   PORTABLE_CONFIG,
   RepoManager,
-  folderIdFor,
+  folderRepoIdsOf,
   getFolderRepoDir,
   getFolderReposBaseDir,
   getNotRewindableEntries,
@@ -233,11 +236,11 @@ export function markHandOffs(items: RewindHistoryItem[], entries: readonly unkno
     if (e.type === 'message') conversationSeen = true;
     if (e.type !== 'custom' || e.customType !== DAMOCLES_WORKTREE_ENTRY || typeof e.data?.place !== 'string') return;
     // A chat that talked before its first entry began in its project folder.
-    if (segments.length === 0 && conversationSeen) segments.push({ from: 0, folder: stringOr(e.data.projectPath) });
+    if (segments.length === 0 && conversationSeen) segments.push({ from: 0, folder: projectNow(e.data.projectPath, entryTimeOf(entry)) });
     const before = place ?? (conversationSeen ? 'project' : undefined);
     if (before !== undefined && before !== e.data.place) handOffIndex = index;
     place = e.data.place;
-    segments.push({ from: index, folder: e.data.place === 'project' ? stringOr(e.data.projectPath) : worktreeFolderOf(stringOr(e.data.worktreeId)) });
+    segments.push({ from: index, folder: e.data.place === 'project' ? projectNow(e.data.projectPath, entryTimeOf(entry)) : worktreeFolderOf(stringOr(e.data.worktreeId)) });
   });
   if (handOffIndex < 0) return items;
   const folderAt = (index: number): string | undefined => [...segments].reverse().find((segment) => segment.from <= index)?.folder;
@@ -254,6 +257,12 @@ export function markHandOffs(items: RewindHistoryItem[], entries: readonly unkno
 
 function stringOr(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+// A recorded project path names the folder as it was at the entry's time; a relocation since moved it.
+function projectNow(value: unknown, recordedAt: number | undefined): string | undefined {
+  const projectPath = stringOr(value);
+  return projectPath === undefined ? undefined : currentPathOf(currentRelocations().aliases, projectPath, recordedAt);
 }
 
 // A turn before a hand-off made its files in the folder it worked in then; its paths are shown there.
@@ -312,7 +321,7 @@ async function rewindHistoryOf(
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return none;
   try {
-    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
+    const sm = await pi.SessionManager.openAsync(filePath, path.dirname(filePath));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
     const checkpoints = [...rewindableCheckpoints(branch)];
     // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
@@ -328,8 +337,8 @@ async function rewindHistoryOf(
       if (e.type === 'compaction' && typeof e.id === 'string') compactionIds.add(e.id);
     }
     // Restore points of this folder, from every branch: an undo restores files, whichever branch is open.
-    const folderId = folderIdFor(checkpointFolder);
-    const preRewinds = getPreRewindEntries(sm.getEntries()).filter((r) => r.folderId === folderId);
+    const folderIds = folderRepoIdsOf(checkpointFolder);
+    const preRewinds = getPreRewindEntries(sm.getEntries()).filter((r) => folderIds.has(r.folderId));
     // Prefer the live diff (what the rewind will actually do); fall back to the static per-turn diff
     // when the checkpoint repo/git is unavailable (e.g. sessions recorded before checkpoints existed).
     const liveDiffs = await liveDiffsPerTarget(
@@ -480,7 +489,7 @@ export async function getPiFileCheckpointContent(
   const sessionFile = await resolvePiSessionFile(cwd, sessionId);
   if (!sessionFile) return null;
   try {
-    const sm = pi.SessionManager.open(sessionFile, path.dirname(sessionFile));
+    const sm = await pi.SessionManager.openAsync(sessionFile, path.dirname(sessionFile));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
     const cp = [...rewindableCheckpoints(branch)].reverse().find((c) => c.userEntryId === userMessageId);
     if (!cp) return null;
@@ -503,7 +512,7 @@ export async function getPiSkippedFiles(cwd: string, sessionId: string, target: 
   const sessionFile = await resolvePiSessionFile(cwd, sessionId);
   if (!sessionFile) return { ok: false, error: `no session file for ${sessionId}` };
   try {
-    const sm = pi.SessionManager.open(sessionFile, path.dirname(sessionFile));
+    const sm = await pi.SessionManager.openAsync(sessionFile, path.dirname(sessionFile));
     if (target.kind === 'restore-point') {
       const record = getPreRewindEntries(sm.getEntries()).find((r) => r.id === target.id);
       return record ? await readSkippedManifest(record, checkpointFolder) : { ok: false, error: `no restore point ${target.id}` };

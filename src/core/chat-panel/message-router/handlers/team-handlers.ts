@@ -29,7 +29,8 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) return;
       try {
-        const teamId = await findTeamIdByToolUse(ctx.folder.fsPath, sessionId, msg.toolUseId);
+        const live = ctx.session.liveConversation();
+        const teamId = await findTeamIdByToolUse(ctx.folder.fsPath, sessionId, msg.toolUseId, live?.sessionId === sessionId ? live.branch : undefined);
         if (!teamId) return;
         const team = await loadTeam(ctx.session, ctx.folder.fsPath, sessionId, teamId);
         if (team) postMessage(ctx.reply, { type: "teamStarted", team });

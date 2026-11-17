@@ -146,12 +146,37 @@ describe('BrowserService client certificates', () => {
 
     expect(close).toHaveBeenCalledTimes(1);
     expect(restore.mock.calls).toEqual([
-      [first, ['https://a.test/', 'https://b.test/'], 1],
-      [second, ['https://down.test/'], undefined],
+      [first, ['https://a.test/', 'https://b.test/'], 1, undefined],
+      [second, ['https://down.test/'], undefined, undefined],
     ]);
     // the profile is prepared again for the relaunch, so the reopened pages get the rule
     restore.mockRestore();
     await expect(service.openNewPageForChat(chat())).rejects.toThrow('no browser in this test');
     expect(ruleOf(launched.at(-1))).toEqual({ 'https://intranet.test:443,*': { setting: { filters: [FILTER] } } });
+  });
+
+  it('reopens a served project page at its file address through the served files of its chat, since the restart drops its grant', async () => {
+    const service = new BrowserService(platform, { profileDir: profile });
+    const owner = chat();
+    const priv = service as unknown as { context: unknown; userDataDir: string | null; pages: Map<unknown, unknown> };
+    priv.context = { close: vi.fn(async () => {}) };
+    priv.userDataDir = profile;
+    const key = { url: 'http://127.0.0.1:51234/docs/index.html?q=1#top' };
+    priv.pages.set(key, { page: key, chat: owner, closing: false, lastUrl: key.url, unreachableUrl: null, pendingAck: null, ackRestartTimer: null, picker: { stopPicking: async () => {} }, panel: { dispose: vi.fn() } });
+    const restoreTarget = vi.fn(async (url: string) => ({ url: `fresh:${url}` }));
+    const binding = service.bindServedPages(owner, {
+      toFile: (url) => url.replace('http://127.0.0.1:51234/', 'file:///c:/project/'),
+      restoreTarget,
+    });
+    const restore = vi.spyOn(service, 'restoreChatPages').mockResolvedValue();
+
+    await service.useClientCertificate('https://intranet.test:443', FILTER);
+
+    expect(restore).toHaveBeenCalledTimes(1);
+    const [restoredChat, urls, active, servedTarget] = restore.mock.calls[0]!;
+    expect([restoredChat, urls, active]).toEqual([owner, ['file:///c:/project/docs/index.html?q=1#top'], undefined]);
+    await expect(servedTarget?.('file:///c:/project/docs/index.html?q=1#top')).resolves.toEqual({ url: 'fresh:file:///c:/project/docs/index.html?q=1#top' });
+    binding.dispose();
+    restore.mockRestore();
   });
 });

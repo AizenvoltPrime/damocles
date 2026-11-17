@@ -15,6 +15,9 @@ import { hostExtras } from './host-deps';
 import { createDesktopEditorService, type ChatTabMessenger } from '../../platform/editor-service';
 import type { EditorPane } from '../../editor-pane';
 import { englishText } from '../../../../shared/localized-text';
+import type { ShellPlatform } from '../../../preload/shell-channels';
+import { HostStore, type RemoteProjectRecord, type RemoteRelocation } from '../../remote/host-store';
+import { remoteHostTrust } from '../../remote/remote-trust';
 
 interface Harness {
   readonly main: FakePlatform;
@@ -22,6 +25,7 @@ interface Harness {
   readonly host: HostServices;
   readonly state: DesktopKeyValueState;
   readonly grant: (folder: string) => void;
+  readonly revoke: (folder: string) => void;
   readonly setTerminal: (shown: boolean) => void;
   readonly setLanguage: (language: 'en' | 'el') => void;
   // the JSON text main forwarded to each view, unparsed
@@ -58,7 +62,7 @@ afterEach(() => {
 });
 
 // editor: main's editor service in place of the fake's, built before the core's init reads it
-function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']> } = {}): Harness {
+function connect(options: { readonly trusted?: readonly string[]; readonly trust?: HostTrust; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']> } = {}): Harness {
   let language = options.language ?? 'en';
   const languageListeners = new Set<() => void>();
   const main = createFakePlatform({ chatBrowserPane: true, secrets: { stored: 'one' }, folders: [{ fsPath: path.resolve('/projects/a'), name: 'a' }] });
@@ -76,11 +80,20 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     trusted.add(folder);
     for (const listener of [...grants]) listener([folder]);
   };
+  const revokes = new Set<() => void>();
+  const revoke = (folder: string): void => {
+    trusted.delete(folder);
+    for (const listener of [...revokes]) listener();
+  };
   const trust: HostTrust = {
     trustedKeys: () => [...trusted].map((folder) => folderKey(folder)),
     onDidGrant: (listener): Disposable => {
       grants.add(listener);
       return { dispose: () => { grants.delete(listener); } };
+    },
+    onDidRevoke: (listener): Disposable => {
+      revokes.add(listener);
+      return { dispose: () => { revokes.delete(listener); } };
     },
     requestTrust: async (folder) => {
       await Promise.resolve();
@@ -95,7 +108,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
   const host = createHostServices({
     endpoint,
     platform: main,
-    trust,
+    trust: options.trust ?? trust,
     state,
     terminalToggle: () => terminal,
     resolveProxy: (url) => Promise.resolve(`PROXY proxy.example:8080 for ${url}`),
@@ -134,6 +147,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     host,
     state,
     grant,
+    revoke,
     setLanguage: (next) => {
       language = next;
       for (const listener of [...languageListeners]) listener();
@@ -226,6 +240,17 @@ describe('mirrored services', () => {
     grant(folder);
     expect(granted).toHaveBeenCalledWith([folder]);
     expect(core.trust.isTrusted(folder)).toBe(true);
+  });
+
+  it('a revoke main makes reaches core, and runs its grant listeners with no folder so they read trust again', () => {
+    const folder = path.resolve('/projects/moved');
+    const { core, revoke } = connect({ trusted: [folder] });
+    const granted = vi.fn();
+    core.trust.onDidGrantTrust(granted);
+    expect(core.trust.isTrusted(folder)).toBe(true);
+    revoke(folder);
+    expect(core.trust.isTrusted(folder)).toBe(false);
+    expect(granted).toHaveBeenCalledWith([]);
   });
 
   it('key-value state starts from main\'s values, updates locally at once and reaches main', async () => {
@@ -664,5 +689,93 @@ describe('a value that cannot cross the process boundary', () => {
     const panel = core.window.createPanel(CHAT);
     void panel.postMessage({ type: 'x', run: notCloneable });
     expect(main.window.panels[0]!.posted).toEqual([{ type: 'x' }]);
+  });
+});
+
+describe('a remote authority\'s trust, as its core reads it', () => {
+  const AUTHORITY = 'ssh+h1';
+  const OS = process.platform as ShellPlatform;
+  const a = path.resolve('/srv/a');
+  const b = path.resolve('/srv/b');
+  const c = path.resolve('/srv/c');
+  const record = (fsPath: string): RemoteProjectRecord => ({ path: fsPath, folderKey: folderKey(fsPath), os: OS });
+  const keyOf = (fsPath: string): string => `${AUTHORITY}|${folderKey(fsPath)}`;
+  const move = (from: string, to: string, id: string): RemoteRelocation => ({ id, fromFolderKey: folderKey(from), fromKey: keyOf(from), to: record(to), toKey: keyOf(to) });
+
+  // the host store's projects of the authority, and the new folder of each move its core's relocations mirror names
+  async function remote(listed: readonly string[], trusted: readonly string[]) {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-remote-trust-'));
+    dirs.push(userData);
+    const store = await HostStore.open(userData, () => undefined);
+    for (const folder of listed) await store.addProject(AUTHORITY, record(folder), keyOf(folder), () => []);
+    for (const folder of trusted) await store.grantTrust(AUTHORITY, folderKey(folder));
+    let movedTo: string[] = [];
+    const foldersChanged = new Set<() => void>();
+    const trust = remoteHostTrust({
+      authorityKey: AUTHORITY,
+      store,
+      folders: () => [
+        ...store.projects().filter((entry) => entry.authorityKey === AUTHORITY).map(({ project }) => ({ folderKey: project.folderKey, fsPath: project.path })),
+        ...movedTo.map((fsPath) => ({ folderKey: folderKey(fsPath), fsPath })),
+      ],
+      onDidChangeFolders: (listener): Disposable => {
+        foldersChanged.add(listener);
+        return { dispose: () => { foldersChanged.delete(listener); } };
+      },
+      requestTrust: async () => false,
+    });
+    const { core } = connect({ trust });
+    const relocations = (folders: string[]): void => {
+      movedTo = folders;
+      for (const listener of [...foldersChanged]) listener();
+    };
+    return { store, core, relocations };
+  }
+
+  it('a merge of trusted A into a listed, trusted B leaves A untrusted in core, though nothing was granted', async () => {
+    const { store, core } = await remote([a, b], [a, b]);
+    expect(core.trust.isTrusted(a)).toBe(true);
+    await store.replaceProject(AUTHORITY, move(a, b, 'r1'));
+    expect(core.trust.isTrusted(a)).toBe(false);
+    expect(core.trust.isTrusted(b)).toBe(true);
+  });
+
+  it('a Locate whose new folder the user declined to trust leaves both folders untrusted in core', async () => {
+    const { store, core } = await remote([a], [a]);
+    await store.replaceProject(AUTHORITY, move(a, c, 'r1'));
+    expect(core.trust.isTrusted(a)).toBe(false);
+    expect(core.trust.isTrusted(c)).toBe(false);
+  });
+
+  it('a Remove Project takes the folder\'s trust out of core', async () => {
+    const { store, core } = await remote([a], [a]);
+    await store.removeProject(AUTHORITY, folderKey(a), keyOf(a));
+    expect(core.trust.isTrusted(a)).toBe(false);
+  });
+
+  it('the new folder of a move core runs reads trusted there while the host store trusts it, granted once, and never otherwise', async () => {
+    const { store, core, relocations } = await remote([a], [a]);
+    const granted = vi.fn();
+    core.trust.onDidGrantTrust(granted);
+    relocations([c]);
+    expect(core.trust.isTrusted(c)).toBe(false);
+    await store.grantTrust(AUTHORITY, folderKey(c));
+    expect(core.trust.isTrusted(c)).toBe(true);
+    expect(granted).toHaveBeenCalledWith([c]);
+    // the host part lists c and revokes a in one write; c stays trusted with no second grant
+    granted.mockClear();
+    await store.replaceProject(AUTHORITY, move(a, c, 'r1'));
+    expect(core.trust.isTrusted(c)).toBe(true);
+    expect(core.trust.isTrusted(a)).toBe(false);
+    expect(granted.mock.calls.filter(([folders]) => (folders as string[]).length > 0)).toEqual([]);
+  });
+
+  it('a stopped move\'s new folder, unlisted, leaves core\'s trust with the move', async () => {
+    const { store, core, relocations } = await remote([a], [a]);
+    await store.grantTrust(AUTHORITY, folderKey(c));
+    relocations([c]);
+    expect(core.trust.isTrusted(c)).toBe(true);
+    relocations([]);
+    expect(core.trust.isTrusted(c)).toBe(false);
   });
 });

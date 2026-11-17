@@ -28,6 +28,15 @@ export const OPENAI_KEY_MOVED_MARKER_PATH: string = path.join(DAMOCLES_HOME_DIR,
 /** `{ sweptAt }`: the key sync's one-time removal of plain-text key-provider keys older versions wrote to auth.json ran. */
 export const PROVIDER_KEY_SWEEP_MARKER_PATH: string = path.join(DAMOCLES_HOME_DIR, "provider-key-sweep.json");
 
+/** The project relocation journal, which is also the alias map of moved project folders (docs/invariants.md "Project relocation"). */
+export const PROJECT_RELOCATIONS_PATH: string = path.join(DAMOCLES_HOME_DIR, "project-relocations.json");
+/** Each project folder's last read repository identity, by folderKey, matched against a folder that is gone (docs/invariants.md "Project relocation"). */
+export const FOLDER_IDENTITIES_PATH: string = path.join(DAMOCLES_HOME_DIR, "folder-identities.json");
+/** `<id>.lock` per relocation: the one runner of that relocation, across processes. */
+export const RELOCATION_LOCK_DIR: string = path.join(DAMOCLES_HOME_DIR, "locks", "relocations");
+/** The worktree registry's rootDir: registry.json and every chat worktree, as <project>-<hash>/<id> (AD12). */
+export const WORKTREES_ROOT_DIR: string = path.join(DAMOCLES_HOME_DIR, "worktrees");
+
 /** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
 export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");
 

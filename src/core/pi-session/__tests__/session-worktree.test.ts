@@ -16,6 +16,8 @@ import type { GitRunner } from '../../scm/git-runner';
 import { worktreeIsolationBlock, WORKTREE_ISOLATION_REASON } from '../worktree-isolation';
 import { DAMOCLES_ORIGINAL_INPUT_ENTRY } from '../session-store/constants';
 import { formatIdeContextBlock } from '../../../shared/ide-context';
+import { installRelocations, relocationsSnapshot } from '../../project-relocation/current';
+import { RELOCATION_STEPS, type RelocationRecord } from '../../project-relocation/types';
 
 const inert = { dispose: () => undefined };
 const watchers: FileWatcherFactory = {
@@ -95,6 +97,27 @@ describe('a session\'s worktree facts', () => {
     expect(s.worktree.shellEnvironment()).toEqual({ DAMOCLES_PROJECT_FOLDER: project, DAMOCLES_WORKTREE_INDEX: '1' });
     expect(s.worktree.isolation()?.projectPath).toBe(project);
     expect(sessionAt(project).worktree.shellEnvironment()).toBeUndefined();
+  });
+
+  // docs/invariants.md "Worktree chats", Ownership: a chat of the worktree opened as its own project is no chat of its record.
+  it("leaves a chat whose panel works in the worktree as that folder's own project out of the worktree: no entry, isolation or environment", () => {
+    const binding = { view: () => undefined, sharedWith: async () => 0, finishing: () => undefined, moving: () => false, projectName: () => 'project' };
+    const own = sessionAt(record.workingFolder);
+    own.worktree.bindPanel({ ...binding, holdsAsProject: () => true });
+    own.worktree.ensureEntry();
+    expect(own.entries).toEqual([]);
+    expect([own.worktree.record(), own.worktree.inLiveWorktree(), own.worktree.isolation(), own.worktree.shellEnvironment()]).toEqual([undefined, undefined, undefined, undefined]);
+    expect([own.worktree.place(), own.worktree.readOnly()]).toEqual(['project', false]);
+    // the project's chat there still works in the worktree, and one resumed in the folder's own role is history only
+    const projects = sessionAt(record.workingFolder);
+    projects.worktree.bindPanel({ ...binding, holdsAsProject: () => false });
+    projects.worktree.ensureEntry();
+    expect(projects.entries).toHaveLength(1);
+    expect(projects.worktree.inLiveWorktree()?.id).toBe(record.id);
+    const resumed = sessionAt(record.workingFolder, { entries: [entry('worktree')] });
+    resumed.worktree.bindPanel({ ...binding, holdsAsProject: () => true });
+    expect(resumed.worktree.inLiveWorktree()).toBeUndefined();
+    expect(resumed.worktree.readOnlyReason()).toBe('deleted');
   });
 
   it('is read-only when its latest entry places it in a worktree this host cannot bind to: deleted, or the VS Code host', async () => {
@@ -219,7 +242,7 @@ describe('a session\'s worktree facts', () => {
         return others;
       },
       finishing: () => finish.action,
-      moving: () => false, projectName: () => 'project',
+      moving: () => false, projectName: () => 'project', holdsAsProject: () => false,
     });
     s.worktree.publish();
     await vi.waitFor(() => expect(s.emitted).toHaveLength(1));
@@ -236,7 +259,7 @@ describe('a session\'s worktree facts', () => {
 
   it('counts no sharing for a chat that moved back to the project folder', async () => {
     const s = sessionAt(project, { entries: [entry('worktree', 'w0'), entry('project', 'w1')] });
-    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 3, finishing: () => undefined, moving: () => false, projectName: () => 'project' });
+    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 3, finishing: () => undefined, moving: () => false, projectName: () => 'project', holdsAsProject: () => false });
     expect(await s.worktree.sharedWith()).toBe(0);
   });
 
@@ -246,7 +269,7 @@ describe('a session\'s worktree facts', () => {
       view: () => ({ phase: 'settingUp', branch: 'damocles/x', setupStep: { command: 'npm ci', index: 1, total: 2 }, heldPrompt: { text: 'Fix it', imageCount: 1 } }),
       sharedWith: async () => 0,
       finishing: () => undefined,
-      moving: () => false, projectName: () => 'project',
+      moving: () => false, projectName: () => 'project', holdsAsProject: () => false,
     });
     s.worktree.publish();
     await vi.waitFor(() => expect(s.emitted).toHaveLength(1));
@@ -306,7 +329,7 @@ describe('a session\'s worktree facts', () => {
   it('emits only the latest of overlapping publishes, never an older state last', async () => {
     const s = sessionAt(record.workingFolder, { entries: [entry('worktree')] });
     const answers: Array<(n: number) => void> = [];
-    s.worktree.bindPanel({ view: () => undefined, sharedWith: () => new Promise<number>((resolve) => answers.push(resolve)), finishing: () => undefined, moving: () => false, projectName: () => 'project' });
+    s.worktree.bindPanel({ view: () => undefined, sharedWith: () => new Promise<number>((resolve) => answers.push(resolve)), finishing: () => undefined, moving: () => false, projectName: () => 'project', holdsAsProject: () => false });
     s.worktree.publish();
     s.worktree.publish();
     await vi.waitFor(() => expect(answers).toHaveLength(2));
@@ -320,7 +343,7 @@ describe('a session\'s worktree facts', () => {
 
   it('offers no hand-off while a finish action runs on the worktree', async () => {
     const s = sessionAt(record.workingFolder, { entries: [entry('worktree')] });
-    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 0, finishing: () => 'merge', moving: () => false, projectName: () => 'project' });
+    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 0, finishing: () => 'merge', moving: () => false, projectName: () => 'project', holdsAsProject: () => false });
     s.worktree.publish();
     await vi.waitFor(() => expect(s.emitted).toHaveLength(1));
     expect(s.emitted[0]).toMatchObject({ finishing: 'merge', canHandOff: false });
@@ -329,10 +352,10 @@ describe('a session\'s worktree facts', () => {
   it('offers no hand-off while one is in flight, and names the finish action holding the live worktree', async () => {
     const s = sessionAt(record.workingFolder, { entries: [entry('worktree')] });
     let moving = true;
-    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 0, finishing: (id) => (id === record.id ? 'apply' : undefined), moving: () => moving, projectName: () => 'project' });
+    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 0, finishing: (id) => (id === record.id ? 'apply' : undefined), moving: () => moving, projectName: () => 'project', holdsAsProject: () => false });
     expect(s.worktree.finishing()).toBe('apply');
     expect(sessionAt(project, { entries: [entry('worktree'), entry('project')] }).worktree.finishing()).toBeUndefined();
-    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 0, finishing: () => undefined, moving: () => moving, projectName: () => 'project' });
+    s.worktree.bindPanel({ view: () => undefined, sharedWith: async () => 0, finishing: () => undefined, moving: () => moving, projectName: () => 'project', holdsAsProject: () => false });
     s.worktree.publish();
     await vi.waitFor(() => expect(s.emitted).toHaveLength(1));
     expect(s.emitted[0]).toMatchObject({ canHandOff: false });
@@ -471,5 +494,23 @@ describe('a session\'s worktree facts', () => {
   it('maps records across a hand-off to the folder each was made in', () => {
     const s = sessionAt(record.workingFolder, { entries: [entry('project', 'w0'), entry('worktree', 'w1')] });
     expect(s.worktree.handOffs()).toEqual({ initialFolder: project, handOffs: [{ entryId: 'w1', folder: record.workingFolder }] });
+  });
+
+  it("names an entry's project where a relocation since moved it, as of the entry's time, in its latest entry and its hand-offs", () => {
+    const old = path.join(base, 'old-project');
+    const steps = Object.fromEntries(RELOCATION_STEPS.map((name) => [name, { state: 'done' }])) as RelocationRecord['steps'];
+    const moved: RelocationRecord = { id: 'r1', seq: 1, requestedBy: 'desktop', mode: 'locate', folders: [{ kind: 'project', from: old, to: project }], chats: 0, state: 'coreDone', steps, startedAt: Date.parse('2026-02-01T00:00:00.000Z') };
+    const recorded = (place: 'worktree' | 'project', id: string, timestamp: string) => ({ ...entry(place, id), data: { worktreeId: 'aaaaaaaa', projectPath: old, place }, timestamp });
+    installRelocations(relocationsSnapshot([moved], [moved]));
+    try {
+      const before = sessionAt(record.workingFolder, { entries: [recorded('project', 'w0', '2026-01-01T00:00:00.000Z'), recorded('worktree', 'w1', '2026-01-02T00:00:00.000Z')] });
+      expect(before.worktree.entry()).toEqual({ worktreeId: 'aaaaaaaa', projectPath: project, place: 'worktree' });
+      expect(before.worktree.handOffs()).toEqual({ initialFolder: project, handOffs: [{ entryId: 'w1', folder: record.workingFolder }] });
+      // a folder at the old path recorded after the move is another folder
+      const after = sessionAt(record.workingFolder, { entries: [recorded('worktree', 'w2', '2026-03-01T00:00:00.000Z')] });
+      expect(after.worktree.entry()?.projectPath).toBe(old);
+    } finally {
+      installRelocations(undefined);
+    }
   });
 });

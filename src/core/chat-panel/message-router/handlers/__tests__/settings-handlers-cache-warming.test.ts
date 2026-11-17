@@ -80,7 +80,7 @@ describe("createSettingsHandlers — setCacheWarming", () => {
     // Typed through `unknown` on purpose: the point is a payload the union does not admit.
     await run({ type: "setCacheWarming", mode: "always" } as unknown as WebviewToExtensionMessage);
 
-    expect(record["cacheWarming"]).toBe("streaming");
+    expect(record["cacheWarming"]).toBe("idle");
   });
 
   // App.vue writes the store optimistically before posting, so a failed write has to be undone by a

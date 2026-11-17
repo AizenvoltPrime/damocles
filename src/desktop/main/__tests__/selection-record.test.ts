@@ -19,7 +19,7 @@ vi.mock('../../../core/config/json-config-write', async (importActual) => {
 import { LastChats } from '../last-chats';
 import { PANEL_STATE_FILE, PanelStateStore } from '../panel-state-store';
 import { REMOTE_STATE_FILE, RemoteState } from '../remote/remote-state';
-import { recordSelection } from '../selection-record';
+import { recordProjectSelection, recordSelection } from '../selection-record';
 
 const LOCAL = 'c:\\work\\p';
 const REMOTE = 'ssh+h1|/srv/app';
@@ -101,5 +101,55 @@ describe('recordSelection', () => {
     expect(String(reported[0])).toContain('could not be read, so it is not changed');
     expect(lastChatFailures).toHaveLength(1);
     expect(written.files).toEqual([]);
+  });
+});
+
+describe('recordProjectSelection', () => {
+  const MISSING_LOCAL = 'c:\\work\\gone';
+
+  it('records a missing remote project in remote-state.json alone, leaving panels.json\'s local selection as it was', async () => {
+    const { deps, settled } = await stores();
+    recordSelection(deps, { projectKey: LOCAL, chatId: 's-1', panelId: 'panel-1', authority: 'local', sessionId: 's-1' });
+    await settled();
+    written.files = [];
+    recordProjectSelection(deps, REMOTE);
+    await settled();
+    expect(written.files).toEqual([REMOTE_STATE_FILE]);
+    expect(onDisk(REMOTE_STATE_FILE)).toMatchObject({ selected: { projectKey: REMOTE } });
+    expect(onDisk(PANEL_STATE_FILE)).toMatchObject({ selected: { projectKey: LOCAL, panelId: 'panel-1', sessionId: 's-1' } });
+  });
+
+  it('keeps the selected chat of a missing remote project that is selected already, writing nothing', async () => {
+    const { deps, settled } = await stores();
+    recordSelection(deps, { projectKey: REMOTE, chatId: 's-r', panelId: 'panel-r', authority: 'ssh+h1', sessionId: 's-r' });
+    await settled();
+    written.files = [];
+    recordProjectSelection(deps, REMOTE);
+    await settled();
+    expect(written.files).toEqual([]);
+    expect(onDisk(REMOTE_STATE_FILE)).toMatchObject({ selected: { projectKey: REMOTE, sessionId: 's-r' } });
+  });
+
+  it('records a missing local project in panels.json and clears a remote selection', async () => {
+    const { deps, settled } = await stores();
+    recordSelection(deps, { projectKey: REMOTE, chatId: 's-r', panelId: 'panel-r', authority: 'ssh+h1', sessionId: 's-r' });
+    await settled();
+    written.files = [];
+    recordProjectSelection(deps, MISSING_LOCAL);
+    await settled();
+    expect(written.files.sort()).toEqual([PANEL_STATE_FILE, REMOTE_STATE_FILE]);
+    expect(onDisk(PANEL_STATE_FILE)).toMatchObject({ selected: { projectKey: MISSING_LOCAL } });
+    expect(onDisk(REMOTE_STATE_FILE)).not.toHaveProperty('selected');
+  });
+
+  it('records a missing local project after a local selection in panels.json alone', async () => {
+    const { deps, settled } = await stores();
+    recordSelection(deps, { projectKey: LOCAL, chatId: 's-1', panelId: 'panel-1', authority: 'local', sessionId: 's-1' });
+    await settled();
+    written.files = [];
+    recordProjectSelection(deps, MISSING_LOCAL);
+    await settled();
+    expect(written.files).toEqual([PANEL_STATE_FILE]);
+    expect(onDisk(PANEL_STATE_FILE)).toMatchObject({ selected: { projectKey: MISSING_LOCAL } });
   });
 });

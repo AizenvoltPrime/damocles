@@ -39,6 +39,7 @@ Damocles is also a VS Code extension. The extension runs the same agent, chat an
 - **Web tools, image generation and GitHub and GitLab tools**: opt-in key-free web search and fetch, `GenerateImage`, the agent's CI, merge request and issue tools on the desktop app, and deferred tool loading. See [Tools](docs/tools.md).
 - **Mentions, commands and skills**: `@` files and agents, built-in and custom `/` commands, and skills from `.damocles`, `.claude` and `.codex`. See [Using Damocles](docs/usage.md).
 - **Voice input**: push-to-talk cloud transcription or an on-device "Hey Jarvis" wake word. See [Voice input](docs/usage.md#voice-input).
+- **Moved project folders**: the desktop app's Locate… moves a missing project's chats to its new folder, and VS Code offers to move a gone folder's chats into a clone or move of it you open. See [Desktop app](docs/desktop-app.md) and [Moved folders in VS Code](docs/usage.md#moved-folders-in-vs-code).
 - **Localization**: the UI is in English and Greek. See [Localization](docs/configuration.md#localization).
 
 ## Requirements

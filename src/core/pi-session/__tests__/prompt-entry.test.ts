@@ -210,6 +210,22 @@ describe('queuedPromptEntries', () => {
     expect(committed).toEqual([]);
   });
 
+  it('claims a prompt whose delivered text carries the hints pi appended to it when it normalized its images', async () => {
+    const fake = fakeSession();
+    const entries = queuedPromptEntries();
+    const committed: unknown[] = [];
+    queue(fake, entries, 'plain', []);
+    queue(fake, entries, 'look at this', [PNG], { onCommitted: (entry) => committed.push(entry), onWithdrawn: () => {}, onRefused: () => {} });
+    const hinted = 'look at this\n\n[Image omitted: could not be resized below the inline image size limit.]';
+    const message = user(hinted);
+
+    expect(entries.claim(fake.asSession(), 'plain\n\n[Image omitted: could not be resized below the inline image size limit.]', user('plain'))).toBe(false);
+    expect(entries.claim(fake.asSession(), hinted, message)).toBe(true);
+    fake.commit('u-look', message);
+    await Promise.resolve();
+    expect(committed).toEqual([{ id: 'u-look', text: hinted, images: 0 }]);
+  });
+
   it('withdraws only the prompts queued on the session named, and never one pi already delivered', () => {
     const live = fakeSession();
     const replaced = fakeSession();

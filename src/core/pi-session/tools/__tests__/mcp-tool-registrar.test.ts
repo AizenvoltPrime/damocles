@@ -11,6 +11,7 @@ import { FolderRuntime } from '../../folder-runtime';
 import { createDamoclesExtensionFactory } from '../../damocles-extension';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { log } from '../../../logger';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
@@ -64,7 +65,7 @@ describe('McpToolRegistrar', () => {
 
   it('registers the current tools on attach', () => {
     const { source } = mutableSource(['mcp__srv__a', 'mcp__srv__b']);
-    const registrar = new McpToolRegistrar(piStub, source, NO_REACH);
+    const registrar = new McpToolRegistrar(piStub, piMcp, source, NO_REACH);
     const instance = fakeInstance();
 
     registrar.attach(instance.api);
@@ -76,7 +77,7 @@ describe('McpToolRegistrar', () => {
     // Each panel on a folder binds its own instance. Topping up only the last one minted left every
     // earlier panel without a server that connected after it opened.
     const tools = mutableSource(['mcp__srv__a']);
-    const registrar = new McpToolRegistrar(piStub, tools.source, NO_REACH);
+    const registrar = new McpToolRegistrar(piStub, piMcp, tools.source, NO_REACH);
     const older = fakeInstance();
     const newer = fakeInstance();
     registrar.attach(older.api);
@@ -93,7 +94,7 @@ describe('McpToolRegistrar', () => {
     // The shipped failure: the registrar kept the newest instance after its session was disposed, and
     // the next MCP connect threw "extension ctx is stale" once per tool.
     const tools = mutableSource([]);
-    const registrar = new McpToolRegistrar(piStub, tools.source, NO_REACH);
+    const registrar = new McpToolRegistrar(piStub, piMcp, tools.source, NO_REACH);
     const live = fakeInstance();
     const disposed = fakeInstance();
     registrar.attach(live.api);
@@ -111,7 +112,7 @@ describe('McpToolRegistrar', () => {
 
   it('a stale detach does not evict the same instance attached again', () => {
     const { source } = mutableSource([]);
-    const registrar = new McpToolRegistrar(piStub, source, NO_REACH);
+    const registrar = new McpToolRegistrar(piStub, piMcp, source, NO_REACH);
     const instance = fakeInstance();
     const firstDetach = registrar.attach(instance.api);
     registrar.attach(instance.api);
@@ -123,7 +124,7 @@ describe('McpToolRegistrar', () => {
 
   it('a tool pi rejects does not keep the other tools out, and is retried on the next sync', () => {
     const tools = mutableSource(['mcp__srv__bad', 'mcp__srv__good']);
-    const registrar = new McpToolRegistrar(piStub, tools.source, NO_REACH);
+    const registrar = new McpToolRegistrar(piStub, piMcp, tools.source, NO_REACH);
     const instance = fakeInstance();
     instance.registerTool.mockImplementationOnce(() => { throw new Error('must define an object parameter schema'); });
 
@@ -151,6 +152,7 @@ describe('MCP registration across extension instances (real FolderRuntime)', () 
     const platform = createFakePlatform();
     const runtime = new FolderRuntime({
       pi: piStub,
+      mcpModule: piMcp,
       cwd: '/tmp/ws',
       agentDir: '/tmp/agent',
       modelRuntime: {} as ModelRuntime,
@@ -210,6 +212,7 @@ describe('MCP registration across extension instances (real FolderRuntime)', () 
     pool.fake.callTool.mockResolvedValue({ content: [{ type: 'resource_link', uri: 'docs://a', name: 'a' }], isError: false } as never);
     const runtime = new FolderRuntime({
       pi: piStub,
+      mcpModule: piMcp,
       cwd: '/tmp/ws',
       agentDir: '/tmp/agent',
       modelRuntime: {} as ModelRuntime,

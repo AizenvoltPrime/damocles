@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Platform } from '../../platform/platform';
+import type { PiCodingAgentModule } from '../pi-session/pi-loader';
 import type { SettingsFolder } from '../../platform/settings-store';
 import { DiffManager } from './diff-manager';
 import { PermissionState } from './state';
@@ -48,11 +49,11 @@ export class PermissionHandler {
   private onPermissionsChanged: (() => void) | null = null;
 
   // panelId is the chat panel this handler belongs to; proposal diffs are shown there on hosts that render editors in the panel.
-  /** `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler. */
-  constructor(platform: Platform, panelId?: string, settingsFolder?: SettingsFolder) {
+  /** `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler; `pi` reads the loaded pi module, whose edit a single Edit's approval diff runs. */
+  constructor(platform: Platform, pi: () => PiCodingAgentModule | null, panelId?: string, settingsFolder?: SettingsFolder) {
     this.platform = platform;
     this.state = new PermissionState();
-    this.diffManager = new DiffManager(platform.editor, panelId);
+    this.diffManager = new DiffManager(platform.editor, panelId, pi);
 
     const getPostMessage = () => this.state.postMessageToWebview;
 
@@ -332,9 +333,9 @@ export class PermissionHandler {
     return this.evaluatorManager.sessionCwd();
   }
 
-  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO; `requiresUser` and `reachesNetwork` as `EvaluatorManager.decide`. */
-  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null, requiresUser = false, reachesNetwork = false): 'allow' | 'deny' | 'ask' {
-    return this.evaluatorManager.decide(toolName, input, rule, requiresUser, reachesNetwork);
+  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO; `requiresUser` and `asksUnlessRuled` as `EvaluatorManager.decide`. */
+  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null, requiresUser = false, asksUnlessRuled = false): 'allow' | 'deny' | 'ask' {
+    return this.evaluatorManager.decide(toolName, input, rule, requiresUser, asksUnlessRuled);
   }
 
   /** Whether a `Read` deny or ask rule covers a file, for Grep and Glob to leave it out of their results. */
@@ -377,7 +378,7 @@ export class PermissionHandler {
     const evaluation = context.requiresUser
       ? this.decide(toolName, input, context.rule, true)
       : context.rule !== undefined
-        ? this.decide(toolName, input, context.rule, false, context.reachesNetwork === true)
+        ? this.decide(toolName, input, context.rule, false, context.reachesNetwork === true || context.outsideFolder === true)
         : await this.evaluatePermission(toolName, input, context.mcpTool);
 
     if (evaluation === 'allow') {

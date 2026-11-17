@@ -23,6 +23,19 @@ export function worktreeEntryOf(entry: unknown): WorktreeEntryData | undefined {
   return e.type === 'custom' && e.customType === DAMOCLES_WORKTREE_ENTRY && isWorktreeEntryData(e.data) ? e.data : undefined;
 }
 
+/** A worktree entry's data and the entry's time. */
+export interface RecordedWorktreeEntry {
+  readonly data: WorktreeEntryData;
+  readonly recordedAt: number | undefined;
+}
+
+/** A session entry's time in epoch ms; undefined when its `timestamp` does not parse. */
+export function entryTimeOf(entry: unknown): number | undefined {
+  const stamp = typeof entry === 'object' && entry !== null ? (entry as { timestamp?: unknown }).timestamp : undefined;
+  const ms = typeof stamp === 'string' ? Date.parse(stamp) : NaN;
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 /** The last worktree entry in file order, which decides where the chat works (AD12). */
 export function latestWorktreeEntry(entries: readonly unknown[]): WorktreeEntryData | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {

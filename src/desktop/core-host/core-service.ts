@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import { ChatPanelProvider, flushCoreWrites } from '../../core/chat-panel';
 import { announceLeaseRefusal, findStoredSessionHolder, leaseRefusalFor } from '../../core/chat-panel/session-ownership';
 import { listMirroredSessions, mirroredProjectFolder, mirroredSessionFile } from '../../core/chat-panel/transcript-view';
+import { currentHostPathOf } from '../../core/project-relocation/aliases';
+import { currentRelocations } from '../../core/project-relocation/current';
 import type { PanelManager } from '../../core/chat-panel/panel-manager';
 import type { AttachedView, CompassViewsHandle, HostInstance } from '../../core/chat-panel/types';
 import { log } from '../../core/logger';
@@ -10,7 +12,8 @@ import { runCheckpointMaintenance, setCheckpointGitAvailability } from '../../co
 import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
 import { SessionDesign } from '../../core/design/session-design';
-import { designPreviewInfo, readPreviewFile } from '../../core/design/design-preview';
+import { designPreviewAnswer, readPreviewFile } from '../../core/design/design-preview';
+import type { DesignPreviewAnswer } from '../../shared/types/design';
 import { isSafeAgentPathId } from '../../shared/agent-path-id';
 import { getPiCodingAgent } from '../../core/pi-session/pi-loader';
 import { writeSessionFile } from '../../core/pi-session/session-store/session-file-write';
@@ -296,11 +299,12 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     provider.openTranscript(panels.attach(viewId), mirrored.path, mirrored.sessionId);
   });
   // only this computer's core, and only a project folder of the session mirror, which is checked here again
-  endpoint.serve('chats.listMirrored', async ({ hostId, folder, query }) => {
+  endpoint.serve('chats.listMirrored', async ({ hostId, folder, query, os, project }) => {
     if (platform.init.remote) throw new Error('A remote core lists no session mirror');
     const mirrored = await mirroredProjectFolder(path.dirname(platform.init.logs.dir), hostId, folder);
     if (mirrored === undefined) throw new Error('The folder is not a project folder of the session mirror');
-    return mirrored === null ? [] : listMirroredSessions(mirrored, query ?? '');
+    // a session names its folders as they were; this computer's journal knows the host's moves since
+    return mirrored === null ? [] : listMirroredSessions(mirrored, query ?? '', os ?? process.platform, (named, recordedAt) => currentHostPathOf(currentRelocations().aliases, hostId, named, recordedAt), project);
   });
   endpoint.serve('chats.startInWorktree', async ({ viewId, projectKey, worktreeId }) => {
     const host = panels.attach(viewId);
@@ -317,10 +321,19 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     publishChat(panelId);
   });
   endpoint.serve('chats.restoreDraft', ({ panelId, content }) => panelManager.restoreDraft(panelId, [...content] as Parameters<typeof panelManager.restoreDraft>[1]));
+  // A saved file: page of one of this core's own chats reopens through its session's served files, after the ready that
+  // restores its stored conversation; a foreign view's file: page has no resolver, so isNavigableUrl skips it.
+  const restoredPageTarget = async (viewId: string, url: string): Promise<{ readonly url: string } | { readonly refused: string }> => {
+    const panelId = panelOfView(viewId)?.[0];
+    if (panelId === undefined) return { refused: 'its chat is not loaded' };
+    await panelManager.whenReadied(panelId);
+    const session = panelManager.getPanels().get(panelId)?.session;
+    return session ? session.browserRestoreTarget(url) : { refused: 'its chat closed' };
+  };
   endpoint.serve('chats.restorePages', async ({ viewId, urls, activePage }) => {
     // a chat closed while its restore ran has no tabs left to restore into
     const owner = pageOwner(viewId);
-    if (owner) await owner.browser.restoreChatPages(owner.host, urls, activePage);
+    if (owner) await owner.browser.restoreChatPages(owner.host, urls, activePage, panels.get(viewId) ? (url) => restoredPageTarget(viewId, url) : undefined);
   });
   endpoint.serve('chats.mention', async ({ panelId, target }) => {
     await panelManager.mentionFile(panelId, target);
@@ -375,6 +388,23 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('chats.promptTarget', async () => (await panelManager.promptTarget(undefined))?.panelId);
   endpoint.serve('chats.whenFolderReleased', ({ fsPath }) => panelManager.whenFolderReleased(fsPath));
   endpoint.serve('chats.whenWorktreeDiscarded', ({ panelId }) => panelManager.whenWorktreeDiscarded(panelId));
+  // a moved project folder's relocation (docs/invariants.md "Project relocation")
+  const relocations = provider.getProjectRelocations();
+  const publishRelocations = (): void => endpoint.publish('relocations', { records: relocations.views() });
+  subscriptions.push(relocations.onDidChange(publishRelocations));
+  publishRelocations();
+  endpoint.serve('projects.relocationPreflight', (request) => relocations.preflight(request));
+  endpoint.serve('projects.relocate', (request) => relocations.relocate(request));
+  endpoint.serve('projects.relocationRetry', ({ id }) => relocations.retry(id));
+  endpoint.serve('projects.relocationAbandon', async ({ id }) => {
+    const refusal = await relocations.abandon(id);
+    return refusal ? { refusal } : { abandoned: true as const };
+  });
+  endpoint.serve('projects.relocationsFrom', ({ keys }) => relocations.relocationsFrom(keys));
+  endpoint.serve('projects.applyHostState', ({ id }) => relocations.applyHostState(id));
+  endpoint.serve('projects.movedFrom', ({ to }) => relocations.movedFrom(to));
+  // this computer's journal records a host project's move for /stats; a daemon's core writes none of this computer's files
+  if (!platform.init.remote) endpoint.serve('projects.addHostAlias', (alias) => relocations.addHostAlias(alias));
   endpoint.serve('chats.projectBusy', ({ projectKey }) => [...panelManager.getPanels()].some(([panelId, instance]) =>
     (instance.folder.ownerKey ?? instance.folder.key) === projectKey && (instance.session.processing || isActiveActivity(activities.get(panelId)))));
   endpoint.serve('chats.leaseRefusal', ({ sessionId, announce }) => {
@@ -418,12 +448,17 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     const folder = heldDesign(designId);
     return folder === undefined ? undefined : readPreviewFile(folder, designId, relPath);
   });
-  endpoint.serve('design.info', async ({ designId, relPath }) => {
+  const previewAnswer = async (designId: string, relPath: string): Promise<DesignPreviewAnswer> => {
     const folder = heldDesign(designId);
     if (folder === undefined) return undefined;
-    const info = await designPreviewInfo(folder, relPath);
-    return info && { ...info, tweaks: SessionDesign.tweaksOf(designId) };
+    const answer = await designPreviewAnswer(folder, relPath);
+    return answer && !('missing' in answer) ? { ...answer, tweaks: SessionDesign.tweaksOf(designId) } : answer;
+  };
+  endpoint.serve('design.info', async ({ designId, relPath }) => {
+    const answer = await previewAnswer(designId, relPath);
+    return answer && !('missing' in answer) ? answer : undefined;
   });
+  endpoint.serve('design.previewAnswer', ({ designId, relPath }) => previewAnswer(designId, relPath));
   endpoint.serve('design.markup', ({ panelId, png, json }) => requireInstance(panelId).session.sendDesignMarkup(png, json));
   endpoint.serve('design.tweak', ({ panelId, tweakId, value }) => requireInstance(panelId).session.keepDesignTweak(tweakId, value));
   endpoint.serve('design.previewScreen', ({ path: screenPath }) => panelManager.previewDesignScreen(screenPath));
@@ -550,6 +585,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     });
     // this computer's ChatGPT sign-in, signed in and refreshed by a stub with short-lived tokens
     endpoint.serve('e2e.stubOAuth', ({ account, expiresInMs, offline }) => signInStubOAuth(PiRuntime.get(), account, expiresInMs, offline));
+    endpoint.serve('e2e.relocationPauseAfter', (pauseAfter) => relocations.setPauseAfter(pauseAfter));
     // this core's recorder starts a stand-in under its own launcher, so a test can tell which process records
     endpoint.serve('e2e.fakeVoice', ({ transcript }) => {
       fakeVoiceForE2e(transcript);

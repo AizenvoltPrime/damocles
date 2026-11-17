@@ -140,6 +140,14 @@ describe('the design preview’s wire', () => {
     expect(info({ ...facts, primary: 12.5 })).toBe(INVALID);
     expect(info({ ...facts, states: ['x'.repeat(200)] })).toBe(INVALID);
     expect(info({ ...facts, breakpoints: [{ name: 'xl', width: -1 }] })).toBe(INVALID);
+    // an older main parses design.info, so only design.previewAnswer may say a page is missing
+    expect(info({ missing: true })).toBe(INVALID);
+    expect(info(undefined)).toBeUndefined();
+    const answer = MAIN_TO_CORE.requests['design.previewAnswer'].result;
+    expect(answer(facts)).not.toBe(INVALID);
+    expect(answer({ missing: true })).toEqual({ missing: true });
+    expect(answer({ missing: false })).toBe(INVALID);
+    expect(answer(undefined)).toBeUndefined();
   });
 
   it('takes the tweaks of design.info only with token names, 2 to 5 controls and 2 to 8 stops, and absent from an older core', () => {

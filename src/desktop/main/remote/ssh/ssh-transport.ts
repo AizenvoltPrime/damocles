@@ -223,7 +223,9 @@ function sshArgsOrFail(input: SshArgsInput, log: (line: string) => void, failure
 
 /** ssh on the launcher; its stderr goes to the attempt's tail and to the log line by line, decoded across chunks. */
 function launchSsh(deps: SshTransportDeps, file: string, env: Record<string, string | undefined>, args: SshArgsInput, tail: Tail, log: (line: string) => void, failure: Failure): LaunchedSsh {
-  const child = deps.launcher().launch({ file, args: sshArgsOrFail(args, log, failure), env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  // Win32-OpenSSH drops stdout bytes while its stdin is written unless its stdio is overlapped, as its own sshd gives a
+  // command's; Node treats 'overlapped' as 'pipe' elsewhere
+  const child = deps.launcher().launch({ file, args: sshArgsOrFail(args, log, failure), env, stdio: ['overlapped', 'overlapped', 'overlapped'], windowsHide: true });
   const beforeOutput = createTail(MAX_STDERR_TAIL_CHARS);
   let output = false;
   child.onData('stdout', () => {

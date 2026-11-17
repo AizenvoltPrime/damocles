@@ -18,11 +18,11 @@ import { withSettingsPolicy } from '../settings-policy';
 
 /**
  * Real nested pi sessions, built as `FolderRuntime.createSubagentSession` builds one, whose user agent folder holds a pi
- * extension (`<agentDir>/extensions/`, which pi loads into every session, `package-manager.js:2055` in pi 1.4.0) with an
- * `agent_settled` handler. pi hands that handler no abort signal (`agent.js:217-219` in pi-agent-core 1.4.0), so a held
+ * extension (`<agentDir>/extensions/`, which pi loads into every session, `package-manager.js:2214` in pi 1.5.2) with an
+ * `agent_settled` handler. pi hands that handler no abort signal (`agent.js:217-219` in pi-agent-core 1.5.2), so a held
  * one keeps a stopped run from settling until the test releases it. With `beforeSettle` it also has an
  * `agent_before_settle` handler whose held draft pi commits once the handler returns, even after a stop
- * (`agent-session.js:1572-1573` in pi-coding-agent 1.4.0).
+ * (`agent-session.js:1636-1637` in pi-coding-agent 1.5.2).
  */
 
 /** The custom type of the draft a held `agent_before_settle` handler returns. */
@@ -38,7 +38,7 @@ const holds = ((globalThis as Record<symbol, unknown>)[HOLDS] ??= new Map()) as 
 // The user extension's own `pi`, through which a test makes it open a run as an extension does (`sendUserMessage`).
 const APIS = Symbol.for('damocles.test.heldSettleApi');
 const apis = ((globalThis as Record<symbol, unknown>)[APIS] ??= new Map()) as Map<string, ExtensionAPI>;
-// Text the user extension's next `agent_settled` handler sends once its hold returns, which pi defers into that settle (`agent-session.js:1632-1634`).
+// Text the user extension's next `agent_settled` handler sends once its hold returns, which pi defers into that settle (`agent-session.js:1696-1698`).
 const SETTLED_SENDS = Symbol.for('damocles.test.heldSettleSend');
 const settledSends = ((globalThis as Record<symbol, unknown>)[SETTLED_SENDS] ??= new Map()) as Map<string, string>;
 
@@ -79,12 +79,12 @@ interface BootOptions {
   mainChat?: boolean;
   /**
    * Registers the `input` handler `holdInput` holds, the inline extension's with `mainChat` and else the user extension's. pi awaits it in `prompt()` before `_startRun`
-   * (`agent-session.js:1652`, `:1693` in pi-coding-agent 1.4.0), where the main chat's prompt waits only on the auth check (`:1682-1683`).
+   * (`agent-session.js:1736`, `:1726` in pi-coding-agent 1.5.2), where the main chat's prompt waits only on the auth check (`:1766-1767`).
    */
   input?: boolean;
   /**
    * Registers the user extension's `before_agent_start` handler `holdBeforeAgentStart` holds. pi awaits it in `_prepareRun`,
-   * after `_startRun` marked the session busy and before the run's `agent_start` (`agent-session.js:1424-1428`, `:1488`).
+   * after `_startRun` marked the session busy and before the run's `agent_start` (`agent-session.js:1488-1492`, `:1552` in pi-coding-agent 1.5.2).
    */
   beforeAgentStart?: boolean;
 }
@@ -207,7 +207,7 @@ export function heldSettleSessions(shared: { modelRuntime?: () => Promise<ModelR
     const { session } = await createAgentSessionFromServices({
       services,
       sessionManager: options.store?.kind === 'file' ? SessionManager.create(cwd, options.store.dir, { id: options.store.id })
-        : options.store?.kind === 'reopen' ? SessionManager.open(options.store.path, undefined, cwd)
+        : options.store?.kind === 'reopen' ? await SessionManager.openAsync(options.store.path, undefined, cwd)
         : SessionManager.inMemory(cwd),
       model: modelRuntime.getModel('anthropic', 'claude-opus-5-5')!,
       thinkingLevel: 'off',

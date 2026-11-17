@@ -89,6 +89,7 @@ describe('memory judge settings contributions: enum sync guard', () => {
       'Jev (TypeSafe)',
       'Jev (OpenRouter)',
       'GPT-6 Luna (Decisions API)',
+      'Microsoft-Decision-1 (GitHub Copilot)',
       ...DEFAULT_MODELS.map(modelLabel),
     ]);
   });

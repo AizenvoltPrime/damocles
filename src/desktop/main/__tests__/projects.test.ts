@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PROJECTS_FILE, ProjectList } from '../projects';
+import { MAX_RELOCATED, PROJECTS_FILE, ProjectList } from '../projects';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 let userData: string;
@@ -75,5 +75,54 @@ describe('ProjectList', () => {
       onDisk: () => new ProjectList(userData, () => undefined).folders().map((folder) => folder.fsPath),
     });
     expect(onDisk).toEqual([a, b]);
+  });
+});
+
+describe('ProjectList.relocate', () => {
+  it('puts the new folder in the old one\'s place, and a second call changes nothing', async () => {
+    const [a, b, c, moved] = ['a', 'b', 'c', 'moved-b'].map((name) => path.join(userData, name));
+    const projects = new ProjectList(userData, () => undefined);
+    for (const folder of [a, b!, c!]) await projects.add(folder!);
+    expect(await projects.relocate(b!, moved!, 'r1')).toBe(true);
+    expect(await projects.relocate(b!, moved!, 'r1')).toBe(false);
+    expect(new ProjectList(userData, () => undefined).folders().map((folder) => folder.fsPath)).toEqual([a, moved, c]);
+  });
+
+  it('removes the old row when the new folder is listed already (a merge)', async () => {
+    const [a, b, c] = ['a', 'b', 'c'].map((name) => path.join(userData, name));
+    const projects = new ProjectList(userData, () => undefined);
+    for (const folder of [a!, b!, c!]) await projects.add(folder);
+    expect(await projects.relocate(a!, `${c!}${path.sep}`, 'r1')).toBe(true);
+    expect(new ProjectList(userData, () => undefined).folders().map((folder) => folder.fsPath)).toEqual([b, c]);
+    expect(await projects.relocate(a!, c!, 'r1')).toBe(false);
+  });
+
+  it('records the relocation in the list\'s own write, which a second call and an older reader leave alone', async () => {
+    const [a, moved] = ['a', 'moved-a'].map((name) => path.join(userData, name));
+    const file = path.join(userData, PROJECTS_FILE);
+    const projects = new ProjectList(userData, () => undefined);
+    await projects.add(a!);
+    expect(projects.relocated('r1')).toBe(false);
+    expect(await projects.relocate(a!, moved!, 'r1')).toBe(true);
+    const written = fs.readFileSync(file, 'utf8');
+    expect(JSON.parse(written)).toEqual({ version: 1, projects: [moved], relocated: ['r1'] });
+    expect(await projects.relocate(a!, moved!, 'r1')).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe(written);
+    const reread = new ProjectList(userData, () => undefined);
+    expect([reread.relocated('r1'), reread.relocated('r2')]).toEqual([true, false]);
+    // a re-added old folder is another project: adding and removing it keeps the record
+    await reread.add(a!);
+    await reread.remove(a!);
+    expect(new ProjectList(userData, () => undefined).relocated('r1')).toBe(true);
+  });
+
+  it('keeps the latest relocations only, and reads a file that names none', async () => {
+    const [a, b] = ['a', 'b'].map((name) => path.join(userData, name));
+    fs.writeFileSync(path.join(userData, PROJECTS_FILE), JSON.stringify({ version: 1, projects: [a] }));
+    const projects = new ProjectList(userData, () => undefined);
+    expect(projects.folders().map((folder) => folder.fsPath)).toEqual([a]);
+    for (let i = 0; i <= MAX_RELOCATED; i++) await projects.relocate(i % 2 === 0 ? a! : b!, i % 2 === 0 ? b! : a!, `r${i}`);
+    const reread = new ProjectList(userData, () => undefined);
+    expect([reread.relocated('r0'), reread.relocated('r1'), reread.relocated(`r${MAX_RELOCATED}`)]).toEqual([false, true, true]);
   });
 });

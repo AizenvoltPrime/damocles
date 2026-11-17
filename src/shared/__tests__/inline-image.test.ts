@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { classifyInlineImage, inlineImageMediaType, sniffImageMediaType } from '../inline-image';
+import { classifyInlineImage, inlineImageMediaType, sniffImageMediaType, sniffReadableImageType } from '../inline-image';
 import { isAttachableImageMimeType, isBinaryMimeType, isDirectoryResource, isTextMimeType } from '../mcp-resource-mime';
 import { MAX_IMAGE_BASE64_LENGTH } from '../types/content';
 import { base64Of as b64, IMAGE_BYTES } from './image-bytes';
@@ -9,13 +9,24 @@ import { base64Of as b64, IMAGE_BYTES } from './image-bytes';
 const PI_MIME = path.resolve(__dirname, '../../../node_modules/@earendil-works/pi-coding-agent/dist/utils/mime.js');
 
 describe('sniffImageMediaType', () => {
-  it('agrees with pi 1.4.0 detectSupportedImageMimeType on every fixture, except BMP, which no provider takes inline', async () => {
+  it('agrees with pi 1.5.2 detectSupportedImageMimeType on every fixture, except BMP, which no provider takes inline', async () => {
     const pi = (await import(pathToFileURL(PI_MIME).href)) as { detectSupportedImageMimeType: (buffer: Uint8Array) => string | null };
     for (const [name, bytes] of Object.entries(IMAGE_BYTES)) {
       const theirs = pi.detectSupportedImageMimeType(Buffer.from(bytes));
       expect(sniffImageMediaType(bytes), name).toBe(theirs === 'image/bmp' ? null : theirs);
     }
     expect(pi.detectSupportedImageMimeType(Buffer.from(IMAGE_BYTES.bmp))).toBe('image/bmp');
+  });
+});
+
+describe('sniffReadableImageType', () => {
+  it('agrees with pi 1.5.2 detectSupportedImageMimeType on every fixture, BMP included', async () => {
+    const pi = (await import(pathToFileURL(PI_MIME).href)) as { detectSupportedImageMimeType: (buffer: Uint8Array) => string | null };
+    for (const [name, bytes] of Object.entries(IMAGE_BYTES)) {
+      expect(sniffReadableImageType(bytes), name).toBe(pi.detectSupportedImageMimeType(Buffer.from(bytes)));
+      // a truncated header, as a short file gives
+      expect(sniffReadableImageType(bytes.subarray(0, 27)), name).toBe(pi.detectSupportedImageMimeType(Buffer.from(bytes.subarray(0, 27))));
+    }
   });
 });
 

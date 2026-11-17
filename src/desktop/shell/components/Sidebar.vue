@@ -315,6 +315,8 @@ defineExpose({
     if (projects.value?.focus()) return;
     root.value?.querySelector<HTMLElement>('button')?.focus();
   },
+  // false: the Projects list is collapsed or empty
+  focusProjects: (): boolean => projects.value?.focus() ?? false,
   // Reveal in Files: the editor tab's file, selected and scrolled into view in the tree.
   revealFile: (file: FileRef): Promise<void> | undefined => files.value?.reveal(file),
 });

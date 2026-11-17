@@ -350,7 +350,7 @@ describe('the before_agent_start reconcile', () => {
       content: Array.from({ length: count }, (_, i) => ({ type: 'toolCall', id: `call-${i}`, name: 'BrowserScreenshot', arguments: {} })),
       api: 'anthropic',
       provider: 'anthropic',
-      model: 'claude-fable-5-1',
+      model: 'claude-fable-5-2',
       usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
       stopReason: 'toolUse',
       timestamp: 0,

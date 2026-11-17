@@ -7,7 +7,9 @@ import { compassIndexPath } from '../compass/util';
 import { l, verbatim } from '../l10n';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { log } from '../logger';
+import { GIT_FILE_READ_LIMIT, reachesAnotherHost, readBounded } from '../workspace-folders/git-head';
 import { folderIdFor, getFolderRepoDir } from '../pi-session/checkpoints/resolver';
+import { adminDirNaming, repositoryDirs } from '../project-relocation/worktree-links';
 import { currentBranchRef, gitMessage, nulList, projectGit, uncommittedFiles as statusFiles, withPatchFile, withTempFolder, type ProjectGit, type WorktreeFile } from './create';
 import type { ChatWorktreeRecord, PendingBase, WorktreeRegistry } from './registry';
 
@@ -495,7 +497,8 @@ export async function removeWorktree(
   const live = registry.get(record.id);
   if (live?.kind !== 'chat' || live.deletedAt !== undefined) throw new Error(`Worktree ${record.id} is not a live chat worktree`);
   const git = gitOf(live, runner);
-  const state = await worktreeFolderState(live.worktreeRoot);
+  const state = await worktreeFolderState(live);
+  if (state === 'unreachable') throw new WorktreeRemoveError(live.worktreeRoot, `its repository ${live.repositoryRoot} is not available`);
   if (state === 'worktree') {
     const result = await git.run(live.projectPath, ['worktree', 'remove', ...(options.force ? ['--force'] : []), ...git.eoo(), live.worktreeRoot], { kind: 'mutation', allowFailure: true });
     if (result.exitCode !== 0) throw new WorktreeRemoveError(live.worktreeRoot, result.stderr.trim() || `git worktree remove exited with ${result.exitCode}`);
@@ -511,8 +514,9 @@ export async function removeWorktree(
   }
   await registry.markDeleted(live.id);
   // The worktree is gone by now, so an empty folder left in place is only logged.
-  await registry.removeEmptyProjectFolder(live.projectPath).catch((err: unknown) => log(`[worktrees] Could not remove the empty folder of ${live.worktreeRoot}: ${gitMessage(err)}`));
+  await registry.removeEmptyProjectFolder(live).catch((err: unknown) => log(`[worktrees] Could not remove the empty folder of ${live.worktreeRoot}: ${gitMessage(err)}`));
   await fs.rm(path.dirname(compassIndexPath(live.workingFolder)), { recursive: true, force: true });
+  // its own folder repo only: a recursive remove never follows a relocation binding, which no working folder gets
   await fs.rm(getFolderRepoDir(folderIdFor(live.workingFolder)), { recursive: true, force: true });
   if (options.deleteBranch) {
     await git.run(live.projectPath, ['branch', '-D', ...git.eoo(), revision(live.branch)], { kind: 'mutation' }).catch((err: unknown) => {
@@ -521,14 +525,35 @@ export async function removeWorktree(
   }
 }
 
+export type WorktreeFolderState = 'worktree' | 'leftover' | 'unreachable' | 'gone';
+
 /**
- * A chat worktree's folder as git sees it: a worktree, gone, or a leftover, a folder whose .git link is gone. A
+ * A chat worktree's folder as git sees it: a worktree, gone, a leftover, or unreachable. A leftover is a folder whose .git
+ * link is gone, or names a git dir that is gone while the record's repository is there and has no admin dir naming it: a
  * `git worktree remove` that deletes the contents but cannot delete the folder itself (on Windows, a process outside
- * Damocles holding it open) leaves one, and git no longer knows it as a worktree.
+ * Damocles holding it open) leaves one, and so does a relocation onto a clone that never had the worktree. Unreachable is a
+ * git dir that is gone while the record's repository cannot be read (a drive that is not mounted, a project moved before
+ * Locate): its work may still be re-linked, so nothing removes it.
  */
-export async function worktreeFolderState(folder: string): Promise<'worktree' | 'leftover' | 'gone'> {
+export async function worktreeFolderState(record: Pick<ChatWorktreeRecord, 'worktreeRoot' | 'repositoryRoot'>): Promise<WorktreeFolderState> {
+  const folder = record.worktreeRoot;
   if (!(await folderExists(folder))) return 'gone';
-  return (await folderExists(path.join(folder, '.git'))) ? 'worktree' : 'leftover';
+  const dotGit = path.join(folder, '.git');
+  if (!(await folderExists(dotGit))) return 'leftover';
+  const text = await readBounded(dotGit, GIT_FILE_READ_LIMIT);
+  const named = text === undefined ? undefined : /^gitdir:\s*(.+?)\s*$/m.exec(text)?.[1];
+  if (named === undefined) return 'worktree';
+  // a git dir on another host is never opened here; git decides, and runs only in a trusted project
+  const gitDir = path.resolve(folder, named);
+  if (reachesAnotherHost(gitDir, folder)) return 'worktree';
+  if (await folderExists(gitDir)) return 'worktree';
+  const dirs = await repositoryDirs(record.repositoryRoot);
+  if (dirs === undefined) return 'unreachable';
+  // git names the worktree by the path it resolved, which may differ from the record's spelling
+  for (const spelling of new Set([dotGit, await fs.realpath(dotGit)])) {
+    if ((await adminDirNaming(dirs.commonDir, spelling)) !== undefined) return 'worktree';
+  }
+  return 'leftover';
 }
 
 async function folderExists(folder: string): Promise<boolean> {

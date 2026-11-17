@@ -2,6 +2,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition, ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
+import type { McpModule } from '../mcp/mcp-client-loader';
 import type { McpToolSource } from '../mcp/tool-source';
 import type { McpCallResult } from '../mcp/mcp-client-manager';
 import type { McpToolDescriptor } from '../mcp/types';
@@ -9,7 +10,7 @@ import type { ElicitationUI } from '../mcp/elicitation-handler';
 import type { McpToolIdentity } from '../../permission-handler/types';
 import { disabledResourceMatcher, type McpResourceRuleFilter } from '../../permission-handler/mcp-resource-rule';
 import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH, type McpResourceToolName } from '../../../shared/tool-names';
-import { limitMcpContent, NO_RESOURCE_READ, transformMcpContent, type ResourceReadReach } from '../mcp/content';
+import { NO_RESOURCE_READ, saveMcpOutputToTempFile, transformMcpContent, type ResourceReadReach } from '../mcp/content';
 import { failureForLog } from '../mcp/connect-failure';
 import { resourceToolsExposure } from '../mcp/exposure';
 import { abortableTool } from './abortable-tool';
@@ -41,8 +42,8 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Build one pi tool for an MCP tool/resource descriptor. The raw MCP JSON Schema is wrapped with
- * `Type.Unsafe` (pi's validator coerces it); `execute` lazily connects + calls the server with the pi
+ * Build one pi tool for an MCP tool/resource descriptor. The MCP JSON Schema, normalized to an object schema by pi-mcp, is
+ * wrapped with `Type.Unsafe` (pi's validator coerces it); `execute` lazily connects + calls the server with the pi
  * `AbortSignal` (real cancellation) and converts the result to pi blocks. Wrapped with `abortableTool`
  * so the pi side also unblocks instantly on abort. A failed call returns a structured result, never a throw.
  *
@@ -55,6 +56,7 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
  */
 export function buildMcpPiTool(
   pi: PiCodingAgentModule,
+  mcp: McpModule,
   descriptor: McpToolDescriptor,
   manager: McpToolSource,
   opts: {
@@ -64,10 +66,9 @@ export function buildMcpPiTool(
     resourceReach: ResourceReachResolver;
   },
 ): ToolDefinition {
-  const rawSchema = isSchemaObject(descriptor.inputSchema)
-    ? descriptor.inputSchema
-    : { type: 'object', properties: {} };
-  const parameters = Type.Unsafe<Record<string, unknown>>(rawSchema);
+  // Normalized here only: the metadata cache keeps the schema the server sent.
+  const schema = mcp.normalizeMcpInputSchema(isSchemaObject(descriptor.inputSchema) ? descriptor.inputSchema : {});
+  const parameters = Type.Unsafe<Record<string, unknown>>(schema);
 
   const tool = pi.defineTool<typeof parameters, McpToolDetails | undefined>({
     name: descriptor.piName,
@@ -128,8 +129,9 @@ export function buildMcpPiTool(
         };
       }
       const reach = result.content.some((block) => block.type === 'resource_link') ? await reachFor(descriptor.serverName) : NO_RESOURCE_READ;
-      const { content, fullOutputPath } = await limitMcpContent(
+      const { content, fullOutputPath } = await mcp.limitMcpContent(
         transformMcpContent(result.content, { server: descriptor.serverName, ...reach }),
+        saveMcpOutputToTempFile,
       );
       const details: McpToolDetails | undefined =
         result.isError || fullOutputPath
@@ -244,6 +246,7 @@ export const EMPTY_NESTED_MCP_TOOLSET: NestedMcpToolset = Object.freeze({
  */
 export function buildNestedMcpToolset(
   pi: PiCodingAgentModule,
+  mcp: McpModule,
   manager: McpToolSource | null,
   opts: NestedMcpToolsetOptions,
 ): NestedMcpToolset {
@@ -287,7 +290,7 @@ export function buildNestedMcpToolset(
     // Already `abortableTool`-wrapped inside `buildMcpPiTool` — do not wrap again. `frozen: true` is
     // what earns these tools the permanent-failure wording: this set never refreshes.
     tools.push(
-      buildMcpPiTool(pi, descriptor, manager, {
+      buildMcpPiTool(pi, mcp, descriptor, manager, {
         frozen: true,
         resourceReach,
         ...(opts.elicitationUi ? { elicitationUi: opts.elicitationUi } : {}),
@@ -312,6 +315,7 @@ export function buildNestedMcpToolset(
     // Filed by the widest exposure among the frozen servers: Always loaded if any of them is.
     const exposure = resourceToolsExposure(resourceServers);
     const definitions = createMcpResourceTools({
+      mcp,
       source: () => manager,
       ruleFilter: opts.resourceRuleFilter,
       disabledResource: () => turnedOff,
@@ -356,14 +360,16 @@ export function buildNestedMcpToolset(
  */
 export class McpToolRegistrar {
   private readonly pi: PiCodingAgentModule;
+  private readonly mcp: McpModule;
   private readonly manager: McpToolSource;
   /** The folder's tools serve every panel in it, so each call asks the panel whose session made it. */
   private readonly resourceReach: ResourceReachResolver;
   /** Attached instances and the tool names already registered on each. */
   private readonly instances = new Map<ExtensionAPI, Set<string>>();
 
-  constructor(pi: PiCodingAgentModule, manager: McpToolSource, resourceReach: ResourceReachResolver) {
+  constructor(pi: PiCodingAgentModule, mcp: McpModule, manager: McpToolSource, resourceReach: ResourceReachResolver) {
     this.pi = pi;
+    this.mcp = mcp;
     this.manager = manager;
     this.resourceReach = resourceReach;
   }
@@ -393,7 +399,7 @@ export class McpToolRegistrar {
       if (registered.has(descriptor.piName)) continue;
       // Per tool: a server-supplied schema pi rejects must not keep the other servers' tools out.
       try {
-        extensionApi.registerTool(buildMcpPiTool(this.pi, descriptor, this.manager, { resourceReach: this.resourceReach }));
+        extensionApi.registerTool(buildMcpPiTool(this.pi, this.mcp, descriptor, this.manager, { resourceReach: this.resourceReach }));
         registered.add(descriptor.piName);
       } catch (err) {
         log('[McpToolRegistrar] failed to register %s: %O', descriptor.piName, err);

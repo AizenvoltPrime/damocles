@@ -29,6 +29,8 @@ export interface RemoteChatRecord {
   readonly authority: string;
   readonly sessionId?: string;
   readonly panelToken: string;
+  // the project the chat was open in, whose missing folder keeps it closed; absent in a record an older version wrote
+  readonly projectKey?: string;
 }
 
 // A chat whose turn was running when this app detached from its host, which the next attach tells about once it finished.
@@ -101,6 +103,8 @@ const PANEL_TOKEN = /^[0-9a-f-]{1,64}$/i;
 /** A page's panel token as remote-state.json keeps it; a page supplies its own, so it is checked before anything is held. */
 export const isPanelToken = (value: string): boolean => PANEL_TOKEN.test(value);
 const CORE_EPOCH = /^[0-9a-f]{32}$/;
+// the longest project key a chat record keeps: an authority key and a folder key of the longest Windows path
+const MAX_PROJECT_KEY = 33_000;
 
 function parseChat(value: unknown, authority: string): RemoteChatRecord | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
@@ -108,9 +112,11 @@ function parseChat(value: unknown, authority: string): RemoteChatRecord | undefi
   const sessionId = own(record, 'sessionId');
   const panelToken = own(record, 'panelToken');
   if (own(record, 'authority') !== authority || typeof panelToken !== 'string' || !PANEL_TOKEN.test(panelToken)) return undefined;
-  if (sessionId === undefined) return { authority, panelToken };
+  const projectKey = own(record, 'projectKey');
+  const project = isText(projectKey) && projectKey.length <= MAX_PROJECT_KEY && authorityKeyOfProject(projectKey) === authority ? { projectKey } : {};
+  if (sessionId === undefined) return { authority, panelToken, ...project };
   if (!isText(sessionId) || sessionId.length > 256) return undefined;
-  return { authority, sessionId, panelToken };
+  return { authority, sessionId, panelToken, ...project };
 }
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && !value.includes('\0');

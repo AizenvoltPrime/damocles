@@ -10,7 +10,9 @@ import type { ExtensionToWebviewMessage } from '../../../../shared/types/message
 import type { AgentWindDown } from '../../../../shared/types/wind-down';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { WIND_DOWN_NOTICE_MS } from '../../wind-down-notice';
+import { trackRunningHook } from '../../hooks/running-hooks';
 import { heldSettleSessions, type HeldSettleSession } from '../../__tests__/held-settle-fixture';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 /**
  * A subagent's Stop whose run a pi extension's `agent_settled` handler holds, on a real pi session built with the gate
@@ -52,9 +54,9 @@ function heldEngine(posted: ExtensionToWebviewMessage[]): { engine: SubagentEngi
     subagentStoreDir: () => '/store',
     recordInvocation: () => {},
     parentBranch: () => [],
-    assertResumableModel: () => {},
+    assertResumableModel: async () => {},
     parentFullToolNames: () => [],
-    buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
+    buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, piMcp, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
     disposeBrowserScope: () => {},
     cancelAgentDialogs: () => {},
     resolveModel: () => ({}),
@@ -90,6 +92,28 @@ describe("a subagent's Stop while a pi extension holds its run's wind-down", () 
     expect(windDowns(posted)).toEqual([{ phase: 'settle', events: ['agent_settled'], extensions: [booted.extensionPath] }, null]);
     const cleared = posted.findIndex((m) => m.type === 'statusUpdate' && m.status === 'windingDown' && m.windDown === null);
     expect(cleared).toBeLessThan(posted.findIndex((m) => m.type === 'subagentStop'));
+    manager.dispose();
+  }, 30_000);
+
+  it('names a SubagentStop hook still running on its card, and drops it once the hook ends', async () => {
+    const posted: ExtensionToWebviewMessage[] = [];
+    const { engine, held } = heldEngine(posted);
+    const manager = new AgentManager(engine, 1);
+    const id = manager.spawn(SPAWN);
+    const { booted, settle } = await within(held(), 10_000, 'the subagent session');
+    await within(settle.waiting, 10_000, 'the agent_settled handler');
+    const hookEnds = trackRunningHook(booted.session.sessionManager.getSessionId(), { command: 'bash ./scripts/notify.sh', scope: 'project' });
+
+    manager.abort(id, 'user');
+    const extensionOnly: AgentWindDown = { phase: 'settle', events: ['agent_settled'], extensions: [booted.extensionPath] };
+    const withHook: AgentWindDown = { ...extensionOnly, hooks: [{ label: 'notify.sh', scope: 'project' }] };
+    await vi.waitFor(() => expect(windDowns(posted)).toEqual([withHook]), { timeout: WIND_DOWN_NOTICE_MS + 2_000 });
+
+    hookEnds();
+    expect(windDowns(posted)).toEqual([withHook, extensionOnly]);
+    settle.release();
+    await within(manager.getRecord(id)!.promise!, 10_000, 'the stopped subagent');
+    expect(windDowns(posted)).toEqual([withHook, extensionOnly, null]);
     manager.dispose();
   }, 30_000);
 

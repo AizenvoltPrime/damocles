@@ -67,6 +67,20 @@ export class LastChats {
     this.change((key, remembered) => (remembered === chatId && key !== projectKey ? null : remembered));
   }
 
+  /** A relocated project: its entry moves to `toKey`, unless `toKey` has one already (a merge keeps the target's). */
+  relocate(fromKey: string, toKey: string): void {
+    if (!this.byProject.has(fromKey)) return;
+    const remembered = this.byProject.get(fromKey)!;
+    this.byProject.delete(fromKey);
+    if (!this.byProject.has(toKey)) this.byProject.set(toKey, remembered);
+    this.write([fromKey, toKey]);
+  }
+
+  /** Drops the entry of every project `stays` does not keep. */
+  forgetProjectsExcept(stays: (projectKey: string) => boolean): void {
+    this.change((key, remembered) => (stays(key) ? remembered : undefined));
+  }
+
   forgetProject(projectKey: string): void {
     this.change((key, remembered) => (key === projectKey ? undefined : remembered));
   }

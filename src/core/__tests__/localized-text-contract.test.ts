@@ -165,6 +165,9 @@ const ALLOWED: Readonly<Record<string, string>> = {
   // the Memory panel words its verdict from rerankClassifierScore
   'ExtensionToWebviewMessage[type="searchResults"].results[].reason': MODEL,
   'ExtensionToWebviewMessage[type="searchResults"].results[].title': NAME,
+  // a running hook's program or script file name, from the user's hooks.json
+  'ExtensionToWebviewMessage[type="sessionStateChanged"].windDown.hooks[].label': NAME,
+  'ExtensionToWebviewMessage[type="statusUpdate"].windDown.hooks[].label': NAME,
   'ExtensionToWebviewMessage[type="steerTargets"].agents[][kind="subagent"].description': MODEL,
   'ExtensionToWebviewMessage[type="storedSessions"].sessions[].workspaceFolder.label': NAME,
   'ExtensionToWebviewMessage[type="subagentMessagesUpdate"].messages[].contentBlocks[][type="text"].text': MODEL,
@@ -219,6 +222,9 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'MainRequests.design.info.result.title': NAME,
   // a tweak control's label, which the designer wrote in DeclareTweaks; the Tweaks column shows it as written
   'MainRequests.design.info.result.tweaks.controls[].label': MODEL,
+  // design.info's answer, with a missing page told apart
+  'MainRequests.design.previewAnswer.result.title': NAME,
+  'MainRequests.design.previewAnswer.result.tweaks.controls[].label': MODEL,
   // a journey step's target: an accessible name or text the designer wrote into the design, matched in the page, never shown as UI text
   'CoreRequests.design.journey.params.steps[].target.label': MODEL,
   'CoreRequests.design.journey.params.steps[].target.text': MODEL,

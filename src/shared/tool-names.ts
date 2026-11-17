@@ -64,7 +64,7 @@ export const DESIGN_CHAT_TOOLS: ReadonlySet<string> = new Set([
   TOOL_REMOVE_DESIGN_FILE, TOOL_OPEN_PREVIEW,
 ]);
 
-/** The cross-server MCP resource tools (pi 1.4.0's names); each call names its server in `input.server`. */
+/** The cross-server MCP resource tools (pi 1.5.2's names); each call names its server in `input.server`. */
 export const MCP_RESOURCE_TOOL_NAMES = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'] as const;
 export type McpResourceToolName = typeof MCP_RESOURCE_TOOL_NAMES[number];
 export function isMcpResourceToolName(name: string): name is McpResourceToolName {

@@ -5,6 +5,7 @@ import { formatPerfLine } from '../../../shared/perf-line';
 import { parseDiffStats } from './diff-parser';
 import {
   checkpointRefName,
+  folderRepoById,
   folderRepoFor,
   preRewindRefName,
   readSkippedManifest,
@@ -13,7 +14,7 @@ import {
 } from './folder-repo';
 import { LockWaitAbortedError } from './lock';
 import { RepoManager, type SnapshotResult } from './repo-manager';
-import { getGitDir, getIndexPath, getRepoDir } from './resolver';
+import { folderRepoIdsOf, getGitDir, getIndexPath, getRepoDir } from './resolver';
 import type {
   CheckpointEntry,
   CheckpointEntryV3,
@@ -306,13 +307,21 @@ export class AutoCheckpointProducer {
       started = true;
       const cap = this.options.maxFileSizeBytes();
       const { repo, folderId } = this.folder;
+      // A checkpoint taken before the folder moved, in a repo other than the one new checkpoints go to (a merge).
+      let other: RepoManager | null = null;
       let legacy: RepoManager | null = null;
       if (source.repo === 'folder') {
-        if (source.folderId !== folderId) {
+        if (!folderRepoIdsOf(this.options.cwd).has(source.folderId)) {
           return { ok: false, reason: 'unavailable', error: `the checkpoint belongs to folder repo ${source.folderId}, not to ${this.options.cwd}`, preRewind: null };
         }
-        if (!fs.existsSync(getGitDir(this.folder.repoDir))) {
-          return { ok: false, reason: 'unavailable', error: `the folder checkpoint repo is gone (${this.folder.repoDir})`, preRewind: null };
+        const handle = source.folderId === folderId ? this.folder : folderRepoById(source.folderId, this.options.cwd, this.options.capturesTracked ?? true);
+        if (!fs.existsSync(getGitDir(handle.repoDir))) {
+          return { ok: false, reason: 'unavailable', error: `the folder checkpoint repo is gone (${handle.repoDir})`, preRewind: null };
+        }
+        if (handle !== this.folder) {
+          const mismatch = await handle.repo.folderMismatch(this.options.cwd);
+          if (mismatch !== null) return { ok: false, reason: 'unavailable', error: mismatch, preRewind: null };
+          other = handle.repo;
         }
       } else {
         const repoDir = getRepoDir(this.options.sessionFile);
@@ -325,7 +334,7 @@ export class AutoCheckpointProducer {
       let held: Held;
       try {
         held = await repo.withLock(async (): Promise<Held> => {
-          if (source.repo === 'folder') {
+          if (source.repo === 'folder' && !other) {
             const mismatch = await repo.folderMismatch(this.options.cwd);
             if (mismatch !== null) return { refused: { ok: false, reason: 'unavailable', error: mismatch, preRewind: null } };
           }
@@ -336,7 +345,7 @@ export class AutoCheckpointProducer {
             log('[Checkpoints] pre-rewind snapshot failed, so nothing is restored: %s', errorText(err));
             return { refused: { ok: false, reason: 'snapshot-failed', error: errorText(err), preRewind: null } };
           }
-          const checkout = source.repo === 'folder' ? await repo.safeCheckoutLocked(targetCommit, { maxFileSizeBytes: cap }) : null;
+          const checkout = source.repo === 'folder' && !other ? await repo.safeCheckoutLocked(targetCommit, { maxFileSizeBytes: cap }) : null;
           return { preRewind, checkout };
         }, signal ? { signal } : undefined);
       } catch (err) {
@@ -348,7 +357,7 @@ export class AutoCheckpointProducer {
       const { preRewind } = held;
       const result: SafeCheckoutResult =
         held.checkout ??
-        (await legacy!.safeCheckout(targetCommit, { maxFileSizeBytes: cap }).catch((err: unknown): SafeCheckoutResult => ({ ok: false, reason: 'checkout-failed', error: errorText(err) })));
+        (await (other ?? legacy)!.safeCheckout(targetCommit, { maxFileSizeBytes: cap }).catch((err: unknown): SafeCheckoutResult => ({ ok: false, reason: 'checkout-failed', error: errorText(err) })));
       if (result.ok) return { ok: true, preRewind };
       if (result.rollbackError !== undefined) {
         log('[Checkpoints] restore and its rollback both failed; the pre-rewind state is kept as %s: %s / %s', preRewind.commit, result.error, result.rollbackError);

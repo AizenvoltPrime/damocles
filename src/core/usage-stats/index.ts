@@ -2,6 +2,7 @@ import { Worker } from 'node:worker_threads';
 import type { UsageStatsQuery, UsageStatsReport } from '../../shared/types/usage-stats';
 import { log } from '../logger';
 import { notifySchemaAhead } from '../schema-skew';
+import { NO_ALIASES, type RelocationAliases } from '../project-relocation/aliases';
 import type { NotificationService } from '../../platform/notification-service';
 import {
   USAGE_STATS_WORKER_MARKER,
@@ -41,6 +42,8 @@ export interface UsageStatsServiceOptions {
   paths: UsageStatsPaths;
   notifications: NotificationService;
   workerFactory?: UsageStatsWorkerFactory;
+  /** Moved project folders, read at each query; none when absent. */
+  aliases?: () => RelocationAliases;
   requestTimeoutMs?: number;
   idleTimeoutMs?: number;
   stallTimeoutMs?: number;
@@ -66,6 +69,7 @@ export class UsageStatsService {
   private readonly paths: UsageStatsPaths;
   private readonly notifications: NotificationService;
   private readonly workerFactory: UsageStatsWorkerFactory;
+  private readonly aliases: () => RelocationAliases;
   private readonly requestTimeoutMs: number;
   private readonly idleTimeoutMs: number;
   private readonly stallTimeoutMs: number;
@@ -83,6 +87,7 @@ export class UsageStatsService {
     this.paths = options.paths;
     this.notifications = options.notifications;
     this.workerFactory = options.workerFactory ?? defaultWorkerFactory;
+    this.aliases = options.aliases ?? (() => NO_ALIASES);
     this.requestTimeoutMs = options.requestTimeoutMs ?? USAGE_STATS_REQUEST_TIMEOUT_MS;
     this.idleTimeoutMs = options.idleTimeoutMs ?? USAGE_STATS_IDLE_TIMEOUT_MS;
     this.stallTimeoutMs = options.stallTimeoutMs ?? USAGE_STATS_STALL_TIMEOUT_MS;
@@ -100,7 +105,7 @@ export class UsageStatsService {
       this.armTimeout(id, entry);
       // A new request never restarts the stall clock, or retries would keep a wedged worker alive.
       if (!this.stallTimer) this.armStallTimer();
-      worker.postMessage({ type: 'query', id, paths: this.paths, models, query });
+      worker.postMessage({ type: 'query', id, paths: this.paths, models, aliases: this.aliases(), query });
     });
   }
 

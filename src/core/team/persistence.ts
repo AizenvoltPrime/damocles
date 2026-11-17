@@ -30,7 +30,7 @@ import type {
   TeamStatus,
 } from './types';
 import { isImageBlock } from '../../shared/types/content';
-import type { TeamState as WebviewTeamState, TeamAgent as WebviewTeamAgent, TeamMessage as WebviewTeamMessage, ScratchpadEntry as WebviewScratchpadEntry, TeamAgentHistoryMessage } from '../../shared/types/team';
+import type { TeamState as WebviewTeamState, TeamAgent as WebviewTeamAgent, TeamMessage as WebviewTeamMessage, ScratchpadEntry as WebviewScratchpadEntry, TeamAgentHistoryMessage, TeamStopReason } from '../../shared/types/team';
 
 /**
  * The team event log (`teams/<teamId>.jsonl`) and the readers that rebuild a team card from it and from
@@ -248,6 +248,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
               agent.lastToolName = null;
               agent.result = null;
               agent.progressSummary = null;
+              delete agent.stopReason;
               // The spawned attempt's own file; it does not exist until pi commits the attempt's task prompt.
               agent.logFilePath = memberFiles.get(agent.agentId)?.find((f) => f.attempt === agent.attempt)?.path ?? null;
             }
@@ -280,6 +281,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
             if (agent) {
               agent.status = entry['status'] as WebviewTeamAgent['status'];
               agent.result = (entry['result'] as string) ?? null;
+              applyStopReason(agent, entry);
               if (typeof entry['toolCallCount'] === 'number') {
                 agent.toolCount = entry['toolCallCount'];
               }
@@ -315,6 +317,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
               agent.progressSummary = null;
               // A resumed member is live again, and only its next settle records a result.
               agent.result = null;
+              applyStopReason(agent, entry);
               if (typeof entry['attempt'] === 'number') agent.attempt = entry['attempt'];
               agent.logFilePath = memberFiles.get(agent.agentId)?.find((f) => f.attempt === agent.attempt)?.path ?? null;
             }
@@ -398,7 +401,21 @@ const AGENT_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>([
 ]);
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>(['completed', 'failed', 'cancelled']);
-const SEAL_CAUSES: ReadonlySet<string> = new Set<TeamCheckpointCause | 'reset'>(['user', 'parent', 'shutdown', 'failed', 'reset']);
+const SEAL_CAUSES: ReadonlySet<string> = new Set<TeamCheckpointCause | 'reset'>(['user', 'parent', 'shutdown', 'denied', 'hookDenied', 'failed', 'reset']);
+const STOP_REASONS: ReadonlySet<string> = new Set<TeamStopReason>(['denied', 'hookDenied']);
+
+/** A log entry's `stopReason`, which an untrusted log may hold in any shape. */
+function entryStopReason(entry: Record<string, unknown>): TeamStopReason | undefined {
+  const reason = entry['stopReason'];
+  return typeof reason === 'string' && STOP_REASONS.has(reason) ? reason as TeamStopReason : undefined;
+}
+
+/** The stop reason an `agent-completed` or `agent-resumed` entry records for its member's attempt, or none. */
+function applyStopReason(agent: WebviewTeamAgent, entry: Record<string, unknown>): void {
+  const reason = entryStopReason(entry);
+  if (reason) agent.stopReason = reason;
+  else delete agent.stopReason;
+}
 const FAILURE_KINDS: ReadonlySet<string> = new Set<AgentFailureKind>(['start', 'model', 'run']);
 
 const isResumable = (checkpoint: TeamCheckpoint): checkpoint is ResumableCheckpoint => checkpoint.stoppedBy !== 'reset';
@@ -437,7 +454,8 @@ function isCheckpointMember(v: unknown): boolean {
     && Array.isArray(v['undelivered'])
     && v['undelivered'].every((m) => isRecord(m) && isString(m['text']) && typeof m['echoed'] === 'boolean'
       && (m['images'] === undefined || (Array.isArray(m['images']) && m['images'].every(isImageBlock)))
-      && (m['ids'] === undefined || isStringArray(m['ids'])))
+      && (m['ids'] === undefined || isStringArray(m['ids']))
+      && (m['held'] === undefined || m['held'] === true))
     && isUsage(v['usage'])
     && isCount(v['toolCallCount']);
 }
@@ -449,6 +467,9 @@ const isSignoff = (v: unknown): boolean => isRecord(v)
   && (v['verdict'] === 'approve' || v['verdict'] === 'changes_requested');
 
 const isDismissal = (v: unknown): boolean => isRecord(v) && isStamp(v['stamp']) && isString(v['reason']) && isString(v['why']);
+
+const isTerminatedCall = (v: unknown): boolean => isRecord(v) && isString(v['toolCallId']) && isString(v['toolName'])
+  && (v['cause'] === 'user' || v['cause'] === 'hook');
 
 function isCoverage(v: unknown): boolean {
   return isRecord(v)
@@ -483,7 +504,8 @@ export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
     && isCount(review['conflictNudges'])
     && isCount(review['leadReviewStalls'])
     && (review['lastReviewRoundNotification'] === null || isString(review['lastReviewRoundNotification']))
-    && (review['coverage'] === undefined || isCoverage(review['coverage']));
+    && (review['coverage'] === undefined || isCoverage(review['coverage']))
+    && (review['rejectedCalls'] === undefined || isPairArray(review['rejectedCalls'], isTerminatedCall));
   if (!reviewOk) return false;
   const steers = value['operatorSteers'];
   return Array.isArray(steers) && steers.every((s) => isRecord(s) && isString(s['memberName']) && isString(s['message'])

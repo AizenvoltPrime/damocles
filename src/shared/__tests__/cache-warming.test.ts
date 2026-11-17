@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { CacheWarmingMode as PiCacheWarmingMode } from '@earendil-works/pi-coding-agent';
+import { SettingsManager, type CacheWarmingMode as PiCacheWarmingMode } from '@earendil-works/pi-coding-agent';
 import { CACHE_WARMING_MODES, DEFAULT_CACHE_WARMING, parseCacheWarmingMode } from '../types/constants';
 import type { CacheWarmingMode } from '../types/settings';
 
 /**
- * pi accepts any string for its `cacheWarming` setting and silently coerces an unknown one to
- * `"streaming"`, so a bad value never surfaces as an error: it surfaces as a settings file that
+ * pi accepts any string for its `cacheWarming` setting and silently coerces an unknown one to its
+ * default, so a bad value never surfaces as an error: it surfaces as a settings file that
  * disagrees with the behaviour the user gets. These pin the three modes, the default, and the two
  * copies of that list that live outside `CACHE_WARMING_MODES` (pi's union and package.json).
  */
@@ -44,7 +44,8 @@ describe('parseCacheWarmingMode', () => {
   );
 
   it('matches the value pi coerces an unknown mode to', () => {
-    expect(DEFAULT_CACHE_WARMING).toBe('streaming');
+    const coerced = SettingsManager.inMemory({ cacheWarming: 'always' as PiCacheWarmingMode }).getCacheWarmingMode();
+    expect([coerced, DEFAULT_CACHE_WARMING]).toEqual(['idle', 'idle']);
   });
 });
 

@@ -8,7 +8,7 @@ import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSubagentStop } from '@/composables/useSubagentStop';
 import { useModelIdentity } from '@/composables/useModelIdentity';
 import ProviderLogo from '@/components/icons/ProviderLogo.vue';
-import { subagentStatusChip } from '@/composables/useTeamFormatting';
+import { subagentStatusChip, subagentStopReasonKey } from '@/composables/useTeamFormatting';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
@@ -98,6 +98,7 @@ const cardClass = computed(() => {
 });
 
 const chip = computed(() => subagentStatusChip(props.subagent));
+const stopReasonKey = computed(() => subagentStopReasonKey(props.subagent));
 
 const displayAgentType = computed((): string | null => {
   const type = props.subagent.agentType;
@@ -216,6 +217,14 @@ function stop(): void {
       data-testid="subagent-status-line"
     >
       {{ statusLine }}
+    </div>
+
+    <div
+      v-if="stopReasonKey"
+      class="-mt-0.5 mr-3 mb-2 ml-12.5 truncate text-xs text-(--d-muted)"
+      data-testid="subagent-stop-reason"
+    >
+      {{ t(stopReasonKey) }}
     </div>
 
     <div

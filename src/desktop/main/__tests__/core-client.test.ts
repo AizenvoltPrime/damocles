@@ -22,11 +22,11 @@ afterEach(() => {
   for (const close of closers.splice(0)) close();
 });
 
-function connect(): { client: CoreClient; core: ReturnType<typeof createCoreEndpoint> } {
+function connect(answersMissingPages = true): { client: CoreClient; core: ReturnType<typeof createCoreEndpoint> } {
   const { main, core } = createLoopback();
   const mainEnd = createMainEndpoint(main, () => undefined);
   const coreEnd = createCoreEndpoint(core, () => undefined);
-  const client = new CoreClient(mainEnd, (_view, attach) => attach(), LOCAL_PROJECT_KEYS);
+  const client = new CoreClient(mainEnd, (_view, attach) => attach(), LOCAL_PROJECT_KEYS, true, true, answersMissingPages);
   closers.push(() => {
     client.dispose();
     mainEnd.close('closed');
@@ -36,6 +36,17 @@ function connect(): { client: CoreClient; core: ReturnType<typeof createCoreEndp
 }
 
 describe('CoreClient', () => {
+  it('asks design.previewAnswer of a core that lists design.infoMissing, and design.info of an older one', async () => {
+    const answered = connect(true);
+    answered.core.serve('design.previewAnswer', async () => ({ missing: true as const }));
+    answered.core.serve('design.info', async () => { throw new Error('an older request'); });
+    expect(await answered.client.designInfo('d1', 'screens/S1.html')).toEqual({ missing: true });
+
+    const older = connect(false);
+    older.core.serve('design.info', async () => undefined);
+    expect(await older.client.designInfo('d1', 'screens/S1.html')).toBeUndefined();
+  });
+
   it('reads the chats and folder targets core published, and drops a chat core closed', () => {
     const { client, core } = connect();
     const foldersChanged = vi.fn();
@@ -52,6 +63,23 @@ describe('CoreClient', () => {
     core.publish('chats', { panelId: 'host-1' });
     expect(client.chat('host-1')).toBeUndefined();
     expect(client.chatOfView('view-1')).toBeUndefined();
+  });
+
+  // docs/invariants.md "Worktree chats", Ownership: a chat of project a works in its worktree w, which is open as a project itself.
+  it('keeps a folder open as a project apart from the same folder held as a working folder, as core resolves it', () => {
+    const { client, core } = connect();
+    const opened: FolderTargetEntry = { key: 'w', fsPath: WORKING, name: 'a-1', label: 'a-1', projectScope: true, branch: 'damocles/x' };
+    core.publish('folderTargets', { defaultKey: 'a', targets: [project, opened, working] });
+    core.publish('chats', { panelId: 'host-1', entry: chat });
+    expect(client.resolve('w')).toEqual(opened);
+    expect(client.project('w')).toEqual(opened);
+    expect(client.projectOf('w')).toEqual(opened);
+    expect(client.branchOf('w')).toBe('damocles/x');
+    expect(client.chat('host-1')?.folder).toEqual(working);
+    core.publish('folderTargets', { defaultKey: 'a', targets: [project, working] });
+    expect(client.resolve('w')).toEqual(working);
+    expect(client.project('w')).toBeUndefined();
+    expect(client.projectOf('w')).toEqual(project);
   });
 
   it('sees the mirror delta core sent before the event that depends on it', () => {

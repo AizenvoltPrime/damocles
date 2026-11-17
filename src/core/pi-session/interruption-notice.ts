@@ -28,7 +28,7 @@ import { log } from '../logger';
  * Why an agent stopped; 'interrupted' for a team whose live checkpoint no run in this process sealed, 'unrecorded'
  * when nothing persisted a cause (a kill, or a file from before causes were recorded).
  */
-export type InterruptionCause = TeamCheckpointCause | 'interrupted' | 'unrecorded';
+export type InterruptionCause = TeamCheckpointCause | 'denied' | 'hookDenied' | 'interrupted' | 'unrecorded';
 
 /** One interrupted invocation. A later interruption of the same agent is a new invocation. */
 export interface InterruptedAgent {
@@ -78,7 +78,7 @@ function noticeKey(agent: Pick<InterruptedAgent, 'id' | 'toolCallId'>): string {
   return `${agent.id}\u0000${agent.toolCallId}`;
 }
 
-/** Resumable subagents on the branch: stopped by the user or a shutdown, or killed with no status. */
+/** Resumable subagents on the branch: stopped by the user, a shutdown or a rejected call, or killed with no status. */
 export async function collectInterruptedSubagents(sources: InterruptionSources): Promise<InterruptedAgent[]> {
   const index = subagentBranchIndex(sources.branch);
   const delivered = deliveredBackgroundResults(index);
@@ -108,8 +108,9 @@ export async function collectInterruptedSubagents(sources: InterruptionSources):
     if (!state || !isResumableSubagentStatus(state)) continue;
     const spawnArgs = state.spawn ? toolCallArgumentsOnBranch(sources.branch, state.spawn.toolCallId) : undefined;
     const description = file?.launch.kind === 'subagent' ? file.launch.description : spawnArgs?.['description'];
-    // isResumableSubagentStatus admits only a 'user' or 'shutdown' stop, or a status with no recorded cause.
-    const cause = state.status === 'stopped' && (state.stopReason === 'user' || state.stopReason === 'shutdown') ? state.stopReason : 'unrecorded';
+    // isResumableSubagentStatus admits only a 'user', 'shutdown', 'denied' or 'hookDenied' stop, or a status with no recorded cause.
+    const stop = state.status === 'stopped' ? state.stopReason : undefined;
+    const cause = stop === 'user' || stop === 'shutdown' || stop === 'denied' || stop === 'hookDenied' ? stop : 'unrecorded';
     out.push({ kind: 'subagent', id, toolCallId: state.latest.toolCallId, description: typeof description === 'string' ? description : '', cause });
   }
   return out;
@@ -170,6 +171,8 @@ const CAUSE_TEXT: Record<InterruptionCause, string> = {
   user: 'stopped by the user',
   parent: 'cancelled by your cancel_team call',
   shutdown: 'stopped when its chat panel closed, switched session or the editor window reloaded',
+  denied: 'stopped when the user rejected one of its tool calls',
+  hookDenied: 'stopped when a hook rejected one of its tool calls',
   failed: 'failed when its lead agent failed',
   interrupted: 'stopped when Damocles exited while it ran',
   unrecorded: 'stopped with no recorded cause',

@@ -25,6 +25,7 @@ import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { HeldAuthEntry } from '../../../shared/remote-user';
 import type { SettingsChange } from '../../../platform/settings-store';
 import { LocalizedError } from '../../../shared/localized-text';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 /** Lets a test make pi-ai fail to load; every other test loads the real module. */
 const piAiLoad = vi.hoisted(() => ({ fail: false }));
@@ -115,7 +116,7 @@ describe('PiRuntime.runStructuredCompletion usage ledger', () => {
   function runtimeReturning(complete: () => Promise<unknown>): PiRuntime {
     const runtime = PiRuntime.get();
     const internals = runtime as unknown as { _modelRuntime: unknown; subCallModelFor: () => unknown };
-    internals._modelRuntime = { hasConfiguredAuth: () => true, completeSimple: vi.fn(complete) };
+    internals._modelRuntime = { settleCredentialWrites: async () => undefined, hasConfiguredAuth: () => true, completeSimple: vi.fn(complete) };
     internals.subCallModelFor = () => ({ model: MODEL });
     return runtime;
   }
@@ -253,6 +254,7 @@ describe('PiRuntime.runStructuredCompletion thinking level', () => {
     const internals = runtime as unknown as { _modelRuntime: unknown; _folders: Map<string, unknown>; subCallModelFor: () => unknown };
     let current: StructuredSubCallPurpose = PURPOSES[0]!;
     internals._modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       getModel: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-sonnet-5-5' ? SONNET : undefined),
       hasConfiguredAuth: () => true,
       completeSimple: vi.fn(async (_m: unknown, _c: unknown, options: Record<string, unknown>) => {
@@ -326,6 +328,7 @@ describe('PiRuntime.runStructuredCompletion thinking level', () => {
       { role: 'assistant', stopReason: 'toolUse', usage: ZERO, content: [{ type: 'toolCall', id: '1', name: 'submit_result', arguments: { ok: true } }] },
     ];
     internals._modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       hasConfiguredAuth: () => true,
       completeSimple: vi.fn(async () => {
         const reply = replies.shift()!;
@@ -351,7 +354,7 @@ describe('PiRuntime.runStructuredCompletion thinking level', () => {
     const completeSimple = vi.fn();
     const runtime = PiRuntime.get();
     const internals = runtime as unknown as { _modelRuntime: unknown; subCallModelFor: () => unknown };
-    internals._modelRuntime = { hasConfiguredAuth: () => true, completeSimple };
+    internals._modelRuntime = { settleCredentialWrites: async () => undefined, hasConfiguredAuth: () => true, completeSimple };
     internals.subCallModelFor = () => ({ model: HAIKU });
 
     expect(await runtime.runStructuredCompletion({ ...REQ, purpose: 'memory-extract' })).toEqual({ kind: 'unreachable' });
@@ -441,6 +444,7 @@ describe('subscription plugin migration', () => {
     let loadFailed = false;
 
     const modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       registerProvider: (name: string, config: Record<string, unknown>) => {
         calls.push(`register:${name}:${String(config['tag'])}`);
         h.providers.set(name, { ...h.providers.get(name), ...config });
@@ -523,6 +527,7 @@ describe('subscription plugin migration', () => {
       addFolder: (label) => {
         const folder = new FolderRuntime({
           pi: {} as PiCodingAgentModule,
+          mcpModule: piMcp,
           cwd: path.join(root, 'ws', label),
           agentDir: root,
           modelRuntime: modelRuntime as unknown as ModelRuntime,
@@ -1185,6 +1190,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   function fakeModelRuntime(overrides: FakeRuntime = {}) {
     const keys = new Set<string>();
     return {
+      settleCredentialWrites: async () => undefined,
       registerProvider: vi.fn(),
       unregisterProvider: vi.fn(),
       setRuntimeApiKey: vi.fn(async (provider: string) => void keys.add(provider)),
@@ -1882,14 +1888,14 @@ describe('PiRuntime.syncCustomProviders', () => {
     type RefreshResult = { aborted: boolean; errors: Map<string, Error> };
 
     /**
-     * pi 1.4.0's OpenRouter catalog refresh as its caller can observe it. A refresh that includes the provider supersedes
+     * pi 1.5.2's OpenRouter catalog refresh as its caller can observe it. A refresh that includes the provider supersedes
      * its running one (pi-ai models.js:127-142, 189-190), which then ends with no error and with `aborted` read off the
      * caller's signal alone (models.js:211-220, 234). Without `allowNetwork` the runtime's `PI_OFFLINE` switch applies
-     * (pi-coding-agent core/model-runtime.js:97, 603; models.js:204). A networked refresh still current when its fetch
-     * ends saves `{ models, checkedAt }` (remote-catalog-provider.js:178-186) under the provider id (models-store.js:92-101)
+     * (pi-coding-agent core/model-runtime.js:97, 610; models.js:204). A networked refresh still current when its fetch
+     * ends saves `{ models, checkedAt }` (remote-catalog-provider.js:180-188) under the provider id (models-store.js:92-101)
      * before it resolves (models.js:143-163). `registerProvider` and `unregisterProvider` each start an offline refresh of
-     * every provider (model-runtime.js:682, 689); a runtime key change refreshes only its own provider (model-runtime.js:411),
-     * and a runtime key is what `getProviderAuthStatus` reports first (model-runtime.js:441-443).
+     * every provider (model-runtime.js:689, 696); a runtime key change refreshes only its own provider (model-runtime.js:411),
+     * and a runtime key is what `getProviderAuthStatus` reports first (model-runtime.js:448-450).
      */
     class PiOpenRouterModel {
       /** Network requests in flight, released by the test; a superseded one is already settled. */
@@ -2237,6 +2243,7 @@ describe('PiRuntime sub-call model', () => {
     const runtime = PiRuntime.get();
     const internals = runtime as unknown as { _modelRuntime: unknown; _folders: Map<string, unknown> };
     internals._modelRuntime = {
+      settleCredentialWrites: async () => undefined,
       getModel: (provider: string, id: string) => [HAIKU, STEP].find((m) => m.provider === provider && m.id === id),
       hasConfiguredAuth: (provider: string) => authed.has(provider),
     };

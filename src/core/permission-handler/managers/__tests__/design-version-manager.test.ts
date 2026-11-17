@@ -4,6 +4,7 @@ import { PermissionState } from '../../state';
 import { PermissionHandler } from '../..';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
+import { getPiCodingAgent } from '../../../pi-session/pi-loader';
 
 const ASK: DesignVersionAsk = { designId: 'contacts-abcd1234', fromVersion: 1, toVersion: 2, changes: [{ kind: 'screenChanged', screen: 'S1' }] };
 
@@ -83,7 +84,7 @@ describe('DesignVersionManager (PD-29)', () => {
 
 describe('PermissionHandler and the designVersion prompt', () => {
   it('reposts the open prompt to a webview that came back, and settles it unanswered on dispose', async () => {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     const posted: ExtensionToWebviewMessage[] = [];
     handler.setPostMessage((m) => posted.push(m));
     const answer = handler.requestDesignVersionDecision(ASK, new AbortController().signal);

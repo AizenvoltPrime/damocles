@@ -17,6 +17,8 @@ import type { FakeSession } from './panel-manager-harness';
 import { restoredWorkspaceFolderKey } from '../../../shared/restored-folder-key';
 import { releaseSessionLease, type SessionLeaseHolder } from '../../pi-session/session-store/session-lease';
 import { englishText } from '../../../shared/localized-text';
+import { inGreek } from '../../../__mocks__/greek-locale';
+import { FolderMissingError } from '../../pi-session/folder-presence';
 
 const ROOT = path.resolve(os.tmpdir(), 'pfs-root');
 const A = path.join(ROOT, 'alpha');
@@ -710,6 +712,19 @@ describe('switch races and failures', () => {
     expect(recovered.setPermissionMode).toHaveBeenCalledWith('plan');
   });
 
+  it("tells a session refused for a folder that is gone in the folder error's own words, in English and Greek", async () => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    const { host, panelId } = await openPanel();
+    h.failCreation.errors.push(new FolderMissingError(B));
+    host.posted.length = 0;
+
+    expect(await h.manager.switchPanelFolder(panelId, folderKey(B), 'user')).toBeUndefined();
+
+    const errors = host.posted.flatMap((m) => (m.type === 'error' ? [m.message] : []));
+    expect(errors.map(englishText)).toEqual([`The folder ${B} was not found. It may have been moved, renamed or deleted.`]);
+    expect(inGreek(errors[0]!)).toBe(`Ο φάκελος ${B} δεν βρέθηκε. Μπορεί να έχει μετακινηθεί, μετονομαστεί ή διαγραφεί.`);
+  });
+
   it('recovers an empty conversation with a fresh session in the old folder and resets the webview', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { host, panelId } = await openPanel();
@@ -840,6 +855,39 @@ describe('Compass views target the focused panel folder', () => {
 
     expect(h.manager.getActivePanelFolder()).toBeUndefined();
     expect(h.activePanelChanges.count).toBe(before + 1);
+  });
+});
+
+describe('a replay a newer one took over before it read the file', () => {
+  type ResumeInto = (instance: unknown, sessionId: string) => Promise<boolean>;
+  const superseded = vi.fn(async (): Promise<string[] | null> => {
+    throw new DOMException('This operation was aborted', 'AbortError');
+  });
+
+  it("leaves a hand-off's resume open, posting no sessionStarted of its own", async () => {
+    h = createHarness([folderEntry(A)], { loadHistory: superseded });
+    const { host, panelId } = await openPanel();
+    const session = sessionOf(panelId);
+    session.openResumeTarget.mockImplementationOnce(async () => ({ kind: 'switched' }));
+    host.posted.length = 0;
+    const resumeInto = (h.manager as unknown as { resumeInto: ResumeInto }).resumeInto.bind(h.manager);
+
+    expect(await resumeInto(h.instance(panelId), 'sess-moved')).toBe(true);
+
+    expect(host.posted.filter((m) => m.type === 'resumeAccepted' || m.type === 'sessionStarted').map((m) => m.type)).toEqual(['resumeAccepted']);
+    releaseSessionLease('sess-moved', session as unknown as SessionLeaseHolder);
+  });
+
+  it("shows a fork no replay error, and still prefills its prompt", async () => {
+    h = createHarness([folderEntry(A)], { loadHistory: superseded });
+    const { panelId: source } = await openPanel();
+    const forked = await h.manager.showForked({ sourcePanelId: source, sourceSdkSessionId: 's1', forkAtUuid: 'u1', piBranchedSessionId: 'sess-branch', promptContent: 'again' } as never);
+    const host = forked!.host as unknown as { posted: Array<{ type: string }>; fireMessage: (message: unknown) => void };
+
+    host.fireMessage({ type: 'ready' });
+
+    await vi.waitFor(() => expect(host.posted.some((m) => m.type === 'prefillInput')).toBe(true));
+    expect(host.posted.some((m) => m.type === 'rewindError')).toBe(false);
   });
 });
 

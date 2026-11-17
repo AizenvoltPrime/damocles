@@ -93,6 +93,9 @@ export interface RegistryRecord {
   readonly id: string;
   readonly kind: 'chat' | 'adopted';
   readonly projectPath?: string;
+  readonly repositoryRoot?: string;
+  // the project path the worktree's folder was named for, once a relocation moved its project
+  readonly namedFor?: string;
   readonly worktreeRoot: string;
   readonly workingFolder: string;
   readonly branch?: string;

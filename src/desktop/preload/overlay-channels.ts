@@ -478,9 +478,15 @@ export interface CloseRemoteRow {
   // the refresh of this provider's sign-in failed: the whole minutes its current token has left; provider is a pi provider id
   // (PROVIDER_ID_PATTERN)
   readonly tokenNote?: { readonly provider: string; readonly minutesLeft: number };
+  // the providers the run's configuration names that it has not used yet and this computer holds an API key for, which a
+  // host gets only when a run asks: pi provider ids (PROVIDER_ID_PATTERN), unique, at most MAX_CLOSE_KEY_PROVIDERS
+  readonly keyProviders: readonly string[];
   // the host ends the user's processes at logout and has no linger, so the run stops when the user logs out there
   readonly lingerWarning?: true;
 }
+
+// the most providers a close row names; main cuts the rest
+export const MAX_CLOSE_KEY_PROVIDERS = 32;
 
 export type CloseRemoteChoice = 'keep' | 'stop' | 'cancel';
 

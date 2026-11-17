@@ -13,9 +13,13 @@ import { sessionsRootIn } from './session-file-path';
  * from the user's pi CLI store.
  */
 export function piSessionDir(cwd: string, agentDir: string = PI_AGENT_DIR): string {
-  const resolvedCwd = path.resolve(cwd);
-  const safePath = `--${resolvedCwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
-  return path.join(piSessionsRoot(agentDir), safePath);
+  return path.join(piSessionsRoot(agentDir), piSessionDirName(cwd));
+}
+
+/** The name of `cwd`'s session directory by the path rules of `os`; lossy, so two folders can share one. */
+export function piSessionDirName(cwd: string, os: NodeJS.Platform = process.platform): string {
+  const resolvedCwd = (os === 'win32' ? path.win32 : path.posix).resolve(cwd);
+  return `--${resolvedCwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
 }
 
 /** The folder every pi session dir lies directly in. */

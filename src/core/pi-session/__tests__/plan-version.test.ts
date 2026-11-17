@@ -9,6 +9,7 @@ import { DESIGN_VERSION_DETAIL_KEY } from '../../../shared/types/design';
 import { planVersionOnBranch } from '../plan-version';
 import { createPlanModeTools } from '../tools/plan-mode-tools';
 import { reconstructMessages } from '../session-store/history-loader';
+import { getPiCodingAgent } from '../pi-loader';
 
 /** D51: a plan's version is one more than the plans the user was shown before it on its branch, stamped by core. */
 
@@ -122,7 +123,7 @@ describe('ExitPlanMode records its version', () => {
   it('on the result details and the plan approval request, whether the plan is approved or sent back', async () => {
     const requests: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>[] = [];
     let approve = true;
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setPermissionMode('plan');
     handler.setPlanContentResolver(async () => '1. Do it');
     handler.setPostMessage((msg) => {
@@ -152,7 +153,7 @@ describe('ExitPlanMode records its version', () => {
   it('stamps no version on a call that showed no plan, so the next plan shown is version 1', async () => {
     const requests: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>[] = [];
     let plan = '';
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setPermissionMode('plan');
     handler.setPlanContentResolver(async () => plan);
     handler.setPostMessage((msg) => {
@@ -184,7 +185,7 @@ describe('ExitPlanMode records its version', () => {
   });
 
   it('keeps the number of a plan the user was shown and then stopped, words the stop as one, and counts it', async () => {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setPermissionMode('plan');
     handler.setPlanContentResolver(async () => '1. Do it');
     const run = new AbortController();
@@ -206,13 +207,13 @@ describe('ExitPlanMode records its version', () => {
   });
 
   it('runs both plan-mode tools in order with their batch, so a plan written beside ExitPlanMode exists when it is read', () => {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     const tools = createPlanModeTools(pi, handler) as unknown as { executionMode?: string }[];
     expect(tools.map((tool) => tool.executionMode)).toEqual(['sequential', 'sequential']);
   });
 
   it('hands the version to the approval on the context, never as tool input the model did not send', async () => {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setPermissionMode('plan');
     const canUseTool = vi.spyOn(handler, 'canUseTool').mockResolvedValue({ behavior: 'allow', updatedInput: {} });
     const exit = createPlanModeTools(pi, handler)[1] as unknown as Exit;
@@ -259,7 +260,7 @@ describe('ExitPlanMode records the design version its plan is approved against (
 
   function exitWith(answer: (msg: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>, handler: PermissionHandler) => void): { exit: Exit; requests: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>[]; handler: PermissionHandler } {
     const requests: Extract<ExtensionToWebviewMessage, { type: 'requestPlanApproval' }>[] = [];
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setPermissionMode('plan');
     handler.setPlanContentResolver(async () => '1. Do it');
     handler.setPostMessage((msg) => {

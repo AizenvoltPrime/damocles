@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import { branchBaseName, branchSlug } from '../slug';
-import { newWorktreeId, WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
+import { newWorktreeId, recordsListedUnder, WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
 import { worktreeFolderFor } from '../records';
 import { scanLeftovers } from '../leftovers';
 
@@ -189,12 +189,12 @@ describe('WorktreeRegistry', () => {
     const projectFolder = path.dirname(live.worktreeRoot);
     fs.mkdirSync(live.worktreeRoot, { recursive: true });
     fs.rmSync(live.worktreeRoot, { recursive: true });
-    await r.removeEmptyProjectFolder(project);
+    await r.removeEmptyProjectFolder(live);
     expect(fs.existsSync(projectFolder)).toBe(true);
     await r.markDeleted('aaaaaaaa');
-    await r.removeEmptyProjectFolder(project);
+    await r.removeEmptyProjectFolder(live);
     expect(fs.existsSync(projectFolder)).toBe(false);
-    await r.removeEmptyProjectFolder(project);
+    await r.removeEmptyProjectFolder(live);
     expect(fs.existsSync(projectFolder)).toBe(false);
   });
 
@@ -204,12 +204,12 @@ describe('WorktreeRegistry', () => {
     await r.markDeleted('aaaaaaaa');
     const projectFolder = path.dirname(record.worktreeRoot);
     fs.mkdirSync(path.join(projectFolder, 'zzzzzzzz'), { recursive: true });
-    await r.removeEmptyProjectFolder(project);
+    await r.removeEmptyProjectFolder(record);
     expect(fs.existsSync(path.join(projectFolder, 'zzzzzzzz'))).toBe(true);
     fs.rmdirSync(path.join(projectFolder, 'zzzzzzzz'));
     fs.writeFileSync(path.join(root, 'registry.json'), '{ "version": 1, "records": [');
     r.reload();
-    await expect(r.removeEmptyProjectFolder(project)).rejects.toThrow(/not valid JSON/);
+    await expect(r.removeEmptyProjectFolder(record)).rejects.toThrow(/not valid JSON/);
     expect(fs.existsSync(projectFolder)).toBe(true);
   });
 
@@ -248,6 +248,16 @@ describe('WorktreeRegistry', () => {
     const gone = await r.upsertAdopted({ worktreeRoot: path.join(base, 'gone'), workingFolder: path.join(base, 'gone'), repositoryRoot: project, projectPath: project });
     expect(r.recordsOfProject(project).map((rec) => rec.id).sort()).toEqual(['aaaaaaaa', gone.id].sort());
     expect(r.projectOf(live)).toBeUndefined();
+  });
+
+  // docs/invariants.md "Worktree chats", Ownership: a worktree open as a project still holds its project's chats.
+  it("lists every chat record under its project whatever else the working folder is open as, and none under that folder", async () => {
+    const r = registry();
+    const opened = await r.addChat(chat('aaaaaaaa'));
+    await r.addChat(chat('bbbbbbbb'));
+    expect(r.recordsOfProject(project).map((rec) => rec.id)).toEqual(['aaaaaaaa', 'bbbbbbbb']);
+    expect(recordsListedUnder(r.records(), project, () => true).map((rec) => [rec.id, rec.kind])).toEqual([['aaaaaaaa', 'chat'], ['bbbbbbbb', 'chat']]);
+    expect(r.recordsOfProject(opened.workingFolder)).toEqual([]);
   });
 
   it('revives a deleted adopted record when its worktree is opened again, rather than adding a second one', async () => {

@@ -21,6 +21,8 @@ import { partialStreamKey } from "./partial-stream";
 import { PanelWorktrees, type PanelWorktreeStateEvent, type WorktreeOptIn } from "./panel-worktrees";
 import { sessionLeaseBlocker } from "../pi-session/session-store/session-lease";
 import { resolvePiSessionFile } from "../pi-session/session-store/reading";
+import { failureNotice } from "../pi-session/folder-presence";
+import { getPiCodingAgent } from "../pi-session/pi-loader";
 import type { DesignSeed, SessionShown } from "../design/tools/start-design";
 import { designChatName } from "../../shared/types/design";
 import { designScreenOf } from "../design/design-paths";
@@ -29,7 +31,7 @@ import { isFileBelow } from "../paths";
 import { folderContains } from "../worktrees/records";
 import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
 import type { UserContentBlock } from "../../shared/types/content";
-import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
+import { sameFolderRole, settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import { chatPageHtml, errorPageHtml } from "../../shared/panel-html";
 import { readContributedConfiguration } from "../config/read-contributed-configuration";
 import { writableKeysOf } from "./settings-view-scope";
@@ -89,6 +91,9 @@ interface MessageGate {
   open: boolean;
   // A `ready` is being handled; it restores the conversation every later message addresses, so they wait for it.
   readying: boolean;
+  // settles once the first `ready` was handled, or the panel closed
+  readonly readied: Promise<void>;
+  readonly signalReadied: () => void;
   queue: Array<{ message: WebviewToExtensionMessage; view?: AttachedView; viewKey?: string; within: <T>(body: () => T) => T }>;
 }
 
@@ -224,7 +229,7 @@ export class PanelManager {
       platform: this.platform,
       folderRegistry: this.folderRegistry,
       panels: () => this.panels,
-      moveTo: (panelId, key, afterSwitch) => this.switchPanelFolder(panelId, key, "chatMove", afterSwitch),
+      moveTo: (panelId, to, afterSwitch) => this.switchPanelFolder(panelId, to, "chatMove", afterSwitch),
       post: (panelId, message) => {
         const instance = this.panels.get(panelId);
         if (instance) this.postMessage(instance.host, message);
@@ -449,11 +454,14 @@ export class PanelManager {
       // A first-message fork has no branched session (fresh panel + prefill only).
       if (args.piBranchedSessionId) await this.loadHistory(instance.folder.fsPath, args.piBranchedSessionId, host, instance.session);
     } catch (err) {
-      log("[PanelManager.replayForkedHistory] history replay failed: %O", err);
-      this.postMessage(host, {
-        type: "rewindError",
-        message: l("Failed to replay forked history: {0}", errorTextOf(err)),
-      });
+      // A newer replay took the panel before this one read the file.
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        log("[PanelManager.replayForkedHistory] history replay failed: %O", err);
+        this.postMessage(host, {
+          type: "rewindError",
+          message: l("Failed to replay forked history: {0}", errorTextOf(err)),
+        });
+      }
     }
 
     if (args.promptContent && args.promptContent.length > 0) {
@@ -594,6 +602,11 @@ export class PanelManager {
     return this.setUpOf(host).settled;
   }
 
+  /** Settles once the panel's first `ready` was handled, which restores its stored conversation and starts its session, or once it closed. */
+  whenReadied(panelId: string): Promise<void> {
+    return this.messageGates.get(panelId)?.readied ?? Promise.resolve();
+  }
+
   private setUpOf(host: PanelHost): HostSetUp {
     let entry = this.setUps.get(host);
     if (!entry) {
@@ -614,7 +627,9 @@ export class PanelManager {
     const panelId = `host-${++this.hostCounter}`;
     const disposables: Disposable[] = [];
 
-    const gate: MessageGate = { open: false, readying: false, queue: [] };
+    let signalReadied!: () => void;
+    const readied = new Promise<void>((resolve) => { signalReadied = resolve; });
+    const gate: MessageGate = { open: false, readying: false, readied, signalReadied, queue: [] };
     this.messageGates.set(panelId, gate);
 
     // Resolves when the webview posts its first `ready` message (mounted + listener live). VS Code drops
@@ -624,7 +639,7 @@ export class PanelManager {
     const webviewReady = new Promise<void>((resolve) => { signalWebviewReady = resolve; });
     // Settle via the disposables list so BOTH teardown paths (onDidDispose and dispose()) release a
     // detached replay still awaiting a webview that never mounted.
-    disposables.push({ dispose: () => signalWebviewReady() });
+    disposables.push({ dispose: () => signalWebviewReady() }, { dispose: () => signalReadied() });
 
     disposables.push(
       host.onMessage((received, viewKey) => {
@@ -677,13 +692,14 @@ export class PanelManager {
         : source?.folder
           ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
           ?? this.folderRegistry.defaultTarget();
+      if (!options?.worktree && options?.sourcePanelId !== undefined && source?.folder.ownerKey !== undefined) this.worktrees.holdAsSource(panelId, options.sourcePanelId);
     } catch (err) {
       disposables.forEach((d) => d.dispose());
       this.messageGates.delete(panelId);
       throw err;
     }
 
-    const permissionHandler = new PermissionHandler(this.platform, panelId, settingsFolderOf(folder));
+    const permissionHandler = new PermissionHandler(this.platform, getPiCodingAgent, panelId, settingsFolderOf(folder));
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
     // Before the session is created, which takes its tool set from the mode. A design chat inherits no permissions (PD-50).
     const inherited = options?.design ? undefined : source?.permissionHandler.getPermissions() ?? options?.permissions;
@@ -777,8 +793,8 @@ export class PanelManager {
 
     // The folder may have left the workspace while the session was being created, after its removal
     // released it; anything this panel started there meanwhile has to be released again.
-    if (!this.folderRegistry.resolve(folder.key)) {
-      this.movePanelOffRemovedFolders(panelId, new Set([folder.key]))
+    if (!this.folderRegistry.current(folder)) {
+      this.movePanelOffRemovedFolders(panelId, [folder])
         .then(async (moved) => {
           if (moved && !this.folderRegistry.resolve(folder.key) && !this.isTargeted(folder.key)) {
             await this.releaseFolder(folder.key);
@@ -897,7 +913,14 @@ export class PanelManager {
     const outcome = await instance.session.openResumeTarget(sessionId);
     if (outcome.kind !== "switched" && outcome.kind !== "deferred") return false;
     this.postMessage(instance.host, { type: "resumeAccepted", sessionId, continued: true });
-    const rewindableIds = await this.loadHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
+    let rewindableIds: string[] | null;
+    try {
+      rewindableIds = await this.loadHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
+    } catch (err) {
+      // A newer replay took the panel before this one read the file; the conversation is open, and that replay shows it.
+      if (err instanceof Error && err.name === "AbortError") return true;
+      throw err;
+    }
     instance.session.seedCheckpoints(rewindableIds ?? []);
     this.postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
     return true;
@@ -942,6 +965,7 @@ export class PanelManager {
       gate.readying = true;
       void within(() => this.handleWebviewMessage(message, panelId, undefined, viewKey)).finally(() => {
         gate.readying = false;
+        gate.signalReadied();
         this.drainGate(panelId, gate);
       });
     }
@@ -1015,38 +1039,41 @@ export class PanelManager {
   }
 
   /**
-   * Move the panel to the open folder `key` with a fresh session. Resolves to the panel's instance once
-   * it targets `key`, or undefined when the key is not open, the user cancelled, the panel closed, or no
-   * session could be created there.
+   * Move the panel to the open folder `to` with a fresh session: a key, or a target in its role (a working folder also open as
+   * a project is one key in two roles). Resolves to the panel's instance once it targets `to`, or undefined when it is not
+   * open, the user cancelled, the panel closed, or no session could be created there.
    * Callers continue with the returned instance: the session they held before is disposed. `afterSwitch`
-   * runs once the panel targets `key`, before messages the webview sent meanwhile reach the new session.
+   * runs once the panel targets `to`, before messages the webview sent meanwhile reach the new session.
    */
   switchPanelFolder(
     panelId: string,
-    key: string,
+    to: string | FolderTarget,
     reason: FolderSwitchReason,
     afterSwitch?: AfterFolderSwitch,
   ): Promise<HostInstance | undefined> {
-    return this.enqueueFolderTask(panelId, () => this.runFolderSwitch(panelId, key, reason, afterSwitch));
+    return this.enqueueFolderTask(panelId, () => this.runFolderSwitch(panelId, to, reason, afterSwitch));
   }
 
   private async runFolderSwitch(
     panelId: string,
-    key: string,
+    to: string | FolderTarget,
     reason: FolderSwitchReason,
     afterSwitch: AfterFolderSwitch | undefined,
   ): Promise<HostInstance | undefined> {
     const instance = this.panels.get(panelId);
     if (!instance) return undefined;
+    const key = typeof to === "string" ? to : to.key;
     // The key comes from the webview, so only a folder that is open right now is accepted; a user switch only to a project,
     // never into a chat's working folder (AD12 Folders).
-    const target = reason === "user" ? this.folderRegistry.targets().find((t) => t.key === key) : this.folderRegistry.resolve(key);
+    const target = reason === "user"
+      ? this.folderRegistry.targets().find((t) => t.key === key)
+      : typeof to === "string" ? this.folderRegistry.resolve(to) : this.folderRegistry.current(to);
     if (!target) {
       log("[PanelManager] Ignoring a switch of %s to a folder key that is not open: %s", panelId, key);
       this.postWorkspaceFolderUpdate(instance, false);
       return undefined;
     }
-    if (target.key === instance.folder.key) {
+    if (sameFolderRole(target, instance.folder)) {
       this.postWorkspaceFolderUpdate(instance, false);
       await afterSwitch?.(instance);
       return instance;
@@ -1123,7 +1150,7 @@ export class PanelManager {
     switched: boolean,
     reason?: FolderSwitchReason,
   ): Promise<void> {
-    const moved = folder.key !== instance.folder.key;
+    const moved = !sameFolderRole(folder, instance.folder);
     // An opt-in belongs to the folder it was made in; only the worktree moves keep it.
     if (moved && reason !== "chatMove") this.worktrees.folderChanged(panelId);
     if (moved && folder.ownerKey === undefined) this.worktrees.dropHold(panelId);
@@ -1153,7 +1180,7 @@ export class PanelManager {
     if (this.panels.get(panelId) !== instance) return;
     this.postMessage(instance.host, {
       type: "error",
-      message: l("Damocles could not start a session in {0}: {1}", folder.label, errorTextOf(err)),
+      message: failureNotice(err, (detail) => l("Damocles could not start a session in {0}: {1}", folder.label, detail)),
     });
   }
 
@@ -1164,7 +1191,7 @@ export class PanelManager {
    */
   private async recoverSession(panelId: string, instance: HostInstance, previousSessionId: string | null): Promise<ChatSession | undefined> {
     // A removed folder is already released, so a session there would build a runtime nobody releases.
-    const folder = this.folderRegistry.resolve(instance.folder.key) ?? this.folderRegistry.defaultTarget();
+    const folder = this.folderRegistry.current(instance.folder) ?? this.folderRegistry.defaultTarget();
     let session: ChatSession;
     try {
       session = await this.createSessionForPanel(instance.host, instance.permissionHandler, panelId, folder);
@@ -1179,7 +1206,7 @@ export class PanelManager {
     }
     // The conversation's file is in its own folder's session dir, so it resumes only there.
     const resumed = previousSessionId !== null
-      && folder.key === instance.folder.key
+      && sameFolderRole(folder, instance.folder)
       && claimStoredSession(this.platform.notifications, this.panels, { panelId, session }, previousSessionId) === undefined;
     if (!resumed) {
       await this.adoptSession(panelId, instance, session, folder, true);
@@ -1195,20 +1222,21 @@ export class PanelManager {
   }
 
   private async onFoldersChanged(change: FolderChange): Promise<void> {
-    const removed = new Set(change.removed.map((t) => t.key));
-    if (removed.size > 0) {
-      const moves = [...this.panels.keys()].map((panelId) => this.movePanelOffRemovedFolders(panelId, removed));
+    if (change.removed.length > 0) {
+      const moves = [...this.panels.keys()].map((panelId) => this.movePanelOffRemovedFolders(panelId, change.removed));
       for (const result of await Promise.allSettled(moves)) {
         if (result.status === "rejected") log("[PanelManager] moving a panel off a removed folder failed: %O", result.reason);
       }
-      const releases = [...removed].map((key) => this.releaseFolder(key));
+      // A folder's services serve both of its roles, so they go only once neither is left.
+      const gone = new Set(change.removed.map((t) => t.key).filter((key) => !this.folderRegistry.resolve(key)));
+      const releases = [...gone].map((key) => this.releaseFolder(key));
       for (const result of await Promise.allSettled(releases)) {
         if (result.status === "rejected") log("[PanelManager] releasing a removed folder failed: %O", result.reason);
       }
     }
     for (const [panelId, instance] of this.panels) {
       // The registry rebuilds its targets on every change, and a rename keeps the key but not the label.
-      const current = this.folderRegistry.resolve(instance.folder.key);
+      const current = this.folderRegistry.current(instance.folder);
       if (current) {
         const relabelled = current.label !== instance.folder.label;
         instance.folder = current;
@@ -1220,10 +1248,10 @@ export class PanelManager {
   }
 
   /** Queued behind any switch in flight, so the check sees the folder that switch landed on. */
-  private movePanelOffRemovedFolders(panelId: string, removed: ReadonlySet<string>): Promise<boolean> {
+  private movePanelOffRemovedFolders(panelId: string, removed: readonly FolderTarget[]): Promise<boolean> {
     return this.enqueueFolderTask(panelId, async () => {
       const instance = this.panels.get(panelId);
-      if (!instance || !removed.has(instance.folder.key)) return false;
+      if (!instance || !removed.some((target) => sameFolderRole(target, instance.folder))) return false;
       const from = instance.folder;
       const to = this.folderRegistry.defaultTarget();
       const moved = await this.replaceSession(panelId, instance, to, "folderRemoved");

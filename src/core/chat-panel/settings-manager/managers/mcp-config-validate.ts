@@ -35,7 +35,7 @@ export const SSE_UNSUPPORTED_MESSAGE = "legacy SSE transport is not supported; u
 
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
-/** Ported from pi-coding-agent/src/core/mcp-servers.ts `isLoopbackRedirectUri`. */
+/** Ported from pi-mcp 1.5.2 `src/config.ts:230-234` `isLoopbackRedirectUri`. */
 export function isLoopbackRedirectUri(value: string): boolean {
   if (!URL.canParse(value)) return false;
   const url = new URL(value);
@@ -50,7 +50,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every(entry => typeof entry === "string");
 }
 
-/** Ported from pi-coding-agent/src/core/mcp-servers.ts `validateOAuth`; Damocles adds `grantType` and `clientUri`. */
+/** Ported from pi-mcp 1.5.2 `src/config.ts:181-227` `validateOAuth`, without `clientRegistration`; Damocles adds `grantType` and `clientUri`. */
 function validateOAuth(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) return "oauth must be an object";

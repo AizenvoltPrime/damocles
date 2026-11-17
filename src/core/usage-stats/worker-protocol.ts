@@ -1,4 +1,5 @@
 import type { UsageStatsQuery, UsageStatsReport } from '../../shared/types/usage-stats';
+import type { RelocationAliases } from '../project-relocation/aliases';
 
 /** Host to worker and back. The worker receives every path and the model registry from the host. */
 
@@ -39,6 +40,8 @@ export interface WorkerQueryRequest {
   id: number;
   paths: UsageStatsPaths;
   models: UsageStatsModel[];
+  /** Moved project folders: recorded paths are keyed where their folder is now (docs/invariants.md "Project relocation"). */
+  aliases: RelocationAliases;
   query: UsageStatsQuery;
 }
 

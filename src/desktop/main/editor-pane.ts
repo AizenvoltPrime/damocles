@@ -65,7 +65,7 @@ import { languageIdForName } from './platform/editor-document';
 import type { BrowserTabsEditor } from './browser-tabs';
 import type { AskMessage } from './message-dialog';
 import type { AuthorityMentionTarget } from './mention-authority';
-import { isServablePreviewPath } from './html-preview/serve-policy';
+import { isServablePreviewPath } from '../../core/served-pages/serve-policy';
 
 // A path a remote project's file has names the target's file, never one this computer's git or file manager may act on.
 function isLocalLocation(location: { readonly projectKey?: string; readonly host?: string }): boolean {
@@ -233,6 +233,46 @@ export type PersistedTab =
 // A worktree delete's Don't Save answers: document id to the unsaved text the user answered for.
 export type RootCloseAnswers = ReadonlyMap<string, string>;
 
+// A saved tab or backup of a chat worktree whose core's registry is not read yet, kept until it is; after: the ids of the
+// tabs and entries saved before it, the last of them still there placing it.
+interface AwaitingRestore {
+  readonly id: string;
+  rootKey: string;
+  persisted?: PersistedTab;
+  backup?: BackupRecord;
+  after: string[];
+  restoring?: true;
+}
+
+// A saved tab under the root key `toKey` where it named `fromKey`.
+function rekeyedTab(persisted: PersistedTab, fromKey: string, toKey: string): PersistedTab {
+  if ('file' in persisted) return persisted.file.projectKey === fromKey ? { ...persisted, file: { ...persisted.file, projectKey: toKey } } : persisted;
+  return persisted.kind === 'searchEditor' && persisted.projectKey === fromKey ? { ...persisted, projectKey: toKey } : persisted;
+}
+
+// A backup whose target names the root key `toKey` where it named `fromKey`.
+function rekeyedBackup(backup: BackupRecord, fromKey: string, toKey: string): BackupRecord {
+  const { target } = backup;
+  return (target.kind === 'project' || target.kind === 'searchEditor') && target.projectKey === fromKey ? { ...backup, target: { ...target, projectKey: toKey } } : backup;
+}
+
+// The root a saved tab, or the backup restore takes its text from, names files in.
+function savedRootKey(persisted: PersistedTab | undefined, backup: BackupRecord | undefined): string | undefined {
+  if (backup) return backup.target.kind === 'project' || backup.target.kind === 'searchEditor' ? backup.target.projectKey : undefined;
+  if (!persisted) return undefined;
+  if ('file' in persisted) return persisted.file.projectKey;
+  return persisted.kind === 'searchEditor' ? persisted.projectKey : undefined;
+}
+
+// Where a tab or entry saved after `after` goes in `order`: behind the last of them still there, else first.
+function slotAfter(after: readonly string[], order: ReadonlyArray<{ readonly id: string }>): number {
+  for (let index = after.length - 1; index >= 0; index--) {
+    const at = order.findIndex((item) => item.id === after[index]);
+    if (at >= 0) return at + 1;
+  }
+  return 0;
+}
+
 export interface PersistedEditor {
   readonly tabs: readonly PersistedTab[];
   // index into tabs
@@ -304,6 +344,8 @@ export interface EditorPaneDeps {
   readonly showPaneBeside: () => void;
   // every root a tab may name a file in, keyed by root key (folder-root.ts): the open projects and their chat worktrees
   readonly projects: () => readonly Project[];
+  // a chat worktree's root key whose core has not published its registry yet (WorktreeRoots.awaitsRegistry)
+  readonly awaitsRegistry: (rootKey: string) => boolean;
   // the OS whose path rules an authority's paths follow: this computer's, or the target's
   readonly authorityOs: (authority: string) => NodeJS.Platform;
   // the branch of a chat worktree's root key, for the tab's chip; undefined for a project folder
@@ -441,6 +483,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   // the last file tab activated, which takes over when the active page tab goes or hides
   private lastFileTabId: string | null = null;
   private recent: FileRef[] = [];
+  // saved tabs and backups waiting on their worktree's registry, in saved order (registriesChanged)
+  private awaiting: AwaitingRestore[] = [];
+  // the saved active tab while it waits, and the tab restore activated instead, which it takes over from when it comes back
+  private awaitingActive: { readonly entryId: string; readonly standIn: string | null } | undefined;
   private selection: { readonly documentId: string; readonly range: EditorSelectionRange | null } | undefined;
   private readonly contextListeners = new Set<(context: ActiveEditorContext | undefined) => void>();
   private readonly flushes = new Map<string, () => void>();
@@ -1336,6 +1382,40 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return result;
   }
 
+  /**
+   * A root whose key changed while its folder stayed where it is (a chat worktree of a moved project): its tabs, unsaved text
+   * and recent files name the new key in place, so the saved layout does too. A second call changes nothing.
+   */
+  relocateRoot(fromKey: string, toKey: string): void {
+    let changed = false;
+    for (const tab of this.tabs) {
+      if (tab.htmlPreview?.projectKey === fromKey) {
+        tab.htmlPreview = { ...tab.htmlPreview, projectKey: toKey };
+        changed = true;
+      }
+      const place = tab.diff && 'place' in tab.diff.subject ? tab.diff.subject.place : undefined;
+      if (tab.diff && place?.projectKey === fromKey && place.relativePath !== undefined) {
+        tab.diff.subject = { place: this.placeOfFile({ projectKey: toKey, relativePath: place.relativePath }) };
+        changed = true;
+      }
+    }
+    if (this.recent.some((file) => file.projectKey === fromKey)) {
+      this.recent = this.recent.map((file) => (file.projectKey === fromKey ? { ...file, projectKey: toKey } : file));
+      changed = true;
+    }
+    for (const entry of this.awaiting) {
+      if (entry.rootKey !== fromKey) continue;
+      entry.rootKey = toKey;
+      if (entry.persisted) entry.persisted = rekeyedTab(entry.persisted, fromKey, toKey);
+      if (entry.backup) entry.backup = rekeyedBackup(entry.backup, fromKey, toKey);
+      changed = true;
+    }
+    this.deps.documents.relocateRoot(fromKey, toKey);
+    if (!changed) return;
+    this.stateChanged();
+    this.contextChanged();
+  }
+
   private filesMoved(projectKey: string, from: string, to: string): void {
     for (const tab of this.tabs) {
       const moved = tab.htmlPreview?.projectKey === projectKey ? movedPath(tab.htmlPreview.relativePath, from, to) : undefined;
@@ -1405,6 +1485,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   /** Whether a file tab belongs to a project match accepts, without building the shell's whole state. */
   hasProjectTab(match: (projectKey: string) => boolean): boolean {
+    if (this.awaiting.some((entry) => match(entry.rootKey))) return true;
     return this.tabs.some((tab) => {
       const projectKey = this.projectKeyOf(tab);
       return projectKey !== undefined && match(projectKey);
@@ -1510,33 +1591,78 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   /**
    * Reopens the persisted tabs and every hot-exit backup. A tab without a backup whose file is gone or no longer confined is
-   * dropped and logged; a backup's text always comes back (restoreBackup).
+   * dropped and logged; a backup's text always comes back (restoreBackup). One of a chat worktree whose core has not published
+   * its registry yet waits for it in its saved place (registriesChanged), since only that registry tells whether it is a root.
    */
   async restore(saved: PersistedEditor, backups: readonly BackupRecord[]): Promise<void> {
     const byId = new Map(backups.map((record) => [record.backupId, record]));
-    const restored: Array<Tab | undefined> = [];
+    const restored: Array<Tab | AwaitingRestore | undefined> = [];
+    const before = (): string[] => restored.flatMap((item) => (item ? [item.id] : []));
     for (const persisted of saved.tabs) {
       const backupId = 'backupId' in persisted ? persisted.backupId : undefined;
       const backup = backupId === undefined ? undefined : byId.get(backupId);
       if (backupId !== undefined) byId.delete(backupId);
-      if (backup) {
-        restored.push(await this.restoreBackup(backup, persisted.kind));
-        continue;
-      }
-      restored.push(await this.restoreTab(persisted).catch((err: unknown) => {
-        this.deps.log(`[editor] dropping a saved ${persisted.kind} tab: ${err instanceof Error ? err.message : String(err)}`);
-        return undefined;
-      }));
+      const waiting = this.awaitRegistry(persisted, backup, before());
+      if (waiting) restored.push(waiting);
+      else if (backup) restored.push(await this.restoreBackup(backup, persisted.kind));
+      else restored.push(await this.restoreSavedTab(persisted));
     }
     for (const backup of byId.values()) {
-      const tab = await this.restoreBackup(backup);
-      if (tab) restored.push(tab);
+      const item = this.awaitRegistry(undefined, backup, before()) ?? (await this.restoreBackup(backup));
+      if (item) restored.push(item);
     }
     const active = saved.active === null ? undefined : restored[saved.active];
     this.recent = [...saved.recent];
-    if (active) this.setActive(active.id);
+    if (active && !('rootKey' in active)) this.setActive(active.id);
     else this.activateFallback();
+    if (active && 'rootKey' in active) this.awaitingActive = { entryId: active.id, standIn: this.activeId };
     this.stateChanged();
+    // a registry read while the restore ran
+    await this.registriesChanged();
+  }
+
+  /**
+   * A registry was read or the projects changed: each saved tab and backup waiting on a registry that is read now comes back
+   * in its saved place by restore's own rules, so one of a worktree that is no longer a root goes as restore drops it, and the
+   * saved active tab takes over unless another tab was activated meanwhile.
+   */
+  async registriesChanged(): Promise<void> {
+    const ready = this.awaiting.filter((entry) => !entry.restoring && !this.deps.awaitsRegistry(entry.rootKey));
+    for (const entry of ready) {
+      // a call while this one waits leaves it alone
+      entry.restoring = true;
+      const open = new Set(this.tabs);
+      const tab = await (entry.backup ? this.restoreBackup(entry.backup, entry.persisted?.kind) : this.restoreSavedTab(entry.persisted!));
+      // its tab was added in this same turn, so no layout write names it twice or not at all
+      this.awaiting = this.awaiting.filter((other) => other !== entry);
+      if (this.disposed) return;
+      if (tab && !open.has(tab)) {
+        this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+        this.tabs.splice(slotAfter(entry.after, this.tabs), 0, tab);
+      }
+      for (const other of this.awaiting) other.after = other.after.map((id) => (id === entry.id && tab ? tab.id : id));
+      if (this.awaitingActive?.entryId === entry.id) {
+        if (tab && this.activeId === this.awaitingActive.standIn) this.setActive(tab.id);
+        this.awaitingActive = undefined;
+      }
+      this.stateChanged();
+    }
+  }
+
+  // A saved tab or backup whose root waits on its core's registry, kept in saved order; undefined when nothing waits.
+  private awaitRegistry(persisted: PersistedTab | undefined, backup: BackupRecord | undefined, after: string[]): AwaitingRestore | undefined {
+    const rootKey = savedRootKey(persisted, backup);
+    if (rootKey === undefined || !this.deps.awaitsRegistry(rootKey)) return undefined;
+    const entry: AwaitingRestore = { id: randomUUID(), rootKey, after, ...(persisted ? { persisted } : {}), ...(backup ? { backup } : {}) };
+    this.awaiting.push(entry);
+    return entry;
+  }
+
+  private restoreSavedTab(persisted: PersistedTab): Promise<Tab | undefined> {
+    return this.restoreTab(persisted).catch((err: unknown) => {
+      this.deps.log(`[editor] dropping a saved ${persisted.kind} tab: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    });
   }
 
   dispose(): void {
@@ -2158,13 +2284,18 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return branch !== undefined ? { ...fields, worktreeBranch: branch } : fields;
   }
 
+  // A tab still waiting on its registry keeps its saved place, and stays the active one until another tab is activated.
   private persisted(): PersistedEditor {
+    const order: Array<Tab | AwaitingRestore> = [...this.tabs];
+    for (const entry of this.awaiting) order.splice(slotAfter(entry.after, order), 0, entry);
+    const activeId = this.awaitingActive && this.activeId === this.awaitingActive.standIn ? this.awaitingActive.entryId : this.activeId;
     const tabs: PersistedTab[] = [];
     let active: number | null = null;
-    for (const tab of this.tabs) {
-      const entry = this.persistedTab(tab);
+    for (const item of order) {
+      // a backup no saved tab named comes back from the backups alone
+      const entry = 'rootKey' in item ? item.persisted : this.persistedTab(item);
       if (!entry) continue;
-      if (tab.id === this.activeId) active = tabs.length;
+      if (item.id === activeId) active = tabs.length;
       tabs.push(entry);
     }
     return { tabs, active, recent: this.recent };

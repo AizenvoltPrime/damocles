@@ -188,8 +188,6 @@ export class ApprovalManager {
         imageModel,
         owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-        ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
-        ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
       };
 
       registerAbortablePrompt({
@@ -242,6 +240,7 @@ export class ApprovalManager {
       : { old_string: editInput.old_string, new_string: editInput.new_string, ...(editInput.replace_all ? { replace_all: true } : {}) };
 
     const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, filePath, diffInput);
+    if (diffResult !== null && 'refused' in diffResult) return { approved: false, customMessage: diffResult.refused };
     if (!diffResult && toolName === TOOL_EDIT) {
       return { approved: false, customMessage: 'Could not find the text to replace in the file' };
     }
@@ -279,8 +278,6 @@ export class ApprovalManager {
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
         ...(suggestions.length ? { suggestions } : {}),
-        ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
-        ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
       };
 
       registerAbortablePrompt({
@@ -354,8 +351,6 @@ export class ApprovalManager {
         ...fields,
         owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-        ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
-        ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
       };
 
       registerAbortablePrompt({

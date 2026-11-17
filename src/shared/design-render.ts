@@ -59,7 +59,7 @@ export const MAX_RENDER_SELECTOR_CHARS = 200;
 
 /** The part of a pi model the image target reads. */
 export interface RenderImageLimits {
-  readonly inputLimits?: { readonly images?: { readonly resize?: { readonly maxWidth?: number; readonly maxHeight?: number; readonly maxBytes?: number; readonly jpegQuality?: number } } };
+  readonly inputLimits?: { readonly images?: { readonly resize?: { readonly maxWidth?: number | undefined; readonly maxHeight?: number | undefined; readonly maxBytes?: number | undefined; readonly jpegQuality?: number | undefined } | undefined } | undefined } | undefined;
 }
 
 /** How a model-facing render is sized and encoded for `model`: its published resize profile, else the default target. */

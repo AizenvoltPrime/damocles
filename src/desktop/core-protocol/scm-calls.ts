@@ -1,7 +1,7 @@
 // The source control and worktree work desktop main asks Damocles Core for by name; core serves each name from its own
 // ScmService, Repository objects and worktree registry (core-host/scm.ts, worktrees.ts), and nothing outside these lists.
 import type { WorktreeFile, WorktreeOptions } from '../../core/worktrees/create';
-import type { ApplyOutcome, MergeOutcome, UpdateOutcome } from '../../core/worktrees/integrate';
+import type { ApplyOutcome, MergeOutcome, UpdateOutcome, WorktreeFolderState } from '../../core/worktrees/integrate';
 import type { LeftoverFinding } from '../../core/worktrees/leftovers';
 import type { AdoptInput } from '../../core/worktrees/registry';
 
@@ -62,7 +62,7 @@ export interface WorktreeCalls {
   mergeInto(worktreeId: string, hold: string, message?: string): Promise<MergeOutcome>;
   rebaseOnto(worktreeId: string, hold: string): Promise<UpdateOutcome>;
   updateFrom(worktreeId: string, hold: string): Promise<UpdateOutcome>;
-  folderState(worktreeId: string): Promise<'worktree' | 'leftover' | 'gone'>;
+  folderState(worktreeId: string): Promise<WorktreeFolderState>;
   deleteFacts(worktreeId: string): Promise<DeleteFacts>;
   removeWorktree(worktreeId: string, hold: string, options: { readonly deleteBranch: boolean; readonly force: boolean }): Promise<void>;
   scanLeftovers(projects: readonly string[]): Promise<readonly LeftoverFinding[]>;

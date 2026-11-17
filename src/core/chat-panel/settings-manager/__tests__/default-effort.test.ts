@@ -16,10 +16,11 @@ function catalogModel(file: string, api: string, id: string): Model<Api> {
 }
 
 const PI_CATALOG: Record<string, [file: string, api: string, id?: string]> = {
-  'claude-fable-5-1': ['anthropic.json', 'anthropic-messages'],
+  'claude-fable-5-2': ['anthropic.json', 'anthropic-messages'],
   'claude-haiku-5-5': ['anthropic.json', 'anthropic-messages'],
   'gpt-6-astra': ['openai.json', 'openai-responses'],
   'gpt-6.1-sol': ['openai.json', 'openai-responses'],
+  'gpt-6.1-terra': ['openai.json', 'openai-responses'],
   'gpt-6-luna': ['openai.json', 'openai-responses'],
   'deepseek-v4-pro': ['deepseek.json', 'openai-completions'],
   'deepseek-flash': ['deepseek.json', 'openai-completions'],

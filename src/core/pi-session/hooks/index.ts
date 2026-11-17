@@ -254,7 +254,7 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
       // The projection is the retained window of the whole session, hidden `display: false` customs
       // (plan-mode nudges, hook context, memory injections, subagent results) included.
       const { messages } = ctx.sessionManager.buildSessionProjection();
-      await dispatchObserveOnly(deps.dispatch, 'agent_end', ctx.cwd, buildAgentEndPayload(buildHookCommon(ctx), messages));
+      await dispatchObserveOnly(deps.dispatch, 'agent_end', ctx.cwd, buildAgentEndPayload(buildHookCommon(ctx), messages), undefined, sessionId);
     } catch (err) {
       log('[Hooks] agent_end (Stop) handler failed: %O', err);
     }

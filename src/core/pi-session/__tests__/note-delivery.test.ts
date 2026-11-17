@@ -64,7 +64,7 @@ function piQueue() {
     steer: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
     clearQueue: vi.fn(() => ({ steering: steering.splice(0), followUp: followUp.splice(0) })),
-    // pi-agent-core 1.4.0 agent.js:187 and :212-215: the steering queue when it holds any, else the follow-ups.
+    // pi-agent-core 1.5.2 agent.js:187 and :212-215: the steering queue when it holds any, else the follow-ups.
     agent: {
       steer: vi.fn(),
       peekQueuedMessages: () => (steering.length > 0 ? steering : followUp).map((text) => ({ role: 'user', content: [{ type: 'text', text }] })),
@@ -304,7 +304,8 @@ describe('the note is echoed once per context', () => {
     const rejecting = { ...piQueue(), prompt: vi.fn(async () => { throw new Error('session is being replaced'); }) };
     deliveries(h.session, () => rejecting).main()(NOTE);
     await vi.waitFor(() => expect(rejecting.prompt).toHaveBeenCalledTimes(1));
-    await Promise.resolve();
+    // Every microtask of the rejection runs before this.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(echoes(h.emitted)).toEqual([]);
     // Nothing of it is left listed, so a later chip batch with the same text still collapses.
@@ -490,8 +491,9 @@ describe('a note for a run that was stopped', () => {
 
     expect(h.piSession.steers).toEqual([]);
     expect(echoes(h.emitted)).toEqual([]);
-    // Nothing of it is left listed, so a later chip batch with the same text still collapses.
-    h.session.queueInput(NOTE, 'q1');
+    // Nothing of it is left listed, so a chip batch with the same text, queued once the stop wound down, still collapses.
+    (h.session as unknown as { abortPromise: Promise<void> | null }).abortPromise = null;
+    expect(h.session.queueInput(NOTE, 'q1')).toBe('queued');
     expect(h.session.onQueuedInputsDelivered(NOTE)).not.toBeNull();
     expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'] });
   });

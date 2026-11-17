@@ -56,8 +56,6 @@ interface CanUseToolContextBase {
   suggestions?: PermissionUpdate[];
   /** What the generic prompt shows in words beside the input: a forge write's card (`approvalOf`, `forge/tools/run.ts`). */
   permissionDetail?: PermissionDetail;
-  blockedPath?: string;
-  decisionReason?: string;
   /** Set for an MCP call whose descriptor the caller found, or an MCP resource call naming a server; `mcp__` rules match it. */
   mcpTool?: McpToolIdentity;
   /** The version core stamped on an `ExitPlanMode` call (`plan-version.ts`), shown on its approval prompt. */
@@ -66,6 +64,8 @@ interface CanUseToolContextBase {
   designLink?: PlanApprovalDesignLink;
   /** The call's file path may reach a network host the chat does not live on: it asks with no rule, and its prompt reads no file. */
   reachesNetwork?: true;
+  /** The call loads a file page outside the chat's folders, and its run grants the page's folder: it asks with no rule. */
+  outsideFolder?: true;
   /**
    * Whether the gate, deciding this call under the current permission state, would run it unasked
    * (`runsUnasked` in `permission-gate.ts`). Its open prompt is settled as approved when this turns true;

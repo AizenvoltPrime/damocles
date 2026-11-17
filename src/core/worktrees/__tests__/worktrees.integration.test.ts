@@ -8,7 +8,7 @@ import { createGitRunner, type GitRunner } from '../../scm/git-runner';
 import { GitError } from '../../scm/errors';
 import { folder, git, GIT_PATH, HAS_GIT, MapMemento, makeRepo, useGitSandbox, watchers, write } from '../../scm/__tests__/git-harness';
 import { approveSetup, createChatWorktree, discardChatWorktree, isSetupApproved, readSetupCommands, worktreeOptions, WorktreeCreateError } from '../create';
-import { apply, applyPlan, branchContained, isRewritten, aheadBehind, mergeInto, rebaseOnto, removeWorktree, settlePendingBase, unmergedCommits, updateFrom, worktreeFolderState } from '../integrate';
+import { apply, applyPlan, branchContained, isRewritten, aheadBehind, mergeInto, rebaseOnto, removeWorktree, settlePendingBase, unmergedCommits, updateFrom, worktreeFolderState, WorktreeRemoveError } from '../integrate';
 import { WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
 import { folderInRepository, linkedWorktreeOf, scanLeftovers } from '../leftovers';
 import { filesToMove, HandOffMoveError, moveFilesToWorktree, WORKTREE_ENTRY, worktreeGitOf } from '../hand-off';
@@ -729,17 +729,29 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
   it('removes the folder a refused git worktree remove left without its .git link, then prunes git\'s record and deletes the branch asked for', async () => {
     const { project, registry, run } = setup('remove-leftover');
     const record = await create(project, registry, run);
-    expect(await worktreeFolderState(record.worktreeRoot)).toBe('worktree');
+    expect(await worktreeFolderState(record)).toBe('worktree');
     // what git leaves on Windows when another process holds the folder: its contents and .git link gone, a held file and the folder kept
     fs.rmSync(path.join(record.worktreeRoot, '.git'));
     write(path.join(record.worktreeRoot, 'held.txt'), 'x\n');
-    expect(await worktreeFolderState(record.worktreeRoot)).toBe('leftover');
+    expect(await worktreeFolderState(record)).toBe('leftover');
     await removeWorktree(record, run, registry, { deleteBranch: true, force: false });
     expect(fs.existsSync(record.worktreeRoot)).toBe(false);
-    expect(await worktreeFolderState(record.worktreeRoot)).toBe('gone');
+    expect(await worktreeFolderState(record)).toBe('gone');
     expect(registry.get(record.id)?.deletedAt).toBeTypeOf('number');
     expect(git(['worktree', 'list', '--porcelain'], project)).not.toContain(path.basename(record.worktreeRoot));
     expect(git(['branch', '--list', record.branch], project).trim()).toBe('');
+  });
+
+  it('refuses to remove a worktree whose repository is not available, and keeps its folder, files and record', async () => {
+    const { project, registry, run } = setup('remove-unreachable');
+    const record = await create(project, registry, run);
+    write(path.join(record.workingFolder, 'work.txt'), 'uncommitted\n');
+    // a drive that is not mounted, or a project moved before Locate
+    fs.renameSync(project, `${project}-away`);
+    expect(await worktreeFolderState(record)).toBe('unreachable');
+    await expect(removeWorktree(record, run, registry, { deleteBranch: false, force: true })).rejects.toThrow(WorktreeRemoveError);
+    expect(fs.readFileSync(path.join(record.workingFolder, 'work.txt'), 'utf8')).toBe('uncommitted\n');
+    expect(registry.get(record.id)?.deletedAt).toBeUndefined();
   });
 
   it('reports a live chat worktree past the creation grace that no session names', async () => {

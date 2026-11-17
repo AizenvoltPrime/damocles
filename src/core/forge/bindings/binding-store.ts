@@ -55,6 +55,8 @@ export interface BindingStore {
   setHostDefault(authorityKey: string, serverId: string, accountId: string | null): Promise<void>;
   /** Drops the project's bindings (Remove Project). */
   forgetProject(projectKey: string): Promise<void>;
+  /** A moved project's bindings go to its new key; a server the new key already binds keeps that binding (a merge). */
+  relocateProject(fromKey: string, toKey: string): Promise<void>;
   /** Drops the authority's host defaults and the bindings of its projects (Forget host). */
   forgetHost(authorityKey: string): Promise<void>;
   /** Drops the host defaults and project bindings of every authority but 'local' outside kept; answers the authorities dropped. */
@@ -95,6 +97,15 @@ export function createBindingStore(forgeDir: string, log: (line: string) => void
     async forgetProject(projectKey) {
       if (file.value().projects[projectKey] === undefined) return;
       await file.update((current) => ({ ...current, projects: withoutKeys(current.projects, (key) => key === projectKey) }));
+    },
+    async relocateProject(fromKey, toKey) {
+      if (fromKey === toKey || file.value().projects[fromKey] === undefined) return;
+      await file.update((current) => {
+        const moved = current.projects[fromKey];
+        if (moved === undefined) return current;
+        const projects = withoutKeys(current.projects, (key) => key === fromKey);
+        return { ...current, projects: { ...projects, [toKey]: { ...moved, ...current.projects[toKey] } } };
+      });
     },
     async forgetHost(authorityKey) {
       const held = file.value();

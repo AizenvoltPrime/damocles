@@ -29,6 +29,9 @@ vi.mock('@/composables/usePlatformBridge', () => ({
 const EXTENSION = '/home/user/.pi/agent/extensions/held-settle.js';
 const SETTLE: AgentWindDown = { phase: 'settle', events: ['agent_settled'], extensions: [EXTENSION] };
 const RUN: AgentWindDown = { phase: 'run', events: [], extensions: [] };
+const HOOK: AgentWindDown = { ...SETTLE, hooks: [{ label: 'notify.sh', scope: 'project' }] };
+const EXTENSION_LINE = 'Stopping: waiting for the end-of-turn step of the extension held-settle.js.';
+const HOOK_LINE = 'Stopping: waiting for the end-of-turn hook notify.sh (project hooks) to finish.';
 
 type StatusUpdate = Extract<ExtensionToWebviewMessage, { type: 'statusUpdate' }>;
 
@@ -86,18 +89,22 @@ const memberLine = (wrapper: VueWrapper) => wrapper.find('[data-testid="team-age
 beforeEach(() => setActivePinia(createPinia()));
 
 describe("a stopped team member's card", () => {
-  it('shows what pi awaits and the extensions loaded for it, and clears it when core does', async () => {
+  it('names the hook or the extension the stop waits for, and clears it when core does', async () => {
     useTeamStore().restoreTeamFromHistory(team());
     const wrapper = memberCard();
     expect(memberLine(wrapper).exists()).toBe(false);
 
     windingDown('agent-1', SETTLE);
     await nextTick();
-    expect(memberLine(wrapper).text()).toBe(`Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: ${EXTENSION}.`);
+    expect(memberLine(wrapper).text()).toBe(EXTENSION_LINE);
+
+    windingDown('agent-1', HOOK);
+    await nextTick();
+    expect(memberLine(wrapper).text()).toBe(HOOK_LINE);
 
     windingDown('agent-1', RUN);
     await nextTick();
-    expect(memberLine(wrapper).text()).toBe("Stopping: waiting for the run's tool calls and event handlers to end.");
+    expect(memberLine(wrapper).text()).toBe('Stopping: waiting for running tools to finish.');
 
     windingDown('agent-1', null);
     await nextTick();
@@ -142,7 +149,7 @@ describe("a stopped subagent's card", () => {
 
   const statusLine = (wrapper: VueWrapper) => wrapper.find('[data-testid="subagent-status-line"]');
 
-  it('shows what pi awaits in its status line, ahead of a retry, and clears it when core does', async () => {
+  it('names what the stop waits for in its status line, ahead of a retry, and clears it when core does', async () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc-1', { description: 'dig', prompt: 'go', subagent_type: 'Explore' });
     store.setSubagentRetry('tc-1', { attempt: 1, maxAttempts: 3 });
@@ -150,7 +157,11 @@ describe("a stopped subagent's card", () => {
 
     windingDown('tc-1', SETTLE);
     await rerender(wrapper);
-    expect(statusLine(wrapper).text()).toBe(`Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: ${EXTENSION}.`);
+    expect(statusLine(wrapper).text()).toBe(EXTENSION_LINE);
+
+    windingDown('tc-1', HOOK);
+    await rerender(wrapper);
+    expect(statusLine(wrapper).text()).toBe(HOOK_LINE);
 
     windingDown('tc-1', null);
     store.setSubagentRetry('tc-1', null);

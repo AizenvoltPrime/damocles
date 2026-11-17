@@ -45,7 +45,7 @@ export {
 
 export { exec, execSafe } from './exec';
 export { setCheckpointGitAvailability, checkpointGitAvailability, type GitAvailability } from './git-availability';
-export { heldRepoLocksReleased, withRepoLock, LockWaitAbortedError, type LockOptions } from './lock';
+export { heldRepoLocksReleased, moveLegacyCheckpointRepo, withRepoLock, LockWaitAbortedError, type LockOptions } from './lock';
 export { parseDiffStats } from './diff-parser';
 export {
   getRepoDir,
@@ -56,6 +56,9 @@ export {
   getFolderReposBaseDir,
   getFolderRepoDir,
   folderIdFor,
+  folderRepoIdOf,
+  folderRepoIdsOf,
+  folderRepoIdsIn,
   isFolderId,
 } from './resolver';
 export { getCheckpointEntries, getCheckpointRecords, getNotRewindableEntries, getPreRewindEntries } from './checkpoint-entry';
@@ -72,6 +75,8 @@ export {
   copyPreRewindRefs,
   markForkCopyPending,
   readSkippedManifest,
+  relocateFolderRepoLocked,
+  repointSessionRegistrations,
   type FolderRepoHandle,
 } from './folder-repo';
 export { materializeCheckpoint } from './materialize';

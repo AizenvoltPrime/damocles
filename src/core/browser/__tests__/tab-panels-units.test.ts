@@ -394,7 +394,8 @@ describe('first open adopts the launcher\'s initial page (no orphan tab)', () =>
     expect(priv(service).pages.has(initial)).toBe(true);
     // The launcher's scope owns + currently points at the adopted page, and it was navigated.
     expect(scopeFor(service).getCurrentPage()).toBe(initial);
-    expect(sessionWithSend.send).toHaveBeenCalledWith('Page.navigate', { url: 'http://a' });
+    // Chrome gets the href the scheme allowlist read
+    expect(sessionWithSend.send).toHaveBeenCalledWith('Page.navigate', { url: 'http://a/' });
 
     service.dispose();
   });

@@ -451,6 +451,13 @@ describe('startSshTransport', () => {
     expect(args).toEqual(expect.arrayContaining(['ControlMaster=no', 'ControlPath=none', 'IdentityFile="/home/100%%u/.damocles/ssh/id_ed25519"']));
   });
 
+  // plain pipes lose Win32-OpenSSH's stdout under concurrent stdin writes, which desyncs the wire's framing
+  it('starts ssh with overlapped stdio', async () => {
+    const { launched, deps, askpass } = fixture((ssh) => ssh.exit(255));
+    await rejection(startSshTransport(transportOptions(askpass).options, deps));
+    expect(launched[0]!.spec.stdio).toEqual(['overlapped', 'overlapped', 'overlapped']);
+  });
+
   it('fails as unknown with reason sshArguments, starting no ssh, when ssh-args.ts refuses an argument', async () => {
     const { launched, deps, askpass } = fixture(() => undefined);
     const { options } = transportOptions(askpass, { identityFile: 'relative/id_ed25519' });

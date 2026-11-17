@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import * as fs from "fs";
 import * as os from "os";
@@ -9,10 +9,16 @@ import { ConfigManager } from "../../../settings-manager/managers/config-manager
 import { PermissionHandler } from "../../../../permission-handler";
 import { runPermissionGate, type GatePermissionContext } from "../../../../pi-session/permission-gate";
 import { ShellCancelStore } from "../../../../pi-session/tools/shell-cancel-registry";
+import { getPiCodingAgent, initPiLoader } from "../../../../pi-session/pi-loader";
 import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
 import { TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE } from "../../../../../shared/tool-names";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import type { HandlerContext, HandlerDependencies } from "../../types";
+
+// An Edit's approval diff runs pi's edit.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 /**
  * A permission mode or YOLO change re-decides every open approval with the gate's own decision and
@@ -61,7 +67,7 @@ const FORM = { title: "Log in", fields: [{ id: "user", label: "User", selector: 
 
 function chat() {
   const platform = createFakePlatform();
-  const handler = new PermissionHandler(platform);
+  const handler = new PermissionHandler(platform, getPiCodingAgent);
   handler.setWorkspacePath(workspace);
   handler.setCwd(workspace);
   const posted: ExtensionToWebviewMessage[] = [];
@@ -73,6 +79,8 @@ function chat() {
     isPlanMode: () => handler.getPermissionMode() === "plan",
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     postMessage: (msg) => posted.push(msg),
+    // this computer, its PATH holding no folder off it
+    machine: { platform: process.platform, allowedNetworkHosts: () => Promise.resolve(new Set()), lookupFolders: () => Promise.resolve([]) },
   };
   const configManager = new ConfigManager(vi.fn(), platform);
   const deps = {

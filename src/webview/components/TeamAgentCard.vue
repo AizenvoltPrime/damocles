@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { TeamAgent } from '@shared/types/team';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { Ban, FileText, LoaderCircle, Wrench } from 'lucide-vue-next';
-import { agentStatusChip, formatElapsed, getAgentColor } from '@/composables/useTeamFormatting';
+import { agentStatusChip, formatElapsed, getAgentColor, teamAgentStopReasonKey } from '@/composables/useTeamFormatting';
 import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useModelIdentity } from '@/composables/useModelIdentity';
@@ -44,6 +44,7 @@ const color = computed(() => getAgentColor(props.index));
 const awaitingUser = computed(() => sessionStore.teamAgentsAwaitingUser.get(teamStore.selectedTeam?.teamId ?? '')?.has(props.agent.agentId) ?? false);
 const chip = computed(() => agentStatusChip(props.agent.status, awaitingUser.value));
 const model = computed(() => modelIdentity(props.agent.model));
+const stopReasonKey = computed(() => teamAgentStopReasonKey(props.agent));
 const windDownLine = computed(() => {
   const windDown = teamStore.agentWindDown[props.agent.agentId];
   return windDown ? windDownText(windDown, t) : null;
@@ -118,6 +119,15 @@ function cancelAgent(): void {
         :title="agent.description"
       >
         {{ agent.description }}
+      </p>
+
+      <p
+        v-if="stopReasonKey"
+        class="truncate text-xs text-(--d-muted)"
+        :title="t(stopReasonKey)"
+        data-testid="team-agent-stop-reason"
+      >
+        {{ t(stopReasonKey) }}
       </p>
 
       <p

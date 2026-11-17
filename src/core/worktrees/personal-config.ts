@@ -5,10 +5,10 @@ import type { Disposable } from '../../platform/disposable';
 export interface WorktreeProjectLookup {
   /** The project of the chat worktree holding `folder`, live or deleted; undefined for any other folder. */
   projectOf(folder: string): string | undefined;
-  /** AD12 Listing: the chat records of the project, live or deleted, and its adopted records whose folder is gone. */
-  recordsOfProject(projectPath: string): ReadonlyArray<{ readonly workingFolder: string }>;
+  /** AD12 Listing: the records whose session directories the project's Chats list reads (recordsListedUnder). */
+  recordsOfProject(projectPath: string): ReadonlyArray<{ readonly workingFolder: string; readonly kind: 'chat' | 'adopted' }>;
   /** A record by id. */
-  get(id: string): { readonly workingFolder: string } | undefined;
+  get(id: string): { readonly workingFolder: string; readonly projectPath?: string } | undefined;
   /** The chat record whose worktree holds `folder`. */
   chatRecordFor(folder: string): { readonly worktreeRoot: string; readonly repositoryRoot: string } | undefined;
 }
@@ -28,7 +28,8 @@ export function personalConfigRoot(folder: string): string {
 
 /**
  * The other folders whose session directories may hold a session of `folder` (slice 12a rule 1): for a project or its chat
- * worktree, the project and every registry folder of the project; none for any other folder.
+ * worktree, the project and every registry folder of the project; none for any other folder. It finds files; which list a
+ * session is in is its own (docs/invariants.md "Worktree chats", Ownership).
  */
 export function worktreeSessionFolders(folder: string): string[] {
   if (!lookup) return [];
@@ -36,6 +37,16 @@ export function worktreeSessionFolders(folder: string): string[] {
   const records = lookup.recordsOfProject(project);
   if (records.length === 0) return [];
   return [project, ...records.map((r) => r.workingFolder)];
+}
+
+/** The records whose session directories the Chats list of the open project `projectPath` reads (AD12 Listing). */
+export function listedWorktreeRecords(projectPath: string): ReadonlyArray<{ readonly workingFolder: string; readonly kind: 'chat' | 'adopted' }> {
+  return lookup ? lookup.recordsOfProject(projectPath) : [];
+}
+
+/** The project the worktree record `id` names, live or deleted; undefined when unknown or without a registry. */
+export function worktreeProjectById(id: string): string | undefined {
+  return lookup?.get(id)?.projectPath;
 }
 
 /** The folder Damocles-owned records (memory's project scope, /stats) name for `folder`: its project for a chat worktree (D34). */

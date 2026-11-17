@@ -209,8 +209,9 @@ const formatterHostOptions: BundleOptions = {
   entryPoints: ['src/desktop/formatter-host/index.ts'],
   bundle: true,
   outfile: 'dist/formatter-host.js',
-  // No externals: the host runs as an Electron utility process from app.asar.unpacked and loads only the project's Prettier,
-  // which is never bundled.
+  // The host runs as an Electron utility process from app.asar.unpacked and loads the project's Prettier, never bundled. koffi
+  // (local-links.ts places drives through it) resolves its native module relative to its own folder, so it is never bundled.
+  external: ['koffi'],
   format: 'cjs',
   platform: 'node',
   target: 'node24',

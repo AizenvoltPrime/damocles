@@ -253,7 +253,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       renameEntry: async (project, relativePath, newName) => call('files.renameEntry', { project: toWire(project), relativePath, newName }),
       deleteEntry: async (project, relativePath, confirmed) => call('files.deleteEntry', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed) }),
       trash: (entryPath) => call('files.trash', { path: entryPath }),
-      isDirectory: (target) => call('files.isDirectory', { target }),
+      isDirectory: (target, signal) => call('files.isDirectory', { target }, signal),
       mtimes: (folder, relativePaths) => call('files.mtimes', { folder, relativePaths }),
       browse: (folder) => call('files.browse', { folder }),
       // pages pulled one request at a time; an early return ends the walk on the host

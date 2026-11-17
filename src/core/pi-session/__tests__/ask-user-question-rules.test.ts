@@ -10,6 +10,7 @@ import { designSection, nestedDesignSection } from '../../design/guidance';
 import { designRuleSet } from '../../design/rule-set';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { ASK_USER_QUESTION_LIMITS } from '../../../shared/types/permissions';
+import { getPiCodingAgent } from '../pi-loader';
 
 const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
 
@@ -17,13 +18,13 @@ type ToolShape = { description: string; parameters: { properties: { questions: {
 
 describe('ASK_AS_OFTEN_AS_NEEDED', () => {
   it('names the per-call limit the tool schema and validator enforce', () => {
-    const tool = createAskUserQuestionTool(pi, new PermissionHandler(createFakePlatform())) as unknown as ToolShape;
+    const tool = createAskUserQuestionTool(pi, new PermissionHandler(createFakePlatform(), getPiCodingAgent)) as unknown as ToolShape;
     expect(ASK_AS_OFTEN_AS_NEEDED).toContain(`up to ${ASK_USER_QUESTION_LIMITS.MAX_QUESTIONS} questions`);
     expect(tool.parameters.properties.questions.maxItems).toBe(ASK_USER_QUESTION_LIMITS.MAX_QUESTIONS);
   });
 
   it('reaches every prompt that tells the model to ask the user', () => {
-    const tool = createAskUserQuestionTool(pi, new PermissionHandler(createFakePlatform())) as unknown as ToolShape;
+    const tool = createAskUserQuestionTool(pi, new PermissionHandler(createFakePlatform(), getPiCodingAgent)) as unknown as ToolShape;
     const prompts = {
       toolDescription: tool.description,
       systemPrompt: SYSTEM_PROMPT_PREAMBLE,

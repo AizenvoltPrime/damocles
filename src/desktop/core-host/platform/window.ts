@@ -1,3 +1,4 @@
+import { log } from '../../../core/logger';
 import type { Disposable } from '../../../platform/disposable';
 import type { ClientSnapshots } from '../../../platform/remote-host';
 import type { TerminalToggle, WindowService } from '../../../platform/window-service';
@@ -26,6 +27,9 @@ export function createWindowProxy(endpoint: CoreEndpoint, init: CoreInit, panels
       ...(forge !== undefined ? { forgeServer: forge.server, ...(forge.account !== undefined ? { forgeAccount: forge.account } : {}) } : {}),
     }),
     toggleTerminal: () => endpoint.emit('window.toggleTerminal', {}),
+    locateProjectFolder: (folderKey) => {
+      endpoint.request('window.locateProjectFolder', { folderKey }).catch((err: unknown) => log('[core-host] Locate for %s failed: %O', folderKey, err));
+    },
     terminalToggle: (clientId) => (clients ? (clientId === undefined ? undefined : clients.terminal(clientId)) ?? NO_TERMINAL : terminal),
     dispose: () => subscription?.dispose(),
   };

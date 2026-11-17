@@ -74,7 +74,7 @@ function localHostNames(): Set<string> {
  * On win32, a drive's admin share on this machine (`\\localhost\C$\x`, `\\127.0.0.1\c$\x`,
  * `\\?\UNC\<host>\C$\x`) as the drive path `C:\x`, which realpath leaves as a network path.
  */
-function localDrivePath(target: string): string {
+export function localDrivePath(target: string): string {
   if (process.platform !== 'win32') return target;
   const match = /^\\\\(?:[?.]\\UNC\\)?([^\\]+)\\([A-Za-z])\$(\\.*)?$/i.exec(target);
   if (!match) return target;

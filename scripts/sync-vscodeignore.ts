@@ -362,6 +362,7 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-tui',
         '@earendil-works/pi-mcp',
         '@earendil-works/pi-codemode',
+        '@earendil-works/pi-schema',
         'quickjs-wasi',
         'openai',
         '@anthropic-ai/sdk',
@@ -400,12 +401,12 @@ const DROP_EXTS = new Set([
  * License, notice and copyright files a narrowed package keeps whatever their extension, because MIT and
  * Apache-2.0 require the text to travel with every copy: a basename that names a license or notice
  * (`LICENSE`, `LICENSE.md`, `ThirdPartyNotices.txt`, esbuild's `<name>.js.LICENSE` sidecars) or any file
- * in a `LICENSES` directory (pi-mcp's only license text is `LICENSES/modelcontextprotocol-typescript-sdk.txt`).
+ * in a directory so named (pi-mcp's only license text is `THIRD_PARTY_NOTICES/modelcontextprotocol-typescript-sdk.txt`).
  */
 const LICENSE_FILE_NAME = /licen[cs]e|notice/i;
 
 function isLicenseFile(name: string, parentDirName: string): boolean {
-  return parentDirName === 'LICENSES' || LICENSE_FILE_NAME.test(name);
+  return LICENSE_FILE_NAME.test(parentDirName) || LICENSE_FILE_NAME.test(name);
 }
 
 /**

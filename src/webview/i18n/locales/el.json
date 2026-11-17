@@ -267,11 +267,13 @@
       "classifier": {
         "typesafe": "Jev (TypeSafe)",
         "openrouter": "Jev (OpenRouter)",
-        "openai": "GPT-6 Luna (Decisions API)"
+        "openai": "GPT-6 Luna (Decisions API)",
+        "github-copilot": "Microsoft-Decision-1 (GitHub Copilot)"
       },
       "unavailable": {
         "no-key": "Δεν έχει αποθηκευτεί κλειδί",
-        "chatgpt-active": "Χρειάζεται το κλειδί API του OpenAI, όχι το ChatGPT"
+        "chatgpt-active": "Χρειάζεται το κλειδί API του OpenAI, όχι το ChatGPT",
+        "signed-out": "Συνδεθείτε στο GitHub Copilot"
       }
     },
     "imageGeneration": {
@@ -532,10 +534,12 @@
     "requiresAction": "Αναμονή για την απάντησή σας",
     "retrying": "Σφάλμα παρόχου, νέα προσπάθεια ({attempt}/{max})...",
     "windDown": {
-      "run": "Γίνεται διακοπή: αναμονή να τελειώσουν οι κλήσεις εργαλείων και οι χειριστές συμβάντων της εκτέλεσης.",
-      "handlers": "Γίνεται διακοπή: αναμονή να επιστρέψουν οι χειριστές {events} του pi. Το pi δεν τους δίνει σήμα ακύρωσης.",
-      "loaded": "Φορτωμένες επεκτάσεις pi: {extensions}.",
-      "withHandler": "Επεκτάσεις pi με τέτοιον χειριστή: {extensions}."
+      "hook": "Γίνεται διακοπή: αναμονή να τελειώσει το hook τέλους γύρου {hook} ({scope}).",
+      "userHooks": "hooks χρήστη",
+      "projectHooks": "hooks έργου",
+      "extension": "Γίνεται διακοπή: αναμονή για το βήμα τέλους γύρου της επέκτασης {extension}.",
+      "run": "Γίνεται διακοπή: αναμονή να τελειώσουν τα εργαλεία που εκτελούνται.",
+      "finishing": "Γίνεται διακοπή: ολοκληρώνεται ο γύρος."
     }
   },
   "subagent": {
@@ -1465,7 +1469,9 @@
     "steered": "Κατευθύνθηκε",
     "resuming": "Συνέχιση {id}",
     "resumed": "Συνεχίστηκε",
-    "queued": "Περιμένει να ελευθερωθεί θέση (Ταυτόχρονοι subagents)"
+    "queued": "Περιμένει να ελευθερωθεί θέση (Ταυτόχρονοι subagents)",
+    "stoppedDenied": "Διακόπηκε: απορρίψατε μια κλήση εργαλείου",
+    "stoppedHookDenied": "Διακόπηκε: ένα hook απέρριψε μια κλήση εργαλείου"
   },
   "steerTool": {
     "title": "Καθοδήγηση subagent",
@@ -1767,7 +1773,9 @@
     "agentOverlay": {
       "noConversationData": "Δεν υπάρχουν διαθέσιμα δεδομένα συνομιλίας",
       "openLogFile": "Άνοιγμα αρχείου καταγραφής agent",
-      "cancelAgent": "Ακύρωση agent"
+      "cancelAgent": "Ακύρωση agent",
+      "waitingDenied": "Αναμένει τον επικεφαλής: απορρίψατε μια κλήση εργαλείου",
+      "waitingHookDenied": "Αναμένει τον επικεφαλής: ένα hook απέρριψε μια κλήση εργαλείου"
     },
     "indicator": {
       "label": "Ομάδα ({n})"
@@ -3332,7 +3340,9 @@
       "activeOf": "{active} από {total} ενεργοί",
       "activeWaitingOf": "{active} από {total} ενεργοί, {waiting} σας χρειάζεται | {active} από {total} ενεργοί, {waiting} σας χρειάζονται",
       "finished": "ολοκληρώθηκε",
-      "stopped": "σταμάτησε"
+      "stopped": "σταμάτησε",
+      "stoppedDenied": "σταμάτησε: απορρίψατε μια κλήση εργαλείου του επικεφαλής",
+      "stoppedHookDenied": "σταμάτησε: ένα hook απέρριψε μια κλήση εργαλείου του επικεφαλής"
     },
     "subagent": {
       "open": "Άνοιγμα subagent {name}"

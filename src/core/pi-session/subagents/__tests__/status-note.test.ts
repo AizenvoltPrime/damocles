@@ -26,6 +26,16 @@ describe('getStatusNote', () => {
     );
   });
 
+  it('a rejected call names the tool, who rejected it, and the resume call', () => {
+    expect(getStatusNote('stopped', 'denied', 'abc', 'Bash')).toBe(
+      ' (STOPPED: the user rejected its Bash call and the run ended there; output is partial. Resume it with Agent({resume:"abc"}) if the user asks to continue.)',
+    );
+    expect(getStatusNote('stopped', 'hookDenied', 'abc', 'Bash')).toBe(
+      ' (STOPPED: a hook rejected its Bash call and ended the run; output is partial. Resume it with Agent({resume:"abc"}) if the user asks to continue.)',
+    );
+    expect(getStatusNote('stopped', 'denied', 'abc')).toContain('the user rejected a tool call');
+  });
+
   it('a failure names the resume call, since a failed agent can be resumed', () => {
     expect(getStatusNote('error', undefined, 'abc')).toBe(' (FAILED before completion. Resume it with Agent({resume:"abc"}) if the user asks to continue.)');
   });

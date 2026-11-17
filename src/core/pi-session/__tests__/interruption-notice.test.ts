@@ -109,6 +109,32 @@ describe('reconcileInterruptions', () => {
     expect(sent[0]!.content).toContain(`subagent ${A} ("task of 0a1b"), stopped when its chat panel closed, switched session or the editor window reloaded: resume with`);
   });
 
+  it.each([
+    ['denied', 'stopped when the user rejected one of its tool calls'],
+    ['hookDenied', 'stopped when a hook rejected one of its tool calls'],
+  ])('a foreground agent a rejected call stopped (%s) is listed with that cause', async (stopReason, cause) => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    writeAgentFile(dir, A, { status: 'stopped', stopReason });
+    invoke(parent, A, 'tc1', { details: { agentId: A, status: 'stopped', stopReason } });
+
+    const { sent } = await reconcile(parent, dir);
+
+    expect(sent[0]!.content).toContain(`subagent ${A} ("task of 0a1b"), ${cause}: resume with Agent({resume:"${A}"})`);
+  });
+
+  it('a background agent a rejected call stopped is not listed once its result was delivered', async () => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    writeAgentFile(dir, A, { status: 'stopped', stopReason: 'denied' });
+    invoke(parent, A, 'tc1', { details: { agentId: A, status: 'async_launched' } });
+    parent.appendCustomMessageEntry(SUBAGENT_RESULTS_CUSTOM_TYPE, 'results', false, {
+      agents: [{ agentId: A, toolCallId: 'tc1', status: 'stopped', stopReason: 'denied', result: 'partial' }],
+    });
+
+    expect((await reconcile(parent, dir)).sent).toEqual([]);
+  });
+
   it('crash: an agent with no status anywhere is interrupted and listed', async () => {
     const dir = tempDir();
     const parent = SessionManager.inMemory('/ws');

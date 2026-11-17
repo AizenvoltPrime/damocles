@@ -4,7 +4,7 @@ import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { extractOriginalInputs } from './original-input';
 import { storedTypedText } from './prompt-context';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
-import { latestWorktreeEntry } from '../../worktrees/worktree-entry';
+import { entryTimeOf, latestWorktreeEntry } from '../../worktrees/worktree-entry';
 import { designRoleOf, finishedDesignVersion } from '../../design/design-entries';
 
 /** Fields computed from a single opened pi session, including the in-tree rename marker and tag. */
@@ -174,11 +174,30 @@ export function newestUniquePrompts(branch: readonly SessionEntry[]): string[] {
   return newest;
 }
 
+/** Where a session's header says it was started: the folder whose chat it is when no worktree entry names a project. */
+export interface SessionOrigin {
+  readonly cwd: string;
+  /** The header's time in epoch ms, which relocation aliases map `cwd` as of; absent when it does not parse. */
+  readonly startedAt?: number;
+}
+
+/** A session's list row as the session metadata index holds it; `origin` is core's alone and never reaches a view. */
+export interface IndexedSession extends StoredSession {
+  /** Absent when the header names no folder. */
+  origin?: SessionOrigin;
+}
+
 /** Persisted by the session metadata index: a change to what fills it must bump `SESSION_META_SCHEMA` (`meta-index/store.ts`). */
 export interface SessionFileMeta {
   /** `null` when the file has no session header. */
-  stored: StoredSession | null;
+  stored: IndexedSession | null;
   prompts: string[];
+}
+
+/** The row a view is sent: `session` without what only core reads. */
+export function listRow(session: IndexedSession): StoredSession {
+  const { origin: _origin, ...row } = session;
+  return row;
 }
 
 type SessionManagerView = Pick<SessionManager, 'getHeader' | 'getEntries' | 'getBranch' | 'getSessionName'>;
@@ -200,9 +219,13 @@ export function sessionFileMeta(sm: SessionManagerView, mtimeMs: number): Sessio
   const role = designRoleOf(branch);
   const finished = role ? finishedDesignVersion(branch, role.designId) : undefined;
   const stored = mapPiFieldsToStored(fields);
+  // A session file is untrusted input, so a header without a string cwd yields no origin.
+  const cwd: unknown = header.cwd;
+  const startedAt = entryTimeOf(header);
   return {
     stored: {
       ...stored,
+      ...(typeof cwd === 'string' ? { origin: { cwd, ...(startedAt !== undefined ? { startedAt } : {}) } } : {}),
       ...(worktree ? { worktree: { worktreeId: worktree.worktreeId, place: worktree.place } } : {}),
       ...(role ? { design: { designId: role.designId, ...(role.parentSessionId !== null ? { parentSessionId: role.parentSessionId } : {}), ...(finished !== undefined ? { finishedVersion: finished } : {}) } } : {}),
     },

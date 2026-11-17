@@ -419,7 +419,7 @@ test('slice 12a Remove Project captures: the question about first messages waiti
         await windowShot(app, testInfo, `remove-project-waiting-${language}-${theme}`);
       }
       await question.getByTestId('overlay-message-cancel').click();
-      expect(await removal).toEqual({ ok: true });
+      expect(await removal).toEqual({ ok: true, removed: false });
       await desktop.close();
     });
   }

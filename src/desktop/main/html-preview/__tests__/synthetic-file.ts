@@ -1,5 +1,5 @@
 import type { ReadRangeResult } from '../../../workspace/transfer-ops';
-import type { PreviewFileReads } from '../preview-reader';
+import type { PreviewFileReads } from '../../../../core/served-pages/preview-reader';
 
 export const SYNTHETIC_CHUNK_BYTES: number = 64 * 1024;
 

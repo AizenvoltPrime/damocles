@@ -1,5 +1,6 @@
 // pi's full parse of one session file, the index's only heavy work. In the worker it runs on a thread of its own, so the
 // thread that answers requests from the index is never held by a parse (docs/invariants.md "Session store").
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker, type MessagePort } from 'node:worker_threads';
@@ -37,8 +38,11 @@ function loadPi(piPackageDir: string): Promise<PiModule | null> {
   );
 }
 
-// A file pi cannot read yields no session, which the index caches like any other row.
-function parseWithPi(pi: PiModule, file: string, mtimeMs: number): ParsedMeta {
+// A file pi cannot read yields no session, which the index caches like any other row. A file gone since the list read its dir
+// (deleted, or moved by a project relocation) yields no row: pi would open it as a new session and recreate its dir.
+function parseWithPi(pi: PiModule, file: string, mtimeMs: number): ParsedMeta | undefined {
+  // eslint-disable-next-line damocles/no-sync -- on the parse thread, right before pi's own synchronous read of the file
+  if (!fs.existsSync(file)) return undefined;
   try {
     // The session dir is the file's own parent, never recomputed from a workspace cwd.
     return sessionFileMeta(pi.SessionManager.open(file, path.dirname(file)), mtimeMs);

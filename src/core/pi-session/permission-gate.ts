@@ -1,20 +1,27 @@
+import { access, realpath } from 'node:fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { ToolCallEvent, ToolCallEventResult, AgentBeforeSettleEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
 import type { McpToolIdentity } from '../permission-handler/types';
-import type { PermissionBehavior, PermissionDetail, PermissionUpdate } from '../../shared/types/permissions';
+import type { PermissionBehavior, PermissionDetail, PermissionFact, PermissionUpdate } from '../../shared/types/permissions';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
 import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_AGENT, TOOL_GENERATE_IMAGE, TOOL_GLOB, TOOL_GREP, TOOL_IMPORT_ASSET, TOOL_LS, TOOL_READ, TOOL_WEB_FETCH, LIVE_OUTPUT_TOOLS, SHELL_TOOLS, WRITE_TOOLS, FORGE_WRITE_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
-import { reachesNetwork } from '../local-links';
+import { networkReach } from '../local-links';
+import { loadedFileUrl, UNPARSED_FILE_URL } from '../browser/loaded-file-url';
+import type { ChatServedFiles } from '../browser/served-files';
+import { canonicalPath, localDrivePath } from '../canonical-path';
+import { l } from '../l10n';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import type { ReadOnlyVerdict } from './readonly-shell';
 import { provenReadOnlyShell, type ChatMachine } from './proven-shell';
-import { resolveReadPathAsync, resolveToCwd } from './tools/search-tools';
+import { readPathCandidates, resolveToCwd } from './tools/search-tools';
+import { rootPointerReach } from './tools/search-walk';
+import { browserUploadPath } from './tools/browser-tools';
 import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import { DESIGN_PI_TOOL_NAMES, DESIGN_TOOLS_WITHOUT_FOLDER_WRITES } from '../design/rule-set';
@@ -26,12 +33,14 @@ import { isForgeTool, type ForgeToolsPort } from './tools/forge-tools';
 import type { ForgeApprovalAnswer } from '../../shared/forge/tools';
 import { DESIGN_CHAT_FORGE_REFUSAL } from './tools/forge-tool-specs';
 import { relayedServerOfTool } from './mcp/relayed-tool-names';
-import { englishText } from '../../shared/localized-text';
+import { englishText, type LocalizedArg, type LocalizedText } from '../../shared/localized-text';
+import { visibleText } from '../../shared/visible-text';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
 import type { ResourceReadReach } from './mcp/content';
 import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
 import { describeStoppedBeforeRun } from './tools/cancellable-shell';
 import type { ToolCallHookOutcome } from './hooks/dispatch';
+import { recordTerminatedCall, type TerminateCause } from './terminated-calls';
 import type { DesignPromptInputs } from './agent-start';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
@@ -153,6 +162,11 @@ export interface PanelGateContext {
    * no network host is the chat's and no PowerShell program lookup can pass, so only the fail-closed answers remain.
    */
   machine?: ChatMachine;
+  /**
+   * The chat's served roots and the folders it was granted, shared by its nested agents: a browser load of a file page outside
+   * them asks, and the call the gate lets run grants the page's folder. Absent: no outside page asks, and the tool refuses it.
+   */
+  browserFiles?: Pick<ChatServedFiles, 'folderAsk' | 'grantedFile' | 'grantRefusal' | 'grant'>;
 }
 
 /** What the gate needs of a panel's turn checkpoint. */
@@ -196,7 +210,7 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope' | 'machine' | 'forgeTools'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope' | 'machine' | 'forgeTools' | 'browserFiles'> & {
   /**
    * Apply plan mode's shell rule to this caller in every mode: a command `provenReadOnlyShell` proves
    * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
@@ -249,58 +263,268 @@ function isInsideFolder(target: string, folder: string): boolean {
 export interface CallFacts {
   /** A shell call's `provenReadOnlyShell` verdict. */
   readonly shellVerdict?: ReadOnlyVerdict;
-  /** The path of a file tool may reach a network host the chat does not live on (`reachesNetwork`): no check touches it. */
+  /** The path of a file tool may reach a network host the chat does not live on (`networkReach`): no check touches it. */
   readonly reachesNetwork: boolean;
+  /** The hosts those paths name by spelling or through a link, each once. */
+  readonly networkHosts: readonly string[];
+  /**
+   * One of those paths may reach a host none of them names: a device path, a link to one, a server with an `@` WebDAV does not
+   * read, a network drive whose server cannot be read, or a `file:` URL naming no path.
+   */
+  readonly unplacedReach: boolean;
+  /** Those paths as the input names them (a browser load's URL as written), each once. */
+  readonly networkPaths: readonly string[];
+  /** The one path that reaches is where a search's repository `.git` file points (`rootPointerReach`), which the search never opens. */
+  readonly repositoryPointer?: true;
+  /**
+   * A browser load of a file page outside the chat's roots and granted folders: the file, the folder as the page names it, and
+   * its root: its canonical path, or for a path that may reach a network host the folder as written, which nothing touches until
+   * the call may run.
+   */
+  readonly outsidePage?: { readonly file: string; readonly folder: string; readonly root: string };
+  /** Why the folder of such a page is never granted: the gate blocks the call with it and asks nothing. */
+  readonly pageRefusal?: string;
+  /** The file of a browser load under a folder the chat was granted, which `Read` rules decide too. */
+  readonly grantedPage?: string;
 }
 
+type Reach = NonNullable<Awaited<ReturnType<typeof networkReach>>>;
+
+const LOCAL_FACTS: CallFacts = { reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] };
 const NO_NETWORK_HOSTS: ReadonlySet<string> = new Set();
 const UNKNOWN_MACHINE: ChatMachine = { platform: process.platform, allowedNetworkHosts: () => Promise.resolve(NO_NETWORK_HOSTS) };
 const BROWSER_URL_TOOLS: ReadonlySet<string> = new Set(['BrowserOpen', 'BrowserNavigate', 'BrowserTabs']);
+const UNPLACED_FILE = Symbol('unplaced file');
 
 /**
- * The paths a tool opens or searches as its input names them, `read` when it opens them as pi's Read does; undefined for a tool
- * that names none. A `file:` URL a browser tool loads is its path, and one that names no path cannot be placed (`unplaced`).
+ * The paths a tool opens or searches, each as its input names it (`written`) and as the absolute path it opens (`path`), `read`
+ * when it opens them as pi's Read does; undefined for a tool that names none. A file tool's path resolves as pi resolves it
+ * (`resolveToCwd`), a browser upload's as the tool does (`browserUploadPath`), and a browser load's as Chrome opens it
+ * (`loadedFile`), which may name no path (`unplaced`, the URL as written).
  */
-function filePathsOf(name: string, input: Record<string, unknown>): { paths: readonly string[]; read: boolean; unplaced?: true } | undefined {
+function filePathsOf(name: string, input: Record<string, unknown>, cwd: () => string): { paths: readonly { written: string; path: string }[]; read: boolean } | { unplaced: string } | undefined {
   const named = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
-  const paths = (read: boolean, ...values: unknown[]) => {
-    const found = values.map(named).filter((value): value is string => value !== undefined);
+  const paths = (read: boolean, resolved: (written: string) => string | undefined, ...values: unknown[]) => {
+    const found = values.map(named).flatMap((written) => {
+      const opened = written === undefined ? undefined : resolved(written);
+      return opened === undefined ? [] : [{ written: written!, path: opened }];
+    });
     return found.length === 0 ? undefined : { paths: found, read };
   };
-  if (name === TOOL_READ) return paths(true, input['file_path']);
-  if (name === TOOL_GREP || name === TOOL_GLOB || name === TOOL_LS) return paths(false, named(input['path']) ?? '.');
+  const tool = (written: string): string => resolveToCwd(written, cwd());
+  if (name === TOOL_READ) return paths(true, tool, input['file_path']);
+  if (name === TOOL_GREP || name === TOOL_GLOB || name === TOOL_LS) return paths(false, tool, named(input['path']) ?? '.');
   // ImportAsset's `path` and `file` read as a Read of that path does; its `url` is no file.
-  if (name === TOOL_IMPORT_ASSET) return paths(true, input['path'], input['file']);
-  if (WRITE_TOOLS.has(name)) return paths(false, named(input['file_path']) ?? input['path']);
-  if (name === 'BrowserUpload') return Array.isArray(input['paths']) ? paths(false, ...input['paths']) : undefined;
-  const url = BROWSER_URL_TOOLS.has(name) ? named(input['url']) : undefined;
-  if (url === undefined || !/^\s*file:/i.test(url)) return undefined;
+  if (name === TOOL_IMPORT_ASSET) return paths(true, tool, input['path'], input['file']);
+  if (WRITE_TOOLS.has(name)) return paths(false, tool, named(input['file_path']) ?? input['path']);
+  // the tool refuses the whole call when any path is relative, so only absolute ones are opened
+  if (name === 'BrowserUpload') return Array.isArray(input['paths']) ? paths(false, browserUploadPath, ...input['paths']) : undefined;
+  const url = browserLoadUrl(name, input);
+  const file = url === undefined ? undefined : loadedFile(url);
+  if (file === undefined) return undefined;
+  return file === UNPLACED_FILE ? { unplaced: url! } : { paths: [{ written: url!, path: file }], read: false };
+}
+
+/** The address a BrowserOpen, BrowserNavigate or BrowserTabs new tab loads; BrowserTabs loads its url only when it opens a new tab. */
+function browserLoadUrl(name: string, input: Record<string, unknown>): string | undefined {
+  const url = input['url'];
+  return BROWSER_URL_TOOLS.has(name) && (name !== 'BrowserTabs' || input['action'] === 'new') && typeof url === 'string' && url !== '' ? url : undefined;
+}
+
+/**
+ * The page facts of a browser load: a page under a granted folder, or one outside the roots and every grant with the folder a
+ * run grants, or why that folder is never granted. A folder is judged as written and, unless its path may reach a network host
+ * (nothing is touched there before the user's answer), as its canonical path, so a link or an 8.3 name cannot lead a grant
+ * into a folder the spelling hides.
+ */
+function browserPageFacts(name: string, input: Record<string, unknown>, files: NonNullable<GatePermissionContext['browserFiles']>, reachesNetwork: boolean): Pick<CallFacts, 'outsidePage' | 'pageRefusal' | 'grantedPage'> | undefined {
+  const url = browserLoadUrl(name, input);
+  if (url === undefined) return undefined;
+  const granted = files.grantedFile(url);
+  if (granted !== undefined) return { grantedPage: granted };
+  const ask = files.folderAsk(name, url);
+  if (ask === undefined) return undefined;
+  if ('refused' in ask) return { pageRefusal: ask.refused };
+  const root = reachesNetwork ? ask.folder : canonicalPath(ask.folder);
+  const refused = reachesNetwork ? files.grantRefusal(localDrivePath(ask.folder), false) : files.grantRefusal(root, true);
+  return refused !== undefined ? { pageRefusal: refused } : { outsidePage: { file: ask.file, folder: ask.folder, root } };
+}
+
+/**
+ * The file Chrome opens for a browser load of url (`loadedFileUrl`, which the browser tools read too): a file: URL's path as
+ * `fileURLToPath` gives it, resolved, with no other normalisation. undefined for a load of no file; UNPLACED_FILE for a file: URL
+ * that names no path or that the parser rejects.
+ */
+function loadedFile(url: string): string | typeof UNPLACED_FILE | undefined {
+  const loaded = loadedFileUrl(url);
+  if (loaded === undefined) return undefined;
+  if (loaded === UNPARSED_FILE_URL) return UNPLACED_FILE;
   try {
-    return { paths: [fileURLToPath(url.trim())], read: false };
-  } catch {
-    return { paths: [], read: false, unplaced: true };
+    return path.resolve(fileURLToPath(loaded));
+  } catch (err) {
+    // a path Node cannot give: not absolute, an encoded separator, a host off win32, or percent-encoding that is not UTF-8
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ERR_INVALID_FILE_URL_PATH' || code === 'ERR_INVALID_FILE_URL_HOST' || err instanceof URIError) return UNPLACED_FILE;
+    throw err;
   }
 }
 
 /**
- * The facts of call `name` with normalized `input`. A file tool's path resolves as the tool resolves it, and a Read's against the
- * names pi's Read falls back to only once the path as written is known to stay on this computer's drives, since finding them
- * opens files there.
+ * What pi's Read of `requested` may reach. pi opens the first of its names (`readPathCandidates`) that exists, and Windows follows
+ * a link at any segment but the last while it answers whether a name exists, so each name is placed before it is probed, a name
+ * that may reach is never probed, and the names after it count too, since pi tries them when it is missing.
  */
-export async function callFactsOf(name: string, input: Record<string, unknown>, machine: ChatMachine, cwd: () => string): Promise<CallFacts> {
-  if (SHELL_TOOLS.has(name)) return { shellVerdict: await provenReadOnlyShell(name, input, machine), reachesNetwork: false };
-  const file = filePathsOf(name, input);
-  if (file === undefined || process.platform !== 'win32') return { reachesNetwork: false };
-  if (file.unplaced) return { reachesNetwork: true };
-  const hosts = await machine.allowedNetworkHosts();
-  for (const named of file.paths) {
-    const requested = resolveToCwd(named, cwd());
-    if (await reachesNetwork(requested, hosts)) return { reachesNetwork: true };
-    if (!file.read) continue;
-    const opened = await resolveReadPathAsync(requested);
-    if (opened !== requested && await reachesNetwork(opened, hosts)) return { reachesNetwork: true };
+async function readReach(requested: string, allowed: ReadonlySet<string>): Promise<Reach | null> {
+  const reaches: Reach[] = [];
+  for (const candidate of readPathCandidates(requested)) {
+    const reach = await networkReach(candidate, allowed);
+    if (reach !== null) reaches.push(reach);
+    else if (await access(candidate).then(() => true, () => false)) break;
   }
-  return { reachesNetwork: false };
+  return reaches.length === 0 ? null : { hosts: reaches.flatMap((reach) => reach.hosts), unplaced: reaches.some((reach) => reach.unplaced) };
+}
+
+/**
+ * The facts of call `name` with normalized `input`. A file tool's path resolves as the tool resolves it, a Read's as `readReach`; a
+ * search's also reaches where its repository's `.git` file points (`rootPointerReach`); a browser load of a file page is placed
+ * against the chat's roots and granted folders (`files`).
+ */
+export async function callFactsOf(name: string, input: Record<string, unknown>, machine: ChatMachine, cwd: () => string, files?: GatePermissionContext['browserFiles']): Promise<CallFacts> {
+  const facts = await networkFactsOf(name, input, machine, cwd);
+  const page = files === undefined ? undefined : browserPageFacts(name, input, files, facts.reachesNetwork);
+  return page === undefined ? facts : { ...facts, ...page };
+}
+
+async function networkFactsOf(name: string, input: Record<string, unknown>, machine: ChatMachine, cwd: () => string): Promise<CallFacts> {
+  if (SHELL_TOOLS.has(name)) return { ...LOCAL_FACTS, shellVerdict: await provenReadOnlyShell(name, input, machine, cwd()) };
+  if (process.platform !== 'win32') return LOCAL_FACTS;
+  const file = filePathsOf(name, input, cwd);
+  if (file === undefined) return LOCAL_FACTS;
+  if ('unplaced' in file) return { reachesNetwork: true, networkHosts: [], unplacedReach: true, networkPaths: [file.unplaced] };
+  const allowed = await machine.allowedNetworkHosts();
+  const hosts = new Set<string>();
+  const reaching = new Set<string>();
+  let unplaced = false;
+  let pointed = false;
+  const add = (written: string, reach: Reach): void => {
+    reaching.add(written);
+    unplaced ||= reach.unplaced;
+    for (const host of reach.hosts) hosts.add(host);
+  };
+  for (const { written, path: requested } of file.paths) {
+    const reach = file.read ? await readReach(requested, allowed) : await networkReach(requested, allowed);
+    if (reach !== null) add(written, reach);
+    // the walk never follows its root repository's `.git` pointer off these hosts, so the card names where it leads
+    else if (name === TOOL_GREP || name === TOOL_GLOB) {
+      const pointer = await rootPointerReach(requested, () => Promise.resolve(allowed));
+      if (pointer !== undefined) {
+        add(pointer.written, pointer.reach);
+        pointed = true;
+      }
+    }
+  }
+  return { reachesNetwork: reaching.size > 0, networkHosts: [...hosts], unplacedReach: unplaced, networkPaths: [...reaching], ...(pointed ? { repositoryPointer: true as const } : {}) };
+}
+
+/**
+ * The card of a call whose path may reach a network host: the action, the paths as written and the hosts they name, and that
+ * opening them sends the user's Windows sign-in there. With no host it says the place is unknown, and with a path it cannot place
+ * beside named hosts it adds "possibly another computer". Undefined for a tool whose prompt has a view of its own (GenerateImage).
+ */
+function networkPathDetail(name: string, facts: CallFacts): PermissionDetail | undefined {
+  // the agent spells the paths and their hosts, so a bidi or control character shows as its escape
+  const hosts = facts.networkHosts.map(visibleText);
+  const paths = facts.networkPaths.map(visibleText);
+  const unplaced = facts.unplacedReach;
+  const several = paths.length > 1;
+  // "a", "a and b", "a, b and c"
+  const named = hosts.length <= 1 ? hosts[0] : l('{0} and {1}', hosts.slice(0, -1).join(', '), hosts[hosts.length - 1]!);
+  const place = named !== undefined && unplaced ? l('{0} and possibly another computer', named) : named;
+  if (facts.repositoryPointer) return repositoryPointerDetail(paths, hosts, unplaced, place);
+  const title = networkPathTitle(name, place, several);
+  if (title === undefined) return undefined;
+  const pathFact: PermissionFact = { label: pathLabel(name, several), value: paths.join('\n') };
+  if (place === undefined) {
+    return {
+      title,
+      subtitle: several ? l('opening them may send your Windows sign-in to other computers') : l('opening it may send your Windows sign-in to another computer'),
+      facts: [pathFact],
+      approvedStatus: l('Allowed once. Your Windows sign-in may go to another computer.'),
+    };
+  }
+  const computers: PermissionFact = unplaced
+    ? { label: l('Computers'), value: hosts.join(', '), note: l('and possibly another') }
+    : { label: hosts.length > 1 ? l('Computers') : l('Computer'), value: hosts.join(', ') };
+  return { title, subtitle: networkPathSubtitle(several, hosts.length > 1, unplaced), facts: [pathFact, computers], approvedStatus: l('Allowed once. Your Windows sign-in goes to {0}.', place) };
+}
+
+// several: more than one path; severalHosts: they name more than one host; unplaced: one may reach a host none names
+function networkPathSubtitle(several: boolean, severalHosts: boolean, unplaced: boolean): LocalizedText {
+  if (unplaced) return several ? l('opening them may send your Windows sign-in to other computers') : l('opening it may send your Windows sign-in to other computers');
+  if (several) return severalHosts ? l('opening them sends your Windows sign-in to those computers') : l('opening them sends your Windows sign-in to that computer');
+  return severalHosts ? l('opening it sends your Windows sign-in to those computers') : l('opening it sends your Windows sign-in to that computer');
+}
+
+function pathLabel(name: string, several: boolean): LocalizedText {
+  if (name === TOOL_GREP || name === TOOL_GLOB || name === TOOL_LS) return l('Folder');
+  if (BROWSER_URL_TOOLS.has(name)) return l('URL');
+  return several ? l('Files') : l('File');
+}
+
+/**
+ * The card of a browser load of a file page outside the chat's folders: the action, the file and the folder a yes serves to the
+ * chat, whose every file and subfolder the page can read until the chat closes. A page that may also reach a network host gets
+ * that card (`network`) with the folder added, so one prompt answers both.
+ */
+function outsideFolderDetail(name: string, page: NonNullable<CallFacts['outsidePage']>, network: PermissionDetail | undefined): PermissionDetail {
+  const root = visibleText(page.root);
+  if (network !== undefined) {
+    const folder: PermissionFact = { label: l('Folder served'), value: root, note: l('the page can read every file in it and its subfolders until the chat closes') };
+    return { ...network, facts: [...(network.facts ?? []), folder], approvedStatus: l('{0} This chat\'s browser serves {1} until the chat closes.', network.approvedStatus ?? '', root) };
+  }
+  const title = name === 'BrowserNavigate' ? l('Go to a page outside this chat\'s folders?') : name === 'BrowserTabs' ? l('Open a tab with a page outside this chat\'s folders?') : l('Open a page outside this chat\'s folders?');
+  return {
+    title,
+    subtitle: l('the page can read every file in its folder and its subfolders until the chat closes'),
+    facts: [{ label: l('File'), value: visibleText(page.file) }, { label: l('Folder served'), value: root }],
+    approvedStatus: l('Allowed. This chat\'s browser serves {0} until the chat closes.', root),
+  };
+}
+
+/** The card of a search whose repository's `.git` file points off this computer: nothing is opened there, so approving sends no sign-in. */
+function repositoryPointerDetail(paths: readonly string[], hosts: readonly string[], unplaced: boolean, place: LocalizedArg | undefined): PermissionDetail {
+  const pointerFact: PermissionFact = { label: l('Repository'), value: paths.join('\n') };
+  const subtitle = l('its .git file points there; Damocles does not open it, so that repository\'s exclude file is not applied');
+  if (place === undefined) {
+    return { title: l('Search a folder whose repository points to another computer?'), subtitle, facts: [pointerFact], approvedStatus: l('Allowed once. Nothing is opened on another computer.') };
+  }
+  const computers: PermissionFact = unplaced
+    ? { label: l('Computers'), value: hosts.join(', '), note: l('and possibly another') }
+    : { label: hosts.length > 1 ? l('Computers') : l('Computer'), value: hosts.join(', ') };
+  return { title: l('Search a folder whose repository points to {0}?', place), subtitle, facts: [pointerFact, computers], approvedStatus: l('Allowed once. Nothing is opened on {0}.', place) };
+}
+
+// several: the call names more than one path that may reach a host
+function networkPathTitle(name: string, place: LocalizedArg | undefined, several: boolean): LocalizedText | undefined {
+  switch (name) {
+    case TOOL_READ:
+    case TOOL_IMPORT_ASSET:
+      return place === undefined ? l('Read a file that may be on another computer?') : l('Read a file on {0}?', place);
+    case TOOL_GREP:
+    case TOOL_GLOB:
+      return place === undefined ? l('Search files that may be on another computer?') : l('Search files on {0}?', place);
+    case TOOL_LS:
+      return place === undefined ? l('List a folder that may be on another computer?') : l('List a folder on {0}?', place);
+    case TOOL_EDIT:
+    case TOOL_WRITE:
+      return place === undefined ? l('Change a file that may be on another computer?') : l('Change a file on {0}?', place);
+    case 'BrowserUpload':
+      if (place === undefined) return several ? l('Upload files that may be on other computers?') : l('Upload a file that may be on another computer?');
+      return several ? l('Upload files from {0}?', place) : l('Upload a file from {0}?', place);
+    default:
+      if (!BROWSER_URL_TOOLS.has(name)) return undefined;
+      return place === undefined ? l('Open a page that may be on another computer?') : l('Open a page on {0}?', place);
+  }
 }
 
 /**
@@ -345,6 +569,8 @@ export function gateErrorFallback(): ToolCallEventResult {
  *
  * `parentToolUseId` is non-null for a nested subagent's tool call (inherit-parent-mode gating): it is the
  * spawning `Agent` tool-call id, threaded into the approval flow so prompts attach to the subagent card.
+ *
+ * `recordSessionId` names the session whose run reads the terminating blocks (`terminated-calls.ts`); without it none is recorded.
  */
 export async function runPermissionGate(
   event: ToolCallEvent,
@@ -352,11 +578,12 @@ export async function runPermissionGate(
   signal: AbortSignal | undefined,
   parentToolUseId: string | null = null,
   preToolUse?: PreToolUseHookGate,
+  recordSessionId?: string,
 ): Promise<ToolCallEventResult | undefined> {
   // Opened at entry because pi emits `tool_execution_start`, which shows the card's Stop, before this gate runs.
   const stopSignal = LIVE_OUTPUT_TOOLS.has(mapPiToolName(event.toolName)) ? panel.shellCancel.admit(event.toolCallId, signal) : undefined;
   try {
-    const result = await decideToolCall(event, panel, signal, parentToolUseId, preToolUse, stopSignal);
+    const result = await decideToolCall(event, panel, signal, parentToolUseId, preToolUse, stopSignal, recordSessionId);
     if (stopSignal && result?.block) panel.shellCancel.releaseAdmitted(event.toolCallId);
     return result;
   } catch (err) {
@@ -373,8 +600,14 @@ async function decideToolCall(
   parentToolUseId: string | null,
   preToolUse: PreToolUseHookGate | undefined,
   stopSignal: AbortSignal | undefined,
+  recordSessionId: string | undefined,
 ): Promise<ToolCallEventResult | undefined> {
   const damoclesName = mapPiToolName(event.toolName);
+  // pi keeps no `terminate` on the result it stores, so the run's outcome reads it from this record.
+  const terminating = (reason: string, cause: TerminateCause): ToolCallEventResult => {
+    if (recordSessionId !== undefined) recordTerminatedCall(recordSessionId, { toolCallId: event.toolCallId, toolName: damoclesName, cause });
+    return { block: true, reason, terminate: true };
+  };
   const category = toolCategory(damoclesName);
   // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
   const isMcp = damoclesName.startsWith('mcp__');
@@ -405,9 +638,12 @@ async function decideToolCall(
   // Read first where every hook has run, so each check judges the input as it runs.
   let facts: Promise<CallFacts> | undefined;
   const callFacts = (): Promise<CallFacts> => (facts ??= callFactsOf(
-    damoclesName, normalizeToolInput(event.toolName, event.input as Record<string, unknown>), panel.machine ?? UNKNOWN_MACHINE, () => panel.permissionHandler.sessionCwd()));
+    damoclesName, normalizeToolInput(event.toolName, event.input as Record<string, unknown>), panel.machine ?? UNKNOWN_MACHINE, () => panel.permissionHandler.sessionCwd(), panel.browserFiles));
   // Every allow path funnels here, after approval, so the approval prompt's time counts toward the baseline.
+  // A page outside the chat's folders is granted its folder here, whichever answer let it run: the user's, a rule's, YOLO's or a hook's.
   const proceed = async (): Promise<ToolCallEventResult | undefined> => {
+    const page = BROWSER_URL_TOOLS.has(damoclesName) ? await callFacts() : undefined;
+    if (page?.pageRefusal !== undefined) return { block: true, reason: formatPolicyBlockReason(page.pageRefusal) };
     const checkpoint = panel.checkpointBaseline;
     if (checkpoint && waitsForCheckpointBaseline(event.toolName, event.input as Record<string, unknown>, panel.isMcpReadOnly, checkpoint.folder, (await callFacts()).shellVerdict)) {
       await checkpoint.wait(callSignal ?? NEVER_ABORT, mapPiToolName(event.toolName));
@@ -416,7 +652,23 @@ async function decideToolCall(
     const stopped = stoppedByUser();
     if (stopped) return stopped;
     if (pendingContext && preToolUse) preToolUse.stashContext(event.toolCallId, pendingContext);
+    if (page?.outsidePage) {
+      const root = page.reachesNetwork ? await networkRoot(page.outsidePage.root) : { root: page.outsidePage.root };
+      if ('refused' in root) return { block: true, reason: formatPolicyBlockReason(root.refused) };
+      panel.browserFiles?.grant(page.outsidePage.folder, root.root);
+    }
     return undefined;
+  };
+  // A network folder is resolved only once the call may run, off the host thread, and judged again as the real path it serves from.
+  const networkRoot = async (folder: string): Promise<{ readonly root: string } | { readonly refused: string }> => {
+    let real: string;
+    try {
+      real = await realpath(folder);
+    } catch (err) {
+      return { refused: `${folder} could not be read (${(err as NodeJS.ErrnoException).code ?? (err instanceof Error ? err.message : String(err))}), so it is not served.` };
+    }
+    const refused = panel.browserFiles?.grantRefusal(real, true);
+    return refused === undefined ? { root: real } : { refused };
   };
 
   // D62, a design chat's posture and one writer per design file apply in every mode and before a hook's force-allow, to the
@@ -460,8 +712,8 @@ async function decideToolCall(
       if (result.decision === 'deny') {
         preToolUse.onDecision(damoclesName, 'deny', result.reason, result.terminate === true);
         // A hook deny defaults to non-terminating; `terminate` is the hook author's explicit opt-in.
-        return { block: true, reason: formatPolicyBlockReason(result.reason ?? 'Blocked by a configured PreToolUse hook'),
-          ...(result.terminate ? { terminate: true } : {}) };
+        const reason = formatPolicyBlockReason(result.reason ?? 'Blocked by a configured PreToolUse hook');
+        return result.terminate ? terminating(reason, 'hook') : { block: true, reason };
       }
       // Fail closed BEFORE the force-allow: a hook that timed out or failed to spawn may be the one that
       // would have denied, and a force-allow skips the gate entirely (canUseTool, plan mode, the
@@ -534,15 +786,20 @@ async function decideToolCall(
         forgeCard = { permissionDetail: approval.detail, suggestions: [approval.suggestion] };
       }
     }
+    const facts = await callFacts();
+    const networkCard = call.reachesNetwork ? networkPathDetail(damoclesName, facts) : undefined;
+    const pathCard = facts.outsidePage ? outsideFolderDetail(damoclesName, facts.outsidePage, networkCard) : networkCard;
     const result = await panel.permissionHandler.canUseTool(
       damoclesName,
       input,
       {
         ...buildCanUseToolContext(event.toolCallId, callSignal, parentToolUseId, mcpTool),
         ...(forgeCard ?? {}),
+        ...(pathCard ? { permissionDetail: pathCard } : {}),
         runsUnasked: () => runsUnasked(call, panel),
         ...(requiresUser ? { requiresUser: true as const, rule: call.rule } : { rule: call.rule }),
         ...(call.reachesNetwork ? { reachesNetwork: true as const } : {}),
+        ...(call.outsideFolder ? { outsideFolder: true as const } : {}),
       },
     );
     // A Stop withdraws the prompt, which settles as an unasked deny, so this check must come first.
@@ -560,19 +817,27 @@ async function decideToolCall(
       return proceed();
     }
     if (result.policy) return { block: true, reason: formatPolicyBlockReason(result.message) };
-    return { block: true, reason: formatDenyReason(result.message), ...(result.interrupt ? { terminate: true } : {}) };
+    const reason = formatDenyReason(result.message);
+    return result.interrupt ? terminating(reason, 'user') : { block: true, reason };
   };
 
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return proceed();
 
-  const { shellVerdict, reachesNetwork: networkPath } = await callFacts();
+  const { shellVerdict, reachesNetwork: networkPath, outsidePage, pageRefusal, grantedPage } = await callFacts();
+  if (pageRefusal !== undefined) return { block: true, reason: formatPolicyBlockReason(pageRefusal) };
   const ruleOptions = { ...(networkPath ? { pathsAsWritten: true as const } : {}), ...(forgeProject !== undefined ? { forgeProject } : {}) };
   let rule = onlyUserApproves
     ? await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, { ignoreBypass: true })
     : await panel.permissionHandler.matchRule(decidedAs.name, decidedAs.input, mcpTool, ruleOptions);
   // A call decided as another tool's keeps its own tool's rule too, and the stricter of the two decides (D101).
   if (decidedAs.name !== damoclesName) rule = stricterRule(rule, await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, ruleOptions));
-  const call: GatedCall = { name: decidedAs.name, input: decidedAs.input, mcpReadOnly, rule, ...(shellVerdict ? { shellVerdict } : {}), ...(networkPath ? { reachesNetwork: true as const } : {}) };
+  // A page outside the project is a file the browser reads, so a Read deny or ask rule on it decides too; a Read allow grants no folder.
+  const pageFile = outsidePage?.file ?? grantedPage;
+  if (pageFile !== undefined) {
+    const readRule = await panel.permissionHandler.matchRule(TOOL_READ, { file_path: pageFile }, undefined, ruleOptions);
+    if (readRule === 'deny' || readRule === 'ask') rule = stricterRule(rule, readRule);
+  }
+  const call: GatedCall = { name: decidedAs.name, input: decidedAs.input, mcpReadOnly, rule, ...(shellVerdict ? { shellVerdict } : {}), ...(networkPath ? { reachesNetwork: true as const } : {}), ...(outsidePage ? { outsideFolder: true as const } : {}) };
   const verdict = gateVerdict(call, panel);
   if (verdict.kind === 'block') return { block: true, reason: formatPolicyBlockReason(verdict.reason) };
   return verdict.kind === 'run' ? proceed() : askUser(call, verdict.requiresUser === true);
@@ -624,6 +889,13 @@ export interface GatedCall {
   shellVerdict?: ReadOnlyVerdict;
   /** Its file path may reach a network host the chat does not live on (`CallFacts.reachesNetwork`). */
   reachesNetwork?: true;
+  /** It loads a file page outside the chat's folders, whose run grants the page's folder (`CallFacts.outsidePage`). */
+  outsideFolder?: true;
+}
+
+/** Whether a call asks when no settings rule decides it, in every mode: its path may reach a network host, or it grants a folder. */
+function asksUnlessRuled(call: GatedCall): boolean {
+  return call.reachesNetwork === true || call.outsideFolder === true;
 }
 
 /**
@@ -643,9 +915,9 @@ const SETTINGS_RULE_DENY = 'Permission denied by a rule in your Damocles setting
  */
 export function gateVerdict(call: GatedCall, panel: GatePermissionContext): GateVerdict {
   const { name, input, rule } = call;
-  // A path that may reach a network host asks unless an allow rule names the call (`CallFacts.reachesNetwork`).
+  // A path that may reach a network host, or a page outside the chat's folders, asks unless an allow rule names the call.
   const byRule = (): GateVerdict => (rule === 'deny' ? { kind: 'block', reason: SETTINGS_RULE_DENY }
-    : rule === 'ask' || (call.reachesNetwork === true && rule !== 'allow') ? APPROVAL : RUN);
+    : rule === 'ask' || (asksUnlessRuled(call) && rule !== 'allow') ? APPROVAL : RUN);
 
   // In-process MCP module tools (memory/compass/browser, now PascalCase): auto-allow with exact SDK
   // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4)
@@ -723,7 +995,7 @@ export function gateVerdict(call: GatedCall, panel: GatePermissionContext): Gate
   // A read whose path may reach a network host the chat does not live on asks, unless a rule decides it (`decide`'s `reachesNetwork`),
   // since opening it sends the user's Windows credentials to that host.
   if (category === 'read' || call.mcpReadOnly) {
-    const evaluation = panel.permissionHandler.decide(name, input, rule, false, call.reachesNetwork === true);
+    const evaluation = panel.permissionHandler.decide(name, input, rule, false, asksUnlessRuled(call));
     if (evaluation === 'deny') return { kind: 'block', reason: SETTINGS_RULE_DENY };
     if (evaluation !== 'ask') return RUN;
   }
@@ -741,5 +1013,5 @@ const UNPROVEN: ReadOnlyVerdict = { readOnly: false, reason: 'no read-only verdi
 export function runsUnasked(call: GatedCall, panel: GatePermissionContext): boolean {
   const verdict = gateVerdict(call, panel);
   return verdict.kind === 'run'
-    || (verdict.kind === 'approval' && panel.permissionHandler.decide(call.name, call.input, call.rule, verdict.requiresUser === true, call.reachesNetwork === true) === 'allow');
+    || (verdict.kind === 'approval' && panel.permissionHandler.decide(call.name, call.input, call.rule, verdict.requiresUser === true, asksUnlessRuled(call)) === 'allow');
 }

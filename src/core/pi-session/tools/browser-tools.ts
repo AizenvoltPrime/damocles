@@ -1,5 +1,5 @@
 import { promises as fsp } from 'fs';
-import { isAbsolute } from 'path';
+import { isAbsolute, resolve } from 'path';
 import { Type } from 'typebox';
 import type { Page } from 'patchright';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
@@ -13,6 +13,7 @@ import type { ChatServedFiles } from '../../browser/served-files';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { log } from '../../logger';
 import { abortableTool } from './abortable-tool';
+import { copyFolderForUpload, type UploadCopy } from './upload-copy';
 
 /**
  * Native pi tools backing the integrated CDP browser. Tools are exposed under PascalCase active-set
@@ -132,7 +133,7 @@ function rejectionReason(sizeBytes: number | undefined): string {
 
 const SCREENSHOT_OPTIONS = { format: 'jpeg', quality: 70 } as const;
 
-const SERVED_FILES_NOTE = 'In the desktop app, a file:// address inside the chat\'s project or design folder loads over http, so its relative links, module scripts and fetch work, and answers show it as the same file:// address; a chat on a remote host opens only those files.';
+const SERVED_FILES_NOTE = 'A file:// address (or a file path) opens only inside the chat\'s project or design folder, and loads over http, so its relative links, module scripts and fetch work, and answers show it as the same file:// address; any other file is refused, so put a page you need to open in the project.';
 
 /**
  * Finite upper bound (ms) passed to every Playwright locator action so a single action can never block
@@ -578,17 +579,36 @@ export async function settle(page: Page, capMs: number): Promise<void> {
   }
 }
 
+/**
+ * The file BrowserUpload opens for a path as written: an absolute one resolved as fs and Playwright's `setInputFiles` resolve it
+ * (`path.resolve`, a root-relative `\x` on this process's drive), with no other normalisation; undefined for a relative one,
+ * which the tool refuses, since it would resolve against this process's folder.
+ */
+export function browserUploadPath(written: string): string | undefined {
+  return isAbsolute(written) ? resolve(written) : undefined;
+}
+
+// At most this many left-out entries are named in a folder upload's result.
+const LEFT_OUT_NAMED = 20;
+
+function leftOutNote(leftOut: readonly string[]): string {
+  if (leftOut.length === 0) return '';
+  const named = leftOut.slice(0, LEFT_OUT_NAMED).join(', ');
+  const more = leftOut.length > LEFT_OUT_NAMED ? `, and ${leftOut.length - LEFT_OUT_NAMED} more` : '';
+  return `. Left out, as no regular file (a link is never followed): ${named}${more}`;
+}
+
 /** Build the `damocles-browser` tools as pi-native definitions, reusing the SDK CDP handler logic. */
 export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
   const { pi, scope, served } = deps;
 
-  // The address to load: a local chat's root file opens on main's server; anything else as given.
+  // A file page opens on its root's server or is refused, anything else as given; without served, BrowserService refuses a file page.
   const target = (url: string): Promise<{ readonly url: string } | { readonly refused: string }> => (served ? served.localTarget(url) : Promise.resolve({ url }));
 
   function requireCdp(_toolName: string) {
     const cdp = scope.getController();
     if (!cdp) {
-      throw new Error('Browser is not connected. Use browser_open first.');
+      throw new Error('Browser is not connected. Use BrowserOpen first.');
     }
     return cdp;
   }
@@ -1769,7 +1789,9 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             return wrap(textResult(`Open tabs (${tabs.length}):\n${lines.join('\n')}`));
           }
           if (input.action === 'new') {
-            const status = await scope.openNewTab(input.url);
+            const loaded = input.url === undefined ? undefined : await target(input.url);
+            if (loaded && 'refused' in loaded) return wrap({ content: [{ type: 'text', text: `Error: ${loaded.refused}` }], isError: true });
+            const status = await scope.openNewTab(loaded?.url);
             return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), `Opened new tab${input.url ? `: ${input.url}${httpErrorNote(status)}` : ''}`));
           }
           if (input.index === undefined) {
@@ -1795,7 +1817,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       label: piName('browser_upload'),
       description: 'Upload local files to the page. Provide the CSS selector of an <input type=file> and one or more absolute file paths. For a control that opens a NATIVE file chooser on click, call this first (the files are staged) then click that control. Returns a screenshot after the files are set.',
       parameters: browserUploadSchema,
-      execute: async (_id, input) => {
+      execute: async (_id, input, signal) => {
         // Outer fail-soft wrapper (mirrors every sibling browser tool): a throw AFTER a successful
         // setInputFiles — e.g. the upload triggered a navigation that disconnected the CDP session, so
         // requireCdp/screenshotWithSnapshot rejects — must be reported as a tool error, never a raw
@@ -1803,33 +1825,39 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
         try {
           const page = scope.getCurrentPage();
           if (!page) {
-            return wrap({ content: [{ type: 'text', text: 'Browser is not connected. Use browser_open first.' }], isError: true });
+            return wrap({ content: [{ type: 'text', text: 'Browser is not connected. Use BrowserOpen first.' }], isError: true });
           }
           // Enforce absolute paths: a relative path resolves against the extension host's cwd (which the
           // agent cannot predict), silently uploading the wrong file or nothing. Reject up front with a
           // value-safe error (paths are safe to name; file CONTENTS are never read or logged here).
-          const relative = input.paths.filter((p) => !isAbsolute(p));
+          const relative = input.paths.filter((p) => browserUploadPath(p) === undefined);
           if (relative.length > 0) {
             return wrap({ content: [{ type: 'text', text: `Error: file path(s) must be absolute: ${relative.join(', ')}` }], isError: true });
           }
+          // the files the permission gate placed, each opened as browserUploadPath resolves it
+          const files = input.paths.map((p) => browserUploadPath(p)!);
           // Fail-soft path validation: report which files are missing rather than throwing. Paths are safe
           // to name; file CONTENTS are never read or logged here.
           const missing: string[] = [];
-          for (const p of input.paths) {
+          for (const [index, file] of files.entries()) {
             try {
-              await fsp.access(p);
+              await fsp.access(file);
             } catch {
-              missing.push(p);
+              missing.push(input.paths[index]!);
             }
           }
           if (missing.length > 0) {
             return wrap({ content: [{ type: 'text', text: `Error: file(s) not found: ${missing.join(', ')}` }], isError: true });
           }
+          // Chrome walks a folder it is handed and reads each file later by path, so it gets a copy of the folder's regular files.
+          let folder: UploadCopy | undefined;
+          if (files.length === 1 && (await fsp.stat(files[0]!)).isDirectory()) folder = await copyFolderForUpload(files[0]!, await scope.newUploadFolder(), signal);
+          const upload = folder === undefined ? files : [folder.copy];
           // Stage BEFORE attempting the direct set: if the selector turns out to trigger a native chooser
           // instead of being an <input type=file>, the staged paths let the filechooser handler complete it.
-          scope.stageUpload(input.paths);
+          scope.stageUpload(upload);
           try {
-            await page.locator(input.selector).first().setInputFiles(input.paths, { timeout: ACTION_TIMEOUT_MS });
+            await page.locator(input.selector).first().setInputFiles(upload, { timeout: ACTION_TIMEOUT_MS });
           } catch (err) {
             // Not a direct file input (or not found). Leave the paths staged so clicking the control that
             // opens the native chooser completes the upload. This is a clear instruction, not a swallow.
@@ -1838,7 +1866,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           }
           // Direct set succeeded → clear the stage so a later unrelated chooser is not auto-filled.
           scope.stageUpload(null);
-          const okMsg = `Uploaded ${input.paths.length} file(s) to ${input.selector}`;
+          const okMsg = folder === undefined ? `Uploaded ${input.paths.length} file(s) to ${input.selector}` : `Uploaded the folder ${input.paths[0]!} (${folder.files} file(s)) to ${input.selector}${leftOutNote(folder.leftOut)}`;
           try {
             return wrap(await screenshotWithSnapshot(requireCdp('browser_upload'), okMsg));
           } catch {
@@ -1943,11 +1971,12 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
   // eval-time import cycle (`browser-tools → …-tool → permission-gate → tool-catalog → browser-tools`)
   // that leaves `BROWSER_TOOL_CATALOG` undefined mid-init. Its name still lives in `BROWSER_SPECS` above,
   // so `BROWSER_PI_TOOL_NAMES`/`BROWSER_TOOL_CATALOG`/gateability all include it as intended.
-  // Every browser tool honors the turn's abort signal at its boundary (CDP has no per-request cancel).
-  return definitions.map((definition) => abortableTool(served ? servedAsFiles(definition, served) : definition));
+  // Every browser tool honors the turn's abort signal at its boundary (CDP has no per-request cancel). Sequential: a call acts
+  // on the page the previous one left, and pi runs a batch holding one sequential call in the model's order.
+  return definitions.map((definition) => abortableTool({ ...(served ? servedAsFiles(definition, served) : definition), executionMode: 'sequential' }));
 }
 
-// A local chat's served root files read as the file:// addresses the agent opened, in every browser tool's answer.
+// A chat's served root files read as the file:// addresses the agent opened, in every browser tool's answer.
 function servedAsFiles(definition: ToolDefinition, served: ChatServedFiles): ToolDefinition {
   return {
     ...definition,

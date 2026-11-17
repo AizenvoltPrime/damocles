@@ -63,6 +63,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     credentials: vi.fn(answer),
     speak,
     runProviders: vi.fn(),
+    runConfiguredProviders: vi.fn(),
     browserTool: vi.fn(async () => ({ content: [] })),
     browserRelease: vi.fn(async () => {}),
     browserDiscard: vi.fn(async () => {}),

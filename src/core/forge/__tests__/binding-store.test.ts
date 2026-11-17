@@ -144,3 +144,28 @@ describe('binding store', () => {
     expect(store.binding('c:/src/a', 'gitlab.com')).toEqual({ account: 'gitlab.com|1', at: 1 });
   });
 });
+
+describe('binding store relocateProject', () => {
+  it('re-keys a located project and keeps the binding a merge target has per server', async () => {
+    const store = await opened();
+    await store.bind('c:/old/acme', 'gitlab.com', 'gitlab.com|1', 1000);
+    await store.bind('c:/old/acme', 'github.com', null, 1001);
+    await store.bind('c:/old/beta', 'gitlab.com', 'gitlab.com|9', 1002);
+
+    await store.relocateProject('c:/old/beta', 'c:/new/beta');
+    expect(store.binding('c:/new/beta', 'gitlab.com')).toEqual({ account: 'gitlab.com|9', at: 1002 });
+    expect(store.binding('c:/old/beta', 'gitlab.com')).toBeUndefined();
+
+    await store.bind('c:/target', 'gitlab.com', 'gitlab.com|2', 2000);
+    await store.relocateProject('c:/old/acme', 'c:/target');
+    expect(store.binding('c:/target', 'gitlab.com')).toEqual({ account: 'gitlab.com|2', at: 2000 });
+    expect(store.binding('c:/target', 'github.com')).toEqual({ account: null, at: 1001 });
+    expect((file() as { projects: Record<string, unknown> }).projects['c:/old/acme']).toBeUndefined();
+  });
+
+  it('writes nothing when nothing is left under the old key', async () => {
+    const store = await opened();
+    await store.relocateProject('c:/gone', 'c:/new');
+    expect(() => file()).toThrow();
+  });
+});

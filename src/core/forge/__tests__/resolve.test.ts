@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChooseAccountAnswer, ChooseAccountRequest, ChooseAccountRows, RemoteEndpoint } from '../../../shared/forge/bindings';
@@ -229,6 +229,31 @@ describe('resolution order', () => {
     await service.forgetProject('c:/src/a');
     await service.forgetHost('ssh+prod-1');
     expect(bindingsFile()).toEqual({ version: 1, projects: {}, hostDefaults: {} });
+  });
+
+  it('forgets a project and a host during a restart once the files are read, while the account secrets are still being read', async () => {
+    const first = await loaded();
+    const work = await signIn(first, 'gitlab.com', PATS.workAlexios);
+    await first.bindAccount('c:/src/a', 'gitlab.com', work);
+    await first.bindAccount('ssh+prod-1|/srv/api', 'gitlab.com', work);
+    // A locked keychain holds every secret read until the test lets go.
+    let unlock = (): void => undefined;
+    const locked = new Promise<void>((resolve) => { unlock = resolve; });
+    const restarted = harness.service({ secrets: { ...harness.secrets, get: async (key: string) => { await locked; return harness.secrets.get(key); } } });
+    const forgets = Promise.all([restarted.forgetProject('c:/src/a'), restarted.forgetHost('ssh+prod-1')]);
+    const load = restarted.load();
+    await forgets;
+    expect(bindingsFile()).toEqual({ version: 1, projects: {}, hostDefaults: {} });
+    unlock();
+    await load;
+  });
+
+  it('refuses a forget with the restart wording when reading the forge files failed', async () => {
+    mkdirSync(path.join(harness.forgeDir, 'servers.json'), { recursive: true });
+    const service = harness.service();
+    const forget = service.forgetProject('c:/src/a');
+    await expect(service.load()).rejects.toThrow();
+    await expect(forget).rejects.toThrow('Damocles could not read its Git hosting accounts. Restart Damocles to try again.');
   });
 });
 

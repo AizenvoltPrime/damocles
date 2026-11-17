@@ -215,6 +215,9 @@ export interface ShellActions {
   state(): Omit<ShellState, 'revision'>;
   addProject(): Promise<void>;
   removeProject(key: string): Promise<RemoveProjectResult>;
+  locateProject(key: string): Promise<void>;
+  retryRelocation(key: string): Promise<void>;
+  abandonRelocation(key: string): Promise<void>;
   selectProject(key: string): Promise<void>;
   grantTrust(key: string): Promise<void>;
   // undefined: projectKey is not a project of main's list
@@ -1375,6 +1378,9 @@ export class ShellHost {
     this.handle(SHELL_CHANNELS.getState, () => this.given(this.actions.state()));
     this.handle(SHELL_CHANNELS.addProject, () => this.actions.addProject());
     this.handle(SHELL_CHANNELS.removeProject, (key) => this.actions.removeProject(this.id(key)));
+    this.handle(SHELL_CHANNELS.locateProject, (key) => this.actions.locateProject(this.id(key)));
+    this.handle(SHELL_CHANNELS.retryRelocation, (key) => this.actions.retryRelocation(this.id(key)));
+    this.handle(SHELL_CHANNELS.abandonRelocation, (key) => this.actions.abandonRelocation(this.id(key)));
     this.handle(SHELL_CHANNELS.selectProject, (key) => this.actions.selectProject(this.id(key)));
     this.handle(SHELL_CHANNELS.grantTrust, (key) => this.actions.grantTrust(this.id(key)));
     this.handle(SHELL_CHANNELS.chatsList, (key, revision) => this.chatList(this.id(key), revision, (projectKey) => this.actions.listChats(projectKey)));

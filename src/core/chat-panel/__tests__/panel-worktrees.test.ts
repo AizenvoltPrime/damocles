@@ -15,6 +15,7 @@ import { WORKTREE_ENTRY } from '../../worktrees/hand-off';
 import { ensurePiSessionDir } from '../../pi-session/session-store/session-dir';
 import { isSessionHeldByPanelHere } from '../../pi-session/session-store/session-lease';
 import { PanelWorktrees } from '../panel-worktrees';
+import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
 import type { HostInstance } from '../types';
 import { englishText, type LocalizedText } from '../../../shared/localized-text';
 
@@ -87,10 +88,14 @@ function harness(name: string, options: HarnessOptions = {}) {
   registries.push(registry);
   const owned = new Map<string, { target: FolderTarget; refs: number }>();
   const projectTarget = target(project);
+  // the open projects; a test opens a chat worktree as a project of its own beside it
+  const projects: FolderTarget[] = [projectTarget];
   const folderRegistry = {
-    resolve: (key: string) => (key === projectTarget.key ? projectTarget : owned.get(key)?.target),
-    targets: () => [projectTarget],
-    projectOf: () => projectTarget,
+    resolve: (key: string) => projects.find((t) => t.key === key) ?? owned.get(key)?.target,
+    ownedTarget: (key: string) => owned.get(key)?.target,
+    current: (t: FolderTarget) => (t.ownerKey === undefined ? projects.find((p) => p.key === t.key) : owned.get(t.key)?.target),
+    targets: () => projects,
+    projectOf: (t: FolderTarget) => projects.find((p) => p.key === (t.ownerKey ?? t.key)),
     acquireOwned: (fsPath: string, ownerKey: string) => {
       const key = folderKey(fsPath);
       const entry = owned.get(key) ?? { target: target(fsPath, ownerKey), refs: 0 };
@@ -138,8 +143,8 @@ function harness(name: string, options: HarnessOptions = {}) {
     beforeOpen?.(instance.session);
     return true;
   });
-  const moveTo = vi.fn(async (_panelId: string, key: string, afterSwitch?: (instance: HostInstance) => Promise<void>): Promise<HostInstance | undefined> => {
-    instance.folder = folderRegistry.resolve(key)!;
+  const moveTo = vi.fn(async (_panelId: string, to: FolderTarget, afterSwitch?: (instance: HostInstance) => Promise<void>): Promise<HostInstance | undefined> => {
+    instance.folder = to;
     await afterSwitch?.(instance);
     return instance;
   });
@@ -162,7 +167,7 @@ function harness(name: string, options: HarnessOptions = {}) {
     completeStoredSessionsOf: async () => options.complete ?? options.stored ?? [],
   });
   return {
-    project, projectTarget, registry, host, worktrees, instance, session, panels, dispatched, posted, releaseFolder, warn, resumeInto, folderRegistry, moveTo, trust,
+    project, projectTarget, projects, registry, host, worktrees, instance, session, panels, dispatched, posted, releaseFolder, warn, resumeInto, folderRegistry, moveTo, trust,
     holdSessionsClosed: (until: Promise<void>) => { sessionsClosed = until; },
   };
 }
@@ -596,10 +601,53 @@ describe.skipIf(!HAS_GIT)('panel worktrees: resuming a stored chat', { timeout: 
     expect([registered(first), registered(second)]).toEqual([false, true]);
   });
 
+  // docs/invariants.md "Worktree chats", Ownership: the record names the chat's project, never the folder that listed it.
+  it('binds a chat of the project to its worktree under the project from either list while the worktree is open as a project too', async () => {
+    const h = harness('resume-open-worktree');
+    const record = await chatRecord(h);
+    const asProject = target(record.workingFolder);
+    h.projects.push(asProject);
+    // a /clear in the worktree made this file there, which rule 1 finds from either folder
+    storedSession(record.workingFolder, 'resume-open-1', [worktreeEntry(record, 'worktree')]);
+    const lookup = installWorktreeProjectLookup(h.registry);
+    try {
+      for (const listedUnder of [h.projectTarget, asProject]) {
+        const binding = await h.worktrees.resumeFolder('p1', 'resume-open-1', listedUnder);
+        expect(binding.folder).toMatchObject({ key: folderKey(record.workingFolder), ownerKey: h.projectTarget.key });
+        expect(binding.state).toEqual({ phase: 'ready', place: 'worktree', canHandOff: false, projectName: h.projectTarget.label, branch: record.branch });
+        binding.settle(undefined);
+      }
+    } finally {
+      lookup.dispose();
+    }
+  });
+
+  it("names the record's project, not the folder that listed the chat, when that project is not open", async () => {
+    const h = harness('resume-owner-closed');
+    const record = await chatRecord(h);
+    const asProject = target(record.workingFolder);
+    h.projects.splice(0, h.projects.length, asProject);
+    storedSession(record.workingFolder, 'resume-owner-closed-1', [worktreeEntry(record, 'worktree')]);
+    const binding = await h.worktrees.resumeFolder('p1', 'resume-owner-closed-1', asProject);
+    expect(binding.folder).toBe(asProject);
+    expect(binding.state).toMatchObject({ phase: 'deleted', place: 'worktree', projectName: path.basename(h.project) });
+  });
+
   it('gives a project-folder chat an explicit project place', async () => {
     const h = harness('resume-project');
     storedSession(h.project, 'resume-project-1', []);
     expect((await h.worktrees.resumeFolder('p1', 'resume-project-1', h.projectTarget)).state).toEqual({ phase: 'none', place: 'project', canHandOff: false });
+  });
+});
+
+describe.skipIf(!HAS_GIT)('panel worktrees: the role a panel holds its folder in', () => {
+  it("tells the session whether its panel works in the folder as that folder's own project or as its owner's working folder", () => {
+    const h = harness('role');
+    h.worktrees.bind('p1', h.instance);
+    const binding = h.session.worktree.binding!;
+    expect(binding.holdsAsProject()).toBe(true);
+    h.instance.folder = target(path.join(h.project, '..', 'role-wt', 'aaaaaaaa'), h.projectTarget.key);
+    expect(binding.holdsAsProject()).toBe(false);
   });
 });
 
@@ -740,6 +788,28 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
     expect(h.resumeInto).toHaveBeenCalledTimes(1);
     expect(session.worktree.binding!.moving()).toBe(false);
     h.worktrees.beginFinish(record.id, 'delete')!.dispose();
+  });
+
+  it('names the first of the given worktrees a finish action holds or a hand-off moves a chat into or out of', async () => {
+    const h = harness('activity');
+    const record = await chatRecord(h);
+    const other = (await createChatWorktree({ git: runner(), registry: h.registry, projectPath: h.project, startRef: 'refs/heads/main', bringChanges: false, slugSource: 'other work', branchPrefix: '' })).record;
+    expect(h.worktrees.activity([record.id, other.id])).toBeUndefined();
+    const finish = h.worktrees.beginFinish(other.id, 'apply')!;
+    expect(h.worktrees.activity([record.id, other.id])).toEqual({ worktreeId: other.id, kind: 'finishing' });
+    finish.dispose();
+    const session = fakeSession(true, 'activity');
+    session.worktree.record = () => record;
+    h.instance.session = session as never;
+    h.worktrees.bind('p1', h.instance);
+    let confirm!: (move: boolean) => void;
+    h.host.confirmHandOff.mockImplementationOnce(() => new Promise<boolean>((resolve) => { confirm = resolve; }));
+    const move = h.worktrees.chatMove('p1', 'worktree');
+    await settled(() => h.host.confirmHandOff.mock.calls.length === 1);
+    expect(h.worktrees.activity([other.id, record.id])).toEqual({ worktreeId: record.id, kind: 'handOff' });
+    confirm(false);
+    await move;
+    expect(h.worktrees.activity([record.id, other.id])).toBeUndefined();
   });
 
   it('lets go of the conversation once it runs in the new worktree, before the worktree\'s setup', async () => {

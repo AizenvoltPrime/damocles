@@ -13,6 +13,7 @@ import { addProject, chatInput } from './support/ui';
  */
 
 const MAIN_GOES_ON = 'The main agent carries on with the partial work.';
+const EXTENSION_LINE = 'Stopping: waiting for the end-of-turn step of the extension held-settle.js.';
 
 async function openProject(app: ElectronApplication, h: HermeticHome): Promise<Page> {
   const home = await activeChat(app);
@@ -35,9 +36,9 @@ function working(): StubReply {
 
 /**
  * Installs a user pi extension whose `agent_settled` handler, in a subagent or team member session only, waits until
- * the returned release file exists. Returns the extension's path and the release.
+ * the returned release file exists. Its file name, `held-settle.js`, is how the wind-down line names it.
  */
-function installHeldSettle(h: HermeticHome): { extension: string; release: () => void } {
+function installHeldSettle(h: HermeticHome): { release: () => void } {
   const releaseFile = path.join(h.root, 'release-settle');
   const extension = path.join(h.agentDir, 'extensions', 'held-settle.js');
   fs.mkdirSync(path.dirname(extension), { recursive: true });
@@ -51,7 +52,7 @@ function installHeldSettle(h: HermeticHome): { extension: string; release: () =>
     '}',
     '',
   ].join('\n'));
-  return { extension, release: () => fs.writeFileSync(releaseFile, '') };
+  return { release: () => fs.writeFileSync(releaseFile, '') };
 }
 
 test('a stopped subagent whose agent_settled handler holds its run says so on its card until the run settles', async ({ home, launch }) => {
@@ -73,7 +74,7 @@ test('a stopped subagent whose agent_settled handler holds its run says so on it
     await card.getByTestId('subagent-card-stop').click();
 
     const line = card.getByTestId('subagent-status-line');
-    await expect(line).toHaveText(`Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: ${held.extension}.`);
+    await expect(line).toHaveText(EXTENSION_LINE);
     await expect(card.getByTestId('subagent-status')).toHaveText('Running');
 
     held.release();
@@ -86,13 +87,16 @@ test('a stopped subagent whose agent_settled handler holds its run says so on it
 });
 
 /**
- * Configures a Stop hook (`agent_end` in `hooks.json`) that runs until the returned release file exists. The main chat
- * loads no user pi extension, and Damocles awaits this hook in its own `agent_settled` handler, with no abort signal.
+ * Configures a user Stop hook (`agent_end` in `~/.damocles/hooks.json`), the script `notify.js`, that runs until the
+ * returned release file exists. The main chat loads no user pi extension, and Damocles awaits this hook in its own
+ * `agent_settled` handler, with no abort signal.
  */
 function installHeldStopHook(h: HermeticHome): () => void {
   const releaseFile = path.join(h.root, 'release-stop-hook');
-  const waitForRelease = "const fs = require('fs'); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) clearInterval(timer); }, 100);";
-  fs.writeFileSync(path.join(h.damoclesDir, 'hooks.json'), JSON.stringify({ hooks: { agent_end: [{ command: [process.execPath, '-e', waitForRelease, releaseFile], timeoutMs: 120_000 }] } }));
+  const script = path.join(h.root, 'hook-scripts', 'notify.js');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, "const fs = require('fs'); const timer = setInterval(() => { if (fs.existsSync(process.argv[2])) clearInterval(timer); }, 100);\n");
+  fs.writeFileSync(path.join(h.damoclesDir, 'hooks.json'), JSON.stringify({ hooks: { agent_end: [{ command: [process.execPath, script, releaseFile], timeoutMs: 120_000 }] } }));
   return () => fs.writeFileSync(releaseFile, '');
 }
 
@@ -138,7 +142,7 @@ test("a resumed team's lead waits for its stopped run to let go of its session f
 
     const lead = tab.getByTestId('team-agent-card').filter({ hasText: 'Atlas' });
     const line = lead.getByTestId('team-agent-wind-down');
-    await expect(line).toHaveText(`Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: ${held.extension}.`);
+    await expect(line).toHaveText(EXTENSION_LINE);
     // The resumed lead has not opened its file, so its model call is still unasked.
     expect(stub.replies).toHaveLength(1);
 
@@ -173,7 +177,7 @@ test("a stopped team's lead whose agent_settled handler holds its run says so on
 
     const lead = tab.getByTestId('team-agent-card').filter({ hasText: 'Atlas' });
     const line = lead.getByTestId('team-agent-wind-down');
-    await expect(line).toHaveText(`Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: ${held.extension}.`);
+    await expect(line).toHaveText(EXTENSION_LINE);
 
     held.release();
     await expect(line).toBeHidden();
@@ -198,7 +202,7 @@ test("a stopped chat whose Stop hook holds its run says so in its status bar, af
     await tab.keyboard.press('Escape');
 
     const line = tab.getByTestId('status-wind-down');
-    const text = "Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal.";
+    const text = 'Stopping: waiting for the end-of-turn hook notify.js (user hooks) to finish.';
     await expect(line).toHaveText(text);
     stub.replies.push({ chunks: ['The next message ran.'] });
     await send(tab, 'the next message');
@@ -237,14 +241,13 @@ test('a stopped subagent still winding down when the chat view reloads keeps its
     const card = tab.getByTestId('subagent-card');
     await card.getByTestId('subagent-card-stop').click();
     const line = card.getByTestId('subagent-status-line');
-    const text = `Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: ${held.extension}.`;
-    await expect(line).toHaveText(text);
+    await expect(line).toHaveText(EXTENSION_LINE);
 
     await tab.reload();
     // The main turn still waits on the subagent, so the reloaded composer queues.
     await expect(tab.getByRole('textbox', { name: 'Message Damocles' })).toHaveAttribute('placeholder', 'Type to queue your next message…');
     await expect(card.getByTestId('subagent-status')).toHaveText('Running');
-    await expect(line).toHaveText(text);
+    await expect(line).toHaveText(EXTENSION_LINE);
 
     held.release();
     await expect(card.getByTestId('subagent-status')).toHaveText('Stopped');

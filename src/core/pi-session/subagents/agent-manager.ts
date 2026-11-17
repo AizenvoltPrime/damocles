@@ -17,13 +17,13 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { AgentSession, ExtensionFactory, SessionEntry, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler } from '../../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import type { SteerTargetInfo } from '../../../shared/types/subagents';
-import { buildResumePrompt, withResumeNote, wrapSteerMessage, type UserAnswerNote } from '../../../shared/steer';
+import type { AgentStopReason, SteerTargetInfo } from '../../../shared/types/subagents';
+import { buildRejectedResumePrompt, buildResumePrompt, withResumeNote, wrapSteerMessage, type UserAnswerNote } from '../../../shared/steer';
 import { TEAM_CREATE_TOOL, TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
 import { log } from '../../logger';
 import { effortBadgeApplies, PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../folder-runtime';
-import type { CheckpointBaselineGate } from '../permission-gate';
+import type { CheckpointBaselineGate, GatePermissionContext } from '../permission-gate';
 import type { WorktreeIsolation } from '../worktree-isolation';
 import type { DesignScope } from '../../design/design-write-rule';
 import type { ChatMachine } from '../proven-shell';
@@ -57,7 +57,6 @@ import {
   type AgentInvocationData,
   type AgentSegmentData,
   type AgentStatusData,
-  type AgentStopReason,
   type LiveAgentStatus,
   type SubagentBranchIndex,
   type SubagentLatestState,
@@ -139,6 +138,8 @@ export interface SubagentEngine {
   designScope?: () => DesignScope | undefined;
   /** The machine the parent chat's tools run on, which its agents' tools run on too. */
   machine?: ChatMachine;
+  /** The chat's served roots and granted folders: its agents' browser opens use and add to the chat's grants. */
+  browserFiles?: GatePermissionContext['browserFiles'];
   /** Present while the panel is a design chat: its subagents get its verification tools, and their answers become its decisions. */
   nestedDesign?: () => NestedDesignGrant | undefined;
   /** The chat's GitHub and GitLab tools, whose target and card the gate resolves for this agent's calls too. */
@@ -157,7 +158,7 @@ export interface SubagentEngine {
   /** The parent session's current branch: the only index of the agents this conversation invoked. */
   parentBranch: () => readonly SessionEntry[];
   /** Throw the resume error unless the model recorded in the agent session file at `path` is usable. */
-  assertResumableModel: (path: string, agentId: string) => void;
+  assertResumableModel: (path: string, agentId: string) => Promise<void>;
   /** The parent panel's full active tool-name set (for `*`/general-purpose agents). */
   parentFullToolNames: () => string[];
   /** Build the subagent's customTools (Edit, PowerShell, Task tools, memory/compass/browser) — NOT the
@@ -246,6 +247,8 @@ export interface ResumeTarget {
   agentId: string;
   path: string | null;
   launch: SubagentLaunchData;
+  /** Who rejected the call its stopped run ended on, when a rejection stopped it. */
+  rejectedBy?: 'user' | 'hook';
 }
 
 /** What the queue holds and a start runs: a spawn, or a resume that already passed validation. */
@@ -449,11 +452,13 @@ export class AgentManager {
       if (!this.engine.registry.getAgentConfig(launch.agentType) || !this.engine.registry.isValidType(launch.agentType)) {
         throw new Error(`Subagent "${agentId}" was a "${launch.agentType}" agent, which is no longer available.`);
       }
-      if (path) this.engine.assertResumableModel(path, agentId);
       if (agentFileHeldElsewhere(path ? { kind: 'reopen', path, agentId } : { kind: 'file', dir: this.engine.subagentStoreDir(), id: agentId })) {
         throw new Error(`Subagent "${agentId}" cannot be resumed yet: its session file is still open in another Damocles window, whose stopped run has not finished. Wait for that run to stop or close that window, then resume it again.`);
       }
-      return { agentId, path, launch };
+      if (path) await this.engine.assertResumableModel(path, agentId);
+      const rejectedBy = state.status !== 'stopped' ? undefined
+        : state.stopReason === 'denied' ? 'user' : state.stopReason === 'hookDenied' ? 'hook' : undefined;
+      return { agentId, path, launch, ...(rejectedBy ? { rejectedBy } : {}) };
     } catch (err) {
       this.resuming.delete(agentId);
       throw err;
@@ -809,6 +814,7 @@ export class AgentManager {
       ...(this.engine.worktreeIsolation ? { worktreeIsolation: this.engine.worktreeIsolation } : {}),
       ...(this.engine.designScope ? { designScope: this.engine.designScope } : {}),
       ...(this.engine.machine ? { machine: this.engine.machine } : {}),
+      ...(this.engine.browserFiles ? { browserFiles: this.engine.browserFiles } : {}),
       ...(this.engine.forgeTools ? { forgeTools: this.engine.forgeTools } : {}),
       shellCancel: this.engine.shellCancelFor(record.id),
       postMessage: this.engine.postMessage,
@@ -864,6 +870,7 @@ export class AgentManager {
         excludeTools: [...PI_EXCLUDED_TOOLS],
         extensionFactory: prepared.extensionFactory,
         store,
+        signal: record.abortController!.signal,
       });
     };
     const createSession = (): Promise<AgentSession> => {
@@ -893,7 +900,10 @@ export class AgentManager {
     };
     let prompt = fresh.prompt;
     if (spec.kind === 'resume') {
-      prompt = reopenPath !== null ? buildResumePrompt(spec.message) : withResumeNote(fresh.prompt, spec.message);
+      const { rejectedBy } = spec.target;
+      prompt = reopenPath === null ? withResumeNote(fresh.prompt, spec.message)
+        : rejectedBy ? buildRejectedResumePrompt(rejectedBy, spec.message)
+          : buildResumePrompt(spec.message);
     }
 
     const result = await runSubagent({
@@ -932,7 +942,11 @@ export class AgentManager {
       onAssistantUsage: (usage) => addUsage(record.lifetimeUsage, usage),
     });
 
-    if (record.status !== 'stopped') {
+    if (record.status !== 'stopped' && result.rejected) {
+      record.status = 'stopped';
+      record.stopReason = result.rejected.cause === 'user' ? 'denied' : 'hookDenied';
+      record.rejectedTool = result.rejected.toolName;
+    } else if (record.status !== 'stopped') {
       record.status = result.aborted ? 'aborted' : result.error !== undefined ? 'error' : result.steered ? 'steered' : 'completed';
     }
     if (record.status === 'error') record.error = result.error;
@@ -1019,6 +1033,7 @@ export class AgentManager {
       responseText,
       agentId: id,
       agentStatus: terminalAgentStatus(record.status),
+      agentStopReason: record.stopReason,
       totalDurationMs: durationMs,
       totalTokens: getLifetimeTotal(record.lifetimeUsage),
       totalToolUseCount: record.toolUses,
@@ -1162,7 +1177,7 @@ export class AgentManager {
     if (!this.disposed) {
       queued.bridge.finish({
         responseText,
-        resultJson: buildAgentResultJson({ responseText, agentId: record.id, agentStatus: 'stopped', totalDurationMs: 0, totalTokens: 0, totalToolUseCount: 0 }),
+        resultJson: buildAgentResultJson({ responseText, agentId: record.id, agentStatus: 'stopped', agentStopReason: reason, totalDurationMs: 0, totalTokens: 0, totalToolUseCount: 0 }),
         isError: false,
         durationMs: 0,
       });

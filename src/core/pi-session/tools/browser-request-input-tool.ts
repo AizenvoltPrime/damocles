@@ -178,6 +178,8 @@ export function createBrowserRequestInputTool(
   return pi.defineTool<typeof formSchema, undefined>({
     name: TOOL_BROWSER_REQUEST_INPUT,
     label: TOOL_BROWSER_REQUEST_INPUT,
+    // as every browser tool (buildBrowserPiTools): it fills the page the previous call left
+    executionMode: 'sequential',
     description: 'Ask the human to fill a form; values are entered directly into the live page and never seen by the model. PREFER this over BrowserFill whenever a HUMAN must enter values or secrets — e.g. login credentials, MFA/OTP codes, payment details.',
     parameters: formSchema,
     execute: async (toolCallId, params, signal) => {

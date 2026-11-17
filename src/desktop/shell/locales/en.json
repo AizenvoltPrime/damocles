@@ -57,6 +57,36 @@
     "worktreeOf": "A worktree of {project}, opened as its own project",
     "hostState": "{host}, {state}",
     "remoteTitle": "{host}: {path}",
+    "presence": {
+      "missing": "Folder not found",
+      "unavailable": "Not available",
+      "missingTitle": "{path} (folder not found)",
+      "unavailableTitle": "{path} (not available)"
+    },
+    "locate": {
+      "action": "Locate…",
+      "hint": "Moved or renamed? Locate its folder to keep its chats.",
+      "progress": "{step}: {done} of {total} chat | {step}: {done} of {total} chats",
+      "paused": "Paused. {progress}",
+      "retry": "Retry",
+      "abandon": "Stop moving…",
+      "abandonTitle": "Stop moving {name}'s chats?",
+      "abandonMessage": "The chats already moved to {to} stay there. The rest stay with {from}, as do the memories and settings not moved yet, and you can locate it again. Nothing moves back.",
+      "abandonFolder": "New folder",
+      "abandonConfirm": "Stop Moving",
+      "abandonCancel": "Cancel",
+      "unsupported": "Update Damocles on {host} to locate this folder.",
+      "step": {
+        "checkpoints": "Moving checkpoints",
+        "sessions": "Moving chats",
+        "worktrees": "Updating chat worktrees",
+        "repair": "Re-linking chat worktrees",
+        "memory": "Moving memories",
+        "compass": "Clearing the code index",
+        "hostState": "Moving settings",
+        "other": "Moving"
+      }
+    },
     "connection": {
       "connecting": "Connecting",
       "connected": "Connected",
@@ -165,7 +195,12 @@
   "content": {
     "empty": "No chat selected",
     "newChat": "New chat",
-    "onHost": "on {host}"
+    "onHost": "on {host}",
+    "absent": {
+      "title": "Damocles can't find {name}",
+      "missing": "Its folder may have been moved, renamed or deleted. Its chats open again once the folder is back.",
+      "unavailable": "Its drive, network share or WSL distro is not connected or did not answer. Its chats open again once it is back."
+    }
   },
   "overlay": {
     "noMatches": "No matches",
@@ -1203,6 +1238,7 @@
       "updateServer": "Update the Damocles server on this host to preview designs.",
       "failed": "The preview could not load.",
       "notFound": "No page of this design is at this address. Use Back to return.",
+      "removed": "This page was removed from the design.",
       "tooNarrow": "The pane is too narrow to show {width} px. Widen it or choose a smaller width.",
       "replay": {
         "label": "Journey replay",
@@ -3156,6 +3192,7 @@
       "idle": "Finished"
     },
     "tokenNote": "{provider} token valid for {minutes} min | {provider} token valid for {minutes} min",
+    "keyProviders": "{providers} uses an API key from this computer, which the host gets only when the chat asks. Until you are back, a prompt on it waits with Sign-in needed, and memory, titles and classifiers on it fail. | {providers} use API keys from this computer, which the host gets only when the chat asks. Until you are back, a prompt on them waits with Sign-in needed, and memory, titles and classifiers on them fail.",
     "linger": "{name} ends your processes when you log out there, so these agents stop then."
   },
   "hostUpdate": {

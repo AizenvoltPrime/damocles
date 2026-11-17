@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll, onTestFinished, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, onTestFinished, type Mock } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -6,9 +6,23 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { runPermissionGate, gateErrorFallback, callFactsOf, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
 import { buildNestedMcpToolset } from '../tools/mcp-tools';
+import { browserUploadPath } from '../tools/browser-tools';
+
+// The QueryDosDeviceW answer for a drive a test maps, by name (`Q:`); a thrown Error for a failing call; any other asks Windows.
+const dosDevices = vi.hoisted(() => new Map<string, string | Error>());
+vi.mock('../../dos-devices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../dos-devices')>();
+  return {
+    queryDosDevice: (name: string): string | undefined => {
+      const answer = dosDevices.get(name);
+      if (answer instanceof Error) throw answer;
+      return answer ?? actual.queryDosDevice(name);
+    },
+  };
+});
 import type { McpToolDescriptor } from '../mcp/types';
 import type { McpClientManager } from '../mcp/mcp-client-manager';
-import type { PiCodingAgentModule } from '../pi-loader';
+import { getPiCodingAgent, initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { DAMOCLES_DESIGNS_DIR, DAMOCLES_PLANS_DIR, isPlanFilePath } from '../../paths';
 import { designFolderOf } from '../../design/design-paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
@@ -16,9 +30,16 @@ import { PermissionHandler, type CanUseToolContext, type PermissionResult } from
 import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { englishText } from '../../../shared/localized-text';
 import type { ToolCallHookResult } from '../hooks/dispatch';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
 import { provenReadOnlyShell, type ChatMachine } from '../proven-shell';
+import * as piMcp from '@earendil-works/pi-mcp';
+
+// An Edit's approval diff runs pi's edit.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
   return { type: 'tool_call', toolName, toolCallId, input } as unknown as ToolCallEvent;
@@ -29,6 +50,7 @@ const NO_PATH_MACHINE: ChatMachine = {
   platform: process.platform,
   allowedNetworkHosts: () => Promise.resolve(new Set()),
   powerShellSearch: () => Promise.resolve({ path: '', pathext: undefined, pwshHome: undefined }),
+  lookupFolders: () => Promise.resolve([]),
 };
 
 function makePanel(opts: {
@@ -639,7 +661,7 @@ describe('block attribution through the real PermissionHandler — every unasked
   afterAll(() => fs.rmSync(workspace, { recursive: true, force: true }));
 
   function realPanel(post: ((msg: ExtensionToWebviewMessage) => void) | null): { panel: PanelGateContext; handler: PermissionHandler } {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setWorkspacePath(workspace);
     handler.setCwd(workspace);
     if (post) handler.setPostMessage(post);
@@ -674,7 +696,7 @@ describe('block attribution through the real PermissionHandler — every unasked
     fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: {
       deny: ['mcp__context7__resolve-library-id'], ask: ['mcp__context7__get_library_docs', 'mcp__context7__search'] } }));
     try {
-      const handler = new PermissionHandler(createFakePlatform());
+      const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
       handler.setWorkspacePath(workspace);
       handler.setCwd(workspace);
       const prompted: string[] = [];
@@ -862,7 +884,7 @@ function nestedGate(opts: {
     getToolDescriptor: (n: string) => descriptors.find((d) => d.piName === n),
     resourceServers: () => [],
   } as unknown as McpClientManager;
-  const mcp = buildNestedMcpToolset(nestedPiStub, manager, {
+  const mcp = buildNestedMcpToolset(nestedPiStub, piMcp, manager, {
     eligible: new Set(descriptors.map((d) => d.piName)),
     disabledEntries: [],
     resourceRuleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }),
@@ -1188,7 +1210,7 @@ describe('ask rules through the real PermissionHandler — the prompt runs where
 
   /** A handler whose webview records each prompt and leaves it pending until the test answers it. */
   function askingPanel(mode: 'default' | 'acceptEdits' | 'plan', yolo = false) {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setWorkspacePath(workspace);
     handler.setCwd(workspace);
     handler.setPermissionMode(mode);
@@ -1415,7 +1437,7 @@ describe('runPermissionGate — a prompted call goes back to running once the ga
   /** The real handler, so its prompt, its answer and the gate's report reach `posted` in the order the webview gets them. */
   function promptingPanel(answer: (msg: ExtensionToWebviewMessage, handler: PermissionHandler) => void) {
     const posted: ExtensionToWebviewMessage[] = [];
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setWorkspacePath(workspace);
     handler.setCwd(workspace);
     const post = (msg: ExtensionToWebviewMessage): void => {
@@ -1530,7 +1552,7 @@ describe('MCP resource calls through the real PermissionHandler, in every mode a
   type Caller = 'panel' | 'subagent' | 'read-only subagent' | 'team agent';
   /** The gate context `caller` gets, over a real handler whose webview records each prompt and approves it. */
   function gateFor(caller: Caller, mode: 'default' | 'acceptEdits' | 'plan', yolo = false) {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setWorkspacePath(workspace);
     handler.setCwd(workspace);
     handler.setPermissionMode(mode);
@@ -1608,7 +1630,7 @@ describe('a design chat\'s posture (PD-4, PD-25)', () => {
   });
 
   function designChat(opts: { yolo?: boolean; mcpReadOnly?: (name: string) => boolean } = {}) {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setCwd(PROJECT);
     handler.setWorkspacePath(PROJECT);
     if (opts.yolo) handler.setDangerouslySkipPermissions(true);
@@ -1619,6 +1641,7 @@ describe('a design chat\'s posture (PD-4, PD-25)', () => {
       shellCancel: new ShellCancelStore().forContext(() => undefined),
       designScope: () => ({ folder: DESIGN_FOLDER, cwd: PROJECT }),
       ...(opts.mcpReadOnly ? { isMcpReadOnly: opts.mcpReadOnly } : {}),
+      machine: NO_PATH_MACHINE,
     };
     return { gate, canUseTool, handler };
   }
@@ -1730,7 +1753,7 @@ describe('one writer per design file, for every chat (D65)', () => {
   });
 
   function plainChat(mode: 'default' | 'acceptEdits', yolo: boolean) {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setCwd(PROJECT);
     handler.setWorkspacePath(PROJECT);
     handler.setPermissionMode(mode);
@@ -1785,7 +1808,7 @@ describe('a chat whose design role cannot be read fails closed', () => {
   afterAll(() => fs.rmSync(PROJECT, { recursive: true, force: true }));
 
   function unreadableChat() {
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setCwd(PROJECT);
     handler.setWorkspacePath(PROJECT);
     handler.setDangerouslySkipPermissions(true);
@@ -1836,7 +1859,7 @@ describe('a design chat\'s MCP call that is not read-only, under YOLO, through t
     const workspace = fs.mkdtempSync(path.join(PROJECT, 'ws-'));
     fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
     fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: rules }));
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setCwd(workspace);
     handler.setWorkspacePath(workspace);
     handler.setDangerouslySkipPermissions(true);
@@ -1893,7 +1916,7 @@ describe('ImportAsset\'s permission: a URL as a WebFetch of it, an outside file 
     const workspace = fs.mkdtempSync(path.join(ROOT, 'ws-'));
     fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
     fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: rules }));
-    const handler = new PermissionHandler(createFakePlatform());
+    const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     handler.setCwd(workspace);
     handler.setWorkspacePath(workspace);
     const prompts: Array<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>> = [];
@@ -2027,7 +2050,7 @@ describe.runIf(process.platform === 'win32')('a file tool whose path may reach a
     fs.mkdirSync(path.join(workspace, '.damocles'));
     fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: opts.permissions ?? {} }));
     const platform = createFakePlatform();
-    const handler = new PermissionHandler(platform);
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
     handler.setWorkspacePath(workspace);
     handler.setCwd(workspace);
     handler.setPermissionMode(opts.mode ?? 'default');
@@ -2053,6 +2076,135 @@ describe.runIf(process.platform === 'win32')('a file tool whose path may reach a
       expect(prompts.map((prompt) => prompt.toolName)).toEqual(['Read', 'Grep', 'Glob', 'Ls']);
     });
   }
+
+  type PermissionRequest = Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>;
+  // What a card says in English: its title, the sign-in line, its facts and its status after Yes.
+  const card = (prompt: PermissionRequest | undefined) => ({
+    title: prompt?.title && englishText(prompt.title),
+    subtitle: prompt?.subtitle && englishText(prompt.subtitle),
+    facts: prompt?.facts?.map((fact) => `${englishText(fact.label)}: ${fact.value}${fact.note ? ` · ${englishText(fact.note)}` : ''}`),
+    approvedStatus: prompt?.approvedStatus && englishText(prompt.approvedStatus),
+  });
+  // pathFact: the path as the agent wrote it, after its label ("File: \\\\h\\s\\a.txt")
+  const onHost = (title: string, host: string, pathFact: string) => ({
+    title,
+    subtitle: 'opening it sends your Windows sign-in to that computer',
+    facts: [pathFact, `Computer: ${host}`],
+    approvedStatus: `Allowed once. Your Windows sign-in goes to ${host}.`,
+  });
+
+  /** The card each call raises, answered Yes in turn; each call must ask. */
+  async function cardsOf(chat: ReturnType<typeof networkChat>, calls: ToolCallEvent[]): Promise<PermissionRequest[]> {
+    for (const call of calls) {
+      const pending = runPermissionGate(call, chat.panel, undefined);
+      await expect.poll(() => chat.prompts.some((prompt) => prompt.toolUseId === call.toolCallId)).toBe(true);
+      await chat.handler.resolveApproval(call.toolCallId, true);
+      expect(await pending).toBeUndefined();
+    }
+    return chat.prompts;
+  }
+
+  it('says which computer a Read, a search and a listing of a share reach, and that opening it sends the Windows sign-in there', async () => {
+    const [read, grep, glob, ls, imported] = await cardsOf(networkChat(), [
+      ev('read', 'h1', { path: '\\\\fileserver\\share\\a.txt' }),
+      ev('grep', 'h2', { pattern: 'a', path: '\\\\fileserver\\share' }),
+      ev('find', 'h3', { pattern: '*', path: '//FileServer/share' }),
+      ev('ls', 'h4', { path: '\\\\?\\UNC\\fileserver\\share' }),
+      ev('ImportAsset', 'h5', { file: '\\\\fileserver\\share\\logo.png', name: 'logo' }),
+    ]);
+    expect(card(read)).toEqual(onHost('Read a file on fileserver?', 'fileserver', 'File: \\\\fileserver\\share\\a.txt'));
+    expect(card(grep)).toEqual(onHost('Search files on fileserver?', 'fileserver', 'Folder: \\\\fileserver\\share'));
+    expect(card(glob)).toEqual(onHost('Search files on fileserver?', 'fileserver', 'Folder: //FileServer/share'));
+    expect(card(ls)).toEqual(onHost('List a folder on fileserver?', 'fileserver', 'Folder: \\\\?\\UNC\\fileserver\\share'));
+    expect(card(imported)).toEqual(onHost('Read a file on fileserver?', 'fileserver', 'File: \\\\fileserver\\share\\logo.png'));
+    // the input stays as the model sent it, and only Yes and No are offered
+    expect(read).toMatchObject({ toolName: 'Read', toolInput: { file_path: '\\\\fileserver\\share\\a.txt' } });
+    expect(read?.suggestions).toBeUndefined();
+  });
+
+  it('shows the card in place of the diff for an Edit and a Write of a share', async () => {
+    const [edit, write] = await cardsOf(networkChat(), [
+      ev('edit', 'e1', { file_path: '\\\\fileserver\\share\\a.txt', old_string: 'a', new_string: 'b' }),
+      ev('write', 'e2', { path: '\\\\fileserver\\share\\b.txt', content: 'x' }),
+    ]);
+    expect(card(edit)).toEqual(onHost('Change a file on fileserver?', 'fileserver', 'File: \\\\fileserver\\share\\a.txt'));
+    expect(card(write)).toEqual(onHost('Change a file on fileserver?', 'fileserver', 'File: \\\\fileserver\\share\\b.txt'));
+    for (const prompt of [edit, write]) {
+      expect(prompt?.patch).toBeUndefined();
+      expect(prompt?.patchOmitted).toBeUndefined();
+      expect(prompt?.filePath).toBeUndefined();
+    }
+  });
+
+  it('names a browser upload\'s and a file: load\'s hosts, all of them for an upload from several', async () => {
+    const chat = networkChat();
+    const [page, upload, several] = await cardsOf(chat, [
+      ev('BrowserNavigate', 'u1', { url: 'file://fileserver/share/x.html' }),
+      ev('BrowserUpload', 'u2', { paths: [path.join(chat.workspace, 'a.png'), '\\\\fileserver\\share\\x.png'] }),
+      ev('BrowserUpload', 'u3', { paths: ['\\\\fileserver\\s\\x.png', '\\\\nas\\s\\y.png', '\\\\backup\\s\\z.png', '\\\\nas\\s\\w.png'] }),
+    ]);
+    expect(card(page)).toEqual(onHost('Open a page on fileserver?', 'fileserver', 'URL: file://fileserver/share/x.html'));
+    expect(card(upload)).toEqual(onHost('Upload a file from fileserver?', 'fileserver', 'File: \\\\fileserver\\share\\x.png'));
+    expect(card(several)).toEqual({
+      title: 'Upload files from fileserver, nas and backup?',
+      subtitle: 'opening them sends your Windows sign-in to those computers',
+      facts: ['Files: \\\\fileserver\\s\\x.png\n\\\\nas\\s\\y.png\n\\\\backup\\s\\z.png\n\\\\nas\\s\\w.png', 'Computers: fileserver, nas, backup'],
+      approvedStatus: 'Allowed once. Your Windows sign-in goes to fileserver, nas and backup.',
+    });
+    expect(several?.title).toEqual({ message: 'Upload files from {0}?', args: [{ message: '{0} and {1}', args: ['fileserver, nas', 'backup'] }] });
+  });
+
+  it('counts the files an upload takes from one computer, not the computers', async () => {
+    const [two] = await cardsOf(networkChat(), [ev('BrowserUpload', 'u4', { paths: ['\\\\fileserver\\s\\x.png', '//FileServer/s/y.png'] })]);
+    expect(card(two)).toEqual({
+      title: 'Upload files from fileserver?',
+      subtitle: 'opening them sends your Windows sign-in to that computer',
+      facts: ['Files: \\\\fileserver\\s\\x.png\n//FileServer/s/y.png', 'Computer: fileserver'],
+      approvedStatus: 'Allowed once. Your Windows sign-in goes to fileserver.',
+    });
+  });
+
+  it('words a device path\'s card without a host, naming the path as written', async () => {
+    const [device] = await cardsOf(networkChat(), [ev('read', 'v1', { path: '\\\\?\\C:\\x.txt' })]);
+    expect(card(device)).toEqual({
+      title: 'Read a file that may be on another computer?',
+      subtitle: 'opening it may send your Windows sign-in to another computer',
+      facts: ['File: \\\\?\\C:\\x.txt'],
+      approvedStatus: 'Allowed once. Your Windows sign-in may go to another computer.',
+    });
+  });
+
+  it('shows a bidi or control character in a path or host as its escape, so the card reads as the path Windows opens', async () => {
+    const [read] = await cardsOf(networkChat(), [ev('read', 'z1', { path: '\\\\h\u202e\\s\\\u202egnp.exe' })]);
+    expect(card(read)).toEqual(onHost('Read a file on h\\u{202E}?', 'h\\u{202E}', 'File: \\\\h\\u{202E}\\s\\\\u{202E}gnp.exe'));
+  });
+
+  // \\?\GLOBALROOT\Device\Mup\<host>\ goes to <host> through the network redirector, while its spelling names no host.
+  const possiblyAnother = (files: string) => ({
+    title: 'Upload files from a and possibly another computer?',
+    subtitle: 'opening them may send your Windows sign-in to other computers',
+    facts: [`Files: ${files}`, 'Computers: a · and possibly another'],
+    approvedStatus: 'Allowed once. Your Windows sign-in goes to a and possibly another computer.',
+  });
+
+  it('never words a card as complete when a path it names reaches a computer it cannot place', async () => {
+    const [upload] = await cardsOf(networkChat(), [ev('BrowserUpload', 'g1', { paths: ['\\\\a\\s\\x', '\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\s\\y'] })]);
+    expect(card(upload)).toEqual(possiblyAnother('\\\\a\\s\\x\n\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\s\\y'));
+  });
+
+  it('never words a card as complete when a link on a path\'s walk leads to a device path', async () => {
+    const chat = networkChat();
+    const link = path.join(chat.workspace, 'dev');
+    fs.mkdirSync(path.join(chat.workspace, 'real'));
+    fs.symlinkSync(path.join(chat.workspace, 'real'), link, 'junction');
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    const spy = vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) =>
+      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\s' : readlink(file))) as typeof fs.promises.readlink);
+    onTestFinished(() => { spy.mockRestore(); });
+    const linked = path.join(link, 'y.png');
+    const [upload] = await cardsOf(chat, [ev('BrowserUpload', 'g2', { paths: ['\\\\a\\s\\x', linked] })]);
+    expect(card(upload)).toEqual(possiblyAnother(`\\\\a\\s\\x\n${linked}`));
+  });
 
   it('asks for an ImportAsset of a network file, as a Read of it', async () => {
     const { panel, handler, prompts } = networkChat();
@@ -2109,19 +2261,17 @@ describe.runIf(process.platform === 'win32')('a file tool whose path may reach a
     expect(yolo.prompts).toEqual([]);
   });
 
-  it('asks for a Read through a junction whose target is a share', async () => {
-    const { panel, handler, prompts, workspace } = networkChat();
-    const link = path.join(workspace, 'shared');
-    fs.mkdirSync(path.join(workspace, 'real'));
-    fs.symlinkSync(path.join(workspace, 'real'), link, 'junction');
+  it('asks for a Read through a junction whose target is a share, naming the share\'s host', async () => {
+    const chat = networkChat();
+    const link = path.join(chat.workspace, 'shared');
+    fs.mkdirSync(path.join(chat.workspace, 'real'));
+    fs.symlinkSync(path.join(chat.workspace, 'real'), link, 'junction');
     const readlink = fs.promises.readlink.bind(fs.promises);
     const spy = vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) =>
-      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\attacker\\share' : readlink(file))) as typeof fs.promises.readlink);
+      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\nas\\data' : readlink(file))) as typeof fs.promises.readlink);
     onTestFinished(() => { spy.mockRestore(); });
-    const pending = runPermissionGate(ev('read', 'j1', { path: 'shared/a.txt' }), panel, undefined);
-    await expect.poll(() => prompts.length).toBe(1);
-    await handler.resolveApproval('j1', true);
-    expect(await pending).toBeUndefined();
+    const [read] = await cardsOf(chat, [ev('read', 'j1', { path: 'shared/a.txt' })]);
+    expect(card(read)).toEqual(onHost('Read a file on nas?', 'nas', 'File: shared/a.txt'));
   });
 
   it('asks for a Read and a Write through a junction to a share that a path allow rule names, which only a tool-wide allow rule runs', async () => {
@@ -2152,17 +2302,170 @@ describe.runIf(process.platform === 'win32')('a file tool whose path may reach a
 
   it('allows the hosts of the chat\'s folders and WSL\'s, in every spelling, and nothing else', async () => {
     const lstat = vi.spyOn(fs.promises, 'lstat').mockImplementation((async () => ({ isSymbolicLink: () => false })) as never);
-    onTestFinished(() => { lstat.mockRestore(); });
+    // a search on an allowed share looks for its repository's `.git` there; none is found, and no share is touched
+    const realpath = vi.spyOn(fs.promises, 'realpath').mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+    onTestFinished(() => { lstat.mockRestore(); realpath.mockRestore(); });
     const cwd = () => path.resolve('/repo');
     const facts = (searched: string, hosts: string[]) => callFactsOf('Grep', { pattern: 'a', path: searched }, machine(hosts), cwd);
-    expect(await facts('\\\\nas\\proj\\src', ['nas'])).toEqual({ reachesNetwork: false });
-    expect(await facts('//NAS/proj/src', ['nas'])).toEqual({ reachesNetwork: false });
-    expect(await facts('\\\\?\\UNC\\nas\\proj\\src', ['nas'])).toEqual({ reachesNetwork: false });
-    expect(await facts('\\\\nas\\proj\\src', [])).toEqual({ reachesNetwork: true });
-    expect(await facts('\\\\wsl.localhost\\Ubuntu\\home', [])).toEqual({ reachesNetwork: false });
-    expect(await facts('\\\\wsl$\\Ubuntu\\home', [])).toEqual({ reachesNetwork: false });
-    expect(await facts('\\\\wsl.localhost@SSL\\Ubuntu\\home', [])).toEqual({ reachesNetwork: true });
-    expect(await facts('\\\\evil\\s', ['nas'])).toEqual({ reachesNetwork: true });
+    const local = { reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] };
+    const reach = (written: string, host: string) => ({ reachesNetwork: true, networkHosts: [host], unplacedReach: false, networkPaths: [written] });
+    expect(await facts('\\\\nas\\proj\\src', ['nas'])).toEqual(local);
+    expect(await facts('//NAS/proj/src', ['nas'])).toEqual(local);
+    expect(await facts('\\\\?\\UNC\\nas\\proj\\src', ['nas'])).toEqual(local);
+    expect(await facts('\\\\nas\\proj\\src', [])).toEqual(reach('\\\\nas\\proj\\src', 'nas'));
+    expect(await facts('\\\\wsl.localhost\\Ubuntu\\home', [])).toEqual(local);
+    expect(await facts('\\\\wsl$\\Ubuntu\\home', [])).toEqual(local);
+    expect(await facts('\\\\wsl.localhost@SSL\\Ubuntu\\home', [])).toEqual(reach('\\\\wsl.localhost@SSL\\Ubuntu\\home', 'wsl.localhost'));
+    expect(await facts('\\\\evil\\s', ['nas'])).toEqual(reach('\\\\evil\\s', 'evil'));
+  });
+
+  // 192.0.2.1 is TEST-NET-1: networkReach places it by spelling, and nothing on it is read.
+  it('asks for a search whose repository\'s `.git` file points off the chat\'s hosts, and not for one pointing to this computer', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-gitdir-')));
+    onTestFinished(() => { fs.rmSync(root, { recursive: true, force: true }); });
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    const search = (name: string, searched: string) => callFactsOf(name, { pattern: 'a', path: searched }, machine(), () => repo);
+    const local = { reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] };
+
+    const remote = '\\\\192.0.2.1\\share\\main\\.git\\worktrees\\w';
+    fs.writeFileSync(path.join(repo, '.git'), `gitdir: ${remote}\n`);
+    const reaching = { reachesNetwork: true, networkHosts: ['192.0.2.1'], unplacedReach: false, networkPaths: [remote], repositoryPointer: true };
+    expect(await search('Grep', 'src')).toEqual(reaching);
+    expect(await search('Glob', '.')).toEqual(reaching);
+    expect(await search('Ls', 'src')).toEqual(local);
+
+    // a local pointer whose commondir leads off this computer names that commondir
+    fs.mkdirSync(path.join(root, 'gd'));
+    fs.writeFileSync(path.join(repo, '.git'), `gitdir: ${path.join(root, 'gd')}\n`);
+    fs.writeFileSync(path.join(root, 'gd', 'commondir'), '\\\\192.0.2.1\\share\\main\\.git\n');
+    expect(await search('Grep', 'src')).toEqual({ ...reaching, networkPaths: ['\\\\192.0.2.1\\share\\main\\.git'] });
+
+    fs.writeFileSync(path.join(root, 'gd', 'commondir'), '../common\n');
+    expect(await search('Grep', 'src')).toEqual(local);
+    // a search of a single file reads no repository
+    fs.writeFileSync(path.join(repo, '.git'), `gitdir: ${remote}\n`);
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), '');
+    expect(await search('Grep', 'src\\a.ts')).toEqual(local);
+  });
+
+  it('says a search whose repository points to another computer opens nothing there', async () => {
+    const chat = networkChat();
+    const remote = '\\\\192.0.2.1\\share\\main\\.git';
+    fs.writeFileSync(path.join(chat.workspace, '.git'), `gitdir: ${remote}\n`);
+    const [grep] = await cardsOf(chat, [ev('grep', 'g1', { pattern: 'a' })]);
+    expect(card(grep)).toEqual({
+      title: 'Search a folder whose repository points to 192.0.2.1?',
+      subtitle: 'its .git file points there; Damocles does not open it, so that repository\'s exclude file is not applied',
+      facts: [`Repository: ${remote}`, 'Computer: 192.0.2.1'],
+      approvedStatus: 'Allowed once. Nothing is opened on 192.0.2.1.',
+    });
+  });
+
+  it('collects the hosts of every path a call names, once each, and the paths that reach as written', async () => {
+    const lstat = vi.spyOn(fs.promises, 'lstat').mockImplementation((async () => ({ isSymbolicLink: () => false })) as never);
+    onTestFinished(() => { lstat.mockRestore(); });
+    const cwd = () => path.resolve('/repo');
+    const upload = (paths: string[]) => callFactsOf('BrowserUpload', { paths }, machine(['nas']), cwd);
+    expect(await upload(['\\\\a\\s\\x', 'local.png', '\\\\nas\\s\\y', '\\\\b\\s\\z', '//A/s/w', '\\\\?\\C:\\v'])).toEqual({
+      reachesNetwork: true, networkHosts: ['a', 'b'], unplacedReach: true, networkPaths: ['\\\\a\\s\\x', '\\\\b\\s\\z', '//A/s/w', '\\\\?\\C:\\v'],
+    });
+    expect(await upload(['\\\\a\\s\\x', '\\\\b\\s\\z'])).toEqual({ reachesNetwork: true, networkHosts: ['a', 'b'], unplacedReach: false, networkPaths: ['\\\\a\\s\\x', '\\\\b\\s\\z'] });
+    expect(await upload(['\\\\?\\C:\\v'])).toEqual({ reachesNetwork: true, networkHosts: [], unplacedReach: true, networkPaths: ['\\\\?\\C:\\v'] });
+    expect(await callFactsOf('BrowserNavigate', { url: 'file:relative' }, machine(), cwd)).toEqual({ reachesNetwork: true, networkHosts: [], unplacedReach: true, networkPaths: ['file:relative'] });
+  });
+
+  it('asks before reading a drive Windows maps to another computer, naming the path as written and the share\'s host', async () => {
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\files.invalid\data\team`);
+    onTestFinished(() => { dosDevices.clear(); });
+    // every path on the drive or the share answers as a plain entry, so no test reaches a network
+    const lstatOf = fs.promises.lstat.bind(fs.promises);
+    const lstat = vi.spyOn(fs.promises, 'lstat').mockImplementation((async (file: fs.PathLike) =>
+      (/^(?:q:|[\\/]{2})/i.test(String(file)) ? { isSymbolicLink: () => false } : lstatOf(file))) as never);
+    const access = vi.spyOn(fs.promises, 'access').mockImplementation(async () => undefined);
+    onTestFinished(() => { lstat.mockRestore(); access.mockRestore(); });
+    const [read] = await cardsOf(networkChat(), [ev('read', 'q1', { path: 'Q:\\notes\\a.txt' })]);
+    expect(card(read)).toEqual(onHost('Read a file on files.invalid?', 'files.invalid', 'File: Q:\\notes\\a.txt'));
+    expect(lstat.mock.calls.filter(([file]) => /^(?:q:|[\\/]{2})/i.test(String(file)))).toEqual([]);
+    // a chat whose folders are on that server reads it unasked
+    const onServer = await callFactsOf('Read', { file_path: 'Q:\\notes\\a.txt' }, machine(['files.invalid']), () => path.resolve('/repo'));
+    expect(onServer).toEqual({ reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] });
+  });
+
+  it('blocks a call whose drive Windows cannot be asked about, never reading it as local', async () => {
+    dosDevices.set('Q:', new Error('QueryDosDeviceW(Q:) failed with Win32 error 5'));
+    onTestFinished(() => { dosDevices.clear(); });
+    await expect(callFactsOf('Read', { file_path: 'Q:\\a.txt' }, machine(), () => path.resolve('/repo'))).rejects.toThrow('Win32 error 5');
+  });
+
+  // Chrome parses a URL as the WHATWG parser does (tab, CR and LF removed, C0 controls and spaces trimmed), loads view-source:'s
+  // inner URL, and on Windows reads text starting with a drive or two slashes as that path's file: URL (url_util.cc).
+  it('places the file a browser load opens as Chrome parses its URL, whatever the raw text looks like', async () => {
+    const lstat = vi.spyOn(fs.promises, 'lstat').mockImplementation((async () => ({ isSymbolicLink: () => false })) as never);
+    onTestFinished(() => { lstat.mockRestore(); });
+    const cwd = () => path.resolve('/repo');
+    const facts = (name: string, input: Record<string, unknown>) => callFactsOf(name, input, machine(['nas']), cwd);
+    const reach = (written: string, host: string) => ({ reachesNetwork: true, networkHosts: [host], unplacedReach: false, networkPaths: [written] });
+    const unplaced = (written: string) => ({ reachesNetwork: true, networkHosts: [], unplacedReach: true, networkPaths: [written] });
+    const local = { reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] };
+    for (const url of ['fi\tle://evil/s/x.html', 'f\r\nile://evil/s/x.html', '\u0001file://evil/s/x.html', ' \u001ffile://evil/s/x.html\u0000 ', 'view-source:file://evil/s/x.html',
+      'VIEW-SOURCE:view-source:FILE://evil/s/x', 'view-sou\trce:file://evil/s/x', '\\\\evil\\s\\x.html', '//evil/s/x.html', '\\/evil/s/x.html', ' \t\\\\evil\\s\\x.html', 'view-source:\\\\evil\\s\\x.html']) {
+      expect(await facts('BrowserNavigate', { url }), JSON.stringify(url)).toEqual(reach(url, 'evil'));
+    }
+    expect(await facts('BrowserOpen', { url: '\t//nas/proj/a.html' })).toEqual(local);
+    for (const url of ['file://ev il/s/x.html', 'fi\nle://[bad/x', 'view-source:file://ev il/s', 'file:///relative', 'file://evil/s/%FF.html', 'file:///C:/a%FF.html']) {
+      expect(await facts('BrowserOpen', { url }), JSON.stringify(url)).toEqual(unplaced(url));
+    }
+    for (const url of ['https://evil/s/x.html', 'about:blank', 'data:text/html,x', 'view-source:https://evil/x', 'evil/s/x.html']) {
+      expect(await facts('BrowserOpen', { url }), JSON.stringify(url)).toEqual(local);
+    }
+    expect(await facts('BrowserTabs', { action: 'new', url: 'fi\tle://evil/s/x' })).toEqual(reach('fi\tle://evil/s/x', 'evil'));
+    expect(await facts('BrowserTabs', { action: 'list', url: 'file://evil/s/x' })).toEqual(local);
+  });
+
+  it('walks a browser load of a local drive path, raw or as a file: URL, and asks only when a link on it reaches', async () => {
+    const chat = networkChat();
+    const folder = fs.mkdtempSync(path.join(chat.workspace, 'nbsp\u00a0'));
+    const link = path.join(chat.workspace, 'a\u00a0b');
+    fs.mkdirSync(path.join(chat.workspace, 'real'));
+    fs.symlinkSync(path.join(chat.workspace, 'real'), link, 'junction');
+    fs.mkdirSync(path.join(chat.workspace, 'a b'));
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    const spy = vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) =>
+      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\attacker\\share' : readlink(file))) as typeof fs.promises.readlink);
+    onTestFinished(() => { spy.mockRestore(); });
+    const cwd = () => chat.workspace;
+    const facts = (name: string, input: Record<string, unknown>) => callFactsOf(name, input, machine(), cwd);
+    const local = { reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] };
+    for (const url of [path.join(folder, 'x.html'), pathToFileURL(path.join(folder, 'x.html')).href, `view-source:${path.join(folder, 'x.html')}`, `${chat.workspace[0]}|${path.join(folder, 'x.html').slice(2)}`]) {
+      expect(await facts('BrowserNavigate', { url }), url).toEqual(local);
+    }
+    // Chrome opens the U+00A0 name as written, never pi's normalised `a b`
+    for (const url of [path.join(link, 'x.html'), pathToFileURL(path.join(link, 'x.html')).href]) {
+      expect(await facts('BrowserNavigate', { url }), url).toEqual({ reachesNetwork: true, networkHosts: ['attacker'], unplacedReach: false, networkPaths: [url] });
+    }
+  });
+
+  it('places the files a browser upload opens as the tool opens them: absolute paths as given, a relative one refused', async () => {
+    const chat = networkChat();
+    const link = path.join(chat.workspace, 'a\u00a0b');
+    fs.mkdirSync(path.join(chat.workspace, 'real'));
+    fs.symlinkSync(path.join(chat.workspace, 'real'), link, 'junction');
+    fs.mkdirSync(path.join(chat.workspace, 'a b'));
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    const spy = vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) =>
+      (String(file).toLowerCase() === link.toLowerCase() ? '\\\\attacker\\share' : readlink(file))) as typeof fs.promises.readlink);
+    onTestFinished(() => { spy.mockRestore(); });
+    const upload = (paths: string[]) => callFactsOf('BrowserUpload', { paths }, machine(), () => chat.workspace);
+    const local = { reachesNetwork: false, networkHosts: [], unplacedReach: false, networkPaths: [] };
+    const nbsp = path.join(link, 'x.png');
+    expect(await upload([nbsp])).toEqual({ reachesNetwork: true, networkHosts: ['attacker'], unplacedReach: false, networkPaths: [nbsp] });
+    expect(await upload([path.join(chat.workspace, 'a b', 'x.png')])).toEqual(local);
+    expect(await upload(['@\\\\evil\\s\\x.png', 'a\u00a0b/x.png'])).toEqual(local);
+    expect(browserUploadPath('/c/x.png')).toBe(path.resolve('/c/x.png'));
+    expect(browserUploadPath('@C:\\x.png')).toBeUndefined();
+    expect(browserUploadPath('C:x.png')).toBeUndefined();
+    expect(browserUploadPath('C:\\a\\..\\x.png')).toBe('C:\\x.png');
   });
 });
 
@@ -2178,12 +2481,12 @@ describe('the three readers of a shell call\'s read-only verdict agree (plan mod
   function windows(...files: string[]): ChatMachine {
     const folder = fs.mkdtempSync(path.join(root, 'bin-'));
     for (const file of files) fs.writeFileSync(path.join(folder, file), '');
-    return { platform: 'win32', allowedNetworkHosts: () => Promise.resolve(new Set()), powerShellSearch: () => Promise.resolve({ path: folder, pathext: '.COM;.EXE;.BAT;.CMD', pwshHome: undefined }) };
+    return { platform: 'win32', allowedNetworkHosts: () => Promise.resolve(new Set()), powerShellSearch: () => Promise.resolve({ path: folder, pathext: '.COM;.EXE;.BAT;.CMD', pwshHome: undefined }), lookupFolders: () => Promise.resolve([folder]) };
   }
 
   async function expectReadersAgree(cases: Array<[string, string, ChatMachine, boolean]>): Promise<void> {
     for (const [tool, command, machine, expected] of cases) {
-      const proven = (await provenReadOnlyShell(tool, { command }, machine)).readOnly;
+      const proven = (await provenReadOnlyShell(tool, { command }, machine, path.resolve('/repo'))).readOnly;
       expect(proven, `proven: ${tool} ${command}`).toBe(expected);
 
       const plan = makePanel({ plan: true });
@@ -2222,6 +2525,18 @@ describe('the three readers of a shell call\'s read-only verdict agree (plan mod
       ['PowerShell', 'Get-ChildItem | rg x', windows('rg.bat'), false],
       ['PowerShell', 'Get-Content a.txt', windows('Get-Content.ps1'), false],
       ['PowerShell', 'Get-Content a.txt', windows('rg.cmd'), true],
+    ]);
+  });
+
+  it.runIf(process.platform === 'win32')('runs, blocks and waits exactly as provenReadOnlyShell proves, for a drive Windows maps to another computer', async () => {
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\192.0.2.7\data`);
+    onTestFinished(() => {
+      dosDevices.delete('Q:');
+    });
+    await expectReadersAgree([
+      ['Bash', 'cat /q/x', windows(), false],
+      ['PowerShell', String.raw`Get-Content Q:\x`, windows(), false],
+      ['Bash', 'cat a.txt', windows(), true],
     ]);
   });
 });

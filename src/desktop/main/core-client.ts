@@ -4,6 +4,7 @@ import type { ChatChangeTotals } from '../../core/pi-session/chat-review';
 import type { ChatActivity, TurnOutcome } from '../../core/pi-session/session-state';
 import type { SessionFileWrite } from '../../core/pi-session/session-store/session-file-write';
 import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
+import type { Coded, MovedFromCandidate, PreflightAnswer, PreflightRequest, RelocationRequest, RelocationView } from '../../core/project-relocation/types';
 import type { ManagedServer } from '../../core/scm/askpass/credential-config';
 import type { MatchableServer } from '../../core/forge/remote-url';
 import type { ClientForgeServer } from '../../shared/git-credential';
@@ -15,8 +16,8 @@ import type { UserContentBlock } from '../../shared/types/content';
 import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToExtensionMessage, WorktreeFinishAction } from '../../shared/types/messages';
 import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, GlobalMemorySearchFilters, HeldAuth, HeldMemoryQueue } from '../../shared/remote-user';
-import type { CoreEvents, PushedCredential } from '../core-protocol/messages';
-import type { DesignPreviewFile, DesignPreviewInfo } from '../../shared/types/design';
+import type { CoreEvents, MirrorHostOs, PushedCredential } from '../core-protocol/messages';
+import type { DesignPreviewAnswer, DesignPreviewFile } from '../../shared/types/design';
 import type { MarkupJsonInput } from '../../shared/design-markup';
 import type { LocalizedText } from '../../shared/localized-text';
 import type { ClientCertificateFilter } from '../../shared/client-certificate';
@@ -43,7 +44,8 @@ export class CoreClient implements Disposable {
   private readonly adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>;
   private readonly chatsById = new Map<string, ChatEntry>();
   private readonly chatsByView = new Map<string, ChatEntry>();
-  private folders: { readonly defaultKey: string; readonly targets: ReadonlyMap<string, FolderTargetEntry> } | undefined;
+  // a folder key open as a project may also be a working folder another project owns, so the two roles are kept apart
+  private folders: { readonly defaultKey: string; readonly projects: ReadonlyMap<string, FolderTargetEntry>; readonly owned: ReadonlyMap<string, FolderTargetEntry> } | undefined;
   private readonly subscriptions: Disposable[];
   private readonly foldersListeners = new Set<() => void>();
   private heldMemory: readonly HeldMemoryQueue[] = [];
@@ -56,11 +58,22 @@ export class CoreClient implements Disposable {
   private forgeServerList: readonly ClientForgeServer[] | undefined;
   private forgeAccountServerList: readonly MatchableServer[] | undefined;
   private readonly forgeListeners = new Set<() => void>();
+  private relocationViews: readonly RelocationView[] = [];
+  private readonly relocationListeners = new Set<() => void>();
+  // whether core serves the relocation requests and mirror: a local core always, a daemon's only when it lists projects.relocate
+  readonly relocates: boolean;
+  // whether core abandons a paused relocation: a local core always, a daemon's only when it lists projects.relocationAbandon
+  readonly abandons: boolean;
+  // whether core serves design.previewAnswer: a local core always, a daemon's only when it lists design.infoMissing
+  readonly answersMissingPages: boolean;
 
-  constructor(endpoint: MainEndpoint, adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>, keys: ProjectKeys) {
+  constructor(endpoint: MainEndpoint, adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>, keys: ProjectKeys, relocates: boolean = keys.authorityKey === 'local', abandons: boolean = keys.authorityKey === 'local', answersMissingPages: boolean = keys.authorityKey === 'local') {
     this.endpoint = endpoint;
     this.adoptView = adoptView;
     this.keys = keys;
+    this.relocates = relocates;
+    this.abandons = relocates && abandons;
+    this.answersMissingPages = answersMissingPages;
     this.subscriptions = [
       endpoint.onMirror('chats', ({ panelId, entry }) => {
         const previous = this.chatsById.get(panelId);
@@ -75,7 +88,11 @@ export class CoreClient implements Disposable {
       }),
       endpoint.onMirror('folderTargets', ({ defaultKey, targets }) => {
         const shown = targets.map((target) => folderTargetToShell(keys, target));
-        this.folders = { defaultKey: keys.toShell(defaultKey), targets: new Map(shown.map((target) => [target.key, target])) };
+        this.folders = {
+          defaultKey: keys.toShell(defaultKey),
+          projects: new Map(shown.filter((target) => target.ownerKey === undefined).map((target) => [target.key, target])),
+          owned: new Map(shown.filter((target) => target.ownerKey !== undefined).map((target) => [target.key, target])),
+        };
         for (const listener of [...this.foldersListeners]) listener();
       }),
       endpoint.onMirror('heldMemory', ({ queues }) => {
@@ -94,6 +111,12 @@ export class CoreClient implements Disposable {
         this.forgeAuthorAvatarKeys = new Set(authorKeys);
       }),
     ];
+    if (relocates) {
+      this.subscriptions.push(endpoint.onMirror('relocations', ({ records }) => {
+        this.relocationViews = records;
+        for (const listener of [...this.relocationListeners]) listener();
+      }));
+    }
   }
 
   dispose(): void {
@@ -101,6 +124,7 @@ export class CoreClient implements Disposable {
     this.foldersListeners.clear();
     this.heldMemoryListeners.clear();
     this.forgeListeners.clear();
+    this.relocationListeners.clear();
   }
 
   // ---- the chats mirror
@@ -122,18 +146,23 @@ export class CoreClient implements Disposable {
   // ---- the folder targets mirror (WorkspaceFolderRegistry)
 
   defaultTarget(): FolderTargetEntry | undefined {
-    return this.folders?.targets.get(this.folders.defaultKey);
+    return this.resolve(this.folders?.defaultKey ?? '');
   }
 
-  // a project, or a working folder a loaded chat holds
+  // a project, or a working folder a loaded chat holds; a key open in both roles answers the project, as core's resolve
   resolve(key: string): FolderTargetEntry | undefined {
-    return this.folders?.targets.get(key);
+    return this.folders?.projects.get(key) ?? this.folders?.owned.get(key);
   }
 
-  // the project target holding key: itself for a project, its owner for an owned folder
+  // a project core holds open, never a working folder
+  project(key: string): FolderTargetEntry | undefined {
+    return this.folders?.projects.get(key);
+  }
+
+  // the project target holding key: itself for a project, its owner for a working folder only a chat holds
   projectOf(key: string): FolderTargetEntry | undefined {
     const target = this.resolve(key);
-    return target?.ownerKey !== undefined ? this.resolve(target.ownerKey) : target;
+    return target?.ownerKey !== undefined ? this.folders?.projects.get(target.ownerKey) : target;
   }
 
   branchOf(key: string): string | undefined {
@@ -310,8 +339,8 @@ export class CoreClient implements Disposable {
   }
 
   /** This computer's core lists one project's chats of a host's session mirror, read-only; folder is under that host's mirror. */
-  async listMirroredSessions(hostId: string, folder: string, query: string): Promise<readonly StoredSession[]> {
-    return (await this.request('chats.listMirrored', { hostId, folder, ...(query !== '' ? { query } : {}) })) as readonly StoredSession[];
+  async listMirroredSessions(hostId: string, folder: string, query: string, os: MirrorHostOs | undefined, project: string): Promise<readonly StoredSession[]> {
+    return (await this.request('chats.listMirrored', { hostId, folder, project, ...(query !== '' ? { query } : {}), ...(os !== undefined ? { os } : {}) })) as readonly StoredSession[];
   }
 
   async searchSessions(projectKey: string, query: string): Promise<readonly StoredSession[]> {
@@ -471,8 +500,9 @@ export class CoreClient implements Disposable {
     return this.request('design.read', { designId, relPath });
   }
 
-  designInfo(designId: string, relPath: string): Promise<DesignPreviewInfo | undefined> {
-    return this.request('design.info', { designId, relPath });
+  // an older core answers a missing page as nothing, which reads as a page it cannot read
+  designInfo(designId: string, relPath: string): Promise<DesignPreviewAnswer> {
+    return this.answersMissingPages ? this.request('design.previewAnswer', { designId, relPath }) : this.request('design.info', { designId, relPath });
   }
 
   // png: base64 with no data: prefix, at most 1950 px a side
@@ -616,6 +646,67 @@ export class CoreClient implements Disposable {
     return this.endpoint.onEvent('panel.foreignPost', ({ viewId, message }) => listener(viewId, message));
   }
 
+  // ---- project relocation (docs/invariants.md "Project relocation"); a daemon's core only when it lists projects.relocate
+
+  /** The relocations mirror: pending relocations and those that reached coreDone in this core's run. */
+  relocations(): readonly RelocationView[] {
+    return this.relocationViews;
+  }
+
+  onRelocationsChanged(listener: () => void): Disposable {
+    this.relocationListeners.add(listener);
+    return { dispose: () => { this.relocationListeners.delete(listener); } };
+  }
+
+  relocationPreflight(request: PreflightRequest): Promise<PreflightAnswer> {
+    return this.relocationRequest('projects.relocationPreflight', request);
+  }
+
+  /** Settles once the journal record is written, with its id, or with preflight's refusal. */
+  relocate(request: RelocationRequest): Promise<{ readonly id: string } | { readonly refusal: Coded }> {
+    return this.relocationRequest('projects.relocate', request);
+  }
+
+  relocationRetry(id: string): Promise<void> {
+    return this.relocationRequest('projects.relocationRetry', { id });
+  }
+
+  /** Stop moving a paused relocation; its refusal when core holds it otherwise. */
+  async relocationAbandon(id: string): Promise<Coded | undefined> {
+    if (!this.abandons) throw new Error(`The core on ${this.keys.authorityKey} does not stop moving project folders`);
+    const answer = await this.request('projects.relocationAbandon', { id });
+    return 'refusal' in answer ? answer.refusal : undefined;
+  }
+
+  /** The relocations from the projects these shell keys name. */
+  relocationsFrom(keys: readonly string[]): Promise<readonly RelocationView[]> {
+    return this.relocationRequest('projects.relocationsFrom', { keys: keys.map((key) => this.keys.toCore(key)) });
+  }
+
+  applyRelocationHostState(id: string): Promise<void> {
+    return this.relocationRequest('projects.applyHostState', { id });
+  }
+
+  movedFrom(to: string): Promise<readonly MovedFromCandidate[]> {
+    return this.relocationRequest('projects.movedFrom', { to });
+  }
+
+  /** This computer's core: a moved remote project's Git hosting bindings follow its project key. */
+  relocateForgeBindings(fromKey: string, toKey: string): Promise<void> {
+    return this.request('forge.relocateProject', { fromKey, toKey });
+  }
+
+  /** This computer's core: /stats counts a moved remote project's sessions under its new path on that host. */
+  addHostAlias(alias: { readonly hostId: string; readonly from: string; readonly to: string; readonly startedAt?: number }): Promise<void> {
+    return this.request('projects.addHostAlias', alias);
+  }
+
+  // a daemon that did not list projects.relocate closes the connection on these names, so none is sent to it
+  private relocationRequest<M extends 'projects.relocationPreflight' | 'projects.relocate' | 'projects.relocationRetry' | 'projects.relocationsFrom' | 'projects.applyHostState' | 'projects.movedFrom'>(method: M, params: Params<M>): Promise<Result<M>> {
+    if (!this.relocates) return Promise.reject(new Error(`The core on ${this.keys.authorityKey} does not move project folders`));
+    return this.request(method, params);
+  }
+
   // ---- lifecycle and the e2e namespace
 
   shutdown(): Promise<void> {
@@ -652,6 +743,10 @@ export class CoreClient implements Disposable {
 
   e2eHoldShutdown(): Promise<void> {
     return this.request('e2e.holdShutdown', {});
+  }
+
+  e2eRelocationPauseAfter(sessions: number | null, mode: 'pause' | 'hang'): Promise<void> {
+    return this.request('e2e.relocationPauseAfter', { sessions, mode });
   }
 
   e2eFakeVoice(transcript: string): Promise<{ readonly pid: number }> {

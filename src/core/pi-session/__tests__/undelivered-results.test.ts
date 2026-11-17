@@ -153,6 +153,17 @@ describe('undelivered background results', () => {
     expect((await promptStart(parent, dir)).sent).toEqual([]);
   });
 
+  it.each(['denied', 'hookDenied'])('delivers once a file agent that a rejected call stopped (%s), since its run ended with a result', async (stopReason) => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    invoke(parent, A, 'tc1');
+    writeAgentFile(dir, A, { status: 'stopped', stopReason, result: 'half (STOPPED: rejected)' });
+
+    const first = await promptStart(parent, dir);
+    expect(first.sent[0]!.details.agents).toEqual([{ agentId: A, toolCallId: 'tc1', status: 'stopped', stopReason, result: 'half (STOPPED: rejected)' }]);
+    expect((await promptStart(parent, dir)).sent).toEqual([]);
+  });
+
   it('a foreground agent is never delivered: its result was the Agent tool result', async () => {
     const dir = tempDir();
     const parent = SessionManager.inMemory('/ws');

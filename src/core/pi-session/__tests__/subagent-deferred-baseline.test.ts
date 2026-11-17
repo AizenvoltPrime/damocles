@@ -99,7 +99,7 @@ const H = vi.hoisted(() => {
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
     SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings', drainErrors: () => [] })) },
-    ModelRuntime: { create: vi.fn(async () => ({ getAvailableSnapshot: () => [] })) },
+    ModelRuntime: { create: vi.fn(async () => ({ getAvailableSnapshot: () => [], stream: vi.fn(), streamSimple: vi.fn(), settleCredentialWrites: async () => undefined })) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
   };
   return { created, sessions, fakePi, restored };
@@ -382,7 +382,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.4.0):
+      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.5.2):
       // `tools:` becomes BOTH the allowlist and the construction-time active set.
       allowedToolNames: tools,
       initialActiveToolNames: tools,
@@ -691,7 +691,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
  * registers a tool into a LIVE nested session, re-apply this baseline after it." Delivering MCP as
  * `customTools` is adjacent to exactly that. The EXPECTED finding is that it does not apply, because
  * `customTools` are read inside `_refreshToolRegistry` during CONSTRUCTION
- * (`dist/core/agent-session.js:2879` in pi 1.4.0), not through a post-bind `registerTool`.
+ * (`dist/core/agent-session.js:2975` in pi 1.5.2), not through a post-bind `registerTool`.
  *
  * This is asserted on a REAL `AgentSession` because the claim is about pi's construction order, and a
  * fake session is precisely the thing that cannot testify to it. If this suite goes red, the finding is
@@ -732,7 +732,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.4.0).
+      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.5.2).
       allowedToolNames: tools,
       initialActiveToolNames: tools,
       customTools,

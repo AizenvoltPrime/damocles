@@ -1,14 +1,20 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { PermissionHandler } from '../index';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { CanUseToolContext } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { getPiCodingAgent, initPiLoader } from '../../pi-session/pi-loader';
 import {
   TOOL_ASK_USER_QUESTION,
   TOOL_BROWSER_REQUEST_INPUT,
   TOOL_EXIT_PLAN_MODE,
   TOOL_SKILL,
 } from '../../../shared/tool-names';
+
+// An Edit's approval diff runs pi's edit.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 /** Stand in for a file on disk, so `prepareDiff` produces a real original and proposed content pair. */
 function stubFileOnDisk(platform: FakePlatform, content: string): void {
@@ -18,7 +24,7 @@ function stubFileOnDisk(platform: FakePlatform, content: string): void {
 /** A handler wired to a message list, which is the only thing the webview side of a prompt is. */
 function handlerWith(): { handler: PermissionHandler; messages: ExtensionToWebviewMessage[]; platform: FakePlatform } {
   const platform = createFakePlatform();
-  const handler = new PermissionHandler(platform);
+  const handler = new PermissionHandler(platform, getPiCodingAgent);
   handler.setCwd(process.cwd());
   const messages: ExtensionToWebviewMessage[] = [];
   handler.setPostMessage((msg) => messages.push(msg));

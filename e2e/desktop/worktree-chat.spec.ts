@@ -8,7 +8,7 @@ import { chatRequests } from './support/openai-stub';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
 import { pressKeys, shellPage, shellState } from './support/shell';
 import { dismiss, openProjectChat } from './support/screenshots';
-import { editorState, openInEditor } from './support/editor';
+import { activeTab, DOCUMENT_END, editorShows, editorState, openInEditor } from './support/editor';
 import { setSection, submenuItem } from './support/scm';
 import { setContentSize } from './support/settings';
 import { addProject, chatInput } from './support/ui';
@@ -446,5 +446,42 @@ test('New chat in this worktree from the row +, the New menu and the shortcut: e
       await pressKeys(app, `/panel/${panelIdOf(fromMenu)}/`, 'N', NEW_IN_WORKTREE_KEYS);
       await startsInWorktree([first, fromRow, fromMenu]);
     });
+  });
+});
+
+test('a relaunch brings the worktree\'s editor tabs back once its core published the registry: in their saved place, the saved one active, unsaved text included', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'), { files: { 'a.ts': 'export const a = 1;\n', 'b.ts': 'export const b = 1;\n' } });
+  await withStub(home, {}, async (stub) => {
+    stub.replies.push({ chunks: ['Worktree turn done'] });
+    let projectKey: string;
+    let worktreeKey: string;
+    {
+      const { app, close } = await launch();
+      await openProjectChat(app, repo.project);
+      const shell = await shellPage(app);
+      const tab = await optIn(app);
+      await send(tab, 'Start the worktree');
+      await expect(tab.getByText('Worktree turn done')).toBeVisible({ timeout: 60_000 });
+      projectKey = (await shellState(app)).selected.projectKey!;
+      worktreeKey = (await shownFolder(app))!.rootKey;
+      expect((await openInEditor(app, { projectKey: worktreeKey, relativePath: 'a.ts' })).ok).toBe(true);
+      await editorShows(shell, 'a = 1');
+      await shell.keyboard.press(DOCUMENT_END);
+      await shell.keyboard.type('// unsaved');
+      await expect.poll(async () => (await activeTab(app))?.dirty).toBe(true);
+      expect((await openInEditor(app, { projectKey: worktreeKey, relativePath: 'b.ts' })).ok).toBe(true);
+      expect((await openInEditor(app, { projectKey, relativePath: 'a.ts' })).ok).toBe(true);
+      expect((await openInEditor(app, { projectKey: worktreeKey, relativePath: 'b.ts' })).ok).toBe(true);
+      await close();
+    }
+    const { app, close } = await launch();
+    const shell = await shellPage(app);
+    const tabs = async () => (await editorState(app)).tabs.map((each) => [each.projectKey, each.relativePath, each.dirty === true]);
+    await expect.poll(tabs, { timeout: 30_000 }).toEqual([[worktreeKey, 'a.ts', true], [worktreeKey, 'b.ts', false], [projectKey, 'a.ts', false]]);
+    expect((await activeTab(app))?.relativePath).toBe('b.ts');
+    expect((await activeTab(app))?.projectKey).toBe(worktreeKey);
+    expect((await openInEditor(app, { projectKey: worktreeKey, relativePath: 'a.ts' })).ok).toBe(true);
+    await editorShows(shell, '// unsaved');
+    await close();
   });
 });

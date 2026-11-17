@@ -99,6 +99,15 @@ describe('RemoteState', () => {
     expect((await RemoteState.open(userData, () => undefined)).chats('ssh+h1')).toEqual([fresh]);
   });
 
+  it('keeps the project a chat was open in, and drops a project key of another authority while keeping the chat', async () => {
+    const token = '6f1c2a9e-0d4b-4c1e-9a1f-1b2c3d4e5f60';
+    const other = '0b9e4c1a-7f2d-4e3b-8c5a-2d1e0f9a8b7c';
+    const state = await RemoteState.open(userData, () => undefined);
+    const chat = { authority: 'ssh+h1', sessionId: 's-1', panelToken: token, projectKey: 'ssh+h1|/home/dev/acme' };
+    await state.setChats('ssh+h1', [chat, { authority: 'ssh+h1', sessionId: 's-2', panelToken: other, projectKey: 'ssh+h2|/home/dev/acme' }], null);
+    expect((await RemoteState.open(userData, () => undefined)).chats('ssh+h1')).toEqual([chat, { authority: 'ssh+h1', sessionId: 's-2', panelToken: other }]);
+  });
+
   it('keeps the epoch the away chats ran under with them, and none once none are away', async () => {
     const state = await RemoteState.open(userData, () => undefined);
     await state.setAway('ssh+h1', [{ panelId: 'host-1', sessionId: 'S1', title: 'Fix it' }], '0123456789abcdef0123456789abcdef');

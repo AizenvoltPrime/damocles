@@ -1,5 +1,6 @@
 import type { Rectangle } from 'electron';
 import { isNavigableUrl } from '../../core/browser/net-guard';
+import { servedToFile, type ServedMapping } from '../../shared/served-file-url';
 import { MAX_BROWSER_URL_LENGTH, typedAddress } from '../../shared/typed-address';
 import type { BrowserAction, ShellBrowserPage, ShellEditorTab } from '../preload/shell-channels';
 import type { PersistedPages } from './panel-state-store';
@@ -57,6 +58,8 @@ export interface BrowserTabsDeps {
   readonly remoteAddress: (chat: DesktopPanel, url: string) => Promise<string | undefined>;
   // a remote chat's page on a forwarded port: the host and the address in the target's form, for the tab's chip
   readonly forwardedFrom: (chat: DesktopPanel, url: string) => ShellBrowserPage['forwardedFrom'];
+  // the origins of the roots local chats' views were granted, with each root's path (ServedRoots.mappings)
+  readonly servedMappings: () => readonly ServedMapping[];
 }
 
 // One chat's pages in tab order.
@@ -99,7 +102,7 @@ export class BrowserTabs implements PagesHost {
     const entry = chat && this.deps.browserEnabled() ? this.chats.get(chat) : undefined;
     return (entry?.pages ?? []).map((page) => {
       const observed = page.page!;
-      const url = observed.url.slice(0, MAX_BROWSER_URL_LENGTH);
+      const url = this.shownUrl(page).slice(0, MAX_BROWSER_URL_LENGTH);
       const forwardedFrom = chat && chat.authority !== 'local' && onLoopback(url) ? this.deps.forwardedFrom(chat, url) : undefined;
       return {
         id: page.panelId,
@@ -203,7 +206,7 @@ export class BrowserTabs implements PagesHost {
         if (!isHttpUrl(url) || !(await this.deps.openExternal(url))) this.deps.openExternalFailed();
         return;
       case 'copyUrl':
-        if (url !== '') await this.deps.copy(url);
+        if (url !== '') await this.deps.copy(this.shownUrl(page));
         return;
     }
   }
@@ -347,11 +350,21 @@ export class BrowserTabs implements PagesHost {
     const entry = this.chats.get(chat);
     if (!entry || this.deps.retainingStates()) return;
     const active = entry.activePage ? entry.pages.indexOf(entry.activePage) : -1;
-    const pages: PersistedPages = { pages: entry.pages.map((page) => page.page!.url), ...(active >= 0 ? { activePage: active } : {}) };
+    const pages: PersistedPages = { pages: entry.pages.map((page) => this.shownUrl(page)), ...(active >= 0 ? { activePage: active } : {}) };
     const persisted = JSON.stringify(pages);
     if (persisted === entry.persisted) return;
     entry.persisted = persisted;
     this.deps.setPages(chat.panelId, pages);
+  }
+
+  // A local chat's page on a served root's origin as its file:// address, which a restore reopens through the chat's own roots;
+  // any other address, a user's own loopback server included, as loaded.
+  private shownUrl(page: DesktopPanel): string {
+    const url = page.page!.url;
+    if (page.chat?.authority !== 'local' || !URL.canParse(url)) return url;
+    const mappings = this.deps.servedMappings();
+    const { origin } = new URL(url);
+    return mappings.some((mapping) => mapping.origin === origin) ? servedToFile(url, mappings) : url;
   }
 
   // The shell's report can lag a resize by a frame, so a page view never extends past the window.

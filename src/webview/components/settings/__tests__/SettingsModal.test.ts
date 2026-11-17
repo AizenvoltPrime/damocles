@@ -170,7 +170,7 @@ describe('state', () => {
     settingsViewHandlers.claudeAuthStatusChanged({ type: 'claudeAuthStatusChanged', mode: 'allowance' }, ctx);
     settingsViewHandlers.openaiAuthStatusChanged({ type: 'openaiAuthStatusChanged', status: { chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, preferApiKey: false }, ctx);
     for (const provider of KEY_PROVIDER_IDS) settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider, configured: true, external: null, signedIn: false, preferApiKey: false }, ctx);
-    settingsViewHandlers.memoryJudgeStatus({ type: 'memoryJudgeStatus', memoryJudge: { kind: 'unknown' }, classifierCredentials: { typesafe: 'ok', openrouter: 'ok', openai: 'no-key' } }, ctx);
+    settingsViewHandlers.memoryJudgeStatus({ type: 'memoryJudgeStatus', memoryJudge: { kind: 'unknown' }, classifierCredentials: { typesafe: 'ok', openrouter: 'ok', openai: 'no-key', 'github-copilot': 'signed-out' } }, ctx);
     await nextTick();
     const status = (provider: string): string => row(`account-${provider}`)!.querySelector('[role="status"]')!.textContent!.trim();
     expect(status('anthropic')).toBe(t('claudeAuth.status.allowance'));
@@ -461,9 +461,10 @@ describe('controls write their messages', () => {
 
   it('a segmented control writes cache warming', async () => {
     await open(NO_HOST_SETTINGS, 'application');
-    const idle = [...row('damocles.cacheWarming')!.querySelectorAll<HTMLElement>('button[aria-pressed]')].find((el) => el.textContent?.includes(t('settingsModal.cacheWarming.idle')))!;
-    idle.click();
-    expect(posted).toContainEqual({ type: 'setCacheWarming', mode: 'idle' });
+    // idle is the default, so the control writes the other mode
+    const streaming = [...row('damocles.cacheWarming')!.querySelectorAll<HTMLElement>('button[aria-pressed]')].find((el) => el.textContent?.includes(t('settingsModal.cacheWarming.streaming')))!;
+    streaming.click();
+    expect(posted).toContainEqual({ type: 'setCacheWarming', mode: 'streaming' });
   });
 
   it('a select writes the default model', async () => {
@@ -1199,7 +1200,7 @@ describe('Models & accounts model and effort rows', () => {
   });
 
   it('lists a classifier whose credential cannot serve it as disabled, with the reason', async () => {
-    useSettingsStore().setMemoryJudgeStatus({ kind: 'unknown' }, { typesafe: 'no-key', openrouter: 'ok', openai: 'chatgpt-active' });
+    useSettingsStore().setMemoryJudgeStatus({ kind: 'unknown' }, { typesafe: 'no-key', openrouter: 'ok', openai: 'chatgpt-active', 'github-copilot': 'signed-out' });
     await open(NO_HOST_SETTINGS, 'accounts');
     await openSelect('damocles.memory.judge', 'Memory judge');
     expect(option('Jev (TypeSafe)').getAttribute('aria-disabled') === 'true').toBe(true);
@@ -1207,11 +1208,13 @@ describe('Models & accounts model and effort rows', () => {
     expect(option('Jev (OpenRouter)').getAttribute('aria-disabled') === 'true').toBe(false);
     expect(option('GPT-6 Luna (Decisions API)').getAttribute('aria-disabled') === 'true').toBe(true);
     expect(option('GPT-6 Luna (Decisions API)').textContent).toContain(t('settings.memoryJudge.unavailable.chatgpt-active'));
+    expect(option('Microsoft-Decision-1 (GitHub Copilot)').getAttribute('aria-disabled') === 'true').toBe(true);
+    expect(option('Microsoft-Decision-1 (GitHub Copilot)').textContent).toContain('Sign in to GitHub Copilot');
   });
 
   it('says in the Memory judge row why the chosen judge cannot run', async () => {
     const store = useSettingsStore();
-    const credentials = { typesafe: 'no-key', openrouter: 'ok', openai: 'ok' } as const;
+    const credentials = { typesafe: 'no-key', openrouter: 'ok', openai: 'ok', 'github-copilot': 'signed-out' } as const;
     store.setJudgeSettings({ choice: 'jev-typesafe', effort: null });
     store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'jev-typesafe', reason: 'no-key' } }, credentials);
     await open(NO_HOST_SETTINGS, 'accounts');

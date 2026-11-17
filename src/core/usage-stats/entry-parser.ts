@@ -28,8 +28,8 @@ export type SessionLine =
   | { kind: 'title'; name: string }
   | { kind: 'launch'; detail: string }
   | { kind: 'model'; provider: string; model: string }
-  /** A worktree entry: the session's spend belongs to this project (slice 12a rule 9). */
-  | { kind: 'project'; projectPath: string }
+  /** A worktree entry: the session's spend belongs to this project (slice 12a rule 9); recordedAt is the entry's time. */
+  | { kind: 'project'; projectPath: string; recordedAt: number | undefined }
   /** A daemon's core run start: spend after it on a provider not listed here used the host's own credential. */
   | { kind: 'credentialSource'; clientProviders: string[] }
   | UsageLine;
@@ -127,7 +127,7 @@ export function parseSessionLine(line: string): SessionLine {
     case 'custom': {
       if (entry['customType'] === DAMOCLES_WORKTREE_ENTRY) {
         const data = isRecord(entry['data']) ? entry['data'] : undefined;
-        return data && nonEmptyString(data['projectPath']) ? { kind: 'project', projectPath: data['projectPath'] } : SKIP;
+        return data && nonEmptyString(data['projectPath']) ? { kind: 'project', projectPath: data['projectPath'], recordedAt: timestampMs(entry['timestamp']) } : SKIP;
       }
       if (entry['customType'] === DAMOCLES_CREDENTIAL_SOURCE_ENTRY) {
         const providers = isRecord(entry['data']) ? entry['data']['clientProviders'] : undefined;

@@ -14,7 +14,7 @@ import AllowBackgroundWork from './AllowBackgroundWork.vue';
 // A close or quit while remote chats run: each chat with its live status, Keep running focused first.
 const props = defineProps<{ api: DamoclesOverlayApi; request: Extract<OverlayRequest, { kind: 'closeRemote' }> }>();
 const emit = defineEmits<{ answer: [answer: OverlayAnswer] }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const rows = shallowRef<readonly CloseRemoteRow[]>(props.request.rows);
 const dontAskAgain = ref(false);
@@ -47,6 +47,7 @@ const lingerHosts = computed(() => [...new Map(rows.value.filter((row) => row.li
 const TONE: Readonly<Record<CloseRemoteStatus, string>> = { running: 'd-tone-accent', waiting: 'd-tone-warning', signIn: 'd-tone-warning', idle: 'd-tone-success' };
 // own keys only: a provider id such as "constructor" would read Object.prototype
 const providerName = (provider: string): string => (Object.hasOwn(PROVIDER_NAMES, provider) ? PROVIDER_NAMES[provider]! : provider);
+const providerList = (providers: readonly string[]): string => new Intl.ListFormat(locale.value, { type: 'conjunction' }).format(providers.map(providerName));
 </script>
 
 <template>
@@ -126,6 +127,13 @@ const providerName = (provider: string): string => (Object.hasOwn(PROVIDER_NAMES
           class="text-11 text-(--d-warning-text)"
         >
           {{ t('closeRemote.tokenNote', row.tokenNote.minutesLeft, { named: { provider: providerName(row.tokenNote.provider), minutes: row.tokenNote.minutesLeft } }) }}
+        </p>
+        <p
+          v-if="row.keyProviders.length > 0"
+          data-testid="close-remote-key-providers"
+          class="text-11 text-(--d-warning-text)"
+        >
+          {{ t('closeRemote.keyProviders', row.keyProviders.length, { named: { providers: providerList(row.keyProviders) } }) }}
         </p>
       </li>
     </ul>

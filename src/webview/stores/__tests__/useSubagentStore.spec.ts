@@ -107,6 +107,22 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
     expect(s.result?.content).toBe(STOPPED_NOTE);
   });
 
+  it('restores the stop reason of a run a rejected call ended, and a resume of the card clears it', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'toolu_2',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'run the tests', prompt: 'p' },
+      result: JSON.stringify({ content: [{ type: 'text', text: 'partial' }], agentId: 'agent-2', agentStatus: 'stopped', agentStopReason: 'hookDenied' }),
+      agentStatus: 'stopped',
+      agentStopReason: 'hookDenied',
+    });
+    expect(defined(store.subagents['toolu_2'], 'toolu_2')).toMatchObject({ status: 'cancelled', stopReason: 'hookDenied' });
+
+    store.resetToRunning('toolu_2');
+    expect(defined(store.subagents['toolu_2'], 'toolu_2').stopReason).toBeUndefined();
+  });
+
   it('restores a clean completion as completed with the persisted final text', () => {
     const store = useSubagentStore();
     store.restoreSubagentFromHistory({

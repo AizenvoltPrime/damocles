@@ -21,6 +21,7 @@ import {
   classifyTerminalContract,
   formatReviewRoundReadyNotification,
   isDeliverableStatus,
+  isSpecialistFinal,
   isSpecialistSettled,
 } from './review-gate';
 import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.generated';
@@ -62,6 +63,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type {
   TeamState,
   TeamRunSummary,
+  TeamStopReason,
   TeamAgent as WebviewTeamAgent,
   TeamMessage as WebviewTeamMessage,
   ScratchpadEntry as WebviewScratchpadEntry,
@@ -69,7 +71,8 @@ import type {
 import type { SteerTargetInfo } from '../../shared/types/subagents';
 import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { ImageBlock } from '../../shared/types/content';
-import { buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../shared/steer';
+import type { TerminatedCall } from '../pi-session/terminated-calls';
+import { buildRejectedResumePrompt, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../shared/steer';
 
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
@@ -140,7 +143,7 @@ export const STRANDED_STANDBY_NUDGE: string =
   'No peer is still working, so no further peer input is coming. If your work is complete and verified, ' +
   'post any final scratchpad and call team_report_complete now. If you are still blocked, message the ' +
   'lead with team_send_message. Do not call team_standby again.';
-const TERMINAL_CONTRACT_NUDGE =
+export const TERMINAL_CONTRACT_NUDGE: string =
   'You ended a turn without a terminal action. If your work is complete and verified, post your final ' +
   'scratchpad and call `team_report_complete` now. If you are waiting on a peer, call `team_standby`; ' +
   'if blocked, message the lead. A bare turn-end is not allowed — do not end again without one of these.';
@@ -148,6 +151,30 @@ const CONFLICT_NUDGE_PREFIX = 'You have UNRESOLVED brief conflicts: ';
 const CONFLICT_NUDGE_SUFFIX =
   '. Before ending, resolve each via team_request_revision (fix the task/contract) or ' +
   'team_resolve_brief_conflict (dismiss with a written rationale). This is a hard requirement.';
+
+function rejectionCause(call: TerminatedCall): string {
+  return call.cause === 'user'
+    ? `the user rejected its ${call.toolName} call and its turn ended there`
+    : `a hook rejected its ${call.toolName} call and ended its turn`;
+}
+
+/** The lead's notice of a specialist turn pi ended after a rejected call, which parks the specialist until the lead acts. */
+function specialistRejectionNote(name: string, call: TerminatedCall): string {
+  return `Specialist "${name}": ${rejectionCause(call)}. It is waiting for you: message it with team_send_message to continue, or cancel it with team_cancel_specialist.`;
+}
+
+/** A member's outcome in the partial results when its last run ended on a rejected call and it filed no report. */
+const rejectionOutcome = (call: TerminatedCall): string => `Stopped: ${rejectionCause(call)}.`;
+
+const stopReasonOf = (call: TerminatedCall): TeamStopReason => (call.cause === 'user' ? 'denied' : 'hookDenied');
+
+export const isRejectionStop = (stop: TeamStop | null): stop is TeamStopReason => stop === 'denied' || stop === 'hookDenied';
+
+/** How many of a restored member's undelivered messages, from the first, its run held behind a rejection. */
+const leadingHeld = (undelivered: readonly UndeliveredMessage[]): number => {
+  const index = undelivered.findIndex((m) => !m.held);
+  return index === -1 ? undelivered.length : index;
+};
 
 /**
  * Roll one attempt's usage into the agent's cumulative totals and hand them back for the webview.
@@ -292,6 +319,9 @@ export class TeamRunner {
   private owedTerminalAction = new Set<string>();
   private terminalNudgeScheduled = new Set<string>();
   private terminalNudgeDelivered = new Set<string>();
+  // By name, the call pi ended a member's latest run on, until it runs again. A live specialist waits for the lead with
+  // no nudge (`parkedOnRejection`), and a settled member's stop records it. Synthesis leaves it, so the settle can read it.
+  private rejections = new Map<string, TerminatedCall>();
   // Open brief conflicts a specialist raised (name → detail). While non-empty the lead cannot explicitly
   // synthesize; on lead turn-end it is nudged (bounded); any completion with an open flag fails loud.
   private briefConflicts = new Map<string, string>();
@@ -548,7 +578,7 @@ export class TeamRunner {
       role: 'lead',
       initial: launch.kind === 'fresh' ? { kind: 'prompt', text: launch.prompt } : launch.initial,
       redeliver: launch.redeliver,
-      createSession: () => this.createMemberSession(leadAgent, leadAttempt, LEAD_OPENING_TASK, launch, this.teamAbort.signal, (store, resolution) => {
+      createSession: () => this.createMemberSession(leadAgent, leadAttempt, LEAD_OPENING_TASK, launch, this.teamAbort.signal, (store, resolution, signal) => {
         // ONE toolset call per spawn. Names, customTools and the MCP snapshot used to be three
         // separate live reads inside this one object literal, so an `mcp__*` name could reach `tools:`
         // with no matching definition — pi registers a name only from a definition and
@@ -568,6 +598,7 @@ export class TeamRunner {
           excludeTools: ['edit'],
           extensionFactory: this.config.engine.buildExtensionFactory(leadCtx, mcp, readOnly),
           store,
+          signal,
         });
       }),
       forgetSession: (session) => this.forgetMemberSession(session),
@@ -602,13 +633,16 @@ export class TeamRunner {
         });
       },
       shouldDeliverMessage: leadShouldDeliverMessage,
+      // A specialist parked on a rejection waits for the lead, so it gives the lead nothing to wait for.
       keepAlive: () => !this.completionResolved && [...this.agents.values()].some(
-        a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
+        a => a.role === 'specialist' && !this.parkedOnRejection(a.name)
+          && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
       ),
       onToolCall: (_toolName, count) => {
         leadAgent.toolCallCount = leadAgent.carriedToolCallCount + count;
         this.currentRun.toolCount++;
       },
+      onRunRejected: (call) => this.stopOnLeadRejection(leadName, call),
       onUsageUpdate: (usage) => {
         const totals = applyAttemptUsage(leadAgent, {
           totalInputTokens: usage.inputTokens,
@@ -667,6 +701,7 @@ export class TeamRunner {
         cacheReadTokens: result.cacheReadTokens,
         cacheCreationTokens: result.cacheCreationTokens,
         costUsd: result.costUsd,
+        ...this.stopReasonField(leadName),
         timestamp: completedAt.toISOString(),
       });
       settledAs = effectiveStatus;
@@ -698,6 +733,13 @@ export class TeamRunner {
         this.synthesizeResult(this.buildPartialResults());
       }
     });
+  }
+
+  /** A lead run pi ended on a rejected call stops the team as the user's Stop does, unless a stop, a failure or the synthesis came first. */
+  private stopOnLeadRejection(leadName: string, call: TerminatedCall): void {
+    if (this.completionResolved) return;
+    this.rejections.set(leadName, call);
+    this.cancel(stopReasonOf(call));
   }
 
   /**
@@ -791,6 +833,7 @@ export class TeamRunner {
         status: agent.status,
         attempt: agent.attempt,
         stopwatch: stopwatchOf(agent),
+        stopReason: this.stopReasonField(agent.name).stopReason ?? null,
       }));
 
       // Before the persistence flush, which reports the writer's failures.
@@ -811,7 +854,10 @@ export class TeamRunner {
         run: endedRun,
       });
 
-      if (this.cancelledBy !== null) return { status: 'cancelled', text: synthesizedResult, stop: this.cancelledBy, resumable };
+      if (this.cancelledBy !== null) {
+        const rejectedTool = isRejectionStop(this.cancelledBy) ? this.rejections.get(this.findLeadName() ?? '')?.toolName : undefined;
+        return { status: 'cancelled', text: synthesizedResult, stop: this.cancelledBy, resumable, ...(rejectedTool !== undefined ? { rejectedTool } : {}) };
+      }
       if (this.leadFailure !== null) return { status: 'failed', text: synthesizedResult, failure: this.leadFailure, resumable };
       return { status: 'completed', text: synthesizedResult };
     } finally {
@@ -1033,7 +1079,7 @@ export class TeamRunner {
       role: 'specialist',
       initial: launch.kind === 'fresh' ? { kind: 'prompt', text: launch.prompt } : launch.initial,
       redeliver: launch.redeliver,
-      createSession: () => this.createMemberSession(agent, attempt, task, launch, specialistAbort.signal, (store, resolution) => {
+      createSession: () => this.createMemberSession(agent, attempt, task, launch, specialistAbort.signal, (store, resolution, signal) => {
         // ONE toolset call per spawn, inside this per-spawn arrow — see the lead spawn site above for
         // why both properties (single read, live-at-spawn) are load-bearing.
         const { toolNames, customTools, mcp, readOnly } = this.config.engine.buildAgentToolset(specialistCtx);
@@ -1049,6 +1095,7 @@ export class TeamRunner {
           excludeTools: ['edit'],
           extensionFactory: this.config.engine.buildExtensionFactory(specialistCtx, mcp, readOnly),
           store,
+          signal,
         });
       }),
       forgetSession: (session) => this.forgetMemberSession(session),
@@ -1064,6 +1111,7 @@ export class TeamRunner {
       getReportedSummary: () => this.reportedSummaries.get(name) ?? null,
       keepAlive: () => {
         if (this.completionResolved) return false;
+        if (this.parkedOnRejection(name)) return true;
         if (this.pendingStandby.has(name)) return true;
         if (this.owedTerminalAction.has(name)) return true;
         if (this.confirmedComplete.has(name)) {
@@ -1074,7 +1122,15 @@ export class TeamRunner {
       },
       shouldDeliverMessage: (msg) => this.specialistShouldDeliver(name, msg),
       onTurnEnd: () => {
-        if (this.confirmedComplete.has(name) && agent.status !== 'awaiting-review') {
+        const rejected = this.rejections.get(name);
+        if (rejected && this.parkedOnRejection(name)) {
+          if (agent.status === 'standby') return;
+          agent.status = 'standby';
+          this.onMessage({ type: 'teamAgentStatusUpdate', teamId: this.config.teamId, agentId: agent.agentId, status: 'standby', stopReason: stopReasonOf(rejected) });
+          // A parked specialist counts as settled for the round, and it can no longer wake a standby peer.
+          this.notifyLeadIfReviewRoundReady();
+          this.resolveStrandedStandbys();
+        } else if (this.confirmedComplete.has(name) && agent.status !== 'awaiting-review') {
           agent.status = 'awaiting-review';
           const rounds = this.specialistReviewRounds.get(name) ?? 0;
           this.onMessage({
@@ -1108,17 +1164,26 @@ export class TeamRunner {
         // here: the deferred nudge is what woke the agent, so clearing terminalNudgeDelivered would let
         // the classifier re-nudge on the next bare end forever instead of converting.
         this.owedTerminalAction.delete(name);
+        const wasParked = this.rejections.delete(name);
         agent.status = 'running';
         this.onMessage({
           type: 'teamAgentStatusUpdate',
           teamId: this.config.teamId,
           agentId: agent.agentId,
           status: 'running',
+          ...(wasParked ? { stopReason: null } : {}),
         });
       },
       onToolCall: (_toolName, count) => {
         agent.toolCallCount = agent.carriedToolCallCount + count;
         this.currentRun.toolCount++;
+      },
+      onRunRejected: (call) => {
+        if (this.completionResolved) return;
+        // Set before the note, so the lead's keepAlive already counts it parked when the note wakes the lead.
+        this.rejections.set(name, call);
+        const leadName = this.findLeadName();
+        if (leadName) this.messageBus.send('system', leadName, specialistRejectionNote(name, call));
       },
       onUsageUpdate: (usage) => {
         const totals = applyAttemptUsage(agent, {
@@ -1142,10 +1207,12 @@ export class TeamRunner {
     let settledAs: AgentResult['status'] | null = null;
     promise.then((result) => {
       const wasApproved = this.reviewedSpecialists.has(name);
-      // Only a team that completed turns the abort that released its member into a completion; a stop or a lead failure does not.
+      // Only a team that completed turns the abort that released its member into a completion; a stop, a lead failure or
+      // a rejection the member was parked on does not.
       const effectiveStatus = result.status === 'cancelled'
         && (this.completionResolved || wasApproved)
         && this.status === 'running'
+        && !this.rejections.has(name)
         ? 'completed'
         : result.status;
       agent.status = effectiveStatus;
@@ -1177,6 +1244,7 @@ export class TeamRunner {
         cacheReadTokens: result.cacheReadTokens,
         cacheCreationTokens: result.cacheCreationTokens,
         costUsd: result.costUsd,
+        ...this.stopReasonField(name),
         timestamp: completedAt.toISOString(),
       });
       settledAs = effectiveStatus;
@@ -1230,7 +1298,7 @@ export class TeamRunner {
   }
 
   /** A specialist's delivery policy, read live at each delivery and by a resume's replay of the log tail. */
-  private specialistShouldDeliver(name: string, msg: { to: string | null; kind?: TeamMessage['kind'] }): boolean {
+  private specialistShouldDeliver(name: string, msg: { from: string; to: string | null; kind?: TeamMessage['kind'] }): boolean {
     if (this.confirmedComplete.has(name) && msg.to === null) {
       return false;
     }
@@ -1247,6 +1315,9 @@ export class TeamRunner {
     if (msg.kind === 'scratchpad-notice' && !this.pendingStandby.has(name)) {
       return false;
     }
+    // Parked on a rejection, it waits for the lead's own message; a notice the lead's write raised is not one, and a
+    // peer's message stays in its inbox for team_read_messages.
+    if (this.parkedOnRejection(name)) return msg.kind === undefined && msg.from === this.findLeadName();
     return true;
   }
 
@@ -1395,6 +1466,7 @@ export class TeamRunner {
     this.terminalNudgeDelivered.delete(name);
     this.cancelAttempts.delete(name);
     this.cancellationTimestamps.delete(name);
+    this.rejections.delete(name);
     // Scratchpad read state is keyed by name as well, and the new attempt has seen none of it.
     this.scratchpad.clearReader(name);
   }
@@ -1448,7 +1520,12 @@ export class TeamRunner {
     this.closeReviewRoundNotification();
 
     for (const agent of this.agents.values()) {
-      if (agent.status === 'awaiting-review' || agent.status === 'standby') {
+      const rejected = this.rejections.get(agent.name);
+      if (rejected && this.parkedOnRejection(agent.name)) {
+        agent.status = 'cancelled';
+        this.onMessage({ type: 'teamAgentStatusUpdate', teamId: this.config.teamId, agentId: agent.agentId, status: 'cancelled', stopReason: stopReasonOf(rejected) });
+        this.specialistAborts.get(agent.name)?.abort();
+      } else if (agent.status === 'awaiting-review' || agent.status === 'standby') {
         agent.status = 'completed';
         this.onMessage({
           type: 'teamAgentStatusUpdate',
@@ -1517,6 +1594,8 @@ export class TeamRunner {
     this.terminalNudgeDelivered.delete(name);
     this.reviewedSpecialists.delete(name);
     this.coverage.clearReReview(name);
+    // The lead's cancel is the member's stop, not the rejection it was parked on.
+    this.rejections.delete(name);
     this.cancellationTimestamps.set(name, Date.now());
     const abort = this.specialistAborts.get(name);
     if (abort) {
@@ -1652,7 +1731,25 @@ export class TeamRunner {
       return agent.status;
     },
     staleReads: (reviewer, implementor) => this.scratchpad.getStaleSectionsFor(reviewer, implementor),
+    waitingForLead: (name) => this.parkedOnRejection(name),
   };
+
+  /** A live specialist whose latest run pi ended on a rejected call, waiting for the lead. */
+  private parkedOnRejection(name: string): boolean {
+    const agent = this.agents.get(name);
+    return agent !== undefined && agent.role === 'specialist' && this.rejections.has(name) && !isSpecialistFinal(agent.status);
+  }
+
+  /** Settled for the review round: no run of it will report before the lead acts. */
+  private settledForReview(agent: TeamAgent): boolean {
+    return isSpecialistSettled(agent.status) || this.parkedOnRejection(agent.name);
+  }
+
+  /** The `stopReason` a member's settle records when its latest run ended on a rejected call. */
+  private stopReasonField(name: string): { stopReason?: TeamStopReason } {
+    const rejected = this.rejections.get(name);
+    return rejected ? { stopReason: stopReasonOf(rejected) } : {};
+  }
 
   private reviewRoster(): RosterMember[] {
     return [...this.agents.values()].map((a) => ({ name: a.name, role: a.role, kind: this.specialistKinds.get(a.name) ?? null }));
@@ -1674,7 +1771,8 @@ export class TeamRunner {
   private requestReReview(reviewer: string, implementor: string, stamp: ReviewStamp): void {
     const agent = this.agents.get(reviewer)!;
     // A run holds its note sink exactly while it is subscribed to the bus, so a run in its settle gap gets nothing and owes nothing.
-    if (this.completionResolved || !this.noteSinks.has(agent.agentId) || this.specialistAborts.get(reviewer)?.signal.aborted) return;
+    // A reviewer parked on a rejection waits for the lead, whose move the coverage rules name.
+    if (this.completionResolved || !this.noteSinks.has(agent.agentId) || this.specialistAborts.get(reviewer)?.signal.aborted || this.parkedOnRejection(reviewer)) return;
     this.confirmedComplete.delete(reviewer);
     this.reportedSummaries.delete(reviewer);
     this.pendingStandby.delete(reviewer);
@@ -1815,7 +1913,7 @@ export class TeamRunner {
     const dispatched = [...this.agents.values()]
       .filter(a => a.role === 'specialist' && a.status !== 'pending');
     if (dispatched.length === 0) return false;
-    const allSettled = dispatched.every(a => isSpecialistSettled(a.status));
+    const allSettled = dispatched.every(a => this.settledForReview(a));
     if (!allSettled) return false;
     return dispatched.some(a =>
       a.status === 'awaiting-review'
@@ -1828,10 +1926,7 @@ export class TeamRunner {
     return [...this.agents.values()]
       .filter(a => a.role === 'specialist'
         && a.status !== 'pending'
-        && a.status !== 'awaiting-review'
-        && a.status !== 'completed'
-        && a.status !== 'cancelled'
-        && a.status !== 'failed')
+        && !this.settledForReview(a))
       .map(a => ({ name: a.name, status: a.status, toolCallCount: a.toolCallCount }));
   }
 
@@ -1841,7 +1936,7 @@ export class TeamRunner {
     // Every path that means "no round is open right now" also closes the suppression window, so a later
     // round always earns a fresh notification even if it renders the same text as a previous one.
     if (dispatched.length === 0) return this.closeReviewRoundNotification();
-    const allSettled = dispatched.every(a => isSpecialistSettled(a.status));
+    const allSettled = dispatched.every(a => this.settledForReview(a));
     if (!allSettled) return this.closeReviewRoundNotification();
 
     const unreviewed = dispatched
@@ -2128,7 +2223,7 @@ export class TeamRunner {
       this.cancelledBy = stop;
       // A reload can kill the drain before `team-completed`, and then this is the run's only record of its work.
       const run = this.runTotals(this.runSummary());
-      this.appendEntry({ type: 'team-cancelled', teamId: this.config.teamId, run, timestamp: new Date().toISOString() });
+      this.appendEntry({ type: 'team-cancelled', teamId: this.config.teamId, run, ...(isRejectionStop(stop) ? { stopReason: stop } : {}), timestamp: new Date().toISOString() });
     }
     this.teamAbort.abort();
     if (unfinished) {
@@ -2238,6 +2333,7 @@ export class TeamRunner {
         leadReviewStalls: this.leadReviewStalls,
         lastReviewRoundNotification: this.lastReviewRoundNotification,
         coverage: this.coverage.serialize(),
+        rejectedCalls: [...this.rejections].map(([name, call]) => [name, { ...call }]),
       },
       operatorSteers: this.operatorSteers.map((s) => ({ ...s })),
     };
@@ -2351,6 +2447,7 @@ export class TeamRunner {
     this.conflictNudges = review.conflictNudges;
     this.leadReviewStalls = review.leadReviewStalls;
     this.lastReviewRoundNotification = review.lastReviewRoundNotification;
+    this.rejections = new Map(review.rejectedCalls ?? []);
     for (const name of respawned) this.clearAttemptReview(name);
     if (review.coverage) this.coverage.restore(review.coverage);
     else this.landSettledWork();
@@ -2514,6 +2611,8 @@ export class TeamRunner {
       if (!plan) continue;
       const isLead = agent.role === 'lead';
       const redeliver = this.restoredUndelivered.get(agent.name) ?? [];
+      // A member parked on a rejection still holds what it held behind it, so only a later message wakes it.
+      const heldBehind = plan.mode === 'park' && this.rejections.has(agent.name) ? leadingHeld(redeliver) : 0;
       const segment: AgentSegmentData = { toolCallId, ...(isLead && message !== undefined ? { message } : {}) };
       let launch: MemberLaunch;
       if (plan.mode === 'restart') {
@@ -2521,24 +2620,29 @@ export class TeamRunner {
         const prompt = isLead ? withResumeNote(task, message) : task;
         launch = { kind: 'fresh', resolution: plan.resolution, prompt, redeliver };
       } else if (plan.mode === 'relaunch') {
+        const leadRejected = isLead ? this.rejections.get(agent.name) : undefined;
         const prompt = !isLead ? buildResumePrompt()
           : this.restoredInterrupted ? buildInterruptedResumePrompt(message)
             : this.restoredLeadFailure !== null ? buildFailedResumePrompt(message)
-              : buildResumePrompt(message);
+              : leadRejected ? buildRejectedResumePrompt(leadRejected.cause, message)
+                : buildResumePrompt(message);
         const initial: AgentStart = { kind: 'prompt', text: prompt };
         launch = { kind: 'reopen', path: plan.path, segment, initial, redeliver };
       } else {
-        launch = { kind: 'reopen', path: plan.path, segment, initial: { kind: 'park' }, redeliver };
+        const initial: AgentStart = { kind: 'park', ...(heldBehind > 0 ? { heldBehind } : {}) };
+        launch = { kind: 'reopen', path: plan.path, segment, initial, redeliver };
       }
 
       if (plan.mode !== 'park') {
         agent.status = 'running';
         // A relaunched turn settles its terminal contract afresh at its own end.
         this.owedTerminalAction.delete(agent.name);
-      } else if (redeliver.length > 0) {
+        this.rejections.delete(agent.name);
+      } else if (redeliver.length > heldBehind) {
         // The run wakes on these at once, the way a live delivery would have woken it.
         this.pendingStandby.delete(agent.name);
         this.owedTerminalAction.delete(agent.name);
+        this.rejections.delete(agent.name);
         agent.status = 'running';
       }
       // The stopped run's result ends with it: a launched member is live again, and only a settle records a result.
@@ -2556,6 +2660,7 @@ export class TeamRunner {
         resumeCount,
         mode: plan.mode,
         status: agent.status,
+        ...this.stopReasonField(agent.name),
         timestamp: resumedEntryAt.toISOString(),
       });
       launches.push({ agent, launch });
@@ -2605,7 +2710,7 @@ export class TeamRunner {
     task: string,
     member: MemberLaunch,
     stop: AbortSignal,
-    create: (store: TeamSessionOptions['store'], resolution: ResolvedTeamModel | null) => Promise<AgentSession>,
+    create: (store: TeamSessionOptions['store'], resolution: ResolvedTeamModel | null, signal: AbortSignal) => Promise<AgentSession>,
   ): Promise<AgentSession> {
     const store: AgentFileStore = member.kind === 'fresh' ? this.freshMemberStore(agent, attempt) : { kind: 'reopen', path: member.path, agentId: agent.agentId };
     const owner = takeAgentFile(store) ?? await waitForAgentFile(store, {
@@ -2614,7 +2719,7 @@ export class TeamRunner {
     });
     let session: AgentSession;
     try {
-      session = await create(store, member.kind === 'fresh' ? member.resolution : null);
+      session = await create(store, member.kind === 'fresh' ? member.resolution : null, stop);
     } catch (err) {
       owner.release();
       throw err;
@@ -2852,7 +2957,8 @@ export class TeamRunner {
     // A cancel builds this before its aborted members settle, so a report is read from where it was filed.
     for (const agent of this.agents.values()) {
       if (agent.status === 'pending') continue;
-      const outcome = agent.finalResponse ?? this.reportedSummaries.get(agent.name) ?? 'Stopped before reporting.';
+      const rejected = this.rejections.get(agent.name);
+      const outcome = agent.finalResponse ?? this.reportedSummaries.get(agent.name) ?? (rejected ? rejectionOutcome(rejected) : 'Stopped before reporting.');
       parts.push(`### ${agent.name} (${agent.role}, ${agent.status})\n${outcome}\n`);
     }
 
@@ -2924,6 +3030,8 @@ export class TeamRunner {
       ...(status === 'completed' ? { progressSummary: `Completed (${completionTally(agent)})` } : {}),
       stopwatch: stopwatchOf(agent),
       result: agent.result,
+      // Null rather than absent: the card may still hold the park a cancel ended.
+      stopReason: this.stopReasonField(agent.name).stopReason ?? null,
     });
   }
 
@@ -2961,6 +3069,7 @@ export class TeamRunner {
       progressSummary: null,
       result: a.result,
       logFilePath: a.logFilePath,
+      ...this.stopReasonField(a.name),
     }));
 
     return {
@@ -2999,6 +3108,7 @@ export class TeamRunner {
       endTime: null,
       toolCount: this.currentRun.toolCount,
       usage: subtractAgentUsage(this.teamUsage(), this.currentRun.baseUsage),
+      ...(isRejectionStop(this.cancelledBy) ? { stopReason: this.cancelledBy } : {}),
     };
   }
 

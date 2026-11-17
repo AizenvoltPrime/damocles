@@ -426,6 +426,11 @@ export class WorktreeController {
     // Left without its .git link by a remove git could not finish: a Retry of that confirmed Delete removes what is left with
     // the user's branch choice; any other Delete asks before the folder and everything in it go.
     const state = await this.deps.engine.folderState(record.id);
+    // its work may still be re-linked once the repository is back, so nothing is asked or removed
+    if (state === 'unreachable') {
+      void this.deps.notify.warn(t('The repository {0} of this worktree is not available, so the worktree was not deleted. Reconnect its drive or locate the project first.', visibleText(record.repositoryRoot)));
+      return;
+    }
     if (state === 'gone' || (state === 'leftover' && retried)) {
       await this.closeAndRemove(record, retried?.deleteBranch ?? false, false);
       return;

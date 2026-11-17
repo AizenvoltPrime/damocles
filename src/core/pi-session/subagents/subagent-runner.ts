@@ -12,7 +12,9 @@
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { abortRunAtStart } from '../abort-run-at-start';
 import { runLifecycleOf } from '../run-lifecycle';
+import { promptRefusable, RunRefused } from '../run-refusal';
 import { nestedCallError } from '../nested-call-failures';
+import { rejectionEndingRun, takeTerminatedCalls, type TerminatedCall } from '../terminated-calls';
 
 /** Info about a tool event in the subagent (drives the parent card's tool-use count). */
 export interface ToolActivity {
@@ -47,6 +49,8 @@ export interface RunResult {
   steered: boolean;
   /** The error the run's last model call ended on, as the parent model reads it (`nestedCallError`); pi has finished retrying it by then. */
   error?: string;
+  /** The rejected call pi ended the run after (`rejectionEndingRun`). */
+  rejected?: TerminatedCall;
 }
 
 const DEFAULT_GRACE_TURNS = 5;
@@ -90,7 +94,10 @@ function getLastAssistantText(session: AgentSession, from: number): string {
   return '';
 }
 
-/** Wire an AbortSignal to abort a session: the run open now, and one pi still prepares at its start. Returns a cleanup function. */
+/**
+ * Wire an AbortSignal to abort a session: the run open now, and one pi still prepares or opens later that the task's prompt
+ * did not open, such as a user's pi extension's, even once the session is let go of. Returns a cleanup function.
+ */
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
   if (!signal) return () => {};
   const onAbort = (): void => {
@@ -104,7 +111,7 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
   return () => signal.removeEventListener('abort', onAbort);
 }
 
-/** Run a subagent session to completion. An abort before the task reaches pi skips the prompt entirely. */
+/** Run a subagent session to completion. An abort before pi opens the task's run skips the task entirely. */
 export async function runSubagent(options: RunSubagentOptions): Promise<RunResult> {
   const session = await options.createSession();
   options.onSessionCreated(session);
@@ -147,6 +154,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
   const cleanupAbort = forwardAbortSignal(session, options.signal);
   let runStart = session.messages.length;
   let prompted = false;
+  let terminated: TerminatedCall[] = [];
 
   try {
     // The task opens a run of its own once pi has none open, and joins as a follow-up a run another prompt opens meanwhile.
@@ -155,7 +163,14 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
       prompted = true;
       runStart = session.messages.length;
       options.onPrompted?.();
-      await session.prompt(options.prompt, { streamingBehavior: 'followUp' });
+      const ran = await promptRefusable(session, options.prompt, {
+        streamingBehavior: 'followUp',
+        // A stop while pi's input handlers hold the task refuses its run, so nothing of the task is written.
+        preflightResult: (disposition) => {
+          if (disposition === 'started' && options.signal?.aborted) throw new RunRefused();
+        },
+      });
+      prompted = ran;
       await run.untilIdle(options.signal);
     }
   } finally {
@@ -164,13 +179,22 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
     unsub();
     collector.unsubscribe();
     cleanupAbort();
+    terminated = takeTerminatedCalls(session.sessionId);
   }
   if (!prompted) return { responseText: '', session, aborted: false, steered: false };
 
   const responseText = collector.getText().trim() || getLastAssistantText(session, runStart);
+  const rejected = rejectionEndingRun(session.messages, terminated);
   // A hard abort after the grace window sets both flags; report only `aborted` so the pair can't
   // contradict (the soft-limit steer is subsumed by the abort).
-  return { responseText, session, aborted, steered: softLimitReached && !aborted, ...(error !== undefined ? { error } : {}) };
+  return {
+    responseText,
+    session,
+    aborted,
+    steered: softLimitReached && !aborted,
+    ...(error !== undefined ? { error } : {}),
+    ...(rejected ? { rejected } : {}),
+  };
 }
 
 /** Send a steering message to a running subagent. */

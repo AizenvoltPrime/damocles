@@ -12,6 +12,7 @@ import { readSessionLeaseOwner } from "../../../pi-session/session-store/session
 import { isUuid } from "../../../../shared/uuid";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import type { ResumeBinding } from "../../panel-worktrees";
+import { sameFolderRole } from "../../../workspace-folders/folder-registry";
 import { resumeStoredSession } from "./resume-session";
 import { postVoiceRuntimeStatus } from "./voice-stream-handlers";
 
@@ -65,7 +66,14 @@ export async function replayLiveConversation(deps: HandlerDependencies, panelId:
     // No runtime holds a conversation: the stored one replays from its file, as a restore that has not started does.
     const stored = live ? null : session.storedSessionId;
     if (stored !== null) {
-      const rewindable = await historyManager.loadSessionHistory(folder.fsPath, stored, reply, session);
+      let rewindable: string[] | null;
+      try {
+        rewindable = await historyManager.loadSessionHistory(folder.fsPath, stored, reply, session);
+      } catch (err) {
+        // A newer replay took the view before this one read the file, and it posts its own.
+        if (err instanceof Error && err.name === "AbortError") return;
+        throw err;
+      }
       deps.postMessage(reply, { type: "sessionStarted", sessionId: stored, stored: rewindable !== null });
     }
   } finally {
@@ -296,9 +304,13 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             ?? listedFolder
             ?? (savedFolderKey !== undefined ? deps.folderRegistry.targets().find((t) => t.key === savedFolderKey) : undefined)
             ?? ctx.folder;
+          // A conversation no open project lists restores only from the session directory of the folder the panel opens on, never as another folder's copy.
+          const otherFoldersCopy = savedSessionId && !heldHere && !leaseRefusal && !listedFolder
+            ? (await storageManager.storedFileFrom(target.fsPath, savedSessionId)) === "other"
+            : false;
           // A restored panel whose conversation another panel already holds opens empty instead.
           const resumeSaved = async (instance: Pick<HostInstance, "host" | "session" | "folder">): Promise<boolean> => {
-            if (!savedSessionId || leaseRefusal) return false;
+            if (!savedSessionId || leaseRefusal || otherFoldersCopy) return false;
             if (claimStoredSession(deps.platform.notifications, deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId)) return false;
             // A panel pi holds another conversation in shows this one only once pi switched to it, and opens fresh when it cannot.
             const outcome = await timed("ready.open", () => instance.session.openResumeTarget(savedSessionId));
@@ -327,11 +339,11 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
           };
 
           let route: "switch" | "restore" | "fresh";
-          const switching = target.key !== ctx.folder.key;
+          const switching = !sameFolderRole(target, ctx.folder);
           if (switching) {
             // Claimed inside the switch, so a message the webview sent meanwhile reaches the restored session.
             let resumed = false;
-            await deps.switchPanelFolder(ctx.panelId, target.key, "restore", async (instance) => { resumed = await resumeSaved(instance); });
+            await deps.switchPanelFolder(ctx.panelId, target, "restore", async (instance) => { resumed = await resumeSaved(instance); });
             route = resumed ? "switch" : "fresh";
           } else {
             // A status posted before `ready` never reached the webview; a switch posts its target folder's status itself.

@@ -32,7 +32,7 @@ export const DEFAULT_FALLBACK_MODEL = "claude-opus-5-5";
  * on an install that is offline or has not refreshed yet. Without this, resolution walks
  * {@link DEFAULT_MODELS} from the top — which is ordered by capability, not price — and silently seats
  * the user on a costlier model than they asked for: an Anthropic user who cannot reach Opus 5.5 would
- * land on Fable 5.1 at $10/$50 rather than Sonnet 5.5 at $2/$10. Every substitute must itself be a
+ * land on Fable 5.2 at $8/$40 rather than Sonnet 5.5 at $2/$10. Every substitute must itself be a
  * {@link DEFAULT_MODELS} entry; `pi-session.ts` only tries substitutes that pass `isCurated`.
  */
 export const MODEL_SUBSTITUTES: Readonly<Record<string, readonly string[]>> = {
@@ -41,8 +41,8 @@ export const MODEL_SUBSTITUTES: Readonly<Record<string, readonly string[]>> = {
 
 export const DEFAULT_MODELS: ModelInfo[] = [
   {
-    value: "claude-fable-5-1",
-    displayName: "Fable 5.1",
+    value: "claude-fable-5-2",
+    displayName: "Fable 5.2",
     description: "Anthropic's most capable model for the most demanding work",
     contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
@@ -110,6 +110,18 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     openaiModelId: "gpt-6.1-sol",
     thinkingAlwaysOn: true,
     knowledgeCutoff: "April 2026",
+  },
+  {
+    value: "gpt-6.1-terra",
+    displayName: "GPT-6.1 Terra",
+    description: "Fast GPT-6.1 model for visual reasoning and computer use",
+    contextWindow: 272_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    backend: "openai",
+    openaiModelId: "gpt-6.1-terra",
+    knowledgeCutoff: "June 2026",
   },
   {
     value: "gpt-6-luna",
@@ -344,9 +356,11 @@ export const LEGACY_MODEL_MAP: Record<string, string> = {
   'gpt-5.4-mini': 'gpt-6-luna',
   'gpt-5.2': 'gpt-6-luna',
   'gpt-5.6-sol': 'gpt-6.1-sol',
+  'gpt-5.6-terra': 'gpt-6.1-terra',
   'gpt-5.6-luna': 'gpt-6-luna',
   'gpt-6-sol': 'gpt-6.1-sol',
-  'claude-fable-5': 'claude-fable-5-1',
+  'claude-fable-5': 'claude-fable-5-2',
+  'claude-fable-5-1': 'claude-fable-5-2',
   'claude-opus-5': 'claude-opus-5-5',
   'claude-opus-4-8': 'claude-opus-5-5',
   'claude-sonnet-5': 'claude-sonnet-5-5',
@@ -403,10 +417,11 @@ export function parseEffortLevel(value: string): EffortLevel | null {
  *  derived from this tuple, so the union and the runtime list cannot drift. */
 export const CACHE_WARMING_MODES: readonly ['off', 'streaming', 'idle'] = ['off', 'streaming', 'idle'];
 
-/** pi coerces any out-of-enum cache-warming mode to `"streaming"`, so every extension-side fallback must
- *  be this value or the seed file on disk disagrees with what pi does. The package.json contribution
- *  default is the one copy outside TypeScript, pinned by cache-warming.test.ts. */
-export const DEFAULT_CACHE_WARMING: CacheWarmingMode = 'streaming';
+/** pi coerces any out-of-enum cache-warming mode to its default, `"idle"` (pi-coding-agent 1.5.2
+ *  settings-defaults.js:60, read by settings-manager.js:727), so every extension-side fallback must be this value or
+ *  the seed file on disk disagrees with what pi does. The package.json contribution default is the one copy outside
+ *  TypeScript, pinned by cache-warming.test.ts. */
+export const DEFAULT_CACHE_WARMING: CacheWarmingMode = 'idle';
 
 /** Validate an arbitrary stored or posted value as a `CacheWarmingMode`, falling back to the default.
  *  Replaces unchecked `as CacheWarmingMode` casts on config reads and webview input. */

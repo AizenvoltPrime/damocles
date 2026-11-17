@@ -62,6 +62,7 @@ import type { AgentManager } from '../subagents/agent-manager';
 import { identityFolder } from '../../worktrees/personal-config';
 import { createMcpResourceTools } from './mcp-resource-tools';
 import type { McpToolSource } from '../mcp/tool-source';
+import type { McpModule } from '../mcp/mcp-client-loader';
 
 /**
  * The inputs `buildCustomTools` needs. Note what is NOT here: MCP tool definitions. A nested agent's
@@ -77,6 +78,8 @@ export interface CustomToolDeps {
   permissionHandler: PermissionHandler;
   /** Required, with no default: a missing one would silently drop the user's configured shell. */
   getShellOptions: () => ShellOptions;
+  /** The hosts of the chat's folders the permission gate allows (`ChatMachine.allowedNetworkHosts`), which Ls follows a link onto and a search's walk a `.git` file's pointer. */
+  allowedNetworkHosts: () => Promise<ReadonlySet<string>>;
   /** Each shell call's git credential takeover, registered before its shell starts. */
   shellCredentials?: ShellCredentials;
   /** The session-lived store holding the per-call abort controllers of the shell calls the UI can stop. */
@@ -137,6 +140,7 @@ export interface CustomToolDeps {
    * nested agent's resource tools come from its frozen `NestedMcpToolset`.
    */
   mcpResources?: {
+    mcp: McpModule;
     source: () => McpToolSource | null;
     disabledResource: () => (server: string, uri: string) => boolean;
   };
@@ -220,7 +224,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * file reads take the file's mutation queue slot.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, browserServedFiles, getSessionId, getPlanFilePath, subagentManager, userInput, teamService, imageGeneration, isTeamEnabled, mcpResources, design, nested } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, allowedNetworkHosts, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, browserServedFiles, getSessionId, getPlanFilePath, subagentManager, userInput, teamService, imageGeneration, isTeamEnabled, mcpResources, design, nested } = deps;
   const nestedDesign = nested?.design;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
@@ -232,10 +236,10 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     LIVE_OUTPUT_TOOLS.has(mapPiToolName(tool.name)) ? withPerCallCancel(tool, cancelRegistry) : tool;
   const tools: ToolDefinition[] = [
     createBashTool(pi, cwd, { getShellOptions, shellJob, ...(deps.shellCredentials ? { shellCredentials: deps.shellCredentials } : {}) }),
-    createGrepTool(pi, cwd, rgPath, readRuleFilter),
-    createFindTool(pi, cwd, rgPath, readRuleFilter),
+    createGrepTool(pi, cwd, rgPath, readRuleFilter, allowedNetworkHosts),
+    createFindTool(pi, cwd, readRuleFilter, allowedNetworkHosts),
     createWriteTool(pi, cwd),
-    createLsTool(pi, cwd),
+    createLsTool(pi, cwd, allowedNetworkHosts),
     createReadTool(pi, cwd),
     createEditTool(pi, cwd),
     createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env, deps.shellCredentials),
@@ -301,6 +305,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   // Built while inert, like the web tools: whether they are active follows the resource servers.
   if (mcpResources) {
     tools.push(...createMcpResourceTools({
+      mcp: mcpResources.mcp,
       source: mcpResources.source,
       disabledResource: mcpResources.disabledResource,
       ruleFilter: (toolName) => permissionHandler.mcpResourceRuleFilter(toolName),

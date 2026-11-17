@@ -884,7 +884,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                   class="size-5"
                 />
                 <CircleAlert
-                  v-else-if="preview.status === 'notFound'"
+                  v-else-if="preview.status === 'notFound' || preview.status === 'removed'"
                   aria-hidden="true"
                   class="size-5"
                 />

@@ -27,6 +27,16 @@ export interface OfflineTranscriptsDeps<V extends TranscriptView> {
 }
 
 /**
+ * The mirrored copy of a chat to show. A chat worktree's session folder is mirrored under its project and as a project of its
+ * own, so the project whose offline list holds the chat takes it (docs/invariants.md "Worktree chats", Ownership); with no
+ * list holding it, the first copy.
+ */
+export async function mirroredCopy<C extends { readonly projectKey: string }>(copies: readonly C[], listed: (projectKey: string) => Promise<boolean>): Promise<C | undefined> {
+  if (copies.length > 1) for (const copy of copies) if (await listed(copy.projectKey)) return copy;
+  return copies[0];
+}
+
+/**
  * The read-only transcripts of remote chats whose host is not connected: one view per saved chat a launch could not reopen
  * whose session the mirror holds, the saved selection's shown, and one per chat opened from the offline chat list. The host's
  * connect closes them all, and a selected saved chat names the live chat to select once it reopens.

@@ -8,12 +8,14 @@ vi.mock('../../core/chat-panel', () => ({
   ChatPanelProvider: class {
     getVoiceService(): unknown { return {}; }
     getPanelManager(): unknown { return { onAllPanelsClosed: () => undefined }; }
+    getProjectRelocations(): unknown { return {}; }
     dispose(): Promise<void> { return Promise.resolve(); }
   },
   flushCoreWrites: () => Promise.resolve(),
 }));
 vi.mock('../platform', () => ({ createVsCodePlatform: () => host.platform }));
 vi.mock('../panels/sidebar-view-provider', () => ({ SidebarViewProvider: class {} }));
+vi.mock('../relocation-offer', () => ({ registerRelocationOffer: () => undefined }));
 vi.mock('../voice/status-bar', () => ({ createVoiceStatusBarItem: () => ({ dispose: () => undefined }) }));
 vi.mock('../../core/voice/auto-disable', () => ({ setupAutoDisable: () => undefined }));
 vi.mock('vscode', async (importOriginal) => {

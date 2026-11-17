@@ -368,7 +368,7 @@ export async function discardChatWorktree(runner: GitRunner, registry: WorktreeR
   const removed = await git.run(record.projectPath, ['worktree', 'remove', '--force', ...git.eoo(), record.worktreeRoot], { kind: 'mutation', allowFailure: true });
   if (removed.exitCode !== 0) throw new Error(`Could not remove the worktree ${record.worktreeRoot}: ${removed.stderr.trim() || `git worktree remove exited with ${removed.exitCode}`}`);
   await registry.remove(record.id);
-  await registry.removeEmptyProjectFolder(record.projectPath).catch((err: unknown) => log(`[worktrees] Could not remove the empty folder of ${record.worktreeRoot}: ${gitMessage(err)}`));
+  await registry.removeEmptyProjectFolder(record).catch((err: unknown) => log(`[worktrees] Could not remove the empty folder of ${record.worktreeRoot}: ${gitMessage(err)}`));
   // Not `branch -D`, which rewrites the project's .git/config even when the branch has no section there, and on Windows a git
   // reading the config meanwhile (source control's reads of the open project) fails. `-b` from a commit writes no section.
   const ref = `refs/heads/${revision(record.branch)}`;

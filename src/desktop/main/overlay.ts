@@ -82,6 +82,7 @@ import {
   type GitCredentialConsentChoice,
   MAX_DEVICE_NAME_LENGTH,
   MAX_HOST_DEVICES,
+  MAX_CLOSE_KEY_PROVIDERS,
   type CloseRemoteChoice,
   type CloseRemoteRow,
   type WorktreeDialog,
@@ -1025,9 +1026,12 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
 // A token note's minutes: an OAuth access token lives hours, never a day.
 const MAX_TOKEN_MINUTES = 24 * 60;
 
+const isProviderId = (value: unknown): value is string => typeof value === 'string' && PROVIDER_ID_PATTERN.test(value);
+
 function isCloseRemoteRow(raw: unknown): raw is CloseRemoteRow {
   if (!isRecord(raw)) return false;
   const note = field(raw, 'tokenNote');
+  const keyProviders = field(raw, 'keyProviders');
   const linger = field(raw, 'lingerWarning');
   return isNonEmptyText(field(raw, 'hostId'), MAX_OVERLAY_ID_LENGTH)
     && isNonEmptyText(field(raw, 'panelId'), MAX_OVERLAY_ID_LENGTH)
@@ -1035,8 +1039,9 @@ function isCloseRemoteRow(raw: unknown): raw is CloseRemoteRow {
     && isNonEmptyText(field(raw, 'projectLabel'), MAX_OVERLAY_LABEL_LENGTH)
     && isNonEmptyText(field(raw, 'hostLabel'), MAX_HOST_NAME_LENGTH * 2)
     && (CLOSE_REMOTE_STATUSES as readonly unknown[]).includes(field(raw, 'status'))
-    && (note === undefined || (isRecord(note) && Object.keys(note).length === 2 && typeof field(note, 'provider') === 'string' && PROVIDER_ID_PATTERN.test(field(note, 'provider') as string)
+    && (note === undefined || (isRecord(note) && Object.keys(note).length === 2 && isProviderId(field(note, 'provider'))
       && isIndexBelow(field(note, 'minutesLeft'), MAX_TOKEN_MINUTES + 1)))
+    && Array.isArray(keyProviders) && keyProviders.length <= MAX_CLOSE_KEY_PROVIDERS && keyProviders.every(isProviderId) && new Set(keyProviders).size === keyProviders.length
     && (linger === undefined || linger === true);
 }
 

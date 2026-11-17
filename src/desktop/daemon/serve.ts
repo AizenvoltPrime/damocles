@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { resolveRgPath } from '../../core/chat-panel/ripgrep';
 import { installLogSink, log as coreLog } from '../../core/logger';
-import { DAMOCLES_HOME_DIR, SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
+import { DAMOCLES_HOME_DIR, SUBCALL_USAGE_LEDGER_PATH, WORKTREES_ROOT_DIR } from '../../core/paths';
 import { PI_AGENT_DIR } from '../../core/pi-session/agent-dir';
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher } from '../../core/process-launcher';
 import { spawnCredentialVariables, type CredentialRelay, type RelayIdentity } from '../../core/scm/askpass/credential-relay';
@@ -39,7 +39,7 @@ import { endpointFiles, keepSocketFoldersFresh, openEndpoint, removeStaleSocket,
 import { createLifetime } from './lifetime';
 import { enableLinger } from './linger';
 import { DAEMON_LOG, listLogs, readLog } from './logs';
-import { createMirrorWatches, syncMirror, syncSubcalls } from './mirror-server';
+import { createMirrorWatches, syncMirror, syncProject, syncSubcalls } from './mirror-server';
 import { forkChild, type ForkedChild } from './process-starts';
 import { createRemoteCoreHost } from './remote-core-host';
 import { createRunRegistry } from './run-registry';
@@ -333,7 +333,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     ...(deps.maxHeldBytes !== undefined ? { maxHeldBytes: deps.maxHeldBytes } : {}),
     ...(deps.now !== undefined ? { now: deps.now } : {}),
     log,
-    mirrorWatches: createMirrorWatches({ agentDir: PI_AGENT_DIR, ledgerPath: SUBCALL_USAGE_LEDGER_PATH, watchers }),
+    mirrorWatches: createMirrorWatches({ agentDir: PI_AGENT_DIR, ledgerPath: SUBCALL_USAGE_LEDGER_PATH, worktreesRoot: WORKTREES_ROOT_DIR, watchers }),
     control: {
       attach: ({ terminalIdleDays }) => registry.setIdleDays(terminalIdleDays),
       listRuns: () => ({ runs: registry.runs() }),
@@ -344,6 +344,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
         setImmediate(() => void mux.drained().then(() => shutdown('control.shutdownNow')));
       },
       'mirror.sync': (params, { mux }) => syncMirror({ agentDir: PI_AGENT_DIR, reserveStream: () => mux.reserveStream(), openStream: (id) => mux.openStream(id), drained: () => mux.drained(), log }, params),
+      'mirror.syncProject': (params, { mux }, folders) => syncProject({ agentDir: PI_AGENT_DIR, worktreesRoot: WORKTREES_ROOT_DIR, reserveStream: () => mux.reserveStream(), openStream: (id) => mux.openStream(id), drained: () => mux.drained(), log }, params, folders),
       'mirror.syncSubcalls': (params, { mux }) => syncSubcalls({ ledgerPath: SUBCALL_USAGE_LEDGER_PATH, reserveStream: () => mux.reserveStream(), openStream: (id) => mux.openStream(id), drained: () => mux.drained(), log }, params),
       'logs.list': async () => ({ logs: await listLogs(paths.logsDir) }),
       'logs.read': ({ name, offset, length }) => readLog(paths.logsDir, name, offset, length),

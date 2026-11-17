@@ -13,11 +13,13 @@ vi.mock('node:fs', async (importActual) => {
 });
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE } from '../../../shared/remote-mirror';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, mirrorWorktreeFolder } from '../../../shared/remote-mirror';
+import { DAMOCLES_WORKTREE_ENTRY } from '../../pi-session/session-store/constants';
 import { hostNoProjectKey, hostProjectKey } from '../../../shared/types/usage-stats';
 import { DAMOCLES_CREDENTIAL_SOURCE_ENTRY } from '../../pi-session/session-store/constants';
 import { openUsageDatabase, type UsageDatabase } from '../database';
 import { indexUsage, projectKeyOf } from '../indexer';
+import type { RelocationAliases } from '../../project-relocation/aliases';
 import { buildReport } from '../queries';
 import type { UsageStatsModel } from '../worker-protocol';
 
@@ -100,6 +102,18 @@ describe('the session mirror in the usage index', () => {
     expect(result.byProject!.find((row) => row.cwd === LOCAL_CWD)).not.toHaveProperty('hostId');
     expect(result.filterOptions.projects).toContainEqual({ key: hostProjectKey('prod-1', TARGET_CWD), cwd: TARGET_CWD, hostId: 'prod-1' });
     expect(result.topSessions!.find((row) => row.sessionId === 'remote-1')).toMatchObject({ hostId: 'prod-1', cwd: TARGET_CWD });
+  });
+
+  it('counts a host worktree chat and its subagent, mirrored under its project, under the project its worktree entry names', async () => {
+    const worktreePath = '/home/dev/.damocles/worktrees/app-1a2b3c/abcd1234';
+    const worktree = mirrorWorktreeFolder('abcd1234', 'chat');
+    const entry: Line = { type: 'custom', customType: DAMOCLES_WORKTREE_ENTRY, id: 'w1', parentId: null, timestamp: at(0), data: { worktreeId: 'abcd1234', projectPath: TARGET_CWD, place: 'worktree' } };
+    write(mirrorFile('prod-1', path.join(worktree, '2025_wt-1.jsonl')), [header('wt-1', worktreePath), entry, assistant('w-a1', 1, 1.25)]);
+    write(mirrorFile('prod-1', path.join(worktree, 'wt-1', 'subagents', 'agent-1.jsonl')), [header('agent-1', worktreePath), assistant('w-s1', 2, 0.5)]);
+    await scan();
+    const result = report();
+    expect(result.totals.cost).toBeCloseTo(1.75);
+    expect(result.byProject).toEqual([expect.objectContaining({ key: hostProjectKey('prod-1', TARGET_CWD), hostId: 'prod-1', cost: 1.75 })]);
   });
 
   it('keeps one host\'s project apart from another host\'s project at the same path', async () => {
@@ -233,6 +247,30 @@ describe('a host\'s clock in the usage index', () => {
       expect([tsOf('t0'), tsOf('t1'), tsOf('t2')]).toEqual([NOW, NOW, NOW]);
     });
   }
+
+  it('counts a host project its host moved once, under its new path, rows indexed before the move included', async () => {
+    const MOVED_CWD = '/home/dev/app-renamed';
+    setClock('prod-1', 0);
+    write(mirrorFile('prod-1', '2025_s1.jsonl'), [header('s1', TARGET_CWD), assistant('a1', 1, 1)]);
+    write(hostLedger('prod-1'), [subcall('t1', at(2), 2, { cwd: TARGET_CWD })]);
+    // another host's project at the same path is not that host's
+    write(mirrorFile('staging', '2025_s2.jsonl'), [header('s2', TARGET_CWD), assistant('a2', 1, 4)]);
+    await scan();
+    // main renamed the mirror folder; the moved session file still names the old folder, and it grew
+    const renamed = path.join(remoteMirrorsDir, 'prod-1', 'mirror', 'b'.repeat(32), '2025_s1.jsonl');
+    fs.mkdirSync(path.dirname(renamed), { recursive: true });
+    fs.renameSync(mirrorFile('prod-1', '2025_s1.jsonl'), renamed);
+    fs.appendFileSync(renamed, `${JSON.stringify(assistant('a3', 3, 8))}\n`);
+    const aliases: RelocationAliases = { moves: [], hosts: [{ hostId: 'prod-1', seq: 1, from: TARGET_CWD, to: MOVED_CWD }] };
+    await indexUsage({ db, sessionsDir, ledgerPath: path.join(root, 'subcalls.jsonl'), remoteMirrorsDir, models: MODELS, aliases, log: (line) => logged.push(line) });
+    const result = report();
+    expect(result.byProject!.map((row) => [row.key, row.cost]).sort()).toEqual([
+      [hostProjectKey('prod-1', MOVED_CWD), 11],
+      [hostProjectKey('staging', TARGET_CWD), 4],
+    ]);
+    expect(result.filterOptions.projects.filter((option) => option.hostId === 'prod-1')).toEqual([{ key: hostProjectKey('prod-1', MOVED_CWD), cwd: MOVED_CWD, hostId: 'prod-1' }]);
+    expect(logged).toEqual([]);
+  });
 
   it('indexes none of a host\'s files while its clock file holds no skew, and indexes them once it does', async () => {
     fs.mkdirSync(path.join(remoteMirrorsDir, 'prod-1', 'mirror'), { recursive: true });

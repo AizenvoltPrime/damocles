@@ -2,13 +2,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { sqliteJournalMode } from '../../../network-fs';
 import { DatabaseSync } from 'node:sqlite';
-import type { StoredSession } from '@shared/types/session';
+import type { IndexedSession } from '../metadata';
 import { log } from '../../../logger';
 import { isCorruption } from '../../../usage-stats/database';
 import type { SessionMetaEntry } from './protocol';
 
 /** Bump on any change to what `sessionFileMeta` returns (`__tests__/schema.test.ts` pins it) or to the table below: a new value names a new file. */
-export const SESSION_META_SCHEMA = 8;
+export const SESSION_META_SCHEMA = 9;
 const BUSY_TIMEOUT_MS = 5000;
 
 const SCHEMA_SQL = `
@@ -73,7 +73,7 @@ function storeOn(db: DatabaseSync, file: string): MetaStore {
   const selectEntry = db.prepare('SELECT size, mtime_ms, stored, prompts FROM files WHERE key = ?');
   const upsert = db.prepare('INSERT OR REPLACE INTO files (key, dir_key, size, mtime_ms, stored, prompts) VALUES (?, ?, ?, ?, ?, ?)');
   const remove = db.prepare('DELETE FROM files WHERE key = ?');
-  const parseStored = (value: unknown): StoredSession | null => (typeof value === 'string' ? (JSON.parse(value) as StoredSession) : null);
+  const parseStored = (value: unknown): IndexedSession | null => (typeof value === 'string' ? (JSON.parse(value) as IndexedSession) : null);
 
   function transaction(fn: () => void): void {
     // IMMEDIATE takes the write lock up front, so a second writer waits on busy_timeout instead of failing its upgrade.

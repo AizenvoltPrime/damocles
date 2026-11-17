@@ -10,11 +10,26 @@ import type { ExtensionToWebviewMessage } from '../../../../../shared/types/mess
 import { HistoryManager } from '../../../history-manager';
 import { pendingPromptOwners } from '../../../../pi-session/pending-prompts';
 import { PermissionHandler } from '../../../../permission-handler';
+import { resolvePiSessionFile } from '../../../../pi-session/session-store';
 import { TOOL_OUTPUT_COALESCE_MS } from '../../../../pi-session/tool-output-coalescer';
 import { AT_GATE, BASH, cardsOf, chatPage, fakeSession, liveChatSession, makeAdapter, PROMPT, TURN, type ChatPage } from '../../../../pi-session/__tests__/live-chat-page';
-vi.mock('../../../../pi-session/session-store', () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
+import { getPiCodingAgent } from '../../../../pi-session/pi-loader';
+// Each folder's session directory is `<folder>/sessions`; a saved session's file is not found unless a test says where it is.
+vi.mock('../../../../pi-session/session-store', () => ({
+  renamePiSession: vi.fn(),
+  deletePiSession: vi.fn(),
+  tagPiSession: vi.fn(),
+  piSessionDir: (cwd: string) => `${cwd}/sessions`,
+  resolvePiSessionFile: vi.fn(async () => null),
+}));
 vi.mock('../../../../pi-session/pi-runtime', () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
+
+// StorageManager.storedFileFrom over the mocked session store, whose headers name no folder
+const storedFileFrom = async (folder: string, id: string): Promise<'own' | 'other' | null> => {
+  const file = await resolvePiSessionFile(folder, id);
+  return file === null ? null : file.startsWith(`${folder}/sessions/`) ? 'own' : 'other';
+};
 
 // a panel's IDE context over an editor with no file open
 const ideContext = (): IdeContextManager => new IdeContextManager(createFakePlatform().editor, () => undefined);
@@ -48,6 +63,7 @@ describe('ready handler — releases dialogs the restarted webview can no longer
       worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
       getPanels: () => new Map(),
       storageManager: {
+        storedFileFrom,
         getStoredSessions: async () => {
           calls.push('getStoredSessions');
           return { sessions: [], hasMore: false, nextOffset: 0 };
@@ -233,9 +249,9 @@ describe('ready handler: restores the panel into the right folder', () => {
     const session = makeSession(order);
     const host = { id: 'host' };
     const instance: { host: unknown; session: ReturnType<typeof makeSession>; folder: typeof A } = { host, session, folder: A };
-    const switchPanelFolder = vi.fn(async (_panelId: string, key: string, _reason: string, afterSwitch?: (i: unknown) => Promise<void>) => {
+    const switchPanelFolder = vi.fn(async (_panelId: string, to: string | typeof A, _reason: string, afterSwitch?: (i: unknown) => Promise<void>) => {
       instance.session = makeSession(order);
-      instance.folder = key === B.key ? B : A;
+      instance.folder = (typeof to === 'string' ? to : to.key) === B.key ? B : A;
       await afterSwitch?.(instance);
       order.push('gate-open');
       return instance;
@@ -256,6 +272,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       ]),
       historyManager: { loadSessionHistory },
       storageManager: {
+        storedFileFrom,
         getStoredSessions: async () => { order.push('list'); return { sessions: [], hasMore: false, nextOffset: 0 }; },
         getPromptHistory: async () => { order.push('history'); return { history: [], hasMore: false }; },
         folderOf: vi.fn(async () => opts.sessionFolder),
@@ -343,7 +360,7 @@ describe('ready handler: restores the panel into the right folder', () => {
     const h = harness({ sessionFolder: B });
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-b', savedWorkspaceFolderKey: A.key } as never, h.ctx);
 
-    expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B.key, 'restore', expect.any(Function));
+    expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B, 'restore', expect.any(Function));
     // Opened and replayed inside the switch, before queued webview messages are let through; pi opens it before the replay.
     expect(h.order).toEqual(['open', 'load', 'gate-open', 'list', 'history', 'start']);
     expect(h.instance.session).not.toBe(h.session);
@@ -357,7 +374,7 @@ describe('ready handler: restores the panel into the right folder', () => {
     const h = harness();
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedWorkspaceFolderKey: B.key } as never, h.ctx);
 
-    expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B.key, 'restore', expect.any(Function));
+    expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B, 'restore', expect.any(Function));
     // The new session starts after the lists; the one it replaced is never started.
     expect(h.order).toEqual(['gate-open', 'list', 'history', 'start']);
     expect(h.session.initializeEarly).not.toHaveBeenCalled();
@@ -386,6 +403,29 @@ describe('ready handler: restores the panel into the right folder', () => {
     expect(h.switchPanelFolder).not.toHaveBeenCalled();
     expect(h.session.setResumeSession).toHaveBeenCalledWith('s-a');
     expect(h.loadSessionHistory).toHaveBeenCalledWith('/a', 's-a', h.instance.host, h.session);
+  });
+
+  it("resumes in place a saved conversation in no open project's list whose file is in the panel folder's own session directory", async () => {
+    const h = harness();
+    vi.mocked(resolvePiSessionFile).mockResolvedValueOnce('/a/sessions/s-a.jsonl');
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
+
+    expect(h.session.setResumeSession).toHaveBeenCalledWith('s-a');
+    expect(h.loadSessionHistory).toHaveBeenCalledWith('/a', 's-a', h.instance.host, h.session);
+  });
+
+  // rule 1 finds a session of another folder from this one, and opening it here would make a second writable copy.
+  it("opens a new conversation instead of a saved one no open project lists whose file is in another folder's session directory", async () => {
+    const h = harness();
+    vi.mocked(resolvePiSessionFile).mockResolvedValueOnce('/w/sessions/s-w.jsonl');
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-w' } as never, h.ctx);
+
+    expect(h.switchPanelFolder).not.toHaveBeenCalled();
+    expect(h.session.setResumeSession).not.toHaveBeenCalled();
+    expect(h.session.openResumeTarget).not.toHaveBeenCalled();
+    expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    expect(h.posted).toContainEqual({ type: 'sessionCleared' });
+    expect(h.session.initializeEarly).toHaveBeenCalledTimes(1);
   });
 
   it('neither moves nor resumes when another panel already holds the saved conversation', async () => {
@@ -424,6 +464,7 @@ describe('ready handler: paints the conversation before the session-wide lists',
       getPanels: () => new Map([['p1', panel]]),
       historyManager: { loadSessionHistory: async () => { order.push('loadSessionHistory'); } },
       storageManager: {
+        storedFileFrom,
         getStoredSessions: async () => { order.push('getStoredSessions'); return { sessions: [], hasMore: false, nextOffset: 0 }; },
         getPromptHistory: async () => { order.push('getPromptHistory'); return { history: [], hasMore: false }; },
         folderOf: async () => undefined,
@@ -529,6 +570,7 @@ describe('ready handler: a conversation pi has not written yet', () => {
       getPanels: () => new Map([['p1', { host, session: panelSession, folder }]]),
       historyManager,
       storageManager: {
+        storedFileFrom,
         getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
         getPromptHistory: async () => ({ history: [], hasMore: false }),
         folderOf: async () => undefined,
@@ -644,6 +686,7 @@ describe('ready handler: a page that loads again while the runtime holds its con
         }),
       },
       storageManager: {
+        storedFileFrom,
         getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
         getPromptHistory: async () => ({ history: [], hasMore: false }),
         folderOf: vi.fn(async () => undefined),
@@ -681,6 +724,20 @@ describe('ready handler: a page that loads again while the runtime holds its con
     expect(h.order).toEqual(['gate', 'hold', 'live replay', 'release', 'onWebviewReady', 'repost']);
     expect(h.gated).toEqual([{ type: 'sessionStarted' }]);
     expect(h.posted.some((m) => m.type === 'sessionCleared' || m.type === 'sessionStarted')).toBe(false);
+  });
+
+  it("a file replay a newer replay took over before it read the file posts no sessionStarted, and the page's state still goes out", async () => {
+    const h = harness('s-live');
+    Object.assign(h.session, { liveConversation: () => undefined, storedSessionId: 's-stored' });
+    h.deps.historyManager.loadSessionHistory.mockImplementationOnce(async () => {
+      throw new DOMException('This operation was aborted', 'AbortError');
+    });
+
+    await createSessionHandlers(h.typedDeps).ready!({ type: 'ready', savedSessionId: 's-live' } as never, h.ctx);
+
+    expect(h.deps.historyManager.loadSessionHistory).toHaveBeenCalledOnce();
+    expect(h.posted.some((m) => m.type === 'sessionStarted')).toBe(false);
+    expect(h.order.slice(-2)).toEqual(['onWebviewReady', 'repost']);
   });
 
   // the runtime went (a replacement that failed after pi's teardown) between ready's check and the capture, and no stored conversation is left
@@ -745,6 +802,7 @@ describe('ready handler: a reload mid-turn, through the real chat page stores', 
       getPanels: () => new Map([['p1', { host, session, folder }]]),
       historyManager: new HistoryManager({ postMessage: (_host, m) => reply(m), maxCheckpointFileSizeBytes: () => 0, ...(options.modelReasons ? { modelReasons: options.modelReasons } : {}) }),
       storageManager: {
+        storedFileFrom,
         getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
         getPromptHistory: async () => ({ history: [], hasMore: false }),
         folderOf: async () => undefined,
@@ -779,7 +837,7 @@ describe('ready handler: a reload mid-turn, through the real chat page stores', 
   }
 
   it('a reload whose live replay fails still reposts the pending prompt and the session state to the page', async () => {
-    const permissionHandler = new PermissionHandler(createFakePlatform());
+    const permissionHandler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     permissionHandler.setCwd(process.cwd());
     const reposted: string[] = [];
     const chat = reloadingChat({
@@ -809,7 +867,7 @@ describe('ready handler: a reload mid-turn, through the real chat page stores', 
   });
 
   it('a reload while a tool permission prompt is pending shows the prompt once, on its replayed card, and answering it continues the turn', async () => {
-    const permissionHandler = new PermissionHandler(createFakePlatform());
+    const permissionHandler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
     permissionHandler.setCwd(process.cwd());
     const chat = reloadingChat({ onWebviewReady: () => permissionHandler.repostPendingPrompts() });
     permissionHandler.setPostMessage(chat.panelPost);

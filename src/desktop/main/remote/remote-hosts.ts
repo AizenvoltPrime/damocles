@@ -259,6 +259,8 @@ export class RemoteHosts implements ConnectActions {
   private watching: Set<string> | undefined;
   // the picker the dialog shows, whose browse calls stay inside its roots
   private picking: OpenPick | undefined;
+  // Locate's folder picker, which browses the whole host from its start folder; its authority may have no saved host (loopback)
+  private pickingAnywhere: { readonly hostId: string; readonly authority: string; readonly start: string } | undefined;
   private dialog: OpenDialog | undefined;
   // per attempt, the opening of its container's folder in flight, which a second start of that attempt joins
   private readonly folderOpenings = new Map<string, Promise<string | undefined>>();
@@ -380,6 +382,7 @@ export class RemoteHosts implements ConnectActions {
     if (purpose === 'signIn' && hostId !== undefined && this.connectionOf(hostId) === 'connected') return { shown: false };
     // this dialog replaces an open picker, whose confinement goes with it
     this.picking = undefined;
+    this.pickingAnywhere = undefined;
     const known = new Set(this.deps.store.hosts().flatMap((saved) => (saved.kind === 'ssh' && saved.destination.kind === 'alias' ? [saved.destination.alias] : [])));
     const aliases = (await this.configAliases()).filter((alias) => !known.has(alias));
     const joined = openFolder && hostId !== undefined && this.connectionOf(hostId) === 'connected' ? this.deps.connections.connect(hostId, true) : undefined;
@@ -1282,24 +1285,79 @@ export class RemoteHosts implements ConnectActions {
     }
   }
 
+  /**
+   * Locate's folder picker on a connected host: the Connect dialog's folder browser alone, over the whole host, opening at
+   * `start`. Resolves the picked folder once the host says it is a directory, or undefined on cancel.
+   */
+  async pickAnywhere(authority: string, options: { readonly title: string; readonly start: string; readonly buttonLabel?: string }): Promise<string | undefined> {
+    const overlay = this.deps.overlay();
+    if (!overlay) throw new Error('No window shows the folder browser');
+    const hostId = this.deps.store.hostIdOf(authority) ?? authority;
+    const title = shownLabel(options.title);
+    const buttonLabel = shownLabel(options.buttonLabel);
+    const request = parseConnectRequest({
+      kind: 'connect',
+      hostId,
+      hosts: [],
+      distros: [],
+      sshConfigAliases: [],
+      pick: {
+        mode: 'folder',
+        hostName: this.deps.hostName(authority),
+        roots: [options.start],
+        ...(title !== undefined ? { title } : {}),
+        ...(buttonLabel !== undefined ? { buttonLabel } : {}),
+      },
+    });
+    if (!request) throw new Error('The picker exceeds the overlay bounds');
+    const pick = { hostId, authority, start: options.start };
+    this.picking = undefined;
+    this.pickingAnywhere = pick;
+    this.dialog = undefined;
+    try {
+      const answer = await overlay.request(request);
+      if (answer.kind !== 'connect') return undefined;
+      const workspace = this.deps.workspace(authority);
+      const os = this.deps.connection(authority)?.facts.os;
+      if (!workspace || os === undefined) {
+        this.deps.log(`[remote] refused the picked path: ${authority} is not connected`);
+        return undefined;
+      }
+      if (!pathFor({ os }).isAbsolute(answer.path)) {
+        this.deps.log(`[remote] refused the picked path: not an absolute path on ${authority}`);
+        return undefined;
+      }
+      if (!(await workspace.files.isDirectory(answer.path))) {
+        this.deps.log(`[remote] refused the picked path: not a folder on ${authority}`);
+        return undefined;
+      }
+      return answer.path;
+    } finally {
+      if (this.pickingAnywhere === pick) this.pickingAnywhere = undefined;
+      this.dropUnshownRuns();
+    }
+  }
+
   async browse(hostId: string, folder: string | undefined): Promise<RemoteBrowseResult> {
     const pick = this.picking;
     if (pick?.hostId === hostId) return this.browsePick(pick, folder);
-    this.record(hostId);
-    const authority = this.authorityOf(hostId);
+    const anywhere = this.pickingAnywhere?.hostId === hostId ? this.pickingAnywhere : undefined;
+    if (!anywhere) this.record(hostId);
+    const authority = anywhere?.authority ?? this.authorityOf(hostId);
     const connection = this.deps.connection(authority);
     const workspace = this.deps.workspace(authority);
     if (!connection || !workspace) return { ok: false, error: 'notConnected' };
     const { os, homedir } = connection.facts;
     const flavor = pathFor({ os });
-    const target = folder ?? homedir;
+    const target = folder ?? anywhere?.start ?? homedir;
     if (!flavor.isAbsolute(target)) return { ok: false, error: 'missing' };
     const listed = await workspace.files.browse(target);
     if (!listed.ok) {
       const privacy = os === 'darwin' && listed.reason === 'failed' ? macPrivacyFolder(homedir, target) : undefined;
       return privacy !== undefined ? { ok: false, error: 'eperm-privacy', folder: privacy } : { ok: false, error: listed.reason };
     }
-    const projects = new Map(this.deps.projects(hostId).map((project) => [project.folderKey, project.key]));
+    // Locate's picker answers its path; only the Connect dialog's pick selects a folder that is a project already
+    const projects = new Map(anywhere ? [] : this.deps.projects(hostId).map((project) => [project.folderKey, project.key]));
     const parent = flavor.dirname(listed.path);
     return {
       ok: true,
@@ -1315,7 +1373,7 @@ export class RemoteHosts implements ConnectActions {
   }
 
   async pickFolder(hostId: string, folder: string): Promise<{ readonly projectKey: string }> {
-    if (this.picking) throw new Error('A picker adds no project');
+    if (this.picking || this.pickingAnywhere) throw new Error('A picker adds no project');
     this.record(hostId);
     const projectKey = await this.deps.addProject(hostId, folder);
     await this.deps.store.touchHost(hostId, folder);

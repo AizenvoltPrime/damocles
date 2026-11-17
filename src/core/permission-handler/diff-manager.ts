@@ -4,7 +4,8 @@ import type { DiffView, EditorService } from '../../platform/editor-service';
 import { TOOL_WRITE } from '../../shared/tool-names';
 import type { FilePatch, FilePatchOmitted } from '../../shared/types/file-patch';
 import { FILE_PATCH_MAX_BYTES, filePatch } from '../pi-session/tools/file-patch';
-import { replaceEveryOccurrence } from '../pi-session/tools/edit-tool';
+import { exactEdit, previewEdit } from '../pi-session/tools/edit-tool';
+import type { PiCodingAgentModule } from '../pi-session/pi-loader';
 import { l } from '../l10n';
 import { log } from '../logger';
 
@@ -37,10 +38,12 @@ export class DiffManager {
   private activeDiffs: Map<string, DiffView> = new Map();
   private readonly editor: EditorService;
   private readonly panelId: string | undefined;
+  private readonly pi: () => PiCodingAgentModule | null;
 
-  constructor(editor: EditorService, panelId: string | undefined) {
+  constructor(editor: EditorService, panelId: string | undefined, pi: () => PiCodingAgentModule | null) {
     this.editor = editor;
     this.panelId = panelId;
+    this.pi = pi;
   }
 
   async prepareDiff(
@@ -48,7 +51,7 @@ export class DiffManager {
     toolName: string,
     filePath: string,
     input: { content?: string; old_string?: string; new_string?: string; replace_all?: boolean }
-  ): Promise<DiffInfo | null> {
+  ): Promise<DiffInfo | { refused: string } | null> {
     const original = await readOriginal(this.editor, filePath);
     const originalContent = typeof original === 'string' ? original : '';
 
@@ -58,33 +61,28 @@ export class DiffManager {
     if (toolName === TOOL_WRITE) {
       proposedContent = input.content || '';
       editLineNumber = 1;
-    } else {
+    } else if (input.replace_all === true) {
       if (!originalContent) {
         return null;
       }
 
-      const normalizeToLF = (str: string): string => str.replace(/\r\n/g, '\n');
-
-      const normalizedOriginal = normalizeToLF(originalContent);
-      const normalizedOldString = normalizeToLF(input.old_string || '');
-      const normalizedNewString = normalizeToLF(input.new_string || '');
-
-      const matchIndex = normalizedOriginal.indexOf(normalizedOldString);
-      if (matchIndex !== -1) {
-        const textBeforeMatch = normalizedOriginal.substring(0, matchIndex);
-        editLineNumber = textBeforeMatch.split('\n').length;
-      }
-
-      // A replacer function keeps `$&`, `$$` and the other replacement patterns literal, as Edit writes them.
-      const normalizedProposed = input.replace_all
-        ? replaceEveryOccurrence(normalizedOriginal, normalizedOldString, normalizedNewString)
-        : normalizedOriginal.replace(normalizedOldString, () => normalizedNewString);
-      if (normalizedProposed === null || normalizedProposed === normalizedOriginal) {
+      const edit = exactEdit(originalContent, input.old_string ?? '', input.new_string ?? '');
+      if (!edit || edit.newContent === edit.baseContent) {
         return null;
       }
-
-      const useCRLF = originalContent.includes('\r\n');
-      proposedContent = useCRLF ? normalizedProposed.replace(/\n/g, '\r\n') : normalizedProposed;
+      editLineNumber = edit.baseContent.slice(0, edit.replacements[0]!.matchIndex).split('\n').length;
+      proposedContent = edit.written;
+    } else {
+      if (typeof original !== 'string') {
+        return null;
+      }
+      const pi = this.pi();
+      if (!pi) throw new Error('An Edit approval needs pi\'s edit, which is not loaded');
+      // The edit pi runs, on the text this diff shows as the original.
+      const edit = await previewEdit(pi, filePath, original, input.old_string ?? '', input.new_string ?? '');
+      if ('refused' in edit) return edit;
+      editLineNumber = edit.firstChangedLine;
+      proposedContent = edit.written;
     }
 
     const lineNumber = editLineNumber !== undefined ? { editLineNumber } : {};

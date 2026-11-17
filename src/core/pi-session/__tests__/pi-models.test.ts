@@ -18,8 +18,11 @@ import {
   modelInPlan,
   markNotInPlan,
   effortBadgeApplies,
+  withoutServerSideFallback,
+  stripServerSideFallbacks,
   type ModelLookup,
 } from '../pi-models';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
 
 /** A shipped catalog file keyed by api, then by model id, with only its chat models: pi keys each entry `<type>:<id>`. */
@@ -332,23 +335,23 @@ describe.each([
   });
 });
 
-describe('DEFAULT_MODELS: claude-fable-5-1 effort catalog agrees with the installed pi catalog', () => {
+describe('DEFAULT_MODELS: claude-fable-5-2 effort catalog agrees with the installed pi catalog', () => {
   const anthropicJsonUrl = new URL(
     '../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/anthropic.json',
     import.meta.url,
   );
   const catalog = readChatCatalog<unknown>(fileURLToPath(anthropicJsonUrl));
-  const fable51 = catalog['anthropic-messages']?.['claude-fable-5-1'] as Model<'anthropic-messages'> | undefined;
+  const fable = catalog['anthropic-messages']?.['claude-fable-5-2'] as Model<'anthropic-messages'> | undefined;
 
   it('declares exactly what pi reports, modulo the minimal and ultracode mappings Damocles owns', () => {
-    expect(fable51).toBeDefined();
-    const piLevels = getSupportedThinkingLevels(fable51!);
+    expect(fable).toBeDefined();
+    const piLevels = getSupportedThinkingLevels(fable!);
     // Damocles' EffortLevel union has no 'minimal' tier, and 'ultracode' is its own top tier with no pi
     // analogue, so it only exists while pi still accepts 'max'.
     expect(piLevels).toContain('max');
     const expected = [...piLevels.filter((level) => level !== 'minimal'), 'ultracode'];
 
-    expect(DEFAULT_MODELS.find((m) => m.value === 'claude-fable-5-1')?.supportedEffortLevels).toEqual(expected);
+    expect(DEFAULT_MODELS.find((m) => m.value === 'claude-fable-5-2')?.supportedEffortLevels).toEqual(expected);
     expect(effortToPiThinking('ultracode')).toBe('max');
   });
 });
@@ -363,9 +366,9 @@ describe('MODEL_SUBSTITUTES', () => {
   });
 
   it('sends an unresolvable Opus 5.5 to Sonnet 5.5, never to the costlier catalog head', () => {
-    // Without this the generic walk starts at DEFAULT_MODELS[0], which is Fable 5.1 at $10/$50.
+    // Without this the generic walk starts at DEFAULT_MODELS[0], which is Fable 5.2 at $8/$40.
     expect(MODEL_SUBSTITUTES['claude-opus-5-5']).toEqual(['claude-sonnet-5-5']);
-    expect(DEFAULT_MODELS[0]!.value).toBe('claude-fable-5-1');
+    expect(DEFAULT_MODELS[0]!.value).toBe('claude-fable-5-2');
   });
 });
 
@@ -392,7 +395,7 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
 
   it('is not vacuous: it covers several shipped entries and the predicate separates them', () => {
     expect(covered.length).toBeGreaterThan(2);
-    expect(forcesThinking(entries['claude-fable-5-1']!)).toBe(true);
+    expect(forcesThinking(entries['claude-fable-5-2']!)).toBe(true);
     expect(forcesThinking(entries['claude-sonnet-5-5']!)).toBe(true);
     expect(forcesThinking(entries['claude-haiku-4-5-20251001']!)).toBe(false);
     expect(forcesThinking(entries['claude-haiku-5-5']!)).toBe(false);
@@ -414,7 +417,7 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
 
 // `minimal` has no EffortLevel name. pi's `off` is offered as `none` exactly where both catalogs send it as reasoning
 // effort `none`; where `off` is null pi clamps it up to a real level, so offering it would mislabel what runs.
-describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s agrees with both installed OpenAI catalogs', (id) => {
+describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna'])('DEFAULT_MODELS: %s agrees with both installed OpenAI catalogs', (id) => {
   const info = DEFAULT_MODELS.find((m) => m.value === id);
 
   function catalogEntry(file: string, api: string): Model<Api> | undefined {
@@ -488,17 +491,17 @@ function reachableModelIds(): Set<string> {
   return ids;
 }
 
-/** Catalog entries a session can be seated on, each with the fallback list it declares. */
+/** Catalog entries a session can be seated on. */
 function reachableCatalogEntries(
   catalogs: Record<string, ProviderCatalog>,
-): { where: string; fallbacks: unknown[] }[] {
+): { where: string; entry: Model<Api> }[] {
   const reachable = reachableModelIds();
-  const found: { where: string; fallbacks: unknown[] }[] = [];
+  const found: { where: string; entry: Model<Api> }[] = [];
   for (const [file, catalog] of Object.entries(catalogs)) {
     for (const [api, models] of Object.entries(catalog)) {
       for (const [id, entry] of Object.entries(models)) {
         if (reachable.has(id)) {
-          found.push({ where: `${file} ${api}/${id}`, fallbacks: entry?.compat?.allowedFallbackModels ?? [] });
+          found.push({ where: `${file} ${api}/${id}`, entry: entry as unknown as Model<Api> });
         }
       }
     }
@@ -506,51 +509,40 @@ function reachableCatalogEntries(
   return found;
 }
 
-function assertNoServerSideFallback(catalogs: Record<string, ProviderCatalog>): void {
-  const offenders = reachableCatalogEntries(catalogs)
-    .filter((e) => e.fallbacks.length > 0)
+/** Catalog entries a session can be seated on whose fallback list survives Damocles' strip. */
+function keptFallbacks(catalogs: Record<string, ProviderCatalog>): string[] {
+  return reachableCatalogEntries(catalogs)
+    .filter((e) => (withoutServerSideFallback(e.entry).compat as { allowedFallbackModels?: unknown } | undefined)?.allowedFallbackModels !== undefined)
     .map((e) => e.where);
-  if (offenders.length === 0) return;
-  throw new Error(
-    'Damocles must never be server-side downgraded to a less capable model. These catalog entries are ' +
-      `reachable from DEFAULT_MODELS and now carry compat.allowedFallbackModels: ${offenders.join(', ')}. ` +
-      'A fallback list on a model Damocles offers is a decision to take, not a test to update.',
-  );
 }
 
-describe('no model Damocles offers carries a server-side fallback list', () => {
-  it('holds across every catalog pi ships', () => {
+describe('no model Damocles offers is sent with a server-side fallback list', () => {
+  it('strips the list from every catalog entry pi ships that a session can be seated on', () => {
     const catalogs = loadShippedCatalogs();
     // A broken path or id derivation would pass vacuously, so prove the guard is looking at something.
     expect(Object.keys(catalogs).length).toBeGreaterThan(1);
     expect(reachableCatalogEntries(catalogs).length).toBeGreaterThan(0);
-    expect(() => assertNoServerSideFallback(catalogs)).not.toThrow();
+    expect(keptFallbacks(catalogs)).toEqual([]);
   });
 
-  it('rejects a fallback list attached to a model DEFAULT_MODELS offers', () => {
-    const offered = DEFAULT_MODELS[0]!.value;
-    const synthetic: Record<string, ProviderCatalog> = {
-      'anthropic.json': {
-        'anthropic-messages': {
-          [offered]: { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-sonnet-5' }] } },
-        },
-      },
-    };
-    expect(() => assertNoServerSideFallback(synthetic)).toThrow(
-      /never be server-side downgraded to a less capable model/,
-    );
-    expect(() => assertNoServerSideFallback(synthetic)).toThrow(new RegExp(`anthropic-messages/${offered}`));
+  it('keeps the rest of compat, and returns a model with no list unchanged', () => {
+    const model = { id: 'm', provider: 'anthropic', compat: { supportsStrictTools: true, allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5' }] } } as unknown as Model<Api>;
+    expect(withoutServerSideFallback(model).compat).toEqual({ supportsStrictTools: true });
+    expect(model.compat).toHaveProperty('allowedFallbackModels');
+    const plain = { id: 'p', provider: 'anthropic' } as unknown as Model<Api>;
+    expect(withoutServerSideFallback(plain)).toBe(plain);
   });
 
-  it('ignores a fallback list on a model DEFAULT_MODELS does not offer', () => {
-    const unreachable: Record<string, ProviderCatalog> = {
-      'anthropic.json': {
-        'anthropic-messages': {
-          'claude-fable-5': { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5-5' }] } },
-        },
-      },
+  it('sends stream and streamSimple requests, and the complete calls built on them, without the list', () => {
+    const seen: unknown[] = [];
+    const runtime = {
+      stream: (model: Model<Api>) => { seen.push(model.compat); return 'stream'; },
+      streamSimple: (model: Model<Api>) => { seen.push(model.compat); return 'streamSimple'; },
     };
-    expect(() => assertNoServerSideFallback(unreachable)).not.toThrow();
+    stripServerSideFallbacks(runtime as unknown as ModelRuntime);
+    const model = { id: 'claude-fable-5-2', provider: 'anthropic', compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5' }] } } as unknown as Model<Api>;
+    expect([runtime.stream(model), runtime.streamSimple(model)]).toEqual(['stream', 'streamSimple']);
+    expect(seen).toEqual([{}, {}]);
   });
 });
 
@@ -727,7 +719,7 @@ describe('effortBadgeApplies', () => {
     expect(effortBadgeApplies(undefined)).toBe(false);
   });
 
-  // pi sends no level to a model whose compat says it takes no reasoning effort (openai-completions.js:718-727 in pi-ai 1.4.0).
+  // pi sends no level to a model whose compat says it takes no reasoning effort (openai-completions.js:703-712 in pi-ai 1.5.2).
   it('applies to no model outside the catalog that reasons but takes no effort, by pi\'s own compat', () => {
     const kimiCoding = readChatCatalog<Model<Api>>(fileURLToPath(new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/kimi-coding.json', import.meta.url)));
     const k3 = copilotEntry('openai-completions', 'kimi-k3');

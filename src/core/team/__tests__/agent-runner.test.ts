@@ -14,6 +14,7 @@ import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 import { memberHistoryMessages } from '../content-blocks';
 import type { PersistedAgentMessage } from '../../pi-session/agent-records';
 import type { AgentTurnContext, AgentTurnDecision } from '@earendil-works/pi-agent-core';
+import { recordTerminatedCall, takeTerminatedCalls, type TerminatedCall } from '../../pi-session/terminated-calls';
 
 /**
  * The pi-native team agent runner (US-024b). These tests drive a FAKE pi `AgentSession` to assert the
@@ -88,6 +89,13 @@ function persistedUserTexts(fake: FakeSession): string[] {
     const { type, message } = entry as { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
     return type === 'message' && message?.role === 'user' ? [(message.content ?? []).map((p) => p.text ?? '').join('')] : [];
   });
+}
+
+/** How many agent runs pi starts on `fake` from here on, which a disposed session still starts. */
+function agentRuns(fake: FakeSession): () => number {
+  let started = 0;
+  fake.agent.subscribe((event) => { if ((event as { type?: string }).type === 'agent_start') started++; });
+  return () => started;
 }
 
 /** The text of each user message the runner showed on the member's card. */
@@ -554,7 +562,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(config.forgetSession).toHaveBeenCalledWith(fake);
   });
 
-  it('stops before any request the run pi opens for a steer an input handler held across a stop, which stays undelivered', async () => {
+  it('refuses the run pi would open for a steer an input handler held across a stop, which stays undelivered once, first in line', async () => {
     const messageBus = new MessageBus('team-1');
     const ac = new AbortController();
     const live = liveCallCounter();
@@ -573,6 +581,7 @@ describe('AgentRunner (pi-native team agent)', () => {
 
     const run = new AgentRunner().startAgent(config);
     await fake.whenModelCalled(1);
+    const runs = agentRuns(fake);
     messageBus.send('Lead', 'worker', 'late');
     await held.entered;
     // A team stop takes each member's undelivered messages right before its abort.
@@ -586,11 +595,14 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(result.status).toBe('cancelled');
     expect(config.forgetSession).toHaveBeenCalledWith(fake);
     expect(live.count()).toBe(1);
+    expect(runs()).toBe(0);
     expect(undelivered).toEqual([{ text: '[Message from Lead]: late', echoed: true, ids: [expect.any(String)] }]);
+    // pi committed none of it, so it is still owed, once.
+    expect(take()).toEqual(undelivered);
     expect(fake.customEntries.filter((e) => e.customType === DAMOCLES_TEAM_DELIVERED_ENTRY)).toEqual([]);
   });
 
-  it('stops before any request the run pi opens for a steer an input handler held when the run threw, and reports the steer undelivered', async () => {
+  it('refuses the run pi would open for a steer an input handler held when the run threw, and reports the steer undelivered', async () => {
     const messageBus = new MessageBus('team-1');
     const opening: { end: (() => void) | null } = { end: null };
     const live = liveCallCounter();
@@ -615,6 +627,7 @@ describe('AgentRunner (pi-native team agent)', () => {
 
     const run = new AgentRunner().startAgent(config);
     await fake.whenModelCalled(1);
+    const runs = agentRuns(fake);
     messageBus.send('Lead', 'worker', 'late');
     await held.entered;
     opening.end!();
@@ -625,6 +638,7 @@ describe('AgentRunner (pi-native team agent)', () => {
 
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'run', message: 'the run broke' } });
     expect(live.count()).toBe(1);
+    expect(runs()).toBe(0);
     expect(result.undelivered).toEqual([{ text: '[Message from Lead]: late', echoed: true, ids: [expect.any(String)] }]);
   });
 
@@ -734,16 +748,19 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(fake.prompts).toEqual([]);
   });
 
-  it('logs the failure of an opening prompt an input handler releases after the stop, opening no request and leaving no rejection unhandled', async () => {
+  it('logs the failure of an opening prompt pi rejects once an input handler releases it after the stop, opening no request and leaving no rejection unhandled', async () => {
     const ac = new AbortController();
     const live = liveCallCounter();
     const fake = new FakeSession({ onModelCall: live.after(0, 'worked after the stop') });
-    const prompt = fake.prompt.bind(fake);
-    fake.prompt = async (text, options) => {
-      await prompt(text, options);
+    const held = holdInput(fake, 'do the task');
+    let rejected!: () => void;
+    const rejection = new Promise<void>((resolve) => { rejected = resolve; });
+    // pi's model and auth checks reject a prompt after its input handlers, before any verdict.
+    fake.prompt = async (text) => {
+      await fake.inputHandler?.(text);
+      rejected();
       throw new Error('pi refused the late prompt');
     };
-    const held = holdInput(fake, 'do the task');
     const config = baseConfig({ abortSignal: ac.signal, createSession: async () => fake as never, keepAlive: () => false, forgetSession: vi.fn(() => fake.dispose()) });
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const unhandled: unknown[] = [];
@@ -756,8 +773,7 @@ describe('AgentRunner (pi-native team agent)', () => {
       ac.abort();
       const result = await run;
       held.release();
-      await fake.whenPrompted(1);
-      await fake.waitForIdle();
+      await rejection;
       // Node reports an unhandled rejection only once the microtask queue drains.
       await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -1048,7 +1064,7 @@ describe('AgentRunner tool count', () => {
     type: 'tool_execution_end', toolCallId: id, toolName: 'read', result: { content: [{ type: 'text', text }], details: {} }, isError,
   });
 
-  // pi emits `tool_execution_start` (agent-loop.js:384, :420 in pi-agent-core 1.4.0) before `beforeToolCall`, where the gate blocks a call (:499).
+  // pi emits `tool_execution_start` (agent-loop.js:384, :420 in pi-agent-core 1.5.2) before `beforeToolCall`, where the gate blocks a call (:499).
   it('counts each call as pi starts it, a blocked call included', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const counts: Array<[string, number]> = [];
@@ -1085,7 +1101,7 @@ describe('AgentRunner tool count', () => {
     ]);
   });
 
-  // pi starts no call after the one an abort lands in (agent-loop.js:408-410, :435-437, :455-457 in pi-agent-core 1.4.0).
+  // pi starts no call after the one an abort lands in (agent-loop.js:408-410, :435-437, :455-457 in pi-agent-core 1.5.2).
   it('counts no call a batch cut short by an abort skipped', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const onToolCall = vi.fn();
@@ -1351,7 +1367,7 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
 
 /**
  * A completed assistant message carrying one tool call per name, each paired with the successful result
- * pi builds for it (`createToolResultMessage`, `agent-loop.js:662-676` in pi-agent-core 1.4.0, keys the result to the call id and carries `isError`).
+ * pi builds for it (`createToolResultMessage`, `agent-loop.js:662-676` in pi-agent-core 1.5.2, keys the result to the call id and carries `isError`).
  */
 function turnWith(...names: string[]): AgentTurnContext {
   return {
@@ -1371,7 +1387,7 @@ describe('AgentRunner terminal-tool turn stop', () => {
 
   it('does not stop the turn while the session has a queued message', async () => {
     // pi polls its steering queue only after this check, so stopping here would make it end the loop and
-    // start another for the message (`agent-session.js:1531-1565` in pi 1.4.0): an extra request.
+    // start another for the message (`agent-session.js:1595-1629` in pi 1.5.2): an extra request.
     await withStopHook(async (hook, fake) => {
       fake.queueSteer('[Message from Lead]: one more thing');
       expect(await hook(turnWith('team_standby'))).toBe(false);
@@ -1453,6 +1469,160 @@ describe('AgentRunner terminal-tool turn stop', () => {
       priorStops = true;
       expect(await hook(turnWith('read'))).toBe(true);
     }, fake);
+  });
+});
+
+describe('AgentRunner run that pi ended on a rejected call', () => {
+  /** A member session whose one run ends on a tool batch of `batch`, the gate having recorded `recorded` for it. */
+  function rejectingSession(batch: string[], recorded: TerminatedCall[]): FakeSession {
+    const messages: unknown[] = [];
+    const fake = new FakeSession({
+      onModelCall: (_c, s) => {
+        for (const call of recorded) recordTerminatedCall('member-1', call);
+        messages.push({ role: 'assistant', content: [] }, ...batch.map((id) => ({ role: 'toolResult', toolCallId: id })));
+        void s.endTurn();
+      },
+    });
+    Object.defineProperty(fake, 'sessionId', { value: 'member-1' });
+    Object.defineProperty(fake, 'messages', { get: () => messages });
+    return fake;
+  }
+
+  it('reports the rejected call once the run settles, and clears the record', async () => {
+    const onRunRejected = vi.fn();
+    const fake = rejectingSession(['c1'], [{ toolCallId: 'c1', toolName: 'Bash', cause: 'hook' }]);
+
+    await new AgentRunner().startAgent(baseConfig({ createSession: async () => fake as never, keepAlive: () => false, onRunRejected }));
+
+    expect(onRunRejected).toHaveBeenCalledExactlyOnceWith({ toolCallId: 'c1', toolName: 'Bash', cause: 'hook' });
+    expect(takeTerminatedCalls('member-1')).toEqual([]);
+  });
+
+  it('reports nothing when another call of the batch ran, and still clears the record', async () => {
+    const onRunRejected = vi.fn();
+    const fake = rejectingSession(['c1', 'c2'], [{ toolCallId: 'c1', toolName: 'Bash', cause: 'user' }]);
+
+    await new AgentRunner().startAgent(baseConfig({ createSession: async () => fake as never, keepAlive: () => false, onRunRejected }));
+
+    expect(onRunRejected).not.toHaveBeenCalled();
+    expect(takeTerminatedCalls('member-1')).toEqual([]);
+  });
+
+  /** A session whose opening run ends on a Bash call the user rejected; every later call ends its turn at once. */
+  function rejectedOpening(): FakeSession {
+    return new FakeSession({
+      onModelCall: (call, s) => {
+        if (call.index > 0) { void s.endTurn(); return; }
+        recordTerminatedCall(s.sessionId, { toolCallId: 'c1', toolName: 'Bash', cause: 'user' });
+        void s.callTools([{ id: 'c1', name: 'bash', terminate: true }]);
+      },
+    });
+  }
+
+  it('waits after the rejection, taking no message queued before it, until one arrives after it', async () => {
+    const fake = rejectedOpening();
+    const abort = new AbortController();
+    const messageBus = new MessageBus('team-1');
+    let early = true;
+    // pi turns the session idle before its `agent_settled` handlers, so this message is queued, not steered.
+    fake.subscribe((event) => {
+      if ((event as { type?: string }).type !== 'agent_settled' || !early) return;
+      early = false;
+      messageBus.send('Lead', 'worker', 'sent before the rejection was reported');
+    });
+    let onTurnEnd: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => { onTurnEnd = resolve; });
+    const onKeepAliveResume = vi.fn();
+    const run = new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never, messageBus, abortSignal: abort.signal, keepAlive: () => true,
+      onRunRejected: vi.fn(), onTurnEnd: () => onTurnEnd(), onKeepAliveResume,
+    }));
+
+    await parked;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fake.prompts).toEqual(['do the task']);
+    expect(onKeepAliveResume).not.toHaveBeenCalled();
+
+    messageBus.send('Lead', 'worker', 'sent after it');
+    await fake.whenPrompted(3);
+    expect(fake.prompts.slice(1)).toEqual(['[Message from Lead]: sent before the rejection was reported', '[Message from Lead]: sent after it']);
+    expect(onKeepAliveResume).toHaveBeenCalledTimes(1);
+
+    abort.abort();
+    await run;
+  });
+
+  it('marks the messages it holds behind the rejection in what a peek or take returns', async () => {
+    const fake = rejectedOpening();
+    const abort = new AbortController();
+    const messageBus = new MessageBus('team-1');
+    let early = true;
+    fake.subscribe((event) => {
+      if ((event as { type?: string }).type !== 'agent_settled' || !early) return;
+      early = false;
+      messageBus.send('Lead', 'worker', 'held');
+    });
+    let onTurnEnd: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => { onTurnEnd = resolve; });
+    const taker = undeliveredTaker();
+    const run = new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never, messageBus, abortSignal: abort.signal, keepAlive: () => true,
+      onRunRejected: vi.fn(), onTurnEnd: () => onTurnEnd(), bindTakeUndelivered: taker.bind,
+    }));
+
+    await parked;
+    expect(taker.peek()).toEqual([expect.objectContaining({ text: '[Message from Lead]: held', held: true })]);
+    abort.abort();
+    expect(taker.take()).toEqual([expect.objectContaining({ text: '[Message from Lead]: held', held: true })]);
+    await run;
+  });
+
+  it('a park start holds the leading messages it is told were held, until one arrives after them', async () => {
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
+    const abort = new AbortController();
+    const messageBus = new MessageBus('team-1');
+    const onKeepAliveResume = vi.fn();
+    const taker = undeliveredTaker();
+    let bound: () => void = () => undefined;
+    const live = new Promise<void>((resolve) => { bound = resolve; });
+    const run = new AgentRunner().startAgent(baseConfig({
+      initial: { kind: 'park', heldBehind: 1 },
+      redeliver: [{ text: '[Message from B]: held', echoed: false, ids: ['m1'], held: true }],
+      createSession: async () => fake as never, messageBus, abortSignal: abort.signal, keepAlive: () => true, onKeepAliveResume,
+      bindTakeUndelivered: taker.bind, bindNoteDelivery: () => { bound(); return () => undefined; },
+    }));
+
+    await live;
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(fake.prompts).toEqual([]);
+    expect(onKeepAliveResume).not.toHaveBeenCalled();
+    expect(taker.peek()).toEqual([{ text: '[Message from B]: held', echoed: false, ids: ['m1'], held: true }]);
+
+    messageBus.send('Lead', 'worker', 'go on');
+    await fake.whenPrompted(2);
+    expect(fake.prompts).toEqual(['[Message from B]: held', '[Message from Lead]: go on']);
+    expect(onKeepAliveResume).toHaveBeenCalledTimes(1);
+
+    abort.abort();
+    await run;
+  });
+
+  it('wakes on a message that arrives while the rejection is reported, before its wait is armed', async () => {
+    const fake = rejectedOpening();
+    const abort = new AbortController();
+    const messageBus = new MessageBus('team-1');
+    const onKeepAliveResume = vi.fn();
+    const run = new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never, messageBus, abortSignal: abort.signal, keepAlive: () => true,
+      onRunRejected: () => { messageBus.send('Lead', 'worker', 'carry on'); }, onKeepAliveResume,
+    }));
+
+    await fake.whenPrompted(2);
+    expect(fake.prompts[1]).toBe('[Message from Lead]: carry on');
+    expect(onKeepAliveResume).toHaveBeenCalledTimes(1);
+
+    abort.abort();
+    await run;
   });
 });
 
@@ -2231,9 +2401,9 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
   });
 
   // pi finalizes the call it was running and starts none after it (agent-loop.js:408-410, :435-437, :455-457 in
-  // pi-agent-core 1.4.0), drains steers (:191) and makes the next request under the aborted signal (:146), whose
-  // setup rejects it, so it ends on an error stop (`model-runtime.js:518-521`, pi-ai `lazy.js:45-65`) the nested
-  // extension records as the run's wind-down.
+  // pi-agent-core 1.5.2), drains steers (:191) and makes the next request under the aborted signal (:146), whose
+  // setup rejects it, so it ends on an aborted stop (`model-runtime.js:525-528` in pi-coding-agent 1.5.2, pi-ai
+  // `lazy.js:57-65`).
   it('re-seals a batch an abort cut short with its skipped calls stopped, the blocks its reload builds', async () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
     const batch = { role: 'assistant', content: [{ type: 'text', text: 'Reading' }, call('tc-ran'), call('tc-skipped')], stopReason: 'toolUse' };
@@ -2271,9 +2441,9 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(JSON.stringify(sealed[1]!.content)).toBe(JSON.stringify(reloaded!.content));
   });
 
-  // The nested extension records a call the abort settled at the gate (agent-loop.js:506-510 in pi-agent-core 1.4.0)
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:506-510 in pi-agent-core 1.5.2)
   // and pi emits the entry inside the extension pass, before listeners get that call's tool_execution_end
-  // (agent-session.js:752, :2783-2788 in pi 1.4.0).
+  // (agent-session.js:811, :2879-2884 in pi 1.5.2).
   it('re-seals a call the turn-stopped record names as stopped, sends no result for it, and matches its reload', async () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: `run ${id}` } });
     const batch = { role: 'assistant', content: [call('tc-gated'), call('tc-skipped')], stopReason: 'toolUse' };
@@ -2363,12 +2533,12 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
 });
 
 /**
- * A team cancel while a member runs a tool, in pi 1.4.0's order: the runner's abort listener aborts the session,
- * pi records the killed call with its `durationMs` (`agent-loop.js:590-598` in pi-agent-core 1.4.0), and the loop's
- * next request, made under the aborted signal (`:146`), ends on an error stop because its setup rejects first
- * (`model-runtime.js:518-521`, `lazy.js:45-65` in pi-ai 1.4.0). The nested extension names its entry at its
+ * A team cancel while a member runs a tool, in pi 1.5.2's order, on a provider that reports the abort as an error: the
+ * runner's abort listener aborts the session, pi records the killed call with its `durationMs` (`agent-loop.js:590-598`
+ * in pi-agent-core 1.5.2), and the loop's next request, made under the aborted signal (`:146`), ends on an error stop
+ * (pi-ai's own rejected setup ends aborted, `lazy.js:57-65` in pi-ai 1.5.2). The nested extension names its entry at its
  * `turn_end` boundary (`registerWindDownErrorRecord`), which pi commits before the listeners get that `turn_end`
- * (`agent-session.js:514`, `:635-640`).
+ * (`agent-session.js:569`, `:690-695`).
  */
 describe('AgentRunner wind-down error of a cancelled run', () => {
   const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });
@@ -2379,6 +2549,7 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
   const cancelledRun = (opts: { recorded: boolean }): { config: AgentRunConfig; fake: FakeSession } => {
     const cancel = new AbortController();
     const fake = new FakeSession({
+      abortedRequestStop: 'error',
       ...(opts.recorded ? { onTurnBoundary: windDownBoundary } : {}),
       onModelCall: (_c, s) => {
         s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });

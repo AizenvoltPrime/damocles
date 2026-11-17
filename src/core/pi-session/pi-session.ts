@@ -71,6 +71,7 @@ import { errorTextOf, l, verbatim } from "../l10n";
 import { englishText, LocalizedError, type LocalizedText } from "../../shared/localized-text";
 import { perfSpan, timed } from "../perf";
 import { PiRuntime } from "./pi-runtime";
+import { assertFolderPresent, failureNotice, folderFailure, isFolderAbsent, tellFolderAbsent } from "./folder-presence";
 import { ownSessionUsage } from "./session-usage";
 import type { FolderRuntime } from "./folder-runtime";
 import { getPiCodingAgent, loadedPiAi, type PiCodingAgentModule } from "./pi-loader";
@@ -129,8 +130,8 @@ import type { ShellOptions } from "./tools/bash-tool";
 import type { ShellCredentialLease } from "./tools/shell-credentials";
 import type { GitCredentialOrigin } from "../../shared/git-credential";
 import type { WorktreeIsolation } from "./worktree-isolation";
-import type { ChatMachine } from "./proven-shell";
-import { powerShellSearch } from "./tools/powershell-tool";
+import { shellHomeFolders, shellLookupFolders, type ChatMachine } from "./proven-shell";
+import { powerShellSearch, shellToolEnv } from "./tools/powershell-tool";
 import { networkHostsOf } from "../local-links";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, teamAgentPiToolNames } from "./tools/team-tools";
 import { mapPiToolName, toolCategory } from "./tool-normalization";
@@ -195,7 +196,7 @@ import {
   type LiveTitleOutcome,
 } from "./session-store";
 import { recordedSelection } from "./session-store/recorded-selection";
-import { sessionFileEntries } from "./session-store/history-loader";
+import { readSessionFileEntries } from "./session-store/session-file-entries";
 import { earlierModelRuns } from "./session-store/model-runs";
 import type { TerminalAttachmentsData } from "./session-store/terminal-attachments";
 import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
@@ -236,8 +237,8 @@ import {
   turnExchangeFrom,
   firstExchangeForTitle,
 } from "./branch-text";
-import { abortRunAtStart } from "./abort-run-at-start";
-import { queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp, type ReturnRefused } from "./prompt-entry";
+import { promptRefusable, RunRefused } from "./run-refusal";
+import { deliveredAs, queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp, type ReturnRefused } from "./prompt-entry";
 import { isExtensionCommand, resolveSlashInvocation } from "./slash-invocation";
 import { loadOsName, osName } from "./os-name";
 import {
@@ -359,7 +360,7 @@ interface QueuedInput {
   design?: HeldDesignPrompt;
   /** pi's steering queue holds it, so its delivery is its own. */
   steered?: boolean;
-  /** pi delivered it, which can come before its `prompt()` reports `queued` (agent-session.js:1673-1675 in pi-coding-agent 1.4.0). */
+  /** pi delivered it, which can come before its `prompt()` reports `queued` (agent-session.js:1757-1759 in pi-coding-agent 1.5.2). */
   delivered?: boolean;
 }
 
@@ -443,9 +444,9 @@ function keepRefusalText(refused: "noControl" | "notAStop" | "locked"): Localize
 
 /** A `sendMessage` prompt, from the start of its send until it settles (docs/invariants.md, "A send holds the session"). */
 interface OutgoingPrompt extends SendTicket {
-  /** Aborts `signal`: the send stops before `prompt()`, and a run pi opens with it afterwards is aborted at its start. */
+  /** Aborts `signal`: the send stops before `prompt()`, and the run pi would open with it afterwards is refused. */
   stop: () => void;
-  /** `prompt()` holds it, so a Stop leaves it to pi's verdict instead of returning it. */
+  /** `prompt()` holds it, so a Stop leaves it to pi's verdict instead of returning it at once. */
   inPi: boolean;
   /** pi queued it, opened a run with it, or handled it. */
   accepted: boolean;
@@ -518,7 +519,7 @@ function resumeRequestFor(sessionId: string, prior: string | null, atStart: bool
 
 /** A resume that threw: pi's own error is what the user reads. */
 function resumeFailure(err: unknown): ResumeOutcome {
-  return { kind: "failed", reason: errorTextOf(err) };
+  return isFolderAbsent(err) ? { kind: "failed", reason: err.text, absent: err } : { kind: "failed", reason: errorTextOf(err) };
 }
 
 /** A resume switch queued behind earlier replacements; `cancelled` once the panel let go of its target before pi installed it. */
@@ -635,7 +636,7 @@ export class PiSession implements ChatSession {
   /** Bumped by every model request, prompt and conversation change, so a refusal they supersede arms no pick. */
   private openaiPickEpoch = 0;
   /** In-flight abort (interrupt/cancel → session.abort() → waitForIdle); a following sendMessage awaits
-   * it so a new turn never races a still-winding-down one ("Agent is already processing"). */
+   * it so a new turn never queues as a follow-up into the stopped run, which ends without running it. */
   private abortPromise: Promise<void> | null = null;
   /** Aborted and replaced by each `stopSends`; a turn pin keeps the one current when it was made (`signInPrompts`). */
   private pinStop = new AbortController();
@@ -672,6 +673,7 @@ export class PiSession implements ChatSession {
   /** The chat's design role or its own design link (PD-23); the one source of `designState`. */
   readonly design: SessionDesign;
   private servedFiles: ChatServedFiles | undefined;
+  private readonly servedPagesBinding: { dispose(): void } | undefined;
   private readonly designSettingSubscription: { dispose(): void };
   // D61's note not yet in the conversation (rule 11): delivered once the session runs, never by starting a turn.
   private pendingWorkingFolderNote: string | null = null;
@@ -713,6 +715,8 @@ export class PiSession implements ChatSession {
   private supportedModelsCache: ModelInfo[] = piSupportedModels();
   /** The models a daemon's core last logged unavailable for a loopback endpoint, so the log names each change once. */
   private loopbackUnavailable: string | undefined;
+  /** The configured providers a daemon's core last reported for this chat, joined, so it reports only a change. */
+  private reportedConfiguredProviders: string | undefined;
   private permissionMode: PermissionMode;
   private processingFlag = false;
   /** Set while a manual compaction runs. Distinct from `processingFlag` so it gates a concurrent
@@ -729,6 +733,8 @@ export class PiSession implements ChatSession {
   private promptInPi: { session: AgentSession; settled: Promise<void>; openedRun: boolean } | null = null;
   /** The bound session's run lifecycle, the one reader of its run state for the notices, the sends, the queue and compaction. */
   private runLifecycle: RunLifecycle | null = null;
+  /** The lifecycle whose idle a design delivery deferred by pi's own run waits for (`reconcileDesignWhenPiIdle`). */
+  private designWaitsForPi: RunLifecycle | null = null;
   /** The bound session's wind-down notice, armed by the next Stop. */
   private windDownWatch: WindDownWatch | null = null;
   /** What the main chat's stopped run still waits for, as `windDownWatch` published it; carried by the session state. */
@@ -754,6 +760,8 @@ export class PiSession implements ChatSession {
   private resumeRequest: ResumeRequest | null = null;
   /** Sessions whose lease another process took; this panel is detaching from them and never re-leases them. */
   private readonly lostLeases = new Set<string>();
+  /** The start's read of the file it opens; `stored` when that is the resume target, which the panel can let go of meanwhile. */
+  private startRead: { readonly sessionId: string; readonly stored: boolean; readonly stop: AbortController } | null = null;
   /** Resume switches queued and not yet finished, each cancelled when the panel lets go of its target first. */
   private readonly queuedSwitches = new Set<QueuedSwitch>();
   /** Settles once the replacement pi is running (a reset's newSession or a resume switch) settles; a dispose waits for it before tearing the runtime down. */
@@ -794,7 +802,7 @@ export class PiSession implements ChatSession {
   private designSteers: DesignSteer[] = [];
   /** The design steer whose `prompt()` pi holds; a Stop leaves it to pi's verdict, as it leaves `batchInPi`. */
   private designInPi: DesignSteer | null = null;
-  /** The design steer a Stop left to pi's verdict: sent and stopped if pi opens a run with it, dropped otherwise. */
+  /** The design steer a Stop left to pi's verdict, dropped whatever it is; a run pi would open with it is refused. */
   private stoppedDesign: DesignSteer | null = null;
   private readonly userInputWaiters = new Set<() => void>();
   /** Put-back passes waiting for the opening prompt of the run their last steer opened (`nextUserDelivery`). */
@@ -823,7 +831,7 @@ export class PiSession implements ChatSession {
   private markupNumbering: Promise<void> = Promise.resolve();
   /** The batch whose re-steer `prompt()` holds; a Stop leaves it to pi's verdict instead of returning its chips. */
   private batchInPi: readonly QueuedInput[] | null = null;
-  /** The batch a Stop left to pi's verdict: sent and stopped if pi opens a run with it, returned if pi queues or rejects it. */
+  /** The batch a Stop left to pi's verdict: returned, its run refused, unless an input handler consumed it. */
   private stoppedBatch: readonly QueuedInput[] | null = null;
   private screeningRunning = false;
   /** How many leading `queuedInputs` the batch pi holds carries, so its delivery consumes exactly those; null counts them all. */
@@ -928,6 +936,12 @@ export class PiSession implements ChatSession {
       this.publishDesignState();
       if (this.design.enabled()) this.design.idle();
     });
+    // a daemon's core has no browser: a remote chat's pages are in the client's
+    const browser = options.browserService;
+    const chat = options.browserChat;
+    this.servedPagesBinding = browser && chat && !options.platform.remote
+      ? browser.bindServedPages(chat, { toFile: (url) => this.browserServedFiles().toFile(url), restoreTarget: (url) => this.browserRestoreTarget(url) })
+      : undefined;
     this.chatReview = new ChatReview({
       // A design chat's changes are design files, which the project's review never shows.
       enabled: () => options.platform.capabilities.chatReview && !this.design.role(),
@@ -996,11 +1010,15 @@ export class PiSession implements ChatSession {
 
   // ---- lifecycle ----------------------------------------------------------
 
+  // A chat worktree's folder is never located on its own: its project's relocation re-points it.
+  private readonly locatable = (folder: string): boolean => !this.worktree.inChatWorktree(folder);
+
   private ensureStarted(): Promise<void> {
     // A panel replaces a disposed session rather than reviving it, so a stale caller must fail here.
     if (this._disposed) return Promise.reject(new Error("PiSession: session was disposed"));
     if (!this.startPromise)
-      this.startPromise = timed("start.total", () => this.start()).catch(async (err) => {
+      this.startPromise = timed("start.total", () => this.start()).catch(async (thrown: unknown) => {
+        const err = await folderFailure(this.cwd, thrown);
         // A dispose under way releases the runtime itself.
         if (!this._disposed) await this.releaseRuntime();
         this.startPromise = null;
@@ -1050,6 +1068,9 @@ export class PiSession implements ChatSession {
   }
 
   private async start(): Promise<void> {
+    // First, so a missing folder builds no folder runtime.
+    await assertFolderPresent(this.cwd);
+    this.throwIfDisposedDuringStart();
     const piRuntime = PiRuntime.get();
     // the environment section states it, so it is read before anything builds the session's prompt
     const [folder] = await Promise.all([piRuntime.folder(this.cwd), loadOsName()]);
@@ -1098,7 +1119,8 @@ export class PiSession implements ChatSession {
       // new sessions belong in this folder's directory (AD12), so that file is opened again with it.
       const reopen = this.switchedFromOtherDir;
       this.switchedFromOtherDir = null;
-      const sessionManager = reopen !== null ? pi.SessionManager.open(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
+      // Unstopped: pi's switch tore the old session down before building this one, and a dispose waits for it (`piReplacement`).
+      const sessionManager = reopen !== null ? await pi.SessionManager.openAsync(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
       // A recorded model that cannot run is still the chat's, and its sends are refused until it can.
       const built = this.recordedSelectionOf(sessionManager.getBranch());
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
@@ -1123,11 +1145,13 @@ export class PiSession implements ChatSession {
         },
         isTeamEnabled: () => this.teamToolEligible(),
         getShellOptions: () => this.shellOptions(),
+        allowedNetworkHosts: () => this.allowedNetworkHosts(),
         shellCredentials: (toolCallId) => this.shellCredentials(toolCallId),
         shellCancel: this.shellCancel,
         deliverUserNote: this.noteDeliveryForMain(() => bound.session),
         shellJob: this.shellJob,
         mcpResources: {
+          mcp: folder.mcpModule,
           source: () => this.mcpClientManager(),
           disabledResource: () => disabledResourceMatcher(this.disabledToolEntries()),
         },
@@ -1137,9 +1161,9 @@ export class PiSession implements ChatSession {
       // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
       // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
-      // Given no model, pi picks one itself (sdk.js:87-118 in pi-coding-agent 1.4.0), so it always gets the chat's.
+      // Given no model, pi picks one itself (sdk.js:87-118 in pi-coding-agent 1.5.2), so it always gets the chat's.
       const model = built ? built.model ?? this.shownPiModel(built.value) : this.desiredModel ?? this.shownPiModel(this.modelValue);
-      // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :252-257 in pi-coding-agent 1.4.0).
+      // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :252-257 in pi-coding-agent 1.5.2).
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager,
@@ -1176,7 +1200,12 @@ export class PiSession implements ChatSession {
     let openedPath = letGo() ? null : resumePath;
     // A hand-off moves a chat without moving its file, whose header and directory are the folder it was created in (rule 2):
     // cwdOverride keeps the chat in this folder, and sessionDir puts a /clear's new session in this folder's directory.
-    const sessionManager = openedPath ? pi.SessionManager.open(openedPath, sessionDir, this.cwd) : pi.SessionManager.create(this.cwd, sessionDir);
+    const opened = openedPath && resumeTargetId ? await this.readAtStart(pi, openedPath, sessionDir, resumeTargetId, resumingStored) : null;
+    // Checked again after the read, which a dispose, a let-go or a lost lease stops; one past its last chunk still lands here.
+    this.throwIfDisposedDuringStart();
+    if (resumeTargetId && this.lostLeases.has(resumeTargetId)) throw new Error("PiSession: the session's lease was lost during start");
+    if (opened === null || letGo()) openedPath = null;
+    const sessionManager = opened !== null && openedPath !== null ? opened : pi.SessionManager.create(this.cwd, sessionDir);
     const runtime = await timed("start.createRuntime", () =>
       pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager }), { resumed: openedPath !== null });
     if (openedPath !== null && letGo()) {
@@ -1218,7 +1247,7 @@ export class PiSession implements ChatSession {
     this.runtime.setBeforeSessionInvalidate(() => {
       this.unsubscribe?.();
       this.unsubscribe = null;
-      // pi disposes this session right after the hook (agent-session-runtime.js:111-112 in pi-coding-agent 1.4.0).
+      // pi disposes this session right after the hook (agent-session-runtime.js:111-112 in pi-coding-agent 1.5.2).
       this.tornDown.add(runtime.session);
     });
     // A rebind that throws rejects pi's replacement, whose caller then releases the runtime (`releaseIfTornDown`).
@@ -1249,9 +1278,34 @@ export class PiSession implements ChatSession {
     // Only a start that completed retires the fork target, so the next start after a failed one reopens the branch.
     if (openedPath && forkResumeId && fork) fork.consumed = true;
     const request = this.resumeRequest;
-    // A resume that landed while the runtime was being built found no runtime to switch.
-    if (request && this.resumeSessionId !== resumeTargetId) this.queueResumeSwitch(request);
+    // A resume that landed while the runtime was being built found no runtime to switch, and a target the start let go of
+    // and was given back meanwhile is not the conversation it opened.
+    if (request && (this.resumeSessionId !== resumeTargetId || openedPath === null)) this.queueResumeSwitch(request);
     else request?.settle(RESUME_SWITCHED);
+  }
+
+  /**
+   * The start's read of `file`, the conversation `sessionId`; null when the read was stopped first: by a dispose, or for a
+   * stored target (`stored`) a let-go or a lost lease (`stopUnwantedStartRead`). The caller re-checks each after the await.
+   */
+  private async readAtStart(pi: PiCodingAgentModule, file: string, sessionDir: string, sessionId: string, stored: boolean): Promise<AgentSession["sessionManager"] | null> {
+    const read = { sessionId, stored, stop: new AbortController() };
+    this.startRead = read;
+    try {
+      return await pi.SessionManager.openAsync(file, sessionDir, this.cwd, { signal: read.stop.signal });
+    } catch (err) {
+      if (read.stop.signal.aborted) return null;
+      throw err;
+    } finally {
+      if (this.startRead === read) this.startRead = null;
+    }
+  }
+
+  /** Stop the start's read once its file is not wanted: on a dispose, and for a stored target once let go of or its lease is lost. */
+  private stopUnwantedStartRead(): void {
+    const read = this.startRead;
+    if (!read) return;
+    if (this._disposed || (read.stored && (this.resumeSessionId !== read.sessionId || this.lostLeases.has(read.sessionId)))) read.stop.abort();
   }
 
   private subscribeEvents(session: AgentSession): void {
@@ -1295,7 +1349,7 @@ export class PiSession implements ChatSession {
     return session !== undefined && run?.session === session ? run : null;
   }
 
-  /** pi defers a prompt made while it runs a run's `agent_settled` handlers and returns at once (agent-session.js:1632-1634), and `waitForIdle()` no longer waits then (:685, :1983-1985). */
+  /** pi defers a prompt made while it runs a run's `agent_settled` handlers and returns at once (agent-session.js:1696-1698), and `waitForIdle()` no longer waits then (:740, :2085-2087). */
   private piSettling(session: AgentSession, signal?: AbortSignal): Promise<void> | null {
     return this.runOf(session)?.untilSettled(signal) ?? null;
   }
@@ -1404,6 +1458,7 @@ export class PiSession implements ChatSession {
       worktreeIsolation: () => this.worktreeIsolation(),
       designScope: () => this.design.scope(),
       machine: this.chatMachine(),
+      browserFiles: this.browserServedFiles(),
       ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       designPrompt: () => this.design.promptInputs(),
     };
@@ -1503,6 +1558,7 @@ export class PiSession implements ChatSession {
     for (const id of this.lostLeases) if (!held.has(id)) this.lostLeases.delete(id);
     // A switch must not bind a session whose lease this panel let go of (a reset, another target, dispose).
     for (const queued of this.queuedSwitches) if (!held.has(queued.sessionId)) queued.cancelled = true;
+    this.stopUnwantedStartRead();
     for (const id of held) if (!this.lostLeases.has(id) && !acquireSessionLease(id, this)) this.onSessionLeaseLost(id);
   }
 
@@ -1511,6 +1567,7 @@ export class PiSession implements ChatSession {
     this.lostLeases.add(sessionId);
     // Recorded on the switch itself: the detach below forgets the loss once its reset lets go of the session.
     for (const queued of this.queuedSwitches) if (queued.sessionId === sessionId) queued.cancelled = true;
+    this.stopUnwantedStartRead();
     const session = this.runtime?.session;
     if (session) this.muteIfLeaseLost(session);
     // A panel being disposed is already letting go of the session; a detach would re-register it.
@@ -1930,36 +1987,38 @@ export class PiSession implements ChatSession {
     outgoing: OutgoingPrompt,
   ): Promise<SendOutcome> {
     // Waits for any in-flight session replacement so we prompt the FRESH session, not the old one that
-    // is still tearing down (else pi throws "Agent is already processing"). Drives the plan
+    // is still tearing down (its teardown aborts its run and disposes it). Drives the plan
     // "clear context & start fresh" flow, which calls clear() then sendMessage() synchronously.
     try {
       await this.ensureStarted();
       if (this.resetPromise) await this.afterReplacements();
     } catch (err) {
-      this.emit({ type: "error", message: l("pi failed to start: {0}", errorTextOf(err)) });
+      this.emit({ type: "error", message: failureNotice(err, (detail) => l("pi failed to start: {0}", detail)) });
       return "unsent";
     }
     // A model picked before this send is the one the turn runs on and the composer shows.
     if (this.modelSwitch) await this.modelSwitch;
     // Likewise wait for an in-flight abort (interrupt/cancel) to fully wind the prior turn down before
     // starting a new one. ESC during a long tool (e.g. browser open) keeps pi streaming until the tool
-    // returns; a sendMessage that arrived in that window would otherwise hit "Agent is already
-    // processing". Tools honor the abort signal, so this resolves promptly rather than blocking.
+    // returns; a sendMessage that arrived in that window would otherwise queue as a follow-up into the
+    // stopped run, which ends without running it. Tools honor the abort signal, so this resolves promptly rather than blocking.
     if (this.abortPromise) {
       await this.abortPromise;
     }
     // A prompt a Stop left in pi's hands settles first, unless another run streams: on an idle session both would race
-    // to open a run and pi refuses the second, and the run it opens is being aborted.
+    // to open a run, and the second would join the first's start, which is refused.
     const stoppedInPi = this.promptInPi;
     if (stoppedInPi && stoppedInPi.session === this.runtime?.session && (stoppedInPi.openedRun || !this.runOf(stoppedInPi.session)?.streaming)) {
       await stoppedInPi.settled;
     }
     const settling = this.runtime ? this.piSettling(this.runtime.session, outgoing.signal) : null;
     if (settling) await settling;
+    // A reload in flight rebuilds the runtime across awaits, so this turn prompts only after it.
+    while (this.mcpReloadPromise) await this.mcpReloadPromise;
     // Flush a deferred MCP reload (a connect that arrived mid-turn on an orphaned session): the prior
     // turn has settled, so rebuild now — awaited so this turn prompts against the rebuilt session.
     if (this.mcpReloadPendingAfterTurn) {
-      await this.runMcpReload();
+      await this.runMcpReload(outgoing);
     }
     // `runStartRefusal` below reads the link this finds (PD-36).
     if (this.design.role()) await this.design.readLink();
@@ -2026,7 +2085,7 @@ export class PiSession implements ChatSession {
       // the model reads which reference each image is; the transcript shows the typed text (the original-input sidecar)
       if (references.note) text = `${text}\n\n${references.note}`;
     }
-    // Only the UserPromptSubmit hook and a settle wait await between this check and `prompt()`, and each checks again after it: past `prompt()` a Stop stops the run pi opens instead of returning the message.
+    // Only the UserPromptSubmit hook and a settle wait await between this check and `prompt()`, and each checks again after it: past `prompt()` a Stop returns the message at pi's verdict instead.
     if (this.sendOvertaken(outgoing, session)) return "withdrawn";
     // After the last wait: a finish action (D33) holds the chat's worktree only while the chat is idle, which `beginTurn` ends.
     // The model was judged once its adoption above settled.
@@ -2102,12 +2161,10 @@ export class PiSession implements ChatSession {
       }
       hookContext = verdict?.additionalContext;
     }
-    // A run that streamed at the settle wait above can reach its `agent_settled` handlers while the steps since awaited, and pi defers a prompt made then (agent-session.js:1632-1634).
+    // A run that streamed at the settle wait above can reach its `agent_settled` handlers while the steps since awaited, and pi defers a prompt made then (agent-session.js:1696-1698).
     for (let settling = this.piSettling(session, outgoing.signal); settling; settling = this.piSettling(session, outgoing.signal)) await settling;
     if (this.sendOvertaken(outgoing, session)) return withdrawnAfterTurnBegan();
 
-    // After the hook: a thinking level change is a session entry, and a send stopped during the hook writes none.
-    session.setThinkingLevel(this.resolveThinkingLevel());
     // Refresh the auto-compaction reserve against the current model's window before the turn, so the
     // configured trigger percent holds even after a model switch or a settings save() (US-030).
     this.refreshCompactionReserve();
@@ -2132,24 +2189,26 @@ export class PiSession implements ChatSession {
     outgoing.inPi = true;
     try {
       // `isStreaming` covers a run's retry and auto-compaction windows, where a prompt queues as a follow-up.
-      await this.pinned(() => session.prompt(text, {
+      const ran = await this.pinned(() => promptRefusable(session, text, {
         ...(images.length > 0 ? { images } : {}),
         ...(this.runOf(session)?.streaming ? { streamingBehavior: "followUp" as const } : {}),
-        // pi treats this as internal and calls it outside every try (#11044, #11065), so it only observes.
         preflightResult: (disposition) => {
+          // Overtaken while pi held it: nothing of it is written, so it goes back whole.
+          if (disposition === "started" && (outgoing.signal.aborted || this.runtime?.session !== session)) {
+            outcome = { kind: "cancelled" };
+            outgoing.returnUnsent();
+            throw this.refuseRun(session);
+          }
           accepted = disposition;
           outgoing.accepted = true;
+          // A thinking level change is a session entry, so only an accepted send writes it; pi reads the level when the run's request is built.
+          if (disposition !== "handled") session.setThinkingLevel(this.resolveThinkingLevel());
           committed.preflightResult(disposition);
           if (this.currentSend === outgoing) this.releaseHeldInputs();
           if (disposition === "started") {
             inPi.openedRun = true;
             this.runStarted(session);
-            if (outgoing.signal.aborted || this.runtime?.session !== session) {
-              outcome = { kind: "cancelled" };
-              this.stopRunAtStart(session);
-            } else {
-              this.steerRunStartContext(session, hookContext);
-            }
+            this.steerRunStartContext(session, hookContext);
           }
           if (disposition === "queued") {
             const queued = this.queuedPrompts.add(session, images, hookContext, {
@@ -2183,6 +2242,7 @@ export class PiSession implements ChatSession {
           }
         },
       }));
+      if (!ran) return "withdrawn";
       // An extension command (`/todos`) opens no run, so no pi event ends its turn; `prompt()` resolves once a run settled.
       if (this.currentSend === outgoing && !this._aborting && !this.runOf(session)?.streaming && !this.adapter.observedAgentRun()) {
         this.adapter.endTurnWithoutAgentRun();
@@ -2239,11 +2299,44 @@ export class PiSession implements ChatSession {
     return session && pi ? resolveSlashInvocation(session, text, pi.stripFrontmatter) : { kind: "text" };
   }
 
-  /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1447), so this panel drops them too. */
+  /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1509-1511), so this panel drops them too. */
   private runStarted(session: AgentSession): void {
     if (this.runtime?.session !== session) return;
     this.pendingRestoredTools.clear();
     this.commitShownModel();
+    this.reportConfiguredProviders();
+  }
+
+  /**
+   * On a daemon's core, the providers this chat's configuration names, read as the run's pinned client: the Memory judge's
+   * and the Background model's, every subagent profile's and, while teams are on, every team role's; sorted, each once.
+   */
+  private reportConfiguredProviders(): void {
+    const remote = this.options.platform.remote;
+    const panelId = this.options.panelId;
+    if (!remote || panelId === undefined) return;
+    const piRuntime = PiRuntime.get();
+    const modelRuntime = piRuntime.modelRuntime;
+    if (!piRuntime.modelLookup || !modelRuntime) return;
+    const providers = new Set(piRuntime.subCallProviders());
+    // one read of the enabledModels allowlist serves every profile
+    const scope = resolveEnabledModels(readEnabledModels(this.cwd), modelRuntime);
+    for (const config of this.agentRegistry?.getAvailableConfigs() ?? []) {
+      const model = this.resolveSubagentModel(config, () => scope).model;
+      if (model) providers.add(model.provider);
+    }
+    if (this.isTeamEnabled()) {
+      const deps = this.teamModelDeps();
+      for (const role of Object.keys(deps.roleSettings) as TeamRole[]) {
+        const model = resolveRoleModel(role, deps).model;
+        if (model) providers.add(model.provider);
+      }
+    }
+    const sorted = [...providers].sort();
+    const key = sorted.join("\n");
+    if (key === this.reportedConfiguredProviders) return;
+    this.reportedConfiguredProviders = key;
+    remote.runConfiguredProviders(panelId, sorted);
   }
 
   /** A shown factory default that a run or a compaction uses is committed, so the panel holds it; every run-opening path checked the model first. */
@@ -2254,20 +2347,12 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Abort the run pi just opened for a message a Stop or a replacement overtook while pi held it, at `agent_start`, before
-   * any request (agent-session.js:712-713); a session still connected keeps the message in its transcript as a stopped turn.
+   * The error to throw from `preflightResult('started')` of a message a Stop or a replacement overtook while pi held it, which
+   * refuses its run (patches/README.md, 002). pi keeps what joined that run's start queued for the next run, so it is dropped.
    */
-  private stopRunAtStart(session: AgentSession): void {
-    // pi's run takes whatever its queue holds as it starts (agent-loop.js:90), and a stopped run delivers nothing.
+  private refuseRun(session: AgentSession): RunRefused {
     this.dropQueue(session);
-    const ending = abortRunAtStart(session).catch((err) => log("[PiSession] stopping a run at its start failed: %O", err));
-    if (this.runtime?.session !== session) return;
-    this.stopWindDownWatch(session);
-    const pending = Promise.all([this.abortPromise, ending]).then(() => undefined);
-    this.abortPromise = pending;
-    void pending.finally(() => {
-      if (this.abortPromise === pending) this.abortPromise = null;
-    });
+    return new RunRefused();
   }
 
   /** The folder's hooks, when a UserPromptSubmit hook is configured. */
@@ -2306,7 +2391,7 @@ export class PiSession implements ChatSession {
       .catch((err) => log("[PiSession] queueing UserPromptSubmit context failed: %O", err));
   }
 
-  /** `queueHookContext` for the prompt a run opens with, from its `started`: the run's first drain takes it (agent-loop.js:90 in pi-agent-core 1.4.0). */
+  /** `queueHookContext` for the prompt a run opens with, from its `started`: the run's first drain takes it (agent-loop.js:90 in pi-agent-core 1.5.2). */
   private steerRunStartContext(session: AgentSession, context: string | undefined): void {
     if (!context) return;
     this.queueHookContext(session, context, "steer");
@@ -2479,6 +2564,9 @@ export class PiSession implements ChatSession {
     // Gate on pi's own run state, not `processingFlag`: the two can momentarily disagree. A send on its way to pi holds the
     // message for the run it opens.
     const holding = this.currentSend !== null && !this.currentSend.accepted;
+    // A stopped run delivers nothing more and a run being refused opens none, though pi still counts either as busy; only a
+    // send made after the Stop holds a message, for the run it opens.
+    if (this.runStopped() && !holding) return "runEnded";
     if (!(run?.mayQueue || holding)) return "runEnded";
     if (!this.sendsTo(session, target)) return "otherConversation";
     const input: QueuedInput = {
@@ -2722,7 +2810,7 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Hands `text` to pi as a steer and resolves once pi gave its verdict (`onVerdict`), or once `prompt()` ended without one.
+   * Hands `text` to pi as a steer and resolves once pi gave its verdict (`onVerdict`, which refuses a run by throwing `RunRefused`), or once `prompt()` ended without one.
    * On an idle session `prompt()` holds the whole run it opens, so `onEnd` runs off the pass, with the error if it threw;
    * a run it opens is waited for only until it delivered `text`, its opening prompt, so no later pass puts that back again.
    * Template expansion stays on only for typed text (`expand`); core's text is never a template.
@@ -2736,21 +2824,18 @@ export class PiSession implements ChatSession {
     onEnd: (err: unknown) => void,
   ): Promise<void> {
     return new Promise<void>((resolve) => {
-      void this.pinned(() => session.prompt(text, {
+      void this.pinned(() => promptRefusable(session, text, {
         streamingBehavior: "steer",
         // Every message steered here already passed the input handlers when it was queued.
         source: "extension",
         ...(expand ? {} : { expandPromptTemplates: false }),
         ...(images.length > 0 ? { images: [...images] } : {}),
         preflightResult: (disposition) => {
+          // A refusal throws here, and the pass then waits only for `prompt()` to reject.
+          onVerdict(disposition);
           // Registered before pi's loop starts, which delivers the opening prompt.
-          const opened = disposition === "started" ? this.nextUserDelivery(session) : null;
-          try {
-            onVerdict(disposition);
-          } finally {
-            if (opened) void opened.then(resolve);
-            else resolve();
-          }
+          if (disposition === "started") void this.nextUserDelivery(session).then(resolve);
+          else resolve();
         },
       }))
         .then(() => onEnd(undefined), (err: unknown) => onEnd(err ?? new Error("prompt() rejected")))
@@ -2763,6 +2848,8 @@ export class PiSession implements ChatSession {
   private steerNote(session: AgentSession, note: string): Promise<void> {
     return this.handOver(session, note, [], false, (disposition) => {
       if (disposition !== "started") return;
+      // A stop dropped it from the notes while pi held it, and it annotates a call of the stopped turn.
+      if (this.runtime?.session !== session || !this.injectedNotes.some((listed) => listed.text === note)) throw this.refuseRun(session);
       this.runStarted(session);
       this.adapter.beginTurn();
     }, (err) => {
@@ -2867,7 +2954,8 @@ export class PiSession implements ChatSession {
 
   /**
    * Puts one follow-up back with the content it was queued with. Until its `prompt()` a withdraw returns it whole, and one
-   * withdrawn meanwhile is never handed to pi; one a Stop overtook in pi's hands is sent and stopped, or returned (`queued`).
+   * withdrawn meanwhile is never handed to pi; one a Stop overtook in pi's hands returns at pi's verdict, its run refused,
+   * unless an input handler consumed it.
    */
   private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp, report: (refusal: RunStartRefusal) => void = this.runRefusalReport()): void {
     if (queued.withdrawn()) return;
@@ -2879,42 +2967,36 @@ export class PiSession implements ChatSession {
     }
     let dispositioned = false;
     queued.inPi();
-    void this.pinned(() => session
-      .prompt(queued.text, {
-        expandPromptTemplates: false,
-        streamingBehavior: "followUp",
-        source: "extension",
-        ...(queued.images.length > 0 ? { images: [...queued.images] } : {}),
-        preflightResult: (disposition) => {
-          dispositioned = true;
-          queued.dispatched();
-          if (disposition === "started") this.runStarted(session);
-          if (queued.stopped()) {
-            if (disposition === "started") {
-              const onCommitted = queued.release();
-              this.stopRunAtStart(session);
-              const watch = watchPromptEntry(session, (entry) => {
-                watch.dispose();
-                onCommitted(entry);
-              });
-              watch.preflightResult(disposition);
-            } else if (disposition === "queued") {
-              queued.giveBack();
-              this.takeBackQueued(session, queued.text);
-            } else {
-              queued.release();
-            }
+    void this.pinned(() => promptRefusable(session, queued.text, {
+      expandPromptTemplates: false,
+      streamingBehavior: "followUp",
+      source: "extension",
+      ...(queued.images.length > 0 ? { images: [...queued.images] } : {}),
+      preflightResult: (disposition) => {
+        dispositioned = true;
+        queued.dispatched();
+        if (queued.stopped()) {
+          if (disposition === "handled") {
+            queued.release();
             return;
           }
-          if (!queued.withdrawn()) {
-            if (disposition === "queued") this.queueHookContext(session, queued.hookContext, "followUp");
-            if (disposition === "started") this.steerRunStartContext(session, queued.hookContext);
-            return;
+          queued.giveBack();
+          if (disposition === "started") throw this.refuseRun(session);
+          this.takeBackQueued(session, queued.text);
+          return;
+        }
+        if (!queued.withdrawn()) {
+          if (disposition === "queued") this.queueHookContext(session, queued.hookContext, "followUp");
+          if (disposition === "started") {
+            this.runStarted(session);
+            this.steerRunStartContext(session, queued.hookContext);
           }
-          if (disposition === "started") this.stopRunAtStart(session);
-          if (disposition === "queued") this.takeBackQueued(session, queued.text);
-        },
-      }))
+          return;
+        }
+        if (disposition === "started") throw this.refuseRun(session);
+        if (disposition === "queued") this.takeBackQueued(session, queued.text);
+      },
+    }))
       .catch((err) => {
         log("[PiSession] re-queueing a preserved follow-up failed: %O", err);
         if (dispositioned) return;
@@ -2934,27 +3016,13 @@ export class PiSession implements ChatSession {
   /** pi's verdict on a steered batch, after every input and `before_agent_start` handler (docs/invariants.md, "A stopped run delivers nothing more"). */
   private admitSteer(session: AgentSession, batch: readonly QueuedInput[], disposition: PromptDisposition): void {
     const opensRun = disposition === "started";
-    if (opensRun) this.runStarted(session);
     if (this.batchWithdrawn(session, batch)) {
-      const leftToPi = this.stoppedBatch === batch;
-      if (opensRun) {
-        this.stopRunAtStart(session);
-        if (leftToPi) {
-          this.stoppedBatch = null;
-          this.emitBatchProcessed(batch);
-          // The stopped turn's adapter skips the delivery, so the batch's entry gets its mid-stream marker here.
-          const watch = watchPromptEntry(session, (entry) => {
-            watch.dispose();
-            this.recordMidStreamMarker(entry.id);
-          });
-          watch.preflightResult(disposition);
-        }
-        return;
-      }
       if (disposition === "queued") this.takeBackQueued(session);
-      if (leftToPi) this.returnStoppedBatch(disposition === "queued");
+      if (this.stoppedBatch === batch) this.returnStoppedBatch(disposition !== "handled");
+      if (opensRun) throw this.refuseRun(session);
       return;
     }
+    if (opensRun) this.runStarted(session);
     if (disposition === "handled") {
       this.queuedInputs.splice(0, batch.length);
       this.steeredCount = null;
@@ -3049,7 +3117,7 @@ export class PiSession implements ChatSession {
       return {};
     }
     // pi holds the one in `designInPi` from `agent.steer()`, before its `prompt()` reports `queued`.
-    const design = this.designSteers.findIndex((input) => (input.steered === true || input === this.designInPi) && input.text === deliveredText);
+    const design = this.designSteers.findIndex((input) => (input.steered === true || input === this.designInPi) && deliveredAs(input, deliveredText));
     if (design !== -1) {
       const [input] = this.designSteers.splice(design, 1);
       if (!input) return null;
@@ -3240,15 +3308,16 @@ export class PiSession implements ChatSession {
       }
       const startsRun = disposition === "started";
       const target = session();
-      if (startsRun && target) this.runStarted(target);
-      // A stop can land while pi runs its input handlers, after the queue this note just joined was cleared.
-      const withdrawn = startsRun ? null : this.noteRefusal(target);
+      // A stop can land while pi runs its input handlers, after the queue this note just joined was cleared or before the run it would open.
+      const withdrawn = this.noteRefusal(target);
       if (withdrawn) {
-        target?.clearQueue();
         unlist();
         this.emit({ type: "notification", message: withdrawn, notificationType: "warning" });
+        if (startsRun && target) throw this.refuseRun(target);
+        target?.clearQueue();
         return;
       }
+      if (startsRun && target) this.runStarted(target);
       note.echoed = true;
       const echo: UserEcho = { message: { type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true }, text };
       if (startsRun) {
@@ -3291,7 +3360,7 @@ export class PiSession implements ChatSession {
    * Tear down the in-flight turn. Emits `sessionCancelled` + idle immediately, then drives
    * `session.abort()` (which aborts the agent and waits for it to go idle). The abort promise is
    * tracked so the next `sendMessage` awaits it — a turn started before pi finished winding down would
-   * otherwise hit pi's "Agent is already processing" rejection.
+   * otherwise queue as a follow-up into the stopped run, which ends without running it.
    *
    * Queued input is not sent later (`withdrawQueue`); a note pi held annotates a command in the turn
    * the user just stopped.
@@ -3381,8 +3450,8 @@ export class PiSession implements ChatSession {
       return;
     }
     // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is refused as
-    // `busy`, which gives it back to the composer, instead of racing into pi's raw "Agent is already
-    // processing" error on the shared session.
+    // `busy`, which gives it back to the composer, instead of reaching pi's raw "Cannot submit a prompt while compaction is
+    // in progress" error on the shared session.
     this.compacting = true;
     const beforePi = new AbortController();
     this.compactionBeforePi = beforePi;
@@ -3391,12 +3460,12 @@ export class PiSession implements ChatSession {
         await this.ensureStarted();
         if (this.resetPromise) await this.afterReplacements();
       } catch (err) {
-        this.emit({ type: "error", message: l("pi failed to start: {0}", errorTextOf(err)) });
+        this.emit({ type: "error", message: failureNotice(err, (detail) => l("pi failed to start: {0}", detail)) });
         return;
       }
       if (this.abortPromise) await this.abortPromise;
       const waitedOn = this.runtime?.session;
-      // pi's `compact()` aborts and waits for idle first, which returns at once while it settles a run (agent-session.js:2231, :1983-1985).
+      // pi's `compact()` aborts and waits for idle first, which returns at once while it settles a run (agent-session.js:2327, :2085-2087).
       const settling = waitedOn ? this.piSettling(waitedOn, beforePi.signal) : null;
       if (settling) await settling;
       if (beforePi.signal.aborted) {
@@ -3404,7 +3473,7 @@ export class PiSession implements ChatSession {
         if (waitedOn && this.runtime?.session === waitedOn) this.emit({ type: "compactionAborted", trigger: "manual", willRetry: false, timestamp: Date.now() });
         return;
       }
-      // pi's `compact()` aborts the run it finds open (agent-session.js:2231), one no send opened included.
+      // pi's `compact()` aborts the run it finds open (agent-session.js:2327), one no send opened included.
       if (this.runOf(waitedOn)?.streaming) {
         this.emit({ type: "notification", message: l("Finish or stop the current turn before compacting."), notificationType: "warning" });
         return;
@@ -3444,7 +3513,7 @@ export class PiSession implements ChatSession {
       onAccepted?.();
       this.commitShownModel();
       const trimmed = instructions?.trim();
-      // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1976).
+      // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:2078).
       this.compactionBeforePi = null;
       try {
         await this.pinned(() => session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined));
@@ -3553,19 +3622,33 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * The machine this chat's tools, and its agents', run on: the hosts of its working folder and project, resolved, and of the open
-   * project folders as written, since a realpath of an offline share would hold every call; and the PowerShell tool's lookup.
+   * The hosts this chat's tools, and its agents', may reach unasked: those of its working folder and project, resolved, and of the
+   * open project folders as written, since a realpath of an offline share would hold every call.
    */
+  private allowedNetworkHosts(): Promise<ReadonlySet<string>> {
+    return networkHostsOf([...new Set([this.cwd, identityFolder(this.cwd)])], this.options.platform.workspaceFolders.folders().map((folder) => folder.fsPath));
+  }
+
+  /** The machine this chat's tools, and its agents', run on: its allowed network hosts, the PowerShell tool's lookup, and the shell tools' home and lookup folders. */
   private chatMachine(): ChatMachine {
     return {
       platform: process.platform,
-      allowedNetworkHosts: () => networkHostsOf([...new Set([this.cwd, identityFolder(this.cwd)])], this.options.platform.workspaceFolders.folders().map((folder) => folder.fsPath)),
+      allowedNetworkHosts: () => this.allowedNetworkHosts(),
       powerShellSearch: () => {
         const pi = getPiCodingAgent();
         if (!pi) return Promise.reject(new Error("The PowerShell program lookup needs pi, which is not loaded"));
         return powerShellSearch(pi, this.shellOptions().env);
       },
+      homeFolders: () => this.shellToolEnv().then(shellHomeFolders),
+      lookupFolders: () => this.shellToolEnv().then(shellLookupFolders),
     };
+  }
+
+  /** The environment both shell tools start with (`shellToolEnv`). */
+  private shellToolEnv(): Promise<NodeJS.ProcessEnv> {
+    const pi = getPiCodingAgent();
+    if (!pi) return Promise.reject(new Error("The shell tools' environment needs pi, which is not loaded"));
+    return Promise.resolve(shellToolEnv(pi, this.shellOptions().env));
   }
 
   /**
@@ -3707,15 +3790,23 @@ export class PiSession implements ChatSession {
         // A dispose that began meanwhile tears the runtime down with the old session, so nothing is created on it,
         // and a runtime an earlier failed replacement released builds nothing either.
         if (this._disposed || this.runtime !== runtime) return;
+        // Refused before pi's teardown, so the session left stays bound.
+        await assertFolderPresent(this.cwd).catch((err: unknown) => {
+          void this.options.platform.notifications.error(errorTextOf(err));
+          throw err;
+        });
+        if (this._disposed || this.runtime !== runtime) return;
         const left = runtime.session;
         const replacing = runtime.newSession();
         this.piReplacement = replacing.then(() => undefined, () => undefined);
         try {
           const { cancelled } = await replacing;
           if (cancelled) throw new Error("session replacement was cancelled");
-        } catch (err) {
+        } catch (thrown) {
+          const err = await folderFailure(this.cwd, thrown);
           if (await this.releaseIfTornDown(runtime, left)) {
-            void this.options.platform.notifications.error(l("Damocles could not open a new conversation: {0}", errorTextOf(err)));
+            if (isFolderAbsent(err)) tellFolderAbsent(this.options.platform, err, this.locatable);
+            else void this.options.platform.notifications.error(l("Damocles could not open a new conversation: {0}", errorTextOf(err)));
           }
           throw err;
         } finally {
@@ -3760,12 +3851,14 @@ export class PiSession implements ChatSession {
     this.worktree.dispose();
     this.design.dispose();
     this.designSettingSubscription.dispose();
+    this.servedPagesBinding?.dispose();
     // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
     this.returnQueue(this.runtime?.session, true);
     this.stopSends(true);
     this._disposed = true;
     // Before any await, so no queued switch binds a session on the runtime this tears down.
     for (const queued of this.queuedSwitches) queued.cancelled = true;
+    this.stopUnwantedStartRead();
     this.resumeRequest?.settle(RESUME_CANCELLED);
     // Closing the session job is what kills whatever this panel's shells left running: the job object's
     // kill-on-close on Windows, the EOF the sentinel is waiting for on POSIX.
@@ -3832,7 +3925,7 @@ export class PiSession implements ChatSession {
     this.releaseBrowserScopes();
   }
 
-  /** A replacement that rejected after pi tore `left` down (agent-session-runtime.js:102-127 in pi-coding-agent 1.4.0) left this chat no live session, so the runtime goes and the next start builds one. */
+  /** A replacement that rejected after pi tore `left` down (agent-session-runtime.js:102-127 in pi-coding-agent 1.5.2) left this chat no live session, so the runtime goes and the next start builds one. */
   private async releaseIfTornDown(runtime: AgentSessionRuntime, left: AgentSession): Promise<boolean> {
     if (this._disposed || this.runtime !== runtime || !this.tornDown.has(left)) return false;
     await this.releaseRuntime();
@@ -3862,7 +3955,7 @@ export class PiSession implements ChatSession {
     try {
       // The runtime owns the AgentSession it created via the factory and disposes it here; the
       // session was never registered with the folder runtime (createSession), so there is nothing to forget.
-      // A session pi already tore down got its `session_shutdown`; runtime.dispose only repeats that teardown (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.4.0).
+      // A session pi already tore down got its `session_shutdown`; runtime.dispose only repeats that teardown (agent-session-runtime.js:102-113, :309-318 in pi-coding-agent 1.5.2).
       if (this.runtime && !this.tornDown.has(this.runtime.session)) await this.runtime.dispose();
     } catch (err) {
       log("[PiSession] dispose failed: %O", err);
@@ -4289,8 +4382,8 @@ export class PiSession implements ChatSession {
     const file = await resolvePiSessionFile(this.cwd, target);
     if (file === null) return false;
     try {
-      // Read as text: pi's open can rewrite a file, and another process may hold this one's lease.
-      return hasDesignRoleEntry(sessionFileEntries(await fs.promises.readFile(file, "utf8")));
+      // Read without pi's open, which can rewrite a file, and another process may hold this one's lease.
+      return hasDesignRoleEntry(await readSessionFileEntries(file));
     } catch (err) {
       log("[PiSession] reading %s for its design role failed, so it counts as a design chat: %O", file, err);
       return true;
@@ -4313,6 +4406,13 @@ export class PiSession implements ChatSession {
       if (!request || request.settled || request.atStart) return;
       await this.openResumeTarget(request.sessionId);
     }
+  }
+
+  async browserRestoreTarget(url: string): Promise<{ readonly url: string } | { readonly refused: string }> {
+    // a start that failed bound no branch, so only the project root resolves
+    await this.startPromise?.catch(() => undefined);
+    await this.whenConversationSettled();
+    return this.browserServedFiles().restoreTarget(url);
   }
 
   /**
@@ -4511,7 +4611,8 @@ export class PiSession implements ChatSession {
     if (request.settled) return;
     if (outcome.kind === "failed") {
       log("[PiSession] resume of %s failed: %s", request.sessionId, englishText(outcome.reason));
-      void this.options.platform.notifications.error(l("This conversation could not be opened: {0}", outcome.reason));
+      if (outcome.absent) tellFolderAbsent(this.options.platform, outcome.absent, this.locatable);
+      else void this.options.platform.notifications.error(l("This conversation could not be opened: {0}", outcome.reason));
     }
     request.settle(outcome);
     if (outcome.kind === "switched" || this.resumeRequest !== request) return;
@@ -4541,6 +4642,8 @@ export class PiSession implements ChatSession {
         return !target.cancelled && this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : RESUME_CANCELLED;
       }
       if (runtime.session.sessionId === sessionId) return target.cancelled ? RESUME_CANCELLED : RESUME_SWITCHED;
+      // Before the retire, so a switch pi would refuse leaves the bound session's agents running.
+      await assertFolderPresent(this.cwd);
       const filePath = await resolvePiSessionFile(this.cwd, sessionId);
       // Opening can rewrite the file (a format migration), so a target this panel let go of is never opened.
       if (target.cancelled) return RESUME_CANCELLED;
@@ -4564,7 +4667,7 @@ export class PiSession implements ChatSession {
         // Sent back (as `settleResume` does) before the release, so the conversation the chat goes back to keeps its lease throughout.
         if (this.resumeRequest === target.request && !target.request.atStart && this.tornDown.has(left)) this.resumeSessionId = target.request.prior;
         await this.releaseIfTornDown(runtime, left);
-        throw err;
+        throw await folderFailure(this.cwd, err);
       } finally {
         this.switchedFromOtherDir = null;
         this.runningSwitch = null;
@@ -4578,7 +4681,7 @@ export class PiSession implements ChatSession {
       // The switched-in session reads the current tool set on build, so a deferred reload is moot.
       this.mcpReloadPendingAfterTurn = false;
       if (target.cancelled) return RESUME_CANCELLED;
-      // pi opens a file that went missing after the lookup as a new conversation (session-manager.js:685-689 in pi-coding-agent 1.4.0).
+      // pi opens a file that went missing after the lookup as a new conversation (session-manager.js:686-690 in pi-coding-agent 1.5.2).
       return this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : { kind: "failed", reason: l("its file was not found") };
     } finally {
       this.piReplacement = null;
@@ -5177,16 +5280,17 @@ export class PiSession implements ChatSession {
     void this.runMcpReload();
   }
 
-  /** Any turn-level work in flight, so a runtime-rebuilding `session.reload()` must be deferred. */
-  private isSessionBusy(session: AgentSession): boolean {
-    return this.processingFlag || this.compacting || this.runOf(session)?.busy === true;
+  /** Any turn-level work in flight, so a runtime-rebuilding `session.reload()` must be deferred; `flushing` is a send that waits for the reload. */
+  private isSessionBusy(session: AgentSession, flushing?: OutgoingPrompt): boolean {
+    return (this.processingFlag && (flushing === undefined || this.currentSend !== flushing)) || this.compacting || this.runOf(session)?.busy === true;
   }
 
   /**
    * Drive `session.reload()` for the orphaned-runtime case. Fail-soft (a reload error leaves the session
    * usable), serialized with reset/newSession, and single-flight (concurrent requests coalesce).
+   * `flushing` is the send that awaits this reload before its prompt, so its own `processingFlag` does not defer it.
    */
-  private runMcpReload(): Promise<void> {
+  private runMcpReload(flushing?: OutgoingPrompt): Promise<void> {
     this.mcpReloadPendingAfterTurn = false;
     // Single-flight: a reload already running picks up the latest registry when it settles, so just flag
     // a re-run instead of stacking a second rebuild (a burst of connects → one trailing reload).
@@ -5208,19 +5312,26 @@ export class PiSession implements ChatSession {
           this.refreshActiveTools();
           return;
         }
+        // pi 1.5.2 refuses a reload while a run streams or compacts (agent-session.js:3095-3100); a run can open at any
+        // await above, so this check and the call stay with no await between them.
+        if (this.isSessionBusy(session, flushing)) {
+          this.mcpReloadPendingAfterTurn = true;
+          return;
+        }
         try {
           await session.reload();
         } finally {
-          // pi's session reload re-reads the settings manager (agent-session.js:3007) before work that can still throw.
+          // pi's session reload re-reads the settings manager (agent-session.js:3109) before work that can still throw.
           this.reapplyPiSettings();
         }
         this.applyActiveToolsForMode(this.permissionMode);
       } while (this.mcpReloadRerunRequested && !this._disposed);
     })().catch((err) => log("[PiSession] MCP reload failed: %O", err));
-    this.mcpReloadPromise = chained.finally(() => {
-      if (this.mcpReloadPromise === chained) this.mcpReloadPromise = null;
+    const tracked = chained.finally(() => {
+      if (this.mcpReloadPromise === tracked) this.mcpReloadPromise = null;
     });
-    return this.mcpReloadPromise;
+    this.mcpReloadPromise = tracked;
+    return tracked;
   }
 
   /**
@@ -5304,7 +5415,8 @@ export class PiSession implements ChatSession {
         const designs = [this.design.role(), this.design.ownLink()].flatMap((own) => (own ? [{ designId: own.designId, folder: own.folder }] : []));
         return { ...(this.options.projectScope ? { project: this.cwd } : {}), designs };
       },
-      ...(chat && served ? { serve: (file: ServedFile) => served.url(chat, file) } : {}),
+      ...(chat && served ? { serve: (file: ServedFile, root: string) => served.url(chat, file, root) } : {}),
+      ...(this.options.platform.remote ? { relayed: true as const } : {}),
     });
     return this.servedFiles;
   }
@@ -5383,6 +5495,7 @@ export class PiSession implements ChatSession {
       worktreeIsolation: () => this.worktreeIsolation(),
       designScope: () => this.design.scope(),
       machine: this.chatMachine(),
+      browserFiles: this.browserServedFiles(),
       nestedDesign: () => this.nestedDesignGrant(),
       ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
@@ -5433,9 +5546,9 @@ export class PiSession implements ChatSession {
     return this.runtime?.session.sessionManager.getBranch() ?? [];
   }
 
-  /** Throw the resume error unless the model recorded in the agent session file at `path` is usable. */
-  assertResumableModel(path: string, agentId: string): void {
-    this.requireFolder().assertResumableModel(path, agentId);
+  /** Reject with the resume error unless the model recorded in the agent session file at `path` is usable. */
+  async assertResumableModel(path: string, agentId: string): Promise<void> {
+    await this.requireFolder().assertResumableModel(path, agentId);
   }
 
   /** Tell the model which agents were interrupted before the next user prompt. */
@@ -5536,7 +5649,7 @@ export class PiSession implements ChatSession {
     // The boundary event carries no per-turn message list, so both predicates read the session
     // projection. `turnHasNonErrorExitPlanModeResult` scopes itself to the current turn; `lastAssistant`
     // does not need to, because every run reaching this boundary has appended an assistant message, a
-    // synthetic one even on hard failure (`agent.js:368-384` in pi-agent-core 1.4.0), so the last one is always this turn's.
+    // synthetic one even on hard failure (`agent.js:368-384` in pi-agent-core 1.5.2), so the last one is always this turn's.
     const messages = event.context.contextMessages;
     if (turnHasNonErrorExitPlanModeResult(messages)) return undefined;
     if (lastAssistant(messages)?.stopReason !== "stop") return undefined;
@@ -5568,7 +5681,8 @@ export class PiSession implements ChatSession {
     pi: PiCodingAgentModule,
     opts: { disallowed?: ReadonlySet<string>; agent?: AgentUiAttribution },
   ): NestedMcpToolset {
-    return buildNestedMcpToolset(pi, this.mcpClientManager(), {
+    const folder = this.requireFolder();
+    return buildNestedMcpToolset(pi, folder.mcpModule, folder.mcp, {
       eligible: new Set(this.fullActiveToolNames()),
       disabledEntries: this.disabledToolEntries(),
       resourceRuleFilter: (toolName) => this.options.permissionHandler.mcpResourceRuleFilter(toolName),
@@ -5601,6 +5715,7 @@ export class PiSession implements ChatSession {
       ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       getSessionId: () => this.memorySessionId,
       getShellOptions: () => this.shellOptions(),
+      allowedNetworkHosts: () => this.allowedNetworkHosts(),
       shellCredentials: (toolCallId) => this.shellCredentials(toolCallId),
       shellCancel: this.shellCancel,
       deliverUserNote,
@@ -5632,16 +5747,19 @@ export class PiSession implements ChatSession {
    * `damocles.explore.model` / provider-matched cheap model >
    * inherit the panel's session model. The spawning LLM has NO say — there is no `model` param on the
    * `Agent` tool — so a subagent runs on the session model unless a template declares otherwise.
-   * `enabledModels` scope is enforced (out-of-scope → fail soft).
+   * `enabledModels` scope is enforced (out-of-scope → fail soft); `readScope` reads it, once per call unless a caller shares one read.
    */
-  private resolveSubagentModel(agentConfig: AgentConfig): ResolvedSubagentModel {
+  private resolveSubagentModel(
+    agentConfig: AgentConfig,
+    readScope: (modelRuntime: NonNullable<PiRuntime["modelRuntime"]>) => ReturnType<typeof resolveEnabledModels> = (modelRuntime) => resolveEnabledModels(readEnabledModels(this.cwd), modelRuntime),
+  ): ResolvedSubagentModel {
     const piRuntime = PiRuntime.get();
     const registry = piRuntime.modelLookup;
     const modelRuntime = piRuntime.modelRuntime;
     if (!registry || !modelRuntime) return { error: "pi runtime not initialized" };
     const openai = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
-    const scope = resolveEnabledModels(readEnabledModels(this.cwd), modelRuntime);
+    const scope = readScope(modelRuntime);
 
     // Names the allowlist as the thing to edit: a configured `enabledModels` that resolves to nothing
     // denies every model (fail-closed by design), so one typo there fails every spawn — and a message
@@ -5979,6 +6097,7 @@ export class PiSession implements ChatSession {
         preRewind = result.preRewind;
         // decisions.md is core's, from the branch, which a files-only rewind keeps.
         if (role && option === "code-only") this.design.refresh({ filesRestored: true });
+        if (role) this.design.previewFilesRestored();
       }
 
       if (needsFork) {
@@ -6040,7 +6159,10 @@ export class PiSession implements ChatSession {
         : { ok: false, reason: "service-unavailable", preRewind: null };
       this.emit(result.ok ? { type: "rewindUndone" } : { type: "rewindError", message: restoreErrorMessage(result) });
       // decisions.md is core's, from the branch, which an undo keeps.
-      if (result.ok && this.design.role()) this.design.refresh({ filesRestored: true });
+      if (result.ok && this.design.role()) {
+        this.design.refresh({ filesRestored: true });
+        this.design.previewFilesRestored();
+      }
     } catch (err) {
       this.emit({ type: "rewindError", message: errorTextOf(err) });
     }
@@ -6147,7 +6269,7 @@ export class PiSession implements ChatSession {
     const present = new Set(getCheckpointRecords(inherited).map(recordKey));
     const missing = getCheckpointRecords(sourceSm.getEntries()).filter((r) => anchorIds.has(r.userEntryId) && !present.has(recordKey(r)));
     if (missing.length > 0) {
-      const childSm = pi.SessionManager.open(branchedPath, path.dirname(branchedPath), this.cwd);
+      const childSm = await pi.SessionManager.openAsync(branchedPath, path.dirname(branchedPath), this.cwd);
       for (const record of missing) childSm.appendCustomEntry(DAMOCLES_CHECKPOINT_ENTRY, record);
     }
     const folderEntries = [...getCheckpointRecords(inherited), ...missing].filter((r): r is CheckpointEntryV3 => r.kind === "checkpoint" && r.v === 3);
@@ -6168,7 +6290,7 @@ export class PiSession implements ChatSession {
     }
     const liveSm = session.sessionManager;
     const parentId = liveSm.getEntry(userEntryId)?.parentId ?? null;
-    // Capture the source identity BEFORE branching: createBranchedSession reassigns sessionId/sessionFile
+    // Capture the source identity BEFORE branching: createBranchedSessionAsync reassigns sessionId/sessionFile
     // on whatever manager it runs on, so it must run on a throwaway manager opened on the source file —
     // never the live one (which would corrupt the source session and misdirect the checkpoint clone).
     const sourceFile = liveSm.getSessionFile();
@@ -6189,8 +6311,8 @@ export class PiSession implements ChatSession {
         // pi's own AgentSessionRuntime.fork). Truncate at the parent so the prefilled prompt re-sends
         // the rewound message.
         // The fork is a new session, created in this chat's folder; its agent data is copied beside it.
-        const branchSm = pi.SessionManager.open(sourceFile, ensurePiSessionDir(this.cwd), this.cwd);
-        const branchedPath = branchSm.createBranchedSession(parentId);
+        const branchSm = await pi.SessionManager.openAsync(sourceFile, ensurePiSessionDir(this.cwd), this.cwd);
+        const branchedPath = await branchSm.createBranchedSessionAsync(parentId);
         if (branchedPath) {
           piBranchedSessionId = piSessionIdFromFile(branchedPath);
           if (design && !(await this.prepareDesignFork(pi, design, liveSm, branchedPath, piBranchedSessionId))) return;
@@ -6263,7 +6385,7 @@ export class PiSession implements ChatSession {
    * rewind. A main chat's rewind gives the new chat its own link entry and makes it the design's main chat last, in the same order.
    */
   private async prepareDesignFork(pi: PiCodingAgentModule, design: DesignForkPlan, sourceSm: AgentSession["sessionManager"], branchedPath: string, forkSessionId: string): Promise<boolean> {
-    const childSm = pi.SessionManager.open(branchedPath, path.dirname(branchedPath), this.cwd);
+    const childSm = await pi.SessionManager.openAsync(branchedPath, path.dirname(branchedPath), this.cwd);
     try {
       if (design.kind === "fork") {
         // The role entry goes first: a failure after it is the removed branched file's, and forkDesign cleans up its own.
@@ -6503,7 +6625,7 @@ export class PiSession implements ChatSession {
     try {
       await this.ensureStarted();
     } catch (err) {
-      post({ type: "btwError", btwId, message: l("pi failed to start: {0}", errorTextOf(err)) });
+      post({ type: "btwError", btwId, message: failureNotice(err, (detail) => l("pi failed to start: {0}", detail)) });
       return;
     }
     const piRuntime = PiRuntime.get();
@@ -6712,6 +6834,7 @@ export class PiSession implements ChatSession {
         worktreeIsolation: () => this.worktreeIsolation(),
         designScope: () => this.design.scope(),
         machine: this.chatMachine(),
+        browserFiles: this.browserServedFiles(),
         ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
         readOnlyShell: readOnly,
         parentToolUseId: agent.agentId,
@@ -6925,7 +7048,7 @@ export class PiSession implements ChatSession {
    * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
    * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
    * `abortAll()` never saw. Auto-compaction does not add to that: pi reaches `prepareNextTurn` only at
-   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@1.4.0`,
+   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@1.5.2`,
    * `agent-loop.ts:194-198`), and a decider answering `{ action: 'end' }` returns from the loop at
    * `:295-300` before it. So the bound is the tool calls of the message that tripped the limit and
    * nothing else.
@@ -6939,7 +7062,7 @@ export class PiSession implements ChatSession {
     this.subagentManager?.abortAll("budget");
     // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
     // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
-    // (`agent-session.ts:2030` in pi 1.4.0) whatever the decider answered. `queueInput` and the cancel-note delivery
+    // (`agent-session.ts:2100` in pi 1.5.2) whatever the decider answered. `queueInput` and the cancel-note delivery
     // refuse new ones from here on. Restoring a held note would let that continuation drain it and bill
     // past the limit, so its echo is corrected instead of honoured.
     this.withdrawQueue(
@@ -7108,14 +7231,34 @@ export class PiSession implements ChatSession {
    * Whether `session` can take a design delivery now (PD-27): idle, or streaming, which the settle boundary covers; a chat
    * busy otherwise reconciles again once it is idle (`SessionDesign.idle`). A prompt start delivers ahead of its own run, and a
    * bind inside the replacement that bound the session; any other trigger waits while a send, a compaction or a replacement
-   * is under way.
+   * is under way, and, as a send does, while pi settles a run, which would defer the delivery's run past that run's `agent_settled`.
    */
   private designDeliveryState(session: AgentSession, trigger: ReconcileTrigger): "idle" | "streaming" | "gone" {
     if (this.runtime?.session !== session || this.lostLeases.has(session.sessionId) || this._disposed) return "gone";
-    if (this.runOf(session)?.streaming) return "streaming";
+    const run = this.runOf(session);
+    if (run?.streaming) {
+      this.reconcileDesignWhenPiIdle(run);
+      return "streaming";
+    }
     if (trigger === "prompt") return "idle";
     if (this.turnState !== "idle" || this.outgoingSends.size > 0 || this.compacting || (this.resetPromise && trigger !== "bind")) return "streaming";
+    if (run?.settling) {
+      this.reconcileDesignWhenPiIdle(run);
+      return "streaming";
+    }
     return "idle";
+  }
+
+  /** A run no turn of this chat tracks (a stopped one, an extension's) ends with no `SessionDesign.idle`, so pi's own idle reconciles. */
+  private reconcileDesignWhenPiIdle(run: RunLifecycle): void {
+    if (this.designWaitsForPi === run) return;
+    const idle = run.untilIdle();
+    if (!idle) return;
+    this.designWaitsForPi = run;
+    void idle.then(() => {
+      if (this.designWaitsForPi === run) this.designWaitsForPi = null;
+      if (this.runOf(run.session) === run) this.design.idle();
+    });
   }
 
   /**
@@ -7138,13 +7281,14 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Starts the delivery run of `message` on idle `session`. Its turn opens before pi starts the run, so nothing takes the chat
-   * for idle meanwhile; a run pi never started (its preparation threw, with no `agent_settled`) ends that turn, and the message,
-   * which pi did not append, is delivered again with no run.
+   * Starts the delivery run of `message` on idle `session`, never while pi settles a run (`designDeliveryState`), so pi starts
+   * or refuses it inside this call. Its turn opens before pi starts the run, so nothing takes the chat for idle meanwhile; a run
+   * pi never started (its preparation threw, with no `agent_settled`) ends that turn, and the message, which pi did not append,
+   * is delivered again with no run.
    */
   private startDeliveryRun(session: AgentSession, message: DesignCustomMessage<unknown>): void {
     let started = false;
-    // pi drops the restored tools and runs the shown model only once it opened the run (agent-session.js:1447).
+    // pi drops the restored tools and runs the shown model only once it opened the run (agent-session.js:1508-1511).
     const stopWatching = this.runOf(session)?.onChange((event) => {
       if (event.type !== "agent_start") return;
       started = true;
@@ -7154,7 +7298,6 @@ export class PiSession implements ChatSession {
     this._aborting = false;
     this._budgetStopRequested = false;
     this.adapter.beginTurn();
-    // Watched past the call's return: pi defers a run asked for while it runs `agent_settled` handlers and returns at once (agent-session.js:1866-1868).
     void session.sendCustomMessage(message, { triggerTurn: true }).catch((err: unknown) => {
       stopWatching?.();
       log("[PiSession] a design delivery's run failed: %O", err);
@@ -7602,35 +7745,21 @@ export class PiSession implements ChatSession {
   /** pi's verdict on a design steer, as `admitSteer` judges a batch. */
   private admitDesignSteer(session: AgentSession, input: DesignSteer, disposition: PromptDisposition): void {
     const opensRun = disposition === "started";
-    if (opensRun) this.runStarted(session);
     if (input.delivered === true) {
       // pi drained it between `agent.steer()` and its `queued`, so it is already the boundary's and only its context follows.
       if (this.runtime?.session === session) this.queueHookContext(session, input.hookContext, "steer");
       return;
     }
     if (this.designWithdrawn(session, input)) {
-      const leftToPi = this.stoppedDesign === input;
-      if (leftToPi) this.stoppedDesign = null;
-      if (opensRun) {
-        this.stopRunAtStart(session);
-        // Sent and stopped, as a batch a Stop left to pi is: its entry commits, so its card and files land with it.
-        if (leftToPi) {
-          const delivery = this.designDelivered(input);
-          const watch = watchPromptEntry(session, (entry) => {
-            watch.dispose();
-            this.recordMidStreamMarker(entry.id);
-            const service = this.checkpointService;
-            if (service?.sessionId === session.sessionId) service.startTurn(session.sessionManager, entry.id, entry.text);
-            delivery.onCommitted?.(entry.id);
-          });
-          watch.preflightResult(disposition);
-        }
-        return;
-      }
       if (disposition === "queued") this.takeBackQueued(session);
-      if (leftToPi) this.dropDesignPrompt(input.design, designStopped(input.design));
+      if (this.stoppedDesign === input) {
+        this.stoppedDesign = null;
+        this.dropDesignPrompt(input.design, designStopped(input.design));
+      }
+      if (opensRun) throw this.refuseRun(session);
       return;
     }
+    if (opensRun) this.runStarted(session);
     if (disposition === "handled") {
       this.designSteers.splice(this.designSteers.indexOf(input), 1);
       this.dropDesignPrompt(input.design, designNotSent(input.design));

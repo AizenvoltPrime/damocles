@@ -110,7 +110,7 @@ function deps(closeTimeoutMs = 1_000, readyTimeoutMs = 60_000): CoreConnectionDe
   const platform = { ...main, state: createDesktopKeyValueState(userData, () => undefined) } as unknown as DesktopPlatform;
   return {
     platform,
-    trust: { trustedFolders: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false } as unknown as TrustStore,
+    trust: { trustedFolders: () => [], onDidGrant: () => ({ dispose: () => undefined }), onDidRevoke: () => ({ dispose: () => undefined }), requestTrust: async () => false } as unknown as TrustStore,
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     resolveProxy: async () => 'DIRECT',
     createView: (panelId, create) => Object.assign(main.window.createPanel(create) as FakePanelHost, { panelId, postJson: () => undefined, showPage: () => undefined, closeReason: 'user' as const }),

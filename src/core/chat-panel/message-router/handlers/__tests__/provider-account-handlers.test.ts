@@ -138,31 +138,31 @@ describe("provider sign-in flow", () => {
     expect(JSON.stringify(vi.mocked(log).mock.calls)).not.toContain("ABCD-1234");
   });
 
-  // pi's own texts, pi-ai 1.4.0 dist/auth/oauth
+  // pi's own texts, pi-ai 1.5.2 dist/auth/oauth
   it.each<[string, string, object]>([
     ["device-code.js:2", "Device flow timed out", EXPIRED],
     ["device-code.js:3", "Device flow timed out after one or more slow_down responses. This is often caused by clock drift in WSL or VM environments. Please sync or restart the VM clock and try again.", EXPIRED],
     ["xai.js:152", "xAI device code expired", EXPIRED],
-    ["kimi-coding.js:160", "Kimi Code device authorization expired. Please restart login.", EXPIRED],
-    ["meta.js:121", "Meta device authorization expired. Please restart login.", EXPIRED],
+    ["kimi-coding.js:142", "Kimi Code device authorization expired. Please restart login.", EXPIRED],
+    ["meta.js:108", "Meta device authorization expired. Please restart login.", EXPIRED],
     ["xai.js:149", "xAI device authorization was denied", DENIED],
-    ["kimi-coding.js:163", "Kimi Code login was denied.", DENIED],
-    ["meta.js:119", "Meta login was denied.", DENIED],
+    ["kimi-coding.js:145", "Kimi Code login was denied.", DENIED],
+    ["meta.js:106", "Meta login was denied.", DENIED],
     ["anthropic.js:159, a pasted link of another sign-in", "OAuth state mismatch", OTHER_SIGN_IN],
     ["openai-codex.js:304, a pasted link of another sign-in", "State mismatch", OTHER_SIGN_IN],
     ["anthropic.js, a paste with no code", "Missing authorization code", NO_CODE],
     ["a state mismatch phrase followed by other text", "OAuth state mismatch: state=abc", PROVIDER],
     ["callback-server.js:96, OpenRouter has no code", "OpenRouter sign-in timed out", PROVIDER],
     ["openrouter.js:82, OpenRouter has no code", "OpenRouter OAuth token exchange timed out", PROVIDER],
-    ["meta.js:147, a session, not a code", "Meta session expired (status 401). Run `/login meta` to sign in again.: Session has expired", providerStatus(401)],
-    ["github-copilot.js:150, a leading status", '404 Not Found: {"message":"Not Found","documentation_url":"https://docs.github.com/rest"}', providerStatus(404)],
-    ["github-copilot.js:142, a leading status", "403 Forbidden: device code expired, access was denied", providerStatus(403)],
+    ["meta.js:134, a session, not a code", "Meta session expired (status 401). Run `/login meta` to sign in again.: Session has expired", providerStatus(401)],
+    ["github-copilot.js:151, a leading status", '404 Not Found: {"message":"Not Found","documentation_url":"https://docs.github.com/rest"}', providerStatus(404)],
+    ["github-copilot.js:143, a leading status", "403 Forbidden: device code expired, access was denied", providerStatus(403)],
     ["xai.js:81", "xAI OAuth device token polling failed (HTTP 500): server_error: device code expired", providerStatus(500)],
     ["openrouter.js:91", "OpenRouter OAuth key exchange failed (HTTP 409): login was denied", providerStatus(409)],
-    ["kimi-coding.js:167, a body naming an expiry", "Kimi Code device token request failed (status 400): expired_token: The device authorization expired", providerStatus(400)],
-    ["meta.js:73", "Meta device authorization failed with status 503: authorization was denied (HTTP 500)", providerStatus(503)],
-    ["github-copilot.js:232, GitHub's words after pi's", "Device flow failed: access_denied: The user has denied your application access.", PROVIDER],
-    ["meta.js:155, a status only in the provider's URL", "Meta did not issue an API key. Complete setup at https://www.meta.ai/setup (500): retry", PROVIDER],
+    ["kimi-coding.js:149, a body naming an expiry", "Kimi Code device token request failed (status 400): expired_token: The device authorization expired", providerStatus(400)],
+    ["meta.js:60", "Meta device authorization failed with status 503: authorization was denied (HTTP 500)", providerStatus(503)],
+    ["github-copilot.js:231, GitHub's words after pi's", "Device flow failed: access_denied: The user has denied your application access.", PROVIDER],
+    ["meta.js:142, a status only in the provider's URL", "Meta did not issue an API key. Complete setup at https://www.meta.ai/setup (500): retry", PROVIDER],
   ])("classifies pi's %s text", async (_source, message, error) => {
     const t = setup();
     H.runtime.signInProvider.mockRejectedValueOnce(new Error(message));
@@ -387,7 +387,7 @@ describe("provider sign-in flow", () => {
     expect(answered).toBe("");
   });
 
-  // pi-ai 1.4.0 dist/auth/oauth/kimi-coding.js:62 and :103
+  // pi-ai 1.5.2 dist/auth/oauth/kimi-coding.js:49 and :85
   it.each<[string, string, object]>([
     ["a status", 'Kimi Code device authorization failed with status 500: {"access_token":"SECRET","refresh_token":"SECRET"}', providerStatus(500)],
     ["no status", 'Kimi Code token poll response missing fields: {"access_token":"SECRET","refresh_token":"SECRET","expires_in":"soon"}', PROVIDER],

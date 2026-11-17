@@ -177,7 +177,7 @@ describe('what a screen reader gets', () => {
 });
 
 describe("a stopped run's wind-down, as core published it", () => {
-  const LINE = "Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: C:\\x\\held.js.";
+  const LINE = 'Stopping: waiting for the end-of-turn hook notify.sh (project hooks) to finish.';
 
   function mountWindDown(isProcessing: boolean, windDown: string | undefined) {
     return mount(StatusBar, {

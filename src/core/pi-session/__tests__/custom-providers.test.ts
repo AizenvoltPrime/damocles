@@ -233,7 +233,7 @@ const NO_AUTH_FILE = agentDirWith();
 const SWEPT = sweepMarker();
 
 /**
- * pi 1.4.0's runtime key operations (model-runtime.js:384-437): one the signal stops before it starts throws the abort
+ * pi 1.5.2's runtime key operations (model-runtime.js:384-437): one the signal stops before it starts throws the abort
  * and commits nothing; once started it commits the key or its removal, then its snapshot sync wraps every failure, an
  * abort included, as a CredentialSynchronizationError. `onCommit` runs between the two steps.
  */

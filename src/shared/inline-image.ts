@@ -21,8 +21,8 @@ export type InlineImage = { ok: true; mediaType: ImageMediaType; data: string } 
 // Anchored with one character class, so a failed match costs time linear in the length.
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-// pi 1.4.0 sniffs this many leading bytes (`IMAGE_TYPE_SNIFF_BYTES`, pi-coding-agent `dist/utils/mime.js:2`).
-const SNIFF_BYTES = 4100;
+// pi 1.5.2 sniffs this many leading bytes (`IMAGE_TYPE_SNIFF_BYTES`, pi-coding-agent `dist/utils/mime.js:2`).
+export const IMAGE_SNIFF_BYTES = 4100;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 function decodeBase64Prefix(data: string, maxBytes: number): Uint8Array {
@@ -40,6 +40,14 @@ function decodeBase64Prefix(data: string, maxBytes: number): Uint8Array {
     }
   }
   return Uint8Array.from(bytes);
+}
+
+function readUint16LE(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] ?? 0) + ((bytes[offset + 1] ?? 0) << 8);
+}
+
+function readUint32LE(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] ?? 0) + ((bytes[offset + 1] ?? 0) << 8) + ((bytes[offset + 2] ?? 0) << 16) + (bytes[offset + 3] ?? 0) * 0x1000000;
 }
 
 function readUint32BE(bytes: Uint8Array, offset: number): number {
@@ -68,7 +76,7 @@ function isAnimatedPng(bytes: Uint8Array): boolean {
   return false;
 }
 
-/** Port of pi 1.4.0's `detectSupportedImageMimeType` (`dist/utils/mime.js:4-21`) without BMP, which is not one of `IMAGE_MEDIA_TYPES`. */
+/** Port of pi 1.5.2's `detectSupportedImageMimeType` (`dist/utils/mime.js:4-21`) without BMP, which is not one of `IMAGE_MEDIA_TYPES`. */
 export function sniffImageMediaType(bytes: Uint8Array): ImageMediaType | null {
   if (startsWith(bytes, [0xff, 0xd8, 0xff])) return bytes[3] === 0xf7 ? null : 'image/jpeg';
   if (startsWith(bytes, PNG_SIGNATURE)) {
@@ -80,6 +88,35 @@ export function sniffImageMediaType(bytes: Uint8Array): ImageMediaType | null {
   return null;
 }
 
+/** pi 1.5.2's `isBmp` (`dist/utils/mime.js`). */
+function isBmp(bytes: Uint8Array): boolean {
+  if (bytes.length < 26) return false;
+  const declaredFileSize = readUint32LE(bytes, 2);
+  const pixelDataOffset = readUint32LE(bytes, 10);
+  const dibHeaderSize = readUint32LE(bytes, 14);
+  if (declaredFileSize !== 0 && declaredFileSize < 26) return false;
+  if (pixelDataOffset < 14 + dibHeaderSize) return false;
+  if (declaredFileSize !== 0 && pixelDataOffset >= declaredFileSize) return false;
+  let colorPlanes: number;
+  let bitsPerPixel: number;
+  if (dibHeaderSize === 12) {
+    colorPlanes = readUint16LE(bytes, 22);
+    bitsPerPixel = readUint16LE(bytes, 24);
+  } else if (dibHeaderSize >= 40 && dibHeaderSize <= 124) {
+    if (bytes.length < 30) return false;
+    colorPlanes = readUint16LE(bytes, 26);
+    bitsPerPixel = readUint16LE(bytes, 28);
+  } else {
+    return false;
+  }
+  return colorPlanes === 1 && [1, 4, 8, 16, 24, 32].includes(bitsPerPixel);
+}
+
+/** pi 1.5.2's `detectSupportedImageMimeType` whole: `sniffImageMediaType` and BMP, which pi's read converts before sending. */
+export function sniffReadableImageType(bytes: Uint8Array): ImageMediaType | 'image/bmp' | null {
+  return sniffImageMediaType(bytes) ?? (asciiAt(bytes, 0, 'BM') && isBmp(bytes) ? 'image/bmp' : null);
+}
+
 /**
  * Whether base64 `data` may go to the model as an image block, and as which type: the label must be absent or name
  * a type providers take, the data must fit `MAX_IMAGE_BASE64_LENGTH`, and the media type is the one its bytes carry.
@@ -88,6 +125,6 @@ export function classifyInlineImage(data: string, declaredMimeType: string | und
   if (declaredMimeType !== undefined && inlineImageMediaType(declaredMimeType) === undefined) return { ok: false, reason: 'unsupportedType' };
   if (data.length > MAX_IMAGE_BASE64_LENGTH) return { ok: false, reason: 'tooLarge' };
   if (data.length === 0 || data.length % 4 !== 0 || !BASE64.test(data)) return { ok: false, reason: 'notBase64' };
-  const mediaType = sniffImageMediaType(decodeBase64Prefix(data, SNIFF_BYTES));
+  const mediaType = sniffImageMediaType(decodeBase64Prefix(data, IMAGE_SNIFF_BYTES));
   return mediaType ? { ok: true, mediaType, data } : { ok: false, reason: 'unrecognized' };
 }

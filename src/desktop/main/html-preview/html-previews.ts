@@ -15,10 +15,10 @@ import { leavePageOnPartKeys, type PartStep } from '../page-focus';
 import { PREVIEW_SCHEME } from '../protocol';
 import { mainFrameLoadFailed, registerLockedContents } from '../security';
 import { NotConnectedError } from '../workspace/workspaces';
-import { answerPreview, type PreviewFileReads } from './preview-reader';
+import { answerPreview, type PreviewFileReads } from '../../../core/served-pages/preview-reader';
 import type { ServedGrant, ServedRoots } from './served-roots';
 import { HTML_PREVIEW_PARTITION, previewResponse, type PreviewSessionDeps } from './preview-session';
-import { previewHeaders, previewRequestPath, previewUrlPath } from './serve-policy';
+import { previewHeaders, previewRequestPath, previewUrlPath } from '../../../core/served-pages/serve-policy';
 
 export const RELOAD_DEBOUNCE_MS = 200;
 // Beyond this many live views the least recently shown other one is destroyed, and rebuilt when its tab shows again.

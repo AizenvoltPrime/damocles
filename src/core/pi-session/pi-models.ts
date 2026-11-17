@@ -1,5 +1,6 @@
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, EffortLevel } from '../../shared/types/settings';
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, migrateLegacyModelValue, thinkingDisableApplies } from '../../shared/types/constants';
 import { TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
@@ -345,6 +346,28 @@ export function effortBadgeApplies(model: Pick<Model<Api>, 'provider' | 'id' | '
   if (model?.reasoning !== true || defaultInfoForPiModel(model)?.supportsEffort === false) return false;
   const compat = model.compat;
   return !(compat !== undefined && 'supportsReasoningEffort' in compat && compat.supportsReasoningEffort === false);
+}
+
+/** `model` without its Anthropic server-side fallback list, or `model` itself when it has none. */
+export function withoutServerSideFallback<M extends Model<Api>>(model: M): M {
+  const compat = model.compat as { allowedFallbackModels?: unknown } | undefined;
+  if (compat?.allowedFallbackModels === undefined) return model;
+  const kept: Record<string, unknown> = { ...compat };
+  delete kept['allowedFallbackModels'];
+  return { ...model, compat: kept as M['compat'] };
+}
+
+/**
+ * Sends every request of `runtime` without the model's server-side fallback list, which pi-ai turns into Anthropic's
+ * `fallbacks` (anthropic-messages.js:1214-1217): a request the provider's classifiers refuse ends as a refusal, never as
+ * another model's answer. Sessions, the cache warmer, compaction and sub-calls all request through these two methods,
+ * and `complete` and `completeSimple` call them.
+ */
+export function stripServerSideFallbacks(runtime: ModelRuntime): void {
+  const stream = runtime.stream.bind(runtime);
+  const streamSimple = runtime.streamSimple.bind(runtime);
+  runtime.stream = ((model, context, options) => stream(withoutServerSideFallback(model), context, options)) as ModelRuntime['stream'];
+  runtime.streamSimple = (model, context, options) => streamSimple(withoutServerSideFallback(model), context, options);
 }
 
 /** A pi provider's display name: the vendor's name for a provider the catalog or Accounts knows, else its pi id. */

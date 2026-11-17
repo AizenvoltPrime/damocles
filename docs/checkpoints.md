@@ -36,6 +36,8 @@ Video, audio, archives, disk images, model weights, Git LFS files and any file o
 
 A background sweep (shortly after activation, then roughly daily) keeps these shadow repos small, repacking each one so per-turn snapshots delta-compress (rewind history stays fully intact) and removing the checkpoints of any conversation idle beyond `damocles.checkpoints.retentionDays` (default 30; `0` keeps history forever).
 
+When you locate a moved project folder, its checkpoints stay where they are: the new folder keeps writing to the moved folder's shadow repo, so a rewind to a turn from before the move restores files into the new folder. Locating into a project you already have keeps that project's own repo for new turns, and the moved chats' earlier turns still rewind from theirs. A folder you later create at the old path gets a shadow repo of its own, apart from the moved project's.
+
 A chat with no project folder (no folder open in VS Code, no project loaded on the desktop) runs in your home folder and takes no file checkpoints: each prompt still rewinds and forks the conversation, and the rewind view says why its file options are off.
 
 ## Rewind to before compaction

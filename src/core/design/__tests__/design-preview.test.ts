@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignPreviewHost } from '../../../platform/design-preview';
-import { designPreviewInfo, readPreviewFile } from '../design-preview';
-import { designFolderOf, designStateDirOf } from '../design-paths';
+import { designPreviewAnswer, designPreviewInfo, readPreviewFile } from '../design-preview';
+import { designFolderOf, designStateDirOf, MAX_SCREEN_BYTES } from '../design-paths';
 import { updateDesignLink } from '../design-state';
 import { readManifest } from '../design-files';
 import { TOOL_EDIT } from '../../../shared/tool-names';
@@ -90,6 +90,14 @@ describe('design.info: a screen\'s widths and declared states (PD-8, PD-44)', ()
     expect(await designPreviewInfo(folder, '../outside.html')).toBeUndefined();
   });
 
+  it('says a page is missing only when no file is there, and answers nothing for one it refuses', async () => {
+    const folder = writeDesign({ 'screens/S1.html': SCREEN, 'screens/big.html': `<html><body>${'x'.repeat(MAX_SCREEN_BYTES)}</body></html>` });
+    expect(await designPreviewAnswer(folder, 'screens/S1.html')).toMatchObject({ screenId: 'S1', states: ['default', 'empty'] });
+    expect(await designPreviewAnswer(folder, 'screens/S2.html')).toEqual({ missing: true });
+    expect(await designPreviewAnswer(folder, 'screens/big.html')).toBeUndefined();
+    expect(await designPreviewAnswer(folder, '../outside.html')).toBeUndefined();
+  });
+
   it('reads a file with the fidelity it is served with, and nothing outside the folder', async () => {
     const folder = writeDesign({ 'screens/S1.html': SCREEN, 'manifest.json': JSON.stringify({ schemaVersion: 1, designId: DESIGN, plan: null, fidelity: 'interactive', status: 'draft', version: null, screens: [], updatedAt: new Date().toISOString() }) });
     expect(await readPreviewFile(folder, DESIGN, 'screens/S1.html')).toEqual({ bytes: Buffer.from(SCREEN), fidelity: 'interactive' });
@@ -158,6 +166,26 @@ describe('a design chat\'s writes open and refresh its previews (PD-33)', () => 
     expect(host.changes).toEqual([[DESIGN, ['screens/S1.html', 'design.md', 'variants/a.html']]]);
     expect(host.opens).toEqual([['design-panel', DESIGN, 'screens/S1.html']]);
     chat.design.dispose();
+  });
+
+  it('tells the previews every file of the design after a rewind put its files back, and an empty folder as none', async () => {
+    const session = fakeSession('design-1', [role()]);
+    const chat = designHarness({ session });
+    const host = withPreview(chat);
+    writeDesign({ 'design.md': DESIGN_MD, 'screens/S1.html': SCREEN });
+    chat.design.previewFilesRestored();
+    await vi.waitFor(() => expect(host.changes).toEqual([[DESIGN, ['design.md', 'screens/S1.html']]]));
+    fs.rmSync(designFolderOf(DESIGN), { recursive: true, force: true });
+    chat.design.previewFilesRestored();
+    await vi.waitFor(() => expect(host.changes).toHaveLength(2));
+    expect(host.changes[1]).toEqual([DESIGN, []]);
+    chat.design.dispose();
+    const reduced = designHarness({ session: fakeSession('design-2', [role('reduced')]) });
+    const quiet = withPreview(reduced);
+    reduced.design.previewFilesRestored();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(quiet.changes).toEqual([]);
+    reduced.design.dispose();
   });
 
   it('marks a finished version edited at the first designer write after it, keeping its number', async () => {

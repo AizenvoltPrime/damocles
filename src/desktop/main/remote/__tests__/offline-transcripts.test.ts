@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OfflineTranscripts, type TranscriptView } from '../offline-transcripts';
+import { mirroredCopy, OfflineTranscripts, type TranscriptView } from '../offline-transcripts';
 import type { RemoteChatRecord } from '../remote-state';
 
 // a transcript shows a saved chat with a conversation
@@ -140,5 +140,19 @@ describe('OfflineTranscripts', () => {
     expect(await transcripts.openChat('ssh+h1', 's1')).toBeUndefined();
     expect(transcripts.hostConnected('ssh+h1')).toBeUndefined();
     expect(opened.map((candidate) => candidate.isDisposed)).toEqual([true]);
+  });
+});
+
+describe('mirroredCopy', () => {
+  const copies = [{ projectKey: 'acme', file: 'a.jsonl' }, { projectKey: 'acme-worktree', file: 'b.jsonl' }];
+
+  it('takes the copy whose project lists the chat', async () => {
+    expect(await mirroredCopy(copies, async (projectKey) => projectKey === 'acme-worktree')).toBe(copies[1]);
+  });
+
+  it('takes the first copy when no list holds the chat, and the only one without asking', async () => {
+    expect(await mirroredCopy(copies, async () => false)).toBe(copies[0]);
+    expect(await mirroredCopy([copies[1]!], async () => { throw new Error('not asked'); })).toBe(copies[1]);
+    expect(await mirroredCopy([], async () => false)).toBeUndefined();
   });
 });

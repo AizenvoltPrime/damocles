@@ -79,6 +79,9 @@ function makeServices() {
   };
 
   const modelRuntime = {
+    stream: vi.fn(),
+    streamSimple: vi.fn(),
+    settleCredentialWrites: async () => undefined,
     login: vi.fn(async (provider: string, _type: "oauth", _interaction: AuthInteractionLike, _options?: unknown) => {
       creds[provider] = { type: "oauth", expires: 123 };
       syncDisk();

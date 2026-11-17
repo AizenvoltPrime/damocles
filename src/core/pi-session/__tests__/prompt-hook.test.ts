@@ -350,7 +350,7 @@ describe('the UserPromptSubmit hook runs before pi', () => {
     expect(hookContextEntries(session)).toEqual([]);
   }, 20_000);
 
-  it('a prompt a Stop overtook after pi took it leaves its context to no run, though pi still opens one with it', async () => {
+  it('a prompt a Stop overtook after pi took it leaves its context to no run, and pi refuses the run it would open', async () => {
     const hook = judgingHook("if (p === 'held') process.stdout.write('CTX-HELD');");
     const gate: Array<() => void> = [];
     const { panel, session, contexts } = await hookedPanel(hook, say('Next.'), (pi) => {
@@ -364,11 +364,11 @@ describe('the UserPromptSubmit hook runs before pi', () => {
     await vi.waitFor(() => expect(gate).toHaveLength(1), { timeout: 10_000 });
     const stopped = panel.interrupt();
     gate.shift()!();
-    expect(await sending).toBe('sent');
+    expect(await sending).toBe('withdrawn');
     await stopped;
     expect(await panel.sendMessage('next', undefined, 'c2', { content: 'next' })).toBe('sent');
 
-    expect(userTexts(session)).toEqual(['held', 'next']);
+    expect(userTexts(session)).toEqual(['next']);
     expect(contexts).toHaveLength(1);
     expect(contexts[0]).not.toContain('user: CTX-HELD');
     expect(hookContextEntries(session)).toEqual([]);
@@ -518,7 +518,7 @@ describe('the UserPromptSubmit hook runs before pi', () => {
     expect(hookContextEntries(session)).toEqual([]);
   }, 20_000);
 
-  it("leaves a batch's context out of the stopped run pi opens with it after ESC overtook it in pi's hands", async () => {
+  it("leaves a batch's context to no run when ESC overtook it in pi's hands and pi refuses the run it would open", async () => {
     const hook = judgingHook("if (p === 'queued') process.stdout.write('CTX-QUEUED');");
     const shell = steppedShell();
     const held: Array<() => void> = [];
@@ -538,7 +538,7 @@ describe('the UserPromptSubmit hook runs before pi', () => {
     held.shift()!();
     await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
     await session.waitForIdle();
-    expect(userTexts(session)).toEqual(['work', 'queued']);
+    expect(userTexts(session)).toEqual(['work']);
     expect(await panel.sendMessage('fresh', undefined, 'c1', { content: 'fresh' })).toBe('sent');
 
     expect(contexts.at(-1)?.at(-1)).toBe('user: fresh');

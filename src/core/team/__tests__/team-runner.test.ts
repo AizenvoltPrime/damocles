@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { TeamRunner } from '../team-runner';
+import { TeamRunner, STRANDED_STANDBY_NUDGE, TERMINAL_CONTRACT_NUDGE } from '../team-runner';
 import { MessageBus } from '../message-bus';
 import { Scratchpad } from '../scratchpad';
 import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, AgentResult, TeamCheckpoint } from '../types';
@@ -1374,7 +1374,7 @@ interface RedispatchHarness {
   /** The `store` each member session was created with, in creation order. */
   sessionStores: unknown[];
   teamEntries: Array<Record<string, unknown>>;
-  statusUpdates: Array<{ agentId: string; status: string; progressSummary?: string; stopwatch?: Stopwatch }>;
+  statusUpdates: Array<{ agentId: string; status: string; progressSummary?: string; stopwatch?: Stopwatch; stopReason?: string | null }>;
   sentToLead: string[];
   messageBus: MessageBus;
   set: (name: string, key: string) => Set<string>;
@@ -1428,6 +1428,7 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
     statusUpdates.push({
       agentId: m.agentId, status: m.status,
       ...(m.progressSummary ? { progressSummary: m.progressSummary } : {}), ...(m.stopwatch ? { stopwatch: m.stopwatch } : {}),
+      ...(m.stopReason !== undefined ? { stopReason: m.stopReason } : {}),
     });
   });
 
@@ -2508,7 +2509,7 @@ describe('TeamRunner agent stopwatch', () => {
     expect(Date.parse(completed['timestamp'] as string)).toBe(1_042_400);
     expect(completed).not.toHaveProperty('durationMs');
     expect(h.statusUpdates.filter((u) => u.agentId === agentId && u.status !== 'running')).toEqual([
-      { agentId, status: 'completed', progressSummary: 'Completed (5 tools, 42s)', stopwatch: { activeMs: 42_400, runningSince: null } },
+      { agentId, status: 'completed', progressSummary: 'Completed (5 tools, 42s)', stopwatch: { activeMs: 42_400, runningSince: null }, stopReason: null },
     ]);
     expect(h.sentToLead).toContain('Specialist "A" completed (5 tools, 42s). Read their scratchpad section for findings.');
   });
@@ -2550,7 +2551,7 @@ describe('TeamRunner agent stopwatch', () => {
     await settle();
 
     expect(h.agents.get(name)).toMatchObject({ status: 'failed', activeMs: 7_000, runningSince: null });
-    expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toEqual({ agentId, status: 'failed', stopwatch: { activeMs: 7_000, runningSince: null } });
+    expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toEqual({ agentId, status: 'failed', stopwatch: { activeMs: 7_000, runningSince: null }, stopReason: null });
   });
 
   it('a settle that throws after writing agent-completed keeps the status that entry recorded and writes no second one', async () => {
@@ -3441,6 +3442,117 @@ describe('TeamRunner re-review on landing (rule A)', () => {
     expect(h.agents.get('appsec')!.status).toBe('failed');
     h.runner.redispatchSpecialist('appsec', 'Test label', 'review the backend for security defects again', undefined, 'reviewer');
     expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+  });
+});
+
+describe('TeamRunner specialist turn that pi ended on a rejected call', () => {
+  const WAITS = 'It is waiting for you: message it with team_send_message to continue, or cancel it with team_cancel_specialist.';
+  const DENIED = { toolCallId: 'c1', toolName: 'Bash', cause: 'user' as const };
+  const settle = async (): Promise<void> => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+
+  it.each([
+    ['user', `Specialist "A": the user rejected its Bash call and its turn ended there. ${WAITS}`],
+    ['hook', `Specialist "A": a hook rejected its Bash call and ended its turn. ${WAITS}`],
+  ] as const)('tells the lead which call the %s rejected', (cause, note) => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+    h.runs.get('A')!.config.onRunRejected!({ toolCallId: 'c1', toolName: 'Bash', cause });
+    expect(h.sentToLead).toEqual([note]);
+  });
+
+  /** A specialist whose turn the user's rejection ended, parked as its runner parks it. */
+  function parkedOnRejection(h: RedispatchHarness, name: string): AgentRunConfig {
+    h.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
+    const config = h.runs.get(name)!.config;
+    config.onRunRejected!(DENIED);
+    expect(config.keepAlive!()).toBe(true);
+    config.onTurnEnd!();
+    return config;
+  }
+
+  it('parks it waiting for the lead, naming the cause, with no nudge of either kind and no conversion to review', async () => {
+    const h = makeRedispatchHarness(['A', 'B']);
+    h.runner.startSpecialist('B', 'Test label', 'task for B that is descriptive enough');
+    h.agents.get('B')!.status = 'standby';
+    h.set('B', 'pendingStandby').add('B');
+    parkedOnRejection(h, 'A');
+    await settle();
+
+    expect(h.agents.get('A')!.status).toBe('standby');
+    expect(h.statusUpdates.at(-1)).toEqual({ agentId: 'id-A', status: 'standby', stopReason: 'denied' });
+    const toA = h.messageBus.getAllMessages().filter((m) => m.to === 'A').map((m) => m.content);
+    expect(toA).not.toContain(TERMINAL_CONTRACT_NUDGE);
+    expect(toA).not.toContain(STRANDED_STANDBY_NUDGE);
+    expect(h.set('A', 'owedTerminalAction').has('A')).toBe(false);
+    expect(h.set('A', 'confirmedComplete').has('A')).toBe(false);
+    // Its standby peer is stranded now that A cannot wake it.
+    expect(h.messageBus.getAllMessages().filter((m) => m.to === 'B').map((m) => m.content)).toEqual([STRANDED_STANDBY_NUDGE]);
+  });
+
+  it("takes only the lead's messages while parked, and the wake clears the park", () => {
+    const h = makeRedispatchHarness(['A', 'B']);
+    const config = parkedOnRejection(h, 'A');
+
+    expect(config.shouldDeliverMessage!({ from: 'B', to: 'A' })).toBe(false);
+    expect(config.shouldDeliverMessage!({ from: 'system', to: 'A' })).toBe(false);
+    expect(config.shouldDeliverMessage!({ from: 'Lead', to: 'A' })).toBe(true);
+    config.onKeepAliveResume!();
+
+    expect(h.agents.get('A')!.status).toBe('running');
+    expect(h.statusUpdates.at(-1)).toEqual({ agentId: 'id-A', status: 'running', stopReason: null });
+    expect(config.keepAlive!()).toBe(false);
+    expect(config.shouldDeliverMessage!({ from: 'B', to: 'A' })).toBe(true);
+  });
+
+  it('counts as settled for the review round and keeps no lead alive by itself', () => {
+    const h = makeRedispatchHarness(['A', 'B']);
+    parkedOnRejection(h, 'A');
+    (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+      .launchLead(h.agents.get('Lead')!, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'go', redeliver: [] });
+    const lead = h.runs.get('Lead')!.config;
+    h.agents.get('B')!.status = 'completed';
+
+    expect(lead.keepAlive!()).toBe(false);
+    expect(h.runner.getNonSettledSpecialistDetails()).toEqual([]);
+
+    h.agents.get('B')!.status = 'awaiting-review';
+    expect(lead.keepAlive!()).toBe(true);
+    h.set('B', 'confirmedComplete').add('B');
+    expect(h.runner.isReviewRoundReady()).toBe(true);
+  });
+
+  it('ends stopped on the rejection, not completed, when the team completes while it is parked', async () => {
+    const h = makeRedispatchHarness(['A']);
+    parkedOnRejection(h, 'A');
+
+    h.runner.synthesizeResult('done');
+    expect(h.statusUpdates.at(-1)).toEqual({ agentId: 'id-A', status: 'cancelled', stopReason: 'denied' });
+    h.runs.get('A')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+    await settle();
+
+    expect(h.agents.get('A')!.status).toBe('cancelled');
+    expect(h.teamEntries.filter((e) => e['type'] === 'agent-completed').at(-1)).toMatchObject({ name: 'A', status: 'cancelled', stopReason: 'denied' });
+    expect(h.statusUpdates.at(-1)).toMatchObject({ agentId: 'id-A', status: 'cancelled', stopReason: 'denied' });
+  });
+
+  it('lists its stop in the partial results of a team stopped while it is parked', () => {
+    const h = makeRedispatchHarness(['A']);
+    parkedOnRejection(h, 'A');
+    const partial = (h.runner as unknown as { buildPartialResults: () => string }).buildPartialResults();
+    expect(partial).toContain('### A (specialist, standby)\nStopped: the user rejected its Bash call and its turn ended there.\n');
+  });
+
+  it("is ended plainly by the lead's cancel", async () => {
+    const h = makeRedispatchHarness(['A']);
+    parkedOnRejection(h, 'A');
+    h.runner.cancelSpecialist('A');
+    h.runs.get('A')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+    await settle();
+    const settled = h.teamEntries.filter((e) => e['type'] === 'agent-completed').at(-1)!;
+    expect(settled).toMatchObject({ name: 'A', status: 'cancelled' });
+    expect(settled).not.toHaveProperty('stopReason');
+    // The card held the rejection, so the settle clears it as a reload of that entry does.
+    expect(h.statusUpdates.at(-1)).toMatchObject({ agentId: 'id-A', status: 'cancelled', stopReason: null });
   });
 });
 

@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { noSessionFiles, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 
-const H = vi.hoisted(() => ({ trail: [] as string[], folderState: 'worktree' as 'worktree' | 'leftover' | 'gone', removeError: undefined as Error | undefined, applyOutcome: undefined as unknown, uncommitted: [] as Array<{ path: string; letter: string }>, unmerged: [] as Array<{ hash: string; subject: string }>, contained: false }));
+const H = vi.hoisted(() => ({ trail: [] as string[], folderState: 'worktree' as 'worktree' | 'leftover' | 'unreachable' | 'gone', removeError: undefined as Error | undefined, applyOutcome: undefined as unknown, uncommitted: [] as Array<{ path: string; letter: string }>, unmerged: [] as Array<{ hash: string; subject: string }>, contained: false }));
 vi.mock('electron', () => ({ WebContentsView: vi.fn(), nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {}, dialog: { showMessageBox: vi.fn() } }));
 vi.mock('../../../core/worktrees/integrate', () => ({
   aheadBehind: vi.fn(async () => ({ behind: 0 })),
@@ -23,7 +23,7 @@ vi.mock('../../../core/worktrees/integrate', () => ({
   uncommittedFiles: vi.fn(async () => H.uncommitted),
   unmergedCommits: vi.fn(async () => H.unmerged),
   // a folder that is not there is gone; one that is reads as the test sets it
-  worktreeFolderState: vi.fn(async (folder: string) => ((await import('node:fs')).existsSync(folder) ? H.folderState : 'gone')),
+  worktreeFolderState: vi.fn(async (folder: { worktreeRoot: string }) => ((await import('node:fs')).existsSync(folder.worktreeRoot) ? H.folderState : 'gone')),
   removeWorktree: vi.fn(async (_record: unknown, _git: unknown, _registry: unknown, options: { deleteBranch: boolean; force: boolean }) => {
     H.trail.push(`remove:${options.deleteBranch}:${options.force}`);
     if (H.removeError) throw H.removeError;
@@ -89,7 +89,7 @@ function controller(overrides: Partial<WorktreeControllerDeps> & { readonly regi
   const holds = createFinishHolds();
   const call = coreCalls(registry, holds);
   const engine = worktreeEngine(call);
-  roots = new WorktreeRoots({ projects: () => [{ key: KEY, fsPath: PROJECT, name: 'alpha' }], registry: () => registry, osOf: () => process.platform });
+  roots = new WorktreeRoots({ projects: () => [{ key: KEY, fsPath: PROJECT, name: 'alpha' }], registry: () => registry as unknown as WorktreeRecordReader, osOf: () => process.platform });
   const askDialog = (async (dialog: unknown) => {
     dialogs.push(dialog);
     H.trail.push(`dialog:${(dialog as { dialog: string }).dialog}`);
@@ -256,6 +256,19 @@ describe('WorktreeController', () => {
     reply.choice = 0;
     await worktrees.finish(record.id, 'delete');
     expect(H.trail).toEqual(['close:abcd1234:true', 'root while asking:open', 'hold:abcd1234:delete', 'root once stopping:refused', 'remove:false:false', 'release', 'afterClose:true', 'showProjectFolder']);
+  });
+
+  it('refuses a Delete, first or a Retry, while the repository of the worktree is not available, asking nothing and removing nothing', async () => {
+    H.folderState = 'unreachable';
+    const asked: unknown[] = [];
+    const worktrees = controller({ ask: async (question) => { asked.push(question); return 0; } });
+    await worktrees.finish(record.id, 'delete');
+    await worktrees.finish(record.id, 'delete', { deleteBranch: true });
+    expect(asked).toEqual([]);
+    expect(dialogs).toEqual([]);
+    expect(H.trail).toEqual([]);
+    const refusal = `The repository ${PROJECT} of this worktree is not available, so the worktree was not deleted. Reconnect its drive or locate the project first.`;
+    expect(notices).toEqual([{ severity: 'warn', message: refusal, actions: [] }, { severity: 'warn', message: refusal, actions: [] }]);
   });
 
   it('stops before removing anything when the user cancels a question while closing', async () => {
@@ -698,6 +711,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       gitOf: () => undefined,
       designScreens: { is: () => false, preview: async () => undefined },
       worktreeBranch: () => undefined,
+      awaitsRegistry: () => false,
     });
     try {
       worktrees = controller({

@@ -1,4 +1,4 @@
-import type { TeamRunSummary } from '../../shared/types/team';
+import type { TeamRunSummary, TeamStopReason } from '../../shared/types/team';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../shared/usage-accounting';
 import { isEffortBadgeLevel, type EffortBadgeLevel } from '../../shared/effort-badge';
 import { stopStopwatch, type Stopwatch } from '../../shared/team-stopwatch';
@@ -53,6 +53,8 @@ export class TeamRunLog {
   private readonly ended: TeamRunSummary[] = [];
   private open: TeamRunSummary | null = null;
   private openCancelTotals: ReadRunTotals | null = null;
+  // What the open run's `team-cancelled` entry recorded stopped it, when a lead's rejected call did.
+  private openStopReason: TeamStopReason | null = null;
   // Each member's logged tool calls in its current attempt, since `agent-completed` carries that running count.
   private readonly attemptToolCounts = new Map<string, number>();
   // By agentId: a spawn starts an attempt with no effort, and only that attempt's own sessions set it.
@@ -78,9 +80,13 @@ export class TeamRunLog {
         this.open = { toolUseId, status: 'running', startTime: time, endTime: null, toolCount: 0, usage: emptyAgentUsage() };
         break;
       }
-      case 'team-cancelled':
-        if (this.open) this.openCancelTotals = readRunTotals(entry['run']) ?? this.openCancelTotals;
+      case 'team-cancelled': {
+        if (!this.open) break;
+        this.openCancelTotals = readRunTotals(entry['run']) ?? this.openCancelTotals;
+        const reason = entry['stopReason'];
+        if (reason === 'denied' || reason === 'hookDenied') this.openStopReason = reason;
         break;
+      }
       case 'agent-spawned': {
         if (typeof name === 'string') this.attemptToolCounts.set(name, 0);
         const agentId = entry['agentId'];
@@ -134,9 +140,10 @@ export class TeamRunLog {
         const status = entry['status'];
         if (timed) this.stopAll(time);
         if (!this.open || !timed || !isEndedStatus(status)) break;
-        this.ended.push({ ...this.open, ...(readRunTotals(entry['run']) ?? this.openCancelTotals), status, endTime: time });
+        this.ended.push({ ...this.open, ...(readRunTotals(entry['run']) ?? this.openCancelTotals), ...this.stopReasonOf(status), status, endTime: time });
         this.open = null;
         this.openCancelTotals = null;
+        this.openStopReason = null;
         break;
       }
       default:
@@ -185,9 +192,14 @@ export class TeamRunLog {
     if (this.open) this.ended.push(this.cutShort(this.open));
     this.open = null;
     this.openCancelTotals = null;
+    this.openStopReason = null;
   }
 
   private cutShort(run: TeamRunSummary): TeamRunSummary {
-    return { ...run, ...this.openCancelTotals, status: 'cancelled', endTime: this.lastTime ?? run.startTime };
+    return { ...run, ...this.openCancelTotals, ...this.stopReasonOf('cancelled'), status: 'cancelled', endTime: this.lastTime ?? run.startTime };
+  }
+
+  private stopReasonOf(status: EndedStatus): Pick<TeamRunSummary, 'stopReason'> {
+    return status === 'cancelled' && this.openStopReason ? { stopReason: this.openStopReason } : {};
   }
 }

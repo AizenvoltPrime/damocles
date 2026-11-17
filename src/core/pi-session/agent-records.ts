@@ -12,7 +12,7 @@
  */
 
 import { createReadStream } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -27,11 +27,13 @@ import {
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from './subagents/background-results';
 import { turnStoppedEntryIds, turnStoppedToolCallIds } from './session-store/turn-stopped';
 import { piSessionFileId } from './session-store/session-file-path';
+import { readSessionFileEntries } from './session-store/session-file-entries';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT } from '../../shared/tool-names';
 import type { AgentRecord } from './subagents/types';
 import { addAgentUsage, agentUsageOf, emptyAgentUsage, usageOfEntry, type AgentUsageTotals } from '../../shared/usage-accounting';
 import { isEffortBadgeLevel, type EffortBadgeLevel } from '../../shared/effort-badge';
 import { isSafeAgentPathId } from '../../shared/agent-path-id';
+import { isAgentStopReason, type AgentStopReason } from '../../shared/types/subagents';
 
 // ---- layout ----------------------------------------------------------------
 
@@ -110,10 +112,8 @@ export function agentFileSessionId(path: string): string {
 
 // ---- payloads ----------------------------------------------------------------
 
-export type AgentStopReason = 'user' | 'budget' | 'shutdown' | 'reset';
 export type AgentTerminalStatus = Exclude<AgentRecord['status'], 'queued' | 'running'>;
 
-const STOP_REASONS: ReadonlySet<string> = new Set<AgentStopReason>(['user', 'budget', 'shutdown', 'reset']);
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set<AgentTerminalStatus>(['completed', 'steered', 'aborted', 'stopped', 'error']);
 
 export function isAgentTerminalStatus(value: unknown): value is AgentTerminalStatus {
@@ -216,7 +216,6 @@ function isOptional(value: unknown, check: (v: unknown) => boolean): boolean {
 }
 
 const isString = (v: unknown): boolean => typeof v === 'string';
-const isStopReason = (v: unknown): boolean => typeof v === 'string' && STOP_REASONS.has(v);
 
 export function isAgentInvocationData(value: unknown): value is AgentInvocationData {
   return (
@@ -294,7 +293,7 @@ export function isAgentStatusData(value: unknown): value is AgentStatusData {
   return (
     isRecord(value) &&
     isAgentTerminalStatus(value['status']) &&
-    isOptional(value['stopReason'], isStopReason) &&
+    isOptional(value['stopReason'], isAgentStopReason) &&
     isString(value['result'])
   );
 }
@@ -304,7 +303,7 @@ export function isAgentToolDetails(value: unknown): value is AgentToolDetails {
     isRecord(value) &&
     isNonEmptyString(value['agentId']) &&
     (value['status'] === 'async_launched' || isAgentTerminalStatus(value['status'])) &&
-    isOptional(value['stopReason'], isStopReason)
+    isOptional(value['stopReason'], isAgentStopReason)
   );
 }
 
@@ -314,7 +313,7 @@ function isInjectedAgentResult(value: unknown): value is InjectedAgentResult {
     isNonEmptyString(value['agentId']) &&
     isNonEmptyString(value['toolCallId']) &&
     isAgentTerminalStatus(value['status']) &&
-    isOptional(value['stopReason'], isStopReason) &&
+    isOptional(value['stopReason'], isAgentStopReason) &&
     isString(value['result'])
   );
 }
@@ -554,11 +553,9 @@ export function parseAgentEntries(path: string, entries: readonly unknown[]): Ag
   };
 }
 
-/** Read one agent pi session file. Null when it carries no valid launch entry. */
+/** Read one agent pi session file, without writing it, since its run may own it. Null when it carries no valid launch entry. */
 export async function readAgentFile(path: string): Promise<AgentFile | null> {
-  const pi = await requirePi();
-  const content = await readFile(path, 'utf8');
-  return parseAgentEntries(path, pi.parseSessionEntries(content));
+  return parseAgentEntries(path, await readSessionFileEntries(path));
 }
 
 /** The segment an invocation rendered: the launch segment, or the resume segment it opened. */
@@ -778,10 +775,15 @@ export function subagentLatestState(
   return { spawn, latest, status: resolved.status, ...(resolved.stopReason ? { stopReason: resolved.stopReason } : {}) };
 }
 
-/** Resumable: stopped by the user or a panel shutdown, or killed before any status was recorded. */
+/** Resumable: stopped by the user, a panel shutdown or a rejected call, or killed before any status was recorded. */
 export function isResumableSubagentStatus(state: Pick<SubagentLatestState, 'status' | 'stopReason'>): boolean {
   if (state.status === 'interrupted') return true;
-  return state.status === 'stopped' && (state.stopReason === 'user' || state.stopReason === 'shutdown');
+  return state.status === 'stopped' && (state.stopReason === 'user' || state.stopReason === 'shutdown' || endedOnRejection(state));
+}
+
+/** A stop pi made after a rejected call: the run ended on its own, so its recorded result is delivered as a completion's is. */
+export function endedOnRejection(state: Pick<SubagentLatestState, 'status' | 'stopReason'>): boolean {
+  return state.status === 'stopped' && (state.stopReason === 'denied' || state.stopReason === 'hookDenied');
 }
 
 /** What `Agent({resume})` accepts: an interrupted agent, or a failed one, whose result already named the resume call. */

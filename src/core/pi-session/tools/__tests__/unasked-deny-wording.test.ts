@@ -7,6 +7,7 @@ import type { ExtensionToWebviewMessage } from '../../../../shared/types/message
 import { createAskUserQuestionTool } from '../ask-user-question-tool';
 import { createBrowserRequestInputTool } from '../browser-request-input-tool';
 import { createPlanModeTools } from '../plan-mode-tools';
+import { getPiCodingAgent } from '../../pi-loader';
 
 type Executable = { execute: (id: string, params: unknown, signal: AbortSignal, onUpdate?: undefined, ctx?: unknown) => Promise<unknown> };
 
@@ -16,7 +17,7 @@ const form = { fields: [{ id: 'a', label: 'A', type: 'text', selector: '#a' }] }
 
 /** A real handler. `answer` plays the user: it receives each prompt the webview would show. */
 function handlerAnswering(answer: ((msg: ExtensionToWebviewMessage, handler: PermissionHandler) => void) | null): PermissionHandler {
-  const handler = new PermissionHandler(createFakePlatform());
+  const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
   if (answer) handler.setPostMessage((msg) => answer(msg, handler));
   handler.setPermissionMode('plan');
   handler.setPlanContentResolver(async () => '# Plan\n- step');

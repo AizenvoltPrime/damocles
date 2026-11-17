@@ -1,5 +1,6 @@
 import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { RunLifecycle } from './run-lifecycle';
+import { onRunningHooksChange, runningHooks } from './hooks/running-hooks';
 
 /**
  * How long a stopped run may wind down before its card says what it waits for. A wind-down nothing holds (the aborted
@@ -12,12 +13,12 @@ export interface WindDownNotice {
   end(): void;
   /**
    * Resolves once pi has finished the run it had open when `stop` fired: at its `agent_settled`, which pi publishes after
-   * the handlers and before it runs the actions they deferred (agent-session.js:689-699), or at once when none was open.
+   * the handlers and before it runs the actions they deferred (agent-session.js:744-754 in pi-coding-agent 1.5.2), or at once when none was open.
    */
   readonly runSettled: Promise<void>;
 }
 
-// `builtin:<name>` and `<inline:...>` name no file (`source-info.js:14-16` in pi-coding-agent 1.4.0).
+// `builtin:<name>` and `<inline:...>` name no file (`source-info.js:21-23` in pi-coding-agent 1.5.2).
 const loadedFromFile = (extensionPath: string): boolean => !extensionPath.startsWith('builtin:') && !extensionPath.startsWith('<');
 
 function windDownOf(run: RunLifecycle, skipsBeforeSettle: boolean): AgentWindDown {
@@ -25,18 +26,20 @@ function windDownOf(run: RunLifecycle, skipsBeforeSettle: boolean): AgentWindDow
   let events: string[] = [];
   if (now === 'start') events = ['input', 'before_agent_start'];
   else if (now === 'settle') events = skipsBeforeSettle || run.settling ? ['agent_settled'] : ['agent_before_settle', 'agent_settled'];
-  const extensions = run.session.resourceLoader.getExtensions().extensions
+  const extensions = now !== 'settle' ? [] : run.session.resourceLoader.getExtensions().extensions
     .filter((extension) => loadedFromFile(extension.path))
-    .filter((extension) => now === 'run' || events.some((event) => (extension.handlers.get(event)?.length ?? 0) > 0))
+    .filter((extension) => events.some((event) => (extension.handlers.get(event)?.length ?? 0) > 0))
     .map((extension) => extension.path);
-  return { phase: now, events, extensions };
+  const hooks = runningHooks(run.session.sessionManager.getSessionId());
+  return { phase: now, events, extensions, ...(hooks.length > 0 ? { hooks } : {}) };
 }
 
 const sameWindDown = (a: AgentWindDown, b: AgentWindDown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /**
  * Once `stop` fires, waits `WIND_DOWN_NOTICE_MS` and then publishes what the run's wind-down waits for, again at each
- * lifecycle event until the owner calls `end`. Display only: it never changes how the owner waits.
+ * lifecycle event and as each of the session's tracked hooks starts or ends, until the owner calls `end`. Display only:
+ * it never changes how the owner waits.
  */
 export function noticeWindDown(run: RunLifecycle, stop: AbortSignal, publish: (windDown: AgentWindDown | null) => void): WindDownNotice {
   let skipsBeforeSettle = false;
@@ -73,8 +76,11 @@ export function noticeWindDown(run: RunLifecycle, stop: AbortSignal, publish: (w
     if (event.type === 'agent_settled') timer = setTimeout(show, 0);
     else show();
   });
+  const unwatchHooks = onRunningHooksChange((sessionId) => {
+    if (shown && sessionId === run.session.sessionManager.getSessionId()) show();
+  });
   const onStop = (): void => {
-    // A run aborted before it ended skips its `agent_before_settle` handlers (agent-session.js:1450, :1457).
+    // A run aborted before it ended skips its `agent_before_settle` handlers (agent-session.js:1514, :1521 in pi-coding-agent 1.5.2).
     skipsBeforeSettle = run.phase !== 'settle';
     const runEnds = run.untilRunEnds();
     if (runEnds) void runEnds.then(settleRun);
@@ -92,6 +98,7 @@ export function noticeWindDown(run: RunLifecycle, stop: AbortSignal, publish: (w
       clearTimeout(timer);
       stop.removeEventListener('abort', onStop);
       unsubscribe();
+      unwatchHooks();
       if (shown) send(null);
     },
   };

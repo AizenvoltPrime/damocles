@@ -12,6 +12,7 @@ import {
   teamMemberSessionId,
 } from '../../pi-session/agent-records';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
+import type { RelocationAliases } from '../../project-relocation/aliases';
 import { openUsageDatabase, type UsageDatabase } from '../database';
 import { classifySessionPath, indexUsage, projectKeyOf, type IndexUsageSummary } from '../indexer';
 import { loadRates, queryTotals } from '../queries';
@@ -656,5 +657,125 @@ describe('indexUsage project keys', () => {
     writeLines(mainPath('sess-p'), [header('sess-p', at(0), '/Work/Repo/sub/..'), assistant('a0000001', at(1), 0.1)]);
     await scan();
     expect(rows().map((r) => r.projectKey)).toEqual(['/Work/Repo']);
+  });
+});
+
+describe('relocated projects', () => {
+  const MOVED = path.resolve('/work/moved');
+  const projects = (): Array<{ key: string; cwd: string | null }> =>
+    env.db.prepare('SELECT project_key AS key, cwd FROM projects ORDER BY project_key').all() as unknown as Array<{ key: string; cwd: string | null }>;
+
+  it('re-keys rows indexed under the old folder, ledger rows included, and keys new rows where the folder is now', async () => {
+    const main = mainPath('sess-r');
+    writeLines(main, [header('sess-r', at(0)), assistant('a0000001', at(1), 0.1)]);
+    fs.mkdirSync(path.dirname(env.ledgerPath), { recursive: true });
+    writeLines(env.ledgerPath, [ledgerRecord('l0000001', at(2), 'title', 0.02, { cwd: CWD, sessionId: 'sess-r' })]);
+    await scan();
+    expect(new Set(rows().map((r) => r.projectKey))).toEqual(new Set([projectKeyOf(CWD)]));
+    const before = totals();
+
+    // the sessions step moved the file to the new folder's dir; its header still names the old folder
+    const moved = path.join(env.sessionsDir, '--work-moved--', path.basename(main));
+    fs.mkdirSync(path.dirname(moved), { recursive: true });
+    fs.renameSync(main, moved);
+    appendLines(moved, [assistant('a0000002', at(3), 0.3)]);
+    appendLines(env.ledgerPath, [ledgerRecord('l0000002', at(4), 'title', 0.04, { cwd: CWD, sessionId: 'sess-r' })]);
+    const summary = await indexUsage({
+      db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m),
+      aliases: { moves: [{ seq: 1, startedAt: Date.parse(at(5)), from: CWD, to: MOVED }], hosts: [] },
+    });
+    expect(summary.filesFailed).toBe(0);
+
+    expect(rows().map((r) => [r.key.split('|')[0], r.projectKey])).toEqual([
+      ['a0000001', projectKeyOf(MOVED)],
+      ['a0000002', projectKeyOf(MOVED)],
+      ['l0000001', projectKeyOf(MOVED)],
+      ['l0000002', projectKeyOf(MOVED)],
+    ]);
+    expect(projects().filter((p) => p.key !== NO_PROJECT_KEY)).toEqual([{ key: projectKeyOf(MOVED), cwd: MOVED }]);
+    expect(totals().cost).toBeCloseTo(before.cost + 0.34, 10);
+    const session = env.db.prepare('SELECT project_key AS key, missing FROM sessions WHERE session_id = ?').get('sess-r') as { key: string; missing: number };
+    expect(session).toEqual({ key: projectKeyOf(MOVED), missing: 0 });
+  });
+
+  it('merges into a project the index already has', async () => {
+    writeLines(mainPath('sess-a'), [header('sess-a', at(0)), assistant('a0000001', at(1), 0.1)]);
+    writeLines(path.join(env.sessionsDir, '--work-moved--', '2025-06-10T09-00-00-000Z_sess-b.jsonl'), [header('sess-b', at(0), MOVED), assistant('b0000001', at(1), 0.2)]);
+    await scan();
+    await indexUsage({ db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m), aliases: { moves: [{ seq: 1, startedAt: Date.parse(at(5)), from: CWD, to: MOVED }], hosts: [] } });
+    expect(new Set(rows().map((r) => r.projectKey))).toEqual(new Set([projectKeyOf(MOVED)]));
+    expect(projects().map((p) => p.key)).toEqual([projectKeyOf(MOVED)]);
+  });
+
+  // P at CWD located to MOVED, then Q located from OTHER into a re-created CWD (docs/invariants.md "Project relocation").
+  it('keeps a reused folder\'s rows apart by time, and applies each move to the index once', async () => {
+    const OTHER = path.resolve('/work/other');
+    const aliases = { moves: [{ seq: 1, startedAt: Date.parse(at(10)), from: CWD, to: MOVED }, { seq: 2, startedAt: Date.parse(at(20)), from: OTHER, to: CWD }], hosts: [] };
+    const indexed = () => indexUsage({ db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m), aliases });
+    writeLines(mainPath('sess-p'), [header('sess-p', at(0)), assistant('p0000001', at(1), 0.1)]);
+    writeLines(mainPath('sess-q'), [header('sess-q', at(5), OTHER), assistant('q0000001', at(6), 0.2)]);
+    fs.mkdirSync(path.dirname(env.ledgerPath), { recursive: true });
+    writeLines(env.ledgerPath, [ledgerRecord('l0000001', at(2), 'title', 0.01, { cwd: CWD, sessionId: 'sess-p' })]);
+    await scan();
+
+    writeLines(mainPath('sess-n', '2025-06-10T09-30-00-000Z'), [header('sess-n', at(30)), assistant('n0000001', at(31), 0.4)]);
+    appendLines(env.ledgerPath, [ledgerRecord('l0000002', at(32), 'title', 0.02, { cwd: CWD, sessionId: 'sess-n' })]);
+    await indexed();
+    const expected = [
+      ['l0000001', projectKeyOf(MOVED)],
+      ['l0000002', projectKeyOf(CWD)],
+      ['n0000001', projectKeyOf(CWD)],
+      ['p0000001', projectKeyOf(MOVED)],
+      ['q0000001', projectKeyOf(CWD)],
+    ];
+    expect(rows().map((r) => [r.key.split('|')[0], r.projectKey])).toEqual(expected);
+
+    appendLines(mainPath('sess-q'), [assistant('q0000002', at(40), 0.8)]);
+    await indexed();
+    expect(rows().map((r) => [r.key.split('|')[0], r.projectKey])).toEqual([...expected, ['q0000002', projectKeyOf(CWD)]]);
+    expect(projects().filter((p) => p.key !== NO_PROJECT_KEY).map((p) => p.key).sort()).toEqual([projectKeyOf(CWD), projectKeyOf(MOVED)].sort());
+  });
+
+  it('indexes nothing with a journal older than the moves the index applied', async () => {
+    writeLines(mainPath('sess-a'), [header('sess-a', at(0)), assistant('a0000001', at(1), 0.1)]);
+    await indexUsage({ db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m), aliases: { moves: [{ seq: 1, startedAt: Date.parse(at(5)), from: CWD, to: MOVED }], hosts: [] } });
+    writeLines(mainPath('sess-b', '2025-06-10T09-10-00-000Z'), [header('sess-b', at(0)), assistant('b0000001', at(1), 0.2)]);
+    expect((await scan()).filesRead).toBe(0);
+    expect(rows().map((r) => [r.key.split('|')[0], r.projectKey])).toEqual([['a0000001', projectKeyOf(MOVED)]]);
+  });
+
+  // A paused move the index applied, then abandoned before its worktrees step: the journal keeps its seq but no longer its move.
+  it('keeps indexing once a move it applied leaves the alias rule, mapping new rows by the moves that are left', async () => {
+    writeLines(mainPath('sess-a'), [header('sess-a', at(0)), assistant('a0000001', at(1), 0.1)]);
+    await indexUsage({ db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m), aliases: { moves: [{ seq: 1, startedAt: Date.parse(at(5)), from: CWD, to: MOVED }], hosts: [], localSeq: 1 } });
+    writeLines(mainPath('sess-b', '2025-06-10T09-10-00-000Z'), [header('sess-b', at(0)), assistant('b0000001', at(1), 0.2)]);
+    const summary = await indexUsage({ db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m), aliases: { moves: [], hosts: [], localSeq: 1 } });
+    expect(summary.filesRead).toBeGreaterThan(0);
+    expect(rows().map((r) => [r.key.split('|')[0], r.projectKey])).toEqual([['a0000001', projectKeyOf(MOVED)], ['b0000001', projectKeyOf(CWD)]]);
+  });
+
+  // The journal file deleted: the journal written next restarts its seqs, under an id of its own.
+  it('applies the moves of a journal that replaced the one whose moves the index applied', async () => {
+    const OTHER = path.resolve('/work/other');
+    const ELSEWHERE = path.resolve('/work/elsewhere');
+    const indexed = (aliases: RelocationAliases) => indexUsage({ db: env.db, sessionsDir: env.sessionsDir, ledgerPath: env.ledgerPath, models: MODELS, log: (m) => env.logs.push(m), aliases });
+    writeLines(mainPath('sess-a'), [header('sess-a', at(0)), assistant('a0000001', at(1), 0.1)]);
+    writeLines(mainPath('sess-b'), [header('sess-b', at(2), OTHER), assistant('b0000001', at(3), 0.2)]);
+    await indexed({
+      journal: 'first',
+      moves: [{ seq: 1, startedAt: Date.parse(at(5)), from: CWD, to: MOVED }, { seq: 2, startedAt: Date.parse(at(6)), from: path.resolve('/work/x'), to: path.resolve('/work/y') }],
+      hosts: [{ hostId: 'h1', seq: 1, startedAt: Date.parse(at(6)), from: '/srv/a', to: '/srv/b' }],
+      localSeq: 2,
+    });
+
+    writeLines(mainPath('sess-c', '2025-06-10T09-30-00-000Z'), [header('sess-c', at(30)), assistant('c0000001', at(31), 0.4)]);
+    expect((await indexed({ moves: [], hosts: [], localSeq: 0 })).filesRead).toBeGreaterThan(0);
+    expect(await indexed({ journal: 'second', moves: [{ seq: 1, startedAt: Date.parse(at(40)), from: OTHER, to: ELSEWHERE }], hosts: [], localSeq: 1 })).toMatchObject({ filesFailed: 0 });
+
+    expect(rows().map((r) => [r.key.split('|')[0], r.projectKey])).toEqual([
+      ['a0000001', projectKeyOf(MOVED)],
+      ['b0000001', projectKeyOf(ELSEWHERE)],
+      ['c0000001', projectKeyOf(CWD)],
+    ]);
   });
 });

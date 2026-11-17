@@ -21,6 +21,7 @@ import { PROVIDER_SECRET_KEYS } from "../core/pi-session/explore-providers";
 import { runCheckpointMaintenance } from "../core/pi-session/checkpoints";
 import { isNavigableUrl } from "../core/browser/net-guard";
 import { connectGuardedFetchThroughHost } from "../core/pi-session/web-access/safe-fetch";
+import { registerRelocationOffer } from "./relocation-offer";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
@@ -70,6 +71,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     subscriptions: context.subscriptions,
     createCompassViews: (options) => new CompassViews(platform, options),
   }));
+
+  registerRelocationOffer(context, chatPanelProvider.getProjectRelocations());
 
   const voiceService = chatPanelProvider.getVoiceService();
   const voiceStatusBar = createVoiceStatusBarItem(context, voiceService, platform.settings);
@@ -196,13 +199,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  */
 export async function deactivate(): Promise<void> {
   const deadline = Date.now() + DEACTIVATE_BUDGET_MS;
-  if (PiRuntime.exists) {
-    void PiRuntime.disposeInstance();
-  }
+  // Awaited within the budget: the runtime's dispose waits for an OAuth refresh's credential write, whose refresh token is spent.
+  const runtimeDisposed = settleBy(PiRuntime.exists ? PiRuntime.disposeInstance() : Promise.resolve(), deadline, 'the pi runtime');
   try {
     await chatPanelProvider?.dispose();
   } finally {
-    await flushCoreWritesWithin(Math.max(0, deadline - Date.now()));
+    await Promise.all([runtimeDisposed, settleBy(flushCoreWrites(), deadline, 'config writes')]);
   }
   log("Damocles extension deactivated");
 }
@@ -210,12 +212,17 @@ export async function deactivate(): Promise<void> {
 // The 5 s VS Code gives an extension host's deactivate before it exits the process, counted from deactivate's start.
 const DEACTIVATE_BUDGET_MS = 5_000;
 
-async function flushCoreWritesWithin(ms: number): Promise<void> {
+// Handles `work`'s rejection synchronously, so awaiting other work before this promise leaves no rejection unhandled.
+async function settleBy(work: Promise<unknown>, deadline: number, what: string): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(true), ms);
+    timer = setTimeout(() => resolve(true), Math.max(0, deadline - Date.now()));
   });
-  const late = await Promise.race([flushCoreWrites().then(() => false), timedOut]);
+  const failed = (err: unknown): boolean => {
+    log(`[deactivate] ${what} failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+    return false;
+  };
+  const late = await Promise.race([work.then(() => false, failed), timedOut]);
   clearTimeout(timer);
-  if (late) log(`[deactivate] config writes did not settle within the ${DEACTIVATE_BUDGET_MS} ms deactivate budget`);
+  if (late) log(`[deactivate] ${what} did not settle within the ${DEACTIVATE_BUDGET_MS} ms deactivate budget`);
 }

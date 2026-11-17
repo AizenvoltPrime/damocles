@@ -24,12 +24,27 @@ import { startInProcessDaemon, type InProcessDaemon } from './in-process-daemon'
 import { connectClient, resumeClient } from './test-client';
 import { holdStream } from '../../../remote/tunnel-pipe';
 import type { AgentRelay } from '../agent-relay';
+import type { ConnectionMirrorWatches, MirrorWatches } from '../mirror-server';
 
 // no terminal or formatter runs in these tests
 const NO_HOSTS: HostStarters = {
   startPtyHost: () => { throw new Error('no pty host in this test'); },
   startFormatterHost: () => { throw new Error('no formatter host in this test'); },
 };
+
+// every connection's mirror watches: none watch anything, but for what the test gives
+function mirrorWatches(watches: Partial<ConnectionMirrorWatches> = {}, released?: (connectionId: string) => void): MirrorWatches {
+  return {
+    forConnection: (connectionId) => ({
+      released: false,
+      follow: () => Promise.resolve(),
+      followProject: () => Promise.resolve({ folders: { own: '/sessions/app', worktrees: [], unreadable: false } }),
+      followSubcalls: () => Promise.resolve(),
+      dispose: () => released?.(connectionId),
+      ...watches,
+    }),
+  };
+}
 
 // the mux frame kinds (mux.ts KIND), read off the wire
 const KIND_OPEN = 0;
@@ -284,7 +299,7 @@ describe('daemon connections inside the grace', () => {
         },
       },
       control: {} as never,
-      mirrorWatches: { follow: () => Promise.resolve(), followSubcalls: () => Promise.resolve(), release: () => undefined },
+      mirrorWatches: mirrorWatches(),
       connectionsChanged: (connected) => presence.push(connected),
       agentUpstream: () => undefined,
       maxHeldBytes,
@@ -412,15 +427,13 @@ describe('daemon connections inside the grace', () => {
     let watching!: () => void;
     const released: string[] = [];
     const { connections, socket } = harness(64 * 1024, {
-      mirrorWatches: {
-        follow: (_id, projectKey, changed) => {
+      mirrorWatches: mirrorWatches({
+        follow: (projectKey, changed) => {
           order.push(`follow ${projectKey}`);
           announce = changed;
           return new Promise<void>((resolve) => { watching = resolve; });
         },
-        followSubcalls: () => Promise.resolve(),
-        release: (id) => released.push(id),
-      },
+      }, (id) => released.push(id)),
       control: { 'mirror.sync': () => { order.push('sync'); return { changes: [] }; } } as never,
     });
     const client = await connectClient(await socket());
@@ -441,22 +454,62 @@ describe('daemon connections inside the grace', () => {
     expect(released).toHaveLength(1);
   });
 
-  it('answers mirror.sync and mirror.syncSubcalls when their watch fails, and logs it', async () => {
+  it('answers mirror.sync, mirror.syncProject and mirror.syncSubcalls when their watch fails, and logs it', async () => {
+    const webFolders = { own: '/sessions/web', worktrees: [], unreadable: false };
+    const listedFrom: unknown[] = [];
     const { connections, socket, lines } = harness(64 * 1024, {
-      mirrorWatches: {
+      mirrorWatches: mirrorWatches({
         follow: () => Promise.reject(new Error('no watch for you')),
+        followProject: (projectKey) => (projectKey === '/srv/web' ? Promise.resolve({ folders: webFolders, failed: new Error('no project watch') }) : Promise.reject(new Error('no registry read'))),
         followSubcalls: () => Promise.reject(new Error('no ledger watch')),
-        release: () => undefined,
-      },
-      control: { 'mirror.sync': () => ({ changes: [] }), 'mirror.syncSubcalls': () => ({}) } as never,
+      }),
+      control: { 'mirror.sync': () => ({ changes: [] }), 'mirror.syncProject': (_params: unknown, _connection: unknown, folders: unknown) => { listedFrom.push(folders); return { changes: [] }; }, 'mirror.syncSubcalls': () => ({}) } as never,
     });
     const client = await connectClient(await socket());
     expect(await client.control.request('mirror.sync', { projectKey: '/srv/app', budgetBytes: 1024, files: [] })).toEqual({ changes: [] });
+    expect(await client.control.request('mirror.syncProject', { projectKey: '/srv/web', budgetBytes: 1024, files: [] })).toEqual({ changes: [] });
+    expect(await client.control.request('mirror.syncProject', { projectKey: '/srv/api', budgetBytes: 1024, files: [] })).toEqual({ changes: [] });
     expect(await client.control.request('mirror.syncSubcalls', { budgetBytes: 1024 })).toEqual({});
+    // a sync whose folders the follow could not read reads them itself
+    expect(listedFrom).toEqual([webFolders, undefined]);
     expect(lines.filter((line) => line.startsWith('[mirror]'))).toEqual([
       '[mirror] connection-1: watching /srv/app failed, so its changes are not announced: no watch for you',
+      '[mirror] connection-1: watching /srv/web and its worktree chats failed, so their changes are not announced: no project watch',
+      '[mirror] connection-1: watching /srv/api and its worktree chats failed, so their changes are not announced: no registry read',
       '[mirror] connection-1: watching the sub-call ledger failed, so its changes are not announced: no ledger watch',
     ]);
+    client.protocol.close('done');
+    await connections.endAll();
+  });
+
+  it('follows a project and its worktree chats\' folders before it serves mirror.syncProject, lists the folders it followed, and sends mirror.changed for it', async () => {
+    const order: string[] = [];
+    let announce: (() => void) | undefined;
+    let watching!: () => void;
+    const folders = { own: '/sessions/app', worktrees: [{ id: 'live0001', kind: 'chat' as const, folder: '/sessions/wt' }], unreadable: false };
+    let listed: unknown;
+    const { connections, socket } = harness(64 * 1024, {
+      mirrorWatches: mirrorWatches({
+        followProject: (projectKey, changed) => {
+          order.push(`follow ${projectKey}`);
+          announce = changed;
+          return new Promise((resolve) => { watching = () => resolve({ folders }); });
+        },
+      }),
+      control: { 'mirror.syncProject': (params: { projectKey: string }, _connection: unknown, followed: unknown) => { order.push(`sync ${params.projectKey}`); listed = followed; return { changes: [] }; } } as never,
+    });
+    const client = await connectClient(await socket());
+    const answer = client.control.request('mirror.syncProject', { projectKey: '/srv/app', budgetBytes: 1024, files: [] });
+    await vi.waitFor(() => expect(order).toEqual(['follow /srv/app']));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['follow /srv/app']);
+    watching();
+    expect(await answer).toEqual({ changes: [] });
+    expect(order).toEqual(['follow /srv/app', 'sync /srv/app']);
+    expect(listed).toBe(folders);
+    const heard = new Promise((resolve) => client.control.onEvent('mirror.changed', resolve));
+    announce!();
+    expect(await heard).toEqual({ projectKey: '/srv/app' });
     client.protocol.close('done');
     await connections.endAll();
   });
@@ -466,15 +519,13 @@ describe('daemon connections inside the grace', () => {
     let announce: (() => void) | undefined;
     let watching!: () => void;
     const { connections, socket } = harness(64 * 1024, {
-      mirrorWatches: {
-        follow: () => Promise.resolve(),
-        followSubcalls: (_id, changed) => {
+      mirrorWatches: mirrorWatches({
+        followSubcalls: (changed) => {
           order.push('follow');
           announce = changed;
           return new Promise<void>((resolve) => { watching = resolve; });
         },
-        release: () => undefined,
-      },
+      }),
       control: { 'mirror.syncSubcalls': () => { order.push('sync'); return {}; } } as never,
     });
     const client = await connectClient(await socket());

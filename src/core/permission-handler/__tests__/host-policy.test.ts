@@ -6,6 +6,7 @@ import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { agentSocketPath, asClient, bypassAllowed, runPinnedTurn } from '../../client-snapshots';
 import { PermissionHandler } from '../index';
 import type { ClientPolicy } from '../../../shared/remote-user';
+import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
 // Two devices attached to one daemon's core, each with its own host store's policy for this host.
 function twoDevices(laptop: ClientPolicy, desktop: ClientPolicy, settings: Record<string, unknown> = {}) {
@@ -23,14 +24,14 @@ const edit = { file_path: path.join(cwd, 'a.ts'), old_string: 'a', new_string: '
 describe('the host\'s configured policy on a daemon\'s core, per issuing client', () => {
   it('starts a new chat in the default mode the acting client configured for the host, else the settings\' default', () => {
     const { host, platform } = twoDevices({ voice: true, allowBypass: false, defaultPermissionMode: 'plan' }, { voice: true, allowBypass: false }, { 'damocles.permissionMode': 'acceptEdits' });
-    expect(new PermissionHandler(platform).getPermissionMode()).toBe('plan');
+    expect(new PermissionHandler(platform, getPiCodingAgent).getPermissionMode()).toBe('plan');
     host.setActing('desktop');
-    expect(new PermissionHandler(platform).getPermissionMode()).toBe('acceptEdits');
+    expect(new PermissionHandler(platform, getPiCodingAgent).getPermissionMode()).toBe('acceptEdits');
   });
 
   it('refuses YOLO from the client whose policy refuses it, and takes it from the one that allows it', () => {
     const { host, platform } = twoDevices({ voice: true, allowBypass: false }, { voice: true, allowBypass: true });
-    const handler = new PermissionHandler(platform);
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
     // a forged setPermissionMode to bypass from the laptop
     expect(handler.setDangerouslySkipPermissions(true)).toBe(false);
     expect(handler.getDangerouslySkipPermissions()).toBe(false);
@@ -41,7 +42,7 @@ describe('the host\'s configured policy on a daemon\'s core, per issuing client'
   it('runs a YOLO panel\'s turn for a client whose policy refuses bypass in that client\'s default mode for the host', async () => {
     const { host, platform } = twoDevices({ voice: true, allowBypass: false, defaultPermissionMode: 'acceptEdits' }, { voice: true, allowBypass: true });
     host.setActing('desktop');
-    const handler = new PermissionHandler(platform);
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
     handler.setCwd(cwd);
     handler.setPermissionMode('default');
     expect(handler.setDangerouslySkipPermissions(true)).toBe(true);
@@ -59,7 +60,7 @@ describe('the host\'s configured policy on a daemon\'s core, per issuing client'
   it('a refused YOLO with no default mode configured runs in the panel\'s own mode', async () => {
     const { host, platform } = twoDevices({ voice: true, allowBypass: false }, { voice: true, allowBypass: true });
     host.setActing('desktop');
-    const handler = new PermissionHandler(platform);
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
     handler.setCwd(cwd);
     handler.setPermissionMode('default');
     handler.setDangerouslySkipPermissions(true);
@@ -70,7 +71,7 @@ describe('the host\'s configured policy on a daemon\'s core, per issuing client'
   it('runs a refused YOLO turn in plan mode when that is the client\'s default for the host, for every plan mode check', async () => {
     const { host, platform } = twoDevices({ voice: true, allowBypass: false, defaultPermissionMode: 'plan' }, { voice: true, allowBypass: true });
     host.setActing('desktop');
-    const handler = new PermissionHandler(platform);
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
     handler.setCwd(cwd);
     handler.setPermissionMode('default');
     handler.setDangerouslySkipPermissions(true);

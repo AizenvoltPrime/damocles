@@ -26,7 +26,7 @@ export async function renamePiSession(cwd: string, sessionId: string, newName: s
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return;
   try {
-    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
+    const sm = await pi.SessionManager.openAsync(filePath, path.dirname(filePath));
     sm.appendSessionInfo(newName);
     sm.appendCustomEntry(DAMOCLES_USER_RENAMED_ENTRY);
   } catch (err) {
@@ -65,7 +65,8 @@ export async function titleStoredPiSession(
       outcome = 'missing';
       return;
     }
-    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
+    // The writer lease is held across this read, so no delete or panel can take the file meanwhile.
+    const sm = await pi.SessionManager.openAsync(filePath, path.dirname(filePath));
     if (sm.getSessionName()) {
       outcome = 'named';
       return;
@@ -87,7 +88,7 @@ export async function tagPiSession(cwd: string, sessionId: string, tag: string |
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return;
   try {
-    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
+    const sm = await pi.SessionManager.openAsync(filePath, path.dirname(filePath));
     sm.appendCustomEntry(DAMOCLES_TAG_ENTRY, { tag });
   } catch (err) {
     log('[session-store] tagPiSession failed for %s: %O', sessionId, err);
@@ -96,7 +97,7 @@ export async function tagPiSession(cwd: string, sessionId: string, tag: string |
 }
 
 /** The pre-session-subtree subagent transcript folder, `~/.damocles/pi/subagents/<encoded-cwd>/<sessionId>/`. */
-function legacySubagentTranscriptDir(cwd: string, sessionId: string): string {
+export function legacySubagentTranscriptDir(cwd: string, sessionId: string): string {
   const encodedCwd = cwd
     .replace(/^[A-Za-z]:[/\\]/, '')
     .replace(/[/\\:]/g, '-')

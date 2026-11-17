@@ -406,6 +406,33 @@ export class PanelStateStore {
     this.persist();
   }
 
+  /**
+   * A relocated project's key: each saved chat of `fromKey` and the selection move to `toKey`; its last chat moves too, unless
+   * `toKey` has one already (a merge keeps the target's). A second call changes nothing.
+   */
+  relocate(fromKey: string, toKey: string): void {
+    if (this.sealed) return;
+    this.batch(() => {
+      for (const chat of this.chats.values()) {
+        if (!isRecord(chat.state) || field(chat.state, 'workspaceFolderKey') !== fromKey) continue;
+        this.chats.set(chat.panelId, { ...chat, state: { ...chat.state, workspaceFolderKey: toKey } });
+        this.persist();
+      }
+      if (this.selection?.projectKey === fromKey) {
+        this.selection = { ...this.selection, projectKey: toKey };
+        this.persist();
+      }
+      if (this.lastChatEntries.some((entry) => entry.projectKey === fromKey)) {
+        const targetKept = this.lastChatEntries.some((entry) => entry.projectKey === toKey);
+        this.lastChatEntries = this.lastChatEntries.flatMap((entry) => {
+          if (entry.projectKey !== fromKey) return [entry];
+          return targetKept ? [] : [{ ...entry, projectKey: toKey }];
+        });
+        this.persist();
+      }
+    });
+  }
+
   /** Runs change, landing every change it makes in one write of the file, since each write holds every chat's state. */
   batch(change: () => void): void {
     if (this.batching) return change();

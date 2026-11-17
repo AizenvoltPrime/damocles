@@ -100,6 +100,16 @@ function services(wslDistro?: string, openNamed: (targetPath: string) => Promise
 }
 
 describe('a remote core\'s services', () => {
+  it('locates the listed project a remote core names by the target\'s folder key, and nothing for a folder no project of its host names', () => {
+    const { deps, main, logged } = services();
+    const located: string[] = [];
+    main.window.locateProjectFolder = (key) => { located.push(key); };
+    deps.platform.window.locateProjectFolder?.('/srv/app');
+    deps.platform.window.locateProjectFolder?.('/srv/other');
+    expect(located).toEqual(['loopback|/srv/app']);
+    expect(logged).toContain('[remote] loopback\'s core asked to locate a folder no project of it names');
+  });
+
   it('refuses a clipboard write, a reload, the trash and a proxy lookup', async () => {
     const { deps } = services();
     await expect(deps.platform.clipboard.writeText('x')).rejects.toThrow('not available to a remote core');

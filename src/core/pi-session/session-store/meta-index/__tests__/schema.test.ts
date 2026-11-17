@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
-import type { StoredSession } from '@shared/types/session';
-import { sessionFileMeta, type SessionFileMeta } from '../../metadata';
+import { sessionFileMeta, type IndexedSession, type SessionFileMeta } from '../../metadata';
 import { SESSION_META_SCHEMA } from '../store';
 
 // The index serves a row while its file is unchanged, whatever app wrote it, so its rows must mean the same in every app
 // that opens the same file name (docs/invariants.md "Session store"). These outputs pin what `sessionFileMeta` stores.
 
-/** Every field `sessionFileMeta` fills; a new `StoredSession` field fails to compile here until a fixture covers it or it is excluded. */
-const FILLED_FROM_FILE: Record<Exclude<keyof StoredSession, 'workspaceFolder' | 'listedFrom'>, true> = {
+/** Every field `sessionFileMeta` fills; a new `IndexedSession` field fails to compile here until a fixture covers it or it is excluded. */
+const FILLED_FROM_FILE: Record<Exclude<keyof IndexedSession, 'workspaceFolder' | 'listedFrom'>, true> = {
   id: true,
   timestamp: true,
   preview: true,
@@ -20,6 +19,7 @@ const FILLED_FROM_FILE: Record<Exclude<keyof StoredSession, 'workspaceFolder' | 
   model: true,
   worktree: true,
   design: true,
+  origin: true,
 };
 
 const TERMINAL_BLOCK = '<damocles_terminal_output source="command" command="npm test" exit_code="1" terminal="bash" omitted_lines="0">\n'
@@ -93,13 +93,14 @@ function headerless(): SessionFileMeta {
 describe('what the session metadata index stores', () => {
   it('changes only with SESSION_META_SCHEMA: a new output takes a new schema number, so apps never share rows that mean different things', () => {
     expect({ schema: SESSION_META_SCHEMA, outputs: [everyField(), aiTitled(), designChat(), forkedDesignChat(), headerless()] }).toEqual({
-      schema: 8,
+      schema: 9,
       outputs: [
         {
           stored: {
             id: 'session-renamed',
             timestamp: 1_767_225_609_000,
             createdAt: 1_767_225_600_000,
+            origin: { cwd: '/w', startedAt: 1_767_225_600_000 },
             preview: 'fix the failing test',
             messageCount: 5,
             customTitle: 'Parser fix',
@@ -110,7 +111,7 @@ describe('what the session metadata index stores', () => {
           prompts: ['fix the failing test', '/review the diff'],
         },
         {
-          stored: { id: 'session-ai-titled', timestamp: 1_767_225_800_000, createdAt: 1_767_225_800_000, preview: '(no messages)', messageCount: 0, aiTitle: 'Generated title' },
+          stored: { id: 'session-ai-titled', timestamp: 1_767_225_800_000, createdAt: 1_767_225_800_000, preview: '(no messages)', messageCount: 0, aiTitle: 'Generated title', origin: { cwd: '/w' } },
           prompts: [],
         },
         {
@@ -118,6 +119,7 @@ describe('what the session metadata index stores', () => {
             id: 'session-design',
             timestamp: 1_767_225_603_000,
             createdAt: 1_767_225_600_000,
+            origin: { cwd: '/w', startedAt: 1_767_225_600_000 },
             preview: 'design the contacts list',
             messageCount: 1,
             customTitle: 'Design · Add contacts',
@@ -130,6 +132,7 @@ describe('what the session metadata index stores', () => {
             id: 'session-design-fork',
             timestamp: 1_767_225_602_000,
             createdAt: 1_767_225_600_000,
+            origin: { cwd: '/w', startedAt: 1_767_225_600_000 },
             preview: 'try a denser table',
             messageCount: 1,
             design: { designId: 'contacts-fork5678' },

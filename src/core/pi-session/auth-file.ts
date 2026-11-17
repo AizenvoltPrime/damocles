@@ -36,7 +36,7 @@ function parseAuth(text: string, authPath: string): Record<string, unknown> {
 /**
  * Parse `<agentDir>/auth.json` without taking pi's lock: on Windows each lock release leaves the lock directory
  * pending deletion, which fails pi's next `mkdir` of it with EPERM, and pi's writers retry EPERM only 5 times
- * (pi-coding-agent 1.4.0 `core/auth-storage.js:14-17`, `:104-106`). Undefined when there is no file. Text that does not parse is re-read a
+ * (pi-coding-agent 1.5.2 `core/auth-storage.js:14-17`, `:105-107`). Undefined when there is no file. Text that does not parse is re-read a
  * few times; if it still does not parse, returns the last content this process parsed, or throws when there
  * is none or `lastGood` is false.
  */

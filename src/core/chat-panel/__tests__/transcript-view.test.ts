@@ -10,6 +10,7 @@ vi.mock("../../logger", () => ({ log: vi.fn() }));
 import { listMirroredSessions, mirroredProjectFolder, mirroredSessionFile, openTranscriptView } from "../transcript-view";
 import { replaySessionFileReadOnly } from "../../pi-session/session-store";
 import { initPiLoader } from "../../pi-session/pi-loader";
+import { log } from "../../logger";
 
 let userData: string;
 let mirror: string;
@@ -124,6 +125,30 @@ describe("mirroredSessionFile", () => {
     fs.writeFileSync(path.join(path.dirname(mirror), FILE_NAME), SESSION_TEXT);
     expect(await mirroredSessionFile(userData, "host1", path.join(path.dirname(mirror), FILE_NAME))).toBeUndefined();
   });
+
+  it("accepts a worktree chat's session file in its project's worktree.<id> or adopted.<id> folder, and no other folder or depth", async () => {
+    const adopted = path.join(mirror, "adopted.gone0002");
+    fs.mkdirSync(adopted, { recursive: true });
+    fs.writeFileSync(path.join(adopted, FILE_NAME), SESSION_TEXT);
+    expect(await mirroredSessionFile(userData, "host1", path.join(adopted, FILE_NAME))).toEqual({ path: fs.realpathSync.native(path.join(adopted, FILE_NAME)), sessionId: SESSION_ID });
+    const worktree = path.join(mirror, "worktree.live0001");
+    fs.mkdirSync(path.join(worktree, SESSION_ID, "subagents"), { recursive: true });
+    const file = path.join(worktree, FILE_NAME);
+    fs.writeFileSync(file, SESSION_TEXT);
+    expect(await mirroredSessionFile(userData, "host1", file)).toEqual({ path: fs.realpathSync.native(file), sessionId: SESSION_ID });
+    fs.writeFileSync(path.join(worktree, SESSION_ID, "subagents", FILE_NAME), SESSION_TEXT);
+    expect(await mirroredSessionFile(userData, "host1", path.join(worktree, SESSION_ID, "subagents", FILE_NAME))).toBeUndefined();
+    for (const name of ["worktree.NOTANID", "worktree.live00012", "other"]) {
+      fs.mkdirSync(path.join(mirror, name), { recursive: true });
+      fs.writeFileSync(path.join(mirror, name, FILE_NAME), SESSION_TEXT);
+      expect(await mirroredSessionFile(userData, "host1", path.join(mirror, name, FILE_NAME))).toBeUndefined();
+    }
+    // a worktree folder of another host's mirror
+    const elsewhere = path.join(userData, "remote", "host2", "mirror", "0123abcd", "worktree.live0001");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, FILE_NAME), SESSION_TEXT);
+    expect(await mirroredSessionFile(userData, "host1", path.join(elsewhere, FILE_NAME))).toBeUndefined();
+  });
 });
 
 const DESKTOP_CAPABILITIES = { ...VSCODE_HOST_CAPABILITIES, historyInPanel: false, settingsInPanel: false, windowLayout: true };
@@ -196,7 +221,8 @@ ${JSON.stringify({ type: "session_info", id: "n1", parentId: "a1", timestamp: at
     expect(view.posted.length).toBe(first * 2);
   });
 
-  it("gives a page reloaded mid-replay one replay, the later ready's", async () => {
+  it("gives a page reloaded mid-replay one replay, the later ready's, and logs no failure for the one it stopped", async () => {
+    vi.mocked(log).mockClear();
     const file = writeSession();
     const view = host();
     openTranscriptView(view, transcriptOf(file));
@@ -206,6 +232,7 @@ ${JSON.stringify({ type: "session_info", id: "n1", parentId: "a1", timestamp: at
     await named;
     const count = (type: string): number => view.posted.filter((message) => message.type === type).length;
     expect([count("userReplay"), count("done"), count("storedSessions")]).toEqual([1, 1, 1]);
+    expect(vi.mocked(log).mock.calls.map(([format]) => String(format)).filter((format) => format.startsWith("[transcript]"))).toEqual([]);
   });
 });
 
@@ -233,14 +260,160 @@ describe("the offline chat list's mirrored chats", () => {
     fs.writeFileSync(path.join(mirror, "notes.txt"), "x");
     const before = snapshot();
 
-    const rows = await listMirroredSessions(mirror, "");
+    const rows = await listMirroredSessions(mirror, "", "linux");
     expect(rows.map((row) => [row.id, row.customTitle ?? row.aiTitle ?? row.preview, row.timestamp])).toEqual([
       [OTHER_ID, "Build fix", Date.parse("2026-02-02T10:00:00.000Z")],
       [SESSION_ID, "list the files", 2],
     ]);
-    expect((await listMirroredSessions(mirror, "BUILD")).map((row) => row.id)).toEqual([OTHER_ID]);
+    expect((await listMirroredSessions(mirror, "BUILD", "linux")).map((row) => row.id)).toEqual([OTHER_ID]);
     // the torn last line stays torn: nothing was repaired, migrated, indexed or added
     expect(snapshot()).toEqual(before);
+  });
+
+  it("lists the project's worktree chats from its worktree.<id> folders with its own, each session once, and nothing from other folders", async () => {
+    writeSession();
+    const WORKTREE_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+    const worktreeChat = [
+      { type: "session", version: 3, id: WORKTREE_ID, timestamp: "2026-03-01T00:00:00.000Z", cwd: "/home/dev/.damocles/worktrees/app-abc123/live0001" },
+      { type: "custom", customType: "damocles.worktree", id: "w1", parentId: null, timestamp: "2026-03-01T00:00:00.000Z", data: { worktreeId: "live0001", projectPath: "/srv/app", place: "worktree" } },
+      { type: "message", id: "u1", parentId: "w1", timestamp: "2026-03-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "work in the worktree" }], timestamp: Date.parse("2026-03-02T10:00:00.000Z") } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    const worktree = path.join(mirror, "worktree.live0001");
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(worktree, `2026-03-01T00-00-00-000Z_${WORKTREE_ID}.jsonl`), worktreeChat);
+    // the project's own session listed again from a worktree folder (colliding session folders) lists once, as its own: its entry
+    // names another project, so the worktree folder's rule keeps it and only the one-row-per-session check leaves it out
+    const otherProjects = { type: "custom", customType: "damocles.worktree", id: "w9", parentId: "a1", timestamp: at, data: { worktreeId: "live0001", projectPath: "/srv/other", place: "worktree" } };
+    fs.writeFileSync(path.join(worktree, FILE_NAME), `${SESSION_TEXT.slice(0, SESSION_TEXT.lastIndexOf("\n") + 1)}${JSON.stringify(otherProjects)}\n`);
+    // a folder that is no worktree's, and an agent file in a worktree chat's session folder, are not chats
+    fs.mkdirSync(path.join(mirror, "worktree.NOTANID"), { recursive: true });
+    fs.writeFileSync(path.join(mirror, "worktree.NOTANID", `2026-04-01T00-00-00-000Z_${WORKTREE_ID.replace("7", "9")}.jsonl`), worktreeChat);
+    fs.mkdirSync(path.join(worktree, WORKTREE_ID, "subagents"), { recursive: true });
+    fs.writeFileSync(path.join(worktree, WORKTREE_ID, "subagents", "agent-1.jsonl"), SESSION_TEXT);
+    const before = snapshot();
+
+    const rows = await listMirroredSessions(mirror, "", "linux");
+    expect(rows.map((row) => [row.id, row.preview])).toEqual([
+      [WORKTREE_ID, "work in the worktree"],
+      [SESSION_ID, "list the files"],
+    ]);
+    expect((await listMirroredSessions(mirror, "worktree", "linux")).map((row) => row.id)).toEqual([WORKTREE_ID]);
+    expect(snapshot()).toEqual(before);
+  });
+
+  // docs/invariants.md "Worktree chats", Ownership: a chat worktree's folder holds the project's sessions, which have a worktree
+  // entry, and its own chats from when it was open as a project, which never record one; a deleted adopted worktree's are the
+  // project's history (rule 18).
+  it("lists from a worktree.<id> folder only the sessions with a worktree entry, and from an adopted.<id> folder only those without", async () => {
+    const chat = (id: string, cwd: string, text: string, entry: boolean): string => [
+      { type: "session", version: 3, id, timestamp: "2026-03-01T00:00:00.000Z", cwd },
+      ...(entry ? [{ type: "custom", customType: "damocles.worktree", id: "w1", parentId: null, timestamp: "2026-03-01T00:00:00.000Z", data: { worktreeId: "live0001", projectPath: "/srv/app", place: "worktree" } }] : []),
+      { type: "message", id: "u1", parentId: entry ? "w1" : null, timestamp: "2026-03-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text }], timestamp: Date.parse("2026-03-02T10:00:00.000Z") } },
+    ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+    const ids = { cleared: "77777777-8888-4999-8aaa-000000000001", own: "77777777-8888-4999-8aaa-000000000002", history: "77777777-8888-4999-8aaa-000000000003", adoptedOwn: "77777777-8888-4999-8aaa-000000000004" };
+    const worktree = path.join(mirror, "worktree.live0001");
+    const adopted = path.join(mirror, "adopted.gone0002");
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.mkdirSync(adopted, { recursive: true });
+    const cwd = "/home/dev/.damocles/worktrees/app-abc123/live0001";
+    fs.writeFileSync(path.join(worktree, `2026-03-01T00-00-00-000Z_${ids.cleared}.jsonl`), chat(ids.cleared, cwd, "cleared in the worktree", true));
+    fs.writeFileSync(path.join(worktree, `2026-03-01T00-00-00-000Z_${ids.own}.jsonl`), chat(ids.own, cwd, "the worktree's own chat", false));
+    fs.writeFileSync(path.join(adopted, `2026-03-01T00-00-00-000Z_${ids.history}.jsonl`), chat(ids.history, "/srv/app-gone", "the adopted worktree's chat", false));
+    fs.writeFileSync(path.join(adopted, `2026-03-01T00-00-00-000Z_${ids.adoptedOwn}.jsonl`), chat(ids.adoptedOwn, "/srv/app-gone", "its own worktree's chat", true));
+
+    expect((await listMirroredSessions(mirror, "", "linux")).map((row) => row.id).sort()).toEqual([ids.cleared, ids.history].sort());
+  });
+
+  // A chat worktree open as a project mirrors its own session folder as that project's, where its project's chats live too.
+  it("lists from a project's own folder the sessions that belong to the folder they were created in, a relocation's old paths mapped", async () => {
+    const chat = (id: string, cwd: string, entryProject?: string): string => [
+      { type: "session", version: 3, id, timestamp: "2026-03-01T00:00:00.000Z", cwd },
+      ...(entryProject !== undefined ? [{ type: "custom", customType: "damocles.worktree", id: "w1", parentId: null, timestamp: "2026-03-01T00:00:00.000Z", data: { worktreeId: "live0001", projectPath: entryProject, place: "worktree" } }] : []),
+      { type: "message", id: "u1", parentId: entryProject !== undefined ? "w1" : null, timestamp: "2026-03-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: id }], timestamp: Date.parse("2026-03-02T10:00:00.000Z") } },
+    ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+    const worktree = "/home/dev/.damocles/worktrees/app-abc123/live0001";
+    const ids = { own: "77777777-8888-4999-8aaa-000000000011", projects: "77777777-8888-4999-8aaa-000000000012", handedOff: "77777777-8888-4999-8aaa-000000000013", moved: "77777777-8888-4999-8aaa-000000000014" };
+    const write = (id: string, text: string): void => fs.writeFileSync(path.join(mirror, `2026-03-01T00-00-00-000Z_${id}.jsonl`), text);
+    // as the worktree's own folder: its own chat, and one of its project's that started there
+    write(ids.own, chat(ids.own, worktree));
+    write(ids.projects, chat(ids.projects, worktree, "/srv/app"));
+    expect((await listMirroredSessions(mirror, "", "linux")).map((row) => row.id)).toEqual([ids.own]);
+    // as the project's own folder: a chat handed off into a worktree, and one made before the project moved from /srv/old
+    write(ids.handedOff, chat(ids.handedOff, "/srv/app", "/srv/app"));
+    write(ids.moved, chat(ids.moved, "/srv/old", "/srv/app"));
+    const moved = (folder: string): string => (folder === "/srv/old" ? "/srv/app" : folder);
+    expect((await listMirroredSessions(mirror, "", "linux", moved)).map((row) => row.id).sort()).toEqual([ids.own, ids.handedOff, ids.moved].sort());
+  });
+
+  // The mirror sync replaces a host's folders while a list reads them.
+  it("lists the rest when a worktree folder goes while the list reads the project's folder", async () => {
+    writeSession();
+    const worktree = path.join(mirror, "worktree.live0001");
+    fs.mkdirSync(worktree);
+    fs.writeFileSync(path.join(worktree, `2026-03-01T00-00-00-000Z_${SESSION_ID.replace("1", "9")}.jsonl`), SESSION_TEXT);
+    const readdir = fs.promises.readdir.bind(fs.promises) as (folder: string, options: { withFileTypes: true }) => Promise<fs.Dirent[]>;
+    const spy = vi.spyOn(fs.promises, "readdir").mockImplementationOnce((async (folder: string, options: { withFileTypes: true }) => {
+      const entries = await readdir(folder, options);
+      fs.rmSync(worktree, { recursive: true, force: true });
+      return entries;
+    }) as typeof fs.promises.readdir);
+    try {
+      expect((await listMirroredSessions(mirror, "", "linux")).map((row) => row.id)).toEqual([SESSION_ID]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Both paths come from the host, so the host's rules decide whether they name one folder, whatever this computer folds.
+  it("compares the folders a session names by the path rules of the host's OS", async () => {
+    const chat = (id: string, cwd: string, entryProject: string): string => [
+      { type: "session", version: 3, id, timestamp: "2026-03-01T00:00:00.000Z", cwd },
+      { type: "custom", customType: "damocles.worktree", id: "w1", parentId: null, timestamp: "2026-03-01T00:00:00.000Z", data: { worktreeId: "live0001", projectPath: entryProject, place: "project" } },
+      { type: "message", id: "u1", parentId: "w1", timestamp: "2026-03-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: id }], timestamp: Date.parse("2026-03-02T10:00:00.000Z") } },
+    ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+    const ids = { windows: "77777777-8888-4999-8aaa-000000000021", posix: "77777777-8888-4999-8aaa-000000000022" };
+    fs.writeFileSync(path.join(mirror, `2026-03-01T00-00-00-000Z_${ids.windows}.jsonl`), chat(ids.windows, "C:\\srv\\app", "c:\\srv\\App"));
+    fs.writeFileSync(path.join(mirror, `2026-03-01T00-00-00-000Z_${ids.posix}.jsonl`), chat(ids.posix, "/srv/App", "/srv/app"));
+    expect((await listMirroredSessions(mirror, "", "win32")).map((row) => row.id)).toContain(ids.windows);
+    expect((await listMirroredSessions(mirror, "", "linux")).map((row) => row.id)).not.toContain(ids.posix);
+  });
+
+  // pi's session directory name is a lossy encoding of the folder, so the host's /srv/a-b and /srv/a/b share one, which both
+  // projects' mirror folders copy whole.
+  it("lists from a project's own folder only the chats its header or worktree entry gives the project, not a colliding folder's", async () => {
+    const chat = (id: string, cwd: string, entryProject?: string): string => [
+      { type: "session", version: 3, id, timestamp: "2026-03-01T00:00:00.000Z", cwd },
+      ...(entryProject !== undefined ? [{ type: "custom", customType: "damocles.worktree", id: "w1", parentId: null, timestamp: "2026-03-01T00:00:00.000Z", data: { worktreeId: "live0001", projectPath: entryProject, place: "worktree" } }] : []),
+      { type: "message", id: "u1", parentId: entryProject !== undefined ? "w1" : null, timestamp: "2026-03-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: id }], timestamp: Date.parse("2026-03-02T10:00:00.000Z") } },
+    ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+    const ids = { own: "77777777-8888-4999-8aaa-000000000031", colliding: "77777777-8888-4999-8aaa-000000000032", collidingHandedOff: "77777777-8888-4999-8aaa-000000000033", ownHandedOff: "77777777-8888-4999-8aaa-000000000034", stopped: "77777777-8888-4999-8aaa-000000000035" };
+    const write = (id: string, text: string): void => fs.writeFileSync(path.join(mirror, `2026-03-01T00-00-00-000Z_${id}.jsonl`), text);
+    write(ids.own, chat(ids.own, "/srv/a-b"));
+    write(ids.ownHandedOff, chat(ids.ownHandedOff, "/srv/a-b", "/srv/a-b"));
+    write(ids.colliding, chat(ids.colliding, "/srv/a/b"));
+    write(ids.collidingHandedOff, chat(ids.collidingHandedOff, "/srv/a/b", "/srv/a/b"));
+    // moved here by a relocation whose moves do not count yet: its header's folder has another session directory
+    write(ids.stopped, chat(ids.stopped, "/srv/old"));
+    const sorted = (rows: ReadonlyArray<{ id: string }>): string[] => rows.map((row) => row.id).sort();
+
+    expect(sorted(await listMirroredSessions(mirror, "", "linux", undefined, "/srv/a-b"))).toEqual([ids.own, ids.ownHandedOff, ids.stopped].sort());
+    expect(sorted(await listMirroredSessions(mirror, "", "linux", undefined, "/srv/a/b"))).toEqual([ids.colliding, ids.collidingHandedOff, ids.stopped].sort());
+    // a moved project's chats name its old folder, which the host's relocation maps to the project
+    expect(sorted(await listMirroredSessions(mirror, "", "linux", (folder) => (folder === "/srv/a/b" ? "/srv/a-b" : folder), "/srv/a-b"))).toEqual(Object.values(ids).sort());
+    // a caller that names no project gets every chat of the folder, as before projects were named
+    expect(sorted(await listMirroredSessions(mirror, "", "linux"))).toEqual(Object.values(ids).sort());
+  });
+
+  it("tells colliding folders apart by the host's path rules", async () => {
+    const chat = (id: string, cwd: string): string => [
+      { type: "session", version: 3, id, timestamp: "2026-03-01T00:00:00.000Z", cwd },
+      { type: "message", id: "u1", parentId: null, timestamp: "2026-03-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: id }], timestamp: Date.parse("2026-03-02T10:00:00.000Z") } },
+    ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+    const ids = { own: "77777777-8888-4999-8aaa-000000000041", colliding: "77777777-8888-4999-8aaa-000000000042" };
+    fs.writeFileSync(path.join(mirror, `2026-03-01T00-00-00-000Z_${ids.own}.jsonl`), chat(ids.own, "C:\\Work\\a-b"));
+    fs.writeFileSync(path.join(mirror, `2026-03-01T00-00-00-000Z_${ids.colliding}.jsonl`), chat(ids.colliding, "C:\\Work\\a\\b"));
+
+    expect((await listMirroredSessions(mirror, "", "win32", undefined, "c:\\work\\A-B")).map((row) => row.id)).toEqual([ids.own]);
   });
 
   it("takes only a project folder of that host's mirror, and a folder the mirror holds nothing for lists nothing", async () => {

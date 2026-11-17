@@ -58,6 +58,8 @@ When a conversation goes idle, the Background model (Settings › Models & accou
 
 ### Which workspace a memory lands in
 
+When you locate a moved project folder, its project memories, candidates, retrieval history and profile move to the new folder in one step. Locating into a project you already have joins both projects' memories, and where both have a profile section the target project's is kept. A memory audit change you applied before the move can still be reverted after it, and the memory returns in the new folder. If memory is off or its database is read only at that moment, the memories move at a later start.
+
 Each queued turn records the files its tool calls touched. When a project memory is about another repository, extraction files it under that repository, so GPU work on `psychic_smash` done from a `damocles` window becomes `psychic_smash` memory. Extraction can name only a folder open in the window, or a repository you have memories for that holds a file the turns touched. An observation whose files all sit in one other known workspace is filed there too, and the `save_observation` result names that workspace. An observation whose files all sit inside the window's workspace stays there, even when a nested folder has memories of its own, and mixed or relative paths also stay in the current workspace. Your home folder, where a window with no folder open keeps its memories, is never offered as another repository.
 
 ## User profile
@@ -126,6 +128,8 @@ On Automatic they run on the first available classifier:
 With no classifier, Automatic uses the first signed-in of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model.
 
 You can instead choose one classifier or any model from the model picker, with its reasoning effort. A choice that cannot run (its key is missing or refused, its provider signed out, or this version no longer offers it) is never swapped for another: the Memory judge row and the TypeSafe panel say "none" and why, the dropdown lists a classifier whose key is missing and a model whose provider is signed out as unavailable with the reason, and merges and reranks wait until it can run. The Background model never judges.
+
+**Microsoft-Decision-1 (GitHub Copilot)** is a classifier you can choose, never one Automatic picks: it runs through a GitHub Copilot sign-in (Settings › Models & accounts › GitHub Copilot), and GitHub does not list its price, so Damocles never spends your Copilot quota on it unasked. Without a Copilot sign-in the dropdown shows it as "Sign in to GitHub Copilot". Its requests count in `/stats` under GitHub Copilot.
 
 The TypeSafe panel names the judge in use; until a chat has started, it can name only a classifier, because the judge model is resolved when pi starts. If a classifier provider refuses the key (for example an OpenRouter account with no credit), Damocles stops sending classifier requests there, the panel says why, and it tries again after 5 minutes or as soon as you save that key, even unchanged; for OpenAI, any change of the key, the prefer toggle or the ChatGPT sign-in counts. On Automatic, a contradiction the classifier is unsure about goes to the small model, and a rerank the classifier cannot answer in time falls back to the small model, then to lexical order.
 

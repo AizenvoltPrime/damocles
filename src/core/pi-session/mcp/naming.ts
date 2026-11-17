@@ -26,9 +26,10 @@ export function sanitizeMcpToolName(name: string): string {
 }
 
 /**
- * Ported from pi-coding-agent/src/extensions/mcp/tools.ts `createMcpToolName`. `mcp__<server>__<tool>`
- * with everything but `[A-Za-z0-9_]` replaced by `_`, and an 8-character hash suffix when the name is
- * over 64 characters or `isTaken` reports it used by a different tool.
+ * Damocles' persisted MCP tool name format (session files, permission rules, hook matchers), kept equal to pi-mcp 1.5.2's
+ * `createMcpToolName` (`src/naming.ts:18-27`; `naming-contract.test.ts`); a change needs a `tool-name-migration.ts` step.
+ * `mcp__<server>__<tool>` with everything but `[A-Za-z0-9_]` replaced by `_`, and an 8-character hash suffix when the
+ * name is over 64 characters or `isTaken` reports it used by a different tool.
  */
 export function createMcpToolName(
   server: string,
@@ -42,7 +43,7 @@ export function createMcpToolName(
 }
 
 /**
- * Names for one server's tools, ported from pi-coding-agent/src/extensions/mcp/index.ts `registerTools`:
+ * Names for one server's tools, ported from pi-coding-agent 1.5.2 `src/extensions/mcp/index.ts:400-416`:
  * every tool whose plain name collides with another of the server's tools gets the hash suffix, so which
  * one keeps the plain name does not depend on list order. `taken` holds names other servers already hold.
  */

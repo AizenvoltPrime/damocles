@@ -1170,8 +1170,6 @@ provideSendPrompt(handleSuggestion);
               :owner="currentPermission.owner"
               :agent-description="currentPermission.agentDescription"
               :suggestions="currentPermission.suggestions"
-              :blocked-path="currentPermission.blockedPath"
-              :decision-reason="currentPermission.decisionReason"
               :title="currentPermission.title"
               :subtitle="currentPermission.subtitle"
               :facts="currentPermission.facts"

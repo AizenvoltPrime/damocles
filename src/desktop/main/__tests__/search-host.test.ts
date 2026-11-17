@@ -108,6 +108,7 @@ beforeEach(() => {
     gitOf: () => undefined,
     designScreens: { is: () => false, preview: async () => undefined },
     worktreeBranch: () => undefined,
+    awaitsRegistry: () => false,
   });
   host = new SearchHost({
     osOf: () => process.platform,

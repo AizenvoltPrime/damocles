@@ -10,6 +10,7 @@ import { PI_AGENT_DIR } from '../../../../pi-session/agent-dir';
 function loadedRuntime(): void {
   const runtime = PiRuntime.get();
   (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = {
+    settleCredentialWrites: async () => undefined,
     hasConfiguredAuth: () => false,
     getProviderAuthStatus: () => ({ configured: false }),
   };
@@ -23,7 +24,7 @@ const CHATGPT_GRANT = { openai: { type: 'oauth', access: 'a', refresh: 'r', expi
 
 describe('memory-judge status', () => {
   beforeEach(() => {
-    for (const name of ['TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY']) vi.stubEnv(name, '');
+    for (const name of ['TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'COPILOT_GITHUB_TOKEN']) vi.stubEnv(name, '');
   });
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -36,7 +37,7 @@ describe('memory-judge status', () => {
     expect(await memoryJudgeStatus(platform)).toEqual({
       type: 'memoryJudgeStatus',
       memoryJudge: { kind: 'classifier', via: 'openrouter' },
-      classifierCredentials: { typesafe: 'no-key', openrouter: 'ok', openai: 'no-key' },
+      classifierCredentials: { typesafe: 'no-key', openrouter: 'ok', openai: 'no-key', 'github-copilot': 'signed-out' },
     });
 
     await platform.secrets.store('damocles.typesafe.apiKey', 'ts-key');
@@ -55,8 +56,20 @@ describe('memory-judge status', () => {
     expect(await memoryJudgeStatus(platform)).toEqual({
       type: 'memoryJudgeStatus',
       memoryJudge: { kind: 'classifier', via: 'openrouter' },
-      classifierCredentials: { typesafe: 'no-key', openrouter: 'ok', openai: 'no-key' },
+      classifierCredentials: { typesafe: 'no-key', openrouter: 'ok', openai: 'no-key', 'github-copilot': 'signed-out' },
     });
+  });
+
+  it('counts a stored GitHub Copilot sign-in before pi starts, for the chosen Microsoft-Decision-1 only', async () => {
+    const platform = createFakePlatform({ settings: { user: { 'damocles.memory.judge': 'decision-1-copilot' } } });
+    expect(await memoryJudgeStatus(platform)).toMatchObject({
+      memoryJudge: { kind: 'none', forced: { choice: 'decision-1-copilot', reason: 'signed-out' } },
+      classifierCredentials: { 'github-copilot': 'signed-out' },
+    });
+    writeAuthFile({ 'github-copilot': { type: 'oauth', access: 'a', refresh: 'r', expires: 9_999_999_999_999 } });
+    expect(await memoryJudgeStatus(platform)).toMatchObject({ memoryJudge: { kind: 'classifier', via: 'github-copilot' }, classifierCredentials: { 'github-copilot': 'ok' } });
+    await platform.settings.update('damocles.memory.judge', '', 'user');
+    expect(await memoryJudgeStatus(platform)).toMatchObject({ memoryJudge: { kind: 'unknown' } });
   });
 
   it('counts the environment keys pi reads before pi starts', async () => {

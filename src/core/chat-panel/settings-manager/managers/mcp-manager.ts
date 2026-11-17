@@ -10,7 +10,7 @@ import type { RelayedMcpServer } from "../../../../shared/remote-user";
 import type { RemoteHost } from "../../../../platform/remote-host";
 import { currentPin } from "../../../client-snapshots";
 import { relayedServerConfig, relaysPersonalMcp, remoteAvailableNames } from "../../../pi-session/mcp/relayed-mcp";
-import { personalConfigRoot } from "../../../worktrees/personal-config";
+import { personalConfigRoot, worktreeProjectOf } from "../../../worktrees/personal-config";
 import type {
   McpConfigError,
   McpServerConfig,
@@ -24,6 +24,7 @@ import type { McpServerEntry } from "../types";
 import type { McpScope } from "../../../session-types";
 import type { McpServerSpec } from "../../../pi-session/mcp/types";
 import { windowSettingsProject, type FolderTarget } from "../../../workspace-folders/folder-registry";
+import { folderKey } from "../../../workspace-folders/folder-key";
 import {
   mergeMcpEntries,
   orderMcpSources,
@@ -186,6 +187,15 @@ interface FolderRead {
   /** False when a folder source exists but could not be read, so its server names are unknown. */
   complete: boolean;
   localMcpUnignored: boolean;
+}
+
+/**
+ * The folder key whose disabled and enabled lists a folder's toggles live in: a chat worktree's folder keeps its project's, as
+ * its working folder or open as a project itself (docs/invariants.md "Worktree chats", Ownership).
+ */
+function listKeyOfTarget(target: FolderTarget): string {
+  const project = target.ownerKey === undefined ? worktreeProjectOf(target.fsPath) : undefined;
+  return target.ownerKey ?? (project !== undefined ? folderKey(project) : target.key);
 }
 
 const FOLDER_WATCHED_FILES = [".mcp.json", LOCAL_MCP_RELATIVE_PATH, ".pi/mcp.json", ".gitignore"] as const;
@@ -392,6 +402,39 @@ export class McpManager {
     } finally {
       releaseLock!();
     }
+  }
+
+  /**
+   * Moved project folders' toggles go to their new folder keys (docs/invariants.md "Project relocation"): the disabled and
+   * enabled lists and the split's progress. A key the new folder already has keeps its own (a merge). Idempotent.
+   */
+  async relocateFolders(pairs: ReadonlyArray<{ readonly from: string; readonly to: string }>): Promise<void> {
+    const moves = pairs.map(({ from, to }) => [folderKey(from), folderKey(to)] as const).filter(([from, to]) => from !== to);
+    if (moves.length === 0) return;
+    const rekey = <T>(lists: Map<string, T>): boolean => {
+      let changed = false;
+      for (const [from, to] of moves) {
+        const moved = lists.get(from);
+        if (moved === undefined) continue;
+        lists.delete(from);
+        if (!lists.has(to)) lists.set(to, moved);
+        changed = true;
+      }
+      return changed;
+    };
+    await this.withToggleLock(async () => {
+      const disabled = this.getProjectDisabled();
+      if (rekey(disabled)) await this.workspaceState.update(MCP_DISABLED_PROJECT_SERVERS_KEY, Object.fromEntries(disabled));
+      const enabled = this.getProjectEnabledOverride();
+      if (rekey(enabled)) await this.workspaceState.update(MCP_ENABLED_PROJECT_SERVERS_KEY, Object.fromEntries(enabled));
+      const pending = readSplitPending(this.workspaceState.get<unknown>(MCP_DISABLED_SPLIT_PENDING_KEY));
+      if (!pending) return;
+      const decided = new Map(Object.entries(pending.decided));
+      const migrated = new Map(pending.migratedFolders.map((key) => [key, true] as const));
+      const decidedChanged = rekey(decided);
+      if (!rekey(migrated) && !decidedChanged) return;
+      await this.workspaceState.update(MCP_DISABLED_SPLIT_PENDING_KEY, { ...pending, migratedFolders: [...migrated.keys()], decided: Object.fromEntries(decided) });
+    });
   }
 
   /** Record whether a server whose config says `enabled: false` is switched on here anyway. */
@@ -646,7 +689,8 @@ export class McpManager {
 
   // A worktree chat's toggles are its project's, so they outlive the working folder's registration.
   private listKeyOf(folderKey: string): string {
-    return this.folders().find(candidate => candidate.key === folderKey)?.ownerKey ?? folderKey;
+    const target = this.folders().find(candidate => candidate.key === folderKey);
+    return target ? listKeyOfTarget(target) : folderKey;
   }
 
   /**
@@ -809,7 +853,7 @@ export class McpManager {
       complete: read.complete && !global.claudeLocalUnreadable,
     }));
     // The migrations are per project; a worktree chat's working folder shares its project's lists.
-    const pendingSplit = await this.migrateDisabledSplit(folderReads.filter(read => read.target.ownerKey === undefined));
+    const pendingSplit = await this.migrateDisabledSplit(folderReads.filter(read => listKeyOfTarget(read.target) === read.target.key));
 
     const userDisabled = new Set(this.getUserDisabled());
     const projectDisabled = this.getProjectDisabled();
@@ -824,7 +868,7 @@ export class McpManager {
       const folded = trustedByKey.get(target.key) === true ? ranked : demoteRepoAuthored(ranked);
       // A folder the split has not reached yet still honours every pre-split name, so nothing disabled
       // before the upgrade connects while its files are unreadable.
-      const listKey = target.ownerKey ?? target.key;
+      const listKey = listKeyOfTarget(target);
       const folderDisabled = new Set(projectDisabled.get(listKey) ?? []);
       if (pendingSplit && !pendingSplit.migratedFolders.includes(listKey)) {
         for (const name of legacyNamesFor(pendingSplit, listKey)) folderDisabled.add(name);
@@ -853,7 +897,7 @@ export class McpManager {
     // Queued on the toggle lock but not awaited, so a load never waits behind a slow toggle write.
     void this.pruneStaleEnabledOverrides(folderStates).catch(err => log("[McpManager] Pruning stale enabled overrides failed:", err));
     if (folderReads.every(read => read.complete) && global.errors.length === 0) {
-      const projectStates = new Map([...folderStates].filter(([key]) => targets.find(target => target.key === key)?.ownerKey === undefined));
+      const projectStates = new Map([...folderStates].filter(([key]) => targets.some(target => target.key === key && listKeyOfTarget(target) === key)));
       await this.migrateDisabledMcpTools(projectStates, trustedByKey);
     }
   }

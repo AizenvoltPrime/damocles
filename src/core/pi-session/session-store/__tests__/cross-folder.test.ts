@@ -36,7 +36,7 @@ let counter = 0;
 beforeEach(() => {
   lookup = installWorktreeProjectLookup({
     projectOf: (folder) => (folderKey(folder) === folderKey(worktree) ? project : undefined),
-    recordsOfProject: (p) => (folderKey(p) === folderKey(project) ? [{ workingFolder: worktree }] : []),
+    recordsOfProject: (p) => (folderKey(p) === folderKey(project) ? [{ workingFolder: worktree, kind: 'chat' }] : []),
     get: () => undefined,
     chatRecordFor: () => undefined,
   });

@@ -212,6 +212,22 @@ describe('session status copy', () => {
   });
 });
 
+describe('wind-down copy', () => {
+  const windDownKeys = (bundle: Map<string, string>): string[] => [...bundle.keys()].filter((key) => key.startsWith('status.windDown.'));
+
+  it('carries only the lines the status bar and the agent cards render', () => {
+    expect(windDownKeys(EN).sort()).toEqual(['extension', 'finishing', 'hook', 'projectHooks', 'run', 'userHooks'].map((key) => `status.windDown.${key}`));
+  });
+
+  it('names nothing of the engine in either locale: no pi, handler, event name or abort signal', () => {
+    for (const bundle of [EN, EL]) {
+      for (const key of windDownKeys(bundle)) {
+        expect(bundle.get(key), key).not.toMatch(/\bpi\b|handler|χειριστ|agent_settled|before_settle|abort|ακύρωσ/i);
+      }
+    }
+  });
+});
+
 describe('settings write copy', () => {
   it('composes Saved to with every scope into grammatical Greek', () => {
     // SettingsRow.vue interpolates scopeFile into savedTo, so the preposition and article must agree for every scope.

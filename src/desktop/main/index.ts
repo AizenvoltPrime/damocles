@@ -18,10 +18,13 @@ import { movePreferApiKeyFlagsToSettings, runLegacySettingsMigrations } from '..
 import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
-import { DAMOCLES_HOME_DIR } from '../../core/paths';
+import { DAMOCLES_DESIGNS_DIR, DAMOCLES_HOME_DIR, FOLDER_IDENTITIES_PATH, WORKTREES_ROOT_DIR } from '../../core/paths';
 import { resolveSshExecutable, resolveSshKeygenExecutable } from '../../core/system-tools';
 import { folderKey, folderKeyOn } from '../../core/workspace-folders/folder-key';
+import { chatRecordHolding, folderContains } from '../../core/worktrees/records';
 import { homeDirectory } from '../../core/workspace-folders/folder-registry';
+import { createFolderPresenceProbe, folderPresenceOf } from '../../core/workspace-folders/folder-presence-probe';
+import { FolderIdentityStore } from '../../core/project-relocation/identity-store';
 import type { Disposable } from '../../platform/disposable';
 import type { InputBoxOptions } from '../../platform/dialog-service';
 import type { PanelOptions } from '../../platform/window-service';
@@ -56,6 +59,8 @@ import {
   type ShellFocusPart,
   type ShellBrowserPage,
   type ShellProject,
+  type ShellRelocation,
+  type ShellRelocationReason,
   type ShellState,
   type ShellWindowState,
 } from '../preload/shell-channels';
@@ -73,7 +78,8 @@ import { BrowserTabs } from './browser-tabs';
 import { createDesignSession, serveDesignRequest, type DesignViewTarget } from './design/design-session';
 import { DesignPreviews, markupPngForModel, type DesignSupport } from './design/design-previews';
 import { HtmlPreviews } from './html-preview/html-previews';
-import { servedPathRefusal, ServedRoots } from './html-preview/served-roots';
+import { servedPathRefusal } from '../../core/served-pages/root-files';
+import { ServedRoots } from './html-preview/served-roots';
 import { createPreviewSession } from './html-preview/preview-session';
 import { DesignRunner } from './design/design-runner';
 import { DesignRendererHost } from './design/design-renderer-host';
@@ -87,7 +93,7 @@ import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relati
 import type { DesignPreviewFile, JourneyStep } from '../../shared/types/design';
 import { parseJourneySteps } from '../../shared/design-journey';
 import { ChatUnloads, chatsToUnload, ChatWorkQueue } from './chat-pool';
-import { chatProjectKey } from './chat-project';
+import { chatProjectKey, projectStays, savedChatProjectKey } from './chat-project';
 import { showHeldChat } from './held-chat';
 import { isActiveActivity } from '../../shared/chat-retention';
 import { chatTitle, panelTitle, storedTitle } from './chat-title';
@@ -124,7 +130,7 @@ import { followsLocalLinksOnly, type Project } from '../local-services/confine';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { DocumentService, RefusedPathError, type Location, type TextDocument } from './documents/document-service';
 import { sessionFileEngines } from './documents/session-files';
-import { EditorPane, editorSettings, type RemoteDiffTarget } from './editor-pane';
+import { EditorPane, editorSettings, type RemoteDiffTarget, type RootCloseAnswers } from './editor-pane';
 import { FormatService } from './formatting/format-service';
 import { FileTree, type FilesTarget } from './files/file-tree';
 import { FileTransferService } from './files/file-transfer';
@@ -193,9 +199,12 @@ import { closeRemoteResult, createForgeAccountAsker, createInputAsker, createQui
 import { hostAwayOf, hostCoreFacts, lookupOnUpCore, OverlaySettings, settingsPageChat, writeDesktopSetting, type SettingsAttachTarget, type SettingsScope, type SettingsScopes } from './overlay-settings';
 import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
-import { PanelStateStore } from './panel-state-store';
+import { PanelStateStore, type PersistedChat } from './panel-state-store';
+import { ProjectPresences, remotePathPresence, type CheckedProject, type ProjectPresence } from './project-presence';
+import { SelectionTurns } from './selection-turns';
+import { restoredWorkspaceFolderKey } from '../../shared/restored-folder-key';
 import { LastChats, openProjectChat } from './last-chats';
-import { recordSelection } from './selection-record';
+import { recordProjectSelection, recordSelection } from './selection-record';
 import { chatMutationResult } from './chat-mutation-result';
 import { createDesktopPlatform, type DesktopPlatform } from './platform';
 import { askpassPaths, coreHostEntryPath, createDesktopAppPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath, type DesktopLayout } from './platform/app-paths';
@@ -235,7 +244,7 @@ import { openWorktreeConflicts } from './worktrees/worktree-conflicts';
 import { createSharedHomes } from './remote/shared-home';
 import { createWatchLimits, WATCH_LIMIT_COMMAND } from './remote/watch-limit';
 import { worktreeEnvironment } from '../../core/worktrees/environment';
-import { worktreeEngine, type WorktreeEngine } from './worktrees/engine';
+import { worktreeEngine, type FinishHold, type WorktreeEngine } from './worktrees/engine';
 import { localRecord, remoteChatRecord, WorktreeRecords } from './worktrees/records';
 import { SCM_SETTING_KEYS } from '../../core/scm/settings-keys';
 import type { WorktreeStateData } from '../../shared/types/messages';
@@ -247,10 +256,14 @@ import { closeWorktreeRoot, type CloseOutcome } from './worktrees/close-worktree
 import { HeldPrompts } from './held-prompts';
 import { KeptPermissions } from './kept-permissions';
 import { releaseRemoteTerminals, removeProject, type WaitingChat } from './remove-project';
+import { InterruptedLocates, locateOnce, locateProject, locateShown, preparedMove, relocationText, type LocateConfirm, type LocateOutcome, type LocatePrepared, type LocateProjectDeps } from './locate-project';
+import { presentFiles, RelocatedProjects, type RelocationRequester } from './relocate-project-state';
+import { addProjectAt, askToMove, type MissingProject } from './project-readd';
+import type { Coded, RelocationView } from '../../core/project-relocation/types';
 import { ShownFolderState } from './worktrees/shown-folder';
 import { setupTaskKey, WorktreeController, type WorktreeControllerDeps } from './worktrees/worktree-controller';
 import { createWorktreeDialogAsker, type AskWorktreeDialog } from './worktrees/worktree-dialogs';
-import type { WorktreeDialog } from '../preload/overlay-channels';
+import type { OverlayQuickPickItem, WorktreeDialog } from '../preload/overlay-channels';
 import { remoteSetupShell, setupShell } from './worktrees/setup-terminal';
 import { chatRowWorktree } from './worktrees/chat-rows';
 import { UsageWarningStore } from './usage-warning-store';
@@ -304,12 +317,12 @@ import { registerForgeOverlayChannels } from './forge/forge-overlay-channels';
 import { terminalManagedServers } from './forge/terminal-managed-servers';
 import { authoritiesToConnectAtLaunch } from './remote/launch-connect';
 import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, SessionMirror, type MirrorChannel } from './remote/session-mirror';
-import { OfflineTranscripts } from './remote/offline-transcripts';
+import { mirroredCopy, OfflineTranscripts } from './remote/offline-transcripts';
 import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue } from './remote/offline-queue';
 import { e2eManifest, remoteE2eEnvironment } from './remote/remote-e2e-environment';
 import { visibleLines } from '../../shared/visible-text';
 import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, shutDownNow, type SwitchListing } from './remote/app-update-flow';
-import { askRemoteRuns, closeRowId, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
+import { askRemoteRuns, closeRowId, CONFIGURED_PROVIDERS_FEATURE, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
 import { CloseRelease } from './close-release';
 import { announceFinishedAway, awayChats } from './remote/finished-away';
 import { keepRunningAtShutdown, startKeepRunningRefresh, type KeepRunningDeps, type KeepRunningHost } from './remote/keep-running-refresh';
@@ -336,15 +349,17 @@ import type { EditorOpenLink, ReopenInContainerResult } from '../preload/shell-c
 import { FILES_CONFIRM_DRAG_AND_DROP_SETTING, FILES_CONFIRM_PASTE_NATIVE_SETTING, REMOTE_CONTAINER_ENGINE_SETTING } from '../local-services/desktop-configuration';
 import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from './open-as-project';
 import { waitForRemoteFolderConnection } from './e2e-open-folder';
-import { RemoteCore, type RemoteHostedCore } from './remote/remote-core';
+import { RELOCATE_FEATURE, RemoteCore, type RemoteHostedCore } from './remote/remote-core';
+import { remoteRelocation } from './remote/relocate-remote-project';
 import { clientGitCredential, createGitCredentialClient, type GitCredentialClient } from './remote/git-credential-client';
+import { keptChatFate } from './remote/kept-remote-chats';
 import { remoteServices } from './remote/remote-services';
 import { chatOfSelectedProject, keptChatWithheld, remoteSelection } from './remote/remote-selection';
 import type { RemoteChatRecord } from './remote/remote-state';
 import type { DesignMarkupSendRequest, DesignMarkupSent, DesignTweakKeepRequest, OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine } from '../preload/shell-channels';
 import type { HostServicesDeps, HostTrust } from './core-services/host-services';
 import { ERROR_PAGE_STRINGS } from '../../shared/panel-html';
-import { createProjectTrust, createRemoteTrust, type RemoteTrustTarget } from './remote/remote-trust';
+import { createProjectTrust, createRemoteTrust, remoteHostTrust, type HostTrustFolder, type RemoteTrustTarget } from './remote/remote-trust';
 import { authorityKeyOfProject, isAbsoluteOn, pathFor, projectKeyOf, targetFolderKeyOf, type Authority } from '../../shared/project-location';
 import { CREDENTIAL_ORIGIN_FEATURE } from '../../shared/git-credential';
 import { projectOfCwd, remoteFileRef, type RemoteFileRoot } from './remote/remote-files';
@@ -539,6 +554,9 @@ interface ChatCore {
   readonly rejoin?: RemoteHostedCore['rejoin'];
 }
 
+// What Locate reads and runs on the project's own machine and core.
+type LocatePlace = Pick<LocateProjectDeps, 'project' | 'presence' | 'listed' | 'pathPresence' | 'pathFlavor' | 'pickFolder' | 'preflight' | 'isTrusted' | 'requestTrust' | 'closeChats' | 'relocate'>;
+
 interface ChatCoreHost {
   run<T>(label: string, work: (core: ChatCore) => T | Promise<T>): Promise<T>;
   read<T>(label: string, work: (core: ChatCore) => T | Promise<T>): Promise<T>;
@@ -652,12 +670,14 @@ class DesktopApp {
       const hostId = this.savedHostIdOf(authority);
       if (hostId === undefined) return undefined;
       const mirror = this.sessionMirrorOf(hostId);
+      const held: Array<{ readonly projectKey: string; readonly file: string }> = [];
       for (const project of this.remoteProjects().filter((candidate) => candidate.authorityKey === authority)) {
         const file = await mirror.sessionFile(project.folderKey, sessionId);
-        if (file !== undefined) return { projectKey: project.key, file };
+        if (file !== undefined) held.push({ projectKey: project.key, file });
       }
-      log(`[mirror ${hostId}] holds no copy of the saved chat ${sessionId}`);
-      return undefined;
+      const copy = await mirroredCopy(held, async (projectKey) => (await this.mirroredRows(projectKey, ''))?.some((row) => row.id === sessionId) === true);
+      if (!copy) log(`[mirror ${hostId}] holds no copy of the saved chat ${sessionId}`);
+      return copy;
     },
     connected: (authority) => this.authorities?.connection(authority) !== undefined,
     create: (authority, sessionId, projectKey, panelToken) => {
@@ -923,6 +943,29 @@ class DesktopApp {
   private readonly rootSpellings = new RootSpellings({ os: process.platform, realpath: (folder) => this.requireWorkspaces().local.files.realpath(folder), log: (line) => log(line) });
   private terminals: TerminalService | undefined;
   private readonly devcontainerConfigs = new DevcontainerConfigs({ read: (key) => this.devcontainerConfig(key), changed: () => this.shellStateChanged(), log: (line) => log(line) });
+  private readonly folderIdentities = new FolderIdentityStore({ file: FOLDER_IDENTITIES_PATH, log: (line) => log(line) });
+  // a POSIX project's volume is the mount point core recorded for it while it was there
+  private readonly presenceProbe = createFolderPresenceProbe({ recordedMount: (folder) => this.folderIdentities.mountOf(folder) });
+  private readonly presences = new ProjectPresences({
+    presence: ({ fsPath }) => this.presenceProbe.presence(fsPath),
+    changed: (key, presence, previous) => this.presenceChanged(key, presence, previous),
+  });
+  // a remote project's folder as its host's workspace finds it while connected; a host that is not connected leaves none missing
+  private readonly remotePresences = new ProjectPresences({
+    presence: async ({ key, fsPath }) => {
+      const workspace = this.authorities?.connectedWorkspace(authorityKeyOfProject(key));
+      if (!workspace) return 'present';
+      return folderPresenceOf(await remotePathPresence((signal) => workspace.files.isDirectory(fsPath, signal)));
+    },
+    changed: (key, presence, previous) => this.presenceChanged(key, presence, previous),
+  });
+  // saved chats of a local project whose folder was not there when its chats would have opened, by panel id, with that
+  // project; their panels.json entries stay, and they open once the folder is back
+  private readonly skippedChats = new Map<string, { readonly saved: PersistedChat; readonly projectKey: string }>();
+  private readonly selectionTurns = new SelectionTurns();
+  // by destination key, the project a finished move left, local or remote, until its host part changed the list: panels.json
+  // or remote-state.json may name the destination already, and its chats belong to the listed project meanwhile
+  private readonly movedProjects = new Map<string, string>();
   private readonly terminalLinks = new TerminalLinks((project, relativePath) => this.requireWorkspaces().forProject(project.key).terminals.linkKind(project, relativePath));
   private terminalProfiles: TerminalProfileCatalog | undefined;
   // settles once the shells were detected and the user's profiles validated, after which the window restores its terminals
@@ -1017,9 +1060,12 @@ class DesktopApp {
   // the loopback servers of chats' project and design roots and of Open in Browser (docs/invariants.md "Ports and the remote browser")
   private readonly servedRoots = new ServedRoots({
     projectOfView: (authority, viewId) => this.servedProjectOf(authority, viewId),
+    chatView: (authority, viewId) => this.chatViewOf(authority, viewId) !== undefined,
     projects: () => this.roots.all(),
     files: (rootKey) => this.requireWorkspaces().forProject(rootKey).files,
     isTrusted: (project) => this.isProjectTrusted(project),
+    // core's designFolderOf, which a restored page's file:// address must resolve against
+    localDesignFolder: (designId) => path.join(DAMOCLES_DESIGNS_DIR, designId),
     designRead: (authority, designId, relPath) => this.designRead({ authority, designId }, relPath),
     refusalText: () => this.requireLocalization().t('Open this preview from Damocles.'),
     log: (line) => log(line),
@@ -1053,6 +1099,80 @@ class DesktopApp {
   private readonly closingForWorktree = new WeakSet<DesktopPanel>();
   // local projects a Remove Project is removing: a chat it closes selects nothing until the removal settles the selection
   private readonly removingProjects = new Set<string>();
+  // Locate: by relocation id, what this run prepared for the moves it started; by project key, the last refusal its row shows
+  private readonly locatePrepared = new Map<string, LocatePrepared>();
+  private readonly locateRefusals = new Map<string, Coded>();
+  // by project key, the new folder a Locate's relocate request names until that Locate ends
+  private readonly locateTargets = new Map<string, string>();
+  // by authority: its core's relocations mirror, this run's Locate targets or what it prepared changed
+  private readonly relocationTargetsChanged = new Emitter<[authority: string]>('relocation-targets', (line) => log(line));
+  // by project key, the Locates under way; and the requests whose relocate failed without an answer
+  private readonly locating = new Set<string>();
+  private readonly interruptedLocates = new InterruptedLocates();
+  // the repair notices shown in this run, by relocation, outcome and the worktrees it left unlinked
+  private readonly repairNotices = new Set<string>();
+  // by relocation id, the project's name before the move
+  private readonly relocationNames = new Map<string, string>();
+  private readonly relocatedProjects = new RelocatedProjects({
+    keyOf: folderKey,
+    listed: (key) => (this.listedFolder(key) ? { name: this.localProjectName(key) } : undefined),
+    absent: (key) => this.presences.absent(key),
+    applied: (id) => this.projects.relocated(id),
+    offerOpen: async (view, name) => {
+      const { t } = this.requireLocalization();
+      return (await this.notificationCenter.notice('info', t('Chats of {0} moved to {1}.', visibleText(name), visibleText(view.to)), [t('Open')])) === 0;
+    },
+    askClose: (key) => this.askLocateClose(key),
+    isTrusted: (fsPath) => this.trust.isTrusted(fsPath),
+    requestTrust: (fsPath) => this.trust.requestTrust(fsPath),
+    savedTabs: (key) => this.windowLayout.editor().tabs.flatMap((tab) => ('file' in tab && tab.kind !== 'searchEditor' && tab.kind !== 'htmlPreview' && tab.file.projectKey === key ? [tab.file] : [])),
+    relocateStores: async (from, to) => {
+      this.movedProjects.set(to.key, from.key);
+      this.states.relocate(from.key, to.key);
+      for (const [panelId, skipped] of [...this.skippedChats]) {
+        if (skipped.projectKey === from.key) this.skippedChats.set(panelId, { saved: this.states.get(panelId) ?? skipped.saved, projectKey: to.key });
+      }
+      this.lastChats.relocate(from.key, to.key);
+      this.windowLayout.relocateProject(from, to, path);
+    },
+    relocateWorktreeStores: (worktree, fromKey, toKey) => {
+      const from = { key: rootKey({ projectKey: fromKey, worktreeId: worktree.worktreeId }), fsPath: worktree.from };
+      const to = { key: rootKey({ projectKey: toKey, worktreeId: worktree.worktreeId }), fsPath: worktree.to };
+      this.windowLayout.relocateProject(from, to, path);
+    },
+    revokeTrust: (fsPath) => this.trust.revoke(fsPath),
+    applyHostState: (view) => this.core.run('Locate Project', (core) => core.client.applyRelocationHostState(view.id)),
+    relocateList: async (from, to, id) => {
+      await this.projects.relocate(from.fsPath, to.fsPath, id);
+      // before the list change's shell state goes out (setImmediate), which would name a project main no longer lists
+      if (this.selectedProjectKey === from.key) this.selectedProjectKey = to.key;
+      this.movedProjects.delete(to.key);
+    },
+    // the sidebar order and the WSL notice flag, which remote-hosts.json keeps
+    relocateOrder: async (from, to) => {
+      await this.hostStore?.relocateProject(from.key, to.key);
+    },
+    relocateRoot: (fromRootKey, toRootKey) => this.requireEditorPane().relocateRoot(fromRootKey, toRootKey),
+    reopenTabs: (files) => this.reopenRelocatedTabs(files),
+    closeOldRoot: (key, answers) => {
+      if (!this.requireEditorPane().closeRoot(key, answers)) log(`[projects] the moved project's tabs stay open: one was edited after its question`);
+    },
+    reopenChats: (toKey) => this.reopenSkippedChats(toKey),
+    select: (key) => this.selectProject(key),
+    announce: (message) => { void this.notificationCenter.notice('info', message, []); },
+    describe: (failure, project) => relocationText(failure, project, (message, ...args) => this.requireLocalization().t(message, ...args)),
+    report: (action, err) => this.report(action)(err),
+    t: (message, ...args) => this.requireLocalization().t(message, ...args),
+  });
+  // by remote authority, the host part of its core's relocations on this computer, built for the host's OS and id it names
+  private readonly remoteRelocated = new Map<string, { readonly os: NodeJS.Platform; readonly hostId: string | undefined; readonly relocated: RelocatedProjects }>();
+  // by authority, the ids its core's relocations mirror held last; what leaves it is forgotten
+  private readonly mirroredRelocations = new Map<string, ReadonlySet<string>>();
+  // by remote authority, its project paths when its registry last judged its records
+  private readonly remoteRecordPaths = new Map<string, string>();
+  // remote chats of a project whose folder its host does not find, by panel token: not reopened, their records kept in
+  // remote-state.json until the folder is back or the project moved
+  private readonly skippedRemoteChats = new Map<string, RemoteChatRecord & { readonly projectKey: string }>();
   // new chats that show once core holds their worktree opt-in
   private readonly openingInWorktree = new WeakSet<DesktopPanel>();
   private retentionScheduled = false;
@@ -1270,6 +1390,7 @@ class DesktopApp {
       }, scope),
       toggleTerminal: () => this.toggleTerminal(false),
       terminalToggle: () => this.terminalToggle(),
+      locateProjectFolder: (key) => { void this.locateProject(key); },
       chatTabs: this.chatTabs,
       editorPane: () => this.requireEditorPane(),
       chatFolders: {
@@ -1425,6 +1546,7 @@ class DesktopApp {
     });
     this.updates = updates;
     this.disposables.push(updates, updates.onDidChange((snapshot) => this.updateChanged(snapshot)));
+    this.disposables.push(this.presenceProbe.onDidAnswerLate((folder) => this.folderAnsweredLate(folder)));
 
     // Before the window exists, which takes its background from the effective theme.
     this.disposables.push(
@@ -1438,6 +1560,9 @@ class DesktopApp {
       }),
       this.projects.onDidChange(() => {
         this.forgetUnlistedProjects();
+        this.dropSkippedChatsOfUnlisted();
+        for (const key of [...this.locateRefusals.keys()]) if (!this.projectListed(key)) this.locateRefusals.delete(key);
+        this.presences.sync(this.localProjects(), (project) => this.checkedUnselected(project)).catch(this.report('Checking the project folders'));
         this.devcontainerConfigs.sync(this.devcontainerProjectKeys());
         this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
         this.terminalLinks.clear();
@@ -1448,6 +1573,11 @@ class DesktopApp {
       this.hostStore.onDidChange(() => {
         this.publishHostNames();
         this.forgetUnlistedProjects();
+        this.dropSkippedRemoteChatsOfUnlisted();
+        for (const key of [...this.locateRefusals.keys()]) if (!this.projectListed(key)) this.locateRefusals.delete(key);
+        // a forgotten host's; a changed OS or host id builds the authority's anew when next asked
+        for (const authority of [...this.remoteRelocated.keys()]) if (authority !== 'loopback' && !this.hostAuthority(authority)) this.remoteRelocated.delete(authority);
+        this.remotePresences.sync(this.checkedRemoteProjects()).catch(this.report('Checking the remote project folders'));
         // a remote project's trust is its host record's
         this.htmlPreviews?.trustChanged();
         this.servedRoots.trustChanged();
@@ -1456,9 +1586,12 @@ class DesktopApp {
         if (this.remoteSelected() && !this.remoteProject(this.selectedProjectKey!)) {
           this.selectedProjectKey = undefined;
           const selected = this.views?.selected();
-          if (selected) this.selectionChanged(selected);
+          // the selected chat may be one of the removed project's own, which closes after the list changed
+          const selectedProject = selected && this.projectOf(selected);
+          if (selected && selectedProject !== undefined && this.projectListed(selectedProject)) this.selectionChanged(selected);
         }
         this.terminalLinks.clear();
+        this.recheckRemoteWorktreeRecords();
         // Open Chat in Project lists the projects in the sidebar order
         this.installMenu();
         this.shellStateChanged();
@@ -1529,6 +1662,10 @@ class DesktopApp {
       this.logSink.dispose();
     });
     app.on('activate', () => this.showWindow());
+    app.on('browser-window-focus', () => {
+      this.recheckProjectFolders().catch(this.report('Checking the project folders'));
+      this.remotePresences.check(this.checkedRemoteProjects()).catch(this.report('Checking the remote project folders'));
+    });
     // A screen reader starting or stopping turns xterm's screenReaderMode on or off in every terminal.
     app.on('accessibility-support-changed', () => this.terminals?.publish());
 
@@ -1577,6 +1714,8 @@ class DesktopApp {
       ...this.states.lastChats().filter((entry) => this.projectListed(entry.projectKey)),
       ...this.remoteProjects().flatMap((project) => remoteState.lastChats(project.authorityKey).filter((entry) => entry.projectKey === project.key)),
     ]);
+    // before the chats reopen, which skip a project whose folder is not there
+    const presenceChecked = this.presences.sync(this.localProjects());
     const launched = this.core.start();
     this.createWindow();
     // A saved selection on a remote project stays selected, its host connecting or offline; its saved chat shows once that
@@ -1595,7 +1734,7 @@ class DesktopApp {
       },
       quit: () => app.quit(),
     }, localization);
-    this.launchTabs = this.openTabsAtLaunch(launched);
+    this.launchTabs = this.openTabsAtLaunch(launched, presenceChecked);
     await this.launchTabs;
     // a remote project's chats open once the window holds the local ones; a host not connected shows their mirrored copies
     for (const authorityKey of authorities.connectedKeys()) this.connectRemoteCore(authorityKey);
@@ -1630,10 +1769,17 @@ class DesktopApp {
   // The launch's chats reopen into the first core once it is ready. A quit that began meanwhile opens nothing, and a core that
   // ended before it was ready took the crash path, whose reload reopens them into the next core. A chat that fails to open is
   // no failed start: the quit or a crash can end the core under it.
-  private async openTabsAtLaunch(launched: DesktopCore): Promise<void> {
-    const ready = await launched.ready.then(() => true, () => false);
+  private async openTabsAtLaunch(launched: DesktopCore, presenceChecked: Promise<unknown>): Promise<void> {
+    const [ready] = await Promise.all([launched.ready.then(() => true, () => false), presenceChecked]);
     if (!ready || this.lifecycle.phase === 'disposing' || this.lifecycle.phase === 'done' || this.core.started() !== launched) return;
+    // before the chats reopen: a host part cut short re-keyed them to a destination the list does not name yet
+    const moved = await this.localRelocationsFrom(launched).catch((err: unknown) => {
+      this.report('Looking for moved projects')(err);
+      return [];
+    });
+    for (const view of moved) if (view.state === 'coreDone') this.movedProjects.set(folderKey(view.to), folderKey(view.from));
     await this.core.openTabs().catch(this.report('Reopening chats'));
+    for (const view of moved) this.relocationReached('local', view);
   }
 
   // The webview normalizes what it stores.
@@ -1862,6 +2008,8 @@ class DesktopApp {
     void core.ready.catch(() => undefined).then(() => this.userRelays?.forgesChanged()).catch(this.report('Reading the Git hosting servers for remote hosts'));
     // a Forget host while the engine was halted left that host's bindings and host defaults, which this core drops
     void core.ready.then(() => this.keepForgeHosts(client), () => undefined).catch(this.report('Dropping the Git hosting bindings of forgotten hosts'));
+    // a finished move whose host part an earlier core's end cut short; the launch's core is asked before its chats reopen
+    if (restarted) void core.ready.then(() => this.localRelocationsReached(hosted), () => undefined).catch(this.report('Looking for moved projects'));
     for (const key of [...this.catalogRows.keys()]) if (authorityKeyOfProject(key) === 'local') this.catalogRows.delete(key);
     const subscriptions = [
       client.onWorktreeState((event) => this.onWorktreeState(event)),
@@ -1895,6 +2043,7 @@ class DesktopApp {
       }),
       client.onDesignChanged((designId, paths) => this.designPreviews?.designChanged('local', designId, paths)),
       client.onWorktreeRecords((records) => this.worktreeRecords.apply(records)),
+      client.onRelocationsChanged(() => this.relocationsChanged('local')),
       client.onNewChatInWorktree((projectPath, worktreeId) => {
         this.newChatInWorktree({ projectKey: folderKey(projectPath), worktreeId }).catch(this.newChatInWorktreeFailure());
       }),
@@ -2126,6 +2275,7 @@ class DesktopApp {
       },
       remoteAddress: (chat, url) => this.remotePageAddress(chat, url),
       forwardedFrom: (chat, url) => this.forwardedFrom(chat, url),
+      servedMappings: () => this.servedRoots.mappings('local'),
       openExternal: (url) => this.requirePlatform().shell.openExternal(url),
       openExternalFailed: () => void this.notifications.error(this.requireLocalization().t('Damocles could not open the page in the system browser.')),
       copy: (text) => this.requirePlatform().clipboard.writeText(text),
@@ -2555,39 +2705,115 @@ class DesktopApp {
     const savedProject = selection && this.isKnownProject(selection.projectKey, core) ? selection.projectKey : undefined;
     // a remote project selected before this core was ready keeps the selection; its own core opens its chat (coreOpened)
     const selectedElsewhere = this.remoteSelected();
-    if (persisted.length === 0) {
+    // A chat of a project whose folder is not there keeps its panels.json entry and opens once the folder is back.
+    this.skippedChats.clear();
+    const opening = persisted.filter((saved) => {
+      const projectKey = this.savedProjectOf(core, saved);
+      if (!this.presences.absent(projectKey)) return true;
+      this.skippedChats.set(saved.panelId, { saved, projectKey });
+      return false;
+    });
+    if (opening.length === 0) {
       if (!selectedElsewhere) await this.newChatIn(core, this.restoreAtLaunch ? savedProject : undefined, { focus: 'whenReady' });
       return;
     }
-    const restored = persisted.map((saved) => {
-      const host = views.create({ options: CHAT_PANEL, restore: { panelId: saved.panelId, state: saved.state } });
-      this.trackChat(host, host.savedFolderKey ?? this.defaultProjectKey(core));
-      // A chat whose saved pages are on their way back is active, so retention keeps it until they arrive.
-      if (saved.browser.pages.length > 0) this.browserTabs?.setRestoring(host, true);
-      if (saved.heldPrompt) this.heldPrompts.restoring(saved.panelId);
-      this.lastViewed.set(host, ++this.viewCount);
-      return { host, saved };
-    });
+    const restored = opening.map((saved) => ({ host: this.createSavedChat(core, views, saved), saved }));
     const selected = restored.find(({ saved }) => saved.panelId === selection?.panelId)
       ?? restored.find(({ host }) => selection?.sessionId !== undefined && host.savedSessionId === selection.sessionId)
       ?? restored.find(({ host }) => this.projectOf(host) === savedProject)
       ?? restored[0];
-    if (selected && !selectedElsewhere) this.showChat(selected.host, { focus: 'whenReady' });
+    if (!selectedElsewhere) {
+      if (savedProject !== undefined && this.presences.absent(savedProject)) this.showAbsentProject(savedProject);
+      else if (selected) this.showChat(selected.host, { focus: 'whenReady' });
+    }
     const ordered = selected ? [selected, ...restored.filter((entry) => entry !== selected)] : restored;
     // One at a time, each chat's restore recorded before any starts, so a request for a chat still queued waits for it too.
     let previous: Promise<void> = Promise.resolve();
     for (const { host, saved } of ordered) {
-      const restore = previous.then(async () => {
-        await this.restoreInCore(core, host, host.savedFolderKey, kept.get(saved.panelId));
-        this.restorePages(core, host, saved.browser.pages, saved.browser.activePage);
-        if (saved.designTabs) this.designPreviews?.restore(host, saved.designTabs);
-        this.restoreHeldPrompt(core, host, saved.heldPrompt);
-      });
+      const restore = previous.then(() => this.restoreSavedChat(core, host, saved, kept.get(saved.panelId)));
       this.chatRestores.set(host, restore);
       previous = restore.catch(this.report('Restoring a chat'));
     }
     await previous;
     this.scheduleRetention();
+  }
+
+  // A saved chat's view, made before any restore awaits (openInitialChats).
+  private createSavedChat(core: ChatCore, views: PanelViews, saved: PersistedChat): DesktopPanel {
+    const host = views.create({ options: CHAT_PANEL, restore: { panelId: saved.panelId, state: saved.state } });
+    this.trackChat(host, host.savedFolderKey ?? this.defaultProjectKey(core));
+    // A chat whose saved pages are on their way back is active, so retention keeps it until they arrive.
+    if (saved.browser.pages.length > 0) this.browserTabs?.setRestoring(host, true);
+    if (saved.heldPrompt) this.heldPrompts.restoring(saved.panelId);
+    this.lastViewed.set(host, ++this.viewCount);
+    return host;
+  }
+
+  private async restoreSavedChat(core: DesktopCore, host: DesktopPanel, saved: PersistedChat, permissions?: ChatPermissions): Promise<void> {
+    await this.restoreInCore(core, host, host.savedFolderKey, permissions);
+    this.restorePages(core, host, saved.browser.pages, saved.browser.activePage);
+    if (saved.designTabs) this.designPreviews?.restore(host, saved.designTabs);
+    this.restoreHeldPrompt(core, host, saved.heldPrompt);
+  }
+
+  // The project a saved chat reopens in: its saved folder's, else the default one, as core sets it up.
+  private savedProjectOf(core: ChatCore, saved: PersistedChat): string {
+    const folder = restoredWorkspaceFolderKey(saved.state) ?? this.defaultProjectKey(core);
+    const listed = (key: string): boolean => this.projectListed(key);
+    return savedChatProjectKey(folder, {
+      listed,
+      records: this.worktreeRecords.records(),
+      keyOf: folderKey,
+      movedFrom: (key) => this.movedFrom(key),
+      resolve: (key) => chatProjectKey(key, core.client, listed) ?? key,
+    });
+  }
+
+  // The listed project a finished move left for this key, while its host part has not changed the list yet.
+  private movedFrom(key: string): string | undefined {
+    const from = this.movedProjects.get(key);
+    return from !== undefined && this.projectListed(from) ? from : undefined;
+  }
+
+  // The skipped saved chats of a project whose folder is back open, after the chats already open. During a reload, which
+  // closes them first, the reload's own reopen opens them.
+  private reopenSkippedChats(projectKey: string): void {
+    const core = this.core.current();
+    const views = this.views;
+    const reopening = [...this.skippedChats.values()].filter((skipped) => skipped.projectKey === projectKey);
+    if (!core || !views || reopening.length === 0) return;
+    let previous: Promise<void> = Promise.resolve();
+    for (const { saved } of reopening) {
+      this.skippedChats.delete(saved.panelId);
+      const host = this.createSavedChat(core, views, saved);
+      const restore = previous.then(() => this.restoreSavedChat(core, host, saved));
+      this.chatRestores.set(host, restore);
+      previous = restore.catch(this.report('Restoring a chat'));
+    }
+    void previous.then(() => this.scheduleRetention());
+  }
+
+  // A project that left the list takes its skipped chats' panels.json entries with it, which would reopen in another folder;
+  // a moved project's chats, re-keyed before its list change, stay.
+  private dropSkippedChatsOfUnlisted(): void {
+    for (const [panelId, { projectKey }] of this.skippedChats) {
+      if (this.projectListed(projectKey) || this.movedFrom(projectKey) !== undefined) continue;
+      this.skippedChats.delete(panelId);
+      this.states.delete(panelId);
+    }
+  }
+
+  // A remote project that left the list takes its skipped chats' remote-state.json records with it, which would reopen on its
+  // host in a folder that is gone; a moved project's chats stay, as relocateStores re-keys them and records the move in
+  // movedProjects before replaceProject changes the list.
+  private dropSkippedRemoteChatsOfUnlisted(): void {
+    const changed = new Set<string>();
+    for (const [panelToken, { authority, projectKey }] of [...this.skippedRemoteChats]) {
+      if (this.projectListed(projectKey) || this.movedFrom(projectKey) !== undefined) continue;
+      this.skippedRemoteChats.delete(panelToken);
+      changed.add(authority);
+    }
+    for (const authority of changed) this.saveRemoteChats(authority);
   }
 
   private async restoreInCore(core: ChatCore, chat: DesktopPanel, folderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
@@ -2671,6 +2897,10 @@ class DesktopApp {
     const selected = this.selectedProjectKey !== undefined && authorityKeyOfProject(this.selectedProjectKey) === core.authority ? this.selectedProjectKey : undefined;
     const key = projectKey ?? selected ?? this.defaultProjectKey(core);
     if (!this.isKnownProject(key, core)) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
+    if (this.projectAbsent(key)) {
+      this.showAbsentProject(key);
+      return;
+    }
     if (worktree && !(await this.worktreesOf(core.authority).checkOptIn(this.worktreeProject(key), worktree.startRef, worktree.bringChanges))) {
       throw new Error(this.requireLocalization().t('The worktree options changed. Open the New menu again.'));
     }
@@ -2767,11 +2997,44 @@ class DesktopApp {
     await this.addProjectAt(folder);
   }
 
-  // A folder joins the project list untrusted unless trusted already; the trust question follows, then a chat opens there.
+  // A folder joins the project list untrusted unless trusted already; the trust question follows, then a chat opens there, unless
+  // the user moves a missing project's chats here (project-readd.ts).
   private async addProjectAt(folder: string): Promise<void> {
-    await this.projects.add(folder);
-    if (!this.trust.isTrusted(folder)) await this.trust.requestTrust(folder);
-    await this.newChat(folderKey(folder));
+    const { t } = this.requireLocalization();
+    const outcome = await addProjectAt(folder, {
+      candidates: (added) => this.missingProjectsOf(added),
+      confirm: (question) => this.askLocateConfirm(question),
+      pick: (placeholder, items) => this.pickMissingProject(placeholder, items),
+      add: async (added) => {
+        await this.projects.add(added);
+      },
+      isTrusted: (added) => this.trust.isTrusted(added),
+      requestTrust: (added) => this.trust.requestTrust(added),
+      moveChats: (key, added) => this.locateProject(key, added),
+      newChat: (added) => this.newChat(folderKey(added)),
+      t: (message, ...args) => t(message, ...args),
+    });
+    log(`[projects] Add Project of ${folder}: ${outcome}`);
+  }
+
+  private async pickMissingProject(placeholder: string, items: readonly OverlayQuickPickItem[]): Promise<string | undefined> {
+    const overlay = this.overlay;
+    if (!overlay) throw new Error('The Add Project question has no window to show in');
+    this.revealWindow();
+    const answer = await overlay.request({ kind: 'quickPick', placeholder, items }, this.window?.webContents);
+    return answer.kind === 'quickPick' ? answer.itemId : undefined;
+  }
+
+  // The listed local projects whose folder is missing and whose chats core says the folder may take over; a failed lookup offers none.
+  private async missingProjectsOf(folder: string): Promise<MissingProject[]> {
+    const candidates = await this.core.run('Add Project', (core) => core.client.movedFrom(folder)).catch((err: unknown) => {
+      log(`[projects] looking for missing projects of ${folder} failed: ${errorText(err)}`);
+      return [];
+    });
+    return candidates.flatMap((candidate) => {
+      const key = folderKey(candidate.from);
+      return this.listedFolder(key) ? [{ key, name: this.localProjectName(key), fsPath: candidate.from, chats: candidate.chats }] : [];
+    });
   }
 
   // Keys from the shell are matched against the project list; a renderer string is never used as a path.
@@ -2882,14 +3145,18 @@ class DesktopApp {
     return this.sessionIdOf(panel) ?? `${NEW_CHAT_ID_PREFIX}${panel.panelId}`;
   }
 
+  // The project a chat belongs to: the owner core named for its working folder, else its folder's (docs/invariants.md
+  // "Worktree chats", Ownership); it lists there, and Remove Project, a relocation and the busy checks take it with that project.
   private projectOf(panel: DesktopPanel): string | undefined {
     const client = this.clientOf(panel);
-    const key = client?.chatOfView(panel.panelId)?.folder.key ?? this.openedInProject.get(panel);
-    if (key === undefined || !client) return key;
+    const opened = this.openedInProject.get(panel);
+    if (!client) return opened;
+    const folder = client.chatOfView(panel.panelId)?.folder ?? opened;
+    if (folder === undefined) return undefined;
     const listed = panel.authority === 'local'
-      ? (candidate: string) => this.projects.folders().some((folder) => folderKey(folder.fsPath) === candidate)
+      ? (candidate: string) => this.projects.folders().some((each) => folderKey(each.fsPath) === candidate)
       : (candidate: string) => this.remoteProject(candidate) !== undefined;
-    return chatProjectKey(key, client, listed);
+    return chatProjectKey(folder, client, listed);
   }
 
   private loadedChat(chatId: string): DesktopPanel | undefined {
@@ -2960,7 +3227,8 @@ class DesktopApp {
   // Records the selected chat's project, its place in the project memory and panels.json.
   private selectionChanged(panel: DesktopPanel): void {
     const projectKey = this.projectOf(panel);
-    if (projectKey === undefined) return;
+    // a remote chat of a project removed meanwhile stays open until its host lets it go, and never selects that project again
+    if (projectKey === undefined || (authorityKeyOfProject(projectKey) !== 'local' && !this.remoteProject(projectKey))) return;
     const projectChanged = projectKey !== this.selectedProjectKey;
     this.selectedProjectKey = projectKey;
     if (projectChanged) {
@@ -2987,10 +3255,16 @@ class DesktopApp {
   }
 
   // authority: the core that named the chat, for a chat id that may not be loaded
-  private selectChat(chatId: string, authority: string = this.chatAuthority(chatId)): Promise<SelectChatResult> {
-    // a loaded chat of a host with no connection is its transcript, which needs no core of that host
-    if (this.mirrorListed(authority)) return this.openMirroredChat(authority, chatId);
-    return this.chatHost(authority).run('Select Chat', (core) => this.selectChatIn(core, chatId));
+  private async selectChat(chatId: string, authority: string = this.chatAuthority(chatId)): Promise<SelectChatResult> {
+    // a project selection still checking its folder no longer selects
+    const turn = this.selectionTurns.begin();
+    try {
+      // a loaded chat of a host with no connection is its transcript, which needs no core of that host
+      if (this.mirrorListed(authority)) return await this.openMirroredChat(authority, chatId);
+      return await this.chatHost(authority).run('Select Chat', (core) => this.selectChatIn(core, chatId));
+    } finally {
+      turn.settle();
+    }
   }
 
   // A host connecting or offline: its projects' chats are the session mirror's, read-only.
@@ -3024,7 +3298,9 @@ class DesktopApp {
     const hostId = project === undefined ? undefined : this.savedHostIdOf(project.authorityKey);
     if (!project || hostId === undefined) return undefined;
     const folder = this.sessionMirrorOf(hostId).projectFolder(project.folderKey);
-    const rows = await this.core.read('List Mirrored Chats', (core) => core.client.listMirroredSessions(hostId, folder, query));
+    const os = this.knownAuthorityOs(project.authorityKey);
+    const mirrorOs = os === undefined ? undefined : os === 'win32' || os === 'darwin' ? os : 'linux';
+    const rows = await this.core.read('List Mirrored Chats', (core) => core.client.listMirroredSessions(hostId, folder, query, mirrorOs, project.fsPath));
     // the title bar names a transcript by its row, until the host's own catalog lists the project
     if (query === '' && this.mirrorListed(project.authorityKey)) this.catalogRows.set(projectKey, rows);
     return rows;
@@ -3086,6 +3362,10 @@ class DesktopApp {
         log(`[chats] the chat lists of ${core.authority} hold no chat ${chatId}`);
         return this.missingChat();
       }
+      if (this.projectAbsent(stored.projectKey)) {
+        this.showAbsentProject(stored.projectKey);
+        return { ok: true };
+      }
       // A local chat holding the conversation shows; another Damocles process's leaves the selection where it is, and core offers a takeover.
       if (await core.client.leaseRefused(chatId, true)) return { ok: false, reason: 'leased' };
       const views = this.requireViews();
@@ -3115,9 +3395,125 @@ class DesktopApp {
   }
 
   // The project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; never viewed: a new chat.
-  private selectProject(key: string): Promise<void> {
-    if (authorityKeyOfProject(key) === 'local') return this.core.run('Select Project', (core) => this.selectProjectIn(core, key));
-    return this.remoteSelection.select(key);
+  private async selectProject(key: string): Promise<void> {
+    const turn = this.selectionTurns.begin();
+    try {
+      await this.selectProjectWhile(key, turn.current);
+    } finally {
+      turn.settle();
+    }
+  }
+
+  // current: whether no later selection overtook this one
+  private async selectProjectWhile(key: string, current: () => boolean): Promise<void> {
+    if (authorityKeyOfProject(key) !== 'local') {
+      const project = this.remoteProject(key);
+      if (project) await this.remotePresences.check([{ key, fsPath: project.fsPath }]);
+      if (!current()) return;
+      if (this.remotePresences.absent(key)) {
+        this.showAbsentProject(key);
+        return;
+      }
+      return this.remoteSelection.select(key);
+    }
+    const folder = this.listedFolder(key);
+    if (folder) await this.presences.check([{ key, fsPath: folder.fsPath }]);
+    if (!current()) return;
+    // a project whose folder is not there shows its placeholder, and core opens none of its chats
+    if (this.presences.absent(key)) {
+      this.showAbsentProject(key);
+      return;
+    }
+    return this.core.run('Select Project', (core) => this.selectProjectIn(core, key));
+  }
+
+  private localProjects(): CheckedProject[] {
+    return this.projects.folders().map((folder) => ({ key: folderKey(folder.fsPath), fsPath: folder.fsPath }));
+  }
+
+  // the listed remote projects, or one authority's
+  private checkedRemoteProjects(authorityKey?: string): CheckedProject[] {
+    return this.remoteProjects().filter((project) => authorityKey === undefined || project.authorityKey === authorityKey).map(({ key, fsPath }) => ({ key, fsPath }));
+  }
+
+  // whether the project's folder is not there, by its authority's presence
+  private projectAbsent(key: string): boolean {
+    return authorityKeyOfProject(key) === 'local' ? this.presences.absent(key) : this.remotePresences.absent(key);
+  }
+
+  private presenceOf(key: string): ProjectPresence {
+    return authorityKeyOfProject(key) === 'local' ? this.presences.of(key) : this.remotePresences.of(key);
+  }
+
+  // On window focus. A stat of a WSL folder starts its distro, so a WSL project last found present is checked only when selected.
+  private async recheckProjectFolders(): Promise<void> {
+    await this.selectIfCameBack(await this.presences.check(this.localProjects().filter((project) => this.checkedUnselected(project))));
+  }
+
+  // Whether a check that no selection asked for checks the project: a WSL project only while it is not present.
+  private checkedUnselected(project: CheckedProject): boolean {
+    return this.presences.absent(project.key) || process.platform !== 'win32' || !wslUncToLinux(project.fsPath);
+  }
+
+  // A check that gave up on a slow stat (a WSL distro starting) checks its project once more when that stat answered.
+  private folderAnsweredLate(folder: string): void {
+    const project = this.localProjects().find((candidate) => candidate.fsPath === folder);
+    if (project) this.presences.answeredLate(project).then((cameBack) => this.selectIfCameBack(cameBack)).catch(this.report('Checking a project folder again'));
+  }
+
+  // A selection in flight checks its own project; one that starts meanwhile overtakes this.
+  private async selectIfCameBack(cameBack: readonly string[]): Promise<void> {
+    const key = this.selectedProjectKey;
+    const current = this.selectionTurns.join();
+    if (key !== undefined && current && cameBack.includes(key)) await this.selectProjectWhile(key, current);
+  }
+
+  private presenceChanged(key: string, presence: ProjectPresence, previous: ProjectPresence): void {
+    log(`[projects] the folder of ${key} is ${presence}, was ${previous}`);
+    // a refusal says why a missing folder was not located, so it ends once the folder is back
+    if (presence === 'present') this.locateRefusals.delete(key);
+    if (presence === 'present' && authorityKeyOfProject(key) !== 'local') this.reopenSkippedRemoteChats(key);
+    else if (presence === 'present') this.reopenSkippedChats(key);
+    else if (authorityKeyOfProject(key) !== 'local') this.remoteRelocationsFrom(authorityKeyOfProject(key)).catch(this.report('Looking for moved projects'));
+    else {
+      // the launch asks for its own moves before its chats reopen
+      void this.launchTabs.then(() => {
+        const core = this.core.started();
+        return core?.isReady() ? this.localRelocationsReached(core) : undefined;
+      }).catch(this.report('Looking for moved projects'));
+    }
+    this.shellStateChanged();
+    this.refreshMenuState();
+  }
+
+  // A project whose folder is not there is selected with no chat of it on screen: the chat view keeps the chat it showed,
+  // withheld, and the shell shows the project's placeholder.
+  private showAbsentProject(key: string): void {
+    if (key !== this.selectedProjectKey) {
+      this.selectedProjectKey = key;
+      this.search?.stopAll();
+      this.scm?.selectedProjectChanged();
+      this.terminals?.publish();
+    }
+    recordProjectSelection({ states: this.states, remoteState: this.remoteState, report: this.report('Saving the remote selection') }, key);
+    this.refreshSelectedCatalog();
+    this.shownFolders.refresh();
+    this.chatsChanged(key);
+    this.refreshMenuState();
+    this.shellStateChanged();
+  }
+
+  // The selected project's folder is not there and the chat is another project's, kept on screen behind its placeholder.
+  private keptBesideAbsentProject(chat: DesktopPanel): boolean {
+    const key = this.selectedProjectKey;
+    return key !== undefined && this.projectAbsent(key) && this.projectOf(chat) !== key;
+  }
+
+  // The shown chat while it is the selected project's to show: neither another authority's chat kept while a remote project's
+  // core opens its chats, nor one kept behind the placeholder of a project whose folder is not there.
+  private selectedProjectChat(chat: DesktopPanel | undefined): DesktopPanel | undefined {
+    const shown = chatOfSelectedProject(this.selectedProjectKey, chat);
+    return shown && this.keptBesideAbsentProject(shown) ? undefined : shown;
   }
 
   private remoteSelected(): boolean {
@@ -3126,6 +3522,11 @@ class DesktopApp {
 
   private async selectProjectIn(core: ChatCore, key: string): Promise<void> {
     if (!this.isKnownProject(key, core)) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
+    // a remote core opens the selected project's chat once it attached, by when its folder may read missing
+    if (this.projectAbsent(key)) {
+      this.showAbsentProject(key);
+      return;
+    }
     await openProjectChat({
       remembered: this.lastChats.remembered(key),
       open: (chatId) => this.openChatOfProject(core, key, chatId),
@@ -3511,7 +3912,7 @@ class DesktopApp {
       const idsIn = (projectKey: string): string[] => this.roots.all().filter((root) => root.root.projectKey === projectKey).flatMap((root) => terminals.idsIn(root.key));
       // a remote project's terminals run on its host: the question offers to leave them running there
       const hostTerminals = remote ? await this.askRemoteTerminals(remote) : undefined;
-      if (hostTerminals === 'cancel') return { ok: true };
+      if (hostTerminals === 'cancel') return { ok: true, removed: false };
       if (!remote) this.removingProjects.add(key);
       return await removeProject(key, {
         project: () => project,
@@ -3535,7 +3936,10 @@ class DesktopApp {
           this.unloadWorktreeChats(key);
           await this.projects.remove(project.fsPath);
           // before the list change's shell state goes out (setImmediate), which would name a project main no longer lists
-          if (this.selectedProjectKey === key && !this.views?.selected()) this.selectedProjectKey = undefined;
+          const shown = this.views?.selected();
+          if (this.selectedProjectKey === key && !shown) this.selectedProjectKey = undefined;
+          // a chat kept behind the removed project's placeholder takes the selection
+          else if (this.selectedProjectKey === key && shown && this.projectOf(shown) !== key) this.selectionChanged(shown);
           await this.hostStore?.removeFromOrder(key);
         },
         t: (message, ...args) => this.requireLocalization().t(message, ...args),
@@ -3546,6 +3950,445 @@ class DesktopApp {
       log(`[shell] removing a project failed: ${errorText(err)}`);
       return { ok: false, reason: errorMessage(err) };
     }
+  }
+
+  // Locate… on a project whose folder is missing or unavailable (docs/desktop-app.md "Locate"); a refusal or failure shows on
+  // the project's row. `offered`: the folder Add Project's offer moves the chats to.
+  private locateProject(key: string, offered?: string): Promise<LocateOutcome> {
+    return locateOnce(this.locating, key, () => this.locateProjectOnce(key, offered));
+  }
+
+  private async locateProjectOnce(key: string, offered: string | undefined): Promise<LocateOutcome> {
+    this.locateRefusals.delete(key);
+    this.shellStateChanged();
+    try {
+      const platform = this.requirePlatform();
+      const { t } = platform.localization;
+      const terminals = this.requireTerminals();
+      const authority = authorityKeyOfProject(key);
+      if (authority !== 'local' && !this.relocatesOn(authority)) throw new Error(t('Update Damocles on {0} to locate this folder.', this.hostName(authority)));
+      const place = authority === 'local' ? this.localLocate(platform) : this.remoteLocate(authority);
+      const outcome = await locateProject(key, {
+        ...place,
+        // the trust update naming the new folder goes to core ahead of the request
+        relocate: (request) => {
+          this.locateTargets.set(key, request.to);
+          this.relocationTargetsChanged.fire(authority);
+          return place.relocate(request);
+        },
+        busy: (projectKey) => this.projectBusy(projectKey),
+        confirm: (question) => this.askLocateConfirm(question),
+        confirmCloseRoot: (projectKey) => this.requireEditorPane().confirmCloseRoot(projectKey),
+        terminals: {
+          idsIn: (projectKey) => this.relocationTerminalIds(projectKey),
+          confirmKill: (ids) => terminals.confirmKill(ids),
+        },
+        started: (id, prepared) => {
+          this.interruptedLocates.forget(authority, prepared.key);
+          this.locatePrepared.set(id, prepared);
+          this.relocationNames.set(id, this.listedProjectName(prepared.key) ?? prepared.key);
+          // a move core finished before relocate answered is in the mirror already
+          this.relocationsChanged(authority);
+        },
+        interrupted: (prepared) => this.interruptedLocates.record(authority, prepared),
+        refused: (projectKey, refusal) => {
+          this.locateRefusals.set(projectKey, refusal);
+          this.shellStateChanged();
+        },
+        t: (message, ...args) => t(message, ...args),
+      }, offered);
+      log(`[projects] Locate of ${key}: ${outcome.kind === 'refused' ? `refused (${outcome.refusal.code})` : outcome.kind}`);
+      return outcome;
+    } catch (err) {
+      log(`[projects] Locate of ${key} failed: ${errorText(err)}`);
+      void this.notifications.error(this.requireLocalization().t('Damocles could not locate the project: {0}', errorMessage(err)));
+      return { kind: 'cancelled' };
+    } finally {
+      if (this.locateTargets.delete(key)) this.relocationTargetsChanged.fire(authorityKeyOfProject(key));
+    }
+  }
+
+  private localLocate(platform: DesktopPlatform): LocatePlace {
+    const { t } = platform.localization;
+    return {
+      project: (projectKey) => {
+        const folder = authorityKeyOfProject(projectKey) === 'local' ? this.listedFolder(projectKey) : undefined;
+        return folder && { name: this.localProjectName(projectKey), fsPath: folder.fsPath };
+      },
+      presence: (projectKey) => this.presences.of(projectKey),
+      listed: () => this.projects.folders().map((folder) => folder.fsPath),
+      pathPresence: (fsPath) => this.presenceProbe.path(fsPath),
+      pathFlavor: path,
+      pickFolder: (defaultPath) => platform.nativeDialogs.pickFolder({ title: t('Locate Project Folder'), ...(defaultPath !== undefined ? { defaultPath } : {}) }),
+      preflight: (request) => this.core.run('Locate Project', (core) => core.client.relocationPreflight(request)),
+      isTrusted: (fsPath) => this.trust.isTrusted(fsPath),
+      requestTrust: (fsPath) => this.trust.requestTrust(fsPath),
+      closeChats: (projectKey) => this.closeChatsForRelocation(projectKey),
+      relocate: (request) => this.core.run('Locate Project', (core) => core.client.relocate(request)),
+    };
+  }
+
+  // A remote project's Locate: its host's folder browser and trust question, and its host's core, which runs the move on
+  // the host; this computer's part follows once that core reports it done.
+  private remoteLocate(authority: string): LocatePlace {
+    const { t } = this.requireLocalization();
+    const host = this.chatHost(authority);
+    const os = this.authorityOs(authority);
+    return {
+      project: (projectKey) => {
+        const project = this.remoteProject(projectKey);
+        return project?.authorityKey === authority ? { name: project.name, fsPath: project.fsPath } : undefined;
+      },
+      presence: (projectKey) => this.remotePresences.of(projectKey),
+      listed: () => this.remoteProjects().filter((project) => project.authorityKey === authority).map((project) => project.fsPath),
+      pathPresence: (fsPath) => remotePathPresence((signal) => this.remoteWorkspace(authority).files.isDirectory(fsPath, signal)),
+      pathFlavor: pathFor({ os }),
+      pickFolder: (defaultPath) => this.requireRemoteHosts().pickAnywhere(authority, { title: t('Locate Project Folder'), start: defaultPath ?? this.requireConnection(authority).facts.homedir }),
+      preflight: (request) => host.run('Locate Project', (core) => core.client.relocationPreflight(request)),
+      isTrusted: (fsPath) => this.requireHostStore().isTrusted(authority, folderKeyOn(os, fsPath)),
+      requestTrust: (fsPath) => this.requireRemoteTrust().request({ key: this.relocationKey(authority, fsPath), authorityKey: authority, folderKey: folderKeyOn(os, fsPath), fsPath, host: this.hostName(authority) }),
+      closeChats: (projectKey) => this.closeRemoteChatsForRelocation(authority, projectKey),
+      relocate: (request) => host.run('Locate Project', (core) => core.client.relocate(request)),
+    };
+  }
+
+  // Whether the authority's daemon moves project folders: it is connected and listed projects.relocate.
+  private relocatesOn(authority: string): boolean {
+    return this.authorities?.connection(authority)?.features.includes(RELOCATE_FEATURE) === true;
+  }
+
+  // The project key a path of an authority's core names, as the shell keys it.
+  private relocationKey(authority: string, fsPath: string): string {
+    if (authority === 'local') return folderKey(fsPath);
+    const located = authority === 'loopback' ? { kind: 'loopback' as const } : this.hostAuthority(authority);
+    if (!located) throw new Error(`No saved host is named ${authority}`);
+    return projectKeyOf(located, folderKeyOn(this.authorityOs(authority), fsPath));
+  }
+
+  // The project's chats on its host close, their records kept beside the skipped ones so they reopen once the move is done;
+  // the host's core lets their sessions go before the move starts.
+  private async closeRemoteChatsForRelocation(authority: string, key: string): Promise<void> {
+    const project = this.remoteProject(key);
+    if (!project) return;
+    for (const chat of this.views?.chats() ?? []) {
+      if (chat.authority !== authority || this.projectOf(chat) !== key) continue;
+      const sessionId = this.sessionIdOf(chat);
+      if (chat.panelToken !== undefined && sessionId !== undefined) this.skippedRemoteChats.set(chat.panelToken, { authority, sessionId, panelToken: chat.panelToken, projectKey: key });
+      chat.close();
+    }
+    await this.chatHost(authority).run('Locate Project', (core) => core.client.whenFolderReleased(project.fsPath));
+  }
+
+  private async askLocateConfirm(question: LocateConfirm): Promise<boolean> {
+    const overlay = this.overlay;
+    if (!overlay) throw new Error('The Locate dialog has no window to show in');
+    this.revealWindow();
+    const answer = await overlay.request({
+      kind: 'confirm',
+      title: question.title,
+      message: question.message,
+      detail: question.detail,
+      ...(question.warning !== undefined ? { warning: { text: question.warning, running: false } } : {}),
+      confirmLabel: question.confirmLabel,
+      cancelLabel: question.cancelLabel,
+      danger: false,
+    }, this.window?.webContents);
+    return answer.kind === 'confirm' && answer.confirmed;
+  }
+
+  // The project's terminals and its worktrees', as Remove Project asks about them.
+  private terminalIdsOf(projectKey: string): string[] {
+    const terminals = this.requireTerminals();
+    return this.roots.all().filter((root) => root.root.projectKey === projectKey).flatMap((root) => terminals.idsIn(root.key));
+  }
+
+  // Open on a move another app made asks Locate's own questions: the old root's unsaved editors, then its terminals.
+  private async askLocateClose(key: string): Promise<RootCloseAnswers | undefined> {
+    const answers = await this.requireEditorPane().confirmCloseRoot(key);
+    if (!answers) return undefined;
+    return (await this.requireTerminals().confirmKill(this.relocationTerminalIds(key))) ? answers : undefined;
+  }
+
+  // A move changes the chat worktrees' root keys (they hold the project's key) and leaves their shells' DAMOCLES_PROJECT_FOLDER
+  // naming the old folder, so their terminals and Setup terminals stop with the project's.
+  private relocationTerminalIds(projectKey: string): string[] {
+    const terminals = this.requireTerminals();
+    const folder = this.listedFolder(projectKey);
+    const setups = folder ? this.worktreeRecords.liveChatRecords(folder.fsPath).flatMap((record) => terminals.taskTerminal(setupTaskKey(record.id)) ?? []) : [];
+    return [...new Set([...this.terminalIdsOf(projectKey), ...setups])];
+  }
+
+  // The project's loaded chats close as a core restart closes them, keeping their saved state, and wait beside the chats that
+  // did not open while the folder was gone, for the folder to come back or the move to finish; core lets their sessions go
+  // before the move starts.
+  private async closeChatsForRelocation(key: string): Promise<void> {
+    const views = this.views;
+    const folder = this.listedFolder(key);
+    if (!views || !folder) return;
+    this.states.batch(() => {
+      for (const chat of views.chats()) {
+        if (chat.authority !== 'local' || this.projectOf(chat) !== key) continue;
+        const saved = this.states.get(chat.panelId);
+        if (saved) this.skippedChats.set(chat.panelId, { saved, projectKey: key });
+        views.closeKeepingState(chat);
+      }
+    });
+    await this.core.run('Locate Project', (core) => core.client.whenFolderReleased(folder.fsPath));
+  }
+
+  // The moved project's saved file tabs whose file is in the new folder open again there.
+  private async reopenRelocatedTabs(files: readonly FileRef[]): Promise<void> {
+    const kept = await presentFiles(files, async (file) => {
+      const remote = this.remoteProject(file.projectKey);
+      if (remote) {
+        const remoteFiles = this.remoteWorkspace(remote.authorityKey).files;
+        const confined = await remoteFiles.confineExisting(remote, file.relativePath);
+        return confined.ok && !(await remoteFiles.isDirectory(confined.path));
+      }
+      const folder = this.listedFolder(file.projectKey);
+      return folder !== undefined && (await fs.promises.stat(path.join(folder.fsPath, file.relativePath))).isFile();
+    }, (file, err) => log(`[projects] could not check the moved project's tab ${file.relativePath}: ${errorText(err)}`));
+    if (kept.length > 0) await this.requireEditorPane().openInBackground(kept.map((file) => ({ file })));
+  }
+
+  // A finished move whose repair waits on the new folder's trust offers Trust, and one that left chat worktrees unlinked
+  // offers Retry; each once per relocation and outcome in this run.
+  private relocationRepairNotice(authority: string, view: RelocationView): void {
+    if (view.state !== 'coreDone' || view.step !== 'repair' || !view.failure) return;
+    const shown = `${authority}:${view.id}:${view.failure.code}:${(view.repairFailures ?? []).map((failure) => failure.worktreeId).join(',')}`;
+    if (this.repairNotices.has(shown)) return;
+    this.repairNotices.add(shown);
+    const { t } = this.requireLocalization();
+    const project = { name: this.relocationName(authority, view), fsPath: view.from };
+    const text = relocationText(view.failure, project, (message, ...args) => t(message, ...args));
+    if (view.failure.code === 'untrusted') {
+      void this.notificationCenter.notice('warning', text, [t('Trust')]).then(async (chosen) => {
+        if (chosen !== 0) return;
+        const moved = { key: this.relocationKey(authority, view.to), fsPath: view.to, name: project.name };
+        await this.requireProjectTrust().request(moved);
+      }).catch(this.report('Trusting the moved project'));
+      return;
+    }
+    if (view.failure.code !== 'repairFailed') return;
+    const branches = (view.repairFailures ?? []).map((failure) => {
+      const record = authority === 'local' ? this.worktreeRecords.get(failure.worktreeId) : undefined;
+      return visibleText(record?.kind === 'chat' ? record.branch : failure.worktreeId);
+    });
+    const message = branches.length > 0 ? `${text} ${t('Chat worktrees: {0}.', branches.join(', '))}` : text;
+    void this.notificationCenter.notice('warning', message, [t('Retry')]).then(async (chosen) => {
+      if (chosen !== 0) return;
+      this.repairNotices.delete(shown);
+      await this.chatHost(authority).run('Locate Project', (core) => core.client.relocationRetry(view.id));
+    }).catch(this.report('Re-linking the chat worktrees of a moved project'));
+  }
+
+  // The project's name before the move, as Locate or the first sight of the relocation in this run found it, so every notice
+  // of one relocation names the project alike, whether or not the list moved on yet.
+  private relocationName(authority: string, view: RelocationView): string {
+    const known = this.relocationNames.get(view.id);
+    if (known !== undefined) return known;
+    const listed = [view.from, view.to].map((fsPath) => this.listedProjectName(this.relocationKey(authority, fsPath))).find((name) => name !== undefined);
+    const name = listed ?? (authority === 'local' ? path : this.hostPathFlavor(authority)).basename(view.to);
+    this.relocationNames.set(view.id, name);
+    return name;
+  }
+
+  private pausedRelocationOf(key: string): RelocationView | undefined {
+    const authority = authorityKeyOfProject(key);
+    return this.clientFor(authority)?.relocations().find((candidate) => this.relocationKey(authority, candidate.from) === key && candidate.state === 'paused');
+  }
+
+  private async retryRelocation(key: string): Promise<void> {
+    const view = this.pausedRelocationOf(key);
+    if (view) await this.chatHost(authorityKeyOfProject(key)).run('Locate Project', (core) => core.client.relocationRetry(view.id));
+  }
+
+  // Stop moving, after the shell's confirmation: core abandons the paused move, which leaves its mirror, so the row offers
+  // Locate… again; a refusal (the move ran on meanwhile) is a notice.
+  private async abandonRelocation(key: string): Promise<void> {
+    const view = this.pausedRelocationOf(key);
+    if (!view) return;
+    const authority = authorityKeyOfProject(key);
+    const refusal = await this.chatHost(authority).run('Stop Moving', (core) => core.client.relocationAbandon(view.id));
+    log(`[projects] Stop moving ${view.id}: ${refusal ? `refused (${refusal.code})` : 'abandoned'}`);
+    if (!refusal) return;
+    const { t } = this.requireLocalization();
+    const text = relocationText(refusal, { name: this.relocationName(authority, view), fsPath: view.from }, (message, ...args) => t(message, ...args));
+    void this.notificationCenter.notice('warning', text, []).catch(this.report('Showing why the move was not stopped'));
+  }
+
+  // A core's relocations mirror changed: rows follow, and a move that reached coreDone is applied here or offered with Open.
+  // What this run kept for a relocation that left the mirror (a new core, Stop moving) is forgotten.
+  private relocationsChanged(authority: string): void {
+    this.shellStateChanged();
+    this.refreshMenuState();
+    const views = this.clientFor(authority)?.relocations() ?? [];
+    const mirrored = new Set(views.map((view) => view.id));
+    for (const id of this.mirroredRelocations.get(authority) ?? []) if (!mirrored.has(id)) this.forgetRelocation(authority, id);
+    this.mirroredRelocations.set(authority, mirrored);
+    this.relocationTargetsChanged.fire(authority);
+    for (const view of views) {
+      this.relocationName(authority, view);
+      this.relocationReached(authority, view);
+      this.relocationRepairNotice(authority, view);
+    }
+  }
+
+  private forgetRelocation(authority: string, id: string): void {
+    this.locatePrepared.delete(id);
+    this.relocationNames.delete(id);
+    const shown = `${authority}:${id}:`;
+    for (const notice of [...this.repairNotices]) if (notice.startsWith(shown)) this.repairNotices.delete(notice);
+  }
+
+  // Requested here: this run's Locate started it under that id and from and to the folders it prepared, a Locate whose request
+  // lost its answer included, or this app's core did in an earlier run (a desktop core runs only for this app). A daemon's core
+  // runs for every device, so only this run's Locate counts there.
+  private relocationReached(authority: string, view: RelocationView): void {
+    const adopted = this.locatePrepared.has(view.id) ? undefined : this.interruptedLocates.adopt(authority, view);
+    if (adopted) this.locatePrepared.set(view.id, adopted);
+    if (view.state !== 'coreDone') return;
+    const prepared = this.locatePrepared.get(view.id);
+    const located = prepared && preparedMove(prepared, view, (fsPath) => this.relocationKey(authority, fsPath)) ? prepared : undefined;
+    const requester: RelocationRequester = located ? { answers: located.answers } : authority === 'local' && view.requestedBy === 'desktop' ? 'thisApp' : 'other';
+    this.relocatedOf(authority).reached(view, requester).catch(this.report('Moving the project to its new folder'));
+  }
+
+  // The host part of an authority's relocations: this computer's core's, or a remote core's, whose copies here main re-keys.
+  private relocatedOf(authority: string): RelocatedProjects {
+    if (authority === 'local') return this.relocatedProjects;
+    const os = this.authorityOs(authority);
+    const hostId = this.savedHostIdOf(authority);
+    const known = this.remoteRelocated.get(authority);
+    if (known?.os === os && known.hostId === hostId) return known.relocated;
+    const { t } = this.requireLocalization();
+    const located = authority === 'loopback' ? { kind: 'loopback' as const } : this.hostAuthority(authority);
+    if (!located) throw new Error(`No saved host is named ${authority}`);
+    const flavor = pathFor({ os });
+    const remote = remoteRelocation({
+      authority: located,
+      authorityKey: authority,
+      hostId,
+      os: shellPlatform(os),
+      store: this.requireHostStore(),
+      mirror: (hostId) => this.sessionMirrorOf(hostId),
+      relocateBindings: (fromKey, toKey) => this.core.run('Locate Project', (core) => core.client.relocateForgeBindings(fromKey, toKey)),
+      addHostAlias: (alias) => this.core.run('Locate Project', (core) => core.client.addHostAlias(alias)),
+    });
+    const relocated = new RelocatedProjects({
+      ...remote,
+      relocateList: async (from, to, id) => {
+        await remote.relocateList(from, to, id);
+        this.movedProjects.delete(to.key);
+      },
+      listed: (key) => {
+        const project = this.remoteProject(key);
+        return project && { name: project.name };
+      },
+      absent: (key) => this.remotePresences.absent(key),
+      offerOpen: async (view) => (await this.notificationCenter.notice('info', t('Chats moved to {0} on {1}.', visibleText(view.to), this.hostName(authority)), [t('Open')])) === 0,
+      askClose: (key) => this.askLocateClose(key),
+      isTrusted: (fsPath) => this.requireHostStore().isTrusted(authority, folderKeyOn(os, fsPath)),
+      requestTrust: (fsPath) => this.requireRemoteTrust().request({ key: this.relocationKey(authority, fsPath), authorityKey: authority, folderKey: folderKeyOn(os, fsPath), fsPath, host: this.hostName(authority) }),
+      savedTabs: (key) => this.windowLayout.editor().tabs.flatMap((tab) => ('file' in tab && tab.kind !== 'searchEditor' && tab.kind !== 'htmlPreview' && tab.file.projectKey === key ? [tab.file] : [])),
+      relocateStores: async (from, to) => {
+        this.movedProjects.set(to.key, from.key);
+        this.lastChats.relocate(from.key, to.key);
+        this.windowLayout.relocateProject(from, to, flavor);
+        for (const [panelToken, skipped] of [...this.skippedRemoteChats]) if (skipped.projectKey === from.key) this.skippedRemoteChats.set(panelToken, { ...skipped, projectKey: to.key });
+        this.saveRemoteChats(authority);
+        const selected = this.remoteState?.selected();
+        if (selected?.projectKey === from.key) await this.remoteState?.select({ ...selected, projectKey: to.key });
+      },
+      relocateWorktreeStores: (worktree, fromKey, toKey) => {
+        this.windowLayout.relocateProject(
+          { key: rootKey({ projectKey: fromKey, worktreeId: worktree.worktreeId }), fsPath: worktree.from },
+          { key: rootKey({ projectKey: toKey, worktreeId: worktree.worktreeId }), fsPath: worktree.to },
+          flavor,
+        );
+      },
+      // HostStore.replaceProject revokes it in the same write that moves the list entry
+      revokeTrust: async () => undefined,
+      relocateRoot: (fromRootKey, toRootKey) => this.requireEditorPane().relocateRoot(fromRootKey, toRootKey),
+      reopenTabs: (files) => this.reopenRelocatedTabs(files),
+      closeOldRoot: (key, answers) => {
+        if (!this.requireEditorPane().closeRoot(key, answers)) log(`[projects] the moved project's tabs stay open: one was edited after its question`);
+      },
+      reopenChats: (toKey) => this.reopenSkippedRemoteChats(toKey),
+      select: (key) => this.selectProject(key),
+      announce: (message) => { void this.notificationCenter.notice('info', message, []); },
+      describe: (failure, project) => relocationText(failure, project, (message, ...args) => this.requireLocalization().t(message, ...args)),
+      report: (action, err) => this.report(action)(err),
+      t: (message, ...args) => this.requireLocalization().t(message, ...args),
+    });
+    this.remoteRelocated.set(authority, { os, hostId, relocated });
+    return relocated;
+  }
+
+  // Another device's finished move of a remote project whose folder is missing here, from that host's core.
+  private async remoteRelocationsFrom(authority: string): Promise<void> {
+    const client = this.clientFor(authority);
+    if (!client) return;
+    for (const view of await this.remoteMovesFrom(authority, client)) this.relocationReached(authority, view);
+  }
+
+  // The moves, by this app or another, that left a listed project of the authority whose folder is not there on its host.
+  private async remoteMovesFrom(authority: string, client: CoreClient): Promise<readonly RelocationView[]> {
+    if (!client.relocates) return [];
+    const absent = this.checkedRemoteProjects(authority).filter((project) => this.remotePresences.absent(project.key)).map((project) => project.key);
+    return absent.length === 0 ? [] : client.relocationsFrom(absent);
+  }
+
+  // The moves, by this app or another, that left a listed local project whose folder is not there. Core's mirror names only the
+  // moves it saw pending in its run, so the launch, every later core start and a folder found missing ask for the rest.
+  private async localRelocationsFrom(core: DesktopCore): Promise<readonly RelocationView[]> {
+    const absent = this.localProjects().filter((project) => this.presences.absent(project.key)).map((project) => project.key);
+    return absent.length === 0 ? [] : core.client.relocationsFrom(absent);
+  }
+
+  private async localRelocationsReached(core: DesktopCore): Promise<void> {
+    for (const view of await this.localRelocationsFrom(core)) this.relocationReached('local', view);
+  }
+
+  // A project's Locate as its row shows it (locateShown).
+  private relocationOf(key: string): ShellRelocation | undefined {
+    const authority = authorityKeyOfProject(key);
+    const view = this.clientFor(authority)?.relocations().find((candidate) => this.relocationKey(authority, candidate.from) === key && candidate.state !== 'coreDone');
+    const shown = locateShown(view, this.projectAbsent(key), () => this.chatWorktreeRefusal(key), this.locateRefusals.get(key));
+    if (!shown) return undefined;
+    const fsPath = authority === 'local' ? this.listedFolder(key)?.fsPath : this.remoteProject(key)?.fsPath;
+    const project = { name: this.listedProjectName(key) ?? key, fsPath: fsPath ?? '' };
+    const { t } = this.requireLocalization();
+    const reason = (coded: Coded): ShellRelocationReason => ({ code: coded.code, text: relocationText(coded, project, (message, ...args) => t(message, ...args)) });
+    if (shown.state !== 'move') return { state: shown.state, reason: reason(shown.reason) };
+    const { view: move } = shown;
+    const { step, progress: { done, total } } = move;
+    if (move.state === 'paused') return { state: 'paused', step, done, total, reason: reason(move.failure ?? { code: 'stopped' }), to: move.to, ...(this.clientFor(authority)?.abandons ? { abandonable: true as const } : {}) };
+    return { state: 'running', step, done, total, ...(move.failure ? { reason: reason(move.failure) } : {}) };
+  }
+
+  // Locate Project Folder…'s target: a project whose folder is not there, on this computer or a daemon that moves folders,
+  // with no move of it under way.
+  private locatable(key: string | undefined): boolean {
+    if (key === undefined || !this.projectAbsent(key) || this.chatWorktreeRefusal(key)) return false;
+    const authority = authorityKeyOfProject(key);
+    if (authority !== 'local' && !this.relocatesOn(authority)) return false;
+    return !(this.clientFor(authority)?.relocations() ?? []).some((view) => this.relocationKey(authority, view.from) === key && view.state !== 'coreDone');
+  }
+
+  // A project folder in a chat worktree, by main's mirror of its core's registry: the worktree stays where its record puts it, so
+  // Locate is not offered (core's preflight refuses it too).
+  private chatWorktreeRefusal(key: string): Coded | undefined {
+    const authority = authorityKeyOfProject(key);
+    const fsPath = authority === 'local' ? this.listedFolder(key)?.fsPath : this.remoteProject(key)?.fsPath;
+    if (fsPath === undefined) return undefined;
+    const record = chatRecordHolding(this.worktreeRegistry(authority)?.records() ?? [], fsPath, authority === 'local' ? undefined : this.authorityOs(authority));
+    if (record) return { code: 'chatWorktree', params: { projectPath: record.projectPath } };
+    return authority === 'local' && folderContains(WORKTREES_ROOT_DIR, fsPath) ? { code: 'chatWorktree' } : undefined;
+  }
+
+  private localProjectName(key: string): string {
+    return this.client()?.resolve(key)?.label ?? this.listedFolder(key)?.name ?? key;
   }
 
   private releaseRemoteTerminals(project: RemoteProject, answer: { readonly end: boolean; readonly runs: readonly string[] }): void {
@@ -3592,9 +4435,10 @@ class DesktopApp {
     return host.run('Project Busy', (core) => core.client.projectBusy(projectKey));
   }
 
-  // The loaded chats of the project, its worktrees' included, that hold their first prompt for their worktree (rule 6).
+  // The chats of the project, its worktrees' included, that hold their first prompt for their worktree (rule 6): loaded ones,
+  // and saved ones its missing folder kept closed.
   private waitingChats(projectKey: string): WaitingChat[] {
-    return (this.client()?.chats() ?? []).flatMap((chat): WaitingChat[] => {
+    const loaded = (this.client()?.chats() ?? []).flatMap((chat): WaitingChat[] => {
       const corePanelId = chat.panelId;
       const prompt = (chat.folder.ownerKey ?? chat.folder.key) === projectKey ? chat.heldPrompt as UserContentBlock[] | undefined : undefined;
       if (prompt === undefined) return [];
@@ -3602,12 +4446,24 @@ class DesktopApp {
       const worktreeId = this.worktreeStates.get(corePanelId)?.worktreeId;
       return [{ corePanelId, title: (panel ? this.titleOf(panel) : undefined) ?? '', prompt, ...(worktreeId !== undefined ? { worktreeId } : {}) }];
     });
+    const saved = [...this.skippedChats.values()].flatMap(({ saved: chat, projectKey: key }): WaitingChat[] => {
+      if (key !== projectKey || !chat.heldPrompt) return [];
+      const name = (chat.state as { sessionName?: unknown } | null)?.sessionName;
+      return [{ savedPanelId: chat.panelId, title: typeof name === 'string' ? name : '', prompt: chat.heldPrompt }];
+    });
+    return [...loaded, ...saved];
   }
 
-  // Each chat closes, as Delete closes one, which drops its hold and panels.json entry; core discards its unused worktree.
+  // Each loaded chat closes, as Delete closes one, which drops its hold and panels.json entry; core discards its unused
+  // worktree. A saved one's entry goes.
   private async discardWaitingChats(chats: readonly WaitingChat[]): Promise<void> {
     const client = this.requireCore().client;
     await Promise.all(chats.map((chat) => {
+      if ('savedPanelId' in chat) {
+        this.skippedChats.delete(chat.savedPanelId);
+        this.states.delete(chat.savedPanelId);
+        return undefined;
+      }
       const panel = this.panelOfCore(chat.corePanelId);
       if (panel && !panel.isDisposed) panel.close();
       return client.whenWorktreeDiscarded(chat.corePanelId);
@@ -3660,6 +4516,11 @@ class DesktopApp {
     return {
       state: () => this.shellState(views),
       addProject: reportFailure(() => this.addProject(), this.shellFailure('Add Project', 'Damocles could not add the project: {0}')),
+      locateProject: async (key) => {
+        await this.locateProject(key);
+      },
+      retryRelocation: reportFailure((key: string) => this.retryRelocation(key), this.shellFailure('Retry Move', 'Damocles could not retry moving the project: {0}')),
+      abandonRelocation: reportFailure((key: string) => this.abandonRelocation(key), this.shellFailure('Stop Moving', 'Damocles could not stop moving the project: {0}')),
       removeProject: (key) => this.removeProject(key),
       selectProject: reportFailure((key: string) => this.selectProject(key), this.shellFailure('Select Project', 'Damocles could not open the project: {0}')),
       grantTrust: reportFailure(async (key: string) => {
@@ -4131,6 +4992,7 @@ class DesktopApp {
         if (!this.windowLayout.sidebar().grid.visible.editor) this.toggleGridPane('editor');
       },
       projects,
+      awaitsRegistry: (key) => this.roots.awaitsRegistry(key),
       worktreeBranch: (key) => this.roots.branchOf(key),
       copy: (text) => platform.clipboard.writeText(text),
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
@@ -4389,6 +5251,7 @@ class DesktopApp {
     // questions, stores their answers as secrets, routes the browser's requests and makes Files' trash or permanent delete fail
     // through this, in the unpackaged app only. What reaches the engine goes through core's e2e.* requests.
     if (E2E_HOOKS) {
+      const e2eFinishHolds = new Map<string, FinishHold>();
       const hooks = {
         editor: platform.editor,
         dialogs: { inputBox: (options: InputBoxOptions) => this.requireCore().client.e2eInputBox(options) },
@@ -4448,6 +5311,8 @@ class DesktopApp {
         // Saved SSH hosts: seeding without the Connect dialog, a host's live control channel (the teardown's shutdownNow),
         // its attempt and its logs.
         remote: {
+          // the authority's core's sessions step pauses (or hangs, holding its lock) after this many chats moved; null clears it
+          relocationPauseAfter: (authorityKey: string, sessions: number | null, mode: 'pause' | 'hang') => this.chatHost(authorityKey).run('E2E relocation', (core) => core.client.e2eRelocationPauseAfter(sessions, mode)),
           // the no-dialog keep path an OS shutdown or an update's quit takes, then the quit
           simulateShutdown: (kind: 'os' | 'quitAndInstall') => this.quitUnattended(kind === 'os' ? 'the e2e hooks shut the system down' : 'the e2e hooks install an update'),
           hosts: () => this.requireHostStore().hosts().map((record) => ({
@@ -4597,6 +5462,8 @@ class DesktopApp {
           },
         },
         reloadCore: () => this.core.reload(),
+        // core's sessions step pauses (or hangs, holding its lock) after this many chats moved; null clears it
+        relocationPauseAfter: (sessions: number | null, mode: 'pause' | 'hang') => this.core.run('E2E relocation', (core) => core.client.e2eRelocationPauseAfter(sessions, mode)),
         // the folder chats open in when none is named, as main's mirror of core's folder targets holds it now
         defaultProjectKey: () => this.client()?.defaultTarget()?.key,
         // this computer's core records a remote chat's voice: a stand-in recorder with a fixed transcript, and its starts
@@ -4609,6 +5476,16 @@ class DesktopApp {
           ask: (dialog: WorktreeDialog) => {
             if (!this.askWorktreeDialog) throw new Error('Worktrees are not started');
             return this.askWorktreeDialog(dialog);
+          },
+          // a finish action's hold on this computer's core, kept until released; false when core gave none
+          holdFinish: async (worktreeId: string) => {
+            const hold = await this.core.run('E2E finish hold', (core) => core.client.beginWorktreeFinish(worktreeId, 'apply', () => false));
+            if (hold) e2eFinishHolds.set(worktreeId, hold);
+            return hold !== undefined;
+          },
+          releaseFinish: (worktreeId: string) => {
+            e2eFinishHolds.get(worktreeId)?.dispose();
+            e2eFinishHolds.delete(worktreeId);
           },
         },
         // reached turns true once a chat restore waits on the hold; fail makes every held restore reject
@@ -5060,7 +5937,8 @@ class DesktopApp {
 
   // A removed project's last chat goes with it, whichever path removed it.
   private forgetUnlistedProjects(): void {
-    for (const key of this.lastChats.projects()) if (!this.projectListed(key)) this.lastChats.forgetProject(key);
+    // relocateStores re-keys a remote move's entry before replaceProject lists its key; a host-store write in between keeps it
+    this.lastChats.forgetProjectsExcept((key) => projectStays(key, (listed) => this.projectListed(listed), this.movedProjects));
   }
 
   // Files, the editor, Search, Quick Open, the formatter and terminals: every shown project, in the sidebar order.
@@ -5206,7 +6084,10 @@ class DesktopApp {
         this.refreshMenuState();
       },
       keptChats: () => this.requireRemoteState().chats(authority).length,
-      reattached: (restarted) => this.reconnector?.attached({ authorityKey: authority, how: 'attached', ...(restarted ? { restarted } : {}) }),
+      reattached: (restarted) => {
+        this.reconnector?.attached({ authorityKey: authority, how: 'attached', ...(restarted ? { restarted } : {}) });
+        this.remoteRelocationsFrom(authority).catch(this.report('Looking for moved projects'));
+      },
       coreEnded: () => this.offlineQueue?.connectionEnded(authority),
       drainTimeoutMs: CLOSE_TIMEOUT_MS,
       log: (line) => log(line),
@@ -5263,6 +6144,7 @@ class DesktopApp {
         if (project) this.newChat(project.key).catch(this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}'));
       }),
       client.onUsageThreshold((crossing) => this.notificationCenter.usageThreshold(crossing)),
+      client.onRelocationsChanged(() => this.relocationsChanged(authority)),
       this.requireScmClient().attach(client),
       {
         dispose: () => {
@@ -5277,24 +6159,25 @@ class DesktopApp {
   // The chats this window had open on the authority: rejoined under the epoch they were open in, else restored into new
   // panels that resume their sessions, with the permissions the ended core published for them.
   private async openRemoteChats(core: RemoteHostedCore, rejoin: boolean, kept: ReadonlyMap<string, ChatPermissions>): Promise<void> {
-    const views = this.requireViews();
+    // a chat of a project whose folder is gone stays closed, as a local one does, so its core never starts it there
+    await this.remotePresences.check(this.checkedRemoteProjects(core.authority)).catch(this.report('Checking the remote project folders'));
+    // before the chats reopen: a host part cut short re-keyed them to a destination the list does not name yet
+    const moved = await this.remoteMovesFrom(core.authority, core.client).catch((err: unknown) => {
+      this.report('Looking for moved projects')(err);
+      return [];
+    });
+    for (const view of moved) if (view.state === 'coreDone') this.movedProjects.set(this.relocationKey(core.authority, view.to), this.relocationKey(core.authority, view.from));
+    const projects = { known: (key: string) => this.projectListed(key) || this.movedFrom(key) !== undefined, absent: (key: string) => this.remotePresences.absent(key) };
+    for (const [panelToken, skipped] of [...this.skippedRemoteChats]) if (skipped.authority === core.authority) this.skippedRemoteChats.delete(panelToken);
     for (const record of this.requireRemoteState().chats(core.authority)) {
       if (this.remoteChatViews(core.authority).some((view) => view.panelToken === record.panelToken)) continue;
-      const host = views.create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}), panelToken: record.panelToken } }, authority: core.authority });
-      this.trackChat(host, this.defaultProjectKey(core));
-      this.lastViewed.set(host, ++this.viewCount);
-      if (this.reselectRemote.get(core.authority) === record.panelToken && !this.views?.selected()) this.showChat(host, { focus: 'whenReady' });
-      const permissions = kept.get(record.panelToken);
-      const restore = (async () => {
-        if (!rejoin) {
-          await core.client.restoreChat(host, undefined, permissions);
-          return;
-        }
-        if (await core.rejoin(host, record.panelToken, record.sessionId)) return;
-        if (!host.isDisposed) await core.client.restoreRelayed(host.panelId, permissions);
-      })();
-      this.chatRestores.set(host, restore);
-      await restore.catch(this.report('Reopening a remote chat'));
+      const fate = keptChatFate(record.projectKey, projects);
+      if (fate === 'dropped') continue;
+      if (fate === 'closed') {
+        this.skippedRemoteChats.set(record.panelToken, { ...record, projectKey: record.projectKey! });
+        continue;
+      }
+      await this.openRemoteChat(core, record, rejoin, kept.get(record.panelToken)).catch(this.report('Reopening a remote chat'));
     }
     this.reselectRemote.delete(core.authority);
     this.reopenedRemoteChats.add(core.authority);
@@ -5304,21 +6187,59 @@ class DesktopApp {
     await this.remoteSelection.coreOpened(core).catch(this.report('Opening the selected project\'s chat'));
   }
 
-  // remote-state.json's chats for the authority: each open chat with a conversation or held messages, under the epoch they are
-  // open in. A quit, disconnect or engine restart closes them with their records kept.
+  // One kept chat into a new panel: rejoined under the epoch it was open in, else restored, resuming its session.
+  private openRemoteChat(core: RemoteHostedCore, record: RemoteChatRecord, rejoin: boolean, permissions: ChatPermissions | undefined): Promise<void> {
+    const host = this.requireViews().create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}), panelToken: record.panelToken } }, authority: core.authority });
+    this.trackChat(host, this.defaultProjectKey(core));
+    this.lastViewed.set(host, ++this.viewCount);
+    if (this.reselectRemote.get(core.authority) === record.panelToken && !this.views?.selected()) this.showChat(host, { focus: 'whenReady' });
+    const restore = (async () => {
+      if (!rejoin) {
+        await core.client.restoreChat(host, undefined, permissions);
+        return;
+      }
+      if (await core.rejoin(host, record.panelToken, record.sessionId)) return;
+      if (!host.isDisposed) await core.client.restoreRelayed(host.panelId, permissions);
+    })();
+    this.chatRestores.set(host, restore);
+    return restore;
+  }
+
+  // The skipped chats of a remote project whose folder is back, or that moved (saved under its new key by then), open again.
+  private reopenSkippedRemoteChats(projectKey: string): void {
+    const authority = authorityKeyOfProject(projectKey);
+    const core = this.remoteCores.get(authority)?.host.current();
+    const reopening = [...this.skippedRemoteChats.values()].filter((skipped) => skipped.projectKey === projectKey);
+    if (!core || reopening.length === 0) return;
+    let previous: Promise<void> = Promise.resolve();
+    for (const record of reopening) {
+      this.skippedRemoteChats.delete(record.panelToken);
+      previous = previous.then(() => this.openRemoteChat(core, record, false, undefined)).catch(this.report('Reopening a remote chat'));
+    }
+    void previous.then(() => {
+      this.saveRemoteChats(authority);
+      this.scheduleRetention();
+    });
+  }
+
+  // remote-state.json's chats for the authority: each open chat with a conversation or held messages, and each skipped one,
+  // under the epoch they are open in. A quit, disconnect or engine restart closes them with their records kept.
   private saveRemoteChats(authority: string): void {
     const views = this.views;
     const state = this.remoteState;
     const remote = this.remoteCores.get(authority);
     if (!views || !state || !remote || !this.reopenedRemoteChats.has(authority) || views.retainingAuthority(authority)) return;
-    const records: RemoteChatRecord[] = this.remoteChatViews(authority).flatMap((view) => {
+    const open: RemoteChatRecord[] = this.remoteChatViews(authority).flatMap((view) => {
       const sessionId = this.sessionIdOf(view);
       const panelToken = view.panelToken;
       if (panelToken === undefined) return [];
-      if (sessionId !== undefined) return [{ authority, sessionId, panelToken }];
+      const projectKey = this.projectOf(view);
+      const project = projectKey !== undefined ? { projectKey } : {};
+      if (sessionId !== undefined) return [{ authority, sessionId, panelToken, ...project }];
       // a new chat that has no conversation yet reopens new, with the messages it holds
-      return (this.offlineQueue?.queued(panelToken).length ?? 0) > 0 ? [{ authority, panelToken }] : [];
+      return (this.offlineQueue?.queued(panelToken).length ?? 0) > 0 ? [{ authority, panelToken, ...project }] : [];
     });
+    const records = [...open, ...[...this.skippedRemoteChats.values()].filter((skipped) => skipped.authority === authority)];
     const text = JSON.stringify([records, remote.epoch()]);
     if (this.savedRemoteChats.get(authority) === text) return;
     this.savedRemoteChats.set(authority, text);
@@ -5537,7 +6458,7 @@ class DesktopApp {
           policy: () => this.clientNetworkPolicy(authority),
           served: {
             grant: (served) => this.servedRoots.grant({ authority, ...served }),
-            mappings: () => this.servedRoots.mappings(authority),
+            mappings: (viewId) => this.servedRoots.mappings(authority, viewId),
           },
           run: (params, abort) => this.core.run('Browser tool', (core) => core.client.browserTool(params, abort)),
         }, request, signal),
@@ -5590,27 +6511,29 @@ class DesktopApp {
     };
   }
 
-  // The authority's trust as its core reads it: the host store's grants for its projects, which a grant there extends.
+  // The authority's trust as its core reads it: the host store's grants for its projects and for the new folder of each move
+  // of its core, from this run's relocate request on, so the move's repair step reads the trust Locate asked for.
   private remoteHostTrust(authority: string): HostTrust {
-    const store = this.requireHostStore();
-    const trusted = (): RemoteProject[] => this.remoteProjects().filter((project) => project.authorityKey === authority && store.isTrusted(authority, project.folderKey));
-    return {
-      trustedKeys: () => trusted().map((project) => project.folderKey),
-      onDidGrant: (listener) => {
-        let before = new Set(trusted().map((project) => project.folderKey));
-        return store.onDidChange(() => {
-          const now = trusted();
-          const granted = now.filter((project) => !before.has(project.folderKey));
-          before = new Set(now.map((project) => project.folderKey));
-          if (granted.length > 0) listener(granted.map((project) => project.fsPath));
-        });
-      },
+    const ofAuthority = (key: string): boolean => authorityKeyOfProject(key) === authority;
+    const moved = (fsPath: string): HostTrustFolder => ({ folderKey: folderKeyOn(this.authorityOs(authority), fsPath), fsPath });
+    return remoteHostTrust({
+      authorityKey: authority,
+      store: this.requireHostStore(),
+      folders: () => [
+        ...this.remoteProjects().filter((project) => project.authorityKey === authority),
+        ...(this.clientFor(authority)?.relocations() ?? []).map((view) => moved(view.to)),
+        ...[...this.locatePrepared.values()].filter((prepared) => ofAuthority(prepared.key)).map((prepared) => moved(prepared.to)),
+        ...[...this.locateTargets].filter(([key]) => ofAuthority(key)).map(([, to]) => moved(to)),
+      ],
+      onDidChangeFolders: (listener) => this.relocationTargetsChanged.add((changed) => {
+        if (changed === authority) listener();
+      }),
       // only a project of this authority, named by its exact path on the target, is ever asked about
       requestTrust: async (folderPath) => {
         const project = this.remoteProjects().find((candidate) => candidate.authorityKey === authority && candidate.fsPath === folderPath);
         return project ? this.requireRemoteTrust().request(this.remoteTrustTarget(project)) : false;
       },
-    };
+    });
   }
 
   // Each remote host's engine for the title bar: restarting while a Restart the user asked for is in flight, halted while the
@@ -6362,8 +7285,8 @@ class DesktopApp {
   // The project root a chat view of the authority works in, as main lists it: its project folder, or its live chat worktree;
   // never the default target or a path its core names.
   private servedProjectOf(authority: string, viewId: string): Project | undefined {
-    const panel = this.views?.panel(viewId);
-    if (!panel || panel.kind !== 'chat' || panel.isDisposed || panel.authority !== authority || !this.views?.chats().includes(panel)) return undefined;
+    const panel = this.chatViewOf(authority, viewId);
+    if (!panel) return undefined;
     const folder = this.clientOf(panel)?.chatOfView(panel.panelId)?.folder;
     if (!folder) return undefined;
     if (folder.ownerKey === undefined) return this.roots.projectRoots().find((root) => root.key === folder.key);
@@ -6371,10 +7294,16 @@ class DesktopApp {
     return event?.worktreeId !== undefined && event.state.place === 'worktree' ? this.roots.ofWorktree(event.worktreeId, authority) : undefined;
   }
 
+  // a live chat view of the authority that main shows
+  private chatViewOf(authority: string, viewId: string): DesktopPanel | undefined {
+    const panel = this.views?.panel(viewId);
+    return panel && panel.kind === 'chat' && !panel.isDisposed && panel.authority === authority && this.views?.chats().includes(panel) ? panel : undefined;
+  }
+
   // browser.servedFileUrl of the local core: a root file of one of its chat views, on that root's served origin.
   private async servedFile(request: CoreRequests['browser.servedFileUrl']['params']): Promise<CoreRequests['browser.servedFileUrl']['result']> {
-    const root = request.kind === 'project' ? { kind: 'project' as const } : { kind: 'design' as const, designId: request.designId };
-    const refusal = servedPathRefusal(root, request.relPath);
+    const root = request.kind === 'project' ? { kind: 'project' as const } : request.kind === 'design' ? { kind: 'design' as const, designId: request.designId } : { kind: 'folder' as const, folder: request.folder };
+    const refusal = servedPathRefusal(root.kind === 'folder' ? { kind: 'folder' } : root, request.relPath);
     if (refusal !== undefined) return { refused: refusal };
     const grant = await this.servedRoots.grant({ authority: 'local', root, viewId: request.viewId });
     return 'refused' in grant ? grant : { url: grant.open(request.relPath), origin: grant.origin };
@@ -6411,7 +7340,7 @@ class DesktopApp {
   private async remotePageAddress(chat: DesktopPanel, url: string): Promise<string | undefined> {
     let verdict: Awaited<ReturnType<typeof typedRemoteAddress>>;
     try {
-      verdict = await typedRemoteAddress(url, chat.authority, this.requirePorts().forwarding.forwardingFor(this.hostIdOf(chat.authority)), () => this.clientNetworkPolicy(chat.authority), this.servedRoots.servedPorts(chat.authority));
+      verdict = await typedRemoteAddress(url, chat.authority, this.requirePorts().forwarding.forwardingFor(this.hostIdOf(chat.authority)), () => this.clientNetworkPolicy(chat.authority), this.servedRoots.viewOrigins(chat.authority, chat.panelId));
     } catch (err) {
       // a forward the address needs and cannot have is told, never a typed address that does nothing
       log(`[browser] ${chat.authority}: a typed address could not be forwarded — ${err instanceof Error ? err.message : String(err)}`);
@@ -6894,6 +7823,7 @@ class DesktopApp {
     this.documents?.connectionsChanged();
     this.htmlPreviews?.connectionsChanged();
     this.devcontainerConfigs.refresh(this.remoteProjects().filter((project) => project.authorityKey === authorityKey).map((project) => project.key));
+    this.remotePresences.check(this.checkedRemoteProjects(authorityKey)).catch(this.report('Checking the remote project folders'));
     this.refreshScmRoots();
     this.reconnector?.stateChanged(authorityKey);
     // after the loop took the state, so a drop it reconnects never reads as offline
@@ -6916,10 +7846,39 @@ class DesktopApp {
   }
 
   // A folder of a connected authority joins the project list, asks the trust question as any new project does and is selected;
-  // a folder that is a project already is selected. Resolves the project's key.
+  // a folder that is a project already is selected. A missing project of the host whose chats the folder may take over is
+  // offered first, as Add Project offers a local one, and Move Chats runs Locate onto the folder. Resolves the project's key.
   private async addRemoteProject(authorityKey: string, folder: string): Promise<string> {
     this.requireConnection(authorityKey);
-    return (await openFolderAsProject(this.projectOpening(), authorityKey, folder)).projectKey;
+    const chosen = await this.remoteMissingProjectOf(authorityKey, folder);
+    const opening = this.projectOpening();
+    const { projectKey } = await openFolderAsProject(chosen ? { ...opening, select: async () => undefined } : opening, authorityKey, folder);
+    // a move that started selects the moved chat once it is done
+    if (chosen && (await this.locateProject(chosen.key, folder)).kind !== 'started') await this.selectProject(projectKey);
+    return projectKey;
+  }
+
+  // The host core's projects.movedFrom for the folder, among the host's listed projects, and the user's answer whether one's
+  // chats move here; a daemon that does not move folders, or a failed lookup, offers none.
+  private async remoteMissingProjectOf(authorityKey: string, folder: string): Promise<MissingProject | undefined> {
+    const client = this.clientFor(authorityKey);
+    if (!client?.relocates) return undefined;
+    const candidates = await client.movedFrom(folder).catch((err: unknown) => {
+      log(`[projects] looking for missing projects of ${folder} on ${authorityKey} failed: ${errorText(err)}`);
+      return [];
+    });
+    const missing = candidates.flatMap((candidate): MissingProject[] => {
+      const key = this.relocationKey(authorityKey, candidate.from);
+      const project = this.remoteProject(key);
+      return project ? [{ key, name: project.name, fsPath: project.fsPath, chats: candidate.chats }] : [];
+    });
+    if (missing.length === 0) return undefined;
+    const { t } = this.requireLocalization();
+    return askToMove(folder, missing, {
+      confirm: (question) => this.askLocateConfirm(question),
+      pick: (placeholder, items) => this.pickMissingProject(placeholder, items),
+      t: (message, ...args) => t(message, ...args),
+    });
   }
 
   // Show log for the loopback host: the end of its daemon.log through control logs.read, as inert read-only text.
@@ -7643,6 +8602,17 @@ class DesktopApp {
     return authority === 'local' ? this.worktreeRecords : this.remoteWorktreeRecords.get(authority);
   }
 
+  // A host's open projects decide which of its records its registry keeps, so a project that joins (a relocated one's new
+  // folder) takes the records its core published before; judged again only when that host's project paths changed.
+  private recheckRemoteWorktreeRecords(): void {
+    for (const [authority, records] of this.remoteWorktreeRecords) {
+      const paths = JSON.stringify(this.remoteProjects().filter((project) => project.authorityKey === authority).map((project) => project.fsPath));
+      if (this.remoteRecordPaths.get(authority) === paths) continue;
+      this.remoteRecordPaths.set(authority, paths);
+      records.recheck();
+    }
+  }
+
   // A remote host's registry keeps only chat records of its open projects (records.ts remoteChatRecord).
   private remoteRecordsOf(authority: string): WorktreeRecords {
     const known = this.remoteWorktreeRecords.get(authority);
@@ -7743,6 +8713,8 @@ class DesktopApp {
       this.servedRoots.trustChanged();
       for (const key of changed.removed) this.quickOpenIndex?.invalidate(key);
     }
+    // a registry read for the first time decides the saved tabs that waited on it, whether or not a root joined
+    this.editorPane?.registriesChanged().catch(this.report('Restoring the tabs of chat worktrees'));
     this.shownFolders.refresh();
     this.refreshScmRoots();
     this.chatsChanged();
@@ -8464,6 +9436,8 @@ class DesktopApp {
       const worktreeOf = this.adoptedProjectName(key);
       const wsl = process.platform === 'win32' ? wslUncToLinux(folder.fsPath) : undefined;
       const devcontainerConfig = this.devcontainerConfigs.get(key);
+      const presence = this.presences.of(key);
+      const relocation = this.relocationOf(key);
       return {
         key,
         name: client?.resolve(key)?.label ?? folder.name,
@@ -8480,11 +9454,15 @@ class DesktopApp {
         ...(wsl ? { wsl } : {}),
         ...(wsl && this.hostStore?.isWslNoticeDismissed(key) ? { wslNoticeDismissed: true as const } : {}),
         ...(devcontainerConfig !== undefined ? { devcontainerConfig } : {}),
+        ...(presence !== 'present' ? { presence } : {}),
+        ...(relocation ? { relocation } : {}),
       };
     });
     const remote = this.remoteProjects().map((project): ShellProject => {
       const branch = this.clientFor(project.authorityKey)?.branchOf(project.key);
       const devcontainerConfig = this.devcontainerConfigs.get(project.key);
+      const presence = this.presenceOf(project.key);
+      const relocation = this.relocationOf(project.key);
       return {
         key: project.key,
         name: project.name,
@@ -8499,12 +9477,15 @@ class DesktopApp {
         running: counts.get(project.key)?.running ?? 0,
         waiting: counts.get(project.key)?.waiting ?? 0,
         ...(devcontainerConfig !== undefined ? { devcontainerConfig } : {}),
+        ...(presence !== 'present' ? { presence } : {}),
+        ...(relocation ? { relocation } : {}),
+        ...(presence !== 'present' && !this.relocatesOn(project.authorityKey) ? { locateUnsupported: true as const } : {}),
       };
     });
     const byKey = new Map([...local, ...remote].map((project) => [project.key, project]));
     const projects = (this.hostStore?.order([...byKey.keys()]) ?? [...byKey.keys()]).map((key) => byKey.get(key)!);
     const shownChat = views.selected();
-    const selected = chatOfSelectedProject(this.selectedProjectKey, shownChat);
+    const selected = this.selectedProjectChat(shownChat);
     const selectedId = selected ? this.chatIdOf(selected) : undefined;
     const selectedTitle = selected ? this.titleOf(selected) : undefined;
     const selectedDesign = selected ? this.designOf(selected) : undefined;
@@ -8626,11 +9607,11 @@ class DesktopApp {
   // A remote project is selected whose core has not opened a chat yet, while the chat view keeps another authority's chat.
   private chatElsewhereSelected(): boolean {
     const selected = this.views?.selected();
-    return selected !== undefined && chatOfSelectedProject(this.selectedProjectKey, selected) === undefined;
+    return selected !== undefined && this.selectedProjectChat(selected) === undefined;
   }
 
   private chatWithheld(chat: DesktopPanel): boolean {
-    return keptChatWithheld(this.selectedProjectKey, chat, (authority) => this.hostAttentionOf(authority));
+    return this.keptBesideAbsentProject(chat) || keptChatWithheld(this.selectedProjectKey, chat, (authority) => this.hostAttentionOf(authority));
   }
 
   private viewsChanged(): void {
@@ -8645,7 +9626,7 @@ class DesktopApp {
   private updateWindowTitle(): void {
     const selected = this.views?.selected();
     if (!selected || !this.window || this.window.isDestroyed()) return;
-    const shown = chatOfSelectedProject(this.selectedProjectKey, selected);
+    const shown = this.selectedProjectChat(selected);
     const title = shown ? this.titleOf(shown) : '';
     this.window.setTitle(title ? `${title} - Damocles` : 'Damocles');
   }
@@ -8693,6 +9674,7 @@ class DesktopApp {
       ...this.selectedWorktreeMenuState(),
       remoteHostConnected: this.selectedProjectKey !== undefined && this.remoteProject(this.selectedProjectKey) !== undefined && this.authorities?.connection(authorityKeyOfProject(this.selectedProjectKey)) !== undefined,
       remoteHostSaved: (this.hostStore?.hosts().length ?? 0) > 0,
+      locatableProject: this.locatable(this.selectedProjectKey),
     };
   }
 
@@ -8858,6 +9840,10 @@ class DesktopApp {
         if (selected && worktreeId !== undefined) this.worktreesOf(selected.authority).finish(worktreeId, action).catch(report('Worktree'));
       },
       addProject: () => { this.addProject().catch(report('Add Project')); },
+      locateProject: () => {
+        const key = this.selectedProjectKey;
+        if (key !== undefined) void this.locateProject(key);
+      },
       newChat: () => { this.newChat(undefined).catch(report('New Chat')); },
       newChatInWorktree: (target) => { this.newChatInWorktree(target).catch(this.newChatInWorktreeFailure()); },
       openChat: () => { this.core.run('Open Chat', (core) => core.client.openChat()).catch(report('Open Chat')); },
@@ -9051,12 +10037,13 @@ class DesktopApp {
     return listHostRuns(authorities.connectedKeys().flatMap((authorityKey) => {
       const connection = authorities.connection(authorityKey);
       if (!connection) return [];
+      // a daemon that cannot tell this device's runs apart answers the frozen listRuns, every device's runs
+      const own = connection.features.includes(LIST_OWN_RUNS_FEATURE);
       return [{
         hostId: this.hostIdOf(authorityKey),
         authorityKey,
+        reportsConfigured: own && connection.features.includes(CONFIGURED_PROVIDERS_FEATURE),
         list: async () => {
-          // a daemon that cannot tell this device's runs apart answers the frozen listRuns, every device's runs
-          const own = connection.features.includes(LIST_OWN_RUNS_FEATURE);
           if (!own) log(`[close] ${authorityKey} cannot tell this device's runs apart; asking about every run it lists`);
           return (own ? await connection.control.request('listOwnRuns', {}) : await connection.control.request('listRuns', {})).runs;
         },
@@ -9072,7 +10059,7 @@ class DesktopApp {
   }
 
   // A run's row: its chat's title, its project and host as this computer names them, its status from the chat's activity.
-  private closeRemoteRow(host: HostRuns, run: Run): CloseRemoteRow {
+  private closeRemoteRow(host: HostRuns, run: Run): Omit<CloseRemoteRow, 'keyProviders'> {
     const project = this.remoteProjects().find((candidate) => candidate.authorityKey === host.authorityKey && candidate.folderKey === run.projectKey);
     const activity = this.activity.get(chatKey(host.authorityKey, run.id));
     const sessionId = this.clientFor(host.authorityKey)?.chat(run.id)?.sessionId;

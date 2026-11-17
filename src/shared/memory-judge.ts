@@ -11,13 +11,15 @@ export function injectRerankBlocking(value: unknown): boolean {
 }
 
 /**
- * The classifier choices of `damocles.memory.judge`, in Automatic's order. Each value must differ from every
- * `DEFAULT_MODELS` value, which shares the setting's enum (`gpt-6-luna` is the chat model).
+ * The classifier choices of `damocles.memory.judge`, Automatic's (`CLASSIFIER_MODELS`) first and in its order, then those
+ * only ever chosen. Each value must differ from every `DEFAULT_MODELS` value, which shares the setting's enum
+ * (`gpt-6-luna` is the chat model).
  */
 export const MEMORY_JUDGE_CLASSIFIERS: readonly { choice: string; provider: ClassifierProvider }[] = [
   { choice: 'jev-typesafe', provider: 'typesafe' },
   { choice: 'jev-openrouter', provider: 'openrouter' },
   { choice: 'gpt-6-luna-classifier', provider: 'openai' },
+  { choice: 'decision-1-copilot', provider: 'github-copilot' },
 ];
 
 /** The classifier provider a `damocles.memory.judge` value forces, or undefined for Automatic or a model. */

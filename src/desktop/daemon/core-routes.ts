@@ -151,15 +151,15 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'user.credentials': { to: 'pinnedClient' },
   'user.voice.speak': { to: 'viewClient', noClient: nothing },
   // core refuses a browser tool itself while no client is attached; one that detached meanwhile fails here
-  // a call with served goes only to a client that serves root files; core reads CLIENT_FEATURE_MISSING as an app to update,
-  // so only a viewer that lacks the feature gets it
+  // a call with served goes only to a client that serves root files, and one with a granted folder's file only to a client that
+  // serves those; core reads CLIENT_FEATURE_MISSING as an app to update, so only a viewer that lacks the feature gets it
   'user.browser.tool': {
     to: 'viewClient',
     noClient: (params, { viewerLacksNeeds }) => {
       if (params.served !== undefined && viewerLacksNeeds) throw new Error(CLIENT_FEATURE_MISSING);
       return noClientFor('run a browser tool')();
     },
-    needs: (params) => (params.served === undefined ? undefined : 'user.browser.servedFiles'),
+    needs: (params) => (params.served === undefined ? undefined : params.served.kind === 'folder' ? 'user.browser.servedFolders' : 'user.browser.servedFiles'),
   },
   // a daemon's core relays its browser calls (user.browser.tool), so main serves root files to this computer's core only
   'browser.servedFileUrl': { to: 'refused' },
@@ -191,6 +191,8 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'design.journey': { to: 'workClient', noClient: noJourneyClient('design.journey'), needs: journeyNeeds('design.journey') },
   // a replay drives the chat's own preview tab, so only a client showing the chat runs it
   'design.replayJourney': { to: 'chatClient', noClient: noJourneyClient('design.replayJourney'), needs: journeyNeeds('design.replayJourney') },
+  // the Locate… click's device alone runs the folder picker; an app whose attach did not list the feature is never asked
+  'window.locateProjectFolder': { to: 'client', noClient: nothing, needs: 'projects.relocate' },
 };
 
 // actingClient: as a client request route, an event held past its expiry dropped and logged; registry: the daemon's own (the
@@ -217,6 +219,7 @@ export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute
   'worktrees.newChatInProject': 'actingClient',
   // the run registry's only
   'chat.providers': 'registry',
+  'chat.configuredProviders': 'registry',
   // this computer's core only
   'panel.foreignPost': 'dropped',
   'user.clientAuthChanged': 'dropped',
@@ -230,8 +233,11 @@ export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute
 };
 
 // each attach gets a snapshot as deltas from version 1, then live deltas; chats only of the panels that client views;
-// dropped: a topic only this computer's core publishes, which no client gets from a daemon
-export const CORE_MIRROR_ROUTES: Readonly<Record<keyof CoreMirrorTopics, 'materialized' | 'dropped'>> = {
+// dropped: a topic only this computer's core publishes, which no client gets from a daemon; needs: only a client whose attach
+// listed that name of FEATURES gets the topic, as a request route's needs
+export type CoreMirrorRoute = 'materialized' | 'dropped' | { readonly to: 'materialized'; readonly needs: string };
+
+export const CORE_MIRROR_ROUTES: Readonly<Record<keyof CoreMirrorTopics, CoreMirrorRoute>> = {
   chats: 'materialized',
   folderTargets: 'materialized',
   worktrees: 'materialized',
@@ -240,6 +246,12 @@ export const CORE_MIRROR_ROUTES: Readonly<Record<keyof CoreMirrorTopics, 'materi
   // a daemon's core keeps no Git hosting accounts
   forge: 'dropped',
   forgeAuthorAvatars: 'dropped',
+  relocations: { to: 'materialized', needs: 'projects.relocate' },
+};
+
+const mirrorNeeds = (topic: keyof CoreMirrorTopics): string | undefined => {
+  const route = CORE_MIRROR_ROUTES[topic];
+  return typeof route === 'object' ? route.needs : undefined;
 };
 
 export const CORE_PANEL_OP_ROUTES: Readonly<Record<keyof CorePanelOps, 'actingClient' | 'views'>> = {
@@ -321,6 +333,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   // core reads only a design a chat of its own holds, and only below that design's folder
   'design.read': 'core',
   'design.info': 'core',
+  'design.previewAnswer': 'core',
   // the remote core writes the markup into its own design folder, on its own machine
   'design.markup': 'core',
   'design.tweak': 'core',
@@ -329,6 +342,17 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'scm.generateMessage': 'core',
   'scm.repo': 'core',
   'worktrees.call': 'core',
+  // the daemon's core moves its own projects' chats; main sends these only to a daemon that lists projects.relocate
+  'projects.relocationPreflight': 'core',
+  'projects.relocate': 'core',
+  'projects.relocationRetry': 'core',
+  // main sends it only to a daemon that lists projects.relocationAbandon
+  'projects.relocationAbandon': 'core',
+  'projects.relocationsFrom': 'core',
+  'projects.applyHostState': 'core',
+  'projects.movedFrom': 'core',
+  // this computer's relocation journal, which only its own core writes
+  'projects.addHostAlias': 'refused',
   'e2e.inputBox': 'e2e',
   'e2e.routeBrowser': 'e2e',
   'e2e.routedRequests': 'e2e',
@@ -341,6 +365,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'e2e.fakeVoice': 'e2e',
   'e2e.voiceRecorder': 'e2e',
   'e2e.stubOAuth': 'e2e',
+  'e2e.relocationPauseAfter': 'e2e',
   'e2e.clientNetworkAnswers': 'e2e',
   // served by the client's own core
   'user.resolveCredential': 'refused',
@@ -367,6 +392,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'forge.setHostDefault': 'refused',
   'forge.prepareGitOperation': 'refused',
   'forge.forgetProject': 'refused',
+  'forge.relocateProject': 'refused',
   'forge.forgetHost': 'refused',
   'forge.keepHosts': 'refused',
   'forge.gitCredential': 'refused',
@@ -415,10 +441,11 @@ export const MAIN_EVENT_ROUTES: Readonly<Record<keyof MainEvents, 'core' | 'host
 };
 
 /**
- * union: every client's grants for the daemon's life; folders: the attached clients' projects, a busy one kept; panel: per
- * panel, by the client's view; perClient: keyed by the sending client's id (editor, terminal and language as clientEditor,
- * clientTerminal and clientLanguage), dropped when it detaches; daemonOwned: the daemon publishes it, a client's delta is
- * dropped (state: core's key-value state is the daemon's own).
+ * union: the union of each client's latest set, which a client's own patch replaces and which outlives its detach;
+ * folders: the attached clients' projects, a busy one kept; panel: per panel, by the client's view; perClient: keyed by the
+ * sending client's id (editor, terminal and language as clientEditor, clientTerminal and clientLanguage), dropped when it
+ * detaches; daemonOwned: the daemon publishes it, a client's delta is dropped (state: core's key-value state is the daemon's
+ * own).
  */
 export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 'folders' | 'panel' | 'perClient' | 'daemonOwned'>> = {
   state: 'daemonOwned',
@@ -450,7 +477,10 @@ export const MAIN_PANEL_OP_ROUTES: Readonly<Record<keyof MainPanelOps, 'core' | 
 
 /** What the daemon takes from its clients for core, kept across core restarts for the daemon's life. */
 export interface ClientMirrors {
+  // the union core reads, of clientTrust
   readonly trust: Set<string>;
+  // by client id, each client's trusted folder keys as its latest patch or attach named them, kept after it detaches
+  readonly clientTrust: Map<string, readonly string[]>;
   // each attached client's folders; the set core sees is in `folders`
   readonly clientFolders: Map<string, readonly OpenFolder[]>;
   folders: readonly OpenFolder[];
@@ -469,6 +499,7 @@ export interface ClientMirrors {
 export function createClientMirrors(): ClientMirrors {
   return {
     trust: new Set(),
+    clientTrust: new Map(),
     clientFolders: new Map(),
     folders: [],
     clientAuth: new Map(),
@@ -608,6 +639,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   let folderTargets: CoreMirrorTopics['folderTargets'] | undefined;
   let worktrees: CoreMirrorTopics['worktrees'] | undefined;
   let heldMemory: CoreMirrorTopics['heldMemory'] | undefined;
+  let relocations: CoreMirrorTopics['relocations'] | undefined;
   const scmViews = new Map<string, ScmPatch>();
   const scmRepositories = new Map<string, ScmPatch>();
   const scmStates = new Map<string, ScmPatch>();
@@ -1008,6 +1040,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     }),
     core.onEvent('chat.turnSettled', ({ panelId }) => deps.registry.panelSettled(panelId)),
     core.onEvent('chat.providers', ({ panelId, providers }) => deps.registry.panelProviders(panelId, providers)),
+    core.onEvent('chat.configuredProviders', ({ panelId, providers }) => deps.registry.panelConfiguredProviders(panelId, providers)),
     core.onEvent('ports.urlSeen', (hit) => deps.agentShellUrl(hit)),
   );
 
@@ -1061,6 +1094,11 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     core.onMirror('heldMemory', (patch) => {
       heldMemory = patch;
       for (const session of sessions.values()) deliver(session, (endpoint) => endpoint.publish('heldMemory', patch));
+    }),
+    // whole on every change, so the latest is the snapshot
+    core.onMirror('relocations', (patch) => {
+      relocations = patch;
+      for (const session of sessions.values()) if (capable(session, mirrorNeeds('relocations'))) deliver(session, (endpoint) => endpoint.publish('relocations', patch));
     }),
     core.onMirror('scm', (patch) => {
       scmMaps(patch);
@@ -1155,6 +1193,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     if (folderTargets) endpoint.publish('folderTargets', folderTargets);
     if (worktrees) endpoint.publish('worktrees', worktrees);
     if (heldMemory) endpoint.publish('heldMemory', heldMemory);
+    if (relocations && capable(session, mirrorNeeds('relocations'))) endpoint.publish('relocations', relocations);
     for (const panelId of chats.keys()) publishChat(session, panelId);
     for (const payload of activities.values()) endpoint.emit('chat.activity', payload);
     for (const map of [scmViews, scmRepositories, scmStates, scmDecorations]) for (const patch of map.values()) endpoint.publish('scm', patch);
@@ -1180,17 +1219,18 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       .catch((err: unknown) => log(`[core-host] the folder set was not updated: ${err instanceof Error ? err.message : String(err)}`));
   };
 
-  const grantTrust = (keysGranted: readonly string[], granted: readonly string[]): void => {
-    const before = deps.mirrors.trust.size;
-    for (const key of keysGranted) {
-      // core refuses a mirror past MAX_ITEMS, and its init carries the same set
-      if (deps.mirrors.trust.size >= MAX_ITEMS && !deps.mirrors.trust.has(key)) {
-        log(`[core-host] refused a trust grant past the ${MAX_ITEMS}-folder limit`);
-        break;
-      }
-      deps.mirrors.trust.add(key);
-    }
-    if (deps.mirrors.trust.size !== before || granted.length > 0) core.publish('trust', { keys: [...deps.mirrors.trust], granted });
+  // a key leaves core's set only once no client's set holds it, a detached client's included
+  const setClientTrust = (clientId: string, keys: readonly string[], granted: readonly string[]): void => {
+    deps.mirrors.clientTrust.set(clientId, keys);
+    const held = new Set([...deps.mirrors.clientTrust.values()].flat());
+    const union = [...[...deps.mirrors.trust].filter((key) => held.has(key)), ...[...held].filter((key) => !deps.mirrors.trust.has(key))];
+    // core refuses a mirror past MAX_ITEMS, and its init carries the same set; the keys core holds already keep their place
+    if (union.length > MAX_ITEMS) log(`[core-host] refused ${union.length - MAX_ITEMS} trusted folders past the ${MAX_ITEMS}-folder limit`);
+    const keysNow = union.slice(0, MAX_ITEMS);
+    const changed = keysNow.length !== deps.mirrors.trust.size || keysNow.some((key) => !deps.mirrors.trust.has(key));
+    deps.mirrors.trust.clear();
+    for (const key of keysNow) deps.mirrors.trust.add(key);
+    if (changed || granted.length > 0) core.publish('trust', { keys: keysNow, granted });
   };
 
   const serveClient = (session: Session): void => {
@@ -1325,8 +1365,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       session.disposables.push(endpoint.onMirror(topic, touch((patch: unknown) => {
         switch (topic) {
           case 'trust': {
-            const { keys: granted, granted: folders } = patch as MirrorTopics['trust'];
-            grantTrust(granted, folders);
+            const { keys, granted } = patch as MirrorTopics['trust'];
+            setClientTrust(client.clientId, keys, granted);
             return;
           }
           case 'folders':
@@ -1469,7 +1509,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       }));
       publishActing();
       serveClient(session);
-      grantTrust(client.mirrors.trust.keys, []);
+      setClientTrust(client.clientId, client.mirrors.trust.keys, []);
       deps.mirrors.clientFolders.set(client.clientId, client.mirrors.folders.folders);
       publishFolders();
       // a snapshot the wire refuses detaches a session already whole; what its work held follows the snapshot

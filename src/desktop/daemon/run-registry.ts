@@ -3,7 +3,7 @@
 // chat.turnSettled, which core derives from the session's RunLifecycle.
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import type { Disposable } from '../../platform/disposable';
-import { MAX_RUN_TITLE_CHARS, type Run } from './control-messages';
+import { MAX_RUN_TITLE_CHARS, type OwnRun, type Run } from './control-messages';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // setTimeout's largest delay; a later deadline is re-armed from there
@@ -31,6 +31,8 @@ export interface RunRegistry {
   panelSettled(panelId: string): void;
   // chat.providers: the providers the panel's runs read through the token broker
   panelProviders(panelId: string, providers: readonly string[]): void;
+  // chat.configuredProviders: the providers the panel's configuration names; the latest report replaces the previous one
+  panelConfiguredProviders(panelId: string, providers: readonly string[]): void;
   // the panel closed, or its core ended
   removePanel(panelId: string): void;
   hasPanelRun(panelId: string): boolean;
@@ -45,7 +47,7 @@ export interface RunRegistry {
   onIdle(listener: (id: string) => void): void;
   runs(): readonly Run[];
   // the chat runs the client started, so its close stops or keeps only its own
-  ownRuns(clientId: string): readonly Run[];
+  ownRuns(clientId: string): readonly OwnRun[];
   isEmpty(): boolean;
   onChange(listener: () => void): Disposable;
   dispose(): void;
@@ -70,6 +72,7 @@ export function createRunRegistry(now: () => number = Date.now): RunRegistry {
   const panels = new Map<string, { readonly run: PanelRun; activity: ChatActivity; readonly owner: string | undefined }>();
   // kept while the panel lives, whether or not it has a run now
   const providers = new Map<string, readonly string[]>();
+  const configured = new Map<string, readonly string[]>();
   const changed = new Set<() => void>();
   const idle = new Set<(id: string) => void>();
   let idleDays = 0;
@@ -129,8 +132,12 @@ export function createRunRegistry(now: () => number = Date.now): RunRegistry {
     panelProviders: (panelId, used) => {
       providers.set(panelId, used);
     },
+    panelConfiguredProviders: (panelId, named) => {
+      configured.set(panelId, named);
+    },
     removePanel: (panelId) => {
       providers.delete(panelId);
+      configured.delete(panelId);
       if (panels.delete(panelId)) fire();
     },
     hasPanelRun: (panelId) => panels.has(panelId),
@@ -162,7 +169,10 @@ export function createRunRegistry(now: () => number = Date.now): RunRegistry {
       ...[...panels.values()].map(panelRun),
       ...[...terminals.values()].map(({ run }): Run => ({ kind: 'terminal', id: run.id, projectKey: run.projectKey, title: title(run.title), state: 'running', providers: [] })),
     ],
-    ownRuns: (clientId) => [...panels.values()].filter((entry) => entry.owner === clientId).map(panelRun),
+    ownRuns: (clientId) => [...panels.values()].filter((entry) => entry.owner === clientId).map((entry): OwnRun => {
+      const named = configured.get(entry.run.panelId);
+      return named === undefined ? panelRun(entry) : { ...panelRun(entry), configuredProviders: named };
+    }),
     isEmpty: () => terminals.size === 0 && panels.size === 0,
     onChange: (listener) => {
       changed.add(listener);

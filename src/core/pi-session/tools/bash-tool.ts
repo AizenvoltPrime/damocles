@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
@@ -81,6 +82,61 @@ export async function waitForShellExit(shell: LaunchedProcess): Promise<ShellExi
   return exit;
 }
 
+/** The exit code a terminated shell reports: a signal-killed one has none, and pi's shell tool rejects a null one, so the shell convention stands in. */
+export function shellExitCode({ code, signal }: ShellExit): number {
+  return code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : 1);
+}
+
+/** A timed-out call's shell that exited before the deadline, so only its background processes' output held the call. */
+interface ShellExitBeforeTimeout {
+  exitCode: number;
+  afterSeconds: number;
+}
+
+const callShellExit = new AsyncLocalStorage<{ beforeTimeout?: ShellExitBeforeTimeout }>();
+
+/**
+ * Runs one shell tool call, ending its timeout error with pi's sentence (pi-coding-agent 1.5.2 `dist/core/tools/bash.js:303`)
+ * when its shell exited before the deadline. pi writes it only for its own backend's `ShellTimeoutError`, which it does not export.
+ */
+export async function withShellExitReport<T>(run: () => Promise<T>): Promise<T> {
+  const call: { beforeTimeout?: ShellExitBeforeTimeout } = {};
+  try {
+    return await callShellExit.run(call, run);
+  } catch (err) {
+    const exit = call.beforeTimeout;
+    if (exit !== undefined && err instanceof Error) {
+      err.message += `. The shell exited with code ${exit.exitCode} after ${exit.afterSeconds} seconds, but background processes it started kept writing output until the timeout.`;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Dates the shell's exit from the launcher's own exit event, so the path adds no timer and reads no process table.
+ * `timeoutError` gives the `timeout:<seconds>` error pi's shell tool matches on, recording the exit for `withShellExitReport`
+ * when the shell had exited when the deadline passed.
+ */
+export function shellExitClock(shell: LaunchedProcess): { atDeadline: () => void; timeoutError: (timeout: number | undefined, exit: ShellExit) => Error } {
+  const startedAt = performance.now();
+  let exitedAfterMs: number | undefined;
+  let exitedBeforeDeadlineAfterMs: number | undefined;
+  // Rejects only for a shell that never started, which `waitForShellExit` reports.
+  void shell.exited.then(() => (exitedAfterMs = performance.now() - startedAt), () => undefined);
+  return {
+    atDeadline: () => {
+      exitedBeforeDeadlineAfterMs = exitedAfterMs;
+    },
+    timeoutError: (timeout, exit) => {
+      const call = callShellExit.getStore();
+      if (call !== undefined && exitedBeforeDeadlineAfterMs !== undefined) {
+        call.beforeTimeout = { exitCode: shellExitCode(exit), afterSeconds: Math.round(exitedBeforeDeadlineAfterMs / 100) / 10 };
+      }
+      return new Error(`timeout:${timeout}`);
+    },
+  };
+}
+
 type ShellConfig = ReturnType<PiCodingAgentModule['getShellConfig']>;
 
 /**
@@ -142,6 +198,7 @@ export function createTrackedBashOperations(
       });
       lease?.heldBy(shell);
       if (commandFromStdin) shell.end(command);
+      const exitClock = shellExitClock(shell);
 
       let timedOut = false;
       let timeoutHandle: NodeJS.Timeout | undefined;
@@ -153,6 +210,7 @@ export function createTrackedBashOperations(
         if (timeoutMs !== undefined) {
           timeoutHandle = setTimeout(() => {
             timedOut = true;
+            exitClock.atDeadline();
             killShell();
           }, timeoutMs);
         }
@@ -162,12 +220,10 @@ export function createTrackedBashOperations(
           if (signal.aborted) killShell();
           else signal.addEventListener('abort', killShell, { once: true });
         }
-        const { code, signal: exitSignal } = await waitForShellExit(shell);
+        const exit = await waitForShellExit(shell);
         if (signal?.aborted) throw new Error('aborted');
-        if (timedOut) throw new Error(`timeout:${timeout}`);
-        // A signal-killed shell has no exit code, and pi's bash tool rejects a null one, so the shell
-        // convention stands in for it.
-        return { exitCode: code ?? (exitSignal ? 128 + (osConstants.signals[exitSignal] ?? 0) : 1) };
+        if (timedOut) throw exitClock.timeoutError(timeout, exit);
+        return { exitCode: shellExitCode(exit) };
       } finally {
         stdout.end();
         stderr.end();
@@ -224,6 +280,6 @@ export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashT
     // `constrainedSampling` comes in with this spread, so declaring it here would shadow pi's own setting.
     ...metadata,
     parameters: withCommandDescription(metadata.parameters),
-    execute: (toolCallId, params, signal, onUpdate, ctx) => withShellCredentials(deps.shellCredentials, toolCallId, () => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx)),
+    execute: (toolCallId, params, signal, onUpdate, ctx) => withShellCredentials(deps.shellCredentials, toolCallId, () => withShellExitReport(() => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx))),
   };
 }

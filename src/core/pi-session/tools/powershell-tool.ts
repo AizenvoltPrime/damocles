@@ -1,12 +1,11 @@
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
-import { constants as osConstants } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, win32 } from 'node:path';
 import type { PowerShellOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_POWERSHELL } from '../../../shared/tool-names';
-import { resolveTimeoutMs, SHELL_EXIT_OUTPUT_GRACE_MS, waitForShellExit, withCommandDescription, type ShellExit } from './bash-tool';
+import { resolveTimeoutMs, SHELL_EXIT_OUTPUT_GRACE_MS, shellExitClock, shellExitCode, waitForShellExit, withCommandDescription, withShellExitReport, type ShellExit } from './bash-tool';
 import { withUrlWatch } from './shell-url-watch';
 import { processLauncher, type SessionJob } from '../../process-launcher';
 import { findPwsh, windowsPowerShell } from '../../system-tools';
@@ -18,6 +17,18 @@ import { currentShellLease, withShellCredentials, type ShellCredentialLease, typ
 const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
 
 /**
+ * Windows PowerShell 5.1 turns redirected native stderr into error records and sets $? to false, so a native command that
+ * exited 0 exits 1 (pi #8842). pi-coding-agent 1.5.2 `dist/core/tools/powershell.js:11`, which its package does not export.
+ */
+const WINDOWS_POWERSHELL_EXIT_SUFFIX = '\n;\nif ($?) { exit 0 }\nif (($LASTEXITCODE -eq 0) -and ("$($Error[0].FullyQualifiedErrorId)" -like "NativeCommandError*")) { exit 0 }\nexit 1';
+
+/** The script `exe` runs: PowerShell 7 needs no exit suffix, and a final backtick would continue the command into it. */
+function powerShellScript(exe: string, command: string): string {
+  const suffix = win32.basename(exe).toLowerCase() === 'powershell.exe' && !command.endsWith('`') ? WINDOWS_POWERSHELL_EXIT_SUFFIX : '';
+  return `${UTF8_OUTPUT_PREFIX}${command}${suffix}`;
+}
+
+/**
  * Absolute paths only: a bare name would search the working folder (a repository) first on Windows. `pwsh` leads so
  * PowerShell 7 wins where both exist, and it is the only one off Windows.
  */
@@ -27,16 +38,23 @@ async function powerShellExecutables(env: NodeJS.ProcessEnv): Promise<string[]> 
 }
 
 /**
- * Where the PowerShell this tool starts looks a program up: the PATH and PATHEXT pi's `getShellEnv`
- * (`dist/utils/shell.js`) gives the tool, its bin folder ahead of `process.env`'s PATH, under `extraEnv`, and pwsh's own folder,
- * which pwsh puts ahead of PATH. Kept in step with pi's `getShellEnv`.
+ * The environment both shell tools start with: pi's `getShellEnv` (`dist/utils/shell.js`), its bin folder ahead of
+ * `process.env`'s PATH, under `extraEnv`. Kept in step with pi's `getShellEnv`.
  */
-export async function powerShellSearch(pi: Pick<PiCodingAgentModule, 'getAgentDir'>, extraEnv: Readonly<Record<string, string | undefined>> | undefined): Promise<PowerShellSearch> {
+export function shellToolEnv(pi: Pick<PiCodingAgentModule, 'getAgentDir'>, extraEnv: Readonly<Record<string, string | undefined>> | undefined): NodeJS.ProcessEnv {
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
   const current = process.env[pathKey] ?? '';
   const binDir = join(pi.getAgentDir(), 'bin');
   const piPath = current.split(delimiter).filter(Boolean).includes(binDir) ? current : [binDir, current].filter(Boolean).join(delimiter);
-  const env: NodeJS.ProcessEnv = { ...process.env, [pathKey]: piPath, ...extraEnv };
+  return withEnvOverrides<string | undefined>({ ...process.env, [pathKey]: piPath }, extraEnv ?? {}, process.platform);
+}
+
+/**
+ * Where the PowerShell this tool starts looks a program up: the PATH and PATHEXT of `shellToolEnv`, and pwsh's own folder,
+ * which pwsh puts ahead of PATH. Finding pwsh reads the PATH folders, so a caller places them first (`shellLookupFolders`).
+ */
+export async function powerShellSearch(pi: Pick<PiCodingAgentModule, 'getAgentDir'>, extraEnv: Readonly<Record<string, string | undefined>> | undefined): Promise<PowerShellSearch> {
+  const env = shellToolEnv(pi, extraEnv);
   const variable = (name: string): string | undefined => env[Object.keys(env).find((key) => key.toLowerCase() === name) ?? name];
   const pwsh = await findPwsh(env);
   return { path: variable('path') ?? '', pathext: variable('pathext'), pwshHome: pwsh === undefined ? undefined : dirname(pwsh) };
@@ -90,6 +108,7 @@ async function execOnce(
     ...(shellJob ? { job: shellJob.id } : {}),
   });
 
+  const exitClock = shellExitClock(shell);
   const started = shell.pid.then(() => true, () => false);
   // only a started shell takes the lease over: one that never started leaves it to the next candidate
   void started.then((ok) => {
@@ -106,6 +125,7 @@ async function execOnce(
     if (timeoutMs !== undefined) {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
+        exitClock.atDeadline();
         killShell();
       }, timeoutMs);
     }
@@ -125,10 +145,8 @@ async function execOnce(
       throw err;
     }
     if (signal?.aborted) throw new Error('aborted');
-    if (timedOut) throw new Error(`timeout:${timeout}`);
-    // A signal-killed shell has no exit code, and pi's shell tool rejects a null one, so the shell
-    // convention stands in for it.
-    return { exitCode: exit.code ?? (exit.signal ? 128 + (osConstants.signals[exit.signal] ?? 0) : 1) };
+    if (timedOut) throw exitClock.timeoutError(timeout, exit);
+    return { exitCode: shellExitCode(exit) };
   } finally {
     stdout.end();
     stderr.end();
@@ -165,7 +183,7 @@ export function createTrackedPowerShellOperations(shellJob: SessionJob | undefin
       for (const exe of await powerShellExecutables(env)) {
         // An abort raised while the first executable failed must stop the fallback from starting a shell.
         if (signal?.aborted) throw new Error('aborted');
-        const result = await execOnce(exe, `${UTF8_OUTPUT_PREFIX}${command}`, cwd, { onData, signal, timeout, timeoutMs, env, lease }, shellJob);
+        const result = await execOnce(exe, powerShellScript(exe, command), cwd, { onData, signal, timeout, timeoutMs, env, lease }, shellJob);
         if (!('startError' in result)) return result;
         failures.push(`${exe}: ${result.startError.message}`);
       }
@@ -191,6 +209,6 @@ export function createPowerShellTool(pi: PiCodingAgentModule, cwd: string, shell
     name: TOOL_POWERSHELL,
     label: 'PowerShell',
     parameters: withCommandDescription(definition.parameters),
-    execute: (toolCallId, params, signal, onUpdate, ctx) => withShellCredentials(credentials, toolCallId, () => definition.execute(toolCallId, params, signal, onUpdate, ctx)),
+    execute: (toolCallId, params, signal, onUpdate, ctx) => withShellCredentials(credentials, toolCallId, () => withShellExitReport(() => definition.execute(toolCallId, params, signal, onUpdate, ctx))),
   };
 }

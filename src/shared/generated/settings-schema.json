@@ -23,7 +23,7 @@
       "damocles.model": {
         "type": "string",
         "default": "",
-        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1"
+        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2"
       },
       "damocles.maxBudgetUsd": {
         "type": [
@@ -67,7 +67,7 @@
             null
           ]
         },
-        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra and GPT-6.1 Sol support low through max; GPT-6 Luna supports none through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh; K3 and Kimi for Coding support low, high and max; Muse Spark 1.3 and Muse Wonder 1.0 support low through max; the GitHub Copilot Claude and GPT models (keyed \"github-copilot/<id>\") support low through max, and its Gemini models take no level. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra and GPT-6.1 Sol support low through max; GPT-6.1 Terra and GPT-6 Luna support none through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh; K3 and Kimi for Coding support low, high and max; Muse Spark 1.3 and Muse Wonder 1.0 support low through max; the GitHub Copilot Claude and GPT models (keyed \"github-copilot/<id>\") support low through max, and its Gemini models take no level. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
       },
       "damocles.checkpoints.retentionDays": {
         "type": "number",
@@ -271,12 +271,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -317,12 +318,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -363,12 +365,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -596,7 +599,7 @@
       },
       "damocles.cacheWarming": {
         "type": "string",
-        "default": "streaming",
+        "default": "idle",
         "enum": [
           "off",
           "streaming",
@@ -687,12 +690,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -733,12 +737,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -782,12 +787,14 @@
           "jev-typesafe",
           "jev-openrouter",
           "gpt-6-luna-classifier",
-          "claude-fable-5-1",
+          "decision-1-copilot",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -808,7 +815,7 @@
           "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
-        "description": "What judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
+        "description": "What judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. Microsoft-Decision-1 through a GitHub Copilot sign-in runs only when you choose it, since GitHub does not price it. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
       },
       "damocles.memory.judgeEffort": {
         "type": "string",
@@ -1796,7 +1803,7 @@
       "damocles.model": {
         "type": "string",
         "default": "",
-        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1"
+        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-2"
       },
       "damocles.maxBudgetUsd": {
         "type": [
@@ -1840,7 +1847,7 @@
             null
           ]
         },
-        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra and GPT-6.1 Sol support low through max; GPT-6 Luna supports none through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh; K3 and Kimi for Coding support low, high and max; Muse Spark 1.3 and Muse Wonder 1.0 support low through max; the GitHub Copilot Claude and GPT models (keyed \"github-copilot/<id>\") support low through max, and its Gemini models take no level. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra and GPT-6.1 Sol support low through max; GPT-6.1 Terra and GPT-6 Luna support none through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh; K3 and Kimi for Coding support low, high and max; Muse Spark 1.3 and Muse Wonder 1.0 support low through max; the GitHub Copilot Claude and GPT models (keyed \"github-copilot/<id>\") support low through max, and its Gemini models take no level. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
       },
       "damocles.checkpoints.retentionDays": {
         "not": {},
@@ -2045,12 +2052,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -2091,12 +2099,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -2137,12 +2146,13 @@
         "type": "string",
         "enum": [
           "",
-          "claude-fable-5-1",
+          "claude-fable-5-2",
           "claude-opus-5-5",
           "claude-sonnet-5-5",
           "claude-haiku-5-5",
           "gpt-6-astra",
           "gpt-6.1-sol",
+          "gpt-6.1-terra",
           "gpt-6-luna",
           "step-5-preview",
           "deepseek-v4-pro",
@@ -2447,7 +2457,7 @@
         "not": {},
         "errorMessage": "damocles.memory.judge applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.memory.judge applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhat judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
+        "description": "damocles.memory.judge applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhat judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. Microsoft-Decision-1 through a GitHub Copilot sign-in runs only when you choose it, since GitHub does not price it. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
       },
       "damocles.memory.judgeEffort": {
         "not": {},

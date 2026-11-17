@@ -151,6 +151,28 @@ describe('PanelManager routes nothing a webview sent after its ready until the r
     await tick();
     expect(routedTypes()).toEqual(['ready', 'sendMessage', 'cancelSession']);
   });
+
+  it('settles whenReadied once the first ready was handled, and for a panel that closed before one came', async () => {
+    h = createHarness([folderEntry(A)]);
+    const host = makeFakeHost();
+    const panelId = await h.manager.initializeHost(host);
+    let readied!: () => void;
+    h.holdReady.gate = new Promise<void>((resolve) => { readied = resolve; });
+    let settled = false;
+    void h.manager.whenReadied(panelId).then(() => { settled = true; });
+    host.send({ type: 'ready', panelToken: PANEL_TOKEN });
+    await tick();
+    expect(settled).toBe(false);
+    readied();
+    await tick();
+    expect(settled).toBe(true);
+
+    const closing = makeFakeHost();
+    const closingId = await h.manager.initializeHost(closing);
+    const waiting = h.manager.whenReadied(closingId);
+    closing.closeFromUser();
+    await expect(waiting).resolves.toBeUndefined();
+  });
 });
 
 describe('design chats (PD-1, PD-50)', () => {

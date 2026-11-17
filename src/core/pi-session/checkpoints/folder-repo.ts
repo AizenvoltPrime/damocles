@@ -2,9 +2,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../../logger';
 import { writeFileAtomic } from './atomic-write';
+import { withRepoLock } from './lock';
 import { getCheckpointRecords } from './checkpoint-entry';
 import { RepoManager } from './repo-manager';
-import { folderIdFor, getFolderRepoDir, getGitDir, getIndexPath, isFolderId } from './resolver';
+import { folderRepoIdOf, folderRepoIdsOf, getFolderRepoDir, getGitDir, getIndexPath, isFolderId } from './resolver';
+import { currentPathOf } from '../../project-relocation/aliases';
+import { currentRelocations } from '../../project-relocation/current';
+import { folderKey } from '../../workspace-folders/folder-key';
+import { piSessionDir } from '../session-store/session-dir';
+import { readSessionFileEntries } from '../session-store/session-file-entries';
 import { isHexCommit, isSafeRefId } from './types';
 import type { CheckpointEntryV3, PreRewindRecord, Result, SkippedFile } from './types';
 
@@ -52,7 +58,7 @@ export interface FolderRepoHandle {
  * that is no git project (a design folder), whose enclosing repository's tracked files are not its own.
  */
 export function folderRepoFor(cwd: string, capturesTracked = true): FolderRepoHandle {
-  return folderRepoById(folderIdFor(cwd), cwd, capturesTracked);
+  return folderRepoById(folderRepoIdOf(cwd), cwd, capturesTracked);
 }
 
 export function folderRepoById(folderId: string, cwd: string, capturesTracked = true): FolderRepoHandle {
@@ -94,6 +100,39 @@ export async function markForkCopyPending(sessionId: string, sessionFile: string
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
     await writeFileAtomic(file, `${JSON.stringify({ sessionFile, pendingCopy: true })}\n`);
   }
+}
+
+/**
+ * Whether a registered session file is gone, and not moved by a relocation of its folder since `registeredAtMs`
+ * (docs/invariants.md "Project relocation").
+ */
+export async function registeredFileGone(sessionFile: string, registeredAtMs: number): Promise<boolean> {
+  return !(await present(await registeredFileNow(sessionFile, registeredAtMs)));
+}
+
+// As existsSync reads it: any failure is absence.
+function present(file: string): Promise<boolean> {
+  return fs.promises.access(file).then(() => true, () => false);
+}
+
+/**
+ * The registered session file where it is now: moved by a relocation of its folder, or, while a relocation is pending or after
+ * one was abandoned in its sessions step, still in the old folder's dir though its registration names the new one; else as
+ * registered.
+ */
+async function registeredFileNow(sessionFile: string, registeredAtMs: number): Promise<string> {
+  if (await present(sessionFile)) return sessionFile;
+  const dirKey = folderKey(path.dirname(sessionFile));
+  const { aliases, pendingPairs, stoppedPairs } = currentRelocations();
+  const candidates = [
+    ...aliases.moves.filter((move) => folderKey(piSessionDir(move.from)) === dirKey).map((move) => piSessionDir(currentPathOf(aliases, move.from, registeredAtMs))),
+    ...[...pendingPairs, ...stoppedPairs].filter((pair) => folderKey(piSessionDir(pair.to)) === dirKey).map((pair) => piSessionDir(pair.from)),
+  ];
+  for (const dir of candidates) {
+    const found = path.join(dir, path.basename(sessionFile));
+    if (await present(found)) return found;
+  }
+  return sessionFile;
 }
 
 export interface SessionRegistration {
@@ -144,6 +183,61 @@ async function clearPendingCopyLocked(repoDir: string, sessionId: string): Promi
 }
 
 /**
+ * A moved folder's repo: `folder.json` names `to` once it named `from`. The repo itself is never renamed, since its lock
+ * lives inside it. A `folder.json` that holds no folder record is left as it is: `folderMismatch` refuses that repo whatever
+ * it names. Idempotent; the caller holds the folder lock.
+ */
+export async function relocateFolderRepoLocked(repoDir: string, from: string, to: string): Promise<void> {
+  const folderJson = path.join(repoDir, 'folder.json');
+  let text: string;
+  try {
+    text = await fs.promises.readFile(folderJson, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    log('[Checkpoints] %s is not JSON, left as it is: %s', folderJson, err instanceof Error ? err.message : String(err));
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    log('[Checkpoints] %s holds no folder record, left as it is', folderJson);
+    return;
+  }
+  const recorded = (parsed as { path?: unknown }).path;
+  if (typeof recorded === 'string' && folderKey(recorded) === folderKey(from)) {
+    await writeFileAtomic(folderJson, `${JSON.stringify({ path: path.resolve(to), layout: 1 }, null, 2)}\n`);
+  }
+}
+
+/**
+ * A relocated session's registration names its file's new path, keeping the registration's mtime; one that names another
+ * file is left alone. Idempotent; the caller holds the folder lock.
+ */
+export async function repointRegistrationLocked(repoDir: string, sessionId: string, fromFile: string, toFile: string): Promise<void> {
+  if (!isSafeRefId(sessionId)) return;
+  const registration = await readSessionRegistration(repoDir, sessionId);
+  if (!registration || folderKey(registration.sessionFile) !== folderKey(fromFile)) return;
+  const file = registrationPath(repoDir, sessionId);
+  await writeFileAtomic(file, `${JSON.stringify(registration.pendingCopy ? { sessionFile: toFile, pendingCopy: true } : { sessionFile: toFile })}\n`);
+  // The mtime dates the registration for maintenance's age eviction.
+  const registeredAt = new Date(registration.registeredAtMs);
+  await fs.promises.utimes(file, registeredAt, registeredAt);
+}
+
+/** Re-points `sessionId`'s registration in every folder repo its file's checkpoints name, each under its own lock. */
+export async function repointSessionRegistrations(sessionId: string, fromFile: string, toFile: string): Promise<void> {
+  for (const folderId of await folderIdsInSessionFile(fromFile)) {
+    const repoDir = getFolderRepoDir(folderId);
+    if (!(await present(path.join(getGitDir(repoDir), 'HEAD')))) continue;
+    await withRepoLock(repoDir, () => repointRegistrationLocked(repoDir, sessionId, fromFile, toFile));
+  }
+}
+
+/**
  * Point `sessionId`'s refs at each entry's commits and skipped manifest. An entry with an unsafe id, a
  * non-hex commit or a missing object is logged and skipped. Returns how many entries got refs. The
  * caller holds the folder lock.
@@ -179,20 +273,6 @@ async function copyEntryRefsLocked(handle: FolderRepoHandle, sessionId: string, 
   return count;
 }
 
-/** Every entry object of a JSONL session file; a line that is not JSON is skipped the way pi's own reader skips it. */
-async function readSessionFileEntries(sessionFile: string): Promise<unknown[]> {
-  const entries: unknown[] = [];
-  for (const line of (await fs.promises.readFile(sessionFile, 'utf8')).split('\n')) {
-    if (line.trim().length === 0) continue;
-    try {
-      entries.push(JSON.parse(line));
-    } catch {
-      continue;
-    }
-  }
-  return entries;
-}
-
 /**
  * Finish every fork copy recorded by `markForkCopyPending` in this folder repo: copy the refs of the
  * validated v3 checkpoints the fork's session file holds for this repo and clear the flag, or remove the
@@ -213,15 +293,16 @@ export async function reconcilePendingCopiesLocked(handle: FolderRepoHandle): Pr
     if (!isSafeRefId(sessionId)) continue;
     const registration = await readSessionRegistration(handle.repoDir, sessionId);
     if (!registration?.pendingCopy) continue;
-    if (!fs.existsSync(registration.sessionFile)) {
+    const sessionFile = await registeredFileNow(registration.sessionFile, registration.registeredAtMs);
+    if (!(await present(sessionFile))) {
       await fs.promises.rm(registrationPath(handle.repoDir, sessionId), { force: true });
       log('[Checkpoints] pending fork copy of session %s dropped: its session file is gone', sessionId);
       continue;
     }
-    const entries = getCheckpointRecords(await readSessionFileEntries(registration.sessionFile)).filter(
+    const entries = getCheckpointRecords(await readSessionFileEntries(sessionFile)).filter(
       (r): r is CheckpointEntryV3 => r.kind === 'checkpoint' && r.v === 3 && r.folderId === handle.folderId,
     );
-    const copied = await copyEntryRefsLocked(handle, sessionId, registration.sessionFile, entries);
+    const copied = await copyEntryRefsLocked(handle, sessionId, sessionFile, entries);
     await clearPendingCopyLocked(handle.repoDir, sessionId);
     log('[Checkpoints] reconciled the pending fork copy of session %s in folder repo %s: %d of %d checkpoints', sessionId, handle.folderId, copied, entries.length);
   }
@@ -281,7 +362,7 @@ export async function deleteSessionCheckpointRefs(cwd: string, sessionId: string
     log('[Checkpoints] refs of session %s left in place: the id is not ref-safe', sessionId);
     return;
   }
-  for (const folderId of new Set([...folderIds, folderIdFor(cwd)])) {
+  for (const folderId of new Set([...folderIds, ...folderRepoIdsOf(cwd)])) {
     const handle = folderRepoById(folderId, cwd);
     if (!fs.existsSync(path.join(getGitDir(handle.repoDir), 'HEAD'))) continue;
     try {
@@ -354,7 +435,7 @@ export async function copyPreRewindRefs(cwd: string, childSessionId: string, chi
  * folder repo, whose `folder.json` must name `cwd`. Never throws.
  */
 export async function readSkippedManifest(source: Pick<CheckpointEntryV3 | PreRewindRecord, 'folderId' | 'skipped'>, cwd: string): Promise<Result<SkippedFile[]>> {
-  if (source.folderId !== folderIdFor(cwd)) return { ok: false, error: `the checkpoint belongs to folder repo ${source.folderId}, not to ${cwd}` };
+  if (!folderRepoIdsOf(cwd).has(source.folderId)) return { ok: false, error: `the checkpoint belongs to folder repo ${source.folderId}, not to ${cwd}` };
   const manifest = source.skipped.manifest;
   if (manifest === null) return { ok: true, value: [] };
   const handle = folderRepoById(source.folderId, cwd);

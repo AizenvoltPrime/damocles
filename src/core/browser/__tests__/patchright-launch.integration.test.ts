@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'http';
-import type { AddressInfo } from 'net';
+import { createServer as createPipeServer, type AddressInfo } from 'net';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -703,6 +703,88 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       await context.close();
       await fsp.rm(downloadsDir, { recursive: true, force: true }).catch(() => {});
       await fsp.rm(uploadPath, { force: true }).catch(() => {});
+    }
+  }, 60_000);
+
+  // Local only: the links inside the folder lead to a named pipe of this process and a folder beside it.
+  it.runIf(process.platform === 'win32')('uploads a folder as a copy of its regular files, which the tab closing removes', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    const { symlinkSync } = await import('fs');
+
+    const base = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-folder-'));
+    const folder = join(base, 'shared');
+    await fsp.mkdir(join(folder, 'sub'), { recursive: true });
+    await fsp.mkdir(join(base, 'outside'));
+    await fsp.writeFile(join(folder, 'a.txt'), 'A');
+    await fsp.writeFile(join(folder, 'sub', 's.txt'), 'S');
+    await fsp.writeFile(join(base, 'outside', 'o.txt'), 'O');
+    const pipe = `\\\\.\\pipe\\damocles-it-upload-${process.pid}`;
+    let connections = 0;
+    const pipeServer = createPipeServer((socket) => {
+      connections++;
+      socket.end();
+    });
+    await new Promise<void>((resolve) => pipeServer.listen(pipe, resolve));
+    symlinkSync(pipe, join(folder, 'pipe'), 'file');
+    symlinkSync(join(base, 'outside', 'o.txt'), join(folder, 'sub', 'file-link'), 'file');
+    symlinkSync(join(base, 'outside'), join(folder, 'junction'), 'junction');
+
+    const context = await launchBrowserContext({ userDataDir, headless: true, viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, devToolsPort: false });
+    const service = new BrowserService(createFakePlatform());
+    type Svc = { context: unknown; userDataDir: string | null; scopes: Map<string, { currentPage: unknown }>; registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown> };
+    const s = service as unknown as Svc;
+    s.context = context;
+    s.userDataDir = userDataDir;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
+    type ToolLike = { name: string; execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+    const upload = tools.find((t) => t.name === 'BrowserUpload')!;
+    const copiesRoot = join(userDataDir, 'damocles-uploads');
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page;
+      await page.setContent('<input id="dir" type="file" webkitdirectory>');
+
+      const result = await upload.execute('it', { selector: '#dir', paths: [folder] });
+      const text = result.content.map((c) => c.text ?? '').join('\n');
+      expect(result.isError, text).toBeUndefined();
+
+      // the browser was handed a copy holding exactly the folder's regular files, never the folder itself
+      const holders = await fsp.readdir(copiesRoot);
+      expect(holders).toHaveLength(1);
+      const copy = join(copiesRoot, holders[0]!, 'shared');
+      expect((await fsp.readdir(copy)).sort()).toEqual(['a.txt', 'sub']);
+      expect(await fsp.readdir(join(copy, 'sub'))).toEqual(['s.txt']);
+      expect(text).toContain('Uploaded the folder');
+      expect(text).toContain('Left out');
+      for (const name of ['pipe', 'junction', join('sub', 'file-link')]) expect(text).toContain(name);
+
+      const seen = await page.evaluate(async () => Promise.all([...(document.querySelector('#dir') as HTMLInputElement).files!].map(async (file) => `${file.webkitRelativePath}=${await file.text()}`)));
+      expect(seen.sort()).toEqual(['shared/a.txt=A', 'shared/sub/s.txt=S']);
+      // a control that opens the native chooser gets the copy staged for it
+      await page.setContent('<input id="hidden" type="file" webkitdirectory style="display:none"><button id="pick" onclick="document.getElementById(\'hidden\').click()">pick</button>');
+      const staged = await upload.execute('it', { selector: '#pick', paths: [folder] });
+      expect(staged.isError).toBe(true);
+      await page.click('#pick');
+      await page.waitForFunction(() => (document.querySelector('#hidden') as HTMLInputElement).files!.length > 0);
+      const chosen = await page.evaluate(async () => Promise.all([...(document.querySelector('#hidden') as HTMLInputElement).files!].map(async (file) => `${file.webkitRelativePath}=${await file.text()}`)));
+      expect(chosen.sort()).toEqual(['shared/a.txt=A', 'shared/sub/s.txt=S']);
+      expect(await fsp.readdir(copiesRoot)).toHaveLength(2);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(connections).toBe(0);
+
+      await page.close();
+      for (let i = 0; i < 50 && (await fsp.readdir(copiesRoot)).length > 0; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await fsp.readdir(copiesRoot)).toEqual([]);
+    } finally {
+      await context.close();
+      await new Promise((resolve) => pipeServer.close(resolve));
+      await fsp.rm(base, { recursive: true, force: true });
     }
   }, 60_000);
 

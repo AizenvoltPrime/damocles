@@ -11,6 +11,7 @@ import { removeSavedMcpOutputs } from '../../mcp/content';
 import { MCP_RESOURCE_TOOL_NAMES } from '../../../../shared/tool-names';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../../../shared/types/content';
 import { base64Of, IMAGE_BYTES } from '../../../../shared/__tests__/image-bytes';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
@@ -58,6 +59,7 @@ async function liveManager(resources: Record<string, FakeResources> = { docs: DO
 function toolsOver(manager: McpClientManager, filter: McpResourceRuleFilter = NO_RULES, frozenServers?: McpResourceServer[], disabledEntries: string[] = []) {
   const ruleFilter = vi.fn(async () => filter);
   const tools = createMcpResourceTools({
+    mcp: piMcp,
     source: () => manager,
     ruleFilter,
     disabledResource: () => disabledResourceMatcher(disabledEntries),
@@ -70,13 +72,13 @@ function toolsOver(manager: McpClientManager, filter: McpResourceRuleFilter = NO
 
 const json = (result: Result): Record<string, unknown> => JSON.parse(result.content[0]!.text!) as Record<string, unknown>;
 
-describe('MCP resource tools: parity with pi 1.4.0', () => {
+describe('MCP resource tools: parity with pi 1.5.2', () => {
   it('declares pi\u2019s names, descriptions and parameter schemas', async () => {
     const pi = (await import(pathToFileURL(PI_RESOURCES).href)) as {
       createMcpResourceToolDefinitions: (options: { servers: () => never[]; exposure: string }) => Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
     };
     const theirs = pi.createMcpResourceToolDefinitions({ servers: () => [], exposure: 'deferred' });
-    const ours = createMcpResourceTools({ source: () => null, disabledResource: () => () => false, ruleFilter: async () => NO_RULES });
+    const ours = createMcpResourceTools({ mcp: piMcp, source: () => null, disabledResource: () => () => false, ruleFilter: async () => NO_RULES });
 
     expect(ours.map((t) => t.name)).toEqual([...MCP_RESOURCE_TOOL_NAMES]);
     expect(theirs.map((t) => t.name)).toEqual(ours.map((t) => t.name));
@@ -284,7 +286,7 @@ describe('read_mcp_resource', () => {
     it('is read per call, so a change to the list applies to the next call', async () => {
       const { manager } = await liveManager();
       const entries: string[] = [];
-      const tools = createMcpResourceTools({ source: () => manager, ruleFilter: async () => NO_RULES, disabledResource: () => disabledResourceMatcher(entries) });
+      const tools = createMcpResourceTools({ mcp: piMcp, source: () => manager, ruleFilter: async () => NO_RULES, disabledResource: () => disabledResourceMatcher(entries) });
       const read = (uri: string) => (tools.find((t) => t.name === 'read_mcp_resource')!.execute as unknown as Execute)('tc', { server: 'docs', uri }, undefined, undefined, {});
 
       await expect(read('docs://text')).resolves.toBeDefined();

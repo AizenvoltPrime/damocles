@@ -1,11 +1,12 @@
+import { authorityKeyOfProject } from '../../shared/project-location';
 import type { LastChats } from './last-chats';
 import type { PanelStateStore } from './panel-state-store';
 import type { RemoteState } from './remote/remote-state';
 
 export interface SelectionStores {
-  readonly states: Pick<PanelStateStore, 'batch' | 'select'>;
+  readonly states: Pick<PanelStateStore, 'batch' | 'select' | 'selected'>;
   // undefined until remote-state.json was read
-  readonly remoteState: Pick<RemoteState, 'batch' | 'select'> | undefined;
+  readonly remoteState: Pick<RemoteState, 'batch' | 'select' | 'selected'> | undefined;
   readonly lastChats: Pick<LastChats, 'remember'>;
   // a remote-state.json write that failed
   readonly report: (err: unknown) => void;
@@ -33,4 +34,14 @@ export function recordSelection(deps: SelectionStores, selection: ChatSelection)
     deps.remoteState?.select(authority === 'local' ? undefined : { projectKey, ...session }).catch(deps.report);
   };
   deps.states.batch(() => (deps.remoteState ? deps.remoteState.batch(record) : record()));
+}
+
+/** Records a project shown with no chat (its folder is not there) as the selection, by recordSelection's rule. */
+export function recordProjectSelection(deps: Pick<SelectionStores, 'states' | 'remoteState' | 'report'>, projectKey: string): void {
+  if (authorityKeyOfProject(projectKey) !== 'local') {
+    if (deps.remoteState?.selected()?.projectKey !== projectKey) deps.remoteState?.select({ projectKey }).catch(deps.report);
+    return;
+  }
+  if (deps.states.selected()?.projectKey !== projectKey) deps.states.select({ projectKey });
+  if (deps.remoteState?.selected() !== undefined) deps.remoteState.select(undefined).catch(deps.report);
 }

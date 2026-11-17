@@ -45,6 +45,7 @@ const workspace = {
     projectOfPath,
     confineExisting,
     isDirectory: (target: string) => fs.promises.stat(target).then((stat) => stat.isDirectory(), () => false),
+    browse: async (folder: string) => ({ ok: true, path: folder, folders: fs.readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) }),
   },
   tree: createTreeListing(() => undefined),
 } as unknown as ProjectWorkspace;
@@ -128,13 +129,56 @@ async function setup(renderer: Renderer, roots: () => readonly Project[] = () =>
     containerUp: async () => undefined,
     openContainerFolder: async () => '',
   });
-  return { hosts, requests, logged, addProject };
+  return { hosts, requests, logged, addProject, store };
 }
 
 const listed = (result: RemoteBrowseResult): Extract<RemoteBrowseResult, { ok: true }> => {
   if (!result.ok) throw new Error(`browse failed: ${result.error}`);
   return result;
 };
+
+describe('Locate\'s folder picker on a host', () => {
+  it('opens the folder browser at its start folder, browses outside every project, and answers a folder the host has', async () => {
+    const answers = [outside, path.join(outside, 'keys.md')];
+    const { hosts, requests, addProject, store } = await setup(async (_request, browse) => {
+      const start = listed(await browse());
+      expect(start).toMatchObject({ path: base, folders: [{ name: 'secret' }, { name: 'srv' }, { name: 'user-data' }] });
+      expect(start).not.toHaveProperty('root');
+      expect(listed(await browse(outside)).path).toBe(outside);
+      return { kind: 'connect', path: answers.shift()! };
+    }, () => []);
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('the host was not added');
+    const authority = `ssh+${added.host.id}`;
+    expect(await hosts.pickAnywhere(authority, { title: 'Locate Project Folder', start: base })).toBe(outside);
+    expect(requests[0]).toMatchObject({ kind: 'connect', hostId: added.host.id, pick: { mode: 'folder', hostName: 'prod-1', roots: [base], title: 'Locate Project Folder' } });
+    // a file is no folder
+    expect(await hosts.pickAnywhere(authority, { title: 'Locate Project Folder', start: base })).toBeUndefined();
+    expect(addProject).not.toHaveBeenCalled();
+    // once it closed, the browser opens at the host's home again
+    expect(listed(await hosts.browse(added.host.id, undefined)).path).toBe(os.homedir());
+  });
+});
+
+describe('Locate\'s folder picker on the loopback daemon', () => {
+  it('browses and answers for an authority no saved host names', async () => {
+    const { hosts, requests } = await setup(async (_request, browse) => {
+      expect(listed(await browse()).path).toBe(base);
+      return { kind: 'connect', path: outside };
+    }, () => []);
+    expect(await hosts.pickAnywhere('loopback', { title: 'Locate Project Folder', start: base })).toBe(outside);
+    expect(requests[0]).toMatchObject({ kind: 'connect', hostId: 'loopback', pick: { mode: 'folder' } });
+  });
+
+  it('refuses a relative path, which the host would resolve against its own working folder', async () => {
+    // a folder relative to this process's working folder, which the test's "host" would find
+    const relative = 'src';
+    expect(fs.statSync(relative).isDirectory()).toBe(true);
+    const { hosts, logged } = await setup(async () => ({ kind: 'connect', path: relative }), () => []);
+    expect(await hosts.pickAnywhere('loopback', { title: 'Locate Project Folder', start: base })).toBeUndefined();
+    expect(logged).toContain('[remote] refused the picked path: not an absolute path on loopback');
+  });
+});
 
 describe('a remote core\'s pickers in the host\'s folder browser', () => {
   it('pickFile opens the Connect dialog\'s folder browser in file mode at the default path and answers a confined file', async () => {

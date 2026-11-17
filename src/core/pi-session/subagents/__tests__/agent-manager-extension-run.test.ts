@@ -9,6 +9,7 @@ import type { PiCodingAgentModule } from '../../pi-loader';
 import type { McpResourceRuleFilter } from '../../../permission-handler/mcp-resource-rule';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { heldSettleSessions, type HeldSettleSession } from '../../__tests__/held-settle-fixture';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 /**
  * A run a user's pi extension opens in a subagent's session, and a steer that reaches a subagent while pi settles its run, on
@@ -27,8 +28,11 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
 const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
 const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
 
-/** An engine whose one subagent session is a real one, handed to `prepare` before the manager receives it. */
-function realEngine(responses: FauxResponseStep[], prepare: (booted: HeldSettleSession) => void, boot: { beforeAgentStart?: boolean } = {}): {
+/**
+ * An engine whose one subagent session is a real one, handed to `prepare` before the manager receives it. With `runOpen`, the
+ * manager receives it only once the run `prepare` began is open, so the task cannot reach pi first.
+ */
+function realEngine(responses: FauxResponseStep[], prepare: (booted: HeldSettleSession) => void, boot: { beforeAgentStart?: boolean } = {}, runOpen = false): {
   engine: SubagentEngine;
   booted: () => Promise<HeldSettleSession>;
   order: string[];
@@ -45,7 +49,16 @@ function realEngine(responses: FauxResponseStep[], prepare: (booted: HeldSettleS
       booted.session.subscribe((event) => {
         if (event.type === 'agent_settled') order.push('agent_settled');
       });
+      const opened = new Promise<void>((resolve) => {
+        const off = booted.session.subscribe((event) => {
+          if (event.type === 'agent_start') {
+            off();
+            resolve();
+          }
+        });
+      });
       prepare(booted);
+      if (runOpen) await opened;
       resolveBooted(booted);
       return booted.session;
     },
@@ -62,9 +75,9 @@ function realEngine(responses: FauxResponseStep[], prepare: (booted: HeldSettleS
     subagentStoreDir: () => '/store',
     recordInvocation: () => {},
     parentBranch: () => [],
-    assertResumableModel: () => {},
+    assertResumableModel: async () => {},
     parentFullToolNames: () => [],
-    buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
+    buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, piMcp, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
     disposeBrowserScope: () => {},
     cancelAgentDialogs: () => {},
     resolveModel: () => ({}),
@@ -98,7 +111,7 @@ describe("a run a user's pi extension opens in a subagent's session", () => {
     const { engine, booted, order } = realEngine([fauxAssistantMessage('Extension reply.'), fauxAssistantMessage('Unused.')], (b) => {
       settle = b.hold();
       b.sendFromExtension('from the extension');
-    });
+    }, {}, true);
     const manager = new AgentManager(engine, 1);
     const id = manager.spawn(SPAWN);
     const { session } = await within(booted(), 10_000, 'the subagent session');
@@ -140,8 +153,8 @@ describe("a Stop while pi still prepares a run a user's pi extension opened in a
     expect(order).toEqual(['forget']);
 
     start.release();
-    // The run's request setup rejects under the aborted signal before any request (`model-runtime.js:456-460` in pi-coding-agent 1.4.0).
-    await vi.waitFor(() => expect(ends).toEqual(['error: This operation was aborted']), { timeout: 10_000 });
+    // The run's request setup rejects under the aborted signal before any request, which pi reports as an abort (pi-ai 1.5.2 api/lazy.js:58).
+    await vi.waitFor(() => expect(ends).toEqual(['aborted: This operation was aborted']), { timeout: 10_000 });
     manager.dispose();
   }, 30_000);
 });

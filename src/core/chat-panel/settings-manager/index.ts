@@ -91,6 +91,11 @@ export class SettingsManager {
     return this.mcpManager.setServerEnabled(folderKey, serverName, enabled);
   }
 
+  /** Moved project folders' MCP toggles go to their new folder keys (docs/invariants.md "Project relocation"). */
+  relocateMcpFolders(pairs: ReadonlyArray<{ readonly from: string; readonly to: string }>): Promise<void> {
+    return this.mcpManager.relocateFolders(pairs);
+  }
+
   getEnabledMcpServers(folderKey: string): McpScope {
     return this.mcpManager.getEnabledServers(folderKey);
   }

@@ -4,7 +4,7 @@ import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { keyProviderOfSecret, providerKeyStored, TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
 import { clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
 import { readProviderSignIns } from "../../../pi-session/provider-auth";
-import { CLASSIFIER_ENV_KEYS, CLASSIFIER_MODELS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";
+import { CLASSIFIER_ENV_KEYS, CLASSIFIER_PROVIDERS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";
 import { OPENAI_API_KEY_SECRET, openaiAuthStatus, readOpenAIAuthFromDisk, readPreferOpenAIApiKey } from "../../../pi-session/openai-auth";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { MEMORY_JUDGE_SETTING, forcedClassifierOf, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
@@ -40,15 +40,16 @@ export async function memoryJudgeStatus(platform: Platform): Promise<Extract<Ext
   ]);
   const openai = openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), openaiKey);
   // on a daemon's core auth.json reads as the pinned (else acting) client's sign-ins, as for the key status
-  const openrouterSignedIn = readProviderSignIns(PI_AGENT_DIR)?.["openrouter"]?.type === "oauth";
+  const signIns = readProviderSignIns(PI_AGENT_DIR);
   const keyed: Record<ClassifierProvider, boolean> = {
     typesafe: typesafeKey || inEnv("typesafe"),
-    openrouter: inEnv("openrouter") || openrouterKey || openrouterSignedIn,
+    openrouter: inEnv("openrouter") || openrouterKey || signIns?.["openrouter"]?.type === "oauth",
     openai: openai.apiKey || openai.chatgpt || inEnv("openai"),
+    "github-copilot": inEnv("github-copilot") || signIns?.["github-copilot"]?.type === "oauth",
   };
   const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, "openai") : readPreferOpenAIApiKey(platform.settings);
   const classifierCredentials = Object.fromEntries(
-    CLASSIFIER_MODELS.map(({ provider }) => [provider, classifierCredential(provider, (p) => keyed[p], { status: openai, preferApiKey })]),
+    CLASSIFIER_PROVIDERS.map((provider) => [provider, classifierCredential(provider, (p) => keyed[p], { status: openai, preferApiKey })]),
   ) as Record<ClassifierProvider, ClassifierCredential>;
   const choice = migrateLegacyModelValue(platform.settings.get<string>(MEMORY_JUDGE_SETTING, ""));
   const forced = forcedClassifierOf(choice);

@@ -103,6 +103,7 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
       await endpoint.request('user.voice.speak', { viewId, text });
     },
     runProviders: (panelId, providers) => endpoint.emit('chat.providers', { panelId, providers }),
+    runConfiguredProviders: (panelId, providers) => endpoint.emit('chat.configuredProviders', { panelId, providers }),
     browserTool: async (host, scope, tool, input, signal, served) => {
       const viewId = viewIdOf(host);
       if (viewId === undefined) throw new Error('The chat has no view');

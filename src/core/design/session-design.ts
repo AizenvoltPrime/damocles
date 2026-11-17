@@ -38,7 +38,7 @@ import {
   type DesignRole,
   type DesignVersionPause,
 } from './design-entries';
-import { markDesignEdited, readManifest, syncManifestVersion, writeDecisions } from './design-files';
+import { listDesignFiles, markDesignEdited, readManifest, syncManifestVersion, writeDecisions } from './design-files';
 import { DecisionRefusedError, DESIGN_CONTINUES_ELSEWHERE, type DecisionLedger } from './decisions';
 import { withDesignWrite } from './design-writes';
 import { designFolderOf, designStateDirOf } from './design-paths';
@@ -334,6 +334,15 @@ export class SessionDesign implements Disposable {
     const role = this.role();
     if (!role || this.disposed || !this.ruleSet().preview) return;
     this.deps.platform.designPreview?.changed(role.designId, []);
+  }
+
+  /** A rewind or its undo put this design's files back: its previews read every page again, so one it removed or restored says so (D74). */
+  previewFilesRestored(): void {
+    const role = this.role();
+    if (!role || this.disposed || !this.ruleSet().preview) return;
+    listDesignFiles(role.folder).then((files) => {
+      if (!this.disposed) this.deps.platform.designPreview?.changed(role.designId, files.map((file) => file.path).slice(0, MAX_CHANGED_PATHS));
+    }, (err: unknown) => log('[SessionDesign] listing design %s after a restore failed: %O', role.designId, err));
   }
 
   /** A Write or Edit of this design chat landed: its previews reload, and a screen's first write opens its tab (PD-33). */

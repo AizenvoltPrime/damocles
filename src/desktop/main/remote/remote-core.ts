@@ -61,6 +61,12 @@ export interface RemoteCoreDeps {
   readonly log: (line: string) => void;
 }
 
+// The daemon's core serves the relocation requests and the relocations mirror, and sends window.locateProjectFolder.
+export const RELOCATE_FEATURE = 'projects.relocate';
+// The daemon's core abandons a paused relocation (Stop moving).
+export const RELOCATION_ABANDON_FEATURE = 'projects.relocationAbandon';
+export const DESIGN_INFO_MISSING_FEATURE = 'design.infoMissing';
+
 class HaltedError extends Error {}
 
 /** The authority's core: a CoreHost whose start attaches, the daemon's core state, and the chats' kept permissions. */
@@ -268,7 +274,7 @@ export class RemoteCore {
       connection.close(error.message);
     }, undefined, serviceDeps.render);
     const services: HostServices = createHostServices({ ...serviceDeps, endpoint });
-    const client = new CoreClient(endpoint, (view, attach) => services.adopt(view, attach), authorityProjectKeys(authority, (error) => connection.close(error.message)));
+    const client = new CoreClient(endpoint, (view, attach) => services.adopt(view, attach), authorityProjectKeys(authority, (error) => connection.close(error.message)), connection.features.includes(RELOCATE_FEATURE), connection.features.includes(RELOCATION_ABANDON_FEATURE), connection.features.includes(DESIGN_INFO_MISSING_FEATURE));
     const closed = connection.onClose((reason) => end(`the connection closed: ${reason}`));
     // a delta published before the attach opens waits in the transport, after the values the attach names
     const relayed = this.deps.relays.attach((topic, value) => endpoint.publish(topic, { value } as MirrorTopics[typeof topic]), this.deps.authority, this.deps.sharedLoopback, connection.features);

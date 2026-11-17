@@ -21,9 +21,11 @@ import {
   isolatedBridgeInstaller,
 } from './page-scripts';
 import { fetchIconPinned, fetchIconThroughContext, resolveFavicon } from './favicon';
-import { isNavigableUrl } from './net-guard';
+import { agentNavigationRefusal, isNavigableUrl } from './net-guard';
 import { httpFallbackUrl } from './https-fallback';
 import { typedAddress } from '../../shared/typed-address';
+import { isFileUrl, isServedGrantHost } from '../../shared/served-file-url';
+import { loadedFileUrl } from './loaded-file-url';
 import { DownloadManager } from './downloads';
 import { writeClientCertificateRules } from './client-certificate-rules';
 import { isClientCertificateOrigin, namesCertificate, type ClientCertificateFilter } from '../../shared/client-certificate';
@@ -39,6 +41,14 @@ import type { ElementAttachment, ConsoleEntry, NetworkError, DownloadEntry, Brow
 
 export { BrowserAgentScope } from './agent-scope';
 export type { ScopeTabInfo } from './agent-scope';
+
+/** How a local chat's served project and design pages map back to their file: addresses and reopen (`ChatServedFiles`). */
+export interface ChatServedPages {
+  /** The file: address of a URL served on one of the chat's origins, any other URL unchanged. */
+  toFile(url: string): string;
+  /** A fresh one-time served URL for a file: address of the chat's roots, or why it does not reopen. */
+  restoreTarget(url: string): Promise<{ readonly url: string } | { readonly refused: string }>;
+}
 export { DOWNLOAD_MAX_BYTES, DOWNLOAD_LAUNCH_MAX_BYTES } from './downloads';
 export { STREAM_JPEG_QUALITY, TOOL_JPEG_QUALITY, MAX_DEVICE_SCALE, FRAME_ACK_FALLBACK_MS } from './screencast';
 
@@ -112,6 +122,8 @@ interface PageEntry {
    *  ring buffer's `shift()` can keep it aligned by decrementing it. */
   dialogsReportedUpTo: number;
   pendingUploadPaths: string[] | null;
+  /** The folders holding this tab's folder-upload copies, which Chrome reads lazily by path; removed when the tab or browser closes. */
+  uploadCopies: string[];
   /** Serializes this tab's resizes. `resizeEntry` performs several sequential awaits, so two
    *  overlapping invocations could interleave such that the earlier one's `stopScreencast` lands after
    *  the later one's `startScreencast`, leaving the stream dead. Latest-wins trailing run. */
@@ -200,10 +212,11 @@ const BRIDGE_CONSOLE_BATCH_MAX = 64;
 /** A level is one of six known words; the cap only stops a forged one from being unbounded. */
 const BRIDGE_CONSOLE_LEVEL_MAX_CHARS = 16;
 
-// Origin only: a URL's path and query can carry tokens.
+// Origin only: a URL's path and query can carry tokens, and a served grant's host is one.
 function navigationOrigin(url: string): string {
   if (!URL.canParse(url)) return 'an unparseable address';
   const parsed = new URL(url);
+  if (isServedGrantHost(parsed.hostname)) return `a served page on port ${parsed.port}`;
   return parsed.origin === 'null' ? parsed.protocol : parsed.origin;
 }
 
@@ -353,6 +366,17 @@ export async function installContextObservers(
 }
 
 /** Local chats' profile. */
+/** The folder of a browser profile's folder-upload copies, which the browser's own launch sweeps. */
+function uploadCopiesRoot(userDataDir: string): string {
+  return join(userDataDir, 'damocles-uploads');
+}
+
+// Copies hold only regular files and folders Damocles made, so the removal follows no link; one Chrome still holds stays for the next launch's sweep.
+async function removeUploadCopies(folders: readonly string[]): Promise<void> {
+  await Promise.all(folders.map((folder) => fsp.rm(folder, { recursive: true, force: true }).catch((err: unknown) =>
+    log(`[Browser] A folder-upload copy could not be removed (${folder}) — ${err instanceof Error ? err.message : String(err)}`))));
+}
+
 export function localProfileDir(): string {
   return join(homedir(), '.damocles', 'browser-profile');
 }
@@ -455,6 +479,14 @@ export class BrowserService {
   private readonly interceptManager = new InterceptManager(() => this.context);
   // The certificate Chrome sends each origin without asking, chosen by the user in this app session; never persisted.
   private readonly clientCertificateRules = new Map<string, ClientCertificateFilter>();
+  // each local chat's served pages, so a relaunch of the browser alone reopens them as a restart of the app does
+  private readonly servedPages = new Map<PanelHost, ChatServedPages>();
+
+  /** Registers `chat`'s served pages until the returned binding is disposed. */
+  bindServedPages(chat: PanelHost, pages: ChatServedPages): { dispose(): void } {
+    this.servedPages.set(chat, pages);
+    return { dispose: () => { if (this.servedPages.get(chat) === pages) this.servedPages.delete(chat); } };
+  }
 
   isConnected(): boolean {
     return this.state === 'connected';
@@ -676,7 +708,7 @@ export class BrowserService {
    */
   async openNewTab(scopeId: string, url?: string): Promise<number | undefined> {
     if (!this.context) {
-      throw new Error('Browser is not connected. Use browser_open first.');
+      throw new Error('Browser is not connected. Use BrowserOpen first.');
     }
     const page = await this.claimNewTabForScope(scopeId);
     const entry = this.pages.get(page)!;
@@ -695,18 +727,24 @@ export class BrowserService {
    */
   private async navigateEntry(entry: PageEntry, url: string, signal?: AbortSignal): Promise<number | undefined> {
     if (signal?.aborted) throw new Error('Browser open aborted');
+    // Only a browser-initiated load gives a page a file: origin in Chrome, so no spelling Chrome loads as a file is navigated to.
+    if (loadedFileUrl(url) !== undefined) throw new Error('The browser opens no file: page; a project or design file opens on its served http address.');
+    const refusal = agentNavigationRefusal(url);
+    if (refusal !== undefined) throw new Error(refusal);
+    // Chrome gets the href the allowlist read, never raw text a second parser could read otherwise
+    const target = url === 'about:blank' ? url : new URL(url).href;
     entry.documentStatus = undefined;
-    const { errorText, isDownload } = await this.raceAbort(entry.controller.navigate(url), signal);
+    const { errorText, isDownload } = await this.raceAbort(entry.controller.navigate(target), signal);
     if (isDownload) {
-      throw new NavigationFailedError(`${navigationOrigin(url)} started a download instead of loading a page; BrowserDownloads lists it`);
+      throw new NavigationFailedError(`${navigationOrigin(target)} started a download instead of loading a page; BrowserDownloads lists it`);
     }
     // An empty-bodied HTTP error still is the server's answer, so its status is reported like any other.
     const answeredByServer = errorText === HTTP_RESPONSE_CODE_FAILURE && entry.documentStatus !== undefined;
     if (errorText !== undefined && !answeredByServer) {
-      throw new NavigationFailedError(`Navigation to ${navigationOrigin(url)} failed: ${errorText}`);
+      throw new NavigationFailedError(`Navigation to ${navigationOrigin(target)} failed: ${errorText}`);
     }
-    entry.lastUrl = url;
-    if (entry.page === this.activePage) this.currentUrl = url;
+    entry.lastUrl = target;
+    if (entry.page === this.activePage) this.currentUrl = target;
     return entry.documentStatus;
   }
 
@@ -784,6 +822,23 @@ export class BrowserService {
     if (!entry) return;
     entry.panel.reveal();
     this.setActivePage(page);
+  }
+
+  /** A fresh folder for a folder upload's copy to the SCOPE's current tab, removed when that tab or the browser closes. */
+  async newUploadFolder(scopeId: string): Promise<string> {
+    const page = this.scopes.get(scopeId)?.currentPage;
+    const entry = page ? this.pages.get(page) : undefined;
+    if (!entry || !this.userDataDir) throw new Error('Browser is not connected. Use BrowserOpen first.');
+    const root = uploadCopiesRoot(this.userDataDir);
+    await fsp.mkdir(root, { recursive: true });
+    const folder = await fsp.mkdtemp(join(root, 'u-'));
+    // the tab may have closed during the awaits, and its copies with it
+    if (this.pages.get(page!) !== entry) {
+      await removeUploadCopies([folder]);
+      throw new Error('The tab closed before the upload started.');
+    }
+    entry.uploadCopies.push(folder);
+    return folder;
   }
 
   /** Stage (or clear with null) the files a subsequent native file chooser should receive on the SCOPE's
@@ -895,20 +950,27 @@ export class BrowserService {
   /**
    * Reopen a chat's saved pages in its human scope after a restart, one tab per saved address in order,
    * then reveal the one at `activeIndex` and make it the scope's current tab. Refused entirely while
-   * `damocles.browser.enabled` is off; an address that is not navigable is skipped.
+   * `damocles.browser.enabled` is off; an address that is not navigable is skipped. A saved `file:` address reopens only
+   * at the address `servedTarget` resolves it to, asked as its turn comes, since a served URL is valid once and briefly.
    */
-  async restoreChatPages(chat: PanelHost, urls: readonly string[], activeIndex: number | undefined): Promise<void> {
+  async restoreChatPages(chat: PanelHost, urls: readonly string[], activeIndex: number | undefined, servedTarget?: (url: string) => Promise<{ readonly url: string } | { readonly refused: string }>): Promise<void> {
     if (!this.readEnabledSetting()) return;
     const scopeId = this.humanScopeId(chat);
     let active: Page | null = null;
     const restored = new Set<Page>();
-    for (const [index, url] of urls.entries()) {
-      // The saved URL is page-controlled state, so it passes the same check as the address bar.
-      if (!isNavigableUrl(url)) {
-        log('[Browser] Not restoring a page whose saved address is not http, https or about:blank');
-        continue;
-      }
+    for (const [index, saved] of urls.entries()) {
       try {
+        const target = servedTarget && isFileUrl(saved) ? await servedTarget(saved) : { url: saved };
+        if ('refused' in target) {
+          log(`[Browser] Not restoring a project or design page: ${target.refused}`);
+          continue;
+        }
+        const { url } = target;
+        // The saved URL is page-controlled state, so it passes the same check as the address bar.
+        if (!isNavigableUrl(url)) {
+          log('[Browser] Not restoring a page whose saved address is not http, https or about:blank');
+          continue;
+        }
         await this.ensureContext(scopeId);
         // Only the blank tab a launch adopted for this scope is reused; a page the chat already has open is
         // never navigated away.
@@ -1009,7 +1071,7 @@ export class BrowserService {
    * context.on('page') race). Do NOT serialize tab creation.
    */
   private async openTabForScope(scopeId: string, url: string, signal?: AbortSignal): Promise<number | undefined> {
-    if (!this.context) throw new Error('Browser is not connected. Use browser_open first.');
+    if (!this.context) throw new Error('Browser is not connected. Use BrowserOpen first.');
     const page = await this.claimNewTabForScope(scopeId);
     const entry = this.pages.get(page)!;
     // A new tab already is about:blank.
@@ -1053,7 +1115,8 @@ export class BrowserService {
 
   /**
    * Chrome sends the certificate `filter` names to `origin` without asking for the rest of this app session. Chrome reads
-   * the rule only at launch, so a running browser closes and every chat's pages reopen.
+   * the rule only at launch, so a running browser closes and every chat's pages reopen; a served page's grant dies with the
+   * browser's cookies, so it reopens from its file: address through its chat's served files.
    */
   async useClientCertificate(origin: string, filter: ClientCertificateFilter): Promise<void> {
     if (!isClientCertificateOrigin(origin)) throw new Error('Not an https origin');
@@ -1067,7 +1130,10 @@ export class BrowserService {
       return reopen;
     });
     this.openChain = run.then(() => {}, () => {});
-    for (const { chat, urls, active } of await run) await this.restoreChatPages(chat, urls, active);
+    for (const { chat, urls, active } of await run) {
+      const served = this.servedPages.get(chat);
+      await this.restoreChatPages(chat, urls, active, served ? (url) => served.restoreTarget(url) : undefined);
+    }
   }
 
   // Each chat's pages in tab order with the one its human scope shows, as restoreChatPages takes them.
@@ -1082,7 +1148,8 @@ export class BrowserService {
       }
       const scopeId = this.chatScopeIds.get(entry.chat);
       if (scopeId !== undefined && this.scopes.get(scopeId)?.currentPage === entry.page) pages.active = pages.urls.length;
-      pages.urls.push(shownUrl(entry) ?? 'about:blank');
+      const url = shownUrl(entry) ?? 'about:blank';
+      pages.urls.push(this.servedPages.get(entry.chat)?.toFile(url) ?? url);
     }
     return [...byChat.values()];
   }
@@ -1156,6 +1223,8 @@ export class BrowserService {
       this.context = context;
       this.closing = false;
       this.userAgentCheck = readCleanUserAgent(context);
+      // Chrome now holds the profile, so no other process's tab reads a copy left in it
+      await removeUploadCopies([uploadCopiesRoot(this.userDataDir!)]);
       // Capture the launching scope for popup owner-attribution fallback. Set BEFORE wiring
       // context.on('page') so a spontaneous popup can resolve it.
       this.launchOwnerScopeId = launchScopeId;
@@ -1362,6 +1431,7 @@ export class BrowserService {
       dialogs: [],
       dialogsReportedUpTo: 0,
       pendingUploadPaths: null,
+      uploadCopies: [],
       resizeChain: Promise.resolve(),
     };
     this.pages.set(page, entry);
@@ -1467,6 +1537,7 @@ export class BrowserService {
     // active page (survivors after it shift left by one).
     const closedIndex = [...this.pages.keys()].indexOf(page);
     this.pages.delete(page);
+    void removeUploadCopies(entry.uploadCopies);
     this.screencast.releasePendingAck(entry, 'drop');
     if (entry.ackRestartTimer) clearTimeout(entry.ackRestartTimer);
     entry.picker.stopPicking().catch(() => {});
@@ -1784,7 +1855,8 @@ export class BrowserService {
         logFailedNavigation(navUrl, errorText);
         const fallback = address.upgraded ? httpFallbackUrl(navUrl, errorText) : undefined;
         if (fallback === undefined) return;
-        log(`[Browser] ${new URL(navUrl).host} did not load over https (${errorText}); loading it over http`);
+        const { host, hostname } = new URL(navUrl);
+        log(`[Browser] ${isServedGrantHost(hostname) ? navigationOrigin(navUrl) : host} did not load over https (${errorText}); loading it over http`);
         const fallbackLoad = await controller.navigate(fallback);
         if (fallbackLoad.errorText !== undefined) logFailedNavigation(fallback, fallbackLoad.errorText);
       })().catch((err) =>
@@ -2083,6 +2155,7 @@ export class BrowserService {
     // Marked first so the context 'close' event handler treats this as an intentional teardown rather
     // than a crash to recover from.
     this.closing = true;
+    const uploadCopies = [...this.pages.values()].flatMap((entry) => entry.uploadCopies);
     for (const entry of this.pages.values()) this.disposeEntry(entry);
     this.pages.clear();
     this.activePage = null;
@@ -2091,8 +2164,8 @@ export class BrowserService {
     // The rules are routes on a context that is going away, so drop them WITHOUT unrouting. Done
     // synchronously so listInterceptRules() never reports phantoms while the close settles.
     this.interceptManager.forget();
-    if (!ctx) return Promise.resolve();
-    return ctx.close().catch((err) => log(`[Browser] Context close failed — ${err instanceof Error ? err.message : String(err)}`));
+    if (!ctx) return removeUploadCopies(uploadCopies);
+    return ctx.close().catch((err) => log(`[Browser] Context close failed — ${err instanceof Error ? err.message : String(err)}`)).then(() => removeUploadCopies(uploadCopies));
   }
 
   /** Return the service to a fresh, reusable disconnected state. Synchronous, and never touches the

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { AgentSession, AgentSessionServices, ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
+import * as piMcp from '@earendil-works/pi-mcp';
 
 const H = vi.hoisted(() => ({ home: '' }));
 
@@ -15,6 +16,7 @@ vi.mock('os', async (importOriginal) => {
 });
 
 import { FolderRuntime } from '../folder-runtime';
+import { recordTerminatedCall, takeTerminatedCalls } from '../terminated-calls';
 import { PiRuntime, renamedRuleNoticeMemory } from '../pi-runtime';
 import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { McpClientManager } from '../mcp/mcp-client-manager';
@@ -34,6 +36,7 @@ const testPlatform = createFakePlatform();
 function bareFolder(made: FolderRuntime[], cwd = '/tmp/ws'): FolderRuntime {
   const folder = new FolderRuntime({
     pi: {} as PiCodingAgentModule,
+    mcpModule: piMcp,
     cwd,
     agentDir: '/tmp/agent',
     modelRuntime: {} as ModelRuntime,
@@ -158,6 +161,7 @@ describe('renamed-tool rule migration', () => {
     const userMcp = new McpClientManager({ clientVersion: 'test' });
     const folder = new FolderRuntime({
       pi: {} as PiCodingAgentModule,
+      mcpModule: piMcp,
       cwd,
       agentDir: path.join(root, 'agent'),
       modelRuntime: {} as ModelRuntime,
@@ -853,6 +857,21 @@ describe('createSubagentSession store', () => {
     folder.forgetSubagentSession(session);
   }, 60_000);
 
+  it('letting go of a nested session clears the calls the gate recorded for it', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const runtime = PiRuntime.get(tempDir('damocles-store-agent-'));
+    const folder = await runtime.folder(workspace);
+    const session = await folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: path.join(workspace, 'subagents'), id: 'agent-1' } });
+    recordTerminatedCall('agent-1', { toolCallId: 'c1', toolName: 'Bash', cause: 'user' });
+    folder.forgetSubagentSession(session);
+    expect(takeTerminatedCalls('agent-1')).toEqual([]);
+
+    const running = await folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: path.join(workspace, 'subagents'), id: 'agent-2' } });
+    recordTerminatedCall(running.sessionId, { toolCallId: 'c2', toolName: 'Bash', cause: 'hook' });
+    await folder.dispose();
+    expect(takeTerminatedCalls('agent-2')).toEqual([]);
+  }, 60_000);
+
   it('reopen restores the messages, the recorded model and the thinking level from the file', async () => {
     const workspace = tempDir('damocles-store-ws-');
     const agentDir = tempDir('damocles-store-agent-');
@@ -879,8 +898,52 @@ describe('createSubagentSession store', () => {
     expect(reopened.model?.provider).toBe(model.provider);
     expect(reopened.model?.id).toBe(model.id);
     expect(reopened.thinkingLevel).toBe('medium');
-    expect(() => folder.assertResumableModel(file, 'agent-1')).not.toThrow();
+    await expect(folder.assertResumableModel(file, 'agent-1')).resolves.toBeUndefined();
     folder.forgetSubagentSession(reopened);
+  }, 60_000);
+
+  // The check runs before the resume owns the file, whose stopped run may still append to it; pi's open completes a torn last line.
+  it('the resume check reads the recorded model without writing the file, accepted or refused', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const runtime = PiRuntime.get(tempDir('damocles-store-agent-'));
+    const folder = await runtime.folder(workspace);
+    const model = await reasoningModel(runtime);
+    const storeDir = path.join(workspace, 'sess-1', 'subagents');
+    const torn = '{"type":"message","id":"torn"';
+
+    const usable = await folder.createSubagentSession({ ...baseOpts(workspace), model, store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
+    usable.sessionManager.appendMessage(assistantMessage(model.provider, model.id));
+    const usableFile = usable.sessionManager.getSessionFile()!;
+    folder.forgetSubagentSession(usable);
+    fs.appendFileSync(usableFile, torn);
+    const usableBytes = fs.readFileSync(usableFile);
+    await expect(folder.assertResumableModel(usableFile, 'agent-1')).resolves.toBeUndefined();
+    expect(fs.readFileSync(usableFile).equals(usableBytes)).toBe(true);
+
+    const unusable = await folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-2' } });
+    unusable.sessionManager.appendMessage(assistantMessage('anthropic', 'no-such-model'));
+    const unusableFile = unusable.sessionManager.getSessionFile()!;
+    folder.forgetSubagentSession(unusable);
+    fs.appendFileSync(unusableFile, torn);
+    const unusableBytes = fs.readFileSync(unusableFile);
+    await expect(folder.assertResumableModel(unusableFile, 'agent-2')).rejects.toThrow('Cannot resume "agent-2": its model anthropic/no-such-model is not configured or not signed in.');
+    expect(fs.readFileSync(unusableFile).equals(unusableBytes)).toBe(true);
+  }, 60_000);
+
+  it("reopen stops reading the file when its run is stopped, rejecting with the stop's reason", async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const runtime = PiRuntime.get(tempDir('damocles-store-agent-'));
+    const folder = await runtime.folder(workspace);
+    const model = await reasoningModel(runtime);
+    const session = await folder.createSubagentSession({ ...baseOpts(workspace), model, store: { kind: 'file', dir: path.join(workspace, 'subagents'), id: 'agent-1' } });
+    session.sessionManager.appendMessage(assistantMessage(model.provider, model.id));
+    const file = session.sessionManager.getSessionFile()!;
+    folder.forgetSubagentSession(session);
+    const stop = new AbortController();
+    const reason = new Error('stopped');
+    stop.abort(reason);
+
+    await expect(folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' }, signal: stop.signal })).rejects.toBe(reason);
   }, 60_000);
 
   it('reopen throws the resume error, instead of falling back, when the recorded model is unavailable', async () => {
@@ -900,7 +963,7 @@ describe('createSubagentSession store', () => {
     await expect(
       folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
     ).rejects.toThrow(error);
-    expect(() => folder.assertResumableModel(file, 'agent-1')).toThrow(error);
+    await expect(folder.assertResumableModel(file, 'agent-1')).rejects.toThrow(error);
   }, 60_000);
 
   it('reopen throws the resume error when the recorded model exists but its provider is not signed in', async () => {
@@ -919,7 +982,7 @@ describe('createSubagentSession store', () => {
     folder.forgetSubagentSession(session);
 
     const error = `Cannot resume "agent-1": its model ${signedOut.provider}/${signedOut.id} is not configured or not signed in.`;
-    expect(() => folder.assertResumableModel(file, 'agent-1')).toThrow(error);
+    await expect(folder.assertResumableModel(file, 'agent-1')).rejects.toThrow(error);
     await expect(
       folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
     ).rejects.toThrow(error);
@@ -941,7 +1004,7 @@ describe('createSubagentSession store', () => {
     folder.forgetSubagentSession(session);
 
     const error = 'Cannot resume "agent-1": your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot), the model its session recorded.';
-    expect(() => folder.assertResumableModel(file, 'agent-1')).toThrow(error);
+    await expect(folder.assertResumableModel(file, 'agent-1')).rejects.toThrow(error);
     await expect(
       folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
     ).rejects.toThrow(error);

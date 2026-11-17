@@ -887,6 +887,78 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
     service.dispose();
   });
 
+  it('names a served grant host in no error or log line, only its port', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const service = await makeService();
+    const { entry, page } = await addTab(service, 'about:blank');
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    entry.session.send.mockImplementation(async (method: string) => (method === 'Page.navigate' ? { frameId: 'f', loaderId: 'l', errorText: 'net::ERR_CONNECTION_REFUSED' } : {}));
+    const label = 'c'.repeat(32);
+    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, `http://${label}.localhost:52341/docs/a.html`)).rejects.toThrow('Navigation to a served page on port 52341 failed: net::ERR_CONNECTION_REFUSED');
+    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, `http://${label}.localhost.:52341/docs/a.html`)).rejects.toThrow('Navigation to a served page on port 52341 failed: net::ERR_CONNECTION_REFUSED');
+    expect(logSpy.mock.calls.flat().map(String).join('\n')).not.toContain(label);
+    logSpy.mockRestore();
+    service.dispose();
+  });
+
+  it('sends no Page.navigate for any spelling Chrome loads as a file', async () => {
+    const service = await makeService();
+    const { entry, page } = await addTab(service, 'about:blank');
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    entry.session.send.mockImplementation(async () => ({ frameId: 'f', loaderId: 'l' }));
+    for (const url of ['file:///C:/Users/u/a.html', 'C:\\Users\\u\\a.html', '\\\\192.0.2.1\\s\\a.html', '//192.0.2.1/s/a.html', 'view-source:file:///etc/hosts', ' FILE:///etc/hosts', 'file://ev il/x']) {
+      await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, url), url).rejects.toThrow('The browser opens no file: page');
+    }
+    expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate')).toEqual([]);
+    expect(entry.lastUrl).toBe('about:blank');
+    service.dispose();
+  });
+
+  it('sends no Page.navigate for an agent address of any scheme but http, https and about:blank, naming the scheme', async () => {
+    const service = await makeService();
+    const { entry, page } = await addTab(service, 'about:blank');
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    entry.session.send.mockImplementation(async () => ({ frameId: 'f', loaderId: 'l' }));
+    const refused: ReadonlyArray<readonly [string, string]> = [
+      ['chrome://settings/', 'chrome:'],
+      ['CHROME://version', 'chrome:'],
+      ['javascript:alert(1)', 'javascript:'],
+      ['data:text/html,<p>x</p>', 'data:'],
+      ['view-source:http://192.0.2.1/', 'view-source:'],
+      ['view-source:https://192.0.2.1/', 'view-source:'],
+      ['about:version', 'about:'],
+      ['about:srcdoc', 'about:'],
+      ['about:blank#x', 'about:'],
+      ['blob:http://192.0.2.1/00000000-0000-0000-0000-000000000000', 'blob:'],
+      ['filesystem:http://192.0.2.1/temporary/x', 'filesystem:'],
+      ['devtools://devtools/bundled/inspector.html', 'devtools:'],
+      ['chrome-extension://abcdefghijklmnopabcdefghijklmnop/x.html', 'chrome-extension:'],
+      ['chrome-untrusted://x/', 'chrome-untrusted:'],
+      ['edge://settings', 'edge:'],
+      ['ws://192.0.2.1/', 'ws:'],
+      ['ftp://192.0.2.1/x', 'ftp:'],
+      ['localhost:3000', 'localhost:'],
+      // Chrome strips C0 controls and spaces, removes tab and newline, and lowercases the scheme, as the URL parser does
+      [' \tJaVa\nScRiPt:alert(1)', 'javascript:'],
+      ['\u0000chrome://settings', 'chrome:'],
+      ['ms-settings:privacy', 'ms-settings:'],
+    ];
+    for (const [url, scheme] of refused) {
+      await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, url), url).rejects.toThrow(`The browser does not open ${scheme} addresses; it opens only http and https URLs and about:blank.`);
+    }
+    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'javascript:alert(1)')).rejects.toThrow('To run script in the page, use BrowserEvaluate.');
+    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'example.invalid/x')).rejects.toThrow('That address is not a complete URL; the browser opens only http and https URLs and about:blank.');
+    expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate')).toEqual([]);
+    expect(entry.lastUrl).toBe('about:blank');
+    // http, https and about:blank still navigate
+    // Chrome gets the href that was checked, never the raw text
+    for (const url of ['http://192.0.2.1/a', ' HTTPS://192.0.2.1/b c\n']) await service.openForScope(BrowserService.PRIMARY_SCOPE_ID, url);
+    expect(entry.lastUrl).toBe('https://192.0.2.1/b%20c');
+    await service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'about:blank');
+    expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate').map(([, params]) => (params as { url: string }).url)).toEqual(['http://192.0.2.1/a', 'https://192.0.2.1/b%20c', 'about:blank']);
+    service.dispose();
+  });
+
   it('never falls back for an address typed with its scheme, whatever the message claims', async () => {
     expect(await navigateWith({ url: 'https://dev.example.com/' }, 'net::ERR_CONNECTION_REFUSED')).toEqual(['https://dev.example.com/']);
     expect(await navigateWith({ url: 'https://dev.example.com/', upgraded: true }, 'net::ERR_CONNECTION_REFUSED')).toEqual(['https://dev.example.com/']);

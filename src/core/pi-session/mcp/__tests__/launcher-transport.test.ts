@@ -4,23 +4,32 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as mcp from '@earendil-works/pi-mcp';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../../__mocks__/spawn-budget';
-import { installProcessLauncher, type LaunchedProcess } from '../../../process-launcher';
-import { LauncherStdioTransport } from '../launcher-transport';
+import { installProcessLauncher, type KillOptions, type LaunchedProcess, type ProcessExit } from '../../../process-launcher';
+import { launcherPipe } from '../launcher-transport';
 
 // Answers each request with its own pid and a helper's; leaves on stdin's end unless told to ignore it.
+// With --leave-helper the helper holds the server's stdout and outlives the server's exit.
 const SERVER = `
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
-const helper = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'], { stdio: 'ignore' });
+const leaveHelper = process.argv.includes('--leave-helper');
+const helper = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'], { stdio: ['ignore', leaveHelper ? 'inherit' : 'ignore', 'ignore'] });
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const request = JSON.parse(line);
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { pid: process.pid, helper: helper.pid } }) + '\\n');
 });
 process.stdin.on('end', () => {
   if (process.argv.includes('--ignore-stdin-end')) return;
-  helper.kill();
+  if (!leaveHelper) helper.kill();
   process.exit(0);
 });
+`;
+
+// Ignores stdin closing and SIGTERM; reports its pid on stderr once both are in place.
+const STUBBORN = `
+process.on('SIGTERM', () => undefined);
+process.stdin.resume();
+process.stderr.write('ready ' + process.pid + '\\n');
 `;
 
 // Writes what its mode names, then leaves on stdin's end.
@@ -42,12 +51,15 @@ process.stdin.on('end', leave);
 
 let dir: string;
 let script: string;
+let stubborn: string;
 let framing: string;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-mcp-transport-'));
   script = path.join(dir, 'server.js');
   fs.writeFileSync(script, SERVER);
+  stubborn = path.join(dir, 'stubborn.js');
+  fs.writeFileSync(stubborn, STUBBORN);
   framing = path.join(dir, 'framing.js');
   fs.writeFileSync(framing, FRAMING);
 });
@@ -70,17 +82,85 @@ async function until(check: () => boolean, ms: number): Promise<void> {
   while (!check() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
-function transport(command: string, args: string[]): LauncherStdioTransport {
-  return new LauncherStdioTransport(mcp, { command, args, cwd: dir, env: { ...process.env } as Record<string, string>, stderr: 'pipe' });
+function open(command: string, args: string[]): mcp.PipeTransportOptions['open'] {
+  return launcherPipe({ command, args, cwd: dir, env: { ...process.env } as Record<string, string>, stderr: 'pipe' });
 }
 
-async function ask(server: LauncherStdioTransport): Promise<{ pid: number; helper: number }> {
+// The grace server-manager.ts gives a server after stdin closes.
+function transport(command: string, args: string[], closeTimeoutMs = 500): mcp.PipeTransport {
+  return new mcp.PipeTransport({ open: open(command, args), closeTimeoutMs });
+}
+
+async function ask(server: mcp.PipeTransport): Promise<{ pid: number; helper: number }> {
   const reply = new Promise<mcp.JsonRpcMessage>((resolve) => server.onMessage(resolve));
   await server.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
   return ((await reply) as mcp.JsonRpcSuccessResponse).result as { pid: number; helper: number };
 }
 
-describe('LauncherStdioTransport', () => {
+// Above every platform's pid range, so the host-exit hook can never signal a real group with it.
+const FAKE_PID = 4_194_305;
+
+interface FakeChild {
+  readonly child: LaunchedProcess;
+  readonly kills: KillOptions[];
+  readonly ended: () => boolean;
+  /** The server process exits; its output stays open. */
+  exit(): void;
+  /** The server's output closes, settling `closed`. */
+  closeOutput(): void;
+  reply(message: object): void;
+}
+
+/** A launched process whose tree kill ends it, as the launcher's does. */
+function fakeChild(write: (line: string) => Promise<void> = async () => undefined): FakeChild {
+  let stdout: (chunk: Buffer) => void = () => undefined;
+  let exit!: (value: ProcessExit) => void;
+  let close!: () => void;
+  let ended = false;
+  const exited = new Promise<ProcessExit>((resolve) => (exit = resolve));
+  const closed = new Promise<void>((resolve) => (close = resolve));
+  const kills: KillOptions[] = [];
+  const child: LaunchedProcess = {
+    pid: Promise.resolve(FAKE_PID),
+    exited,
+    closed,
+    leftRunning: closed.then(() => false),
+    onData: (stream, listener) => {
+      if (stream === 'stdout') stdout = listener;
+    },
+    write: (chunk) => write(String(chunk)),
+    end: () => {
+      ended = true;
+    },
+    kill: (options = {}) => {
+      kills.push(options);
+      if (!options.tree) return;
+      exit({ code: null, signal: 'SIGTERM' });
+      close();
+    },
+  };
+  return {
+    child,
+    kills,
+    ended: () => ended,
+    exit: () => exit({ code: 0, signal: null }),
+    closeOutput: () => close(),
+    reply: (message) => stdout(Buffer.from(`${JSON.stringify(message)}\n`)),
+  };
+}
+
+async function withLauncher<T>(child: LaunchedProcess, run: () => Promise<T>): Promise<T> {
+  const previous = installProcessLauncher({ launch: () => child, createSessionJob: () => ({ id: 1, dispose: () => undefined }), dispose: async () => undefined });
+  try {
+    return await run();
+  } finally {
+    installProcessLauncher(previous!);
+  }
+}
+
+const noOutput: mcp.McpPipeHandlers = { onStdout: () => undefined, onStderr: () => undefined };
+
+describe('launcherPipe under PipeTransport', () => {
   it('exchanges newline-delimited JSON-RPC, and a server that leaves on stdin closing closes the transport', async () => {
     const server = transport(process.execPath, [script]);
     let closed = 0;
@@ -94,12 +174,23 @@ describe('LauncherStdioTransport', () => {
     await expect(server.send({ jsonrpc: '2.0', id: 2, method: 'ping' })).rejects.toBeInstanceOf(mcp.McpConnectionClosedError);
   }, SPAWN_TEST_TIMEOUT_MS);
 
-  it('kills a server that ignores stdin closing, with what it started', async () => {
+  it('stops a server that ignores stdin closing within 2.5 s, with what it started', async () => {
     const server = transport(process.execPath, [script, '--ignore-stdin-end']);
     await server.start();
     const { pid, helper } = await ask(server);
+    const started = Date.now();
     await server.close();
+    expect(Date.now() - started).toBeLessThan(2_500);
     await until(() => !alive(pid) && !alive(helper), 5_000);
+    expect([alive(pid), alive(helper)]).toEqual([false, false]);
+  }, SPAWN_TEST_TIMEOUT_MS);
+
+  it('ends what a server that exits during the close left holding its output, without waiting out the grace', async () => {
+    // Only the kill at the server's exit can end the helper before this grace runs out.
+    const server = transport(process.execPath, [script, '--leave-helper'], 60_000);
+    await server.start();
+    const { pid, helper } = await ask(server);
+    await server.close();
     expect([alive(pid), alive(helper)]).toEqual([false, false]);
   }, SPAWN_TEST_TIMEOUT_MS);
 
@@ -119,16 +210,90 @@ describe('LauncherStdioTransport', () => {
     const errors: Error[] = [];
     server.onError((error) => errors.push(error));
     const closed = new Promise<void>((resolve) => server.onClose(resolve));
-    // cmd.exe starts and exits 1 on Windows, which cross-spawn reports after the start, as pi-mcp's transport does
+    // cmd.exe starts and exits 1 on Windows, which cross-spawn reports after the start, as pi-mcp's stdio transport does
     const started = await server.start().then(() => undefined, (error: NodeJS.ErrnoException) => error);
-    await closed;
+    if (started === undefined) await closed;
     const error = (started ?? errors[0]) as NodeJS.ErrnoException | undefined;
     expect(error?.code).toBe('ENOENT');
   }, SPAWN_TEST_TIMEOUT_MS);
+
+  it('settles exited after close(), escalating to SIGKILL on POSIX for a server that ignores SIGTERM', async () => {
+    let ready!: (pid: number) => void;
+    const readyPid = new Promise<number>((resolve) => (ready = resolve));
+    const pipe = await open(process.execPath, [stubborn])({
+      onStdout: () => undefined,
+      onStderr: (bytes) => {
+        const match = /ready (\d+)/.exec(Buffer.from(bytes).toString('utf8'));
+        if (match) ready(Number(match[1]));
+      },
+    });
+    const pid = await readyPid;
+    pipe.close();
+    await pipe.exited;
+    expect(alive(pid)).toBe(false);
+  }, SPAWN_TEST_TIMEOUT_MS);
 });
 
-describe('LauncherStdioTransport framing, as pi-mcp frames', () => {
-  async function run(mode: string, until: (seen: { messages: mcp.JsonRpcMessage[]; errors: Error[] }) => boolean): Promise<{ server: LauncherStdioTransport; messages: mcp.JsonRpcMessage[]; errors: Error[] }> {
+describe('launcherPipe with a stand-in launcher', () => {
+  it('kills the tree when the server exits after stdin closed, and not when it exits on its own', async () => {
+    const own = fakeChild();
+    await withLauncher(own.child, async () => {
+      const pipe = await open('/unused', [])(noOutput);
+      own.exit();
+      await own.child.exited;
+      await Promise.resolve();
+      expect(own.kills).toEqual([]);
+      pipe.close();
+    });
+
+    const closing = fakeChild();
+    await withLauncher(closing.child, async () => {
+      const pipe = await open('/unused', [])(noOutput);
+      pipe.closeStdin();
+      expect(closing.ended()).toBe(true);
+      closing.exit();
+      await pipe.exited;
+      expect(closing.kills).toEqual([{ tree: true, signal: 'SIGTERM' }]);
+    });
+  });
+
+  it('stops the server when a write to its stdin fails, so pending requests fail at once', async () => {
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    const fake: FakeChild = fakeChild(async (line) => {
+      const message = JSON.parse(line) as { id?: number; method: string };
+      if (message.method === 'initialize') {
+        fake.reply({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: mcp.LATEST_PROTOCOL_VERSION, capabilities: {}, serverInfo: { name: 'fake', version: '1' } } });
+      }
+      if (message.method === 'tools/list') throw epipe;
+    });
+    await withLauncher(fake.child, async () => {
+      const client = new mcp.McpClient({ name: 'test', version: '1' });
+      await client.connect(new mcp.PipeTransport({ open: open('/unused', []), closeTimeoutMs: 500 }));
+      const started = Date.now();
+      await expect(client.listTools({ timeoutMs: 60_000 })).rejects.toBeInstanceOf(mcp.McpConnectionClosedError);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(fake.kills[0]).toEqual({ tree: true, signal: 'SIGTERM' });
+    });
+  });
+
+  it('leaves a server that already ended alone when a write in flight fails', async () => {
+    let reject!: (error: Error) => void;
+    const fake = fakeChild(() => new Promise<void>((_resolve, rejectWrite) => (reject = rejectWrite)));
+    await withLauncher(fake.child, async () => {
+      const pipe = await open('/unused', [])(noOutput);
+      pipe.write('{}\n');
+      fake.exit();
+      fake.closeOutput();
+      await pipe.exited;
+      reject(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(fake.kills).toEqual([]);
+    });
+  });
+});
+
+describe('launcherPipe framing, as pi-mcp frames', () => {
+  async function run(mode: string, until: (seen: { messages: mcp.JsonRpcMessage[]; errors: Error[] }) => boolean): Promise<{ server: mcp.PipeTransport; messages: mcp.JsonRpcMessage[]; errors: Error[] }> {
     const server = transport(process.execPath, [framing, mode]);
     const seen = { messages: [] as mcp.JsonRpcMessage[], errors: [] as Error[] };
     server.onMessage((message) => seen.messages.push(message));
@@ -176,27 +341,4 @@ describe('LauncherStdioTransport framing, as pi-mcp frames', () => {
     expect(server.stderr).toHaveLength(64 * 1024);
     expect(server.stderr.endsWith('eeeEND')).toBe(true);
   }, SPAWN_TEST_TIMEOUT_MS);
-
-  it('rejects a send whose write to the server\'s stdin fails, as pi-mcp\'s does', async () => {
-    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
-    const pending = new Promise<never>(() => undefined);
-    const child: LaunchedProcess = {
-      pid: Promise.resolve(4242),
-      exited: pending,
-      closed: pending,
-      leftRunning: pending,
-      onData: () => undefined,
-      write: () => Promise.reject(epipe),
-      end: () => undefined,
-      kill: () => undefined,
-    };
-    const previous = installProcessLauncher({ launch: () => child, createSessionJob: () => ({ id: 1, dispose: () => undefined }), dispose: async () => undefined });
-    try {
-      const server = transport('/unused', []);
-      await server.start();
-      await expect(server.send({ jsonrpc: '2.0', id: 1, method: 'ping' })).rejects.toBe(epipe);
-    } finally {
-      installProcessLauncher(previous!);
-    }
-  });
 });
