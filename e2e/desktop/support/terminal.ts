@@ -74,6 +74,33 @@ export async function hoverTerminalText(shell: Page, line: string, needle: strin
   await shell.mouse.move(point.x, point.y, { steps: 4 });
 }
 
+/** The active terminal's rows that xterm's selection covers, as terminalText reads them. */
+async function selectedRows(shell: Page): Promise<string[]> {
+  return activeTerminal(shell).evaluate((view) => {
+    const marks = [...view.querySelectorAll('.xterm-selection div')].map((mark) => mark.getBoundingClientRect());
+    return [...view.querySelectorAll('.xterm-rows > div')].filter((row) => {
+      const box = row.getBoundingClientRect();
+      const middle = box.top + box.height / 2;
+      return marks.some((mark) => middle >= mark.top && middle < mark.bottom);
+    }).map((row) => (row.textContent ?? '').replace(/\u00a0/g, ' ').trimEnd());
+  });
+}
+
+/**
+ * Triple-clicks the last row reading `line` until xterm's selection is that row. Output landing between the measure and the
+ * click can scroll the row from under the pointer (ConPTY may deliver a line's end after its text); a selection, once made,
+ * stays on its buffer line.
+ */
+export async function selectTerminalLine(shell: Page, line: string): Promise<void> {
+  await expect(async () => {
+    const row = activeTerminal(shell).locator('.xterm-rows > div', { hasText: line }).last();
+    // xterm's screen layer takes the pointer above its rows, so the click lands on the row's position.
+    const box = (await row.boundingBox())!;
+    await shell.mouse.click(box.x + 4, box.y + box.height / 2, { clickCount: 3 });
+    await expect.poll(() => selectedRows(shell), { timeout: 2_000 }).toEqual([line]);
+  }).toPass({ timeout: 20_000 });
+}
+
 export const linkUnderline = (shell: Page): Locator => activeTerminal(shell).getByTestId('terminal-link-underline');
 // The hint on screen, not one still playing its exit after the pointer left an earlier link.
 export const linkHint = (shell: Page): Locator => activeTerminal(shell).locator('[data-testid="terminal-link-hint"]:not([class*="-leave-active"])');

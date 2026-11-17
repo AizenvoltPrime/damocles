@@ -146,6 +146,35 @@ export async function inShownDesignView<T>(app: ElectronApplication, code: strin
   return ran!.value;
 }
 
+/** The shown design view's zoom as main applied it and as its page lays out at it, and the page's CSS width. */
+async function shownDesignZoom(app: ElectronApplication): Promise<{ applied: number; inPage: number; width: number } | undefined> {
+  return app.evaluate(async ({ BrowserWindow, WebContentsView, screen }, scheme) => {
+    const win = BrowserWindow.getAllWindows()[0]!;
+    const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView | undefined;
+    if (!view) return undefined;
+    const [ratio, width] = await (view.webContents.executeJavaScript('[devicePixelRatio, innerWidth]', true) as Promise<[number, number]>);
+    return { applied: view.webContents.getZoomFactor(), inPage: ratio / screen.getDisplayMatching(win.getBounds()).scaleFactor, width };
+  }, DESIGN_SCHEME);
+}
+
+/**
+ * Waits until the shown design view lays out at its frame's settled zoom. A preset glides the frame for 0.35 s with the view at
+ * the new CSS width throughout and its zoom following the frame, and the page's layout moves with the zoom.
+ */
+export async function settledDesignZoom(app: ElectronApplication, shell: Page): Promise<void> {
+  const frame = shell.getByTestId('design-preview-frame');
+  await expect(frame).not.toHaveAttribute('data-glide');
+  // the frame's width as the shell reports it (content-bounds.ts), over which the shell zooms the page's CSS width
+  const frameWidth = await frame.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return Math.round(rect.right) - Math.max(0, Math.round(rect.left));
+  });
+  await expect.poll(async () => {
+    const zoom = await shownDesignZoom(app);
+    return zoom !== undefined && Math.abs(zoom.applied - frameWidth / zoom.width) < 0.001 && Math.abs(zoom.inPage - zoom.applied) < 0.001;
+  }, { message: 'the design view lays out at its frame\'s zoom' }).toBe(true);
+}
+
 /** Records every URL main hands to the OS from now on, without opening any. */
 export async function recordOpenExternal(app: ElectronApplication): Promise<() => Promise<string[]>> {
   await app.evaluate(({ shell }) => {

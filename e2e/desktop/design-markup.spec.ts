@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, selectChatPage, test } from './support/fixtures';
 import { expectNoAxeViolations } from './support/axe';
-import { DESIGN_APP, designViews, grounding, inShownDesignView, startDesignChat } from './support/design';
+import { DESIGN_APP, designViews, grounding, inShownDesignView, settledDesignZoom, startDesignChat } from './support/design';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { agentRequests, call, lastToolResult, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { openProjectChat, setPageSize } from './support/screenshots';
@@ -116,6 +116,8 @@ test('markup on the frozen preview: a pin on a row anchors to ui/Table, a box li
     await shell.locator('[data-testid="design-preview-preset"][data-preset="xl"]').click();
     await expect(shell.getByTestId('design-preview-readout')).toHaveText(/^xl · 1280 px · \d+%$/);
     await expect.poll(() => inShownDesignView<number>(app, 'window.innerWidth'), { timeout: 30_000 }).toBe(1280);
+    // The freeze captures at the settled zoom, so the rects below are read at it too.
+    await settledDesignZoom(app, shell);
 
     // Where the second row and the button are, read from the live page before it freezes.
     await expect.poll(() => rectInView(app, '#row-2').then(() => 'shown').catch(() => 'hidden'), { timeout: 30_000 }).toBe('shown');

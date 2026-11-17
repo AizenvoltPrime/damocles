@@ -10,7 +10,7 @@ import { git, initRepo } from './support/git';
 import { call, lastToolResultRequest, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { overlayMenu, readyOverlay } from './support/overlay';
 import { recordingCredentialHelper } from './support/recording-credential-helper';
-import { clickAccountChip, scmSection, setSection } from './support/scm';
+import { clickAccountChip, commitMessage, scmSection, setSection } from './support/scm';
 import { openProjectChat } from './support/screenshots';
 import { closeSettingsModal } from './support/settings';
 import { shellPage } from './support/shell';
@@ -76,6 +76,8 @@ async function damoclesProject(run: RefusedRun, home: HermeticHome): Promise<Pag
 async function bindInChip(app: ElectronApplication, login: string): Promise<void> {
   const shell = await shellPage(app);
   await setSection(shell, 'scm-section', true);
+  // The title actions arrive with the repository and shorten the title, moving the chip, so it is clicked once the repository shows.
+  await expect(commitMessage(shell)).toBeVisible(CHECKED);
   const chip = scmSection(shell).getByTestId('forge-account-chip');
   await expect(chip).toBeVisible(CHECKED);
   const overlay = await readyOverlay(app);

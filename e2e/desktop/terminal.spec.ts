@@ -16,6 +16,7 @@ import {
   openTerminal,
   readFromTerminal,
   runInTerminal,
+  selectTerminalLine,
   terminalPane,
   terminalRows,
   terminalText,
@@ -248,11 +249,7 @@ test('Ctrl+C copies a selection on Windows and is ^C without one, and Ctrl+V pas
   await runInTerminal(shell, `node -e "process.stdin.setRawMode(true);console.log('e2e-copy-'+'5b1c');console.log('raw-'+'ready');process.stdin.once('data',(d)=>{console.log('byte='+d[0]);process.exit()})"`);
   await expect.poll(() => terminalText(shell)).toContain('raw-ready');
   await clipboard.writeText(app, 'before');
-  const line = activeTerminal(shell).locator('.xterm-rows > div', { hasText: 'e2e-copy-5b1c' }).last();
-  // xterm's screen layer takes the pointer above its rows, so the triple click lands on the row's position.
-  const box = (await line.boundingBox())!;
-  await shell.mouse.click(box.x + 4, box.y + box.height / 2, { clickCount: 3 });
-  await expect(activeTerminal(shell).locator('.xterm-selection div').first()).toBeAttached();
+  await selectTerminalLine(shell, 'e2e-copy-5b1c');
 
   await pressKeys(app, '/shell/', 'C', ['control']);
   if (windows) {
