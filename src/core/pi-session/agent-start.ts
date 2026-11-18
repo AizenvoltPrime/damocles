@@ -133,7 +133,7 @@ export interface DamoclesSystemPromptInputs {
    *  delivery-mechanism ladder: the `damocles_team` section, the plan-mode implementation directive and
    *  the execution-time directive a bound plan file carries; the other two rungs are emitted either way. */
   teamEnabled: boolean;
-  /** Whether the native web tools are enabled (`damocles.pi.webSearch.enabled`, off by default). While
+  /** Whether the native web tools are enabled (`damocles.pi.webSearch.enabled`, on by default). While
    *  off they are not in the session's eligible set at all, so both the `damocles_web_verification`
    *  section and the plan-mode research clause are suppressed rather than pointing the model at
    *  a `ToolSearch` group that answers "Not available in this session". Required, not optional: an

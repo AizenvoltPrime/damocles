@@ -41,6 +41,9 @@ export interface AuthoritiesDeps {
   readonly projectOfCwd: (authorityKey: string, cwd: string) => string | undefined;
   // an authority's state changed
   readonly changed: (authorityKey: string) => void;
+  // a fresh connection's daemon, settled before anything sees the connection: replaced when it was another build's and
+  // stopped, so the attempt attaches again and the bridge starts this build's
+  readonly adopt: (authorityKey: string, connection: RemoteConnection) => Promise<'kept' | 'replaced'>;
   // a fresh connection is up, once per connection: never for a resume or a cleared suspect state
   readonly attached: (authorityKey: string, connection: RemoteConnection) => void;
   // what an action on an authority fails with while it is not connected
@@ -165,26 +168,36 @@ export class Authorities {
       held.close('the daemon no longer holds this connection');
       log(`[remote] ${entry.authorityKey}: the daemon refused the reconnection token; attaching fresh`);
     }
-    let connection: RemoteConnection;
-    try {
-      connection = await connect({
-        stream: await transport(),
-        appVersion: this.deps.appVersion,
-        clientId: this.deps.clientId,
-        deviceName: this.deps.deviceName,
-        ...(this.deps.protocolVersion !== undefined ? { protocolVersion: this.deps.protocolVersion } : {}),
-        terminalIdleDays: this.deps.terminalIdleDays(),
-        onOtherProtocol: (daemon) => {
-          // a daemon answering after the quit began or a Disconnect is let go at once, or it would connect again
-          if (this.disposed || superseded()) daemon.close(this.disposed ? 'the app is quitting' : 'the user disconnected');
-          else this.deps.otherProtocol(entry.authorityKey, daemon);
-        },
-        log,
-      });
-    } catch (err) {
-      log(`[remote] connecting to ${entry.authorityKey} failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.setState(entry, superseded() ? 'offline' : 'failed');
-      throw err;
+    const attachFresh = async (): Promise<RemoteConnection> => {
+      try {
+        return await connect({
+          stream: await transport(),
+          appVersion: this.deps.appVersion,
+          clientId: this.deps.clientId,
+          deviceName: this.deps.deviceName,
+          ...(this.deps.protocolVersion !== undefined ? { protocolVersion: this.deps.protocolVersion } : {}),
+          terminalIdleDays: this.deps.terminalIdleDays(),
+          onOtherProtocol: (daemon) => {
+            // a daemon answering after the quit began or a Disconnect is let go at once, or it would connect again
+            if (this.disposed || superseded()) daemon.close(this.disposed ? 'the app is quitting' : 'the user disconnected');
+            else this.deps.otherProtocol(entry.authorityKey, daemon);
+          },
+          log,
+        });
+      } catch (err) {
+        log(`[remote] connecting to ${entry.authorityKey} failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.setState(entry, superseded() ? 'offline' : 'failed');
+        throw err;
+      }
+    };
+    let connection = await attachFresh();
+    // the authority stays connecting across a replace, so nothing sees the stopped daemon's connection or the gap after it
+    while (!this.disposed && !superseded() && (await this.deps.adopt(entry.authorityKey, connection)) === 'replaced') {
+      connection.close('the daemon was replaced by this build');
+      // the quit or a Disconnect during the check ends the attempt below, keeping nothing
+      if (this.disposed || superseded()) break;
+      log(`[remote] ${entry.authorityKey}: attaching to the daemon of this build`);
+      connection = await attachFresh();
     }
     // a connect that finished after the quit began is not kept, or its bridge would outlive the app
     if (this.disposed) {

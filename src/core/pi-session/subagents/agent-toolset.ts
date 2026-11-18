@@ -10,7 +10,7 @@
  *  - edit → Edit (custom), powershell → PowerShell (custom)
  *  - `*` / `all` / omitted (builtinToolNames === undefined) → mirror the parent's full active set
  *  - an explicit list is intersected with the parent's available set: EVERY named tool only resolves
- *    when it is actually active in the panel. This matters most for opt-in tools (web search/fetch,
+ *    when it is actually active in the panel. This matters most for switchable tools (web search/fetch,
  *    memory/compass/browser), but applies to all — a tool the panel has disabled (e.g. `write`) is
  *    dropped even if the agent names it, matching the `*`-inherit case and the panel's own gating
  *  - ToolSearch is always added when the parent has it — it is a capability of the harness, not a tool

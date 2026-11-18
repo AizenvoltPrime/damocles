@@ -33,7 +33,7 @@ function connection(closedAlready?: string) {
   return { value, close };
 }
 
-function authorities(transport: () => Promise<PassThrough> = async () => new PassThrough()) {
+function authorities(transport: () => Promise<PassThrough> = async () => new PassThrough(), adopt: (connection: RemoteConnection) => Promise<'kept' | 'replaced'> = async () => 'kept') {
   const changes: string[] = [];
   const attached: RemoteConnection[] = [];
   const subject: Authorities = new Authorities({
@@ -47,6 +47,7 @@ function authorities(transport: () => Promise<PassThrough> = async () => new Pas
     changed: (key) => {
       changes.push(`${key}:${subject.state(key)}`);
     },
+    adopt: (_key, connection) => adopt(connection),
     attached: (_key, connection) => {
       attached.push(connection);
     },
@@ -100,6 +101,40 @@ beforeEach(() => {
 });
 
 describe('Authorities', () => {
+  it('settles a replaced daemon before it reports the authority connected, and publishes only the next connection', async () => {
+    const stopped = connection();
+    const current = connection();
+    connect.mockResolvedValueOnce(stopped.value).mockResolvedValueOnce(current.value);
+    const checked: RemoteConnection[] = [];
+    const { subject, changes, attached } = authorities(undefined, async (checking) => {
+      checked.push(checking);
+      return checking === stopped.value ? 'replaced' : 'kept';
+    });
+    await subject.connect('ssh+host');
+    expect(checked).toEqual([stopped.value, current.value]);
+    expect(stopped.close).toHaveBeenCalledWith('the daemon was replaced by this build');
+    expect(attached).toEqual([current.value]);
+    expect(subject.connection('ssh+host')).toBe(current.value);
+    // never connected to the stopped daemon, nor offline or failed in the gap
+    expect(changes).toEqual(['ssh+host:connecting', 'ssh+host:connected']);
+  });
+
+  it('keeps nothing and attaches no next connection when the user disconnects during the check', async () => {
+    const stopped = connection();
+    connect.mockResolvedValueOnce(stopped.value);
+    let answer!: (outcome: 'kept' | 'replaced') => void;
+    const { subject, attached } = authorities(undefined, () => new Promise((resolve) => (answer = resolve)));
+    const attempt = subject.connect('ssh+host');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    subject.disconnect('ssh+host');
+    answer('replaced');
+    await expect(attempt).rejects.toThrow('was disconnected while connecting');
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(stopped.close).toHaveBeenCalledWith('the daemon was replaced by this build');
+    expect(attached).toEqual([]);
+    expect(subject.state('ssh+host')).toBe('offline');
+  });
+
   it('shares one attempt among callers and is connected once it lands', async () => {
     const { value } = connection();
     let land!: (connection: RemoteConnection) => void;

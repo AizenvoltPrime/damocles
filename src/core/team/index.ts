@@ -160,7 +160,7 @@ export class TeamService {
   }
 
   get isEnabled(): boolean {
-    return platform().settings.get<boolean>('damocles.team.enabled', false);
+    return platform().settings.get<boolean>('damocles.team.enabled', true);
   }
 
   setPendingToolUseId(toolUseId: string): void {

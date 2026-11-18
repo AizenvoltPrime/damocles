@@ -5,26 +5,38 @@ import { Ban, CircleCheck, CircleQuestionMark, CircleX, Hourglass, LoaderCircle,
 
 type ToolStatus = ToolCall["status"];
 
-function iconFor(status: ToolStatus): Component {
+type StatusIconKind = "spinner" | "waiting" | "done" | "blocked" | "failed" | "stopped" | "unrecorded";
+
+const STATUS_ICONS: Record<StatusIconKind, Component> = {
+  spinner: LoaderCircle,
+  waiting: Hourglass,
+  done: CircleCheck,
+  blocked: ShieldBan,
+  failed: CircleX,
+  stopped: Ban,
+  unrecorded: CircleQuestionMark,
+};
+
+function iconKindFor(status: ToolStatus): StatusIconKind {
   switch (status) {
     case "pending":
     case "running":
-      return LoaderCircle;
+      return "spinner";
     case "awaiting_approval":
-      return Hourglass;
+      return "waiting";
     case "approved":
     case "completed":
-      return CircleCheck;
+      return "done";
     case "blocked":
-      return ShieldBan;
+      return "blocked";
     case "denied":
     case "failed":
-      return CircleX;
+      return "failed";
     case "abandoned":
     case "cancelled":
-      return Ban;
+      return "stopped";
     case "unrecorded":
-      return CircleQuestionMark;
+      return "unrecorded";
   }
 }
 
@@ -131,6 +143,8 @@ export function useToolStatusBadge(status: MaybeRefOrGetter<ToolStatus>): Comput
 
 export interface ToolCardStatus {
   statusIcon: ComputedRef<Component>;
+  /** Which icon shows, for a Transition's key: a status change that keeps the icon (pending to running) replays nothing. */
+  statusIconKind: ComputedRef<StatusIconKind>;
   /** The icon's colour and its motion.css class. */
   statusClass: ComputedRef<string>;
   /** The motion.css class alone, for an icon that takes its colour from a chip. */
@@ -180,7 +194,8 @@ export function useToolStatusNote(status: MaybeRefOrGetter<ToolStatus>, abandonR
 /** The one status vocabulary of every tool card (the reference's tool row, Chat Panel.dc.html m.isTool). */
 export function useToolCardStatus(status: MaybeRefOrGetter<ToolStatus>): ToolCardStatus {
   return {
-    statusIcon: computed(() => iconFor(toValue(status))),
+    statusIcon: computed(() => STATUS_ICONS[iconKindFor(toValue(status))]),
+    statusIconKind: computed(() => iconKindFor(toValue(status))),
     statusClass: computed(() => [textClassFor(toValue(status)), motionFor(toValue(status))].filter(Boolean).join(" ")),
     statusMotion: computed(() => motionFor(toValue(status))),
     cardClass: computed(() => borderClassFor(toValue(status))),

@@ -546,12 +546,17 @@ defineExpose({
                     name="t-icon"
                     :css="twist"
                   >
-                    <LoaderCircle
+                    <!-- The wrapper is what transitions: the spinner's endless spin on the leaving element would hold it for a turn. -->
+                    <span
                       v-if="iconKey === 'busy'"
                       key="busy"
-                      aria-hidden="true"
-                      class="d-spinning size-3.25"
-                    />
+                      class="flex"
+                    >
+                      <LoaderCircle
+                        aria-hidden="true"
+                        class="d-spinning size-3.25"
+                      />
+                    </span>
                     <PencilLine
                       v-else-if="iconKey === 'amend'"
                       key="amend"

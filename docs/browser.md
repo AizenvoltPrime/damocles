@@ -2,7 +2,7 @@
 
 This page covers the integrated browser: how its pages open in VS Code and the desktop app, the tools the agent gets, how credentials and dialogs are handled, and its known limits.
 
-The browser is disabled by default; enable it in Settings › Tools & integrations or via `damocles.browser.enabled`.
+The browser is enabled by default; turn it off in Settings › Tools & integrations or via `damocles.browser.enabled`.
 
 ## Pages and tabs
 

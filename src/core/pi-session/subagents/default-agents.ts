@@ -30,7 +30,7 @@ import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
  * tools, the integrated browser tools and the GitHub and GitLab reads. Research and planning legitimately
  * need the web, some questions are only answerable against a running app or a live page, and some only
  * from the repository's pipelines, merge requests and issues. `resolveAgentToolset` maps these to the
- * Damocles active-set names and gates the opt-in ones by availability, so the web tools appear only when
+ * Damocles active-set names and gates the switchable ones by availability, so the web tools appear only when
  * `damocles.pi.webSearch.enabled` is on, the browser tools only when `damocles.browser.enabled` is on and
  * the GitHub and GitLab reads only when `damocles.desktop.forge.agentTools` is on, exactly like the parent
  * panel and a `tools: *` agent.

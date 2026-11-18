@@ -124,6 +124,7 @@
   "Could not save {0}: {1}": "Could not save {0}: {1}",
   "The permission rule was not saved. {0}": "The permission rule was not saved. {0}",
   "{0} is not valid JSON, so Damocles keeps using the settings it last read from it. Fix the file to apply it: {1}": "{0} is not valid JSON, so Damocles keeps using the settings it last read from it. Fix the file to apply it: {1}",
+  "{0} gives {1} a value of the wrong type, so Damocles ignores it and uses the default or another settings file's value. Fix the value to apply it.": "{0} gives {1} a value of the wrong type, so Damocles ignores it and uses the default or another settings file's value. Fix the value to apply it.",
   "Damocles cannot reach your operating system's keyring, so the key or sign-in you just saved lasts only until Damocles restarts. Turn on the keyring to keep it.": "Damocles cannot reach your operating system's keyring, so the key or sign-in you just saved lasts only until Damocles restarts. Turn on the keyring to keep it.",
   "How to Turn It On": "How to Turn It On",
   "Show Log": "Show Log",

@@ -87,6 +87,8 @@ export interface ConnectionsDeps {
   readonly mirrorWatches: MirrorWatches;
   // every welcomed connection, connected or dropped inside its grace; a refused connection is not one
   readonly connectionsChanged: (connections: readonly ConnectionPresence[]) => void;
+  // every connection, a refused one included, before connectionsChanged drops it
+  readonly connectionClosed: (id: string) => void;
   // where the client's agent is on its latest connection: the relay once that connection offered it, else the agent socket
   // its bridge named; undefined once it dropped or closed
   readonly agentUpstream: (clientId: string, upstream: AgentUpstream | undefined) => void;
@@ -98,7 +100,11 @@ export interface ConnectionsDeps {
   readonly log: (line: string) => void;
 }
 
-export type ConnectionPresence = 'connected' | 'inGrace';
+export interface ConnectionPresence {
+  // ControlConnection's id; a resume keeps it
+  readonly id: string;
+  readonly state: 'connected' | 'inGrace';
+}
 
 export interface Connections {
   // token: the one the endpoint the socket reached was opened with
@@ -133,7 +139,8 @@ const upstreamOf = (live: Live, agentSock: string | undefined): AgentUpstream | 
 
 export function createConnections(deps: ConnectionsDeps): Connections {
   const { log } = deps;
-  const sockets = new Set<Duplex>();
+  // each open socket and the protocol writing to it: its handshake's, then a resumed connection's held one
+  const sockets = new Map<Duplex, PersistentProtocol>();
   // each welcomed socket's connection id, which endAll may keep open
   const socketIds = new Map<Duplex, string>();
   // before their handshake: any local user can open the Windows pipe, so these are capped
@@ -152,7 +159,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     for (const live of clients.values()) if (!live.grace) live.clientsEvents?.(attachedFor(live));
   };
   const presence = (): void => {
-    deps.connectionsChanged([...clients.values()].map((live) => (live.grace ? 'inGrace' : 'connected')));
+    deps.connectionsChanged([...clients.values()].map((live) => ({ id: live.id, state: live.grace ? 'inGrace' : 'connected' })));
     publishClients();
   };
 
@@ -170,6 +177,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     clearTimeout(live.grace);
     live.grace = undefined;
     socketIds.set(socket, live.id);
+    sockets.set(socket, live.protocol);
     deps.agentUpstream(live.clientId, upstreamOf(live, agentSock));
     live.protocol.resume(streamSocket(socket), rest);
     live.resumed();
@@ -343,6 +351,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     }
     protocol.onClose((reason) => {
       for (const disposable of disposables.reverse()) disposable.dispose();
+      deps.connectionClosed(id);
       presence();
       log(`[daemon] ${id} closed: ${reason}`);
     });
@@ -356,7 +365,6 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         socket.destroy();
         return;
       }
-      sockets.add(socket);
       unauthenticated.add(socket);
       socket.once('close', () => {
         sockets.delete(socket);
@@ -364,6 +372,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         unauthenticated.delete(socket);
       });
       const protocol = createPersistentProtocol({ socket: streamSocket(socket), maxBodyBytes: HANDSHAKE_MAX_BYTES, log });
+      sockets.set(socket, protocol);
       acceptConnection({
         protocol,
         token,
@@ -380,19 +389,20 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       ending = true;
       // a connection inside its grace has no socket left to end
       for (const live of [...clients.values()]) if (live.grace && !except?.has(live.id)) live.protocol.close('the daemon is shutting down');
-      await Promise.all([...sockets].filter((socket) => !except?.has(socketIds.get(socket) ?? '')).map((socket) => new Promise<void>((resolve) => {
+      await Promise.all([...sockets].filter(([socket]) => !except?.has(socketIds.get(socket) ?? '')).map(([socket, protocol]) => new Promise<void>((resolve) => {
         // a peer that never ends its side is cut off
         const timer = setTimeout(() => socket.destroy(), END_TIMEOUT_MS);
         socket.once('close', () => {
           clearTimeout(timer);
           resolve();
         });
-        socket.end();
+        // its protocol stops its keepalive and sends first, which would otherwise write after the end until the peer closes
+        protocol.end('the daemon is shutting down');
       })));
     },
     destroyAll: () => {
       ending = true;
-      for (const socket of sockets) socket.destroy();
+      for (const socket of sockets.keys()) socket.destroy();
       for (const live of [...clients.values()]) live.protocol.close('the daemon stopped');
     },
   };

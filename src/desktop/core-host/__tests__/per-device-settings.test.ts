@@ -174,3 +174,17 @@ describe('a voice key on a daemon\'s core', () => {
     expect([store.get(WAKE_WORD), changes.mock.calls.length]).toEqual(['hey jarvis', 0]);
   });
 });
+
+describe('a daemon core reading a client\'s user layer', () => {
+  it('ignores a value of a type its setting does not declare, which an app predating the type check relays', () => {
+    const typed = parseContributedConfiguration({
+      contributes: { configuration: { properties: { 'damocles.showCacheMissNotices': { default: false, type: 'boolean' } } } },
+    });
+    const remote = createFakeRemoteHost();
+    remote.set('clientUser', 'device-a', { settings: { 'damocles.showCacheMissNotices': 'true' }, permissionRules: [] });
+    remote.setActing('device-a');
+    const { store } = storeOver(createFakePlatform(), typed, {}, remote);
+    expect(store.inspect('damocles.showCacheMissNotices')).toEqual({ defaultValue: false });
+    expect(store.get('damocles.showCacheMissNotices')).toBe(false);
+  });
+});

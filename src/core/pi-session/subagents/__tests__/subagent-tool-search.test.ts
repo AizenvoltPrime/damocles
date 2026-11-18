@@ -153,7 +153,7 @@ describe('subagent ToolSearch registration (Slice 3 §3.3)', () => {
 
   it('advertises `web (5)` and its five names to a web-only agent, and nothing else', () => {
     // A web-ONLY universe is the sharp shape here, not a web-plus-browser one: it is the configuration an
-    // Explore agent actually gets in the default workspace (web on, browser off), and it is the only one
+    // Explore agent gets with the web tools on and the browser off, and it is the only one
     // that can distinguish "the menu is scoped to this agent's universe" from "the menu lists every
     // built-in group". A subagent advertised a group its own allowlist cannot reach spends a whole turn
     // on a call that can only ever fail.

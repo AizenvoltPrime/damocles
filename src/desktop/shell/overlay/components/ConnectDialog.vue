@@ -1556,6 +1556,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
             :host-name="hostName"
             :recent-folders="picker?.roots ?? host?.recentFolders ?? []"
             :browse="(path) => answerOf(api.browseHost(hostId!, path))"
+            :connected="host === undefined ? undefined : host.connection === 'connected'"
             :pick="picker && { mode: picker.mode, ...(picker.buttonLabel !== undefined ? { buttonLabel: picker.buttonLabel } : {}) }"
             :open-label="containerFlow?.kind === 'devcontainer' ? t('remote.container.openInContainer') : undefined"
             @pick="pick"

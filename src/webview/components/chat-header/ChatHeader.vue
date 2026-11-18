@@ -123,15 +123,20 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
           {{ title }}
         </h1>
         <Transition name="t-fade">
+          <!-- The wrapper takes the fade: the dot's endless pulse on the same element would replace it. -->
           <span
             v-if="status"
-            class="size-1.75 shrink-0 rounded-full animate-[d-pulse_1.6s_ease-in-out_infinite]"
-            :class="status.dot"
-            role="img"
-            :aria-label="status.label"
-            :title="status.label"
-            data-testid="chat-header-status"
-          />
+            class="flex shrink-0"
+          >
+            <span
+              class="size-1.75 rounded-full animate-[d-pulse_1.6s_ease-in-out_infinite]"
+              :class="status.dot"
+              role="img"
+              :aria-label="status.label"
+              :title="status.label"
+              data-testid="chat-header-status"
+            />
+          </span>
         </Transition>
       </div>
       <div class="flex min-w-0 items-center gap-1.5 text-11.5/4 text-(--d-faint)">

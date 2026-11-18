@@ -271,6 +271,18 @@ describe('daemon connections', () => {
     expect(await daemon.exited).toBe('control.shutdownNow');
     expect(await readPidFile(daemon.paths.pidFile)).toBeUndefined();
   });
+
+  // two apps of different builds on one host: the one that asks must not end the other's connection
+  it('after one client asks shutdownWhenIdle, stays while another client is connected and exits once it leaves', async () => {
+    const asker = await connectClient(await daemon.connect(), { clientId: 'asker' });
+    const other = await connectClient(await daemon.connect(), { clientId: 'other' });
+    await asker.control.request('shutdownWhenIdle', {});
+    const running = await Promise.race([daemon.exited, new Promise<string>((resolve) => setTimeout(() => resolve('running'), 200))]);
+    expect(running).toBe('running');
+    other.protocol.close('done');
+    expect(await daemon.exited).toBe('shutdownWhenIdle, and no run, terminal or other client is left');
+    asker.protocol.close('done');
+  });
 });
 
 // Connections alone, with a core channel the test posts on, so traffic queues while the client is away in a known order.
@@ -282,6 +294,7 @@ describe('daemon connections inside the grace', () => {
     let coreDrained: (() => Promise<void>) | undefined;
     const links: ClientLink[] = [];
     const presence: Array<readonly ConnectionPresence[]> = [];
+    const closed: string[] = [];
     const lines: string[] = [];
     const connections = createConnections({
       serverVersion: '0.0.0-test',
@@ -301,6 +314,7 @@ describe('daemon connections inside the grace', () => {
       control: {} as never,
       mirrorWatches: mirrorWatches(),
       connectionsChanged: (connected) => presence.push(connected),
+      connectionClosed: (id) => closed.push(id),
       agentUpstream: () => undefined,
       maxHeldBytes,
       log: (line) => lines.push(line),
@@ -324,7 +338,7 @@ describe('daemon connections inside the grace', () => {
       if (rest.length > 0) ours.unshift(Buffer.from(rest));
       return ours;
     };
-    return { connections, socket, drop, presence, lines, links, core: () => core!, coreDrained: () => coreDrained!() };
+    return { connections, socket, drop, presence, closed, lines, links, core: () => core!, coreDrained: () => coreDrained!() };
   }
 
   it('relays a client\'s agent only once that connection offers it, asks that client alone, and holds the process until its answer', async () => {
@@ -549,7 +563,7 @@ describe('daemon connections inside the grace', () => {
     const client = await connectClient(first, { clientId: 'away' });
     client.protocol.holdOnDrop();
     drop(first);
-    await vi.waitFor(() => expect(presence.at(-1)).toEqual(['inGrace']));
+    await vi.waitFor(() => expect(presence.at(-1)?.map((connection) => connection.state)).toEqual(['inGrace']));
     // core keeps talking while the client is away: nothing is sent, the longest queued message (the latest of equal ones) is
     // exempt, so the third passes the bound
     core().post({ filler: 'x'.repeat(40 * 1024) });
@@ -557,7 +571,7 @@ describe('daemon connections inside the grace', () => {
     expect(lines.join('\n')).not.toContain('held frames passed');
     core().post({ filler: 'x'.repeat(40 * 1024) });
     expect(lines.join('\n')).toContain('held frames passed the per-connection bound');
-    expect(presence.at(-1)).toEqual([]);
+    expect(presence.at(-1)?.map((connection) => connection.state)).toEqual([]);
     expect(await resumeClient(client, await socket(), 'away')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
     client.protocol.close('done');
     await connections.endAll();
@@ -585,7 +599,7 @@ describe('daemon connections inside the grace', () => {
     expect(overflows(lines)).toBe(1);
     expect(posted).toBeLessThan(2 * bound);
     expect(lines.join('\n')).not.toContain(' lost (');
-    expect(presence.at(-1)).toEqual([]);
+    expect(presence.at(-1)?.map((connection) => connection.state)).toEqual([]);
     expect(await resumeClient(slow, await socket(), 'slow')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
     // the fresh attach reads, and core waits for the channel to drain, so the same volume again passes no bound
     const fresh = await connectClient(await socket(), { clientId: 'slow' });
@@ -654,18 +668,36 @@ describe('daemon connections inside the grace', () => {
     await connections.endAll();
   });
 
-  it('counts a connection inside its grace as inGrace, and connected again once resumed', async () => {
-    const { connections, socket, drop, presence } = harness(64 * 1024 * 1024);
+  it('ends each connection through its protocol, so what core sends before the client closes its side is never written after the end', async () => {
+    const { connections, socket, lines, core } = harness(64 * 1024 * 1024);
+    const ours = await socket();
+    const client = await connectClient(ours, { clientId: 'staying' });
+    client.protocol.holdOnDrop();
+    // the client closes its side a network round trip after it read the end, as the app does
+    ours.once('end', () => setTimeout(() => ours.end(), 50));
+    const ending = connections.endAll();
+    core().post({ late: true });
+    await ending;
+    expect(lines.filter((line) => line.includes(' closed: '))).toEqual(['[daemon] connection-1 closed: the daemon is shutting down']);
+    client.protocol.close('done');
+  });
+
+  // the lifetime keys a shutdownWhenIdle ask by this id (ControlConnection.id), so a resume must keep it and a close must name it
+  it('lists a connection by its id, inGrace inside its grace and connected again once resumed, and names it once it closes', async () => {
+    const { connections, socket, drop, presence, closed } = harness(64 * 1024 * 1024);
     const first = await socket();
     const client = await connectClient(first, { clientId: 'back' });
     client.protocol.holdOnDrop();
-    expect(presence.at(-1)).toEqual(['connected']);
+    expect(presence.at(-1)).toEqual([{ id: 'connection-1', state: 'connected' }]);
     drop(first);
-    await vi.waitFor(() => expect(presence.at(-1)).toEqual(['inGrace']));
+    await vi.waitFor(() => expect(presence.at(-1)).toEqual([{ id: 'connection-1', state: 'inGrace' }]));
     await vi.waitFor(() => expect(client.protocol.lost()).toBe(true));
     expect(await resumeClient(client, await socket(), 'back')).toMatchObject({ kind: 'welcome', welcome: { resumed: true } });
-    expect(presence.at(-1)).toEqual(['connected']);
-    client.protocol.close('done');
+    expect(presence.at(-1)).toEqual([{ id: 'connection-1', state: 'connected' }]);
+    expect(closed).toEqual([]);
     await connections.endAll();
+    await vi.waitFor(() => expect(closed).toEqual(['connection-1']));
+    expect(presence.at(-1)).toEqual([]);
+    client.protocol.close('done');
   });
 });

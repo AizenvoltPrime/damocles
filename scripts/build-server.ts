@@ -157,6 +157,18 @@ function bytes(path: string, data: Buffer | string): ArchiveEntry {
   return { path, mode: modeOf(path), data: Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8') };
 }
 
+// git's own test (buffer_is_binary in xdiff-interface.c): a NUL in the first 8000 bytes makes a file binary
+const BINARY_PROBE_BYTES = 8000;
+
+// A checkout's file as the repository holds it: git may check text out with CRLF (core.autocrlf), and the repository's LF
+// keeps the package's build the same on every build OS. latin1 maps each byte to one character, and CR and LF never occur
+// inside a UTF-8 sequence, so the round trip changes nothing else.
+function asCommitted(path: string, source: string): ArchiveEntry {
+  const data = readFileSync(source);
+  if (data.subarray(0, BINARY_PROBE_BYTES).includes(0)) return bytes(path, data);
+  return bytes(path, Buffer.from(data.toString('latin1').replaceAll('\r\n', '\n'), 'latin1'));
+}
+
 /** bin/damocles-server (sh) and, for Windows, bin/damocles-server.cmd: the package's Node runs dist/daemon.js. */
 export function launchers(spec: Pick<ServerTarget, 'platform'>): ArchiveEntry[] {
   const node = spec.platform === 'win32' ? 'node/node.exe' : 'node/node';
@@ -233,8 +245,8 @@ export function packageEntries({ spec, distDir, nodeModules = join(ROOT, 'node_m
       entries.push(file(`node_modules/${name}/${relative}`, join(dir, relative)));
     }
   }
-  for (const name of ROOT_FILES) entries.push(file(name, join(root, name)));
-  for (const folder of ROOT_FOLDERS) for (const relative of walk(join(root, folder))) entries.push(file(`${folder}/${relative}`, join(root, folder, relative)));
+  for (const name of ROOT_FILES) entries.push(asCommitted(name, join(root, name)));
+  for (const folder of ROOT_FOLDERS) for (const relative of walk(join(root, folder))) entries.push(asCommitted(`${folder}/${relative}`, join(root, folder, relative)));
   return entries;
 }
 

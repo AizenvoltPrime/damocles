@@ -80,7 +80,8 @@ export const SHELL_CHANNELS = {
   hostsSignIn: 'damocles:shell:hosts:sign-in',
   // { hostId }: the failure banner's Show log: the host's ssh output and daemon log as read-only tabs
   hostsShowLog: 'damocles:shell:hosts:show-log',
-  // { hostId }: the update banner's "Switch when they finish": the old daemon exits once idle, then the host connects again
+  // { hostId }: the update banner's "Switch when they finish": the old daemon exits once idle, then the host connects again; a
+  // daemon listing control.shutdownWhenIdle.clients also waits for its other connected devices, which the frozen commands cannot list
   hostsSwitchWhenIdle: 'damocles:shell:hosts:switch-when-idle',
   // { hostId } → boolean: "Switch now" after main's confirmation listing the agents and terminals; false: the user cancelled it
   hostsSwitchNow: 'damocles:shell:hosts:switch-now',

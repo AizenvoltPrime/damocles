@@ -2040,8 +2040,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
     expect(data).not.toBeNull();
     // One row per prompt piece, named by the section key, preamble first. Memory is off and no plan
-    // file exists in this panel, so only the always-on pieces are present.
-    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_explore', 'damocles_environment', 'damocles_model', 'damocles_tone']);
+    // file exists in this panel, so only the always-on pieces and the default-on web section are present.
+    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_explore', 'damocles_web_verification', 'damocles_environment', 'damocles_model', 'damocles_tone']);
     expect(data!.systemPromptSections!.every((s) => s.tokens > 0)).toBe(true);
     await session.dispose();
   });
@@ -2056,7 +2056,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.requestContextUsage();
     const msg = messages.find((m) => m.type === 'contextUsage');
     const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
-    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_explore', 'damocles_memory', 'damocles_environment', 'damocles_model', 'damocles_tone']);
+    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_explore', 'damocles_web_verification', 'damocles_memory', 'damocles_environment', 'damocles_model', 'damocles_tone']);
     await session.dispose();
   });
 
@@ -5970,6 +5970,7 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     cfg.mockImplementation(settingsReader((key: string) => {
       if (key === 'damocles.browser.enabled') return flags.browser;
       if (key === 'damocles.team.enabled') return flags.team;
+      if (key === 'damocles.pi.webSearch.enabled') return false;
       return undefined;
     }));
 
@@ -5981,7 +5982,7 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
 
     const before = nestedPi([TOOL_TOOL_SEARCH]);
     engine.buildExtensionFactory(spawnCtx('agent-1'), engine.buildAgentToolset(spawnCtx('agent-1')).mcp, false)(before.api);
-    // Browser off, compass unwired and no MCP manager ⇒ nothing deferrable ⇒ registration is skipped.
+    // Browser and web off, compass unwired and no MCP manager ⇒ nothing deferrable ⇒ registration is skipped.
     expect(before.registered.get(TOOL_TOOL_SEARCH)).toBeUndefined();
 
     flags.browser = true; // the user enables the browser mid-run
@@ -10372,6 +10373,7 @@ describe("a daemon's core reports the providers a chat's configuration names at 
   it('names the judge, classifier and Background providers, Explore and every profile, sorted and each once, and the team roles only while teams are on', async () => {
     const { host, panel, send, restore } = await configuredPanel(true);
     try {
+      await testPlatform.settings.update('damocles.team.enabled', false, 'user');
       await send('first');
       expect(host.remote.runConfiguredProviders).toHaveBeenCalledTimes(1);
       expect(host.remote.runConfiguredProviders).toHaveBeenLastCalledWith('panel-1', ['deepseek', 'github-copilot', 'openai', 'typesafe']);

@@ -93,7 +93,7 @@ describe('buildPlanModeGuidance', () => {
     }
   });
 
-  // `damocles.pi.webSearch.enabled` is off by default, and while it is off the web tools are not in the
+  // While `damocles.pi.webSearch.enabled` is off the web tools are not in the
   // session's eligible set — `ToolSearch({tools:["web"]})` answers "Not available in this session".
   // These two cases pin BOTH branches: the guidance appears exactly when the capability does.
   it('tells the model HOW to load the deferred web tools BEFORE telling it to verify what is current (web on)', () => {
@@ -119,7 +119,7 @@ describe('buildPlanModeGuidance', () => {
     }
   });
 
-  it('emits NO web guidance when the web tools are disabled (the default)', () => {
+  it('emits NO web guidance when the web tools are disabled or the flag is not passed', () => {
     for (const out of [
       buildPlanModeGuidance('/p/x.md'),
       buildPlanModeGuidance('/p/x.md', { webSearchEnabled: false }),
@@ -150,7 +150,7 @@ describe('buildPlanModeGuidance', () => {
 
   // With teams off the team tools are absent from the session, so naming them points the model at a
   // tool it cannot call. The two cheaper rungs still apply.
-  it('offers the two-way choice and names no team tool when teams are disabled (the default)', () => {
+  it('offers the two-way choice and names no team tool when teams are disabled or the flag is not passed', () => {
     for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance('/p/x.md', { teamEnabled: false })]) {
       expect(out).toContain('pick the smallest one that fits');
       for (const rung of sliceMechanismRungs(false)) expect(out).toContain(rung);

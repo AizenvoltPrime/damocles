@@ -151,9 +151,9 @@ test('a remote chat\'s pin and Tools switches save this computer\'s user setting
     await expect(overlay.getByTestId('settings-scope-host')).toHaveAttribute('aria-selected', 'true');
     await expect(overlay.getByTestId('settings-scope-loading')).toHaveCount(0, { timeout: 60_000 });
     const browserRow = settingsRow(overlay, 'damocles.browser.enabled').getByRole('switch');
-    await expect(browserRow).toHaveAttribute('aria-checked', 'false');
+    await expect(browserRow).toHaveAttribute('aria-checked', 'true');
     await browserRow.click();
-    await expect.poll(async () => (await hostSettings(fixture))['damocles.browser.enabled'], { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await hostSettings(fixture))['damocles.browser.enabled'], { timeout: 30_000 }).toBe(false);
     expect(readUserSettings(home)).not.toHaveProperty(['damocles.browser.enabled']);
     await closeSettingsModal(overlay);
 
@@ -161,7 +161,7 @@ test('a remote chat\'s pin and Tools switches save this computer\'s user setting
     await expectRemoteToolStatus(tab, (snapshot) => snapshot.groups.some((entry) => entry.group === 'browser' && entry.setOnHost === true));
     const browser = groupSwitch(panel, 'browser', 'Browser');
     await expect(browser).toBeDisabled();
-    await expect(browser).toHaveAttribute('aria-checked', 'true');
+    await expect(browser).toHaveAttribute('aria-checked', 'false');
     const note = groupCard(panel, 'browser').getByTestId('tools-group-host-note');
     await expect(note).toBeVisible();
     await note.getByTestId('tools-open-host-settings').click();
@@ -174,13 +174,13 @@ test('a remote chat\'s pin and Tools switches save this computer\'s user setting
 
     // an unwritable user file: the switch goes back and the toast names the failure
     const web = groupSwitch(panel, 'web', 'Web');
-    await expect(web).toHaveAttribute('aria-checked', 'false');
+    await expect(web).toHaveAttribute('aria-checked', 'true');
     const restore = lockUserSettings(home);
     try {
       await web.click();
       await expect.poll(() => failureNotices(tab), { timeout: 60_000 }).toEqual(['Failed to save tool group setting: {0}']);
       await expect(tab.locator('[data-sonner-toast]').filter({ hasText: 'Failed to save tool group setting:' })).toHaveCount(1);
-      await expect(web).toHaveAttribute('aria-checked', 'false');
+      await expect(web).toHaveAttribute('aria-checked', 'true');
     } finally {
       restore();
     }

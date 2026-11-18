@@ -105,8 +105,8 @@ export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
  * side effects anywhere". `BrowserEvaluate`, `BrowserUpload` and `BrowserIntercept` are the sharp edges
  * — arbitrary main-world JS against a live logged-in profile, an arbitrary local path to a remote
  * origin, and context-wide interception that reaches the human's own tabs. They are governed by the
- * browser master switch (`damocles.browser.enabled`, off by default) and by settings deny rules, not by
- * plan mode.
+ * browser master switch (`damocles.browser.enabled`, on by default) and by settings deny rules, not by
+ * plan mode. The accepted risk: docs/invariants.md, "Permissions and plan mode".
  */
 export const PLAN_MODE_EXCLUDED_TOOLS: readonly string[] = [
   // Already in plan mode — calling it again is a no-op that wastes a turn.

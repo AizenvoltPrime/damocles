@@ -117,7 +117,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       return host && authority !== undefined ? { host, authority } : undefined;
     },
     pi: getPiCodingAgent,
-    enabled: () => platform.settings.get<boolean>('damocles.browser.enabled', false),
+    enabled: () => platform.settings.get<boolean>('damocles.browser.enabled', true),
   });
   // a page of this core's chat, or of a remote chat whose view this core holds a proxy for, in its authority's context
   const pageOwner = (viewId: string): { readonly host: PanelHost; readonly browser: BrowserService } | undefined => {

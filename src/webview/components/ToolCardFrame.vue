@@ -32,7 +32,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.status);
+const { statusIcon, statusIconKind, statusClass, cardClass } = useToolCardStatus(() => props.status);
 const note = useToolStatusNote(() => props.status, () => props.abandonReason);
 
 function handleCardClick(): void {
@@ -118,13 +118,20 @@ function handleNameKeydown(event: KeyboardEvent): void {
             aria-hidden="true"
           />{{ t('toolOverlay.statusBlocked') }}
         </span>
-        <component
-          :is="statusIcon"
+        <!-- The wrapper takes the badge's animation: on the spinning icon itself, its endless spin would replace it. -->
+        <span
           v-else
-          class="size-3.5 flex-none"
-          :class="statusClass"
-          aria-hidden="true"
-        />
+          :key="statusIconKind"
+          class="flex flex-none"
+          data-testid="tool-card-status-icon"
+        >
+          <component
+            :is="statusIcon"
+            class="size-3.5 flex-none"
+            :class="statusClass"
+            aria-hidden="true"
+          />
+        </span>
       </Transition>
       <slot name="trailing" />
     </div>

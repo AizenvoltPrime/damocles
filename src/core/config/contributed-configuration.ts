@@ -1,8 +1,11 @@
 // scripts/generate-settings-schema.ts imports this file through Node's type stripping: erasable TypeScript and node: imports only.
 
+export type SettingType = string | readonly string[];
+
 interface PropertySchema {
   readonly default?: unknown;
   readonly scope?: string;
+  readonly type?: SettingType;
 }
 
 export interface Manifest {
@@ -29,6 +32,8 @@ export interface ContributedConfiguration {
   readonly clientMachineKeys: ReadonlySet<string>;
   // every other machine scoped key: a daemon's core reads it only from its host's file, never from a client's user layer
   readonly hostKeys: ReadonlySet<string>;
+  // each key's declared JSON type, which a value read from a settings file must have (settingTypeFits)
+  readonly types: ReadonlyMap<string, SettingType>;
 }
 
 const USER_ONLY_SCOPES: ReadonlySet<string> = new Set(['machine', 'application']);
@@ -44,15 +49,36 @@ export function parseContributedConfiguration(manifest: Manifest): ContributedCo
   const resourceKeys = new Set<string>();
   const clientMachineKeys = new Set<string>();
   const hostKeys = new Set<string>();
+  const types = new Map<string, SettingType>();
   for (const section of sections as ReadonlyArray<{ readonly properties?: Record<string, PropertySchema> }>) {
     for (const [key, schema] of Object.entries(section.properties ?? {})) {
       keys.push(key);
       if (Object.hasOwn(schema, 'default')) defaults.set(key, schema.default);
+      if (schema.type !== undefined) types.set(key, schema.type);
       if (schema.scope === 'resource') resourceKeys.add(key);
       if (schema.scope !== undefined && USER_ONLY_SCOPES.has(schema.scope)) userOnlyKeys.add(key);
       if (schema.scope === 'application' || key.startsWith(VOICE_PREFIX)) clientOnlyKeys.add(key);
       if (schema.scope === 'machine') (key.startsWith(VOICE_PREFIX) ? clientMachineKeys : hostKeys).add(key);
     }
   }
-  return { keys, defaults, userOnlyKeys, clientOnlyKeys, resourceKeys, clientMachineKeys, hostKeys };
+  return { keys, defaults, userOnlyKeys, clientOnlyKeys, resourceKeys, clientMachineKeys, hostKeys, types };
+}
+
+/**
+ * Whether value has one of the JSON Schema types a setting declares. Enums are left to each reader, since the migrations
+ * read stored values no longer in an enum (a retired model id).
+ */
+export function settingTypeFits(type: SettingType, value: unknown): boolean {
+  return (typeof type === 'string' ? [type] : type).some((one) => {
+    switch (one) {
+      case 'boolean': return typeof value === 'boolean';
+      case 'string': return typeof value === 'string';
+      case 'number': return typeof value === 'number';
+      case 'integer': return Number.isInteger(value);
+      case 'null': return value === null;
+      case 'array': return Array.isArray(value);
+      case 'object': return typeof value === 'object' && value !== null && !Array.isArray(value);
+      default: return true;
+    }
+  });
 }

@@ -1,5 +1,7 @@
 // ControlContract: the `control` channel. listRuns, shutdownWhenIdle, shutdownNow and mirror.sync are frozen: their shapes
-// never change, and they stay served after `refused { reason: 'protocol' }`.
+// never change, and they stay served after `refused { reason: 'protocol' }`. shutdownWhenIdle exits once no run, no terminal
+// and no connected client but those that asked is left, the ask lasting as long as its connection (feature
+// control.shutdownWhenIdle.clients; before it, once no run and no terminal was left, whoever was connected).
 
 import type { Call, ClientAuth, ClientPolicy, ClientUser, Contract, MirrorTopics, Tables } from '../core-protocol/messages';
 import { MAIN_TO_CORE, parseClientValues, MAX_ITEMS, MAX_LABEL_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';

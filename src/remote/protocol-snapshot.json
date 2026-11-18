@@ -229,7 +229,8 @@
   "design.infoMissing",
   "chats.listMirroredProject",
   "browser.servedFileUnavailableRemoved",
-  "user.browser.servedFolders"
+  "user.browser.servedFolders",
+  "control.shutdownWhenIdle.clients"
  ],
  "contracts": {
   "CoreRequests": {

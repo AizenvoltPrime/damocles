@@ -178,7 +178,8 @@ mac:
 linux:
   # No arch list. It would add the other arch to every build, packed with this host's native modules.
   target: [deb, rpm]
-  icon: resources/icon.png
+  # one PNG per hicolor size, from npm run generate:icons
+  icon: build/icons
   executableName: damocles
   category: Development
   synopsis: Agentic development environment (ADE)

@@ -2,7 +2,8 @@ import type { ClipboardService } from '../../platform/clipboard-service';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import { OVERLAY_CHANNELS, type OverlayRequest } from '../preload/overlay-channels';
 import type { UpdateAction, VersionInfo } from '../preload/updates';
-import { isVersion, type ReleaseNotesSource } from './release-notes';
+import type { ReleaseNotesSource } from './release-notes';
+import { isVersion } from './semver';
 import { versionInfoText, type UpdateService } from './updater';
 
 export interface AboutOverlay {

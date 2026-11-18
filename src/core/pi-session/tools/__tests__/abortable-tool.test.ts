@@ -25,12 +25,13 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 beforeEach(() => logSpy.mockClear());
 
 describe('abortableTool', () => {
-  it('answers an already-aborted call at once and logs, by error name only, a body that fails later', async () => {
+  // an error, so the stop marker shows the card stopped rather than done
+  it('answers an already-aborted call at once with an error result and logs, by error name only, a body that fails later', async () => {
     const { tool, reject } = pendingTool();
     const controller = new AbortController();
     controller.abort();
 
-    expect(await run(tool, controller.signal)).toEqual({ content: [{ type: 'text', text: 'BrowserClick aborted' }], details: undefined });
+    expect(await run(tool, controller.signal)).toEqual({ content: [{ type: 'text', text: 'BrowserClick aborted' }], details: undefined, isError: true });
     reject(new TypeError('page said: secret text'));
     await settle();
 

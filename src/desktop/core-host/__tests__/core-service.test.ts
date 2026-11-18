@@ -518,8 +518,8 @@ describe('a remote chat\'s browser on this core', () => {
       ['scope', 'ssh-a', { viewId: 'view-1', scope: 'agent-1', closeTabs: true, discard: true }],
       ['authority', 'ssh-a'],
     ]);
-    // the test platform's settings answer every default, and the browser is off by default
-    expect(H.browserEnabled?.()).toBe(false);
+    // the test platform's settings answer every default, and the browser is on by default
+    expect(H.browserEnabled?.()).toBe(true);
   });
 });
 

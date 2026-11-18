@@ -13,7 +13,7 @@ import type { CoreState } from '../daemon/control-messages';
 import type { RemoteConnection } from './remote/connection';
 import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import { parseRect, type OverlayHost } from './overlay';
-import { isVersion } from './release-notes';
+import { isVersion } from './semver';
 import { asJsonValue, isWebviewMessage } from './views';
 
 // A core's side of the settings modal (PanelManager.attachView): an attachment is named by its generation.
@@ -198,8 +198,6 @@ export class OverlaySettings {
   private userTab = false;
   // settles when the open modal ends
   private ended: Promise<void> = Promise.resolve();
-  // authorities whose connection replacing() swaps, which a waiting tab hears of only once the next attempt started
-  private readonly replaced = new Set<string>();
   // attach work runs one at a time, so a selection change during an attach never leaves two views
   private attaching: Promise<void> = Promise.resolve();
   // The re-attach under way: the renderer has its generation (settingsAttached goes first) and asks for state at once, so
@@ -325,22 +323,8 @@ export class OverlaySettings {
 
   /** The authority's connection, reconnect loop or engine changed: a tab waiting for its core tells why it waits. */
   authorityChanged(authority: string): void {
-    if (!this.open || this.away?.authority !== authority || this.replaced.has(authority)) return;
+    if (!this.open || this.away?.authority !== authority) return;
     if (!this.waitFor(authority)) this.selectionChanged();
-  }
-
-  /**
-   * Runs swap, which ends the authority's connection and starts the next attempt, and only then tells a tab waiting for it
-   * why it waits, so the drop in between never reads as offline.
-   */
-  replacing(authority: string, swap: () => void): void {
-    this.replaced.add(authority);
-    try {
-      swap();
-    } finally {
-      this.replaced.delete(authority);
-    }
-    this.authorityChanged(authority);
   }
 
   // false when the authority's core is up, so there is nothing to wait for

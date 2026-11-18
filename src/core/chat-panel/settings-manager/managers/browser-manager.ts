@@ -12,9 +12,9 @@ export class BrowserManager {
   }
 
   loadState(): void {
-    this.enabled = this.platform.settings.get<boolean>("damocles.browser.enabled", false);
+    this.enabled = this.platform.settings.get<boolean>("damocles.browser.enabled", true);
     this.configListener ??= this.platform.settings.onDidChange("damocles.browser.enabled", () => {
-      this.enabled = this.platform.settings.get<boolean>("damocles.browser.enabled", false);
+      this.enabled = this.platform.settings.get<boolean>("damocles.browser.enabled", true);
     });
   }
 

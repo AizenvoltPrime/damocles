@@ -1123,6 +1123,8 @@ jobs:
           grep -q '^provider: github' /opt/Damocles/resources/app-update.yml
           # electron-updater picks its Linux installer (dpkg or rpm) from this file.
           grep -qx deb /opt/Damocles/resources/package-type
+          # scripts/linux-icons.ts LINUX_ICON_SIZES; without them electron-builder installs the Electron icon and only logs it
+          for size in 16 24 32 48 64 128 256 512; do test -f "/usr/share/icons/hicolor/${size}x${size}/apps/damocles.png"; done
           apparmor=N
           if [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N)" = Y ]; then
             apparmor=Y
@@ -1214,6 +1216,8 @@ jobs:
             test -d /opt/Damocles/resources/app.asar.unpacked
             grep -q "^provider: github" /opt/Damocles/resources/app-update.yml
             grep -qx rpm /opt/Damocles/resources/package-type
+            # scripts/linux-icons.ts LINUX_ICON_SIZES; without them electron-builder installs the Electron icon and only logs it
+            for size in 16 24 32 48 64 128 256 512; do test -f "/usr/share/icons/hicolor/${size}x${size}/apps/damocles.png"; done
             # The /usr/bin alternative after-install.sh registers runs resources/bin/damocles, which runs dist/cli.js under the app binary as Node.
             cli_version=$(/usr/bin/damocles --version)
             if [ "$cli_version" != "$version" ]; then

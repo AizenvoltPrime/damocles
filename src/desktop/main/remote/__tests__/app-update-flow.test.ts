@@ -8,12 +8,14 @@ const quiet = (): void => undefined;
 const chat = (id: string, title: string): Run => ({ kind: 'chat', id, projectKey: '/srv/app', title, state: 'running', providers: [] });
 const terminal = (id: string, title: string): Run => ({ kind: 'terminal', id, projectKey: '', title, state: 'running', providers: [] });
 
-function compatible(serverVersion: string, runs: readonly Run[], otherDevices = 0) {
+// others: 'unknown' for a daemon that has not listed this device
+function compatible(serverVersion: string, runs: readonly Run[], others: number | 'unknown' = 0, waitsForOtherClients = true) {
   const calls: string[] = [];
   const daemon: CompatibleDaemon = {
     serverVersion,
+    waitsForOtherClients,
     listRuns: async () => runs,
-    otherDevices: () => otherDevices,
+    otherDevices: () => (others === 'unknown' ? undefined : others),
     shutdownWhenIdle: async () => {
       calls.push('shutdownWhenIdle');
     },
@@ -56,9 +58,11 @@ describe('a compatible daemon of another build', () => {
   });
 
   it('keeps its runs: attached, it is asked to exit once idle, never stopped', async () => {
+    const lines: string[] = [];
     const { daemon, calls } = compatible('3.6.9', [chat('host-1', 'Fix the parser')]);
-    expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
+    expect(await adoptCompatibleDaemon(manifest, daemon, (line) => lines.push(line))).toBe('switchWhenIdle');
     expect(calls).toEqual(['shutdownWhenIdle']);
+    expect(lines).toEqual(['[update] the daemon of 3.6.9 has 1 runs and 0 other devices; it exits once idle, then this build of 3.7.0 starts']);
   });
 
   it('is kept alive by a terminal alone, which delays the switch until it closes', async () => {
@@ -67,10 +71,53 @@ describe('a compatible daemon of another build', () => {
     expect(calls).toEqual(['shutdownWhenIdle']);
   });
 
+  // a dist:local rebuild of the same version: this app's own terminal or Keep running chat only delays the switch
+  it('busy with no other device, is asked to exit once idle whatever its version, a daemon of the plain version included', async () => {
+    for (const serverVersion of ['3.7.0+fedcba987654', '3.8.0+fedcba987654', '3.7.0']) {
+      const { daemon, calls } = compatible(serverVersion, [chat('host-1', 'busy')], 0, false);
+      expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
+      expect(calls).toEqual(['shutdownWhenIdle']);
+    }
+  });
+
   it('serving another device, waits for idle though it runs nothing', async () => {
     const { daemon, calls } = compatible('3.6.9', [], 1);
     expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
     expect(calls).toEqual(['shutdownWhenIdle']);
+  });
+
+  // two machines' builds of one version on one host: neither takes the daemon the other uses
+  it('serving other devices or an unknown number of them, is used as it is when this app version is the same or older, whatever its build', async () => {
+    for (const [serverVersion, runs, others] of [['3.7.0+fedcba987654', [], 1], ['3.7.0+fedcba987654', [chat('host-1', 'busy')], 'unknown'], ['3.8.0+fedcba987654', [], 2]] as const) {
+      const lines: string[] = [];
+      const { daemon, calls } = compatible(serverVersion, runs, others);
+      expect(await adoptCompatibleDaemon(manifest, daemon, (line) => lines.push(line))).toBe('useAsIs');
+      expect(calls).toEqual([]);
+      expect(lines).toEqual([`[update] the daemon of ${serverVersion} has ${runs.length} runs and ${others === 'unknown' ? 'an unknown number of' : others} other devices and is not older than this build of 3.7.0; using it as it is`]);
+    }
+  });
+
+  // its shutdownWhenIdle would exit once idle and end the other devices' connections
+  it('serving other devices without control.shutdownWhenIdle.clients, is used as it is though this app version is newer', async () => {
+    const lines: string[] = [];
+    const { daemon, calls } = compatible('3.6.9', [], 1, false);
+    expect(await adoptCompatibleDaemon(manifest, daemon, (line) => lines.push(line))).toBe('useAsIs');
+    expect(calls).toEqual([]);
+    expect(lines).toEqual(['[update] the daemon of 3.6.9 has 0 runs and 1 other devices and would end their connections once idle; using it as it is']);
+  });
+
+  it('serving another device, is asked to exit once idle by a release of its prerelease, and when its version does not parse', async () => {
+    for (const serverVersion of ['3.7.0-dev.1+fedcba987654', 'nightly+fedcba987654']) {
+      const { daemon, calls } = compatible(serverVersion, [], 1);
+      expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
+      expect(calls).toEqual(['shutdownWhenIdle']);
+    }
+  });
+
+  it('serving another device, is used as it is when this app version does not parse', async () => {
+    const { daemon, calls } = compatible('3.6.9', [], 1);
+    expect(await adoptCompatibleDaemon({ ...manifest, version: '3.7.0-a..b' }, daemon, quiet)).toBe('useAsIs');
+    expect(calls).toEqual([]);
   });
 
   it('idle and alone, is stopped now so this build starts', async () => {

@@ -321,7 +321,7 @@ import { mirroredCopy, OfflineTranscripts } from './remote/offline-transcripts';
 import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue } from './remote/offline-queue';
 import { e2eManifest, remoteE2eEnvironment } from './remote/remote-e2e-environment';
 import { visibleLines } from '../../shared/visible-text';
-import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, shutDownNow, type SwitchListing } from './remote/app-update-flow';
+import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE, shutDownNow, type SwitchListing } from './remote/app-update-flow';
 import { askRemoteRuns, closeRowId, CONFIGURED_PROVIDERS_FEATURE, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
 import { CloseRelease } from './close-release';
 import { announceFinishedAway, awayChats } from './remote/finished-away';
@@ -1862,7 +1862,7 @@ class DesktopApp {
   }
 
   private browserEnabled(): boolean {
-    return this.requirePlatform().settings.get<boolean>(BROWSER_ENABLED_KEY, false);
+    return this.requirePlatform().settings.get<boolean>(BROWSER_ENABLED_KEY, true);
   }
 
   // Only for callers that cannot run while a reload replaces the core; a page's request runs through this.core.run instead.
@@ -5981,6 +5981,7 @@ class DesktopApp {
       },
       projectOfCwd: (authorityKey, cwd) => projectOfCwd(this.remoteFileRoots(authorityKey), cwd),
       changed: (authorityKey) => this.authorityChanged(authorityKey),
+      adopt: (authorityKey, connection) => this.adoptDaemonVersion(authorityKey, connection),
       attached: (authorityKey, connection) => {
         // the damocles command in this authority's terminals, relayed by its daemon
         connection.workspace.serve('cli.request', (relay) => this.requireCliRequests().fromSocket(authorityKey, relay));
@@ -7373,7 +7374,6 @@ class DesktopApp {
     const following = followMirrorChanges(connection, () => this.syncMirror(hostId, connection));
     connection.onClose(() => following.dispose());
     this.syncMirror(hostId, connection);
-    this.adoptDaemonVersion(hostId, connection).catch(this.report('Switching the host to this version'));
   }
 
   // A fresh connection's chats reopened: the chats left running at the last detach that ended meanwhile make one notice.
@@ -7397,27 +7397,28 @@ class DesktopApp {
     }, authority).catch(this.report('Telling which chats finished while away'));
   }
 
-  // A daemon of the same protocol and another build: replaced at once while it is idle and alone, else asked to exit once
-  // idle, after which the next connection starts this build (Compatibility).
-  private async adoptDaemonVersion(hostId: string, connection: RemoteConnection): Promise<void> {
-    const authority = this.authorityOfHost(hostId);
-    // the manifest every saved host's connect installs from
-    const { manifest } = await this.serverInstall();
-    const outcome = await adoptCompatibleDaemon(manifest, {
-      serverVersion: connection.serverVersion,
-      listRuns: async () => (await connection.control.request('listRuns', {})).runs,
-      otherDevices: () => otherDeviceCount(connection.devices()),
-      shutdownWhenIdle: () => connection.control.request('shutdownWhenIdle', {}),
-      shutdownNow: () => shutDownNow(connection, (line) => log(line)),
-    }, (line) => log(line));
-    if (outcome !== 'replaceNow') return;
-    // the old daemon is gone, so nothing is held for a resume: a fresh connection starts this version
-    const replace = (): void => {
-      this.authorities?.disconnect(authority);
-      this.connectAuthority(authority);
-    };
-    if (this.overlaySettings) this.overlaySettings.replacing(authority, replace);
-    else replace();
+  // A saved host's daemon of the same protocol and another build, before the connection is published: replaced at once while
+  // it is idle and alone, else asked to exit once idle (after which the next connection starts this build), or used as it is
+  // while other devices use it and this app may not switch it (Compatibility). A check that fails keeps the daemon.
+  private async adoptDaemonVersion(authority: string, connection: RemoteConnection): Promise<'kept' | 'replaced'> {
+    // the loopback daemon has no host record and runs this app's own build
+    if (this.savedHostIdOf(authority) === undefined) return 'kept';
+    try {
+      // the manifest every saved host's connect installs from
+      const { manifest } = await this.serverInstall();
+      const outcome = await adoptCompatibleDaemon(manifest, {
+        serverVersion: connection.serverVersion,
+        waitsForOtherClients: connection.features.includes(SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE),
+        listRuns: async () => (await connection.control.request('listRuns', {})).runs,
+        otherDevices: () => otherDeviceCount(connection.devices()),
+        shutdownWhenIdle: () => connection.control.request('shutdownWhenIdle', {}),
+        shutdownNow: () => shutDownNow(connection, (line) => log(line)),
+      }, (line) => log(line));
+      return outcome === 'replaceNow' ? 'replaced' : 'kept';
+    } catch (err) {
+      this.report('Switching the host to this version')(err);
+      return 'kept';
+    }
   }
 
   // A daemon of another protocol answered: it is stopped when it runs nothing, else its chats show read-only from the mirror

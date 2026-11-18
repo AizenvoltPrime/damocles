@@ -289,10 +289,13 @@ const ROW_CLASS: Record<StepState, string> = {
                 class="pointer-events-none absolute -inset-0.75 rounded-full shadow-[inset_0_0_0_2px_var(--d-design)] animate-[d-attention-ring_1.1s_var(--ease-out)_infinite]"
               />
               <Transition name="t-icon">
-                <LoaderCircle
+                <!-- The wrapper is what leaves: the spinner's endless spin on the leaving element would hold it for a whole turn. -->
+                <span
                   v-if="row.state === 'active'"
-                  class="d-spinning size-2.75"
-                />
+                  class="flex"
+                >
+                  <LoaderCircle class="d-spinning size-2.75" />
+                </span>
                 <Check
                   v-else-if="row.state === 'pass'"
                   class="size-2.75"

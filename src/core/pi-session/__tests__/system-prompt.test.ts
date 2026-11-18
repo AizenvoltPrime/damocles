@@ -118,12 +118,12 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
       }
     });
 
-    // `damocles.pi.webSearch.enabled` is off by DEFAULT, and while it is off the web tools are not in
-    // the session's eligible set at all — `ToolSearch` answers "Not available in this session". The
-    // bullet is therefore capability-gated, exactly like the compass section: in a default workspace it
-    // would otherwise send the model after a tool it cannot obtain, on dependency-upgrade work where a
-    // wasted turn costs the most. Both branches are pinned so neither can regress to unconditional.
-    it('omits the version-verification bullet entirely when the web tools are disabled (the default)', () => {
+    // While `damocles.pi.webSearch.enabled` is off the web tools are not in the session's eligible set at
+    // all — `ToolSearch` answers "Not available in this session". The bullet is therefore
+    // capability-gated, exactly like the compass section: it would otherwise send the model after a tool it
+    // cannot obtain, on dependency-upgrade work where a wasted turn costs the most. Both branches are
+    // pinned so neither can regress to unconditional.
+    it('omits the version-verification bullet entirely when the web tools are disabled', () => {
       for (const p of [
         fullPrompt({ ...baseOptions, compassEnabled: false }),
         fullPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: false }),
@@ -231,7 +231,7 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
 
     // The flag's only effect is the team clause, so omitting it and disabling it must agree byte for
     // byte. The two golden full-prompt snapshots pin what the teams-off prompt is.
-    it('treats an unset Team flag as off, byte for byte', () => {
+    it('builds the prompt without team sections when no Team flag is passed, byte for byte', () => {
       const unset = fullPrompt({ ...baseOptions, compassEnabled: false });
       const off = fullPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false });
       expect(off).toBe(unset);
@@ -403,8 +403,8 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
       expect(prompt).not.toContain('\u2014');
     });
 
-    // `baseOptions` omits `webSearchEnabled`, so this snapshot is the DEFAULT-workspace prompt and the
-    // version-verification bullet is correctly absent from it. The web-on text lives in the explicit
+    // `baseOptions` omits `webSearchEnabled`, which `fullPrompt` reads as off, so the
+    // version-verification bullet is absent from this snapshot. The web-on text lives in the explicit
     // case above rather than a third snapshot — one full-prompt snapshot per compass branch is already
     // the file's convention, and a snapshot cannot express "exactly one bullet differs".
     it('matches snapshot', () => {

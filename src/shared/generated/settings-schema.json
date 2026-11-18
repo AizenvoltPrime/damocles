@@ -210,7 +210,7 @@
       },
       "damocles.browser.enabled": {
         "type": "boolean",
-        "default": false,
+        "default": true,
         "description": "Enable Damocles Browser integration with CDP automation and element picker."
       },
       "damocles.browser.headless": {
@@ -264,7 +264,7 @@
       },
       "damocles.team.enabled": {
         "type": "boolean",
-        "default": false,
+        "default": true,
         "description": "Enable collaborative multi-agent team system"
       },
       "damocles.team.leadModel": {
@@ -614,7 +614,7 @@
       },
       "damocles.pi.webSearch.enabled": {
         "type": "boolean",
-        "default": false,
+        "default": true,
         "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
       },
       "damocles.imageGeneration.enabled": {
@@ -1990,7 +1990,7 @@
       },
       "damocles.browser.enabled": {
         "type": "boolean",
-        "default": false,
+        "default": true,
         "description": "Enable Damocles Browser integration with CDP automation and element picker."
       },
       "damocles.browser.headless": {
@@ -2045,7 +2045,7 @@
       },
       "damocles.team.enabled": {
         "type": "boolean",
-        "default": false,
+        "default": true,
         "description": "Enable collaborative multi-agent team system"
       },
       "damocles.team.leadModel": {
@@ -2387,7 +2387,7 @@
       },
       "damocles.pi.webSearch.enabled": {
         "type": "boolean",
-        "default": false,
+        "default": true,
         "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
       },
       "damocles.imageGeneration.enabled": {

@@ -420,6 +420,7 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(ev.systemPromptOptions.customPrompt).toContain('AI coding agent');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
       'damocles_explore',
+      'damocles_web_verification',
       'damocles_memory',
       'damocles_environment',
       'damocles_model',
@@ -528,6 +529,7 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(text).toContain('which slice, which mechanism, and why, in your next message');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
       'damocles_explore',
+      'damocles_web_verification',
       'damocles_team',
       'damocles_plan_file',
       'damocles_plan_execution',
@@ -554,6 +556,7 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(text).not.toContain('create_team');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
       'damocles_explore',
+      'damocles_web_verification',
       'damocles_plan_file',
       'damocles_plan_execution',
       'damocles_environment',

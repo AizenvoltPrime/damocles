@@ -99,6 +99,27 @@ describe('the package file list', () => {
     });
   });
 
+  it('ships the root files with LF whatever line ends the checkout has, Greek UTF-8 intact, and binary files byte for byte', () => {
+    // a PNG signature holds CRLF and its IHDR length a NUL, as a .wasm's magic number does
+    const png = '\x89PNG\r\n\x1a\n\0\0\0\rIHDR';
+    const root = tree({
+      'package.json': '{\r\n"version":"1.0.0"\r\n}\r\n', 'package.nls.json': '{}', 'package.nls.el.json': '{\r\n"a": "Ρυθμίσεις"\r\n}\r\n', LICENSE: 'MIT\r\n', 'THIRD-PARTY-NOTICES.md': '#',
+      'l10n/bundle.l10n.json': '{\r\n}', 'resources/shell-integration/shellIntegration.ps1': 'a\r\nb\r\n', 'resources/shell-integration/icon.png': png,
+      'resources/grammars/tree-sitter-go.wasm': '\0asm\r\n',
+    });
+    const entries = packageEntries({ spec: FAKE_LINUX, distDir: dist(), nodeModules: nodeModules(), root, portable: [] });
+    const data = (path: string): string => {
+      const entry = entries.find((candidate) => candidate.path === path);
+      // a root file is read into the package, never copied from its source path later
+      if (!entry || !('data' in entry)) throw new Error(`${path} is not read into the package`);
+      return entry.data.toString('utf8');
+    };
+    expect(['package.json', 'package.nls.el.json', 'LICENSE', 'l10n/bundle.l10n.json', 'resources/shell-integration/shellIntegration.ps1'].map(data))
+      .toEqual(['{\n"version":"1.0.0"\n}\n', '{\n"a": "Ρυθμίσεις"\n}\n', 'MIT\n', '{\n}', 'a\nb\n']);
+    expect(data('resources/shell-integration/icon.png')).toBe(png);
+    expect(data('resources/grammars/tree-sitter-go.wasm')).toBe('\0asm\r\n');
+  });
+
   it('keeps the Windows prebuild without its debug symbols, and adds the .cmd launcher and the damocles command\'s sh forms for Git Bash', () => {
     const entries = packageEntries({ spec: FAKE_WINDOWS, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty'] });
     const paths = entries.map((entry) => entry.path);

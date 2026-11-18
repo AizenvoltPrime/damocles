@@ -3,6 +3,10 @@ import type { AttachedClient, Run } from '../../daemon/control-messages';
 import type { HostUpdate } from '../../preload/shell-channels';
 import type { OtherProtocolDaemon, RemoteConnection } from './connection';
 import { appVersionOf, serverVersionsOf, type ServerManifest } from './server-manifest-format';
+import { compareVersions, isVersion } from '../semver';
+
+// The daemon's shutdownWhenIdle waits for every connected client that did not ask; one without it exits once idle whoever is connected.
+export const SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE = 'control.shutdownWhenIdle.clients';
 
 // the daemon's own shutdown bound (lock-timing.ts SHUTDOWN_MAX_MS); it ends its connections first, so the end comes well within
 export const DAEMON_END_WAIT_MS = 10_000;
@@ -26,11 +30,16 @@ export async function shutDownNow(connection: Pick<RemoteConnection, 'control' |
 
 export type { HostUpdate };
 
-/** current: the daemon is this build's; replaceNow: it was idle and stopped; switchWhenIdle: it exits once idle. */
-export type CompatibleOutcome = 'current' | 'replaceNow' | 'switchWhenIdle';
+/**
+ * current: the daemon is this build's; replaceNow: it was idle and stopped; switchWhenIdle: it exits once idle; useAsIs: other
+ * devices use it and this app may not switch it, so it stays.
+ */
+export type CompatibleOutcome = 'current' | 'replaceNow' | 'switchWhenIdle' | 'useAsIs';
 
 export interface CompatibleDaemon {
   readonly serverVersion: string;
+  // it lists SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE
+  readonly waitsForOtherClients: boolean;
   listRuns(): Promise<readonly Run[]>;
   // the other devices attached to it, this one excluded; undefined from a daemon that does not list its clients
   otherDevices(): number | undefined;
@@ -48,18 +57,38 @@ export function otherDeviceCount(devices: readonly AttachedClient[]): number | u
 }
 
 /**
+ * Whether `appVersion` follows the app version of `serverVersion` (its build ignored). A daemon version that does not parse is
+ * followed; an app version that does not parse follows nothing, so it never takes a host in use from another device.
+ */
+function supersedes(appVersion: string, serverVersion: string): boolean {
+  const running = appVersionOf(serverVersion);
+  if (!isVersion(running)) return true;
+  return isVersion(appVersion) && compareVersions(appVersion, running) > 0;
+}
+
+/**
  * What a compatible daemon does once attached: current when its server version is one of `manifest`'s; else, idle and known
- * to serve no other device, replaced now, or asked to exit once idle.
+ * to serve no other device, replaced now; else, known to serve no other device, asked to exit once its runs and terminals end;
+ * else asked the same only when this app version is newer and the daemon waits for the other devices, and used as it is
+ * otherwise, so apps of two builds of one version never take a host from each other.
  */
 export async function adoptCompatibleDaemon(manifest: ServerManifest, daemon: CompatibleDaemon, log: (line: string) => void): Promise<CompatibleOutcome> {
   if (serverVersionsOf(manifest).has(daemon.serverVersion)) return 'current';
   const runs = await daemon.listRuns();
-  if (runs.length === 0 && daemon.otherDevices() === 0) {
+  const others = daemon.otherDevices();
+  const uses = `${runs.length} runs and ${others ?? 'an unknown number of'} other devices`;
+  if (runs.length === 0 && others === 0) {
     log(`[update] the daemon of ${daemon.serverVersion} is idle with no other device; stopping it for this build of ${manifest.version}`);
     await daemon.shutdownNow();
     return 'replaceNow';
   }
-  log(`[update] the daemon of ${daemon.serverVersion} has ${runs.length} runs or other devices; it exits once idle, then this build of ${manifest.version} starts`);
+  const newer = supersedes(manifest.version, daemon.serverVersion);
+  if (others !== 0 && !(newer && daemon.waitsForOtherClients)) {
+    const why = newer ? 'would end their connections once idle' : `is not older than this build of ${manifest.version}`;
+    log(`[update] the daemon of ${daemon.serverVersion} has ${uses} and ${why}; using it as it is`);
+    return 'useAsIs';
+  }
+  log(`[update] the daemon of ${daemon.serverVersion} has ${uses}; it exits once idle, then this build of ${manifest.version} starts`);
   await daemon.shutdownWhenIdle();
   return 'switchWhenIdle';
 }

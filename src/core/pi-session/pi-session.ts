@@ -5361,7 +5361,7 @@ export class PiSession implements ChatSession {
 
   /** The live `damocles.browser.enabled` flag — the browser service is always wired; this gates it. */
   private isBrowserEnabled(): boolean {
-    return this.options.platform.settings.get<boolean>("damocles.browser.enabled", false);
+    return this.options.platform.settings.get<boolean>("damocles.browser.enabled", true);
   }
 
   private imageModelId(): string {
@@ -5372,9 +5372,9 @@ export class PiSession implements ChatSession {
     return PiRuntime.exists ? PiRuntime.get().modelRuntime : null;
   }
 
-  /** The live `damocles.team.enabled` flag — Team is opt-in (disabled by default). */
+  /** The live `damocles.team.enabled` flag (on by default). */
   private isTeamEnabled(): boolean {
-    return this.options.platform.settings.get<boolean>("damocles.team.enabled", false);
+    return this.options.platform.settings.get<boolean>("damocles.team.enabled", true);
   }
 
   /** Whether this chat can start a team now; the prompt and plan guidance follow the tool set, which a design chat and the disabled set narrow. */

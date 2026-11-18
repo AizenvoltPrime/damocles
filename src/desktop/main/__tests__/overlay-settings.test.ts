@@ -1077,20 +1077,6 @@ describe('OverlaySettings scope tabs', () => {
     expect(answer).toEqual({ ok: true, value: undefined });
   });
 
-  it("tells a waiting tab why it waits only once main started the attempt that replaces its host's connection, never offline in between", async () => {
-    const { settings, hooks, awayEvents } = await projectTabLost();
-    settings.replacing('loopback', () => {
-      // the connection ends as the user disconnecting it would, then the next attempt starts
-      hooks.away = 'offline';
-      settings.authorityChanged('loopback');
-      hooks.away = 'reconnecting';
-      settings.authorityChanged('loopback');
-    });
-    hooks.away = 'signIn';
-    settings.authorityChanged('loopback');
-    expect(awayEvents()).toEqual(['reconnecting', 'signIn']);
-  });
-
   it('does nothing for a sign-in while the selection moved to a chat of another host', async () => {
     const { fake, settings, hooks } = await projectTabLost();
     hooks.away = 'signIn';

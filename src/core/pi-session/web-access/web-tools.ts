@@ -15,8 +15,8 @@ import { mapWithConcurrency } from './util';
  * like the memory/compass/browser module tools — no `pi-web-access` install. The active-set names and the
  * Tools-panel catalog are declared in `./web-tool-specs`, which stays free of this module's runtime graph;
  * the `defineTool` names below are held in parity with it by
- * `tools/__tests__/web-tools-schema-parity.test.ts`. Every `execute` is fail-soft: any error becomes a text
- * result, never a thrown turn.
+ * `tools/__tests__/web-tools-schema-parity.test.ts`. Every `execute` is fail-soft: any error becomes an error
+ * result (`isError`), never a thrown turn; a call of several URLs or queries is one only when none succeeded.
  */
 
 const DEFAULT_CODE_MAX_TOKENS = 5000;
@@ -35,6 +35,11 @@ function errMsg(err: unknown): string {
 
 function textResult<D>(text: string, details: D): AgentToolResult<D> {
   return { content: [{ type: 'text', text }], details };
+}
+
+// the card shows the call failed, or stopped when the stop marker names it (stopped-tool-result.ts)
+function errorResult<D>(text: string, details: D): AgentToolResult<D> {
+  return { content: [{ type: 'text', text }], details, isError: true };
 }
 
 const webSearchSchema = Type.Object(
@@ -199,7 +204,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
           .map((q) => q.trim())
           .filter(Boolean);
         if (queries.length === 0) {
-          return textResult('Error: provide a `query` or `queries`.', {
+          return errorResult('Error: provide a `query` or `queries`.', {
             queries: [],
             queryCount: 0,
             totalResults: 0,
@@ -227,9 +232,9 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
               // Surface the degraded note in the model-visible text (not just details) — otherwise the
               // model treats silently-unfiltered results as if the domain/date filters had been applied.
               const markdown = r.degraded && r.note ? `> Note: ${r.note}\n\n${r.markdown}` : r.markdown;
-              return { q, markdown, resultCount: r.resultCount, degraded: Boolean(r.degraded) };
+              return { q, markdown, resultCount: r.resultCount, degraded: Boolean(r.degraded), failed: false };
             } catch (err) {
-              return { q, markdown: `Error: ${errMsg(err)}`, resultCount: 0, degraded: false };
+              return { q, markdown: `Error: ${errMsg(err)}`, resultCount: 0, degraded: false, failed: true };
             }
           });
           const totalResults = results.reduce((sum, r) => sum + r.resultCount, 0);
@@ -238,7 +243,8 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
             results.length === 1
               ? results[0]!.markdown
               : results.map((r) => `## Query: ${r.q}\n\n${r.markdown}`).join('\n\n---\n\n');
-          return textResult(text, {
+          // a query that answered makes the call a success; the text names each one that failed
+          return (results.every((r) => r.failed) ? errorResult : textResult)(text, {
             queries,
             queryCount: queries.length,
             totalResults,
@@ -246,7 +252,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
             ...(degraded ? { degraded: true } : {}),
           });
         } catch (err) {
-          return textResult(`Error: ${errMsg(err)}`, {
+          return errorResult(`Error: ${errMsg(err)}`, {
             queries,
             queryCount: queries.length,
             totalResults: 0,
@@ -267,7 +273,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
           .map((u) => u.trim())
           .filter(Boolean);
         if (allUrls.length === 0) {
-          return textResult('Error: provide a `url` or `urls`.', {
+          return errorResult('Error: provide a `url` or `urls`.', {
             urls: [],
             urlCount: 0,
             successful: 0,
@@ -300,7 +306,8 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
           const text = droppedUrls > 0
             ? `> Note: ${allUrls.length} URLs requested; only the first ${MAX_FETCH_URLS} were fetched (${droppedUrls} dropped).\n\n${body}`
             : body;
-          return textResult(text, {
+          // a page that loaded makes the call a success; the text names each one that failed
+          return (successful === 0 ? errorResult : textResult)(text, {
             urls,
             urlCount: urls.length,
             successful,
@@ -313,7 +320,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
             ...(input.includeImages != null ? { includeImages: input.includeImages } : {}),
           });
         } catch (err) {
-          return textResult(`Error: ${errMsg(err)}`, {
+          return errorResult(`Error: ${errMsg(err)}`, {
             urls,
             urlCount: urls.length,
             successful: 0,
@@ -334,13 +341,13 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
         const query = input.query.trim();
         const maxTokens = input.maxTokens ?? DEFAULT_CODE_MAX_TOKENS;
         if (!query) {
-          return textResult('Error: provide a `query`.', { query: '', maxTokens, mode: 'code-context', error: 'No query provided' });
+          return errorResult('Error: provide a `query`.', { query: '', maxTokens, mode: 'code-context', error: 'No query provided' });
         }
         try {
           const r = await codeSearchExa(query, maxTokens, signal);
           return textResult(r.markdown, { query, maxTokens, mode: r.mode });
         } catch (err) {
-          return textResult(`Error: ${errMsg(err)}`, { query, maxTokens, mode: 'code-context', error: errMsg(err) });
+          return errorResult(`Error: ${errMsg(err)}`, { query, maxTokens, mode: 'code-context', error: errMsg(err) });
         }
       },
     }),
@@ -354,19 +361,20 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
       execute: async (_id, input, signal) => {
         const url = input.url.trim();
         if (!url) {
-          return textResult('Error: provide a feed `url`.', { url: '', itemCount: 0, error: 'No URL provided' });
+          return errorResult('Error: provide a feed `url`.', { url: '', itemCount: 0, error: 'No URL provided' });
         }
         try {
           const result = await fetchFeed(url, signal, input.limit);
           const text = formatFeed(url, result);
-          return textResult(text, {
+          // an error beside items read is a note to them; formatFeed shows it alone only when no item was read
+          return (result.error && result.items.length === 0 ? errorResult : textResult)(text, {
             url,
             itemCount: result.items.length,
             ...(result.note ? { note: result.note } : {}),
             ...(result.error ? { error: result.error } : {}),
           });
         } catch (err) {
-          return textResult(`Error: ${errMsg(err)}`, { url, itemCount: 0, error: errMsg(err) });
+          return errorResult(`Error: ${errMsg(err)}`, { url, itemCount: 0, error: errMsg(err) });
         }
       },
     }),
@@ -380,11 +388,11 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
       execute: async (_id, input, signal) => {
         const raw = input.url.trim();
         if (!raw) {
-          return textResult('Error: provide a YouTube `url` or video id.', { videoId: '', chars: 0, error: 'No URL provided' });
+          return errorResult('Error: provide a YouTube `url` or video id.', { videoId: '', chars: 0, error: 'No URL provided' });
         }
         const videoId = parseVideoId(raw);
         if (!videoId) {
-          return textResult(`Error: could not parse a YouTube video id from "${raw}".`, {
+          return errorResult(`Error: could not parse a YouTube video id from "${raw}".`, {
             videoId: '',
             chars: 0,
             error: 'Invalid YouTube URL or id',
@@ -394,7 +402,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
           const result = await fetchTranscript(videoId, signal, input.lang != null ? { lang: input.lang } : undefined);
           if (result.error) {
             const header = result.title ? `# ${result.title}\n${videoId}` : `# ${videoId}`;
-            return textResult(`${header}\n\nError: ${result.error}`, {
+            return errorResult(`${header}\n\nError: ${result.error}`, {
               videoId,
               ...(result.lang ? { lang: result.lang } : {}),
               chars: 0,
@@ -411,7 +419,7 @@ export function buildWebPiTools(deps: WebPiToolDeps): ToolDefinition[] {
             chars: result.text.length,
           });
         } catch (err) {
-          return textResult(`Error: ${errMsg(err)}`, { videoId, chars: 0, error: errMsg(err) });
+          return errorResult(`Error: ${errMsg(err)}`, { videoId, chars: 0, error: errMsg(err) });
         }
       },
     }),

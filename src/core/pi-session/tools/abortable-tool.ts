@@ -41,7 +41,8 @@ export function abortableTool(tool: ToolDefinition): ToolDefinition {
       raceAbort(
         tool.execute(toolCallId, params, signal, onUpdate, ctx),
         signal,
-        () => ({ content: [{ type: 'text', text: `${tool.name} aborted` }], details: undefined }) as AgentToolResult<unknown>,
+        // an error under the aborted signal, which the stop marker (stopped-tool-result.ts) shows as stopped
+        () => ({ content: [{ type: 'text', text: `${tool.name} aborted` }], details: undefined, isError: true }) as AgentToolResult<unknown>,
         tool.name,
       ),
   };

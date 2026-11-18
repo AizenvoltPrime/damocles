@@ -27,7 +27,7 @@ import { DESIGN_TOOL_CATALOG } from '../../design/tools/design-tool-specs';
 
 /**
  * The aggregated Tools-panel catalog. Each subsystem owns its own ordered catalog (`*_TOOL_CATALOG`);
- * this module unions them with the always-on Core built-ins and the opt-in Web tools, and derives the
+ * this module unions them with the always-on Core built-ins and the switchable Web tools, and derives the
  * set of names the permission gate auto-allows as in-process module tools. Single source of truth for
  * the panel (`ChatSession.getToolStatus`) and the gate (`runPermissionGate`).
  */

@@ -326,8 +326,9 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     core: { epoch: () => core.state().epoch, onState: (listener) => core.onState(listener), connect: (id, clientId, channel, close, link) => core.connect(id, clientId, channel, close, link) },
     connectionsChanged: (presence) => {
       lifetime.connectionsChanged(presence);
-      detector.setActive(presence.includes('connected'));
+      detector.setActive(presence.some((connection) => connection.state === 'connected'));
     },
+    connectionClosed: (id) => lifetime.connectionClosed(id),
     agentUpstream: (clientId, upstream) => agentProxy.setClient(clientId, upstream),
     ...(deps.graceMs !== undefined ? { graceMs: deps.graceMs } : {}),
     ...(deps.maxHeldBytes !== undefined ? { maxHeldBytes: deps.maxHeldBytes } : {}),
@@ -338,7 +339,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       attach: ({ terminalIdleDays }) => registry.setIdleDays(terminalIdleDays),
       listRuns: () => ({ runs: registry.runs() }),
       listOwnRuns: (_params, { clientId }) => ({ runs: registry.ownRuns(clientId) }),
-      shutdownWhenIdle: () => lifetime.shutdownWhenIdle(),
+      shutdownWhenIdle: (_params, { id }) => lifetime.shutdownWhenIdle(id),
       // after the answer is on its way
       shutdownNow: (_params, { mux }) => {
         setImmediate(() => void mux.drained().then(() => shutdown('control.shutdownNow')));

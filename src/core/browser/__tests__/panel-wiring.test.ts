@@ -203,7 +203,7 @@ const SRC_DIR = join(__dirname, '..');
 const readSrc = (name: string): string => readFileSync(join(SRC_DIR, name), 'utf8');
 
 /** Set `damocles.browser.enabled`, which gates the restore path. The fake's `get` returns the
- *  caller's default, so the shipped default (false) is what an unstubbed test sees. */
+ *  caller's default, so the shipped default (true) is what an unstubbed test sees. */
 function withBrowserEnabled(enabled: boolean): FakePlatform {
   platform = installFakePlatform({ settings: { user: { 'damocles.browser.enabled': enabled } } });
   return platform;

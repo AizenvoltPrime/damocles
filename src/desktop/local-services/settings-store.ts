@@ -6,7 +6,7 @@ import type { NotificationService } from '../../platform/notification-service';
 import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, SettingsStore } from '../../platform/settings-store';
 import type { TrustService } from '../../platform/trust-service';
 import type { WorkspaceFolders } from '../../platform/workspace-folders';
-import type { ContributedConfiguration } from '../../core/config/contributed-configuration';
+import { settingTypeFits, type ContributedConfiguration } from '../../core/config/contributed-configuration';
 import { stripBom } from '../../core/config/bom';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { mergeSettingValues, parseSettingsText, type SettingsObject } from '../../core/config/settings-file';
@@ -136,6 +136,7 @@ export function withDesktopConfiguration(contributed: ContributedConfiguration):
     resourceKeys: contributed.resourceKeys,
     clientMachineKeys: contributed.clientMachineKeys,
     hostKeys: contributed.hostKeys,
+    types: new Map([...contributed.types, ...desktop.map(([key, property]) => [key, property.type] as const)]),
   };
 }
 
@@ -170,6 +171,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   private readonly reportedBroken = new Set<string>();
   // the user-only keys last logged as ignored, per project file, until that list changes
   private readonly reportedIgnored = new Map<string, string>();
+  // the keys last reported as holding a value of the wrong type, per file, until that list changes
+  private readonly reportedMistyped = new Map<string, string>();
   private readonly folders = new Map<string, FolderEntry>();
   // every file update wrote, kept after its folder's entry is released so a quit still waits for it
   private readonly written = new Set<string>();
@@ -234,7 +237,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     const file = this.deps.remote === undefined
       ? (own ? { userValue: user[key] as T } : {})
       : {
-          ...(Object.hasOwn(client, key) && this.readsFromClient(key) ? { userValue: client[key] as T } : {}),
+          // an app that predates the type check relays its file's values unchecked
+          ...(Object.hasOwn(client, key) && this.readsFromClient(key) && this.typeFits(key, client[key]) ? { userValue: client[key] as T } : {}),
           ...(own && !this.isClientOnly(key) ? { machineValue: user[key] as T } : {}),
         };
     return {
@@ -394,6 +398,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         this.lastParsed.delete(filePath);
         this.reportedBroken.delete(filePath);
+        this.reportedMistyped.delete(filePath);
         return {};
       }
       // A repository can make this path a directory, and a file can be unreadable; neither may stop a reload.
@@ -418,9 +423,32 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
       }
       return { ...previous };
     }
-    this.lastParsed.set(filePath, settings);
+    const typed = this.withoutMistyped(settings, filePath);
+    this.lastParsed.set(filePath, typed);
     this.reportedBroken.delete(filePath);
-    return { ...settings };
+    return { ...typed };
+  }
+
+  // A value of a type its key does not declare is dropped, so every reader, the settings page included, gets the next
+  // layer's value or the default; the file keeps it for the user to fix.
+  private withoutMistyped(settings: SettingsObject, filePath: string): SettingsObject {
+    const mistyped = Object.keys(settings).filter((key) => !this.typeFits(key, settings[key])).sort();
+    const list = mistyped.join(', ');
+    if (list === '') {
+      this.reportedMistyped.delete(filePath);
+      return settings;
+    }
+    if (this.reportedMistyped.get(filePath) !== list) {
+      this.reportedMistyped.set(filePath, list);
+      this.deps.log(`[settings] ${filePath}: ignoring ${list}; the value is not of the type the setting takes`);
+      void this.deps.notifications?.warn(l('{0} gives {1} a value of the wrong type, so Damocles ignores it and uses the default or another settings file\'s value. Fix the value to apply it.', filePath, list));
+    }
+    return Object.fromEntries(Object.entries(settings).filter(([key]) => !mistyped.includes(key)));
+  }
+
+  private typeFits(key: string, value: unknown): boolean {
+    const type = this.deps.contributed.types.get(key);
+    return type === undefined || settingTypeFits(type, value);
   }
 
   private readProjectLayer(filePath: string, acceptEmpty: boolean): SettingsObject {

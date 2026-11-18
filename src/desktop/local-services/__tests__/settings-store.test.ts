@@ -6,7 +6,7 @@ import { createFakePlatform, type FakeFileWatcherFactory, type FakeNotificationS
 import type { Disposable } from '../../../platform/disposable';
 import type { TrustService } from '../../../platform/trust-service';
 import type { SettingsFolder } from '../../../platform/settings-store';
-import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
+import { parseContributedConfiguration, settingTypeFits } from '../../../core/config/contributed-configuration';
 import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
 import { updateConfigAtEffectiveScope } from '../../../core/chat-panel/settings-manager/utils';
 import { DesktopSettingsStore, EMPTY_SETTINGS_RETRY_MS } from '../settings-store';
@@ -28,6 +28,8 @@ const contributed = parseContributedConfiguration({
         'damocles.voice.runtimePath': { default: '', scope: 'machine' },
         'damocles.cacheWarming': { default: 'off', scope: 'application' },
         'damocles.voice.mode': { default: 'push-to-talk', scope: 'machine-overridable' },
+        'damocles.browser.enabled': { default: true, type: 'boolean' },
+        'damocles.retries': { default: null, type: ['integer', 'null'] },
       },
     },
   },
@@ -551,6 +553,55 @@ describe('DesktopSettingsStore file problems', () => {
   });
 });
 
+describe('DesktopSettingsStore value types', () => {
+  it('ignores a value of a type its setting does not declare, in every file, and tells the user once per file and list', () => {
+    writeJson(userFile, { 'damocles.browser.enabled': 'false', 'damocles.retries': 3, 'damocles.model': 'user' });
+    writeJson(projectFile(projectA), { 'damocles.retries': 'many' });
+    const { store, watchers, notifications, lines } = harness({ trusted: [projectA] });
+    const fire = (): void => watchers.watcher(path.dirname(userFile), 'settings.json').fireChange(userFile);
+    // the settings page reads inspect, so it shows what the runtime reads
+    expect(store.inspect('damocles.browser.enabled')).toEqual({ defaultValue: true });
+    expect(store.get('damocles.browser.enabled')).toBe(true);
+    // the project's mistyped value gives way to the user's
+    expect(store.get('damocles.retries')).toBe(3);
+    expect(store.get('damocles.model')).toBe('user');
+    expect(notifications.calls).toEqual([
+      expect.objectContaining({ level: 'warn', message: expect.stringContaining(`${userFile} gives damocles.browser.enabled a value of the wrong type`) }),
+      expect.objectContaining({ level: 'warn', message: expect.stringContaining(`${projectFile(projectA)} gives damocles.retries a value of the wrong type`) }),
+    ]);
+
+    fire();
+    expect(notifications.calls).toHaveLength(2);
+    writeJson(userFile, { 'damocles.browser.enabled': false });
+    fire();
+    expect(store.get('damocles.browser.enabled')).toBe(false);
+    writeJson(userFile, { 'damocles.browser.enabled': 0 });
+    fire();
+    expect(store.get('damocles.browser.enabled')).toBe(true);
+    expect(notifications.calls).toHaveLength(3);
+    expect(lines.filter((line) => line.includes('the value is not of the type the setting takes'))).toHaveLength(3);
+  });
+
+  it('keeps a declared key\'s value of a type it lists and any value of an undeclared key', () => {
+    writeJson(userFile, { 'damocles.retries': null, 'damocles.model': 7 });
+    const { store, notifications } = harness();
+    expect(store.inspect('damocles.retries')).toEqual({ defaultValue: null, userValue: null });
+    expect(store.get('damocles.model')).toBe(7);
+    expect(notifications.calls).toEqual([]);
+  });
+
+  it('settingTypeFits matches each JSON Schema type', () => {
+    expect(settingTypeFits('integer', 2)).toBe(true);
+    expect(settingTypeFits('integer', 2.5)).toBe(false);
+    expect(settingTypeFits('number', 2.5)).toBe(true);
+    expect(settingTypeFits('object', [])).toBe(false);
+    expect(settingTypeFits('object', null)).toBe(false);
+    expect(settingTypeFits('array', [])).toBe(true);
+    expect(settingTypeFits(['string', 'null'], null)).toBe(true);
+    expect(settingTypeFits('boolean', 'true')).toBe(false);
+  });
+});
+
 describe('DesktopSettingsStore per-folder reads (D38)', () => {
   it('reads a folder\'s own project and local layers whichever project is the default', () => {
     writeJson(projectFile(projectA), { 'damocles.maxIndexedFiles': 1 });
@@ -644,6 +695,17 @@ describe('readContributedConfiguration', () => {
     expect(read.userOnlyKeys).toContain('damocles.voice.runtimePath');
     expect(read.defaults.get('damocles.browser.devToolsPort')).toBe(false);
     expect(read.keys.length).toBeGreaterThan(20);
+  });
+
+  // a default of the wrong type would be what a mistyped value falls back to
+  it('declares a type for every setting, which its default fits', () => {
+    const read = readContributedConfiguration(process.cwd());
+    for (const key of read.keys) {
+      const type = read.types.get(key);
+      expect(type, key).toBeDefined();
+      if (read.defaults.has(key)) expect(settingTypeFits(type!, read.defaults.get(key)), key).toBe(true);
+    }
+    for (const [key, property] of Object.entries(DESKTOP_CONFIGURATION)) expect(settingTypeFits(property.type, property.default), key).toBe(true);
   });
 
   it('splits the machine scoped keys into those of client code (voice) and the host\'s own', () => {

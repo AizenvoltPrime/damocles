@@ -215,8 +215,8 @@ function buildDescription(inventory: ToolSearchInventory | null): string {
     .filter((g) => g.names.length > 0)
     .map((g) => `${g.group} (${g.names.length})${g.guidance !== undefined ? ` — ${g.guidance}` : ''}: ${g.names.join(', ')}`);
   const mcpLines = inventory ? mcpInventoryLines(inventory.names, inventory.mcpDescriptions) : [];
-  // The default workspace (browser off, compass off, no MCP) has nothing to defer, and ToolSearch is
-  // always eligible — so without this the model reads "the tools below" followed by nothing.
+  // A session with every deferred group off and no MCP has nothing to defer, and ToolSearch is
+  // always eligible, so without this the model reads "the tools below" followed by nothing.
   if (builtinLines.length === 0 && mcpLines.length === 0) {
     return 'Load additional tools into this session. Nothing is deferred in this session — every tool you can use is already loaded, so this tool has nothing to add right now.';
   }

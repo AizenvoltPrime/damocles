@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, useId } from 'vue';
+import { computed, nextTick, onMounted, ref, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { File, Folder, FolderOpen, House, Search } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,8 @@ const props = defineProps<{
   pick?: { readonly mode: 'file' | 'folder'; readonly buttonLabel?: string } | undefined;
   // the Open button's label outside a picker
   openLabel?: string | undefined;
+  // the host's connection when the caller follows it: a listing that failed is read again once the host is back
+  connected?: boolean | undefined;
 }>();
 const emit = defineEmits<{ pick: [path: string]; cancel: [] }>();
 const { t } = useI18n();
@@ -143,6 +145,10 @@ function onListKeydown(event: KeyboardEvent): void {
   else return;
   event.preventDefault();
 }
+
+watch(() => props.connected, (now, before) => {
+  if (now === true && before === false && problem.value !== undefined) void go(listing.value?.path);
+});
 
 onMounted(async () => {
   await go();

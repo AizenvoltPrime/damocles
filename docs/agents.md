@@ -49,7 +49,7 @@ Damocles does not resume a subagent that the budget limit or a cleared conversat
 
 ## Collaborative teams
 
-A multi-agent team system where 2-5 specialist agents collaborate in real time on complex tasks. A lead agent orchestrates by spawning specialists with domain expertise profiles, coordinating via direct messaging, sharing decisions on a scratchpad, and synthesizing a final result. Teams are disabled by default; enable them via `damocles.team.enabled`.
+A multi-agent team system where 2-5 specialist agents collaborate in real time on complex tasks. A lead agent orchestrates by spawning specialists with domain expertise profiles, coordinating via direct messaging, sharing decisions on a scratchpad, and synthesizing a final result. Teams are enabled by default; turn them off in Settings › Teams or via `damocles.team.enabled`.
 
 ### Mission brief
 

@@ -124,6 +124,7 @@
   "Could not save {0}: {1}": "Δεν ήταν δυνατή η αποθήκευση του {0}: {1}",
   "The permission rule was not saved. {0}": "Ο κανόνας δικαιωμάτων δεν αποθηκεύτηκε. {0}",
   "{0} is not valid JSON, so Damocles keeps using the settings it last read from it. Fix the file to apply it: {1}": "Το {0} δεν είναι έγκυρο JSON, οπότε το Damocles συνεχίζει να χρησιμοποιεί τις ρυθμίσεις που διάβασε τελευταία από αυτό. Διορθώστε το αρχείο για να εφαρμοστεί: {1}",
+  "{0} gives {1} a value of the wrong type, so Damocles ignores it and uses the default or another settings file's value. Fix the value to apply it.": "Το {0} δίνει στη ρύθμιση {1} τιμή λάθος τύπου, οπότε το Damocles την αγνοεί και χρησιμοποιεί την προεπιλογή ή την τιμή άλλου αρχείου ρυθμίσεων. Διορθώστε την τιμή για να εφαρμοστεί.",
   "Damocles cannot reach your operating system's keyring, so the key or sign-in you just saved lasts only until Damocles restarts. Turn on the keyring to keep it.": "Το Damocles δεν έχει πρόσβαση στην κλειδοθήκη του λειτουργικού σας συστήματος, οπότε το κλειδί ή η σύνδεση που μόλις αποθηκεύσατε διατηρείται μόνο μέχρι να επανεκκινήσει το Damocles. Ενεργοποιήστε την κλειδοθήκη για να διατηρηθεί.",
   "How to Turn It On": "Πώς ενεργοποιείται",
   "Show Log": "Εμφάνιση Αρχείου Καταγραφής",

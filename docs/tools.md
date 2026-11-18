@@ -12,7 +12,7 @@ A `read` never sees a file half written by Damocles' own file tools. For an exis
 
 ## Web tools
 
-The web tools are opt-in: enable them via `damocles.pi.webSearch.enabled`. The toggle takes effect on the next turn with no install or reload.
+The web tools are on by default; turn them off in Settings › Tools & integrations or via `damocles.pi.webSearch.enabled`. The toggle takes effect on the next turn with no install or reload.
 
 Five native, **key-free** read-only tools:
 

@@ -5,7 +5,7 @@ import { toolCategory } from '../../tool-normalization';
 /**
  * Schema parity + routing for the native web tools (Phase 7, US-028.3): the five PascalCase tools
  * register with the expected param keys, classify as read-only, route `execute` to the mocked
- * exa/extract layer, and return a structured error result instead of throwing on failure.
+ * exa/extract layer, and return a structured error result (`isError`, so the card shows it failed) instead of throwing.
  */
 
 vi.mock('../../web-access/exa', () => ({
@@ -56,7 +56,7 @@ interface PiTool {
     id: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: Record<string, unknown> }>;
+  ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: Record<string, unknown>; isError?: boolean }>;
 }
 
 function buildTools(): Record<string, PiTool> {
@@ -273,5 +273,44 @@ describe('web tools — fail-soft', () => {
     expect(search.content[0]?.text).toContain('Error');
     const fetch = await buildTools().WebFetch!.execute('t', {});
     expect(fetch.content[0]?.text).toContain('Error');
+  });
+});
+
+describe('web tools — error results', () => {
+  it('marks a failure an error result and a success none', async () => {
+    vi.mocked(codeSearchExa).mockRejectedValueOnce(new Error('exa down'));
+    expect((await buildTools().CodeSearch!.execute('t', { query: 'x' })).isError).toBe(true);
+    expect((await buildTools().CodeSearch!.execute('t', { query: 'x' })).isError).toBeUndefined();
+    vi.mocked(extractUrl).mockResolvedValueOnce({ url: 'https://a', title: '', markdown: '', error: 'HTTP 400', truncated: false });
+    expect((await buildTools().WebFetch!.execute('t', { url: 'https://a' })).isError).toBe(true);
+    expect((await buildTools().WebSearch!.execute('t', {})).isError).toBe(true);
+    vi.mocked(fetchTranscript).mockResolvedValueOnce({ videoId: 'dQw4w9WgXcQ', text: '', error: 'no captions available for this video' });
+    expect((await buildTools().YouTubeTranscript!.execute('t', { url: 'https://youtu.be/dQw4w9WgXcQ' })).isError).toBe(true);
+  });
+
+  it('marks a WebFetch of several urls an error only when none loaded, naming each failure either way', async () => {
+    const failed = { url: 'https://b', title: '', markdown: '', error: 'HTTP 404', truncated: false };
+    vi.mocked(extractUrls).mockResolvedValueOnce([{ url: 'https://a', title: 'A', markdown: 'a-md', error: null, truncated: false }, failed]);
+    const some = await buildTools().WebFetch!.execute('t', { urls: ['https://a', 'https://b'] });
+    expect(some.isError).toBeUndefined();
+    expect(some.content[0]?.text).toContain('HTTP 404');
+    vi.mocked(extractUrls).mockResolvedValueOnce([{ ...failed, url: 'https://a' }, failed]);
+    expect((await buildTools().WebFetch!.execute('t', { urls: ['https://a', 'https://b'] })).isError).toBe(true);
+  });
+
+  it('marks a WebSearch of several queries an error only when every one failed; a query with no results answered', async () => {
+    vi.mocked(webSearchExa).mockResolvedValueOnce({ markdown: 'none', resultCount: 0 }).mockRejectedValueOnce(new Error('exa down'));
+    const some = await buildTools().WebSearch!.execute('t', { queries: ['a', 'b'] });
+    expect(some.isError).toBeUndefined();
+    expect(some.content[0]?.text).toContain('exa down');
+    vi.mocked(webSearchExa).mockRejectedValueOnce(new Error('exa down')).mockRejectedValueOnce(new Error('exa down'));
+    expect((await buildTools().WebSearch!.execute('t', { queries: ['a', 'b'] })).isError).toBe(true);
+  });
+
+  it('marks a FeedRead error an error result only when it read no item', async () => {
+    vi.mocked(fetchFeed).mockResolvedValueOnce({ title: 'Feed', items: [], error: 'not a feed' });
+    expect((await buildTools().FeedRead!.execute('t', { url: 'https://f/rss' })).isError).toBe(true);
+    vi.mocked(fetchFeed).mockResolvedValueOnce({ title: 'Feed', items: [{ title: 'One', link: 'https://f/1', published: '', summary: '' }], error: 'item 2 did not parse' });
+    expect((await buildTools().FeedRead!.execute('t', { url: 'https://f/rss' })).isError).toBeUndefined();
   });
 });

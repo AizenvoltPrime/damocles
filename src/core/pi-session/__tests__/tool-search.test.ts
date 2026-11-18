@@ -355,7 +355,7 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
   });
 
   it('reports the `web` group as INERT against an empty universe, never as unknown', () => {
-    // Web is off by default, so this is the DEFAULT workspace's experience. The name is real and the
+    // A workspace with the web tools turned off. The name is real and the
     // capability is off; "unknown" would send the model hunting a typo and retrying the dead call.
     const { matches, unknown, inertGroups } = resolveToolSearchEntries(['web'], [], new Map());
     expect(matches).toEqual([]);
@@ -913,7 +913,7 @@ describe('the advertised menu never exceeds what the session can load', () => {
   });
 
   it('says so plainly when nothing is deferred, instead of "the tools below" and no tools', () => {
-    // The DEFAULT workspace: browser off, compass off, no MCP. ToolSearch is always eligible.
+    // Every deferred group off and no MCP. ToolSearch is always eligible.
     const description = createToolSearchTool(inventoryPort(() => ({ names: [] }))).description;
 
     expect(description).not.toContain('The tools below');

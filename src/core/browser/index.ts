@@ -896,7 +896,7 @@ export class BrowserService {
    *  takes effect on the next window reload without a restart. */
   private readEnabledSetting(): boolean {
     try {
-      return this.platform.settings.get<boolean>('damocles.browser.enabled', false);
+      return this.platform.settings.get<boolean>('damocles.browser.enabled', true);
     } catch {
       return false;
     }

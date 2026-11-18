@@ -408,6 +408,22 @@ describe('the card frame', () => {
     expect(tool.find('.d-spinning').exists()).toBe(special.find('.d-spinning').exists());
   });
 
+  // The badge transition animates the wrapper, so the spinner's endless spin never holds the leaving icon after a Stop.
+  it('swaps the status icon through a wrapper keyed by the icon, never the spinning icon itself', async () => {
+    const frame = mount(ToolCardFrame, { props: { icon: LoadingSpinner, name: 'WebFetch', status: 'pending' as ToolCall['status'] }, global: { plugins: [i18n] } });
+    const wrapper = (): Element => frame.get('[data-testid="tool-card-status-icon"]').element;
+    const pending = wrapper();
+    expect(pending.classList.contains('d-spinning')).toBe(false);
+    expect(frame.get('[data-testid="tool-card-status-icon"] svg').classes()).toContain('d-spinning');
+
+    await frame.setProps({ status: 'running' });
+    expect(wrapper()).toBe(pending);
+
+    await frame.setProps({ status: 'cancelled' });
+    expect(wrapper()).not.toBe(pending);
+    expect(frame.get('[data-testid="tool-card-status-icon"] svg').classes()).toContain(`lucide-${BAN_PATH}`);
+  });
+
   it('animates only through the motion.css classes', () => {
     for (const status of ['pending', 'running', 'awaiting_approval'] as const) {
       expect(card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status, liveOutput: 'x' }).html()).not.toContain('animate-[');

@@ -47,11 +47,11 @@ export function buildPlanModeGuidance(
     .join('');
   const implementationBullet = `   - For the implementation phase, give every slice a delivery mechanism in the plan and pick the smallest one that fits:${rungs}\n     ${mechanismRecordRule(teamEnabled)}`;
 
-  // `damocles.pi.webSearch.enabled` is off by default, and while it is off the web tools are not in the
+  // While `damocles.pi.webSearch.enabled` is off the web tools are not in the
   // session's eligible set at all. `ToolSearch({tools:["web"]})` answers "Not available in this
   // session". Emitting the clause unconditionally therefore spends a turn sending the model after a
-  // capability it does not have, so the guidance is gated on the capability exactly as the browser
-  // clause above it is.
+  // capability it does not have, so the guidance is gated on the capability. The browser clause in the
+  // text below is unconditional and names the setting instead ("when the integrated browser is enabled").
   //
   // Clause ORDER is the requirement, not mere presence, and it matches the browser clause: the load
   // step LEADS, the prescription follows. A model that reads "verify with the web tools" before it

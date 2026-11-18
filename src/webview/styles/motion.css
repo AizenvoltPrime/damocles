@@ -247,6 +247,7 @@
 
 /* A busy icon turns in place; a live status dot breathes (the reference's d-spin .9s and d-pulse 1s). */
 /* The no-op filter gives the spinner its own render surface, so its layer rasterizes unrotated: GPU raster on ANGLE D3D11 can shift an SVG path 1px when it rasterizes a rotated layer, and the icon then circles instead of turning in place. */
+/* Never on a <Transition>'s own child: this endless animation replaces the transition's, and Vue then holds the element for a spin. */
 .d-spinning{animation:d-spin var(--spin-duration,.9s) linear infinite;filter:opacity(1)}
 .d-pulsing{animation:d-pulse 1s ease-in-out infinite}
 

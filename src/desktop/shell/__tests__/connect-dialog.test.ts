@@ -311,6 +311,21 @@ describe('remote folder browser', () => {
     expect(list(wrapper).attributes('aria-busy')).toBeUndefined();
   });
 
+  it('lists again once its host is back after a listing that failed, and keeps a listing that worked', async () => {
+    const browse = vi.fn(async (): Promise<RemoteBrowseResult> => LISTING).mockResolvedValueOnce({ ok: false, error: 'notConnected' });
+    const wrapper = track(mount(RemoteFolderBrowser, { props: { hostName: 'prod', recentFolders: [], browse, connected: false }, global, attachTo: document.body }));
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toBe('prod is not connected.');
+    await wrapper.setProps({ connected: true });
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(4);
+    await wrapper.setProps({ connected: false });
+    await wrapper.setProps({ connected: true });
+    await flushPromises();
+    expect(browse).toHaveBeenCalledTimes(2);
+  });
+
   it('names the folder and the helper macOS needs Full Disk Access for', async () => {
     const { wrapper } = await mountBrowser(vi.fn(async (path?: string): Promise<RemoteBrowseResult> => (path === '/Users/u/Documents' ? { ok: false, error: 'eperm-privacy', folder: '/Users/u/Documents' } : { ...LISTING, path: '/Users/u', folders: [{ name: 'Documents' }] })));
     await wrapper.get('[role="option"]').trigger('dblclick');

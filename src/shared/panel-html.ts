@@ -57,8 +57,8 @@ export function chatPageHtml(parts: ChatPageParts): string {
 
   // CSP: `script-src` stays nonce-locked (no inline/remote script — no RCE). `img-src ... https:` is
   // a deliberate widening so WebFetch can render inline images from extracted web pages. The tradeoff
-  // is that any rendered markdown can load remote https images (a tracking/IP-leak vector); this is the
-  // standard posture for chat webviews that render web content, and the web tools are opt-in. `blob:` is only what the
+  // is that any rendered markdown can load remote https images, a tracking/IP-leak vector and a channel a
+  // prompt-injected model can exfiltrate through; accepted so WebFetch results render images. `blob:` is only what the
   // page's own script creates: the tool-result image cache's object URLs.
   // form-action does not fall back to default-src, so it is named; every form in the webview handles submit in script.
   return `<!DOCTYPE html>

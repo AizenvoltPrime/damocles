@@ -1,4 +1,4 @@
-// Writes resources/icon.ico and the artwork of build/icon.icon from resources/icon.png; run after changing icon.png and
+// Writes resources/icon.ico, the artwork of build/icon.icon and the Linux icons in build/icons from resources/icon.png; run after changing icon.png and
 // commit the output. Windows loads the window, tray and executable icons from the ICO at the exact size each one is
 // displayed at. build/icon.icon is the macOS Icon Composer icon, whose icon.json is edited by hand.
 import { spawnSync } from 'node:child_process';
@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LINUX_ICON_SIZES, LINUX_ICONS_FOLDER } from './linux-icons.ts';
 
 // Every size Windows 11 shows an app icon at, 100% to 400% scaling ("Construct your Windows app's icon" on learn.microsoft.com).
 const ICON_SIZES = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
@@ -17,8 +18,9 @@ const iconIco = join(repoRoot, 'resources', 'icon.ico');
 // Icon Composer's canvas is 1024 points; icon.json places this layer on it.
 const MAC_ARTWORK_SIZE = 1024;
 const macArtwork = join(repoRoot, 'build', 'icon.icon', 'Assets', 'damocles.png');
+const linuxIcons = join(repoRoot, LINUX_ICONS_FOLDER);
 
-/** Runs inside Electron, whose nativeImage scales the PNG with a Lanczos filter; writes an ICO of PNG entries and the macOS artwork. */
+/** Runs inside Electron, whose nativeImage scales the PNG with a Lanczos filter; writes an ICO of PNG entries, the macOS artwork and the Linux icons. */
 async function writeIcons(profileDir: string | undefined): Promise<void> {
   if (profileDir === undefined) throw new Error('Pass the Electron profile folder as the last argument.');
   const { app, nativeImage } = await import('electron');
@@ -47,6 +49,10 @@ async function writeIcons(profileDir: string | undefined): Promise<void> {
   writeFileSync(iconIco, Buffer.concat([header, ...images.map(({ png }) => png)]));
   mkdirSync(dirname(macArtwork), { recursive: true });
   writeFileSync(macArtwork, source.resize({ width: MAC_ARTWORK_SIZE, height: MAC_ARTWORK_SIZE, quality: 'best' }).toPNG());
+  // electron-builder ships every <n>x<n>.png in the folder, so a size dropped from the list must not stay behind
+  rmSync(linuxIcons, { recursive: true, force: true });
+  mkdirSync(linuxIcons, { recursive: true });
+  for (const size of LINUX_ICON_SIZES) writeFileSync(join(linuxIcons, `${size}x${size}.png`), source.resize({ width: size, height: size, quality: 'best' }).toPNG());
   app.quit();
 }
 
@@ -68,5 +74,5 @@ if (process.versions.electron) {
   } finally {
     rmSync(profileDir, { recursive: true, force: true });
   }
-  console.log(`Wrote ${iconIco} and ${macArtwork}.`);
+  console.log(`Wrote ${iconIco}, ${macArtwork} and ${linuxIcons}.`);
 }
