@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import type { TrustChange } from '../../../platform/trust-service';
 import { worktreeFolderFor } from '../../worktrees/records';
 import { REGISTRY_FILE, WorktreeRegistry } from '../../worktrees/registry';
 import { ProjectRelocations, type ProjectRelocationsDeps } from '../index';
@@ -36,13 +37,17 @@ const allDone = (): Record<RelocationStepName, RelocationStepState> => Object.fr
 const onDisk = (id: string): RelocationRecord => parseJournal(fs.readFileSync(journalFile, 'utf8'), () => undefined).records.find((record) => record.id === id)!;
 
 describe('ProjectRelocations trust resume', () => {
-  it('a trust grant runs the repair of the relocation whose new folder is trusted now, and leaves another waiting', async () => {
+  // a daemon client's attach can add keys with a change that names no folder
+  it.each([
+    ['a trust grant naming the folder', (folder: string): TrustChange => ({ granted: [folder], revoked: [] })],
+    ['a trust change naming no folder', (): TrustChange => ({ granted: [], revoked: [] })],
+  ])('%s runs the repair of the relocation whose new folder is trusted now, and leaves another waiting', async (_, changeOf) => {
     const granted = path.join(dir, 'new', 'granted');
     const other = path.join(dir, 'new', 'other');
     await waitingOnTrust('granted', granted);
     await waitingOnTrust('other', other);
     const trusted = new Set<string>();
-    const grantListeners = new Set<(folders: readonly string[]) => void>();
+    const grantListeners = new Set<(change: TrustChange) => void>();
     const relocations = new ProjectRelocations({
       requestedBy: 'desktop',
       watcherFactory: createFakePlatform().fileWatchers,
@@ -51,7 +56,7 @@ describe('ProjectRelocations trust resume', () => {
       hostState: { mcp: { relocateFolders: async () => undefined } },
       trust: {
         isTrusted: (folder) => trusted.has(folder),
-        onDidGrantTrust: (cb) => {
+        onDidChangeTrust: (cb) => {
           grantListeners.add(cb);
           return { dispose: () => grantListeners.delete(cb) };
         },
@@ -65,7 +70,7 @@ describe('ProjectRelocations trust resume', () => {
     opened.push(relocations);
 
     trusted.add(granted);
-    for (const listener of grantListeners) listener([granted]);
+    for (const listener of grantListeners) listener(changeOf(granted));
     await relocations.whenIdle();
 
     expect(onDisk('granted').steps.repair).toEqual({ state: 'done' });
@@ -113,7 +118,7 @@ describe('ProjectRelocations waiting steps after a later relocation of the proje
       },
       hostState: { mcp: { relocateFolders: async () => undefined } },
       worktrees: registry,
-      trust: { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+      trust: { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) },
       projectFolders: () => [],
       log: () => undefined,
       file: journalFile,
@@ -160,7 +165,7 @@ describe('ProjectRelocations waiting steps after a later relocation of the proje
         },
       },
       hostState: { mcp: { relocateFolders: async () => undefined } },
-      trust: { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+      trust: { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) },
       projectFolders: () => [],
       log: () => undefined,
       file: journalFile,
@@ -214,7 +219,7 @@ describe('ProjectRelocations waiting steps after a later relocation of the proje
           },
         },
         hostState: { mcp: { relocateFolders: async () => undefined } },
-        trust: { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+        trust: { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) },
         projectFolders: () => [],
         log: () => undefined,
         file: journalFile,

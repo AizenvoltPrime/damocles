@@ -55,6 +55,13 @@ export const CDP_ALLOWED_METHODS = [
   'Input.insertText',
   'Emulation.setDeviceMetricsOverride',
   'Emulation.setUserAgentOverride',
+  // the navigation guard (page-network-guard.ts); page script cannot see the Fetch domain
+  'Fetch.enable',
+  'Fetch.continueRequest',
+  'Fetch.failRequest',
+  // the guard's service-worker bypass; Patchright's own session already enables Network on every page, so this adds no tell
+  'Network.enable',
+  'Network.setBypassServiceWorker',
 ] as const;
 
 export type CdpAllowedMethod = (typeof CDP_ALLOWED_METHODS)[number];
@@ -72,7 +79,7 @@ const CDP_ALLOWED_SET: ReadonlySet<string> = new Set<string>(CDP_ALLOWED_METHODS
  * Domains PageController may lazily `.enable` on demand. Enabling these is required for their query
  * methods to work and is NOT a detection concern. `Runtime` / `Console` / `Network` are intentionally
  * excluded — `Runtime.enable` (and `Console.enable`) are the fingerprints Patchright exists to avoid,
- * and network errors are collected via Playwright page events, not a CDP Network domain.
+ * and network errors are collected via Playwright page events; only `bypassServiceWorkers` enables Network.
  */
 type EnableableDomain = 'Page' | 'DOM' | 'CSS' | 'Overlay' | 'Accessibility';
 
@@ -108,7 +115,7 @@ export class PageController {
   }
 
   /**
-   * Enable a domain once per session before its first query. NEVER used for Runtime/Console/Network —
+   * Enable a domain once per session before its first query. NEVER used for Runtime/Console —
    * the `satisfies` below makes a domain whose `.enable` is outside the allow-list a compile error, and
    * `send()` rejects it at runtime. Idempotent: subsequent calls for an already-enabled domain are no-ops.
    */
@@ -417,6 +424,28 @@ export class PageController {
 
   async setUserAgentOverride(userAgent: string): Promise<void> {
     await this.send('Emulation.setUserAgentOverride', { userAgent });
+  }
+
+  async enableFetch(patterns: ReadonlyArray<{ readonly urlPattern?: string; readonly resourceType?: string; readonly requestStage?: 'Request' | 'Response' }>): Promise<void> {
+    await this.send('Fetch.enable', { patterns });
+  }
+
+  // Chrome takes continueRequest at both stages; at the Response stage it continues with the response as received.
+  async continueRequest(requestId: string): Promise<void> {
+    await this.send('Fetch.continueRequest', { requestId });
+  }
+
+  async failRequest(requestId: string, errorReason: 'BlockedByClient'): Promise<void> {
+    await this.send('Fetch.failRequest', { requestId, errorReason });
+  }
+
+  // Chrome ignores setBypassServiceWorker on a session whose Network domain is off (probed); this session reads no response bodies.
+  // Both are sent before either answers; the session keeps their order, so Network is on before the bypass.
+  async bypassServiceWorkers(): Promise<void> {
+    await Promise.all([
+      this.send('Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }),
+      this.send('Network.setBypassServiceWorker', { bypass: true }),
+    ]);
   }
 
   async getFullAXTree(): Promise<unknown> {

@@ -184,7 +184,10 @@ export interface CoreRequests {
   'shell.revealPath': Call<{ readonly path: string }, void>;
   'editor.openFile': Call<{ readonly path: string; readonly options?: OpenFileOptions }, void>;
   'editor.openUntitled': Call<{ readonly content: string; readonly language: string; readonly panelId?: string }, void>;
+  // an older core's read of the editor's text, which main refuses; it goes when PROTOCOL_PRE_RELEASE ends
   'editor.readText': Call<{ readonly path: string }, string>;
+  // whether an editor holds unsaved changes to the file at path (feature editor.isDirty)
+  'editor.isDirty': Call<{ readonly path: string }, boolean>;
   'editor.showDiff': Call<DiffShow, { readonly viewId: string }>;
   'editor.closeDiff': Call<{ readonly viewId: string }, void>;
   'editor.showMarkdownPreview': Call<{ readonly path: string; readonly panelId?: string; readonly content?: string }, void>;
@@ -566,8 +569,9 @@ export interface MainRequests {
   // this computer's core speaks a remote chat's reply; its voice consent applies
   'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
   // this computer's core runs a remote chat's browser tool in authority's context, the scope keyed by the chat's view;
-  // main rewrote and checked its addresses first
-  'user.browser.tool': Call<{ readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, BrowserToolAnswer>;
+  // main rewrote and checked its addresses first; servedOrigins: the view's grant origins of its served roots, the only served
+  // grant hosts its pages may reach, none when absent
+  'user.browser.tool': Call<{ readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown; readonly servedOrigins?: readonly string[] }, BrowserToolAnswer>;
   // this computer's core closes the authority's browser context and its client-network proxy (Forget host), settling once both
   // did; with agentScope, only that agent's scope of a remote chat's view, closing its tabs when closeTabs
   'user.browser.release': Call<{ readonly authority: string; readonly agentScope?: { readonly viewId: string; readonly scope: string; readonly closeTabs: boolean; readonly discard?: boolean } }, void>;
@@ -713,8 +717,9 @@ export type ScmMirrorPatch =
 export interface MirrorTopics {
   // value undefined: the key was removed
   state: { readonly scope: StateScope; readonly key: string; readonly value: unknown };
-  // keys: every trusted folder's folderKey; granted: the folders the grant names, as TrustService.onDidGrantTrust delivers them
-  trust: { readonly keys: readonly string[]; readonly granted: readonly string[] };
+  // keys: every trusted folder's folderKey; granted and revoked: the folders the change names, as TrustService.onDidChangeTrust
+  // delivers them (revoked: feature trust.revoked; a client without it names none)
+  trust: { readonly keys: readonly string[]; readonly granted: readonly string[]; readonly revoked?: readonly string[] };
   folders: { readonly folders: readonly OpenFolder[] };
   panel: { readonly panelId: string; readonly visible: boolean; readonly active: boolean; readonly column?: number };
   // a local core's one client's; a daemon's core reads clientEditor and clientTerminal instead
@@ -1549,6 +1554,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   ),
   'editor.openUntitled': method(obj({ content: text, language: label, panelId: opt(id) }), done),
   'editor.readText': method(obj({ path: filePath }), text),
+  'editor.isDirty': method(obj({ path: filePath }), bool),
   'editor.showDiff': method(
     obj({
       titleTemplate: localizedLabel,
@@ -1646,7 +1652,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
 
 const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   state: obj({ scope: stateScope, key, value }),
-  trust: obj({ keys: trustedKeys, granted: arr(filePath, MAX_ITEMS) }),
+  trust: obj({ keys: trustedKeys, granted: arr(filePath, MAX_ITEMS), revoked: opt(arr(filePath, MAX_ITEMS)) }),
   folders: obj({ folders: arr(openFolder, MAX_ITEMS) }),
   panel: obj({ panelId: id, visible: bool, active: bool, column }),
   editor: editorMirror,
@@ -1810,7 +1816,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'scm.generateMessage': method(obj({ repoId: id }), value),
   'scm.repo': method(obj({ repoId: id, method: oneOf(REPOSITORY_CALLS), args: callArgs }), value),
   'worktrees.call': method(obj({ method: oneOf(WORKTREE_CALLS), args: callArgs }), value),
-  'projects.relocationPreflight': method(obj({ from: filePath, to: filePath, listed: arr(filePath, MAX_ITEMS), heldHere: opt(oneOf(['ignore'] as const)) }), preflightAnswer),
+  'projects.relocationPreflight': method(obj({ from: filePath, to: filePath, listed: arr(filePath, MAX_ITEMS), heldHere: opt(oneOf(['ignore'] as const)), identity: opt(oneOf(['skip'] as const)) }), preflightAnswer),
   'projects.relocate': method(relocationRequest, either(obj({ id }), obj({ refusal: coded }))),
   'projects.relocationRetry': method(obj({ id }), done),
   'projects.relocationAbandon': method(obj({ id }), either(obj({ abandoned: yes }), obj({ refusal: coded }))),
@@ -1837,7 +1843,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'user.clientAuth': method(nothing, heldAuth),
   'user.credentials.push': method(obj({ provider: providerId, credential: pushedCredential }), done),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
-  'user.browser.tool': method(obj({ authority: filePath, viewId: id, scope: id, tool: id, input: value }), browserToolAnswer),
+  'user.browser.tool': method(obj({ authority: filePath, viewId: id, scope: id, tool: id, input: value, servedOrigins: opt(arr(key, MAX_ACTIONS)) }), browserToolAnswer),
   'user.browser.release': method(obj({ authority: filePath, agentScope: opt(obj({ viewId: id, scope: id, closeTabs: bool, discard: opt(bool) })) }), done),
   'user.memory.search': method(obj({ query: text, k: searchCount, tiers: memoryTiers, injection: opt(bool), since: opt(memoryTime), until: opt(memoryTime), includeForgotten: opt(bool) }), searchedMemories),
   'user.memory.profile': method(nothing, clientGlobalProfile),
@@ -1949,6 +1955,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
       memoryIntegrity: filePath,
       sessionMetaIndex: filePath,
       voiceExtract: filePath,
+      walkChild: filePath,
     }),
     watchWorker: filePath,
     remoteMirrors: opt(filePath),

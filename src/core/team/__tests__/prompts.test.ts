@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { STEERING_PROTOCOL_BLOCK } from '../../pi-session/steering-protocol';
-import { buildFailedResumePrompt, buildInterruptedResumePrompt, buildLeadSystemPrompt, buildSpecialistSystemPrompt } from '../prompts';
+import { PENDING_DISPATCH_END_RULE, buildFailedResumePrompt, buildInterruptedResumePrompt, buildLeadSystemPrompt, buildPendingDispatchNudge, buildSpecialistSystemPrompt } from '../prompts';
 import { RESUME_NOTE_LABEL, RESUME_NOTE_RULES, STEER_INSTRUCTION_PREFIX, withResumeNote } from '../../../shared/steer';
 import type { AgentSpec } from '../types';
 import type { DomainProfile } from '../prompts';
@@ -320,7 +320,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         **What triggers your next turn:**
         - The \`[REVIEW ROUND READY]\` notification (all specialists settled)
         - A specialist sending you a direct message
-        - The keep-alive timeout (you'll get a status summary)
+        - One reminder naming the specialists you never started, when you end your turn while none is working. If you end your turn again while no specialist is working, the team completes: every specialist still not started is recorded as cancelled, and your last message becomes the team's result unless you called team_synthesize_result.
 
         **The same pattern applies after requesting revisions.** Stop making tool calls and wait. The next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
 
@@ -571,7 +571,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         **What triggers your next turn:**
         - The \`[REVIEW ROUND READY]\` notification (all specialists settled)
         - A specialist sending you a direct message
-        - The keep-alive timeout (you'll get a status summary)
+        - One reminder naming the specialists you never started, when you end your turn while none is working. If you end your turn again while no specialist is working, the team completes: every specialist still not started is recorded as cancelled, and your last message becomes the team's result unless you called team_synthesize_result.
 
         **The same pattern applies after requesting revisions.** Stop making tool calls and wait. The next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
 
@@ -1357,6 +1357,17 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
     it('preserves the Do-NOT-call-Edit safety-critical negative verbatim', () => {
       expect(prompt).toContain('Do NOT call Edit, Write, NotebookEdit');
     });
+  });
+});
+
+describe('the pending-dispatch rule', () => {
+  it('reads the same in the lead system prompt and the nudge, and the nudge names synthesis as the way to finish', () => {
+    const prompt = buildLeadSystemPrompt(title, brief, specialists, undefined, undefined);
+    const nudge = buildPendingDispatchNudge(['Backend-Bot']);
+    expect(prompt).not.toContain('keep-alive timeout');
+    expect(prompt).toContain(PENDING_DISPATCH_END_RULE);
+    expect(nudge).toContain(PENDING_DISPATCH_END_RULE);
+    expect(nudge).toContain('Once none is left to start and none you started is still working, call team_synthesize_result.');
   });
 });
 

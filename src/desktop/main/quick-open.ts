@@ -15,6 +15,7 @@ import {
 } from '../preload/overlay-channels';
 import type { FileRef } from '../preload/shell-channels';
 import { parseWorkerReply, type WorkerReply, type WorkerRequest } from '../quick-open-worker/protocol';
+import type { WalkIgnore } from '../../core/search-walk';
 import type { Project } from '../local-services/confine';
 import type { ProjectWorkspace } from '../workspace/project-workspace';
 import type { FileListing } from '../workspace/quick-open-listing';
@@ -41,8 +42,8 @@ export interface QuickOpenWorker {
 export interface QuickOpenDeps {
   readonly projects: () => readonly Project[];
   readonly workspaces: Workspaces;
-  // ripgrep's ignore switches from the search.use*IgnoreFiles settings
-  readonly ignoreArgs: () => readonly string[];
+  // the walk's ignore switches from the search.use*IgnoreFiles settings
+  readonly ignore: () => WalkIgnore;
   // damocles.desktop.files.exclude globs that hide files
   readonly excludes: () => readonly string[];
   // keeps the project's watcher running, whose creates and deletes invalidate its list; false while its host is not connected
@@ -106,8 +107,7 @@ interface Search {
 export class QuickOpenIndex {
   private readonly deps: QuickOpenDeps;
   private worker: QuickOpenWorker | undefined;
-  // main holds every listing the worker asked for, on the workspace of its project, since terminating a worker thread leaves
-  // the processes it spawned running
+  // main holds every listing the worker asked for, on the workspace of its project, and stops them with the worker
   private readonly listings = new Set<FileListing>();
   private readonly pending = new Map<number, Pending>();
   private nextId = 0;
@@ -342,8 +342,8 @@ export class QuickOpenIndex {
     return results;
   }
 
-  // The project's file listing on the workspace that holds it, streamed to the worker that asked; main holds every listing,
-  // since terminating a worker thread leaves the processes it spawned running.
+  // The project's file listing on the workspace that holds it, relayed to the worker that asked a batch at a time; main holds
+  // every listing, so it stops each one with the worker.
   private list(worker: QuickOpenWorker, listing: number, projectKey: string): void {
     const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
     if (!project) {
@@ -358,8 +358,8 @@ export class QuickOpenIndex {
       worker.postMessage({ kind: 'listEnd', listing, error: err.message });
       return;
     }
-    const running: FileListing = workspace.quickOpen.list(project.fsPath, this.deps.ignoreArgs(), this.deps.excludes(), {
-      data: (data) => worker.postMessage({ kind: 'listOutput', listing, data }),
+    const running: FileListing = workspace.quickOpen.list(project.fsPath, this.deps.ignore(), this.deps.excludes(), {
+      files: (files) => worker.postMessage({ kind: 'listFiles', listing, files }),
       end: (error) => {
         this.listings.delete(running);
         worker.postMessage({ kind: 'listEnd', listing, ...(error !== undefined ? { error } : {}) });
@@ -383,7 +383,7 @@ export class QuickOpenIndex {
     this.stop();
   }
 
-  // Every query waiting on the worker answers failed, its ripgreps are killed, and the next query starts a fresh worker.
+  // Every query waiting on the worker answers failed, its listings are killed, and the next query starts a fresh worker.
   private stop(): void {
     this.cancelSilence?.();
     this.cancelSilence = undefined;

@@ -704,7 +704,8 @@ describe('a mousedown right after a re-show lands on the correct page coordinate
   it('uses the REPLAYED viewport, not the webview default, for the very first click', async () => {
     // End-to-end across both layers: the real BrowserService resyncs a real BrowserPanel, whose posts
     // are bridged into the real webview script, whose mousedown is bridged back to the host.
-    const service = new BrowserService(createFakePlatform());
+    const platform = createFakePlatform();
+    const service = new BrowserService(platform);
     const priv = service as unknown as Priv;
     priv.context = {
       newCDPSession: async () => ({ on: () => {}, send: vi.fn(async () => ({})), detach: async () => {} }),
@@ -712,7 +713,7 @@ describe('a mousedown right after a re-show lands on the correct page coordinate
     };
     priv.state = 'connected';
     const page = { on: () => {}, url: () => 'http://a', close: async () => {}, opener: async () => null };
-    await priv.registerPage(page, BrowserService.PRIMARY_SCOPE_ID);
+    await priv.registerPage(page, service.chatScope(platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] })).id);
     const entry = priv.pages.get(page)!;
     vi.spyOn(entry.controller, 'startScreencast').mockImplementation(async () => {});
     vi.spyOn(entry.controller, 'stopScreencast').mockImplementation(async () => {});
@@ -831,7 +832,7 @@ describe('copy and cut', () => {
     priv.context = { newCDPSession: async () => ({ on: () => {}, send: vi.fn(async () => ({})), detach: async () => {} }), close: async () => {} };
     priv.state = 'connected';
     const page = { on: () => {}, url: () => 'http://a', close: async () => {}, opener: async () => null };
-    await priv.registerPage(page, BrowserService.PRIMARY_SCOPE_ID);
+    await priv.registerPage(page, service.chatScope(platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] })).id);
     const entry = priv.pages.get(page)!;
     vi.spyOn(entry.controller, 'getPage').mockReturnValue({ evaluate: async () => 'selected text' });
     const deleteSelection = vi.spyOn(entry.controller, 'evaluate').mockResolvedValue(undefined);

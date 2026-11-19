@@ -124,8 +124,13 @@ function panelOf(entry: TestEntry): FakePanelHost {
   return inner;
 }
 
+// A chat's scope: every page belongs to a chat.
+const SCOPE = 'chat-scope';
+
 async function makeService(): Promise<BrowserService> {
-  const service = new BrowserService(createFakePlatform());
+  const platform = createFakePlatform();
+  const service = new BrowserService(platform);
+  service.createAgentScope(SCOPE, platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] }));
   priv(service).context = { newCDPSession: async () => fakeSession(), close: async () => {} };
   priv(service).state = 'connected';
   return service;
@@ -146,7 +151,7 @@ async function addTab(service: BrowserService, url = 'http://a'): Promise<{
   calls: string[];
 }> {
   const page = fakePage(url);
-  await priv(service).registerPage(page, BrowserService.PRIMARY_SCOPE_ID);
+  await priv(service).registerPage(page, SCOPE);
   const entry = priv(service).pages.get(page)!;
   const calls: string[] = [];
   const ack = vi.spyOn(entry.controller, 'ackScreencastFrame').mockImplementation(async (sessionId: number) => {
@@ -1235,7 +1240,7 @@ describe('slice boundaries hold', () => {
     // the project's single most important invariant.
     const service = await makeService();
     const page = fakePage('http://a');
-    await priv(service).registerPage(page, BrowserService.PRIMARY_SCOPE_ID);
+    await priv(service).registerPage(page, SCOPE);
     const entry = priv(service).pages.get(page)! as TestEntry;
     const session = (entry as unknown as { session: { send: ReturnType<typeof vi.fn> } }).session;
     panelOf(entry).setVisible(true);

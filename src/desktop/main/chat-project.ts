@@ -46,3 +46,13 @@ export function chatProjectKey(folder: Pick<FolderTargetEntry, 'key' | 'ownerKey
   const key = typeof folder === 'string' ? client.projectOf(folder)?.key ?? folder : folder.ownerKey ?? folder.key;
   return client.project(key)?.key ?? (listed(key) ? key : client.defaultTarget()?.key);
 }
+
+/**
+ * The project a kept remote chat is tracked under until its core binds it: the project its record names while that project
+ * is listed, else the listed project a finished move left for it while the move's host part has not changed the list, else
+ * core's default target, where core places a chat whose folder left the list.
+ */
+export function keptRemoteChatProjectKey(record: { readonly projectKey?: string }, deps: Pick<SavedChatProjectDeps, 'listed' | 'movedFrom'> & { readonly defaultKey: string }): string {
+  if (record.projectKey === undefined) return deps.defaultKey;
+  return deps.listed(record.projectKey) ? record.projectKey : deps.movedFrom(record.projectKey) ?? deps.defaultKey;
+}

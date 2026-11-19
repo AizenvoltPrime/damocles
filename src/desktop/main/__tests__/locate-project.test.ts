@@ -12,11 +12,16 @@ interface World {
   presence: 'present' | 'missing' | 'unavailable';
   picked: string | undefined;
   answer: PreflightAnswer;
+  // preflight's answer once trust was asked, with the identity read; `answer` when undefined
+  afterTrust: PreflightAnswer | undefined;
   confirmed: boolean;
   editorAnswers: ReadonlyMap<string, string> | undefined;
   killConfirmed: boolean;
-  trusted: boolean;
-  trustAnswer: boolean;
+  // granted: the trust question Locate asked made the grant, so its answer has an undo
+  trust: 'granted' | 'trusted' | 'declined';
+  // the folders held in a remote host's trust mirror now
+  held: string[];
+  busy: boolean[];
   relocated: { readonly id: string } | { readonly refusal: Coded };
   trail: string[];
   confirms: LocateConfirm[];
@@ -30,7 +35,7 @@ const OK: PreflightAnswer = { ok: true, mode: 'locate', chats: 3, worktrees: 0, 
 
 function setup(world: Partial<World> = {}) {
   const w: World = {
-    presence: 'missing', picked: NEW, answer: OK, confirmed: true, editorAnswers: new Map(), killConfirmed: true, trusted: true, trustAnswer: true,
+    presence: 'missing', picked: NEW, answer: OK, afterTrust: undefined, confirmed: true, editorAnswers: new Map(), killConfirmed: true, trust: 'trusted', held: [], busy: [],
     relocated: { id: 'r1' }, trail: [], confirms: [], refusals: [], preflights: [], interrupted: [], stated: [], ...world,
   };
   const deps: LocateProjectDeps = {
@@ -46,11 +51,13 @@ function setup(world: Partial<World> = {}) {
       w.trail.push(`pick:${defaultPath}`);
       return w.picked;
     }),
-    busy: async () => false,
+    busy: async () => w.busy.shift() ?? false,
+    // precheck: the preflight before the trust question, which reads no repository identity
     preflight: async (request) => {
       w.preflights.push(request);
-      w.trail.push('preflight');
-      return w.answer;
+      const step = request.identity === 'skip' ? 'precheck' : 'preflight';
+      w.trail.push(w.held.length > 0 ? `${step} held:${w.held.join(',')}` : step);
+      return request.identity === 'skip' ? w.answer : w.afterTrust ?? w.answer;
     },
     confirm: async (question) => {
       w.confirms.push(question);
@@ -68,10 +75,10 @@ function setup(world: Partial<World> = {}) {
         return w.killConfirmed;
       },
     },
-    isTrusted: () => w.trusted,
-    requestTrust: async () => {
-      w.trail.push('trust');
-      return w.trustAnswer;
+    askTrust: async (fsPath) => {
+      w.trail.push(`trust:${fsPath}`);
+      if (w.trust !== 'granted') return { trusted: w.trust === 'trusted' };
+      return { trusted: true, undo: async () => { w.trail.push('undo'); } };
     },
     closeChats: async () => {
       w.trail.push('closeChats');
@@ -89,21 +96,26 @@ function setup(world: Partial<World> = {}) {
 }
 
 describe('locateProject', () => {
-  it('asks in order, picking from the nearest existing ancestor, and starts the move', async () => {
+  const PICK = `pick:${path.dirname(OLD)}`;
+  const TRUST = `trust:${NEW}`;
+
+  // core reads the new folder's root commits only once it is trusted, so the preflight that reads them comes after the trust
+  // question, and the refusals that need no trust come before it
+  it('asks in order, picking from the nearest existing ancestor, checking what needs no trust, asking trust, and starts the move', async () => {
     const { w, deps } = setup();
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'started', id: 'r1' });
-    expect(w.trail).toEqual([`pick:${path.dirname(OLD)}`, 'preflight', 'confirm', 'editors', 'terminals', 'closeChats', 'relocate', 'started:r1']);
-    expect(w.preflights[0]).toEqual({ from: OLD, to: NEW, listed: [OLD], heldHere: 'ignore' });
+    expect(w.trail).toEqual([PICK, 'precheck', TRUST, 'preflight', 'confirm', 'editors', 'terminals', 'closeChats', 'relocate', 'started:r1']);
+    expect(w.preflights).toEqual([{ from: OLD, to: NEW, listed: [OLD], heldHere: 'ignore', identity: 'skip' }, { from: OLD, to: NEW, listed: [OLD], heldHere: 'ignore' }]);
     expect(w.confirms[0]).toMatchObject({ title: `Move acme's chats to ${NEW}?`, message: '3 chats move, with their history, checkpoints, spend and memories.', confirmLabel: 'Move Chats' });
     expect(w.confirms[0]!.warning).toBeUndefined();
   });
 
-  it('shows a preflight refusal on the row and changes nothing', async () => {
+  it('shows a preflight refusal on the row and changes nothing, asking no trust question for a refusal that needs no trust', async () => {
     const refusal: Coded = { code: 'chatHeld', params: { sessionId: 's1', title: 'Fix the build', holder: 'otherProcess' } };
-    const { w, deps } = setup({ answer: { ok: false, refusal } });
+    const { w, deps } = setup({ answer: { ok: false, refusal }, trust: 'granted' });
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'refused', refusal });
     expect(w.refusals).toEqual([refusal]);
-    expect(w.trail).toEqual([`pick:${path.dirname(OLD)}`, 'preflight']);
+    expect(w.trail).toEqual([PICK, 'precheck']);
     expect(relocationText(refusal, { name: 'acme', fsPath: OLD }, t)).toBe('The chat "Fix the build" is open in another Damocles window or in VS Code. Close it there, then locate the project.');
   });
 
@@ -114,6 +126,17 @@ describe('locateProject', () => {
     expect(w.stated).toEqual([]);
   });
 
+  it('refuses as busy, asking nothing, when the hung gate still refuses an ancestor\'s check after the wait', async () => {
+    const { w, deps } = setup({ trust: 'granted' });
+    const busy = { ...deps, pathPresence: async (candidate: string) => (w.stated.push(candidate), 'unchecked' as const) };
+    expect(await locateProject('acme-key', busy)).toEqual({ kind: 'refused', refusal: { code: 'checksBusy' } });
+    expect(w.stated).toEqual([path.dirname(OLD)]);
+    expect(deps.pickFolder).not.toHaveBeenCalled();
+    expect(w.trail).toEqual([]);
+    expect(w.refusals).toEqual([{ code: 'checksBusy' }]);
+    expect(relocationText({ code: 'checksBusy' }, { name: 'acme', fsPath: OLD }, t)).toBe('Damocles can\'t check these folders right now: its drive checks are busy. Try again in a moment.');
+  });
+
   it('refuses a project whose folder is there without asking anything', async () => {
     const { w, deps } = setup({ presence: 'present' });
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'refused', refusal: { code: 'fromExists' } });
@@ -121,20 +144,125 @@ describe('locateProject', () => {
   });
 
   it.each([
-    ['the picker', { picked: undefined }, [`pick:${path.dirname(OLD)}`]],
-    ['the confirm dialog', { confirmed: false }, [`pick:${path.dirname(OLD)}`, 'preflight', 'confirm']],
-    ['the unsaved-editors question', { editorAnswers: undefined }, [`pick:${path.dirname(OLD)}`, 'preflight', 'confirm', 'editors']],
-    ['the terminal question', { killConfirmed: false }, [`pick:${path.dirname(OLD)}`, 'preflight', 'confirm', 'editors', 'terminals']],
+    ['the picker', { picked: undefined }, [PICK]],
+    ['the confirm dialog', { confirmed: false }, [PICK, 'precheck', TRUST, 'preflight', 'confirm']],
+    ['the unsaved-editors question', { editorAnswers: undefined }, [PICK, 'precheck', TRUST, 'preflight', 'confirm', 'editors']],
+    ['the terminal question', { killConfirmed: false }, [PICK, 'precheck', TRUST, 'preflight', 'confirm', 'editors', 'terminals']],
   ] as const)('a Cancel in %s changes nothing', async (_, world, trail) => {
     const { w, deps } = setup(world);
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'cancelled' });
     expect(w.trail).toEqual(trail);
   });
 
-  it('asks an untrusted new folder for trust, and a decline still moves the chats', async () => {
-    const { w, deps } = setup({ trusted: false, trustAnswer: false });
+  it('asks the new folder for trust before the preflight that reads its identity, and a decline still moves the chats', async () => {
+    const { w, deps } = setup({ trust: 'declined' });
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'started', id: 'r1' });
-    expect(w.trail).toEqual([`pick:${path.dirname(OLD)}`, 'preflight', 'confirm', 'editors', 'terminals', 'trust', 'closeChats', 'relocate', 'started:r1']);
+    expect(w.trail).toEqual([PICK, 'precheck', TRUST, 'preflight', 'confirm', 'editors', 'terminals', 'closeChats', 'relocate', 'started:r1']);
+  });
+
+  it.each([
+    ['a turn running at the pick', { busy: [true] }, [PICK], { code: 'busy' }],
+    ['a refusal of the picked folder itself', { answer: { ok: false, refusal: { code: 'insideDamocles' } } }, [PICK, 'precheck'], { code: 'insideDamocles' }],
+    ['a pending relocation', { answer: { ok: false, refusal: { code: 'pendingRelocation' } } }, [PICK, 'precheck'], { code: 'pendingRelocation' }],
+  ] as const)('refuses %s before the trust question, asking nothing', async (_, world, trail, refusal) => {
+    const { w, deps } = setup({ ...world, trust: 'granted' } as Partial<World>);
+    expect(await locateProject('acme-key', deps)).toEqual({ kind: 'refused', refusal });
+    expect(w.trail).toEqual(trail);
+    expect(w.refusals).toEqual([refusal]);
+  });
+
+  it.each([
+    ['a Cancel in the confirm dialog', { confirmed: false }, 'confirm'],
+    ['a Cancel in the unsaved-editors question', { editorAnswers: undefined }, 'editors'],
+    ['a Cancel in the terminal question', { killConfirmed: false }, 'terminals'],
+    ['a preflight refusal that read the identity', { afterTrust: { ok: false, refusal: { code: 'pendingRelocation' } } }, 'preflight'],
+    ['a turn started while the trust question was open', { busy: [false, true] }, TRUST],
+    ['a turn started while the questions were open', { busy: [false, false, true] }, 'terminals'],
+    ['core refusing the move', { relocated: { refusal: { code: 'pendingRelocation' } } }, 'relocate'],
+  ] as const)('takes back the grant its own trust question made after %s', async (_, world, last) => {
+    const { w, deps } = setup({ ...world, trust: 'granted' } as Partial<World>);
+    expect((await locateProject('acme-key', deps)).kind).not.toBe('started');
+    expect(w.trail.slice(-2)).toEqual([last, 'undo']);
+  });
+
+  // the row shows the refusal once the grant is taken back, so a second Locate meanwhile is not cancelled for nothing
+  it.each([
+    ['a preflight refusal after the trust question', { afterTrust: { ok: false, refusal: { code: 'pendingRelocation' } } }],
+    ['a turn started while the questions were open', { busy: [false, false, true] }],
+    ['core refusing the move', { relocated: { refusal: { code: 'pendingRelocation' } } }],
+  ] as const)('reports %s on the row only after its undo finished', async (_, world) => {
+    const { w, deps } = setup({ ...world, trust: 'granted' } as Partial<World>);
+    // the undo ends only after a turn, so a report made at its start would come before 'undo'
+    const askTrust: LocateProjectDeps['askTrust'] = async (fsPath) => ({ ...(await deps.askTrust(fsPath)), undo: async () => {
+      await Promise.resolve();
+      w.trail.push('undo');
+    } });
+    const reporting: LocateProjectDeps = { ...deps, askTrust, refused: (_key, refusal) => w.trail.push(`refused:${refusal.code}`) };
+    expect((await locateProject('acme-key', reporting)).kind).toBe('refused');
+    expect(w.trail.slice(-2)).toEqual(['undo', expect.stringMatching(/^refused:/)]);
+  });
+
+  it('takes back the grant when a step before relocate throws, and the error goes on', async () => {
+    const { w, deps } = setup({ trust: 'granted' });
+    const failing: LocateProjectDeps = { ...deps, preflight: async (request) => {
+      if (request.identity === 'skip') return deps.preflight(request);
+      w.trail.push('preflight');
+      throw new Error('Damocles Core restarted');
+    } };
+    await expect(locateProject('acme-key', failing)).rejects.toThrow('Damocles Core restarted');
+    expect(w.trail).toEqual([PICK, 'precheck', TRUST, 'preflight', 'undo']);
+  });
+
+  it('takes back the grant when the trust hold throws', async () => {
+    const { w, deps } = setup({ trust: 'granted' });
+    const failing: LocateProjectDeps = { ...deps, holdTrust: () => {
+      w.trail.push('hold');
+      throw new Error('the trust mirror is gone');
+    } };
+    await expect(locateProject('acme-key', failing)).rejects.toThrow('the trust mirror is gone');
+    expect(w.trail).toEqual([PICK, 'precheck', TRUST, 'hold', 'undo']);
+  });
+
+  it.each(['trusted', 'declined'] as const)('revokes nothing on a Cancel when the answer has no undo (%s before, or another question granted it)', async (trust) => {
+    const { w, deps } = setup({ trust, confirmed: false });
+    expect(await locateProject('acme-key', deps)).toEqual({ kind: 'cancelled' });
+    expect(w.trail).not.toContain('undo');
+  });
+
+  it('keeps the grant once the move started, and once relocate was sent and failed without an answer', async () => {
+    const started = setup({ trust: 'granted' });
+    expect(await locateProject('acme-key', started.deps)).toEqual({ kind: 'started', id: 'r1' });
+    expect(started.w.trail).not.toContain('undo');
+    const { w, deps } = setup({ trust: 'granted' });
+    const failing: LocateProjectDeps = { ...deps, relocate: async () => Promise.reject(new Error('Damocles Core restarted')) };
+    await expect(locateProject('acme-key', failing)).rejects.toThrow('Damocles Core restarted');
+    expect(w.trail).not.toContain('undo');
+  });
+
+  // a remote host's core reads trust only from main's mirror
+  it('holds the picked folder in the host\'s trust mirror from the trust answer until Locate ends, however it ends', async () => {
+    const outcomes: Array<[Partial<World>, (deps: LocateProjectDeps) => LocateProjectDeps]> = [
+      [{}, (deps) => deps],
+      [{ confirmed: false }, (deps) => deps],
+      [{ afterTrust: { ok: false, refusal: { code: 'pendingRelocation' } } }, (deps) => deps],
+      [{}, (deps) => ({ ...deps, preflight: async (request) => (request.identity === 'skip' ? deps.preflight(request) : Promise.reject(new Error('Damocles Core restarted'))) })],
+    ];
+    for (const [world, change] of outcomes) {
+      const { w, deps } = setup({ ...world, trust: 'granted' });
+      const holding = change({ ...deps, holdTrust: (fsPath) => {
+        w.trail.push(`hold:${fsPath}`);
+        w.held.push(fsPath);
+        return () => {
+          w.held.splice(w.held.indexOf(fsPath), 1);
+          w.trail.push('release');
+        };
+      } });
+      await locateProject('acme-key', holding).catch(() => undefined);
+      expect(w.trail.slice(0, 4)).toEqual([PICK, 'precheck', TRUST, `hold:${NEW}`]);
+      if (holding.preflight === deps.preflight) expect(w.trail[4]).toBe(`preflight held:${NEW}`);
+      expect(w.trail.at(-1)).toBe('release');
+      expect(w.held).toEqual([]);
+    }
   });
 
   it('warns above the buttons for an unreachable old folder, and shows the merge and inside-project notices', async () => {
@@ -154,11 +282,13 @@ describe('locateProject', () => {
     expect(w.confirms[0]!.message).toBe('2 chats move, with their history, checkpoints, spend and memories.');
   });
 
-  it('moves to the folder an offer named without the picker, the confirmation or the trust question', async () => {
-    const { w, deps } = setup({ trusted: false });
-    expect(await locateProject('acme-key', deps, NEW)).toEqual({ kind: 'started', id: 'r1' });
+  it('moves to the folder an offer named without the picker, the confirmation, the trust question or a mirror hold', async () => {
+    const { w, deps } = setup({ trust: 'declined' });
+    const holdTrust = vi.fn(() => () => undefined);
+    expect(await locateProject('acme-key', { ...deps, holdTrust }, NEW)).toEqual({ kind: 'started', id: 'r1' });
     expect(w.trail).toEqual(['preflight', 'editors', 'terminals', 'closeChats', 'relocate', 'started:r1']);
     expect(w.preflights[0]).toEqual({ from: OLD, to: NEW, listed: [OLD], heldHere: 'ignore' });
+    expect(holdTrust).not.toHaveBeenCalled();
   });
 
   // the folder is still gone: reopened, they would only fail to start there
@@ -177,7 +307,7 @@ describe('locateProject', () => {
     const { w, deps } = setup({ answer: { ok: false, refusal } });
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'refused', refusal });
     expect(w.refusals).toEqual([refusal]);
-    expect(w.trail).toEqual([`pick:${path.dirname(OLD)}`, 'preflight']);
+    expect(w.trail).toEqual([PICK, 'precheck']);
     expect(relocationText(refusal, { name: 'aaaa1111', fsPath: worktree }, t)).toBe(`${worktree} is a chat worktree of ${NEW}, which Damocles keeps in place, so it can't be located. Move the folder back if you moved it, or remove this project.`);
     expect(relocationText({ code: 'chatWorktree' }, { name: 'aaaa1111', fsPath: worktree }, t)).toBe(`${worktree} is in the folder where Damocles keeps chat worktrees, so it can't be located. Remove this project.`);
   });
@@ -265,6 +395,15 @@ describe('nearestExistingAncestor', () => {
     expect(seen).toEqual(['/mnt/nas/work']);
   });
 
+  it('stops at the first ancestor the hung gate did not check, answering unchecked, never reading it as a dead volume', async () => {
+    const seen: string[] = [];
+    expect(await nearestExistingAncestor('/mnt/nas/work/acme', async (candidate) => {
+      seen.push(candidate);
+      return candidate === '/mnt/nas/work' ? 'unchecked' : 'directory';
+    }, path.posix)).toBe('unchecked');
+    expect(seen).toEqual(['/mnt/nas/work']);
+  });
+
   it('walks a host path by the host\'s path rules, whatever this computer\'s are', async () => {
     const seen: string[] = [];
     expect(await nearestExistingAncestor('/srv/apps/acme', async (candidate) => {
@@ -279,7 +418,7 @@ describe('nearestExistingAncestor', () => {
 describe('relocationText', () => {
   it('renders every refusal, notice and failure code, and an unknown one by its code', () => {
     const project = { name: 'acme', fsPath: OLD };
-    const codes = ['busy', 'fromExists', 'toMissing', 'toNotDirectory', 'sameFolder', 'insideDamocles', 'otherAuthority', 'chatWorktree', 'pendingRelocation', 'chatHeld', 'registryUnreadable', 'hasWorktrees', 'unreachable', 'otherRepository', 'insideProject', 'merge', 'conflict', 'io', 'memoryReadOnly', 'locked', 'stopped', 'agentRunHeld', 'agentRunning'];
+    const codes = ['busy', 'fromExists', 'toMissing', 'toNotDirectory', 'sameFolder', 'insideDamocles', 'otherAuthority', 'chatWorktree', 'pendingRelocation', 'chatHeld', 'registryUnreadable', 'hasWorktrees', 'unreachable', 'otherRepository', 'insideProject', 'merge', 'conflict', 'io', 'memoryReadOnly', 'locked', 'stopped', 'agentRunHeld', 'agentRunning', 'checksBusy'];
     const texts = codes.map((code) => relocationText({ code }, project, t));
     expect(new Set(texts).size).toBe(codes.length);
     expect(texts.every((text) => !text.includes('{'))).toBe(true);

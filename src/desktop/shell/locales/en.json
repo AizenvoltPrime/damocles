@@ -1339,6 +1339,10 @@
     "copyHere": "Copy files here...",
     "noProject": "Open a project to see its files.",
     "loadFailed": "Damocles could not list the files.",
+    "absent": {
+      "missing": "Folder not found. It may have been moved, renamed or deleted. Files lists it again once the folder is back.",
+      "unavailable": "Not available. Its drive, network share or WSL distro is not connected or did not answer. Files lists it again once it is back."
+    },
     "empty": "{project} has no files to show.",
     "treeLabel": "Files of {project}",
     "keyboardHelp": "Arrow keys move and open folders, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu. Ctrl+X, Ctrl+C and Ctrl+V cut, copy and paste. Drag a file into the chat to mention it, or onto a folder to move it.",
@@ -2048,6 +2052,10 @@
           "mac": "Download Git for macOS",
           "linux": "Download Git for Linux"
         }
+      },
+      "absent": {
+        "missing": "Folder not found. It may have been moved, renamed or deleted. Source control shows its repositories again once the folder is back.",
+        "unavailable": "Not available. Its drive, network share or WSL distro is not connected or did not answer. Source control shows its repositories again once it is back."
       },
       "unsafe": {
         "text": "The detected Git repository is potentially unsafe as the folder is owned by someone other than the current user. | The detected Git repositories are potentially unsafe as the folders are owned by someone other than the current user.",

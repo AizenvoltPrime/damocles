@@ -6,7 +6,8 @@ import type { Platform } from '../../../platform/platform';
 import type { PermissionState } from '../state';
 import type { MatchRuleOptions, McpToolIdentity } from '../types';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
-import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions } from '../permission-settings';
+import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions, type PermissionWorkspace } from '../permission-settings';
+import { personalFilesTrusted } from '../../worktrees/personal-config';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, TOOL_WEB_FETCH, SHELL_TOOLS, FORGE_READ_TOOLS, FORGE_WRITE_TOOLS } from '../../../shared/tool-names';
 import { isPlanFilePath } from '../../paths';
 import { canonicalPath, rememberedPathQueries, spelledPath } from '../../canonical-path';
@@ -21,6 +22,9 @@ import type { PermissionRuleLists } from '../../../shared/remote-user';
 
 /** Every built-in tool that edits a file; an `Edit` rule covers each of them. */
 const EDIT_RULE_TOOLS: ReadonlySet<string> = new Set([TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE]);
+
+/** The tools whose approval reads the file they change, so a `Read` ask rule on it makes them ask. */
+const READ_ASK_EDIT_TOOLS: ReadonlySet<string> = new Set([TOOL_EDIT, TOOL_WRITE]);
 
 /** Tools that read the files below a path; a `Read` deny or ask rule covers what they search. */
 const SEARCH_TOOLS: ReadonlySet<string> = new Set([TOOL_GREP, TOOL_GLOB, TOOL_LS]);
@@ -102,7 +106,7 @@ const pathResolvers = (targetAsWritten = false): PathResolvers => {
 export class EvaluatorManager {
   private state: PermissionState;
   private cachedPermissions: FilePermissions[] | null = null;
-  private cachedFor: string | null = null;
+  private cachedFor: PermissionWorkspace | null = null;
   private cachedClientRules: readonly PermissionRuleLists[] | undefined;
   private cacheTime = 0;
   private readonly CACHE_TTL_MS = 5000;
@@ -235,6 +239,19 @@ export class EvaluatorManager {
   }
 
   /**
+   * Whether a `Read` ask rule covers the file an Edit or Write changes, as `matchRule` matches it. Such a call asks with no
+   * preview, since a diff would read the file and a refusal before the answer would tell the model what it holds. Nothing is
+   * covered under YOLO.
+   */
+  async readAskCovers(toolName: string, input: Record<string, unknown>, workspacePath: string | null): Promise<boolean> {
+    if (this.bypassing() || !READ_ASK_EDIT_TOOLS.has(toolName)) return false;
+    const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
+    const resolvers = pathResolvers();
+    return permissions.some((file) => file.ask.some((rule, index, rules) =>
+      rule.match(RULE_SHAPE)?.[1] === TOOL_READ && this.matchesPattern(toolName, input, rule, 'ask', file.root, undefined, resolvers, rules.slice(index + 1))));
+  }
+
+  /**
    * Whether a deny or ask `WebFetch(specifier)` rule matches a URL, for WebFetch and ImportAsset never to contact its host on a
    * step they take by themselves (a rewrite, the reader fallback, a redirect). A bare `WebFetch` rule judges calls, not hosts.
    * Nothing is refused under YOLO.
@@ -296,11 +313,14 @@ export class EvaluatorManager {
   }
 
   /**
-   * A repository's own settings files could allow anything, so they count only once the window is
-   * trusted. Read per call: granting trust changes the cache key, so the next call reloads.
+   * A repository's own settings files could allow anything, so they count only once the window is trusted, and its
+   * personal files, a worktree chat's project's, only while personalFilesTrusted admits them. Read per call: a grant or
+   * revoke changes the cache key, so the next call reloads.
    */
-  private trustedWorkspace(workspacePath: string | null): string | null {
-    return workspacePath !== null && this.platform.trust.isTrusted(workspacePath) ? workspacePath : null;
+  private trustedWorkspace(workspacePath: string | null): PermissionWorkspace | null {
+    const isTrusted = (folder: string): boolean => this.platform.trust.isTrusted(folder);
+    if (workspacePath === null || !isTrusted(workspacePath)) return null;
+    return { path: workspacePath, personalFiles: personalFilesTrusted(isTrusted, workspacePath) };
   }
 
   /** Whether `filePath`, resolved against the session cwd as the tools resolve it, is a plan file. */
@@ -320,9 +340,7 @@ export class EvaluatorManager {
   }
 
   sessionCwd(): string {
-    const cwd = this.state.cwd;
-    if (cwd === null) throw new Error('File permission rules need the session cwd, and none is set');
-    return cwd;
+    return this.state.sessionCwd();
   }
 
   /**
@@ -330,21 +348,22 @@ export class EvaluatorManager {
    * and a panel's handler moves to another workspace when the panel switches folder, so a hit for the
    * previous workspace would answer with another project's rules.
    */
-  private async getPermissions(workspacePath: string | null): Promise<FilePermissions[]> {
+  private async getPermissions(workspace: PermissionWorkspace | null): Promise<FilePermissions[]> {
     // the turn's pinned client's user rules on a daemon's core
     const clientRules = this.platform.remote ? (currentPin(this.platform.remote).user?.permissionRules ?? NO_CLIENT_RULES) : undefined;
     await this.ruleSaves;
     const now = Date.now();
     if (
       this.cachedPermissions &&
-      this.cachedFor === workspacePath &&
+      this.cachedFor?.path === workspace?.path &&
+      this.cachedFor?.personalFiles === workspace?.personalFiles &&
       this.cachedClientRules === clientRules &&
       (now - this.cacheTime) < this.CACHE_TTL_MS
     ) {
       return this.cachedPermissions;
     }
-    this.cachedPermissions = await loadPermissionsByPriority(workspacePath, clientRules);
-    this.cachedFor = workspacePath;
+    this.cachedPermissions = await loadPermissionsByPriority(workspace, clientRules);
+    this.cachedFor = workspace;
     this.cachedClientRules = clientRules;
     this.cacheTime = now;
     return this.cachedPermissions;
@@ -395,7 +414,9 @@ export class EvaluatorManager {
     const searchRule = ruleTool === TOOL_READ && behavior !== 'allow' && SEARCH_TOOLS.has(toolName);
     // A `Read` deny rule also keeps its paths from being edited or created.
     const readDenyRule = ruleTool === TOOL_READ && behavior === 'deny' && specifier !== undefined && EDIT_RULE_TOOLS.has(toolName);
-    if (!namesTool(ruleTool, toolName) && !editRule && !searchRule && !readDenyRule) return false;
+    // A `Read` ask rule makes an Edit or Write of its paths ask, with no preview of the file (`readAskCovers`).
+    const readAskRule = ruleTool === TOOL_READ && behavior === 'ask' && specifier !== undefined && READ_ASK_EDIT_TOOLS.has(toolName);
+    if (!namesTool(ruleTool, toolName) && !editRule && !searchRule && !readDenyRule && !readAskRule) return false;
     if (!specifier) return true;
 
     if (SHELL_TOOLS.has(toolName)) {

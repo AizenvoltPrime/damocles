@@ -1,7 +1,7 @@
 export type BrowserSessionState = 'disconnected' | 'browsing' | 'connected';
 
 /**
- * A network-interception rule applied to the browser context via Playwright `context.route`. Patterns
+ * A network-interception rule, routed with Playwright `context.route` and applied to its chat's pages only. Patterns
  * MUST be narrow (e.g. `**\/*.png`, `**\/analytics.js`, `https://api.example.com/**`) — a blanket `**`
  * would swallow the main-document request Patchright needs for its stealth init-script injection.
  */

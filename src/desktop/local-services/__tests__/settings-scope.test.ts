@@ -35,7 +35,7 @@ let project: string;
 
 const trustAll: TrustService = {
   isTrusted: () => true,
-  onDidGrantTrust: () => ({ dispose: () => undefined }),
+  onDidChangeTrust: () => ({ dispose: () => undefined }),
   requestTrust: () => Promise.resolve(true),
 };
 

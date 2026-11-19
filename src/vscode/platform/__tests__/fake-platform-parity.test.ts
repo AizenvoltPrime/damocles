@@ -28,16 +28,16 @@ afterEach(() => {
 describe.each([
   ['two open folders', ['/a', '/b']],
   ['an empty window', []],
-])('onDidGrantTrust payload parity: %s', (_name, fsPaths) => {
+])('onDidChangeTrust payload parity: %s', (_name, fsPaths) => {
   it('the fake grantTrust() default equals the VS Code payload', () => {
     setWorkspaceFolders(fsPaths);
     const vsCodeCb = vi.fn();
-    createVsCodeTrustService().onDidGrantTrust(vsCodeCb);
+    createVsCodeTrustService().onDidChangeTrust(vsCodeCb);
     __trustEmitter.fire();
 
     const fake = createFakePlatform({ trusted: false, folders: fsPaths.map((fsPath) => ({ fsPath, name: fsPath })) });
     const fakeCb = vi.fn();
-    fake.trust.onDidGrantTrust(fakeCb);
+    fake.trust.onDidChangeTrust(fakeCb);
     fake.trust.grantTrust();
 
     expect(fakeCb.mock.calls).toEqual(vsCodeCb.mock.calls);

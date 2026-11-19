@@ -22,7 +22,7 @@ import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
 import type { Project } from '../../local-services/confine';
 import { authorityKeyOfProject, isAbsoluteOn, pathFor } from '../../../shared/project-location';
-import type { FileBytes } from '../../local-services/file-bytes';
+import type { FileBytes } from '../../../core/file-bytes';
 import { WriteRefusedError, type OutsideRefusal, type WatchEvent, type WorkspaceFileSystem, type WriteRefusal } from '../../workspace/file-system';
 import type { ClosedFileRead, ClosedFileWrite, DiskState, TextEncoding } from '../../workspace/search/types';
 import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
@@ -560,6 +560,31 @@ export class DocumentService {
     return document;
   }
 
+  /**
+   * Whether a document of the file at filePath on authority, its own or its settings editor, holds unsaved changes: the file
+   * openNamedPath would open for that path, a project's file in any spelling of its folder or one outside every project.
+   */
+  async isFileDirty(authority: string, filePath: string): Promise<boolean> {
+    const dirty = [...this.documents.values()].filter((document) =>
+      document.kind === 'text' && !document.untitled && document.location !== undefined && this.authorityOf(document.location) === authority && isDirty(document));
+    if (dirty.length === 0) return false;
+    const named = await this.namedPath(authority, filePath);
+    const resolved = named.kind === 'project' ? named.path : named.kind === 'outside' ? await this.outsidePathOf(authority, named.absolute) : undefined;
+    if (resolved === undefined) return false;
+    const key = this.identity({ path: resolved, host: authority });
+    return dirty.some((document) => this.identity(document.location!) === key);
+  }
+
+  // The path openOutsideNow opens an existing entry at: a project's file its realpath leads into, else that realpath (a share's
+  // only as a project's file); a missing or refused path as named.
+  private async outsidePathOf(authority: string, absolute: string): Promise<string> {
+    const resolved = await this.deps.workspaces.forAuthority(authority).files.resolveOutside(absolute);
+    if (resolved.kind === 'missing' || resolved.kind === 'outside') return absolute;
+    if (resolved.kind === 'share') return (await this.projectFileOf(authority, resolved.path, 'existing'))?.path ?? absolute;
+    const inProject = (await this.projectFileOf(authority, resolved.path, 'existing')) ?? (await this.hostProjectFileOf(authority, resolved.path, 'existing'));
+    return inProject?.path ?? resolved.path;
+  }
+
   // The document of a file on disk (not its settings or untitled documents), by its identity.
   private fileDocument(location: Location): Document | undefined {
     const key = this.identity(location);
@@ -656,6 +681,14 @@ export class DocumentService {
   }
 
   private async openNamedPathNow(authority: string, target: string): Promise<Document> {
+    const named = await this.namedPath(authority, target);
+    if (named.kind === 'failed') throw new LocalizedError(l('{0} could not be opened.', visibleText(named.absolute)));
+    if (named.kind === 'project') return this.openResolved(named.path, { projectKey: named.project.key, relativePath: named.relativePath });
+    return this.openOutsideNow(authority, named.absolute, { exact: false });
+  }
+
+  // Where openNamedPath opens a path: a project's file, confined (a missing one too) and confirmed, or a path outside every project.
+  private async namedPath(authority: string, target: string): Promise<{ readonly kind: 'project'; readonly project: Project; readonly relativePath: string; readonly path: string } | { readonly kind: 'outside' | 'failed'; readonly absolute: string }> {
     const os = this.deps.authorityOs(authority);
     if (authority !== 'local' && !isAbsoluteOn({ os }, target)) throw new RefusedPathError(target, 'name');
     // '..' folds by text in the path's own flavor, as pi's file tools resolve it, so the editor opens the file a tool named
@@ -667,11 +700,11 @@ export class DocumentService {
       const files = this.files(project.key);
       const existing = await files.confineExisting(project, relativePath);
       const confined = !existing.ok && existing.reason === 'missing' ? await files.confineMissing(project, relativePath) : existing;
-      if (confined.ok && this.deps.spellings.confirms(inRoot, confined.path)) return this.openResolved(confined.path, { projectKey: project.key, relativePath });
-      if (!confined.ok && confined.reason === 'failed') throw new LocalizedError(l('{0} could not be opened.', visibleText(absolute)));
+      if (confined.ok && this.deps.spellings.confirms(inRoot, confined.path)) return { kind: 'project', project, relativePath, path: confined.path };
+      if (!confined.ok && confined.reason === 'failed') return { kind: 'failed', absolute };
       // a path its project does not confine (a link out of it, its folder gone) or a remapped spelling is outside every project
     }
-    return this.openOutsideNow(authority, absolute, { exact: false });
+    return { kind: 'outside', absolute };
   }
 
   /** A file of Damocles' own logs folder, read-only, which main names itself and no outside rule decides. */
@@ -1984,12 +2017,15 @@ export class DocumentService {
   }
 
   private async currentSettingsVersion(document: TextDocument): Promise<{ readonly ok: true; readonly version: string } | { readonly ok: false; readonly reason: 'failed'; readonly message: string }> {
-    try {
-      return { ok: true, version: settingsFileVersion(await this.deps.workspaces.local.files.readText(document.location!.path)) };
-    } catch (err) {
-      this.deps.log(`[documents] cannot read ${document.location!.path} before overwriting it: ${errorText(err)}`);
-      return { ok: false, reason: 'failed', message: this.saveFailure(document.location!, this.errnoReason(errnoCode(err))) };
-    }
+    const location = document.location!;
+    const read = await this.deps.workspaces.local.files.readText(location.path);
+    if (read.kind === 'text') return { ok: true, version: settingsFileVersion(read.text) };
+    if (read.kind === 'missing') return { ok: true, version: settingsFileVersion(undefined) };
+    this.deps.log(`[documents] cannot read ${location.path} before overwriting it: ${read.kind === 'unreadable' ? read.error : read.kind}`);
+    const reason = read.kind === 'tooLarge'
+      ? this.deps.t('The file on disk is too large for the editor.')
+      : read.kind === 'notAFile' ? this.notAFileReason(read.folder) : this.errnoReason(read.code);
+    return { ok: false, reason: 'failed', message: this.saveFailure(location, reason) };
   }
 
   // Bounded by the bytes the write produces, byte order mark included, as readFileBytes counts them, before anything is encoded.

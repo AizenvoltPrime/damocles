@@ -9,12 +9,15 @@ import type { Disposable } from '../../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
 import type { Memento } from '../../../platform/key-value-state';
 import type { SettingsChange, SettingsStore } from '../../../platform/settings-store';
-import type { TrustService } from '../../../platform/trust-service';
+import type { TrustChange, TrustService } from '../../../platform/trust-service';
 import type { AskpassServer } from '../askpass/askpass-server';
 import { createGitRunner, type GitCloner, type GitRunner } from '../git-runner';
 import { parseGitVersion } from '../git-version';
 import { ScmService, type ScmQuestion } from '../scm-service';
 import { englishText } from '../../../shared/localized-text';
+import { createFolderPresenceProbe } from '../../workspace-folders/folder-presence-probe';
+
+const presenceProbe = createFolderPresenceProbe();
 
 // Real git in temp folders for the source control engine tests: the sandbox, fakes of the platform services and a harness.
 
@@ -68,11 +71,11 @@ export function makeRepo(dir: string, identity = true): string {
 
 export class FakeTrust implements TrustService {
   readonly trusted = new Set<string>();
-  private readonly listeners = new Set<(folders: readonly string[]) => void>();
+  private readonly listeners = new Set<(change: TrustChange) => void>();
   isTrusted(folderPath: string): boolean {
     return this.trusted.has(path.resolve(folderPath).toLowerCase());
   }
-  onDidGrantTrust(cb: (folderPaths: readonly string[]) => void): Disposable {
+  onDidChangeTrust(cb: (change: TrustChange) => void): Disposable {
     this.listeners.add(cb);
     return { dispose: () => this.listeners.delete(cb) };
   }
@@ -80,12 +83,17 @@ export class FakeTrust implements TrustService {
     this.grant(folderPath);
     return true;
   }
+  // untrusted with no event, so only the runner's gate refuses
   revoke(folderPath: string): void {
     this.trusted.delete(path.resolve(folderPath).toLowerCase());
   }
+  revokeAndNotify(folderPath: string): void {
+    this.revoke(folderPath);
+    for (const listener of this.listeners) listener({ granted: [], revoked: [folderPath] });
+  }
   grant(folderPath: string): void {
     this.trusted.add(path.resolve(folderPath).toLowerCase());
-    for (const listener of this.listeners) listener([folderPath]);
+    for (const listener of this.listeners) listener({ granted: [folderPath], revoked: [] });
   }
 }
 
@@ -206,6 +214,7 @@ export function harness(opts: { trusted?: readonly string[]; state?: MapMemento;
       h.bin.push(kept);
     },
     log: (line) => h.serviceLog.push(line),
+    presence: presenceProbe,
     ...(opts.realpath ? { realpath: opts.realpath } : {}),
     ...(opts.askpass ? { askpass: opts.askpass } : {}),
     ...(opts.deletesPermanently ? { deletesPermanently: true } : {}),

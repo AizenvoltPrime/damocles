@@ -17,7 +17,7 @@ vi.mock("../gpu-detect", () => ({ detectGpu: async () => ({ kind: "cpu", reason:
 vi.mock("../smoke-check", () => ({ runImportSmokeCheck: calls.smoke }));
 vi.mock("../compiler-check", async (importOriginal) => ({ ...(await importOriginal<object>()), ensureCxxToolchain: async () => null }));
 vi.mock("../system-libs-check", async (importOriginal) => ({ ...(await importOriginal<object>()), ensurePortAudio: async () => undefined }));
-vi.mock("../disk-check", async (importOriginal) => ({ ...(await importOriginal<object>()), checkDiskSpace: async () => ({ ok: true, freeBytes: 1e12, requiredBytes: 1 }) }));
+vi.mock("../../../disk-space", () => ({ checkDiskSpace: async () => ({ ok: true, freeBytes: 1e12, requiredBytes: 1 }) }));
 vi.mock("../installed-runtime", () => ({ detectInstalledRuntime: calls.installed, detectInstalledTorchChannel: calls.channel }));
 vi.mock("../python-installer", async (importOriginal) => ({
   ...(await importOriginal<object>()),

@@ -3,12 +3,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { processLauncher, type LaunchedProcess } from '../../../core/process-launcher';
 import { rgPath } from '@vscode/ripgrep';
 import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
-import type { QuickOpenListingDeps } from '../../workspace/quick-open-listing';
+import { ALL_IGNORE_FILES, createWalkHost, type WalkHost, type WalkSpec } from '../../../core/search-walk';
+import { InThreadWalkChild } from '../../../__mocks__/in-thread-walk-child';
 import { testRemote, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { FileTree } from '../files/file-tree';
 import { projectKeyOf } from '../../../shared/project-location';
@@ -17,12 +17,12 @@ import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { OVERLAY_CHANNELS, quickOpenRowKey, type OverlayAnswer, type OverlayRequest, type PopupAnswer, type QuickOpenPick, type QuickOpenProjectResult, type QuickOpenResponse, type QuickOpenResult } from '../../preload/overlay-channels';
 import { createQuickOpenFileSearch } from '../../quick-open-worker/file-search';
-import { ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../../quick-open-worker/protocol';
+import type { WorkerReply, WorkerRequest } from '../../quick-open-worker/protocol';
 import type { Project } from '../../local-services/confine';
 import type { MenuState } from '../menu';
 import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenAnswer, type QuickOpenWorker } from '../quick-open';
 import { MAX_EDITOR_LINE } from '../../preload/shell-channels';
-import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import type { LocalWorkspace, ProjectWorkspace } from '../../workspace/project-workspace';
 import { ListingUnsupportedError, OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
@@ -142,11 +142,11 @@ async function settled<T>(promise: Promise<T>): Promise<boolean> {
   return done;
 }
 
-function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(), spawnRg?: QuickOpenListingDeps['spawnRg'], resolveRg: () => Promise<string> = async () => rgPath): QuickOpenIndex {
+function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(), walks?: WalkHost): QuickOpenIndex {
   return new QuickOpenIndex({
     projects: () => [alpha, beta],
-    workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: resolveRg, log: (line) => logged.push(line), ...(spawnRg ? { spawnListingRg: spawnRg } : {}) }),
-    ignoreArgs: () => [],
+    workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, log: (line) => logged.push(line), ...(walks ? { walks } : {}) }),
+    ignore: () => ALL_IGNORE_FILES,
     excludes: () => ['**/.git'],
     watch: () => true,
     startWorker: () => {
@@ -158,13 +158,57 @@ function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(),
   });
 }
 
-/** A ripgrep stuck on a hung file system: a real process that prints nothing and never exits. */
-function hangingRg(): LaunchedProcess {
-  return launch(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)']);
+/** One walk a scripted host started: the test sends its batches and its end, and sees its aborts. */
+interface ScriptedWalk {
+  readonly spec: WalkSpec;
+  aborts: number;
+  push(batch: readonly string[]): void;
+  end(error?: string, errors?: readonly string[]): void;
 }
 
-function launch(file: string, args: readonly string[]): LaunchedProcess {
-  return processLauncher().launch({ file, args, stdio: ['ignore', 'pipe', 'pipe'] });
+/** A walk host whose walks list only what the test sends, and wait for it until aborted, as a walk of a hung file system does. */
+function scriptedWalks(): { readonly host: WalkHost; readonly walks: ScriptedWalk[] } {
+  const walks: ScriptedWalk[] = [];
+  const host: WalkHost = {
+    close: async () => undefined,
+    walk: (spec, signal) => {
+      const batches: Array<readonly string[]> = [];
+      const errors: string[] = [];
+      let ended: { readonly error?: string } | undefined;
+      let wake = (): void => undefined;
+      const walk: ScriptedWalk = {
+        spec,
+        aborts: 0,
+        push: (batch) => {
+          batches.push(batch);
+          wake();
+        },
+        end: (error, folders = []) => {
+          errors.push(...folders);
+          ended = error === undefined ? {} : { error };
+          wake();
+        },
+      };
+      signal?.addEventListener('abort', () => {
+        walk.aborts++;
+        wake();
+      });
+      walks.push(walk);
+      async function* listed(): AsyncGenerator<readonly string[], void, undefined> {
+        for (;;) {
+          if (signal?.aborted) throw new Error('Operation aborted');
+          const batch = batches.shift();
+          if (batch) yield batch;
+          else if (ended?.error !== undefined) throw new Error(ended.error);
+          else if (ended) return;
+          else await new Promise<void>((resolve) => (wake = resolve));
+        }
+      }
+      const iterator = listed();
+      return { errors, [Symbol.asyncIterator]: () => iterator };
+    },
+  };
+  return { host, walks };
 }
 
 /** A worker double that asks main to list alpha as each query arrives, then goes silent. */
@@ -381,36 +425,47 @@ describe('Quick Open in its worker', () => {
   });
 });
 
-describe('ripgrep listings main runs for the worker', () => {
-  it('runs with no config, no link following, each exclude negated and the root after --', () => {
-    const args = ripgrepFileArgs('/p', ['--no-ignore'], ['**/.git', '-x']);
-    expect(args).toEqual(['--files', '--hidden', '--no-config', '--no-ignore', '-g', '!**/.git', '-g', '!-x', '--', '/p']);
-    expect(args).not.toContain('--follow');
+describe('walk listings main runs for the worker', () => {
+  it('walks the project with its ignore switches, every exclude a ! override and .git left to the excludes', async () => {
+    const { host, walks } = scriptedWalks();
+    const worker = new ScriptedWorker();
+    const quickOpen = new QuickOpenIndex({
+      projects: () => [alpha, beta],
+      workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, walks: host }),
+      ignore: () => ({ files: false, global: true, parents: false }),
+      excludes: () => ['**/.git', '-x'],
+      watch: () => true,
+      startWorker: () => worker,
+      log: (line) => logged.push(line),
+      ...TYPED_PATHS,
+    });
+    void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
+    await turnsUntil(() => worker.queries.length === 1);
+    worker.emit('message', { kind: 'list', listing: 7, projectKey: alpha.key });
+    await turnsUntil(() => walks.length === 1);
+    expect(walks[0]!.spec).toEqual({ root: alpha.fsPath, requireGit: true, ignore: { files: false, global: true, parents: false }, gitFolders: 'list', overrides: ['!**/.git', '!-x'] });
+    quickOpen.dispose();
   });
 
-  it('streams ripgrep\'s output for a project to the worker that asked, then ends the listing', async () => {
+  it('relays the walk\'s batches for a project to the worker that asked, then ends the listing', async () => {
     touch(alpha, 'a.ts');
+    touch(alpha, 'src/b.ts');
+    touch(alpha, '.git/HEAD');
     const worker = new ScriptedWorker();
-    const spawned: Array<{ rgPath: string; args: readonly string[] }> = [];
-    const quickOpen = index(() => worker, (path, args) => {
-      spawned.push({ rgPath: path, args });
-      return launch(path, args);
-    });
+    const quickOpen = index(() => worker);
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 7, projectKey: alpha.key });
     await worker.posted((request) => request.kind === 'listEnd');
     expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 7 });
-    expect(spawned).toEqual([{ rgPath, args: ripgrepFileArgs(alpha.fsPath, [], ['**/.git']) }]);
-    const output = worker.received.flatMap((request) => (request.kind === 'listOutput' && request.listing === 7 ? [Buffer.from(request.data).toString('utf8')] : [])).join('');
-    expect(output.trim()).toBe(path.join(alpha.fsPath, 'a.ts'));
+    const files = worker.received.flatMap((request) => (request.kind === 'listFiles' && request.listing === 7 ? request.files : []));
+    expect(files.sort()).toEqual(['a.ts', 'src/b.ts']);
     quickOpen.dispose();
   });
 
-  it('ends an empty project\'s listing as found, a failed ripgrep\'s with its exit code, and one that cannot start once', async () => {
+  it('ends an empty project\'s listing as found, and a missing project\'s with the walk\'s error', async () => {
     const worker = new ScriptedWorker();
-    let resolveRg = async (): Promise<string> => rgPath;
-    const quickOpen = index(() => worker, undefined, () => resolveRg());
+    const quickOpen = index(() => worker);
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     const ends = (listing: number): WorkerRequest[] => worker.received.filter((request) => request.kind === 'listEnd' && request.listing === listing);
@@ -422,155 +477,98 @@ describe('ripgrep listings main runs for the worker', () => {
     fs.rmSync(alpha.fsPath, { recursive: true });
     worker.emit('message', { kind: 'list', listing: 2, projectKey: alpha.key });
     await ended(2);
-    expect(ends(2)).toEqual([{ kind: 'listEnd', listing: 2, error: expect.stringMatching(/^ripgrep exited with 2: /) }]);
-    resolveRg = async () => path.join(root, 'no-such-rg.exe');
-    worker.emit('message', { kind: 'list', listing: 3, projectKey: beta.key });
-    await ended(3);
-    await settled(Promise.resolve());
-    expect(ends(3)).toEqual([{ kind: 'listEnd', listing: 3, error: expect.stringContaining('ENOENT') }]);
-    resolveRg = async () => {
-      throw new Error('ripgrep is missing from the install');
-    };
-    worker.emit('message', { kind: 'list', listing: 4, projectKey: beta.key });
-    await ended(4);
-    expect(ends(4)).toEqual([{ kind: 'listEnd', listing: 4, error: 'ripgrep is missing from the install' }]);
+    expect(ends(2)).toEqual([{ kind: 'listEnd', listing: 2, error: expect.stringContaining('ENOENT') }]);
     quickOpen.dispose();
   });
 
-  it('logs what ripgrep printed for a listing that still succeeded', async () => {
-    fs.writeFileSync(path.join(alpha.fsPath, '.gitignore'), 'a{b\n');
+  it('logs the folders a listing could not read, and still ends it as found', async () => {
+    const { host, walks } = scriptedWalks();
     const worker = new ScriptedWorker();
-    const quickOpen = index(() => worker);
+    const quickOpen = index(() => worker, host);
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 0, projectKey: alpha.key });
+    await turnsUntil(() => walks.length === 1);
+    walks[0]!.push(['a.ts', 'C:/outside.ts']);
+    walks[0]!.end(undefined, ['locked: EACCES: permission denied']);
     await worker.posted((request) => request.kind === 'listEnd');
-    expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 });
-    expect(logged).toEqual([expect.stringMatching(/^\[quick-open\] ripgrep: .*error parsing glob 'a\{b'/)]);
+    expect(worker.received.filter((request) => request.kind === 'listFiles' || request.kind === 'listEnd')).toEqual([{ kind: 'listFiles', listing: 0, files: ['a.ts'] }, { kind: 'listEnd', listing: 0 }]);
+    expect(logged).toEqual([`[quick-open] listing ${alpha.fsPath} skipped folders it could not read: locked: EACCES: permission denied`]);
     quickOpen.dispose();
   });
 
-  it('kills no ripgrep that already finished when the worker stops', async () => {
+  it('cancels no walk that already ended when the worker stops', async () => {
     touch(alpha, 'a.ts');
+    const walkChild = new InThreadWalkChild();
     const worker = new ScriptedWorker();
-    let kills = 0;
-    const quickOpen = index(() => worker, (path, args) => {
-      const rg = launch(path, args);
-      return {
-        ...rg,
-        kill: (options) => {
-          kills++;
-          rg.kill(options);
-        },
-      };
-    });
+    const quickOpen = index(() => worker, createWalkHost(() => walkChild, (line) => logged.push(line)));
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 0, projectKey: alpha.key });
     await worker.posted((request) => request.kind === 'listEnd');
     expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 });
     quickOpen.dispose();
-    expect(kills).toBe(0);
+    expect(walkChild.requests.filter((request) => request.kind === 'cancel')).toEqual([]);
   });
 
-  it('refuses a listing of a folder that is not a project, running nothing', async () => {
+  it('refuses a listing of a folder that is not a project, walking nothing', async () => {
+    const { host, walks } = scriptedWalks();
     const worker = new ScriptedWorker();
-    const spawnRg = vi.fn(hangingRg);
-    const quickOpen = index(() => worker, spawnRg);
+    const quickOpen = index(() => worker, host);
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 0, projectKey: folderKey(root) });
     await turnsUntil(() => worker.received.some((request) => request.kind === 'listEnd'));
     expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0, error: 'not a project' });
-    expect(spawnRg).not.toHaveBeenCalled();
+    expect(walks).toEqual([]);
     quickOpen.dispose();
   });
 
-  it('kills the ripgrep a silent worker asked for when it replaces the worker', async () => {
+  it('cancels the walk a silent worker asked for when it replaces the worker', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const rgs: LaunchedProcess[] = [];
     try {
-      const quickOpen = index(() => new ListingWorker(), () => {
-        const rg = hangingRg();
-        rgs.push(rg);
-        return rg;
-      });
+      const { host, walks } = scriptedWalks();
+      const quickOpen = index(() => new ListingWorker(), host);
       const answer = quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
-      await turnsUntil(() => rgs.length === 1);
+      await turnsUntil(() => walks.length === 1);
       vi.advanceTimersByTime(QUICK_OPEN_WORKER_SILENCE_MS);
       expect(await answer).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
-      await rgs[0]!.exited;
+      expect(walks[0]!.aborts).toBe(1);
       quickOpen.dispose();
     } finally {
       vi.useRealTimers();
-      for (const rg of rgs) rg.kill();
     }
   });
 
-  it('kills the ripgrep of a worker that fails, and of the running worker when Quick Open is disposed at quit', async () => {
-    const rgs: LaunchedProcess[] = [];
+  it('cancels the walk of a worker that fails, and of the running worker when Quick Open is disposed at quit, each once', async () => {
+    const { host, walks } = scriptedWalks();
     const workers = [new ListingWorker(), new ListingWorker()];
-    try {
-      const quickOpen = index(() => workers.shift()!, () => {
-        const rg = hangingRg();
-        rgs.push(rg);
-        return rg;
-      });
-      const search = quickOpen.open();
-      const context = { currentProjectKey: alpha.key, recent: [] };
-      const failing = workers[0]!;
-      void quickOpen.query('a', context, { id: search, generation: 0 });
-      await turnsUntil(() => rgs.length === 1);
-      failing.emit('error', new Error('out of memory'));
-      await rgs[0]!.exited;
-
-      void quickOpen.query('a', context, { id: search, generation: 1 });
-      await turnsUntil(() => rgs.length === 2);
-      quickOpen.dispose();
-      await rgs[1]!.exited;
-    } finally {
-      for (const rg of rgs) rg.kill();
-    }
-  });
-
-  it('sends neither data nor an end after a kill, as a host\'s listing over the wire sends none', async () => {
-    let exit!: (code: number | null) => void;
-    let output!: (chunk: Buffer) => void;
-    const rg = {
-      onData: (stream: string, listener: (chunk: Buffer) => void) => {
-        if (stream === 'stdout') output = listener;
-      },
-      exited: new Promise<{ code: number | null }>((resolve) => (exit = (code) => resolve({ code }))),
-      closed: Promise.resolve(),
-      kill: () => undefined,
-    } as unknown as LaunchedProcess;
-    const listed: string[] = [];
-    const listing = testWorkspaces({ watchers: createFakePlatform().fileWatchers, spawnListingRg: () => rg }).local.quickOpen.list(alpha.fsPath, [], [], { data: () => listed.push('data'), end: (error) => listed.push(`end ${error}`) });
-    await turnsUntil(() => output !== undefined);
-    listing.kill();
-    output(Buffer.from('a.ts\n'));
-    exit(null);
-    await settled(Promise.resolve());
-    expect(listed).toEqual([]);
-  });
-
-  it('kills each listing once: a killed listing, which never ends, is not killed again when the next worker stops', async () => {
-    const kills: number[] = [];
-    const workers = [new ListingWorker(), new ListingWorker()];
-    const quickOpen = index(() => workers.shift()!, () => {
-      const id = kills.push(0) - 1;
-      return { onData: () => undefined, exited: new Promise(() => undefined), closed: new Promise(() => undefined), kill: () => kills[id]!++ } as unknown as LaunchedProcess;
-    });
+    const quickOpen = index(() => workers.shift()!, host);
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
     const failing = workers[0]!;
     void quickOpen.query('a', context, { id: search, generation: 0 });
-    await turnsUntil(() => kills.length === 1);
+    await turnsUntil(() => walks.length === 1);
     failing.emit('error', new Error('out of memory'));
+    expect(walks.map((walk) => walk.aborts)).toEqual([1]);
+
     void quickOpen.query('a', context, { id: search, generation: 1 });
-    await turnsUntil(() => kills.length === 2);
+    await turnsUntil(() => walks.length === 2);
     quickOpen.dispose();
-    expect(kills).toEqual([1, 1]);
+    expect(walks.map((walk) => walk.aborts)).toEqual([1, 1]);
+  });
+
+  it('sends neither files nor an end after a kill, as a host\'s listing over the wire sends none', async () => {
+    const { host, walks } = scriptedWalks();
+    const listed: string[] = [];
+    const listing = testWorkspaces({ watchers: createFakePlatform().fileWatchers, walks: host }).local.quickOpen.list(alpha.fsPath, ALL_IGNORE_FILES, [], { files: () => listed.push('files'), end: (error) => listed.push(`end ${error}`) });
+    await turnsUntil(() => walks.length === 1);
+    listing.kill();
+    walks[0]!.push(['a.ts']);
+    walks[0]!.end();
+    await settled(Promise.resolve());
+    expect(listed).toEqual([]);
+    expect(walks[0]!.aborts).toBe(1);
   });
 
   it('leaves a project whose host is not connected out of a query, and ends a listing the worker asks for it with the reason', async () => {
@@ -581,7 +579,7 @@ describe('ripgrep listings main runs for the worker', () => {
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, remote: () => remote.workspace() });
     const fileTree = new FileTree({ projects: () => [alpha, away], exclude: () => ({}), workspaces, ask: async () => undefined, t: (message) => message, log: (line) => logged.push(line), reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform }) });
     const worker = new InProcessWorker();
-    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line), ...TYPED_PATHS });
+    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignore: () => ALL_IGNORE_FILES, excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line), ...TYPED_PATHS });
     const search = quickOpen.open();
     const answer = await quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 0 });
     expect(answer?.failed).toBeUndefined();
@@ -590,7 +588,7 @@ describe('ripgrep listings main runs for the worker', () => {
     quickOpen.dispose();
 
     const scripted = new ScriptedWorker();
-    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line), ...TYPED_PATHS });
+    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignore: () => ALL_IGNORE_FILES, excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line), ...TYPED_PATHS });
     void asking.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: asking.open(), generation: 0 });
     await turnsUntil(() => scripted.queries.length === 1);
     expect(scripted.queries[0]!.projects.map((queried) => queried.key)).toEqual([alpha.key]);
@@ -602,19 +600,18 @@ describe('ripgrep listings main runs for the worker', () => {
     fileTree.dispose();
   });
 
-  it('starts no ripgrep for a worker that stopped while main looked for ripgrep', async () => {
-    let found!: (path: string) => void;
-    const spawnRg = vi.fn(hangingRg);
-    const worker = new ListingWorker();
-    const quickOpen = index(() => worker, spawnRg, () => new Promise<string>((resolve) => (found = resolve)));
-    const answer = quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
-    await turnsUntil(() => worker.queries.length === 1);
-    await turnsUntil(() => found !== undefined);
-    worker.emit('error', new Error('out of memory'));
-    await answer;
-    found(rgPath);
-    await settled(Promise.resolve());
-    expect(spawnRg).not.toHaveBeenCalled();
+  it('lists a connected host\'s project through the host\'s walk, which never follows a junction there', async () => {
+    touch(alpha, 'mine.ts');
+    touch(beta, 'secret.ts');
+    fs.symlinkSync(beta.fsPath, path.join(alpha.fsPath, 'link'), 'junction');
+    const remote = testRemote({ watchers: createFakePlatform().fileWatchers });
+    const hosted: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(alpha.fsPath)), fsPath: alpha.fsPath, name: 'alpha' };
+    const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, remote: () => remote.workspace() });
+    const quickOpen = new QuickOpenIndex({ projects: () => [hosted], workspaces, ignore: () => ALL_IGNORE_FILES, excludes: () => [], watch: () => true, startWorker: () => new InProcessWorker(), log: (line) => logged.push(line), ...TYPED_PATHS });
+    const answer = await quickOpen.query('', { currentProjectKey: hosted.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
+    expect(answer?.results.map((result) => projectRow(result).relativePath)).toEqual(['mine.ts']);
+    quickOpen.dispose();
+    remote.disconnect('done');
   });
 });
 
@@ -669,11 +666,11 @@ describe('Quick Open of a typed path', () => {
   // An index over this computer's workspace whose files' methods the test replaces.
   const indexWith = (worker: QuickOpenWorker, change: (real: ProjectWorkspace['files']) => Partial<ProjectWorkspace['files']>): QuickOpenIndex => {
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: async () => rgPath, log: (line) => logged.push(line) });
-    const local: ProjectWorkspace = { ...workspaces.local, files: { ...workspaces.local.files, ...change(workspaces.local.files) } };
+    const local: LocalWorkspace = { ...workspaces.local, files: { ...workspaces.local.files, ...change(workspaces.local.files) } };
     return new QuickOpenIndex({
       projects: () => [alpha, beta],
       workspaces: { ...workspaces, local, forAuthority: () => local },
-      ignoreArgs: () => [],
+      ignore: () => ALL_IGNORE_FILES,
       excludes: () => [],
       watch: () => true,
       startWorker: () => worker,

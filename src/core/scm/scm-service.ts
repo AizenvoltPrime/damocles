@@ -15,6 +15,7 @@ import type { TrustService } from '../../platform/trust-service';
 import { followsLocalLinksOnly } from '../local-links';
 import { processLauncher, type SessionJob } from '../process-launcher';
 import { folderKey } from '../workspace-folders/folder-key';
+import { checkWhenAdmitted, type FolderPresence, type FolderPresenceProbe } from '../workspace-folders/folder-presence-probe';
 import { commitHistory, recordCommitMessage } from './commit-history';
 import { discover, inspectFolder, isInside, samePath, type FoundRepository } from './discovery';
 import type { AskpassRegistration, AskpassServer } from './askpass/askpass-server';
@@ -137,6 +138,8 @@ export interface ScmServiceDeps {
   readonly platform?: NodeJS.Platform;
   // a registered project folder's realpath (fs.promises.realpath); it runs on the main thread, so it must never block
   readonly realpath?: (folder: string) => Promise<string>;
+  // the process's one presence probe, so a share that does not answer holds one stat for every reader of the folder
+  readonly presence: Pick<FolderPresenceProbe, 'presence' | 'onDidAdmit' | 'onDidAnswerLate'>;
   // the OpenSSH client as an absolute path, for remote endpoints' ssh -G; resolveSshExecutable when left out
   readonly resolveSsh?: () => Promise<string | undefined>;
 }
@@ -146,7 +149,10 @@ export interface ScmProject {
   readonly path: string;
 }
 
-export type ProjectViewState = 'loading' | 'untrusted' | 'gitMissing' | 'noRepository' | 'ready';
+// absent: the project folder is not there (FolderPresence), so no git runs and nothing can be initialized in it
+export type ProjectViewState = 'loading' | 'untrusted' | 'gitMissing' | 'absent' | 'noRepository' | 'ready';
+
+export type ProjectAbsence = Exclude<FolderPresence, 'present'>;
 
 export interface RepoView {
   readonly repoId: string;
@@ -157,6 +163,8 @@ export interface RepoView {
 export interface ProjectView {
   readonly projectKey: string;
   readonly state: ProjectViewState;
+  // set only while state is absent
+  readonly presence?: ProjectAbsence;
   // the repository holding the project folder first, then by path
   readonly repos: readonly RepoView[];
   readonly closedRoots: readonly string[];
@@ -315,6 +323,8 @@ interface ProjectEntry {
   realPending: Promise<void> | undefined;
   releaseReal: () => void;
   state: ProjectViewState;
+  // why the folder is not there, read only while state is absent
+  absence: ProjectAbsence;
   readonly repos: Map<string, RepoEntry>;
   closedFound: string[];
   parents: string[];
@@ -344,6 +354,8 @@ export class ScmService implements Disposable {
   // ids are unique across services, so an id held from a restarted core names no repository of this one
   private readonly repoIdPrefix = `repo-${randomBytes(6).toString('hex')}-`;
   private nextRepoId = 0;
+  // projects whose presence check the hung gate started no stat for, discovered again once it admits
+  private readonly gateWaiting = new Set<ProjectEntry>();
   // how often mayRunIn refused because a realpath was unknown; a discovery that saw one runs again
   private pendingRefusals = 0;
   private disposed = false;
@@ -375,7 +387,11 @@ export class ScmService implements Disposable {
       describe: gitErrorText,
     });
     this.subscriptions = [
-      deps.trust.onDidGrantTrust((folders) => this.rediscoverAround(folders.map((folder) => path.resolve(folder)), [])),
+      deps.trust.onDidChangeTrust(({ granted, revoked }) => this.trustChanged([...granted, ...revoked].map((folder) => path.resolve(folder)))),
+      deps.presence.onDidAdmit(() => this.discoverWaiting()),
+      deps.presence.onDidAnswerLate((folder) => {
+        for (const project of this.projects.values()) if (samePath(project.path, folder)) this.rediscover(project.key);
+      }),
       deps.settings.onDidChange('damocles.desktop.git', (change) => {
         if (change.affects(SCM_SETTING_KEYS.untrackedChanges)) for (const entry of this.allRepos()) this.scheduleStatus(entry, 0);
         if (change.affects(SCM_SETTING_KEYS.repositoryScanMaxDepth) || change.affects(SCM_SETTING_KEYS.openRepositoryInParentFolders)) {
@@ -411,6 +427,7 @@ export class ScmService implements Disposable {
         realPending: undefined,
         releaseReal: () => undefined,
         state: 'loading',
+        absence: 'missing',
         repos: new Map(),
         closedFound: [],
         parents: [],
@@ -444,7 +461,8 @@ export class ScmService implements Disposable {
     const repos = [...project.repos.values()]
       .map((entry) => ({ repoId: entry.id, root: entry.repo.root, kind: entry.kind }))
       .sort((a, b) => order(a.kind) - order(b.kind) || a.root.localeCompare(b.root));
-    return { projectKey, state: project.state, repos, closedRoots: project.closedFound, unsafe: project.unsafe, parents: project.parents };
+    const presence = project.state === 'absent' ? { presence: project.absence } : {};
+    return { projectKey, state: project.state, ...presence, repos, closedRoots: project.closedFound, unsafe: project.unsafe, parents: project.parents };
   }
 
   snapshot(repoId: string): RepoSnapshot | undefined {
@@ -529,8 +547,23 @@ export class ScmService implements Disposable {
     if (entry) this.scheduleStatus(entry, 0);
   }
 
+  // discovers an absent project again and labels a ready or noRepository one absent once its folder is not there, running no git
+  rediscover(projectKey: string): void {
+    const project = this.projects.get(projectKey);
+    if (project?.state === 'absent') void this.discoverProject(project);
+    else if (project?.state === 'ready' || project?.state === 'noRepository') {
+      const generation = project.generation;
+      const stale = (): boolean => project.disposed || this.disposed || generation !== project.generation;
+      this.labelledAbsent(project, stale).catch((err: unknown) => this.deps.log(`[scm] checking a project folder failed: ${errorText(err)}`));
+    }
+  }
+
   async init(projectKey: string): Promise<void> {
     const project = this.require(projectKey);
+    const presence = await checkWhenAdmitted(() => this.deps.presence.presence(project.path), this.deps.presence);
+    if (presence === 'unchecked') throw new LocalizedError(l("Damocles can't check the folder {0} right now: its drive checks are busy. Try again in a moment.", project.path));
+    if (presence === 'missing') throw new LocalizedError(l('The folder {0} was not found. It may have been moved, renamed or deleted.', project.path));
+    if (presence === 'unavailable') throw new LocalizedError(l("The folder {0} can't be reached: its drive, share or WSL distro does not answer.", project.path));
     await Repository.init(this.runner(), project.path, project.path);
     await this.discoverProject(project);
   }
@@ -1999,6 +2032,28 @@ export class ScmService implements Disposable {
     if (!folders.every((folder) => this.mayRunIn(folder))) throw new LocalizedError(l('That folder belongs to a project you have not trusted, so source control runs no git there.'));
   }
 
+  // A project trusted no more shows the Trust card, its discovery in flight going stale, and one trusted now is discovered, read
+  // per project since a change may name no folder; a trusted project holding or inside a named folder is discovered again.
+  private trustChanged(folders: readonly string[]): void {
+    if (!this.gitRunner) return;
+    const discovered: ProjectEntry[] = [];
+    for (const project of this.projects.values()) {
+      const trusted = this.deps.trust.isTrusted(project.path);
+      if (project.state === 'untrusted' && trusted) discovered.push(project);
+      if (project.state === 'untrusted' || trusted) continue;
+      project.generation++;
+      this.clearProject(project, 'untrusted');
+    }
+    this.rediscoverAround(folders, discovered);
+    for (const project of discovered) void this.discoverProject(project);
+  }
+
+  private discoverWaiting(): void {
+    const waiting = [...this.gateWaiting];
+    this.gateWaiting.clear();
+    for (const project of waiting) if (!project.disposed) void this.discoverProject(project);
+  }
+
   // Rediscovers every trusted project whose folder holds, or lies inside, one of folders, except skip.
   private rediscoverAround(folders: readonly string[], skip: readonly ProjectEntry[]): void {
     if (folders.length === 0) return;
@@ -2090,6 +2145,8 @@ export class ScmService implements Disposable {
     }
     const signal = project.removed.signal;
     try {
+      // before any realpath, which a share that does not answer holds until the OS gives up
+      if (await this.labelledAbsent(project, stale)) return;
       while (this.realpathPending()) await this.realpathsSettled(signal);
       if (stale()) return;
       const refusals = this.pendingRefusals;
@@ -2149,10 +2206,28 @@ export class ScmService implements Disposable {
       if (pendingParents.length > 0) void this.askAboutParents(project, false).catch((err: unknown) => this.deps.log(`[scm] the parent repository question failed: ${errorText(err)}`));
     } catch (err) {
       if (stale()) return;
+      // the folder may have gone while discovery ran
+      if (await this.labelledAbsent(project, stale)) return;
       this.deps.log(`[scm] discovery failed for a project: ${errorText(err)}`);
       if (project.repos.size === 0) project.state = 'noRepository';
       this.emit({ kind: 'view', projectKey: project.key });
     }
+  }
+
+  // Clears a project whose folder is not there and shows it absent, its discovery in flight going stale; true when it did, when
+  // the gate started no stat (the project waits for it as it is), or when the check went stale meanwhile.
+  private async labelledAbsent(project: ProjectEntry, stale: () => boolean): Promise<boolean> {
+    const presence = await this.deps.presence.presence(project.path);
+    if (stale()) return true;
+    if (presence === 'present') return false;
+    if (presence === 'unchecked') {
+      this.gateWaiting.add(project);
+      return true;
+    }
+    project.absence = presence;
+    project.generation++;
+    this.clearProject(project, 'absent');
+    return true;
   }
 
   private openRepo(project: ProjectEntry, key: string, found: FoundRepository, kind: RepoKind): void {
@@ -2366,9 +2441,11 @@ export class ScmService implements Disposable {
     if (project && this.isLive(entry)) {
       this.deps.log(`[scm] ${root} or its git dir no longer exists, so its repository closed`);
       this.disposeRepo(project, entry);
-      if (project.repos.size === 0 && project.state === 'ready') project.state = 'noRepository';
+      // the project folder may be gone with it, which discovery labels absent before any git runs
+      if (project.repos.size === 0) project.state = 'loading';
       this.emit({ kind: 'view', projectKey: project.key });
       this.emit({ kind: 'decorations', projectKey: project.key });
+      if (project.repos.size === 0) void this.discoverProject(project);
     }
     throw new GitQueueDisposedError({ cause: err });
   }
@@ -2400,6 +2477,7 @@ export class ScmService implements Disposable {
 
   private disposeProject(project: ProjectEntry): void {
     project.disposed = true;
+    this.gateWaiting.delete(project);
     project.generation++;
     project.releaseReal();
     project.removed.abort(new GitQueueDisposedError());

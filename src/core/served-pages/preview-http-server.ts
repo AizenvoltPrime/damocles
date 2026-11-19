@@ -51,6 +51,7 @@ export interface PreviewGrant {
 export type GrantHost = 'own' | 'loopback';
 
 interface Grant {
+  readonly host: GrantHost;
   readonly origin: string;
   // the Host values it answers, lowercase with the port
   readonly hosts: readonly string[];
@@ -157,7 +158,7 @@ export class PreviewHttpServer {
       const port = this.listening;
       const hosts = host === 'own' ? [`${randomBytes(LABEL_BYTES).toString('hex')}.localhost:${port}`] : [`127.0.0.1:${port}`, `localhost:${port}`];
       if (hosts.some((value) => this.hosts.has(value))) throw new Error('A served root has one loopback grant');
-      grant = { origin: `http://${hosts[0]}`, hosts, secret: randomBytes(SECRET_BYTES).toString('base64url'), tokens: new Map() };
+      grant = { host, origin: `http://${hosts[0]}`, hosts, secret: randomBytes(SECRET_BYTES).toString('base64url'), tokens: new Map() };
       this.grants.set(holder, grant);
       for (const value of hosts) this.hosts.set(value, grant);
     }
@@ -211,11 +212,13 @@ export class PreviewHttpServer {
     response.writeHead(status, { ...headers, 'Content-Type': 'text/plain; charset=utf-8' }).end(text);
   }
 
-  // The checks run in this order: Host (a live grant's, so neither DNS rebinding nor another holder's host passes), method,
-  // Fetch Metadata, then the token exchange or the cookie of that grant.
+  // The checks run in this order: Host (a live grant's, so neither DNS rebinding nor another holder's host passes), a grant
+  // host's service worker, method, Fetch Metadata, then the token exchange or the cookie of that grant.
   private async answer(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const grant = this.hosts.get(request.headers.host?.toLowerCase() ?? '');
     if (!grant) return this.refuse(response, 421);
+    // a worker here would answer this host's requests from targets no page guard bypasses workers for (a popup's first load, an out-of-process frame)
+    if (grant.host === 'own' && request.headers['service-worker'] === 'script') return this.refuse(response, 403);
     const method = request.method ?? '';
     if (method !== 'GET' && method !== 'HEAD') return this.refuse(response, 405);
     if (crossOriginRefused(request)) return this.refuse(response, 403, isDocumentNavigation(request) ? this.deps.refusalText() : undefined);

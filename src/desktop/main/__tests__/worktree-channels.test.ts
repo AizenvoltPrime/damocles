@@ -139,9 +139,9 @@ describe('trust of chat worktrees (rule 8)', () => {
       questions.push(question.message);
       return 0;
     }, (message, ...args) => message.replace('{0}', args[0] ?? ''), () => undefined);
-    store.setWorktrees({ projectOf: (folder) => (folder === worktree ? project : undefined), workingFolders: (projectPath) => (projectPath === project ? [worktree] : []) });
+    store.setWorktrees({ projectOf: (folder) => (folder === worktree ? project : undefined), liveWorkingFolders: () => [worktree], onDidChange: () => ({ dispose: () => undefined }) });
     const granted: Array<readonly string[]> = [];
-    store.onDidGrant((folders) => granted.push(folders));
+    store.onDidChange((change) => granted.push(change.granted));
     expect(store.isTrusted(worktree)).toBe(false);
     expect(await store.requestTrust(worktree)).toBe(true);
     expect(questions).toEqual([`Do you trust the authors of the files in ${project}?`]);

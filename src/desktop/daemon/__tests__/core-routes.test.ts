@@ -1,8 +1,10 @@
 import * as net from 'node:net';
+import * as path from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { setFlagsFromString } from 'node:v8';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAskpassServer } from '../../../core/scm/askpass/askpass-server';
+import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { GitError } from '../../../core/scm/errors';
 import { credentialPrompt } from '../../core-host/askpass-prompt';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type MainEndpoint } from '../../core-protocol';
@@ -499,6 +501,44 @@ describe('core routes', () => {
     expect(CORE_REQUEST_ROUTES['design.probe']).toMatchObject({ to: 'workClient', needs: 'design.probe' });
   });
 
+  it('ask only an app that lists editor.isDirty whether it holds unsaved changes, and answer no while none can say', async () => {
+    const h = setUp();
+    const file = { path: '/srv/app/a.ts' };
+    expect(await h.core.request('editor.isDirty', file)).toBe(false);
+    // an app that predates the request would close its connection on its name, so it is never asked
+    const older = h.client('c-old');
+    let asked = 0;
+    older.main.serve('editor.isDirty', () => {
+      asked++;
+      return true;
+    });
+    expect(await h.core.request('editor.isDirty', file)).toBe(false);
+    const client = h.client('c1', { features: ['editor.isDirty'] });
+    const paths: string[] = [];
+    client.main.serve('editor.isDirty', ({ path }) => {
+      paths.push(path);
+      return true;
+    });
+    await older.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    expect(await h.core.request('editor.isDirty', file)).toBe(true);
+    expect(paths).toEqual(['/srv/app/a.ts']);
+    expect(asked).toBe(0);
+    expect(CORE_REQUEST_ROUTES['editor.isDirty']).toMatchObject({ to: 'workClient', needs: 'editor.isDirty' });
+  });
+
+  it('refuse an older core\'s editor.readText, which no client is asked', async () => {
+    const h = setUp();
+    const client = h.client('c1', { features: [...FEATURES] });
+    let asked = 0;
+    client.main.serve('editor.readText', () => {
+      asked++;
+      return 'text';
+    });
+    await expect(h.core.request('editor.readText', { path: '/srv/app/a.ts' })).rejects.toThrow();
+    expect(asked).toBe(0);
+    expect(CORE_REQUEST_ROUTES['editor.readText']).toEqual({ to: 'refused' });
+  });
+
   it('send a browser call with a served root file only to a viewer that serves root files, refusing with CLIENT_FEATURE_MISSING while a viewer lacks it', async () => {
     const h = setUp();
     h.core.serve('chats.restore', () => undefined);
@@ -661,11 +701,6 @@ describe('core routes', () => {
     stop.abort();
     await expect(running).rejects.toThrow();
     await vi.waitFor(() => expect(ended).toBeDefined());
-  });
-
-  it('read editor.readText with no client only inside an open project', async () => {
-    const h = setUp();
-    await expect(h.core.request('editor.readText', { path: process.execPath })).rejects.toThrow('outside the open projects');
   });
 
   // core's key-value state is the daemon's own: a client's language is its clientLanguage, never a state key
@@ -854,30 +889,32 @@ describe('core routes', () => {
     expect(seen['c2']).toEqual([{ panelId: 'panel-2', entry: entry('panel-2', 'view-2') }]);
   });
 
-  it('publish the union of each client\'s latest trusted keys, so a key leaves once no client holds it, a detached client\'s included', async () => {
+  it('publish the union of each client\'s latest trusted keys, so a key leaves, and reaches core as revoked, once no client holds it, a detached client\'s included', async () => {
     const h = setUp();
     const published: unknown[] = [];
     h.core.onMirror('trust', (patch) => published.push(patch));
     const first = h.client('c1');
     const second = h.client('c2');
-    first.main.publish('trust', { keys: ['/srv/a', '/srv/b'], granted: ['/srv/a', '/srv/b'] });
-    second.main.publish('trust', { keys: ['/srv/b', '/srv/c'], granted: ['/srv/b', '/srv/c'] });
+    const [a, b, c] = ['/srv/a', '/srv/b', '/srv/c'].map((folder) => path.resolve(folder));
+    const [ka, kb, kc] = [a!, b!, c!].map((folder) => folderKey(folder));
+    first.main.publish('trust', { keys: [ka!, kb!], granted: [a!, b!] });
+    second.main.publish('trust', { keys: [kb!, kc!], granted: [b!, c!] });
     await flush();
-    expect(h.mirrors.trust).toEqual(new Set(['/srv/a', '/srv/b', '/srv/c']));
+    expect(h.mirrors.trust).toEqual(new Set([ka, kb, kc]));
     // the first device revokes a, which no other holds, and b, which the second still trusts
-    first.main.publish('trust', { keys: [], granted: [] });
+    first.main.publish('trust', { keys: [], granted: [], revoked: [a!, b!] });
     await flush();
-    expect(published.at(-1)).toEqual({ keys: ['/srv/b', '/srv/c'], granted: [] });
-    expect(h.mirrors.trust).toEqual(new Set(['/srv/b', '/srv/c']));
+    expect(published.at(-1)).toEqual({ keys: [kb, kc], granted: [], revoked: [a] });
+    expect(h.mirrors.trust).toEqual(new Set([kb, kc]));
     // a detached device's trust stays for its chats that keep running, until its next attach names its set again
     second.detach();
-    first.main.publish('trust', { keys: ['/srv/a'], granted: ['/srv/a'] });
+    first.main.publish('trust', { keys: [ka!], granted: [a!] });
     await flush();
-    expect(h.mirrors.trust).toEqual(new Set(['/srv/b', '/srv/c', '/srv/a']));
+    expect(h.mirrors.trust).toEqual(new Set([kb, kc, ka]));
     h.client('c2');
     await flush();
-    expect(published.at(-1)).toEqual({ keys: ['/srv/a'], granted: [] });
-    expect(h.mirrors.trust).toEqual(new Set(['/srv/a']));
+    expect(published.at(-1)).toEqual({ keys: [ka], granted: [], revoked: [] });
+    expect(h.mirrors.trust).toEqual(new Set([ka]));
   });
 
   it('publish the latest folder set when an earlier one still asks whether a leaving folder is busy', async () => {
@@ -1856,7 +1893,7 @@ describe('the work of a device that is away', () => {
 
   it('holds only what surfaces on a device: a request that only returns data is a workClient route', () => {
     const work = Object.entries(CORE_REQUEST_ROUTES).flatMap(([method, route]) => (route.to === 'workClient' ? [method] : []));
-    expect(work.sort()).toEqual(['design.capture', 'design.journey', 'design.probe', 'design.render', 'editor.readText']);
+    expect(work.sort()).toEqual(['design.capture', 'design.journey', 'design.probe', 'design.render', 'editor.isDirty']);
   });
 
   it('serves a data request of its work on another present device that can when its own present device cannot', async () => {
@@ -1890,18 +1927,20 @@ describe('the work of a device that is away', () => {
   it('never holds a data request while its device is away: another present device serves it, else its no-client answer comes at once', async () => {
     const h = setUp();
     const a = h.client('connection-1', { clientId: 'device-a', features: RENDER_FEATURES });
-    const b = h.client('connection-2', { clientId: 'device-b' });
+    const b = h.client('connection-2', { clientId: 'device-b', features: ['design.probe'] });
     const read: string[] = [];
-    a.main.serve('editor.readText', () => {
+    const measured = { widths: [], consoleErrors: [] };
+    a.main.serve('design.probe', () => {
       read.push('a');
-      return 'from a';
+      return measured;
     });
-    b.main.serve('editor.readText', () => {
+    b.main.serve('design.probe', () => {
       read.push('b');
-      return 'from b';
+      return measured;
     });
     a.lose();
-    expect(await processActor.run('device-a', () => h.core.request('editor.readText', { path: '/srv/app/a.ts' }))).toBe('from b');
+    const probe = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', widths: [390], state: null };
+    expect(await processActor.run('device-a', () => h.core.request('design.probe', probe))).toEqual(measured);
     // no other device renders: refused before the outbox's minute, and not sent on the resume
     const capture = { designId: 'contacts-1a2b3c4d', relPath: 'screens/S1.html', width: 390, state: null, scale: 1 };
     const captured = vi.fn();

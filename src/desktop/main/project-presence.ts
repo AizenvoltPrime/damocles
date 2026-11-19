@@ -1,8 +1,8 @@
-import { PRESENCE_TIMEOUT_MS, type FolderPresence, type PathPresence } from '../../core/workspace-folders/folder-presence-probe';
+import { PRESENCE_TIMEOUT_MS, type FolderCheck, type FolderPresence, type PathPresence } from '../../core/workspace-folders/folder-presence-probe';
 
 // A project's folder as main last found it: there, gone (moved, renamed or deleted), or on a drive, share, WSL distro or mount
-// that is not there or did not answer in time.
-export type ProjectPresence = FolderPresence;
+// that is not there or did not answer in time; unchecked while the hung gate refused every check of it so far.
+export type ProjectPresence = FolderPresence | 'unchecked';
 
 /**
  * A host path's presence by its workspace's `isDirectory`, within PRESENCE_TIMEOUT_MS: a request still running then is
@@ -30,12 +30,19 @@ export interface CheckedProject {
 }
 
 export interface ProjectPresencesDeps {
-  readonly presence: (project: CheckedProject) => Promise<ProjectPresence>;
-  // a project's presence changed; `previous` is 'present' for a project checked for the first time
-  readonly changed: (key: string, presence: ProjectPresence, previous: ProjectPresence) => void;
+  // unchecked: the hung gate started no stat, so the check changes nothing and the project waits for `admitted`
+  readonly presence: (project: CheckedProject) => Promise<FolderCheck>;
+  // a project's presence changed; `previous` is 'present' for a project checked for the first time, 'unchecked' for one the gate refused till now
+  readonly changed: (key: string, presence: FolderPresence, previous: ProjectPresence) => void;
+  // every counted check that found the folder present, changed or not
+  readonly present?: (key: string) => void;
 }
 
-/** Each listed project's presence. A project never checked, and any other key, reads as present. */
+/**
+ * Each listed project's presence. A project never checked, and any other key, reads as present; one whose every check the hung
+ * gate refused, unchecked. A refused check keeps what the last counted check found, and the project is checked again once the
+ * gate admits (`admitted`).
+ */
 export class ProjectPresences {
   private readonly deps: ProjectPresencesDeps;
   private readonly presences = new Map<string, ProjectPresence>();
@@ -43,6 +50,8 @@ export class ProjectPresences {
   private readonly checks = new Map<string, number>();
   // projects checked again after a late answer since their last other check, which no later late answer checks again
   private readonly lateChecked = new Set<string>();
+  // projects whose latest check the hung gate refused
+  private readonly gateWaiting = new Set<string>();
   private lastCheck = 0;
 
   constructor(deps: ProjectPresencesDeps) {
@@ -54,7 +63,8 @@ export class ProjectPresences {
   }
 
   absent(key: string): boolean {
-    return this.of(key) !== 'present';
+    const presence = this.of(key);
+    return presence === 'missing' || presence === 'unavailable';
   }
 
   /** The listed projects: each new one is checked, and each other one `again` selects; any project not listed is forgotten. */
@@ -65,6 +75,7 @@ export class ProjectPresences {
       this.checks.delete(key);
       this.presences.delete(key);
       this.lateChecked.delete(key);
+      this.gateWaiting.delete(key);
     }
     return this.check(projects.filter((project) => !this.checks.has(project.key) || again(project)));
   }
@@ -85,6 +96,11 @@ export class ProjectPresences {
     return this.run([project]);
   }
 
+  /** Checks again the listed projects whose latest check the hung gate refused, once it admits checks again. */
+  admitted(projects: readonly CheckedProject[]): Promise<readonly string[]> {
+    return this.run(projects.filter((project) => this.gateWaiting.has(project.key)));
+  }
+
   private async run(projects: readonly CheckedProject[]): Promise<readonly string[]> {
     const cameBack: string[] = [];
     await Promise.all(projects.map(async ({ key, fsPath }) => {
@@ -92,9 +108,15 @@ export class ProjectPresences {
       this.checks.set(key, id);
       const presence = await this.deps.presence({ key, fsPath });
       if (this.checks.get(key) !== id) return;
+      if (presence === 'unchecked') {
+        this.gateWaiting.add(key);
+        if (!this.presences.has(key)) this.presences.set(key, 'unchecked');
+        return;
+      }
+      this.gateWaiting.delete(key);
       const previous = this.of(key);
-      if (presence === 'present') this.presences.delete(key);
-      else this.presences.set(key, presence);
+      this.presences.set(key, presence);
+      if (presence === 'present') this.deps.present?.(key);
       if (presence === previous) return;
       if (presence === 'present') cameBack.push(key);
       this.deps.changed(key, presence, previous);

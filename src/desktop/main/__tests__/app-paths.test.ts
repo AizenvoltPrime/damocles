@@ -58,6 +58,7 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('memoryIntegrity')).toBe(path.join(unpacked, 'dist', 'memory-integrity-worker.js'));
     expect(paths.workerEntry('sessionMetaIndex')).toBe(path.join(unpacked, 'dist', 'session-meta-index-worker.js'));
     expect(paths.workerEntry('voiceExtract')).toBe(path.join(unpacked, 'dist', 'voice-extract-worker.js'));
+    expect(paths.workerEntry('walkChild')).toBe(path.join(unpacked, 'dist', 'walk-child.js'));
     expect(quickOpenWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'quick-open-worker.js'));
     expect(watchWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'watch-worker.js'));
   });
@@ -115,7 +116,7 @@ describe('ASAR_UNPACK', () => {
   it('covers every path the packaged AppPaths promises under the unpacked root', () => {
     const paths = createDesktopAppPaths({ packaged: true, asarPath: '/app.asar' });
     const promised = [
-      ...(['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const).map((name) => paths.workerEntry(name)),
+      ...(['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract', 'walkChild'] as const).map((name) => paths.workerEntry(name)),
       ptyHostPaths(paths).script,
       quickOpenWorkerPath(paths),
       watchWorkerPath(paths),

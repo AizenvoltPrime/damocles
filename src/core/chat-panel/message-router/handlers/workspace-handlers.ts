@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import type { Platform } from "../../../../platform/platform";
 import type { ChatSession } from "../../../chat-session";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
-import { listWorkspaceFiles } from "../../ripgrep";
+import { listWorkspaceFiles } from "../../workspace-files";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { findSessionPlanFiles } from "../../../paths";
 import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
@@ -37,10 +37,11 @@ export function isPlanFileCandidate(relativePath: string): boolean {
 
 /** The folder's plan files from the `@` autocomplete's listing (same excludes), newest first. */
 async function planFileCandidates(
-  host: Pick<Platform, "settings" | "paths">,
+  host: Pick<Platform, "settings">,
   folderPath: string,
+  signal: AbortSignal,
 ): Promise<{ fsPath: string; relativePath: string; modifiedAt: number }[]> {
-  const listed = (await listWorkspaceFiles(host, folderPath)).filter(
+  const listed = (await listWorkspaceFiles(host, folderPath, signal)).filter(
     (file) => !file.isDirectory && isPlanFileCandidate(file.relativePath),
   );
   const stated = await Promise.all(listed.map(async ({ relativePath }) => {
@@ -189,10 +190,17 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     requestPlanFileCandidates: async (_msg, ctx) => {
       let hasPlan = false;
       let files: Awaited<ReturnType<typeof planFileCandidates>>;
+      const instance = deps.getPanels().get(ctx.panelId);
+      const signal = instance ? workspaceManager.listingSignal(instance, ctx.folder) : AbortSignal.abort();
       try {
         hasPlan = (await ctx.session.getActivePlanFilePath()) !== null;
-        files = await planFileCandidates(platform, ctx.folder.fsPath);
+        files = await planFileCandidates(platform, ctx.folder.fsPath, signal);
       } catch (err) {
+        // the panel closed or left the folder: as for a replaced session, nothing is issued
+        if (signal.aborted) {
+          postMessage(ctx.reply, { type: "planFileCandidates", files: [], hasPlan: false });
+          return;
+        }
         log("[MessageRouter] Listing plan files in %s failed: %O", ctx.folder.fsPath, err);
         issuePlanFiles(ctx, new Map());
         postMessage(ctx.reply, { type: "planFileCandidates", files: [], hasPlan, listFailed: true });
@@ -287,8 +295,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {
-      const message = await workspaceManager.workspaceFilesMessage(ctx.folder);
-      if (stillOnDispatchFolder(ctx)) postMessage(ctx.reply, message);
+      const instance = deps.getPanels().get(ctx.panelId);
+      if (!instance) return;
+      const message = await workspaceManager.workspaceFilesMessage(instance, ctx.folder);
+      if (message && stillOnDispatchFolder(ctx)) postMessage(ctx.reply, message);
     },
 
     openFile: async (msg, ctx) => {

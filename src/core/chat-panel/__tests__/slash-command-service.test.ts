@@ -425,6 +425,25 @@ describe('SlashCommandService asset-source precedence', () => {
       expect((await svc.findCommand('bar'))?.untrusted).toBeFalsy();
     });
 
+    it('flags the project entries again on a revoke after the grant', async () => {
+      writeSkill(ws, '.damocles/skills', 'foo', 'project version');
+      writeCommand(ws, '.damocles/commands', 'bar', 'project version');
+      setTrusted(false);
+
+      const svc = makeService();
+      const invalidated = vi.fn();
+      svc.setOnCacheInvalidate(invalidated);
+      platform.trust.grantTrust([ws]);
+      expect((await svc.getSkills())[0]?.untrusted).toBeFalsy();
+      expect((await svc.getCommands())[0]?.untrusted).toBeFalsy();
+
+      platform.trust.revokeTrust([ws]);
+
+      expect(invalidated).toHaveBeenCalledTimes(2);
+      expect((await svc.getSkills())[0]?.untrusted).toBe(true);
+      expect((await svc.getCommands())[0]?.untrusted).toBe(true);
+    });
+
     it('stops re-scanning once disposed', async () => {
       writeSkill(ws, '.damocles/skills', 'foo', 'project version');
       setTrusted(false);

@@ -585,6 +585,19 @@ export class PanelWorktrees implements Disposable {
     return this.ownedTarget(record.workingFolder);
   }
 
+  /**
+   * The open project of the chat worktree whose working folder is `key` (a live record first, else a deleted one): a chat
+   * restored there before any chat holds the folder starts in its own project, and its stored entry moves it on (resumeFolder).
+   */
+  projectOfWorkingFolder(key: string): FolderTarget | undefined {
+    const records = this.host()?.registry.records() ?? [];
+    const chat = (live: boolean): ChatWorktreeRecord | undefined => records.find((record): record is ChatWorktreeRecord => record.kind === 'chat' && (record.deletedAt === undefined) === live && folderKey(record.workingFolder) === key);
+    const record = chat(true) ?? chat(false);
+    if (!record) return undefined;
+    const project = this.deps.folderRegistry.resolve(folderKey(record.projectPath));
+    return project?.ownerKey === undefined ? project : undefined;
+  }
+
   /** A panel being set up in the working folder its source panel holds takes its own hold of it, for the same project. */
   holdAsSource(panelId: string, sourcePanelId: string): void {
     const held = this.holds.get(sourcePanelId);

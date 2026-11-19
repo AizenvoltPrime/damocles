@@ -121,7 +121,7 @@ function harness(faults: Faults = {}): Harness {
       },
     },
     worktrees: registry,
-    trust: { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+    trust: { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) },
     projectFolders: () => [P, W, DOCS],
     log,
     file: path.join(tmp, 'project-relocations.json'),

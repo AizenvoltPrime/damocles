@@ -19,7 +19,7 @@ const REPOSITORY = { projectKey: 'p', projectPath: '/p', kind: 'root' as const, 
 
 describe('core\'s ScmService as main reads it', () => {
   it('answers ScmHost\'s synchronous reads from the mirror, which is current when the event arrives', () => {
-    const scm = createScmClient({ core: (_authority, _label, work) => Promise.reject(new Error(`no core for ${String(work)}`)), gitVersion: { major: 2, minor: 45, patch: 0 }, log: quiet });
+    const scm = createScmClient({ core: (_authority, _label, work) => Promise.reject(new Error(`no core for ${String(work)}`)), gitVersion: { major: 2, minor: 45, patch: 0 }, log: quiet, features: () => undefined });
     const { core, client } = connected();
     scm.attach(client);
     const seen: Array<{ event: ScmEvent; view: unknown; repo: unknown }> = [];
@@ -45,7 +45,7 @@ describe('core\'s ScmService as main reads it', () => {
   });
 
   it('sends the project list to each core that attaches, and forgets a detached core\'s mirror, telling ScmHost what closed', async () => {
-    const scm = createScmClient({ core: () => Promise.reject(new Error('no core')), gitVersion: undefined, log: quiet });
+    const scm = createScmClient({ core: () => Promise.reject(new Error('no core')), gitVersion: undefined, log: quiet, features: () => undefined });
     void scm.setProjects([{ key: 'p', path: '/p' }]);
     const first = connected();
     const setProjects = vi.fn();
@@ -73,7 +73,7 @@ describe('core\'s ScmService as main reads it', () => {
 
   it('turns a commit\'s branch-name closure into core\'s scm.branchName, bytes into a Buffer and the ignored names into a Set', async () => {
     const { core, client } = connected();
-    const scm = createScmClient({ core: (_authority, _label, work) => work(client), gitVersion: undefined, log: quiet });
+    const scm = createScmClient({ core: (_authority, _label, work) => work(client), gitVersion: undefined, log: quiet, features: () => undefined });
     scm.attach(client);
     let asked: string | undefined;
     let rules: unknown;
@@ -104,7 +104,8 @@ describe('scm calls across authorities', () => {
     return { core: createCoreEndpoint(core, quiet), client };
   }
 
-  function twoCores() {
+  // the remote core's daemon lists `features`
+  function twoCores(features: readonly string[] = ['scm.absentProject']) {
     const local = connected();
     const remote = remoteConnected();
     const clients: Record<string, CoreClient> = { local: local.client, loopback: remote.client };
@@ -116,6 +117,7 @@ describe('scm calls across authorities', () => {
       },
       gitVersion: undefined,
       log: quiet,
+      features: (authority) => (authority === 'loopback' ? features : undefined),
     });
     const calls = { local: [] as Array<[string, readonly unknown[]]>, loopback: [] as Array<[string, readonly unknown[]]> };
     local.core.serve('scm.call', ({ method, args }) => void calls.local.push([method, args]));
@@ -135,6 +137,50 @@ describe('scm calls across authorities', () => {
     await scm.init('loopback|/srv/app');
     expect(calls.loopback).toEqual([['stage', ['repo-r', ['a.ts']]], ['init', ['/srv/app']]]);
     expect(calls.local).toEqual([['stage', ['repo-1', ['b.ts']]]]);
+  });
+
+  it('sends rediscover without waiting to the project\'s attached core, with its key as that core knows it', async () => {
+    const { scm, local, remote, calls, asked } = twoCores();
+    scm.attach(local.client);
+    scm.attach(remote.client);
+    await scm.rediscover('loopback|/srv/app');
+    await scm.rediscover('p');
+    await vi.waitFor(() => expect(calls.loopback).toHaveLength(1));
+    await vi.waitFor(() => expect(calls.local).toHaveLength(1));
+    expect(calls.loopback).toEqual([['rediscover', ['/srv/app']]]);
+    expect(calls.local).toEqual([['rediscover', ['p']]]);
+    expect(asked).toEqual([]);
+  });
+
+  it('tells core of every folder main found not there, and of a present one only while its view shows it absent', async () => {
+    const { scm, local, calls } = twoCores();
+    scm.attach(local.client);
+    local.core.publish('scm', { kind: 'view', projectKey: 'p', view: VIEW });
+    scm.folderChecked('p', 'present');
+    scm.folderChecked('p', 'missing');
+    scm.folderChecked('p', 'unavailable');
+    await vi.waitFor(() => expect(calls.local).toHaveLength(2));
+    local.core.publish('scm', { kind: 'view', projectKey: 'p', view: { ...VIEW, state: 'absent', presence: 'missing', repos: [] } });
+    scm.folderChecked('p', 'present');
+    await vi.waitFor(() => expect(calls.local).toHaveLength(3));
+    expect(calls.local).toEqual([['rediscover', ['p']], ['rediscover', ['p']], ['rediscover', ['p']]]);
+    // a project whose view core has not published yet discovers it itself
+    scm.folderChecked('q', 'present');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(calls.local).toHaveLength(3);
+  });
+
+  // an older core parses scm.call strictly, so an unknown call would close its connection
+  it('withholds rediscover from a remote core whose daemon does not list scm.absentProject, and sends it locally all the same', async () => {
+    const { scm, local, remote, calls } = twoCores([]);
+    scm.attach(local.client);
+    scm.attach(remote.client);
+    await scm.rediscover('loopback|/srv/app');
+    await scm.rediscover('p');
+    await scm.refresh('repo-1');
+    await vi.waitFor(() => expect(calls.local).toHaveLength(2));
+    expect(calls.local).toEqual([['rediscover', ['p']], ['refresh', ['repo-1']]]);
+    expect(calls.loopback).toEqual([]);
   });
 
   it('splits the project list and the autofetch project by authority, each core getting only its own keys, as it knows them', async () => {

@@ -2,7 +2,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { BrowserService } from '../index';
+import { BrowserService, type BrowserChatOwners } from '../index';
+import type { PanelHost } from '../../../platform/window-service';
 import { createFakePlatform, installFakePlatform, type FakePanelHost, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { BrowserPanel } from '../browser-panel';
 import * as logger from '../../logger';
@@ -135,8 +136,18 @@ function postedTypes(panel: FakePanelHost): string[] {
   return panel.posted.map((m) => (m as { type: string }).type);
 }
 
+// The human scope of the chat makeService registers, the first a service names; every page belongs to a chat.
+const SCOPE = 'chat-1';
+const TOKEN = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+
+/** The panel manager's chats as BrowserService reads them: `chat` readied with TOKEN. */
+function ownersOf(chat: PanelHost): BrowserChatOwners {
+  return { tokenOf: () => TOKEN, readiedChat: (token) => (token === TOKEN ? chat : undefined), onDidChange: () => ({ dispose: () => {} }) };
+}
+
 async function makeService(): Promise<BrowserService> {
   const service = new BrowserService(platform);
+  expect(service.chatScope(platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] })).id).toBe(SCOPE);
   priv(service).context = { newCDPSession: async () => fakeSession(), close: async () => {} };
   priv(service).state = 'connected';
   return service;
@@ -147,7 +158,7 @@ async function makeService(): Promise<BrowserService> {
  * the ordering of every observable side effect — the resync-before-first-frame criterion is an
  * assertion about this array, not about internal state.
  */
-async function addTab(service: BrowserService, url = 'http://a', ownerScopeId = BrowserService.PRIMARY_SCOPE_ID): Promise<{
+async function addTab(service: BrowserService, url = 'http://a', ownerScopeId = SCOPE): Promise<{
   entry: TestEntry;
   page: ReturnType<typeof fakePage>;
   start: ReturnType<typeof vi.spyOn>;
@@ -609,9 +620,11 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     p.iconCacheDir = '/tmp/damocles-restore/icons';
     p.downloadManager.downloadsDir = '/tmp/damocles-restore/dl';
     const page = {
-      on: () => {}, url: () => 'http://restored', close: vi.fn(async () => {}),
+      on: () => {}, url: () => 'about:blank', close: vi.fn(async () => {}),
       opener: async () => null, evaluate: async () => 'Mozilla/5.0 Chrome/120',
     };
+    const chat = platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+    service.setChatOwners(ownersOf(chat));
     vi.mocked(await import('../launcher')).launchBrowserContext.mockResolvedValue({
       exposeBinding: vi.fn(async () => {}), addInitScript: vi.fn(async () => {}), on: () => {},
       pages: () => [page], newPage: vi.fn(),
@@ -625,14 +638,15 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     const restored = restoredPanel('old');
     const disposeSpy = vi.spyOn(restored, 'close');
 
-    await service.restorePanel(restored, 'http://restored');
+    await service.restorePanel(restored, 'http://restored', TOKEN);
 
     expect(disposeSpy).toHaveBeenCalledTimes(1);
     const entry = priv(service).pages.get(page)!;
     expect(entry).toBeDefined();
     // A DIFFERENT object, built by the one construction path, with this version's options.
     expect(panelOf(entry)).not.toBe(restored);
-    expect(panelOf(entry).options).toStrictEqual({ kind: 'browser', title: 'restored', localResourceRoots: [] });
+    expect(panelOf(entry).options).toStrictEqual({ kind: 'browser', title: 'about:blank', localResourceRoots: [], owner: chat });
+    expect(entry.lastUrl).toBe('http://restored/');
     service.dispose();
   });
 
@@ -657,7 +671,7 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     const restored = restoredPanel('old');
     const disposeSpy = vi.spyOn(restored, 'close');
 
-    await service.restorePanel(restored, 'http://restored');
+    await service.restorePanel(restored, 'http://restored', TOKEN);
 
     expect(launch).not.toHaveBeenCalled();
     expect(priv(service).pages.size).toBe(0);
@@ -674,7 +688,7 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     const restored = restoredPanel('old');
     const disposeSpy = vi.spyOn(restored, 'close');
 
-    await service.restorePanel(restored, 'file:///c:/Windows/System32/drivers/etc/hosts');
+    await service.restorePanel(restored, 'file:///c:/Windows/System32/drivers/etc/hosts', TOKEN);
 
     expect(launch).not.toHaveBeenCalled();
     expect(priv(service).pages.size).toBe(0);
@@ -682,15 +696,19 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     service.dispose();
   });
 
-  it('disposes an EXTRA restored panel when the session is already claimed', async () => {
-    const service = await makeService();
+  it('disposes a restored panel whose saved state names no chat, and opens no page for it', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const service = new BrowserService(withBrowserEnabled(true));
+    service.setChatOwners(ownersOf(platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] })));
     const extra = restoredPanel('extra');
     const disposeSpy = vi.spyOn(extra, 'close');
 
-    // A second persisted browser tab: the fresh Chromium context cannot be reconnected to it.
-    await service.restorePanel(extra, 'http://second');
+    await service.restorePanel(extra, 'http://second', undefined);
 
     expect(disposeSpy).toHaveBeenCalledTimes(1);
+    expect(priv(service).pages.size).toBe(0);
+    expect(logSpy.mock.calls.map((call) => call.map(String).join(' '))).toEqual(['[Browser] Not restoring a browser tab whose saved state names no chat']);
+    logSpy.mockRestore();
     service.dispose();
   });
 });
@@ -879,9 +897,9 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
     const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
     const service = await makeService();
     const { entry, page } = await addTab(service, 'about:blank');
-    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(SCOPE, page);
     entry.session.send.mockImplementation(async (method: string) => (method === 'Page.navigate' ? { frameId: 'f', loaderId: 'l', errorText: 'net::ERR_NAME_NOT_RESOLVED' } : {}));
-    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'https://nowhere.example/x')).rejects.toThrow('Navigation to https://nowhere.example failed: net::ERR_NAME_NOT_RESOLVED');
+    await expect(service.openForScope(SCOPE, 'https://nowhere.example/x')).rejects.toThrow('Navigation to https://nowhere.example failed: net::ERR_NAME_NOT_RESOLVED');
     expect(entry.lastUrl).toBe('about:blank');
     logSpy.mockRestore();
     service.dispose();
@@ -891,11 +909,11 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
     const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
     const service = await makeService();
     const { entry, page } = await addTab(service, 'about:blank');
-    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(SCOPE, page);
     entry.session.send.mockImplementation(async (method: string) => (method === 'Page.navigate' ? { frameId: 'f', loaderId: 'l', errorText: 'net::ERR_CONNECTION_REFUSED' } : {}));
     const label = 'c'.repeat(32);
-    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, `http://${label}.localhost:52341/docs/a.html`)).rejects.toThrow('Navigation to a served page on port 52341 failed: net::ERR_CONNECTION_REFUSED');
-    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, `http://${label}.localhost.:52341/docs/a.html`)).rejects.toThrow('Navigation to a served page on port 52341 failed: net::ERR_CONNECTION_REFUSED');
+    await expect(service.openForScope(SCOPE, `http://${label}.localhost:52341/docs/a.html`)).rejects.toThrow('Navigation to a served page on port 52341 failed: net::ERR_CONNECTION_REFUSED');
+    await expect(service.openForScope(SCOPE, `http://${label}.localhost.:52341/docs/a.html`)).rejects.toThrow('Navigation to a served page on port 52341 failed: net::ERR_CONNECTION_REFUSED');
     expect(logSpy.mock.calls.flat().map(String).join('\n')).not.toContain(label);
     logSpy.mockRestore();
     service.dispose();
@@ -904,10 +922,10 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
   it('sends no Page.navigate for any spelling Chrome loads as a file', async () => {
     const service = await makeService();
     const { entry, page } = await addTab(service, 'about:blank');
-    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(SCOPE, page);
     entry.session.send.mockImplementation(async () => ({ frameId: 'f', loaderId: 'l' }));
     for (const url of ['file:///C:/Users/u/a.html', 'C:\\Users\\u\\a.html', '\\\\192.0.2.1\\s\\a.html', '//192.0.2.1/s/a.html', 'view-source:file:///etc/hosts', ' FILE:///etc/hosts', 'file://ev il/x']) {
-      await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, url), url).rejects.toThrow('The browser opens no file: page');
+      await expect(service.openForScope(SCOPE, url), url).rejects.toThrow('The browser opens no file: page');
     }
     expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate')).toEqual([]);
     expect(entry.lastUrl).toBe('about:blank');
@@ -917,7 +935,7 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
   it('sends no Page.navigate for an agent address of any scheme but http, https and about:blank, naming the scheme', async () => {
     const service = await makeService();
     const { entry, page } = await addTab(service, 'about:blank');
-    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(SCOPE, page);
     entry.session.send.mockImplementation(async () => ({ frameId: 'f', loaderId: 'l' }));
     const refused: ReadonlyArray<readonly [string, string]> = [
       ['chrome://settings/', 'chrome:'],
@@ -944,17 +962,17 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
       ['ms-settings:privacy', 'ms-settings:'],
     ];
     for (const [url, scheme] of refused) {
-      await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, url), url).rejects.toThrow(`The browser does not open ${scheme} addresses; it opens only http and https URLs and about:blank.`);
+      await expect(service.openForScope(SCOPE, url), url).rejects.toThrow(`The browser does not open ${scheme} addresses; it opens only http and https URLs and about:blank.`);
     }
-    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'javascript:alert(1)')).rejects.toThrow('To run script in the page, use BrowserEvaluate.');
-    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'example.invalid/x')).rejects.toThrow('That address is not a complete URL; the browser opens only http and https URLs and about:blank.');
+    await expect(service.openForScope(SCOPE, 'javascript:alert(1)')).rejects.toThrow('To run script in the page, use BrowserEvaluate.');
+    await expect(service.openForScope(SCOPE, 'example.invalid/x')).rejects.toThrow('That address is not a complete URL; the browser opens only http and https URLs and about:blank.');
     expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate')).toEqual([]);
     expect(entry.lastUrl).toBe('about:blank');
     // http, https and about:blank still navigate
     // Chrome gets the href that was checked, never the raw text
-    for (const url of ['http://192.0.2.1/a', ' HTTPS://192.0.2.1/b c\n']) await service.openForScope(BrowserService.PRIMARY_SCOPE_ID, url);
+    for (const url of ['http://192.0.2.1/a', ' HTTPS://192.0.2.1/b c\n']) await service.openForScope(SCOPE, url);
     expect(entry.lastUrl).toBe('https://192.0.2.1/b%20c');
-    await service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'about:blank');
+    await service.openForScope(SCOPE, 'about:blank');
     expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate').map(([, params]) => (params as { url: string }).url)).toEqual(['http://192.0.2.1/a', 'https://192.0.2.1/b%20c', 'about:blank']);
     service.dispose();
   });
@@ -1272,6 +1290,8 @@ describe('the inviolable invariant holds across the whole slice', () => {
       'Overlay.setInspectMode', 'Accessibility.getFullAXTree', 'Accessibility.getPartialAXTree',
       'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.insertText',
       'Emulation.setDeviceMetricsOverride', 'Emulation.setUserAgentOverride',
+      'Fetch.enable', 'Fetch.continueRequest', 'Fetch.failRequest',
+      'Network.enable', 'Network.setBypassServiceWorker',
     ]);
   });
 });

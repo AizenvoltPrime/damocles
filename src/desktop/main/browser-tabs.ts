@@ -58,8 +58,8 @@ export interface BrowserTabsDeps {
   readonly remoteAddress: (chat: DesktopPanel, url: string) => Promise<string | undefined>;
   // a remote chat's page on a forwarded port: the host and the address in the target's form, for the tab's chip
   readonly forwardedFrom: (chat: DesktopPanel, url: string) => ShellBrowserPage['forwardedFrom'];
-  // the origins of the roots local chats' views were granted, with each root's path (ServedRoots.mappings)
-  readonly servedMappings: () => readonly ServedMapping[];
+  // the origins of the roots this local chat's view was granted, with each root's path (ServedRoots.mappings)
+  readonly servedMappings: (chat: DesktopPanel) => readonly ServedMapping[];
 }
 
 // One chat's pages in tab order.
@@ -357,12 +357,13 @@ export class BrowserTabs implements PagesHost {
     this.deps.setPages(chat.panelId, pages);
   }
 
-  // A local chat's page on a served root's origin as its file:// address, which a restore reopens through the chat's own roots;
-  // any other address, a user's own loopback server included, as loaded.
+  // A local chat's page on an origin its own view was granted as its file:// address, which a restore reopens through the chat's
+  // own roots; any other address as loaded, another chat's served origin and a user's own loopback server included.
   private shownUrl(page: DesktopPanel): string {
     const url = page.page!.url;
-    if (page.chat?.authority !== 'local' || !URL.canParse(url)) return url;
-    const mappings = this.deps.servedMappings();
+    const chat = page.chat;
+    if (chat?.authority !== 'local' || !URL.canParse(url)) return url;
+    const mappings = this.deps.servedMappings(chat);
     const { origin } = new URL(url);
     return mappings.some((mapping) => mapping.origin === origin) ? servedToFile(url, mappings) : url;
   }

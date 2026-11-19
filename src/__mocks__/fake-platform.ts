@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
 import picomatch from 'picomatch';
 import type { AppPaths, WorkerName } from '../platform/app-paths';
 import type { ClipboardService } from '../platform/clipboard-service';
@@ -20,7 +19,7 @@ import type { Platform } from '../platform/platform';
 import type { SecretsStore } from '../platform/secrets-store';
 import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, SettingsStore } from '../platform/settings-store';
 import type { ShellService } from '../platform/shell-service';
-import type { TrustService } from '../platform/trust-service';
+import type { TrustChange, TrustService } from '../platform/trust-service';
 import type { PanelHost, PanelOptions, WindowService } from '../platform/window-service';
 import type { OpenFolder, WorkspaceFolders } from '../platform/workspace-folders';
 import { installPlatform } from '../core/platform-host';
@@ -78,8 +77,10 @@ export interface FakeTrustService extends TrustService {
   /** Every folderPath passed to requestTrust, oldest first. */
   readonly trustRequests: readonly string[];
   setTrusted(value: boolean): void;
-  /** Sets trusted and fires onDidGrantTrust with `folderPaths`, defaulting to the VS Code payload: every open folder, or [homeDirectory()] with none open. */
+  /** Sets trusted and fires onDidChangeTrust granting `folderPaths`, defaulting to the VS Code payload: every open folder, or [homeDirectory()] with none open. */
   grantTrust(folderPaths?: readonly string[]): void;
+  /** Sets untrusted and fires onDidChangeTrust revoking `folderPaths`, defaulting as grantTrust does. */
+  revokeTrust(folderPaths?: readonly string[]): void;
 }
 
 export interface FakeWorkspaceFolders extends WorkspaceFolders {
@@ -213,6 +214,8 @@ export interface FakeEditorService extends EditorService {
   readonly extensionSearches: readonly string[];
   /** Every showChatReview call, in order. */
   readonly chatReviews: ReadonlyArray<{ readonly panelId: string; readonly scope: ChatReviewScope }>;
+  /** The paths isDirty answers true for, as the host's editors would hold unsaved changes to them; empty at first. */
+  readonly dirtyPaths: Set<string>;
   /** Host extensions start inactive. */
   setHostExtensionActive(id: string, active: boolean): void;
   /**
@@ -443,7 +446,11 @@ function createTrustService(initial: boolean, workspaceFolders: WorkspaceFolders
   let trusted = initial;
   const checkedPaths: string[] = [];
   const trustRequests: string[] = [];
-  const listeners = listenerSet<[readonly string[]]>();
+  const listeners = listenerSet<[TrustChange]>();
+  const named = (folderPaths: readonly string[] | undefined): readonly string[] => {
+    const open = workspaceFolders.folders().map((f) => f.fsPath);
+    return folderPaths ?? (open.length > 0 ? open : [homeDirectory()]);
+  };
   return {
     checkedPaths,
     trustRequests,
@@ -451,7 +458,7 @@ function createTrustService(initial: boolean, workspaceFolders: WorkspaceFolders
       checkedPaths.push(folderPath);
       return trusted;
     },
-    onDidGrantTrust: (cb) => listeners.add(cb),
+    onDidChangeTrust: (cb) => listeners.add(cb),
     requestTrust: (folderPath) => {
       trustRequests.push(folderPath);
       return Promise.resolve(trusted);
@@ -461,8 +468,11 @@ function createTrustService(initial: boolean, workspaceFolders: WorkspaceFolders
     },
     grantTrust: (folderPaths) => {
       trusted = true;
-      const open = workspaceFolders.folders().map((f) => f.fsPath);
-      listeners.fire(folderPaths ?? (open.length > 0 ? open : [homeDirectory()]));
+      listeners.fire({ granted: named(folderPaths), revoked: [] });
+    },
+    revokeTrust: (folderPaths) => {
+      trusted = false;
+      listeners.fire({ granted: [], revoked: named(folderPaths) });
     },
   };
 }
@@ -717,6 +727,7 @@ function createEditor(): FakeEditorService {
   let activeContext: ActiveEditorContext | undefined;
   let activeProjectKey: string | undefined;
   let activeAuthority: string | undefined;
+  const dirtyPaths = new Set<string>();
   return {
     openedFiles,
     untitled,
@@ -734,8 +745,8 @@ function createEditor(): FakeEditorService {
       untitled.push({ content, language, ...(opts !== undefined ? { options: opts } : {}) });
       return Promise.resolve();
     },
-    // The fake holds no unsaved edits, so the editor text is the file on disk.
-    readText: (p) => fs.promises.readFile(p, 'utf8'),
+    dirtyPaths,
+    isDirty: (p) => Promise.resolve(dirtyPaths.has(p)),
     showDiff: (req) => {
       const view = createFakeDiffView(req);
       diffs.push(view);
@@ -970,6 +981,7 @@ const WORKER_FILES: Readonly<Record<WorkerName, string>> = {
   memoryIntegrity: 'memory-integrity-worker.js',
   sessionMetaIndex: 'session-meta-index-worker.js',
   voiceExtract: 'voice-extract-worker.js',
+  walkChild: 'walk-child.js',
 };
 
 const NO_WORKERS_ROOT = path.join(os.tmpdir(), `damocles-fake-platform-no-workers-${randomUUID()}`);

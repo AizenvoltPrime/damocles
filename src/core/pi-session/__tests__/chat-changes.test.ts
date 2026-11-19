@@ -1,5 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it } from 'vitest';
 import {
@@ -315,6 +316,12 @@ describe('paths, bounds and unreadable files', () => {
     expect(records(branch).map((record) => record.file)).toEqual([at('src/a.ts'), path.join(os.homedir(), 'notes.md')]);
   });
 
+  it('resolves an Edit\'s file_path as pi does: a leading @ is dropped, ~ is the home folder and a file: URL is its path', () => {
+    const elsewhere = path.resolve('/elsewhere/c.ts');
+    const branch = [user('t1'), ...edit('e1', '@src/a.ts', 'a\n', 'b\n'), ...edit('e2', '~/notes.md', 'a\n', 'b\n'), ...edit('e3', pathToFileURL(elsewhere).href, 'a\n', 'b\n')];
+    expect(records(branch).map((record) => record.file)).toEqual([at('src/a.ts'), path.join(os.homedir(), 'notes.md'), elsewhere]);
+  });
+
   it('reads no checkpoint for a file past the size bound, and lists it with no diff', async () => {
     const branch = [user('t1'), ...edit('e1', at('big.txt'), 'a\n', 'b\n')];
     const io = fakeIo({ disk: { [at('big.txt')]: { kind: 'tooLarge' } }, checkpoints: { 't1:before': { 'big.txt': text('a\n') } } });
@@ -337,6 +344,13 @@ describe('paths, bounds and unreadable files', () => {
     expect(await projectChatChanges(records(branch), 'chat', 't1', ROOT, fakeIo({ disk: { [at('img.bin')]: 'old\0' }, checkpoints: baseline }))).toEqual([]);
     const [changed] = await projectChatChanges(records(branch), 'chat', 't1', ROOT, fakeIo({ disk: { [at('img.bin')]: 'new\0' }, checkpoints: baseline }));
     expect(changed).toMatchObject({ status: 'M', binary: true });
+  });
+
+  it.each(['unreadable', 'notAFile'] as const)('lists a text file whose Write could not read its old content (%s) with its diff, never as binary', async (reason) => {
+    const branch = [user('t1'), entry(call('w1', 'write', { path: 'a.txt', content: 'after\n' })), entry(result('w1', 'write', { patchOmitted: reason }))];
+    const io = fakeIo({ disk: { [at('a.txt')]: 'after\n' }, checkpoints: { 't1:before': { 'a.txt': text('before\n') }, 't1:after': { 'a.txt': text('after\n') } } });
+    const [file] = await projectChatChanges(records(branch), 'chat', 't1', ROOT, io);
+    expect(file).toMatchObject({ status: 'M', binary: false, added: 1, removed: 1 });
   });
 
   it('sends a diff past the source control bound as too large', async () => {

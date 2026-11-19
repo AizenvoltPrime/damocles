@@ -1,4 +1,4 @@
-import type { WorkspaceFileSystem } from './file-system';
+import type { LocalFileSystem, WorkspaceFileSystem } from './file-system';
 import type { Formatter } from './format/formatter';
 import type { QuickOpenListing } from './quick-open-listing';
 import type { SearchRunner } from './search/search-runner';
@@ -14,4 +14,9 @@ export interface ProjectWorkspace {
   readonly quickOpen: QuickOpenListing;
   readonly format: Formatter;
   readonly terminals: TerminalBackend;
+}
+
+// This computer's workspace; no remote workspace reads a whole file as text
+export interface LocalWorkspace extends ProjectWorkspace {
+  readonly files: LocalFileSystem;
 }

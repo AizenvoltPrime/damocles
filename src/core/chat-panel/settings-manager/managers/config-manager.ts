@@ -21,6 +21,12 @@ import {
   SUBAGENT_CONCURRENCY_MAX,
   SUBAGENT_CONCURRENCY_MIN,
   clampSubagentConcurrency,
+  clampWholeNumber,
+  UPLOAD_FOLDER_MAX_ENTRIES,
+  UPLOAD_FOLDER_MAX_ENTRIES_SETTING,
+  UPLOAD_FOLDER_MAX_SIZE,
+  UPLOAD_FOLDER_MAX_SIZE_SETTING,
+  type WholeNumberRange,
 } from "../../../../shared/types/constants";
 import type { TeamRole } from "../../../pi-session/team-model-resolution";
 import { BACKGROUND_EFFORT_SETTING, BACKGROUND_MODEL_SETTING } from "../../../pi-session/subcall-model";
@@ -33,6 +39,7 @@ import { MODEL_PICKER_SETTING, isModelVendor } from "../../../../shared/model-ve
 import { l } from "../../../l10n";
 import { LocalizedError } from "../../../../shared/localized-text";
 import { forEachDevice } from "../../device-hosts";
+import { settingsFileTrusted } from "../../../worktrees/personal-config";
 
 // A hundred years; the bound keeps a typed number from overflowing the retention arithmetic.
 const MAX_RETENTION_DAYS = 36500;
@@ -61,9 +68,9 @@ export class ConfigManager {
     return migrateLegacyModelValue(config.get<string>("damocles.model", "")) || DEFAULT_FALLBACK_MODEL;
   }
 
-  /** A folder's settings files are written only while it is trusted (D38); a chat with no folder writes user settings. */
+  /** A folder's local settings file is written only while it applies (D38); a chat with no folder writes user settings. */
   private workspaceWritable(folder: SettingsFolder | undefined): boolean {
-    return folder === undefined || this.platform.trust.isTrusted(folder.personalPath ?? folder.path);
+    return folder === undefined || settingsFileTrusted((candidate) => this.platform.trust.isTrusted(candidate), folder, "local");
   }
 
   // Workspace section (D37): saved for the chat's folder in its personal file; a chat with no folder saves to user settings.
@@ -135,6 +142,8 @@ export class ConfigManager {
       memoryProfile: config.get<boolean>("damocles.memory.profile.enabled", true),
       memoryInjectRerank: injectRerankBlocking(config.get<unknown>(MEMORY_INJECT_RERANK_SETTING, "off")),
       browserHeadless: config.get<boolean>("damocles.browser.headless", true),
+      browserUploadFolderMaxEntries: clampWholeNumber(config.get<unknown>(UPLOAD_FOLDER_MAX_ENTRIES_SETTING, UPLOAD_FOLDER_MAX_ENTRIES.default), UPLOAD_FOLDER_MAX_ENTRIES),
+      browserUploadFolderMaxSize: clampWholeNumber(config.get<unknown>(UPLOAD_FOLDER_MAX_SIZE_SETTING, UPLOAD_FOLDER_MAX_SIZE.default), UPLOAD_FOLDER_MAX_SIZE),
       cacheWarming: parseCacheWarmingMode(config.get("damocles.cacheWarming")),
       checkpointRetentionDays: config.get<number>("damocles.checkpoints.retentionDays", 30),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
@@ -388,6 +397,23 @@ export class ConfigManager {
   async handleSetBrowserHeadless(headless: boolean): Promise<SettingWrite> {
     assertBoolean(headless);
     return updateConfigAtEffectiveScope(this.platform, "damocles.browser.headless", headless);
+  }
+
+  /** A folder upload copies into this computer's browser profile, so its caps are user-level only (application scope). */
+  async handleSetBrowserUploadFolderMaxEntries(count: number): Promise<SettingWrite> {
+    return this.writeUserWholeNumber(UPLOAD_FOLDER_MAX_ENTRIES_SETTING, count, UPLOAD_FOLDER_MAX_ENTRIES);
+  }
+
+  async handleSetBrowserUploadFolderMaxSize(mebibytes: number): Promise<SettingWrite> {
+    return this.writeUserWholeNumber(UPLOAD_FOLDER_MAX_SIZE_SETTING, mebibytes, UPLOAD_FOLDER_MAX_SIZE);
+  }
+
+  private async writeUserWholeNumber(key: string, value: number, range: WholeNumberRange): Promise<SettingWrite> {
+    if (!Number.isInteger(value) || value < range.min || value > range.max) {
+      throw new LocalizedError(l("{0} must be a whole number from {1} to {2}", key, range.min, range.max));
+    }
+    await this.platform.settings.update(key, value, "user");
+    return { key, home: "user" };
   }
 
   /** False when the host's policy refused YOLO. */

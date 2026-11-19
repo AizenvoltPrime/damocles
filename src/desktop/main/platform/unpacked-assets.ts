@@ -12,6 +12,7 @@ export const ASAR_UNPACK: readonly string[] = [
   'dist/memory-integrity-worker.js',
   'dist/session-meta-index-worker.js',
   'dist/voice-extract-worker.js',
+  'dist/walk-child.js',
   // Main forks these from app.asar.unpacked, though a utility process can load its entry from app.asar (dist/core-host.js does).
   'dist/formatter-host.js',
   'dist/pty-host.js',

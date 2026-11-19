@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, CompactionAbortedNotice, CompactionTrigger, ThinkingDroppedNotice, SessionStats } from '@shared/types/session';
+import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, CompactionAbortedNotice, CompactionTrigger, ThinkingDroppedNotice, ThinkingDroppedReason, SessionStats } from '@shared/types/session';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { PendingPromptOwner } from '@shared/types/permissions';
 import type { AgentWindDown } from '@shared/types/wind-down';
@@ -217,7 +217,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
 
-  function addThinkingDroppedNotice(count: number, reasons: string[], timestamp: number) {
+  function addThinkingDroppedNotice(count: number, reasons: ThinkingDroppedReason[], timestamp: number) {
     const notice: ThinkingDroppedNotice = {
       // Prefix-free, like the cache-miss id: the virtualizer adds its own `thinking-dropped-` prefix.
       id: `${timestamp}-${thinkingDroppedSeq++}`,

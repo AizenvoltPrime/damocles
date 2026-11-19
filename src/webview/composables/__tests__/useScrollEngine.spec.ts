@@ -59,7 +59,7 @@ describe('the height the engine reserves for a thinking-dropped notice', () => {
 
   it('reserves a third text line when the notice lists a reason', async () => {
     const item = baseItem('thinking-dropped-2', 'thinking-dropped-notice');
-    item.thinkingDropped = { id: '2', count: 2, reasons: ['the model rejected the thinking signature'], timestamp: 100 };
+    item.thinkingDropped = { id: '2', count: 2, reasons: [{ text: { message: 'the model rejected the thinking signature' }, count: 2 }], timestamp: 100 };
 
     expect(at(await heightsFor([item]), 0)).toBe(86);
   });

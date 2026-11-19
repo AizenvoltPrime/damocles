@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { OPEN_READ_NONBLOCKING } from '../../../core/file-bytes';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { Project } from '../../local-services/confine';
 import { createTransferOps, isPartName, type TransferEntry, type TransferOps } from '../transfer-ops';
@@ -224,7 +225,7 @@ describe('a racing local process cannot redirect a read or a copy outside the pr
   it('readFile refuses a file swapped for a link after its check', async () => {
     const open = fs.promises.open.bind(fs.promises);
     vi.spyOn(fs.promises, 'open').mockImplementation((async (target: fs.PathLike, flags?: string | number) => {
-      if (String(target) === at('src/a.ts') && flags === 'r') {
+      if (String(target) === at('src/a.ts') && flags === OPEN_READ_NONBLOCKING) {
         fs.rmSync(at('src/a.ts'));
         fs.symlinkSync(outside(), at('src/a.ts'), 'file');
       }

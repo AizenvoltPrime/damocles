@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -7,6 +8,8 @@ import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { initPiLoader, type PiCodingAgentModule } from '../../pi-loader';
 import { createEditTool } from '../edit-tool';
+import { editTooLarge, notARegularFile } from '../local-file-operations';
+import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../../../shared/types/messages';
 import { createReadTool } from '../read-tool';
 import { createWriteTool } from '../write-tool';
 
@@ -24,6 +27,25 @@ vi.mock('../edit-diff', async (importOriginal) => {
   };
 });
 
+/** Paths whose stat answers as a FIFO's, every path the edit operations' readFile was asked for, and what runs after a stat answers. */
+const files = vi.hoisted(() => ({ fifos: new Set<string>(), reads: [] as string[], afterStat: undefined as ((file: string) => void) | undefined }));
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    stat: (async (file: string, options?: object) => {
+      const stats = await actual.stat(file, options);
+      files.afterStat?.(String(file));
+      return files.fifos.has(String(file)) ? Object.assign(stats, { isFile: () => false, isFIFO: () => true }) : stats;
+    }) as typeof actual.stat,
+    readFile: ((file: string, ...rest: never[]) => {
+      files.reads.push(String(file));
+      return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(file, ...rest);
+    }) as typeof actual.readFile,
+  };
+});
+
 let pi: PiCodingAgentModule;
 const dirs: string[] = [];
 
@@ -33,6 +55,9 @@ beforeAll(async () => {
 
 afterEach(() => {
   diffFails.on = false;
+  files.fifos.clear();
+  files.reads = [];
+  files.afterStat = undefined;
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -227,5 +252,93 @@ describe('Edit replace_all', () => {
   it('refuses an empty old_string, which cannot create a file', async () => {
     const cwd = tempDir();
     await expect(run(createEditTool(pi, cwd), cwd, { file_path: 'f.txt', old_string: '', new_string: 'x' })).rejects.toThrow('Use the Write tool');
+  });
+});
+
+describe('Edit of a path that is not a regular file', () => {
+  it.each([
+    ['a single edit', {}],
+    ['replace_all', { replace_all: true }],
+  ])('refuses %s with the approval\'s message, never reading the file', async (_label, extra) => {
+    const cwd = tempDir();
+    const file = path.join(cwd, 'pipe');
+    fs.writeFileSync(file, 'never read');
+    files.fifos.add(file);
+
+    const result = await outcome(run(createEditTool(pi, cwd), cwd, { file_path: 'pipe', old_string: 'never', new_string: 'x', ...extra }));
+
+    expect(result).toEqual({ error: notARegularFile('pipe') });
+    expect(result).toEqual({ error: 'Could not edit file: pipe. It is not a regular file.' });
+    expect(files.reads.filter((read) => read === file)).toEqual([]);
+    expect(fs.readFileSync(file, 'utf8')).toBe('never read');
+  });
+
+  it('refuses a folder, and leaves a missing file to pi\'s own refusal', async () => {
+    const cwd = tempDir();
+    fs.mkdirSync(path.join(cwd, 'dir'));
+    expect(await outcome(run(createEditTool(pi, cwd), cwd, { file_path: 'dir', old_string: 'a', new_string: 'b' }))).toEqual({ error: notARegularFile('dir') });
+    expect(await outcome(run(createEditTool(pi, cwd), cwd, { file_path: 'gone.txt', old_string: 'a', new_string: 'b' }))).toEqual({ error: 'Could not edit file: gone.txt. Error code: ENOENT.' });
+  });
+
+  it.runIf(process.platform !== 'win32')('refuses a FIFO without opening it, which would wait for a writer', async () => {
+    const cwd = tempDir();
+    execFileSync('mkfifo', [path.join(cwd, 'pipe')]);
+
+    expect(await outcome(run(createEditTool(pi, cwd), cwd, { file_path: 'pipe', old_string: 'a', new_string: 'b' }))).toEqual({ error: notARegularFile('pipe') });
+    expect(files.reads).toEqual([]);
+  });
+});
+
+/** The call's outcome, or that it was still waiting after two seconds, as a blocked open waits for a peer that never comes. */
+function within2s(promise: Promise<unknown>): Promise<unknown> {
+  return Promise.race([outcome(promise), new Promise((resolve) => setTimeout(() => resolve('still waiting after 2 s'), 2000))]);
+}
+
+/** Lets a read open that waits on the FIFO at `fifo` go on, so a failing run leaves no thread blocked. */
+function releaseFifo(fifo: string): void {
+  try {
+    fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+  } catch (err) {
+    // ENXIO: nothing waits on it
+    if ((err as NodeJS.ErrnoException).code !== 'ENXIO') throw err;
+  }
+}
+
+describe('Edit reads and writes only through checked handles', () => {
+  it.runIf(process.platform !== 'win32').each([
+    ['a single edit', {}],
+    ['replace_all', { replace_all: true }],
+  ])('refuses %s of a FIFO swapped in after the tool\'s stat, without waiting for a writer', async (_label, extra) => {
+    const cwd = tempDir();
+    const file = path.join(cwd, 'swapped');
+    fs.writeFileSync(file, 'never read');
+    files.afterStat = (target) => {
+      if (target !== file) return;
+      files.afterStat = undefined;
+      fs.rmSync(file);
+      execFileSync('mkfifo', [file]);
+    };
+
+    try {
+      expect(await within2s(run(createEditTool(pi, cwd), cwd, { file_path: 'swapped', old_string: 'never', new_string: 'x', ...extra }))).toEqual({ error: notARegularFile(file) });
+    } finally {
+      releaseFifo(file);
+    }
+  });
+
+  it.each([
+    ['a single edit', {}],
+    ['replace_all', { replace_all: true }],
+  ])('refuses %s of a file over the editor\'s hard limit, naming its size, without reading it', async (_label, extra) => {
+    const cwd = tempDir();
+    const file = path.join(cwd, 'huge.txt');
+    fs.writeFileSync(file, 'a');
+    fs.truncateSync(file, EDITOR_HARD_MAX_DOCUMENT_BYTES + 1);
+
+    const result = await outcome(run(createEditTool(pi, cwd), cwd, { file_path: 'huge.txt', old_string: 'a', new_string: 'b', ...extra }));
+
+    expect(result).toEqual({ error: editTooLarge(file, EDITOR_HARD_MAX_DOCUMENT_BYTES + 1) });
+    expect(result).toEqual({ error: `Could not edit file: ${file}. It is 67108865 bytes, over the 67108864-byte limit of the Edit tool.` });
+    expect(fs.statSync(file).size).toBe(EDITOR_HARD_MAX_DOCUMENT_BYTES + 1);
   });
 });

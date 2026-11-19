@@ -2,7 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkDiskSpace, INSTALL_SIZE_BYTES } from "../disk-check";
+import { INSTALL_SIZE_BYTES } from "../install-sizes";
+import { checkDiskSpace } from "../../../disk-space";
 import {
   VoiceRuntimeInstaller,
   applyUserPreference,
@@ -42,7 +43,7 @@ const noModelsMissing = { missing: async () => [], download: async () => undefin
 const CPU_NO_SMI: GpuDetection = { kind: "cpu", reason: "no-smi" };
 const CPU_OLD: GpuDetection = { kind: "cpu", reason: "driver-too-old" };
 
-describe("disk-check", () => {
+describe("checkDiskSpace", () => {
   it("flags insufficient space when free < required × 1.5", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "damocles-disk-"));
     try {

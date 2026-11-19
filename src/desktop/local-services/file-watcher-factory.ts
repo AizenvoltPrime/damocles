@@ -188,7 +188,8 @@ function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log
     timer = undefined;
     for (const name of pending) {
       const full = path.join(dir, name);
-      if (!fs.existsSync(full)) {
+      // lstat, never a following call: a child link to \\host\share would make Windows connect to that host.
+      if (lstatNow(full, log) === undefined) {
         if (present.delete(name)) emit('delete', full);
       } else if (!present.has(name)) {
         present.add(name);

@@ -20,7 +20,7 @@ import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory }
 import type { ReadOnlyVerdict } from './readonly-shell';
 import { provenReadOnlyShell, type ChatMachine } from './proven-shell';
 import { readPathCandidates, resolveToCwd } from './tools/search-tools';
-import { rootPointerReach } from './tools/search-walk';
+import { rootPointerReach } from '../search-walk';
 import { browserUploadPath } from './tools/browser-tools';
 import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
@@ -242,7 +242,7 @@ export function waitsForCheckpointBaseline(piToolName: string, input: Record<str
     const filePath = normalizeToolInput(piToolName, input)['file_path'];
     if (typeof filePath !== 'string' || !filePath) return true;
     // Resolved against the folder, as the tools resolve it, so an unrecognised prefix reads as inside and waits.
-    const target = path.resolve(folder, filePath);
+    const target = resolveToCwd(filePath, folder);
     return !isPlanFilePath(target) && isInsideFolder(target, folder);
   }
   if (DESIGN_PI_TOOL_NAMES.has(damoclesName)) return !DESIGN_TOOLS_WITHOUT_FOLDER_WRITES.has(damoclesName);

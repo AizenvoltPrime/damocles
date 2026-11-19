@@ -1,13 +1,13 @@
 import { promises as fs, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { networkReach, type Reach } from '../../local-links';
-import { ignoreFileRules, textLines, matchOverrides, matchRules, NO_RULES, pathBytes, type IgnoreMatch, type IgnoreRules } from './rg-ignore';
+import { networkHostsOf, networkReach, type Reach } from '../local-links';
+import { candidateOf, ignoreFileRules, textLines, matchOverrides, matchRules, NO_RULES, pathBytes, type IgnoreMatch, type IgnoreRules } from './rg-ignore';
 
 /**
- * The walk Grep and Glob search, rg 15's walk with `--hidden` and no `--follow` (docs/invariants.md "Tool overrides"). Every
- * entry's type comes from its folder's listing: a link is never listed, entered, stat'd or opened, a `.git` folder is skipped,
- * and only a regular file is listed. Ignore files are read as rg reads them, unless they are links.
+ * rg 15's walk with `--hidden` and no `--follow` (docs/invariants.md "Tool overrides"). Every entry's type comes from its folder's
+ * listing: a link is never listed, entered, stat'd or opened, and only a regular file is listed. Ignore files are read as rg reads
+ * them, unless they are links.
  */
 
 /** A `.git` file's pointer that leads off this computer (`networkReach`), as the file spells it. */
@@ -26,12 +26,43 @@ interface FolderRules {
   readonly empty: boolean;
 }
 
+// One folder's rules as an entry below another reads them: the entry's path below the root made relative to the rules' folder.
+interface RuleSource {
+  readonly rules: FolderRules;
+  // the bytes of `<rel>/` of the rules' folder, dropped from the path; 0 at the root
+  readonly strip: number;
+  // `<below>/` of a folder above the root, put before the path
+  readonly prefix: string;
+  // git's rules apply: inside a repository, and no nearer folder marks one
+  readonly git: boolean;
+}
+
 interface Folder {
   // posix path below the walk's root, '' for the root
   readonly rel: string;
-  readonly rules: FolderRules;
-  readonly parent: Folder | undefined;
   readonly anyGit: boolean;
+  // the rules each entry of the folder reads, nearest folder first, sets with no rule left out
+  readonly sources: readonly RuleSource[];
+}
+
+function topFolder(rules: FolderRules, ancestors: readonly Ancestor[], requireGit: boolean): Folder {
+  const anyGit = !requireGit || rules.hasGit || ancestors.some((ancestor) => ancestor.rules.hasGit);
+  const levels = [{ rules, strip: 0, prefix: '' }, ...ancestors.map((ancestor) => ({ rules: ancestor.rules, strip: 0, prefix: pathBytes(`${ancestor.below}/`) }))];
+  const sources: RuleSource[] = [];
+  let sawGit = false;
+  for (const level of levels) {
+    if (!level.rules.empty) sources.push({ ...level, git: anyGit && !sawGit });
+    sawGit ||= level.rules.hasGit;
+  }
+  return { rel: '', anyGit, sources };
+}
+
+function childFolder(parent: Folder, rel: string, rules: FolderRules): Folder {
+  const anyGit = parent.anyGit || rules.hasGit;
+  if (rules.empty && !rules.hasGit) return { rel, anyGit, sources: parent.sources };
+  const above = rules.hasGit ? parent.sources.map((source) => (source.git ? { ...source, git: false } : source)) : parent.sources;
+  const own: RuleSource[] = rules.empty ? [] : [{ rules, strip: pathBytes(rel).length + 1, prefix: '', git: anyGit }];
+  return { rel, anyGit, sources: [...own, ...above] };
 }
 
 // A folder above the root (rg's "absolute parents"), with the root's canonical path below it.
@@ -40,20 +71,40 @@ interface Ancestor {
   readonly below: string;
 }
 
+/** rg's ignore switches; the `--glob` overrides apply under every one. */
+export interface WalkIgnore {
+  // false is `--no-ignore`: no ignore file of any kind, above the root or below it, and no global excludes
+  readonly files: boolean;
+  // false is `--no-ignore-global`: no global excludes
+  readonly global: boolean;
+  // false is `--no-ignore-parent`: no rules from the folders above the root, which still mark a repository
+  readonly parents: boolean;
+}
+
+/** rg's defaults, every ignore file read. */
+export const ALL_IGNORE_FILES: WalkIgnore = { files: true, global: true, parents: true };
+
 export interface WalkOptions {
   readonly root: string;
-  // git's ignore rules apply only inside a repository (rg's default); Glob turns it off outside one, as pi's find does
+  // git's ignore rules apply only inside a repository (rg's default); false applies them everywhere, as `--no-require-git` does
   readonly requireGit: boolean;
+  readonly ignore: WalkIgnore;
+  // 'list' walks a `.git` folder as any other, as rg does; its info/exclude applies under both
+  readonly gitFolders: 'skip' | 'list';
   readonly overrides: IgnoreRules & { readonly includes: boolean };
   readonly allowedHosts: () => Promise<ReadonlySet<string>>;
   readonly signal: AbortSignal | undefined;
 }
 
 export interface Walk {
-  // each listed file's path below the root, with the platform's separators
-  readonly files: AsyncGenerator<string, void, undefined>;
+  // each folder's listed files, one batch per folder, empty when it lists none: paths below the root, with the platform's separators
+  readonly files: AsyncGenerator<readonly string[], void, undefined>;
   // a folder below the root that could not be read, as rg reports one: the walk goes on
   readonly errors: string[];
+  // folders read ahead whose reads have not settled; a walk left early or ended by a failure leaves them running
+  readonly readsAhead: () => number;
+  // settles once every folder read ahead so far has been read
+  readonly readsSettled: () => Promise<void>;
 }
 
 // Folders read ahead of the one being listed; libuv's pool runs four file system calls at once.
@@ -119,6 +170,7 @@ export async function gitFileExclude(gitFile: string, cwd: string, allowedHosts:
  * (`gitFileExclude`); a `.git` that is a link marks a repository and is never read through.
  */
 async function folderRules(folder: string, entries: readonly Dirent[], options: WalkOptions, cwd: string, absoluteParent: boolean): Promise<FolderRules> {
+  if (!options.ignore.files) return NO_FOLDER_RULES;
   const named = new Map(entries.filter((entry) => ['.rgignore', '.ignore', '.gitignore', '.git', '.jj'].includes(entry.name)).map((entry) => [entry.name, entry]));
   const fileRules = (name: string): Promise<IgnoreRules> => (named.get(name)?.isFile() ? rulesOf(path.join(folder, name)) : Promise.resolve(NO_RULES));
   const git = named.get('.git');
@@ -135,11 +187,15 @@ async function folderRules(folder: string, entries: readonly Dirent[], options: 
     return file === undefined ? NO_RULES : rulesOf(file);
   };
   const [custom, ignore, gitignore, excluded] = await Promise.all([fileRules('.rgignore'), fileRules('.ignore'), fileRules('.gitignore'), exclude()]);
-  // an absolute parent counts a .jj only while git's rules need a repository
-  const hasGit = options.requireGit ? git !== undefined || named.has('.jj') : !absoluteParent && named.has('.jj');
   const empty = [custom, ignore, gitignore, excluded].every((rules) => rules.globs.length === 0);
-  return { custom, ignore, git: gitignore, exclude: excluded, hasGit, empty };
+  return { custom, ignore, git: gitignore, exclude: excluded, hasGit: marksRepository(entries, options, absoluteParent), empty };
 }
+
+const NO_FOLDER_RULES: FolderRules = { custom: NO_RULES, ignore: NO_RULES, git: NO_RULES, exclude: NO_RULES, hasGit: false, empty: true };
+
+// an absolute parent counts a .jj only while git's rules need a repository
+const marksRepository = (entries: readonly Dirent[], options: WalkOptions, absoluteParent: boolean): boolean =>
+  options.requireGit ? entries.some((entry) => entry.name === '.git' || entry.name === '.jj') : !absoluteParent && entries.some((entry) => entry.name === '.jj');
 
 /** The folders above root's canonical path, nearest first, as rg's `add_parents` reads them. */
 async function ancestorsOf(canonicalRoot: string, options: WalkOptions, cwd: string): Promise<Ancestor[]> {
@@ -156,7 +212,8 @@ async function ancestorsOf(canonicalRoot: string, options: WalkOptions, cwd: str
       if (errnoCode(err) !== 'EACCES' && errnoCode(err) !== 'EPERM') throw err;
       entries = [];
     }
-    return { rules: await folderRules(folder, entries, options, cwd, true), below };
+    const rules = options.ignore.parents ? await folderRules(folder, entries, options, cwd, true) : { ...NO_FOLDER_RULES, hasGit: marksRepository(entries, options, true) };
+    return { rules, below };
   }));
 }
 
@@ -174,34 +231,29 @@ async function globalExcludes(): Promise<IgnoreRules> {
 }
 
 /** rg's `Ignore::matched` for a path below the root: overrides first, then each source nearest first in rg's precedence. */
-function matcher(options: WalkOptions, ancestors: readonly Ancestor[], global: IgnoreRules): (rel: string, isDir: boolean, folder: Folder) => IgnoreMatch {
+function matcher(options: WalkOptions, global: IgnoreRules): (rel: string, isDir: boolean, folder: Folder) => IgnoreMatch {
   return (rel, isDir, folder) => {
     const bytes = pathBytes(rel);
-    const overridden = matchOverrides(options.overrides, bytes, isDir);
+    const candidate = candidateOf(bytes);
+    const overridden = matchOverrides(options.overrides, candidate, isDir);
     if (overridden !== undefined) return overridden;
     let custom: IgnoreMatch;
     let ignore: IgnoreMatch;
     let git: IgnoreMatch;
     let exclude: IgnoreMatch;
-    let sawGit = false;
-    const visit = (rules: FolderRules, local: () => string): void => {
-      if (!rules.empty) {
-        const localBytes = local();
-        custom ??= matchRules(rules.custom, localBytes, isDir);
-        ignore ??= matchRules(rules.ignore, localBytes, isDir);
-        if (folder.anyGit && !sawGit) {
-          git ??= matchRules(rules.git, localBytes, isDir);
-          exclude ??= matchRules(rules.exclude, localBytes, isDir);
-        }
+    for (const source of folder.sources) {
+      // the basename and extension are the entry's at every level
+      const local = { ...candidate, path: source.prefix + bytes.slice(source.strip) };
+      custom ??= matchRules(source.rules.custom, local, isDir);
+      // nothing below .rgignore's own answer outranks it
+      if (custom !== undefined) break;
+      ignore ??= matchRules(source.rules.ignore, local, isDir);
+      if (source.git) {
+        git ??= matchRules(source.rules.git, local, isDir);
+        exclude ??= matchRules(source.rules.exclude, local, isDir);
       }
-      sawGit ||= rules.hasGit;
-    };
-    for (let at: Folder | undefined = folder; at !== undefined; at = at.parent) {
-      const below = at.rel;
-      visit(at.rules, () => (below === '' ? bytes : bytes.slice(Buffer.byteLength(below) + 1)));
     }
-    for (const ancestor of ancestors) visit(ancestor.rules, () => pathBytes(`${ancestor.below}/${rel}`));
-    return custom ?? ignore ?? git ?? exclude ?? (folder.anyGit ? matchRules(global, bytes, isDir) : undefined);
+    return custom ?? ignore ?? git ?? exclude ?? (folder.anyGit ? matchRules(global, candidate, isDir) : undefined);
   };
 }
 
@@ -221,13 +273,14 @@ interface Pending {
 /** Walks options.root, a folder, listing the regular files rg 15 would search there, folders read ahead and in listing order. */
 export function walkFiles(options: WalkOptions): Walk {
   const errors: string[] = [];
-  async function* files(): AsyncGenerator<string, void, undefined> {
-    const { root, signal } = options;
-    const [entries, canonicalRoot, global] = await Promise.all([fs.readdir(root, { withFileTypes: true }), fs.realpath(root), globalExcludes()]);
-    const ancestors = await ancestorsOf(canonicalRoot, options, root);
+  const ahead = new Set<Promise<unknown>>();
+  async function* files(): AsyncGenerator<readonly string[], void, undefined> {
+    const { root, signal, ignore } = options;
+    const [entries, canonicalRoot, global] = await Promise.all([fs.readdir(root, { withFileTypes: true }), fs.realpath(root), ignore.files && ignore.global ? globalExcludes() : NO_RULES]);
+    const ancestors = ignore.files ? await ancestorsOf(canonicalRoot, options, root) : [];
     const rootRules = await folderRules(root, entries, options, root, false);
-    const top: Folder = { rel: '', rules: rootRules, parent: undefined, anyGit: !options.requireGit || rootRules.hasGit || ancestors.some((ancestor) => ancestor.rules.hasGit) };
-    const matched = matcher(options, ancestors, global);
+    const top = topFolder(rootRules, ancestors, options.requireGit);
+    const matched = matcher(options, global);
     const read = async (pending: Pending): Promise<Listing | Error> => {
       let listed: Dirent[];
       try {
@@ -237,27 +290,37 @@ export function walkFiles(options: WalkOptions): Walk {
         return err as Error;
       }
       const rules = await folderRules(pending.abs, listed, options, root, false);
-      return { folder: { rel: pending.rel, rules, parent: pending.parent, anyGit: pending.parent.anyGit || rules.hasGit }, entries: listed };
+      return { folder: childFolder(pending.parent, pending.rel, rules), entries: listed };
     };
     const stack: Pending[] = [];
     const readAhead = (): void => {
-      for (let index = stack.length - 1, started = 0; index >= 0 && started < READ_AHEAD; index--, started++) stack[index]!.listing ??= read(stack[index]!).catch((failed: unknown) => ({ failed }));
+      for (let index = stack.length - 1, started = 0; index >= 0 && started < READ_AHEAD; index--, started++) {
+        const pending = stack[index]!;
+        if (pending.listing) continue;
+        const listing = read(pending).catch((failed: unknown) => ({ failed }));
+        pending.listing = listing;
+        ahead.add(listing);
+        void listing.then(() => ahead.delete(listing));
+      }
     };
     let current: Listing = { folder: top, entries };
     for (;;) {
       if (signal?.aborted) throw aborted();
       const { folder } = current;
       const folders: Pending[] = [];
+      const listed: string[] = [];
       for (const entry of current.entries) {
         const rel = folder.rel === '' ? entry.name : `${folder.rel}/${entry.name}`;
         if (entry.isDirectory()) {
-          if (entry.name !== '.git' && matched(rel, true, folder) !== 'ignore') folders.push({ abs: path.join(root, rel), rel, parent: folder });
+          if ((entry.name !== '.git' || options.gitFolders === 'list') && matched(rel, true, folder) !== 'ignore') folders.push({ abs: path.join(root, rel), rel, parent: folder });
         } else if (entry.isFile() && matched(rel, false, folder) !== 'ignore') {
-          yield path.sep === '/' ? rel : rel.replaceAll('/', path.sep);
+          listed.push(path.sep === '/' ? rel : rel.replaceAll('/', path.sep));
         }
       }
       stack.push(...folders.reverse());
+      // the reads run while the caller takes the batch
       readAhead();
+      yield listed;
       let next: Listing | undefined;
       while (next === undefined) {
         const pending = stack.pop();
@@ -270,7 +333,13 @@ export function walkFiles(options: WalkOptions): Walk {
       current = next;
     }
   }
-  return { files: files(), errors };
+  return { files: files(), errors, readsAhead: () => ahead.size, readsSettled: () => Promise.all(ahead).then(() => undefined) };
+}
+
+/** The allowed hosts of a walk no chat runs: the root's own, so a project on a share reads its share and no other host. */
+export function rootHosts(root: string): () => Promise<ReadonlySet<string>> {
+  let hosts: Promise<ReadonlySet<string>> | undefined;
+  return () => (hosts ??= networkHostsOf([root]));
 }
 
 /** An entry below a walked folder: its path below the root, with the platform's separators, and its type from its folder's listing. */

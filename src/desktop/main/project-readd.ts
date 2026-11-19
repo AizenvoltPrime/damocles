@@ -1,9 +1,11 @@
 // Add Project on a folder of the same repository as listed projects whose folders are missing (docs/desktop-app.md "Locate"):
-// the user is asked whether such a project's chats move here. Either way the folder is added and its trust asked; Move Chats then
-// runs Locate's relocation in merge mode, whose finish selects the moved project's last chat, where a plain add opens a new chat.
+// the folder's trust is asked first, so the match reads its root commits, then the user is asked whether such a project's chats
+// move here. Either way the folder is added; Move Chats then runs Locate's relocation in merge mode, whose finish selects the
+// moved project's last chat, where a plain add opens a new chat.
 import type { OverlayQuickPickItem } from '../preload/overlay-channels';
 import { visibleText } from '../../shared/visible-text';
 import type { LocateConfirm, LocateOutcome } from './locate-project';
+import { undoOnThrow, type TrustAnswer } from './trust-store';
 
 type Translate = (message: string, ...args: string[]) => string;
 
@@ -22,9 +24,8 @@ export interface ReaddDeps {
   // the chosen item's id; undefined: dismissed
   readonly pick: (placeholder: string, items: readonly OverlayQuickPickItem[]) => Promise<string | undefined>;
   readonly add: (folder: string) => Promise<void>;
-  readonly isTrusted: (folder: string) => boolean;
   // Add Project's trust question
-  readonly requestTrust: (folder: string) => Promise<boolean>;
+  readonly askTrust: (folder: string) => Promise<TrustAnswer>;
   // Locate of the missing project onto the added folder, without its picker, confirmation or trust question
   readonly moveChats: (key: string, folder: string) => Promise<LocateOutcome>;
   readonly newChat: (folder: string) => Promise<void>;
@@ -33,12 +34,19 @@ export interface ReaddDeps {
 
 const NOT_NOW = 'notNow';
 
-/** 'moving' once a relocation started, whose finish selects the moved chat; 'added' after a plain add, which opened a new chat. */
+/**
+ * 'moving' once a relocation started, whose finish selects the moved chat; 'added' after a plain add, which opened a new chat. A
+ * declined trust question still adds the folder, which then matches by its remotes only.
+ */
 export async function addProjectAt(folder: string, deps: ReaddDeps): Promise<'added' | 'moving'> {
-  const candidates = await deps.candidates(folder);
-  const chosen = candidates.length > 0 ? await askToMove(folder, candidates, deps) : undefined;
-  await deps.add(folder);
-  if (!deps.isTrusted(folder)) await deps.requestTrust(folder);
+  const trust = await deps.askTrust(folder);
+  // a failure before the folder is listed takes back the grant this question made
+  const chosen = await undoOnThrow(trust.undo, async () => {
+    const candidates = await deps.candidates(folder);
+    const picked = candidates.length > 0 ? await askToMove(folder, candidates, deps) : undefined;
+    await deps.add(folder);
+    return picked;
+  });
   if (chosen && (await deps.moveChats(chosen.key, folder)).kind === 'started') return 'moving';
   await deps.newChat(folder);
   return 'added';

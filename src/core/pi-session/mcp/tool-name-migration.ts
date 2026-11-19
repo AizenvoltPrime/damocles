@@ -258,20 +258,31 @@ export function toolRenames(legacy: ReadonlyMap<string, string>, retired: Readon
   return { ...renameSet(legacy, retired, allRetiredTools), shared: renameSet(legacy, userOnly, allRetiredTools) };
 }
 
+/** A trusted folder whose files the migration reads, and whether its personal files are among them (personalFilesTrusted). */
+export interface RuleMigrationFolder {
+  readonly path: string;
+  readonly personalFiles: boolean;
+}
+
+/** The folder holding the personal files, a chat worktree's project (D34), while they are read. */
+function personalRoot(folder: RuleMigrationFolder | null): string | null {
+  return folder?.personalFiles === true ? personalConfigRoot(folder.path) : null;
+}
+
 /**
  * Files whose permission rules Damocles rewrites: the ones it owns on this machine. The folder file is
  * confined to the repository's `.damocles`, as every other write of it is; the home files are not, as
  * `~/.damocles` may be a dotfiles symlink. A file is `shared` when other folders read it too: the home
  * files, and a chat worktree's personal file, which is its project's (D34).
  */
-export function ownedRuleFiles(folder: string | null): { path: string; confineTo?: string; shared: boolean }[] {
+export function ownedRuleFiles(folder: RuleMigrationFolder | null): { path: string; confineTo?: string; shared: boolean }[] {
   const home = os.homedir();
-  const personal = folder === null ? null : personalConfigRoot(folder);
+  const personal = personalRoot(folder);
   return [
     { path: path.join(home, '.damocles', 'settings.json'), shared: true },
     { path: path.join(home, '.damocles', 'settings.local.json'), shared: true },
     ...(folder !== null && personal !== null
-      ? [{ path: path.join(personal, '.damocles', 'settings.local.json'), confineTo: path.join(personal, '.damocles'), shared: personal !== folder }]
+      ? [{ path: path.join(personal, '.damocles', 'settings.local.json'), confineTo: path.join(personal, '.damocles'), shared: personal !== folder.path }]
       : []),
   ];
 }
@@ -285,12 +296,14 @@ function noticeRuleFiles(folder: string | null): string[] {
 }
 
 /** Claude Code's settings files, checked for retired resource tools only: Claude Code never had those, so such a rule was written for Damocles. */
-function claudeRuleFiles(folder: string | null): string[] {
+function claudeRuleFiles(folder: RuleMigrationFolder | null): string[] {
   const home = os.homedir();
+  const personal = personalRoot(folder);
   return [
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.claude', 'settings.local.json'),
-    ...(folder ? [path.join(folder, '.claude', 'settings.json'), path.join(personalConfigRoot(folder), '.claude', 'settings.local.json')] : []),
+    ...(folder ? [path.join(folder.path, '.claude', 'settings.json')] : []),
+    ...(personal !== null ? [path.join(personal, '.claude', 'settings.local.json')] : []),
   ];
 }
 
@@ -455,7 +468,7 @@ function errorCode(err: unknown): string {
  * legacy or retired tool, and an added rule and a shown notice entry are remembered.
  */
 export async function migrateRenamedToolRules(
-  folder: string | null,
+  folder: RuleMigrationFolder | null,
   renames: ToolRenames,
   memory: MigrationMemory,
   toolNameLists: readonly ToolNameList[] = [],
@@ -519,11 +532,11 @@ export async function migrateRenamedToolRules(
     for (const list of personal.lists()) await collectList(list, (set) => set.retiredListEntries);
   }
 
-  for (const file of noticeRuleFiles(folder)) await collect(file, (set) => findPermissionRuleRenames(file, set.rules, set.ruleAdditions));
+  for (const file of noticeRuleFiles(folder?.path ?? null)) await collect(file, (set) => findPermissionRuleRenames(file, set.rules, set.ruleAdditions));
   if (renames.retiredTools.length > 0) {
     for (const file of claudeRuleFiles(folder)) await collect(file, (set) => findPermissionRuleRenames(file, set.retiredRules, set.ruleAdditions));
   }
-  for (const file of hookFiles(folder)) await collect(file, (set) => findHookMatcherRenames(file, set));
+  for (const file of hookFiles(folder?.path ?? null)) await collect(file, (set) => findHookMatcherRenames(file, set));
   for (const list of toolNameLists) await collectList(list, (set) => set.names);
   // An entry remembered by its rule alone takes the content it stands for now.
   for (const notice of seen) await memory.notices.add(notice, notice.rules);

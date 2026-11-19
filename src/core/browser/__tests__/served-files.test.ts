@@ -68,6 +68,32 @@ describe('ChatServedFiles', () => {
     expect(files.toFile('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/a http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001/b')).toBe(`${UNMAPPED_SERVED_PAGE} file:///home/u/proj/b`);
   });
 
+  it('holds the grant origins its pages were served from, a design\'s and a restored page\'s too, and only the live one per root', async () => {
+    const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=a.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
+    const files = new ChatServedFiles({ roots: () => POSIX, serve });
+    // nothing before a page of the chat was served, and never an origin of another chat
+    expect(files.ownsOrigin('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000')).toBe(false);
+    await files.localTarget('file:///home/u/proj/a.html');
+    expect(files.ownsOrigin('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000')).toBe(true);
+    expect(files.ownsOrigin('http://cccccccccccccccccccccccccccccccc.localhost:5000')).toBe(false);
+    expect(files.ownsOrigin('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5001')).toBe(false);
+    serve.mockResolvedValueOnce({ url: 'http://dddddddddddddddddddddddddddddddd.localhost:5002/__damocles_preview/open?t=y&p=screens%2FS2.html', origin: 'http://dddddddddddddddddddddddddddddddd.localhost:5002' });
+    await files.restoreTarget('file:///home/u/.damocles/designs/d1/screens/S2.html');
+    expect(files.ownsOrigin('http://dddddddddddddddddddddddddddddddd.localhost:5002')).toBe(true);
+    // the project root's server restarted on another port: its old origin is no longer the chat's
+    serve.mockResolvedValueOnce({ url: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001/__damocles_preview/open?t=z&p=b.html', origin: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001' });
+    await files.localTarget('file:///home/u/proj/b.html');
+    expect(files.ownsOrigin('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000')).toBe(false);
+    expect(files.ownsOrigin('http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001')).toBe(true);
+    expect(files.ownsOrigin('http://dddddddddddddddddddddddddddddddd.localhost:5002')).toBe(true);
+  });
+
+  it('holds no origin for a page the server refused', async () => {
+    const files = new ChatServedFiles({ roots: () => POSIX, serve: async () => ({ refused: '.env is not opened.' }) });
+    await files.localTarget('file:///home/u/proj/.env');
+    expect(files.ownsOrigin('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000')).toBe(false);
+  });
+
   it('carries the address\'s query into the one-time open and its fragment onto it', async () => {
     const serve = vi.fn(async () => ({ url: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/__damocles_preview/open?t=x&p=docs%2Findex.html', origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000' }));
     const files = new ChatServedFiles({ roots: () => POSIX, serve });

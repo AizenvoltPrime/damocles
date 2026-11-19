@@ -4,7 +4,7 @@ import type { AddressInfo } from 'net';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { BrowserService } from '../index';
+import { BrowserService, type BrowserAgentScope } from '../index';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { buildBrowserPiTools } from '../../pi-session/tools/browser-tools';
@@ -30,15 +30,18 @@ function fakeContext() {
   return { context, routeCalls, unrouteCalls };
 }
 
-/** A fake Playwright Route whose four terminals are counting spies; request().headers() is fixed. */
-function fakeRoute(requestHeaders: Record<string, string> = { 'x-existing': '1' }) {
-  const calls = { abort: 0, continue: [] as unknown[], fulfill: [] as unknown[], fallback: 0 };
+// The page serviceWith's chat owns; fakeRoute's requests come from it unless told otherwise.
+const CHAT_PAGE = { name: 'chat page' };
+
+/** A fake Playwright Route whose four terminals are counting spies; request().headers() and url() are fixed. */
+function fakeRoute(requestHeaders: Record<string, string> = { 'x-existing': '1' }, page: unknown = CHAT_PAGE, url = 'https://site.example/api/data') {
+  const calls = { abort: 0, abortCodes: [] as Array<string | undefined>, continue: [] as unknown[], fulfill: [] as unknown[], fallback: 0 };
   const route = {
-    abort: async () => { calls.abort++; },
+    abort: async (code?: string) => { calls.abort++; calls.abortCodes.push(code); },
     continue: async (opts?: unknown) => { calls.continue.push(opts); },
     fulfill: async (opts?: unknown) => { calls.fulfill.push(opts); },
     fallback: async () => { calls.fallback++; },
-    request: () => ({ headers: () => requestHeaders }),
+    request: () => ({ headers: () => requestHeaders, url: () => url, frame: () => ({ page: () => page }) }),
   };
   return { route, calls };
 }
@@ -48,17 +51,22 @@ function terminalCount(calls: { abort: number; continue: unknown[]; fulfill: unk
   return calls.abort + calls.continue.length + calls.fulfill.length + calls.fallback;
 }
 
-function serviceWith(context: unknown): BrowserService {
-  const service = new BrowserService(createFakePlatform());
+/** A service over `context` and one chat's scope, whose chat owns CHAT_PAGE. */
+function serviceWith(context: unknown): { service: BrowserService; scope: BrowserAgentScope } {
+  const platform = createFakePlatform();
+  const service = new BrowserService(platform);
   (service as unknown as { context: unknown }).context = context;
-  return service;
+  const chat = platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+  // registering a real page here would need a CDP session; the chat-isolation tests below register real pages
+  (service as unknown as { pageChat: (page: unknown) => unknown }).pageChat = (page) => (page === CHAT_PAGE ? chat : undefined);
+  return { service, scope: service.chatScope(chat) };
 }
 
 describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', () => {
   it('block → route.abort() (and nothing else)', async () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({ pattern: '**/tracker.png', action: 'block' });
+    const { scope } = serviceWith(context);
+    scope.addInterceptRule({ pattern: '**/tracker.png', action: 'block' });
     const { route, calls } = fakeRoute();
     await routeCalls[0]!.handler(route);
     expect(calls.abort).toBe(1);
@@ -67,8 +75,8 @@ describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', (
 
   it('fulfill → route.fulfill({status,headers,body}) (and nothing else)', async () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({
+    const { scope } = serviceWith(context);
+    scope.addInterceptRule({
       pattern: '**/api/data',
       action: 'fulfill',
       fulfill: { status: 201, headers: { 'content-type': 'application/json' }, body: '{"mock":true}' },
@@ -82,8 +90,8 @@ describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', (
 
   it('continue + modify.headers → route.continue() with MERGED headers (existing preserved, overrides applied)', async () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({
+    const { scope } = serviceWith(context);
+    scope.addInterceptRule({
       pattern: '**/api/**',
       action: 'continue',
       modify: { headers: { 'x-added': 'yes', 'x-existing': 'overridden' } },
@@ -97,8 +105,8 @@ describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', (
 
   it('continue with NO modify (pure let-through) → route.fallback() so Patchright\'s route still runs', async () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({ pattern: '**/*.js', action: 'continue' });
+    const { scope } = serviceWith(context);
+    scope.addInterceptRule({ pattern: '**/*.js', action: 'continue' });
     const { route, calls } = fakeRoute();
     await routeCalls[0]!.handler(route);
     expect(calls.fallback).toBe(1);
@@ -107,8 +115,8 @@ describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', (
 
   it('a terminal that throws falls back (never-hang guard) — still exactly one settled terminal', async () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({ pattern: '**/tracker.png', action: 'block' });
+    const { scope } = serviceWith(context);
+    scope.addInterceptRule({ pattern: '**/tracker.png', action: 'block' });
     // abort() throws → the catch calls fallback() so the request proceeds instead of hanging.
     let fellBack = 0;
     const route = {
@@ -116,7 +124,7 @@ describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', (
       continue: async () => {},
       fulfill: async () => {},
       fallback: async () => { fellBack++; },
-      request: () => ({ headers: () => ({}) }),
+      request: () => ({ headers: () => ({}), url: () => 'https://site.example/tracker.png', frame: () => ({ page: () => CHAT_PAGE }) }),
     };
     await routeCalls[0]!.handler(route);
     expect(fellBack).toBe(1);
@@ -126,32 +134,32 @@ describe('Slice 6 — intercept handler terminals (exactly one, never hangs)', (
 describe('Slice 6 — registry lifecycle (route/unroute + redaction)', () => {
   it('addInterceptRule registers on the context with the rule pattern and returns an id', () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    const id = service.addInterceptRule({ pattern: '**/*.png', action: 'block' });
+    const { scope } = serviceWith(context);
+    const id = scope.addInterceptRule({ pattern: '**/*.png', action: 'block' });
     expect(id).toMatch(/^ir_/);
     expect(routeCalls).toHaveLength(1);
     expect(routeCalls[0]!.pattern).toBe('**/*.png');
   });
 
   it('addInterceptRule throws when the context is null (browser not connected)', () => {
-    const service = new BrowserService(createFakePlatform()); // context defaults to null
-    expect(() => service.addInterceptRule({ pattern: '**/*.png', action: 'block' })).toThrow(/not connected/i);
+    const { scope } = serviceWith(null); // the browser is not connected
+    expect(() => scope.addInterceptRule({ pattern: '**/*.png', action: 'block' })).toThrow(/not connected/i);
   });
 
   it('rejects an over-broad pattern for block/fulfill but allows it for continue', () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
     for (const pattern of ['**', '*', '**/*', '*://*/*']) {
-      expect(() => service.addInterceptRule({ pattern, action: 'block' })).toThrow(/over-broad/i);
+      expect(() => scope.addInterceptRule({ pattern, action: 'block' })).toThrow(/over-broad/i);
       expect(() =>
-        service.addInterceptRule({ pattern, action: 'fulfill', fulfill: { status: 204 } }),
+        scope.addInterceptRule({ pattern, action: 'fulfill', fulfill: { status: 204 } }),
       ).toThrow(/over-broad/i);
     }
     // A pass-through (continue) rule may legitimately target everything (e.g. a header injector).
-    const id = service.addInterceptRule({ pattern: '**', action: 'continue', modify: { headers: { 'x-a': '1' } } });
+    const id = scope.addInterceptRule({ pattern: '**', action: 'continue', modify: { headers: { 'x-a': '1' } } });
     expect(id).toMatch(/^ir_/);
     // A specific block pattern is still accepted.
-    expect(() => service.addInterceptRule({ pattern: '**/tracker.png', action: 'block' })).not.toThrow();
+    expect(() => scope.addInterceptRule({ pattern: '**/tracker.png', action: 'block' })).not.toThrow();
     expect(routeCalls.some((c) => c.pattern === '**/tracker.png')).toBe(true);
   });
 });
@@ -189,81 +197,80 @@ describe('Slice 5 — over-broad intercept patterns (S4)', () => {
   for (const pattern of OVER_BROAD) {
     it(`refuses "${pattern}" for BOTH block and fulfill, naming it as over-broad`, () => {
       const { context, routeCalls } = fakeContext();
-      const service = serviceWith(context);
+      const { scope } = serviceWith(context);
 
-      expect(() => service.addInterceptRule({ pattern, action: 'block' })).toThrow(/over-broad/i);
-      expect(() => service.addInterceptRule({ pattern, action: 'fulfill', fulfill: { status: 204 } })).toThrow(/over-broad/i);
+      expect(() => scope.addInterceptRule({ pattern, action: 'block' })).toThrow(/over-broad/i);
+      expect(() => scope.addInterceptRule({ pattern, action: 'fulfill', fulfill: { status: 204 } })).toThrow(/over-broad/i);
       // The message names the offending pattern and the action, so the agent can act on it.
       let message = '';
-      try { service.addInterceptRule({ pattern, action: 'block' }); } catch (err) { message = (err as Error).message; }
+      try { scope.addInterceptRule({ pattern, action: 'block' }); } catch (err) { message = (err as Error).message; }
       expect(message).toContain(pattern);
       expect(message).toContain('block');
 
       // A refused rule leaves NOTHING behind: no route registered, no registry entry.
       expect(routeCalls).toHaveLength(0);
-      expect(service.listInterceptRules()).toHaveLength(0);
+      expect(scope.listInterceptRules()).toHaveLength(0);
     });
   }
 
   for (const pattern of ALLOWED) {
     it(`still accepts the narrow pattern "${pattern}" for block and fulfill`, () => {
       const { context, routeCalls } = fakeContext();
-      const service = serviceWith(context);
+      const { scope } = serviceWith(context);
 
-      expect(() => service.addInterceptRule({ pattern, action: 'block' })).not.toThrow();
-      expect(() => service.addInterceptRule({ pattern, action: 'fulfill', fulfill: { status: 200 } })).not.toThrow();
-      expect(service.listInterceptRules()).toHaveLength(2);
+      expect(() => scope.addInterceptRule({ pattern, action: 'block' })).not.toThrow();
+      expect(() => scope.addInterceptRule({ pattern, action: 'fulfill', fulfill: { status: 200 } })).not.toThrow();
+      expect(scope.listInterceptRules()).toHaveLength(2);
       expect(routeCalls.map((c) => c.pattern)).toEqual([pattern, pattern]);
     });
   }
 
   it('leaves the continue carve-out intact — a pass-through rule may target everything', () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
     for (const pattern of OVER_BROAD) {
       expect(() =>
-        service.addInterceptRule({ pattern, action: 'continue', modify: { headers: { 'x-a': '1' } } }),
+        scope.addInterceptRule({ pattern, action: 'continue', modify: { headers: { 'x-a': '1' } } }),
       ).not.toThrow();
     }
-    expect(service.listInterceptRules()).toHaveLength(OVER_BROAD.length);
+    expect(scope.listInterceptRules()).toHaveLength(OVER_BROAD.length);
   });
 
   it('the S4 regression case specifically: a block on "https://**" no longer registers a route', () => {
     // Guarding the exact defect. Before the fix this call SUCCEEDED and aborted every HTTPS request.
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    expect(() => service.addInterceptRule({ pattern: 'https://**', action: 'block' })).toThrow(/over-broad/i);
+    const { scope } = serviceWith(context);
+    expect(() => scope.addInterceptRule({ pattern: 'https://**', action: 'block' })).toThrow(/over-broad/i);
     expect(routeCalls).toHaveLength(0);
 
     // POSITIVE CONTROL: the same scheme with a real host still registers, so the fix is not just
     // "reject anything containing a scheme".
-    expect(() => service.addInterceptRule({ pattern: 'https://ads.example.com/**', action: 'block' })).not.toThrow();
+    expect(() => scope.addInterceptRule({ pattern: 'https://ads.example.com/**', action: 'block' })).not.toThrow();
     expect(routeCalls.map((c) => c.pattern)).toEqual(['https://ads.example.com/**']);
   });
 
   it('surfaces the over-broad refusal through the BrowserIntercept tool as an error, not a silent no-op', async () => {
     type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const scope = service.createAgentScope(BrowserService.PRIMARY_SCOPE_ID);
+    const { scope } = serviceWith(context);
     const built = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     const tool = new Map(built.map((t) => [t.name, t])).get('BrowserIntercept')!;
 
     const res = await tool.execute('t', { action: 'add', pattern: 'https://**', type: 'block' });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toMatch(/over-broad/i);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
 
     // POSITIVE CONTROL: a narrow pattern through the SAME tool path succeeds.
     const ok = await tool.execute('t', { action: 'add', pattern: 'https://ads.example.com/**', type: 'block' });
     expect(ok.isError).toBeFalsy();
-    expect(service.listInterceptRules()).toHaveLength(1);
+    expect(scope.listInterceptRules()).toHaveLength(1);
   });
 });
 
 /**
  * Slice 5 / S5 — intercept header bounds. `fulfill.headers` / `modify.headers` are agent-supplied and
- * applied context-wide, so a rule can reach past "mock this response" into the connection itself or
+ * applied to every page of the chat, so a rule can reach past "mock this response" into the connection itself or
  * the shared profile's cookie jar. The bound is deliberately NARROW (contract §5): `Set-Cookie` on
  * fulfill, hop-by-hop headers on both. `Cookie`/`Authorization` on modify stay ALLOWED by design —
  * that power is documented, not closed — and the positive controls below pin that so a later
@@ -272,54 +279,54 @@ describe('Slice 5 — over-broad intercept patterns (S4)', () => {
 describe('Slice 5 — intercept header bounds (S5)', () => {
   const HOP_BY_HOP = ['Connection', 'Transfer-Encoding', 'Upgrade', 'Keep-Alive', 'Proxy-Authorization'];
 
-  const addFulfill = (service: BrowserService, headers: Record<string, string>) =>
-    service.addInterceptRule({ pattern: '**/api/data', action: 'fulfill', fulfill: { status: 200, headers } });
-  const addModify = (service: BrowserService, headers: Record<string, string>) =>
-    service.addInterceptRule({ pattern: '**/api/**', action: 'continue', modify: { headers } });
+  const addFulfill = (scope: BrowserAgentScope, headers: Record<string, string>) =>
+    scope.addInterceptRule({ pattern: '**/api/data', action: 'fulfill', fulfill: { status: 200, headers } });
+  const addModify = (scope: BrowserAgentScope, headers: Record<string, string>) =>
+    scope.addInterceptRule({ pattern: '**/api/**', action: 'continue', modify: { headers } });
 
   it('rejects Set-Cookie in fulfill.headers, naming the header', () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    expect(() => addFulfill(service, { 'Set-Cookie': 'session=hijacked' })).toThrow(/set-cookie/i);
+    const { scope } = serviceWith(context);
+    expect(() => addFulfill(scope, { 'Set-Cookie': 'session=hijacked' })).toThrow(/set-cookie/i);
     // No partial registration: the rule left no route and no registry entry.
     expect(routeCalls).toHaveLength(0);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('rejects set-cookie case-insensitively (a lowercase spelling is not a bypass)', () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    expect(() => addFulfill(service, { 'set-cookie': 'a=b' })).toThrow(/set-cookie/i);
-    expect(() => addFulfill(service, { 'SET-COOKIE': 'a=b' })).toThrow(/set-cookie/i);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    const { scope } = serviceWith(context);
+    expect(() => addFulfill(scope, { 'set-cookie': 'a=b' })).toThrow(/set-cookie/i);
+    expect(() => addFulfill(scope, { 'SET-COOKIE': 'a=b' })).toThrow(/set-cookie/i);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   for (const header of HOP_BY_HOP) {
     it(`rejects the hop-by-hop header "${header}" in BOTH fulfill and modify`, () => {
       const { context, routeCalls } = fakeContext();
-      const service = serviceWith(context);
+      const { scope } = serviceWith(context);
 
-      expect(() => addFulfill(service, { [header]: 'x' })).toThrow(new RegExp(header, 'i'));
-      expect(() => addModify(service, { [header]: 'x' })).toThrow(new RegExp(header, 'i'));
+      expect(() => addFulfill(scope, { [header]: 'x' })).toThrow(new RegExp(header, 'i'));
+      expect(() => addModify(scope, { [header]: 'x' })).toThrow(new RegExp(header, 'i'));
 
       // The message says WHERE, so the agent knows which half of the rule to fix.
       let message = '';
-      try { addModify(service, { [header]: 'x' }); } catch (err) { message = (err as Error).message; }
+      try { addModify(scope, { [header]: 'x' }); } catch (err) { message = (err as Error).message; }
       expect(message).toContain(header);
       expect(message).toContain('modify.headers');
 
       expect(routeCalls).toHaveLength(0);
-      expect(service.listInterceptRules()).toHaveLength(0);
+      expect(scope.listInterceptRules()).toHaveLength(0);
     });
   }
 
   it('rejects hop-by-hop headers case-insensitively (CONNECTION, transfer-encoding)', () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    expect(() => addFulfill(service, { CONNECTION: 'keep-alive' })).toThrow(/connection/i);
-    expect(() => addModify(service, { 'transfer-encoding': 'chunked' })).toThrow(/transfer-encoding/i);
-    expect(() => addModify(service, { 'PROXY-Authenticate': 'x' })).toThrow(/proxy-authenticate/i);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    const { scope } = serviceWith(context);
+    expect(() => addFulfill(scope, { CONNECTION: 'keep-alive' })).toThrow(/connection/i);
+    expect(() => addModify(scope, { 'transfer-encoding': 'chunked' })).toThrow(/transfer-encoding/i);
+    expect(() => addModify(scope, { 'PROXY-Authenticate': 'x' })).toThrow(/proxy-authenticate/i);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   /**
@@ -340,22 +347,22 @@ describe('Slice 5 — intercept header bounds (S5)', () => {
     ['an empty name', { '': 'a=b' }],
   ])('rejects %s', (_label, headers) => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
 
-    expect(() => addFulfill(service, headers)).toThrow();
-    expect(() => addModify(service, headers)).toThrow();
+    expect(() => addFulfill(scope, headers)).toThrow();
+    expect(() => addModify(scope, headers)).toThrow();
     expect(routeCalls).toHaveLength(0);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('never echoes a rejected header VALUE back to the model', () => {
     // The value is the field most likely to hold a credential, and the error text goes straight into
     // the transcript. Naming the header is actionable; repeating its value is a second leak.
     const { context } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
     let message = '';
     try {
-      addFulfill(service, { 'X-Foo': 'hunter2-SECRET\r\nSet-Cookie: a=b' });
+      addFulfill(scope, { 'X-Foo': 'hunter2-SECRET\r\nSet-Cookie: a=b' });
     } catch (err) {
       message = (err as Error).message;
     }
@@ -367,54 +374,54 @@ describe('Slice 5 — intercept header bounds (S5)', () => {
   it('POSITIVE CONTROL — ordinary values with punctuation and spaces still pass', () => {
     // The syntax check must reject control characters, not everything that is not alphanumeric.
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    expect(() => addFulfill(service, {
+    const { scope } = serviceWith(context);
+    expect(() => addFulfill(scope, {
       'Content-Type': 'application/json; charset=utf-8',
       Accept: '*/*',
       'Cache-Control': 'no-cache, no-store, max-age=0',
       'X-Trace': 'a=1&b=2 (client)',
     })).not.toThrow();
-    expect(service.listInterceptRules()).toHaveLength(1);
+    expect(scope.listInterceptRules()).toHaveLength(1);
   });
 
   it('rejects the whole rule when only ONE of several headers is forbidden', () => {
     // Validation must run before registration, not per-header mid-install: a rule with two good
     // headers and one bad one must leave NO trace.
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
     expect(() =>
-      addFulfill(service, { 'content-type': 'application/json', 'X-Test': 'ok', Connection: 'close' }),
+      addFulfill(scope, { 'content-type': 'application/json', 'X-Test': 'ok', Connection: 'close' }),
     ).toThrow(/connection/i);
     expect(routeCalls).toHaveLength(0);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('POSITIVE CONTROL — Set-Cookie is allowed on a MODIFY rule (the bound is fulfill-only, by design)', () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
     // On a request, `Set-Cookie` is not the cookie-writing response header — blocking it here would be
     // an over-correction the brief explicitly does not ask for.
-    expect(() => addModify(service, { 'Set-Cookie': 'a=b' })).not.toThrow();
-    expect(service.listInterceptRules()).toHaveLength(1);
+    expect(() => addModify(scope, { 'Set-Cookie': 'a=b' })).not.toThrow();
+    expect(scope.listInterceptRules()).toHaveLength(1);
     expect(routeCalls).toHaveLength(1);
   });
 
   it('POSITIVE CONTROL — ordinary headers still work, including Cookie/Authorization on modify', () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    expect(() => addFulfill(service, { 'content-type': 'application/json', 'X-Test': '1' })).not.toThrow();
+    const { scope } = serviceWith(context);
+    expect(() => addFulfill(scope, { 'content-type': 'application/json', 'X-Test': '1' })).not.toThrow();
     // The brief DELIBERATELY leaves these available: attaching credentials to matched requests is
     // within the agent's granted power, and the boundary is documented rather than closed.
-    expect(() => addModify(service, { Cookie: 'session=abc', Authorization: 'Bearer t', 'X-Test': '1' })).not.toThrow();
-    expect(service.listInterceptRules()).toHaveLength(2);
+    expect(() => addModify(scope, { Cookie: 'session=abc', Authorization: 'Bearer t', 'X-Test': '1' })).not.toThrow();
+    expect(scope.listInterceptRules()).toHaveLength(2);
   });
 
   it('POSITIVE CONTROL — an accepted rule really is live (its handler applies the headers)', () => {
     // Proves the acceptance above is not merely "did not throw": the registered handler runs and
     // merges the allowed headers onto the request.
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    addModify(service, { Authorization: 'Bearer t' });
+    const { scope } = serviceWith(context);
+    addModify(scope, { Authorization: 'Bearer t' });
     const { route, calls } = fakeRoute({ 'x-existing': '1' });
     return routeCalls[0]!.handler(route).then(() => {
       expect(calls.continue[0]).toEqual({ headers: { 'x-existing': '1', Authorization: 'Bearer t' } });
@@ -424,8 +431,7 @@ describe('Slice 5 — intercept header bounds (S5)', () => {
   it('surfaces the header refusal through the BrowserIntercept tool as an error', async () => {
     type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const scope = service.createAgentScope(BrowserService.PRIMARY_SCOPE_ID);
+    const { scope } = serviceWith(context);
     const built = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     const tool = new Map(built.map((t) => [t.name, t])).get('BrowserIntercept')!;
 
@@ -434,61 +440,60 @@ describe('Slice 5 — intercept header bounds (S5)', () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toMatch(/set-cookie/i);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
 
     const hop = await tool.execute('t', {
       action: 'add', pattern: '**/api/**', type: 'modify', headers: { Connection: 'close' },
     });
     expect(hop.isError).toBe(true);
     expect(hop.content[0]!.text).toMatch(/connection/i);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
 
     // POSITIVE CONTROL: an ordinary header through the SAME tool path succeeds.
     const ok = await tool.execute('t', {
       action: 'add', pattern: '**/api/**', type: 'modify', headers: { 'X-Test': '1' },
     });
     expect(ok.isError).toBeFalsy();
-    expect(service.listInterceptRules()).toHaveLength(1);
+    expect(scope.listInterceptRules()).toHaveLength(1);
   });
 
-  it('documents the context-wide trust boundary in the BrowserIntercept description', () => {
+  it('documents the chat-wide trust boundary in the BrowserIntercept description', () => {
     type ToolLike = { name: string; description: string };
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const scope = service.createAgentScope(BrowserService.PRIMARY_SCOPE_ID);
+    const { scope } = serviceWith(context);
     const built = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     const description = new Map(built.map((t) => [t.name, t])).get('BrowserIntercept')!.description;
 
-    expect(description).toMatch(/context-wide|context-global/i);
+    expect(description).toMatch(/apply only to this chat's pages, including its subagents' and team agents' pages, and end when the chat or the browser closes/);
     expect(description).toMatch(/set-cookie/i);
     expect(description).toMatch(/hop-by-hop/i);
   });
 
   it('clears intercept rules synchronously on context loss (session teardown)', () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({ pattern: '**/api/data', action: 'block' });
-    expect(service.listInterceptRules()).toHaveLength(1);
+    const { service, scope } = serviceWith(context);
+    scope.addInterceptRule({ pattern: '**/api/data', action: 'block' });
+    expect(scope.listInterceptRules()).toHaveLength(1);
     // A Chrome crash fires the context 'close' event. With one editor tab per page there is no single
     // recovery panel to keep alive: the session tears down and intercept rules drop immediately (they
     // are routes on the now-dead context and must not surface as phantoms).
     const s = service as unknown as { handleContextGone: (c: unknown) => void };
     s.handleContextGone(context);
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('listInterceptRules REDACTS the fulfill body (bodyBytes only) and reports header keys', () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
+    const { scope } = serviceWith(context);
     const secret = '{"token":"super-secret-value"}';
-    service.addInterceptRule({
+    scope.addInterceptRule({
       pattern: '**/api/data',
       action: 'fulfill',
       fulfill: { status: 200, headers: { 'content-type': 'application/json' }, body: secret },
     });
-    service.addInterceptRule({ pattern: '**/api/**', action: 'continue', modify: { headers: { 'x-a': '1', 'x-b': '2' } } });
+    scope.addInterceptRule({ pattern: '**/api/**', action: 'continue', modify: { headers: { 'x-a': '1', 'x-b': '2' } } });
 
-    const listed = service.listInterceptRules();
+    const listed = scope.listInterceptRules();
     expect(listed).toHaveLength(2);
     const serialized = JSON.stringify(listed);
     expect(serialized).not.toContain('super-secret-value');
@@ -507,13 +512,13 @@ describe('Slice 5 — intercept header bounds (S5)', () => {
 
   it('clearInterceptRules calls unroute per pattern/handler and empties the registry', () => {
     const { context, routeCalls, unrouteCalls } = fakeContext();
-    const service = serviceWith(context);
-    service.addInterceptRule({ pattern: '**/a.png', action: 'block' });
-    service.addInterceptRule({ pattern: '**/b.png', action: 'block' });
-    expect(service.listInterceptRules()).toHaveLength(2);
+    const { scope } = serviceWith(context);
+    scope.addInterceptRule({ pattern: '**/a.png', action: 'block' });
+    scope.addInterceptRule({ pattern: '**/b.png', action: 'block' });
+    expect(scope.listInterceptRules()).toHaveLength(2);
 
-    service.clearInterceptRules();
-    expect(service.listInterceptRules()).toHaveLength(0);
+    scope.clearInterceptRules();
+    expect(scope.listInterceptRules()).toHaveLength(0);
     expect(unrouteCalls).toHaveLength(2);
     expect(unrouteCalls.map((c) => c.pattern)).toEqual(['**/a.png', '**/b.png']);
     // The exact handler references registered via route() are the ones unrouted (required for removal).
@@ -524,17 +529,15 @@ describe('Slice 5 — intercept header bounds (S5)', () => {
 
 describe('Slice 6 — BrowserIntercept tool (validation + body-size cap, no body echo)', () => {
   type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
-  function toolsFor(service: BrowserService): Map<string, ToolLike> {
-    // Intercept rules are context-global: the scope forwards add/list/clear straight to the service.
-    const scope = service.createAgentScope(BrowserService.PRIMARY_SCOPE_ID);
+  function toolsFor(scope: BrowserAgentScope): Map<string, ToolLike> {
     const built = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     return new Map(built.map((t) => [t.name, t]));
   }
 
   it('rejects a fulfill body over the 1 MB cap (fail-loud, never truncates or echoes the body)', async () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const tool = toolsFor(service).get('BrowserIntercept')!;
+    const { scope } = serviceWith(context);
+    const tool = toolsFor(scope).get('BrowserIntercept')!;
     const oversized = 'a'.repeat(1_048_576 + 1);
     const res = await tool.execute('t', { action: 'add', pattern: '**/api/data', type: 'fulfill', status: 200, body: oversized });
     expect(res.isError).toBe(true);
@@ -542,24 +545,24 @@ describe('Slice 6 — BrowserIntercept tool (validation + body-size cap, no body
     // The oversized body must NOT be echoed back.
     expect(res.content[0]!.text).not.toContain(oversized);
     // No rule was registered.
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('accepts a fulfill body at the 1 MB cap boundary', async () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const tool = toolsFor(service).get('BrowserIntercept')!;
+    const { scope } = serviceWith(context);
+    const tool = toolsFor(scope).get('BrowserIntercept')!;
     const atCap = 'a'.repeat(1_048_576);
     const res = await tool.execute('t', { action: 'add', pattern: '**/api/data', type: 'fulfill', status: 200, body: atCap });
     expect(res.isError).toBeFalsy();
     expect(res.content[0]!.text).toContain('Added intercept rule');
-    expect(service.listInterceptRules()).toHaveLength(1);
+    expect(scope.listInterceptRules()).toHaveLength(1);
   });
 
   it('add requires pattern + type; fulfill requires status; modify requires headers', async () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const tool = toolsFor(service).get('BrowserIntercept')!;
+    const { scope } = serviceWith(context);
+    const tool = toolsFor(scope).get('BrowserIntercept')!;
 
     const noPattern = await tool.execute('t', { action: 'add', type: 'block' });
     expect(noPattern.isError).toBe(true);
@@ -573,13 +576,13 @@ describe('Slice 6 — BrowserIntercept tool (validation + body-size cap, no body
     expect(noHeaders.isError).toBe(true);
     expect(noHeaders.content[0]!.text).toContain('headers');
 
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('add → list → clear round-trip through the tool (list is redacted, clear reports the count)', async () => {
     const { context } = fakeContext();
-    const service = serviceWith(context);
-    const tool = toolsFor(service).get('BrowserIntercept')!;
+    const { scope } = serviceWith(context);
+    const tool = toolsFor(scope).get('BrowserIntercept')!;
 
     const emptyList = await tool.execute('t', { action: 'list' });
     expect(emptyList.content[0]!.text).toBe('No intercept rules.');
@@ -596,22 +599,213 @@ describe('Slice 6 — BrowserIntercept tool (validation + body-size cap, no body
 
     const clear = await tool.execute('t', { action: 'clear' });
     expect(clear.content[0]!.text).toBe('Cleared 2 intercept rule(s).');
-    expect(service.listInterceptRules()).toHaveLength(0);
+    expect(scope.listInterceptRules()).toHaveLength(0);
   });
 
   it('modify maps to a continue rule with modify.headers', async () => {
     const { context, routeCalls } = fakeContext();
-    const service = serviceWith(context);
-    const tool = toolsFor(service).get('BrowserIntercept')!;
+    const { scope } = serviceWith(context);
+    const tool = toolsFor(scope).get('BrowserIntercept')!;
     const res = await tool.execute('t', { action: 'add', pattern: '**/api/**', type: 'modify', headers: { 'x-trace': 'abc' } });
     expect(res.isError).toBeFalsy();
-    const rule = service.listInterceptRules()[0]!;
+    const rule = scope.listInterceptRules()[0]!;
     expect(rule.action).toBe('continue');
     expect(rule.modifyHeaderKeys).toEqual(['x-trace']);
     // The registered handler merges headers on continue.
     const { route, calls } = fakeRoute({ 'x-existing': '1' });
     await routeCalls[0]!.handler(route);
     expect(calls.continue[0]).toEqual({ headers: { 'x-existing': '1', 'x-trace': 'abc' } });
+  });
+});
+
+describe('intercept rules belong to the chat that added them', () => {
+  const session = { on: () => {}, send: async () => ({}), detach: async () => {} };
+  const fakePage = (): object => ({ on: () => {}, url: () => 'about:blank', opener: async () => null, close: async () => {} });
+
+  /** Two chats over one fake context whose pages register for real (registerPage with a fake CDP session). */
+  function twoChats(newCDPSession: () => Promise<unknown> = async () => session) {
+    const { context, routeCalls, unrouteCalls } = fakeContext();
+    const platform = createFakePlatform();
+    const service = new BrowserService(platform);
+    (service as unknown as { context: unknown }).context = { ...context, newCDPSession };
+    const chatA = platform.window.createPanel({ kind: 'chat', title: 'A', localResourceRoots: [] });
+    const chatB = platform.window.createPanel({ kind: 'chat', title: 'B', localResourceRoots: [] });
+    const a = service.chatScope(chatA);
+    const b = service.chatScope(chatB);
+    const register = (page: object, scopeId?: string): Promise<unknown> =>
+      (service as unknown as { registerPage: (p: unknown, owner?: string) => Promise<unknown> }).registerPage(page, scopeId);
+    return { service, platform, routeCalls, unrouteCalls, chatA, chatB, a, b, register };
+  }
+
+  it('applies chat A\'s rule to A\'s page only, never to B\'s page or a request no page made', async () => {
+    const { routeCalls, a, b, register } = twoChats();
+    const pageA = fakePage();
+    const pageB = fakePage();
+    await register(pageA, a.id);
+    await register(pageB, b.id);
+    a.addInterceptRule({ pattern: '**/api/data', action: 'fulfill', fulfill: { status: 200, body: 'stub' } });
+    const handler = routeCalls[0]!.handler;
+
+    const fromA = fakeRoute({}, pageA);
+    await handler(fromA.route);
+    expect(fromA.calls.fulfill).toEqual([{ status: 200, body: 'stub' }]);
+    expect(terminalCount(fromA.calls)).toBe(1);
+
+    const fromB = fakeRoute({}, pageB);
+    await handler(fromB.route);
+    expect(fromB.calls.fallback).toBe(1);
+    expect(terminalCount(fromB.calls)).toBe(1);
+
+    // an unregistered page, a service worker's request and one made before its frame exists all pass on
+    const fromUnknown = fakeRoute({}, fakePage());
+    await handler(fromUnknown.route);
+    expect(fromUnknown.calls.fallback).toBe(1);
+    for (const message of ['Service Worker requests do not have an associated frame.', 'Frame for this navigation request is not available']) {
+      const calls = { fallback: 0, fulfill: 0 };
+      await handler({
+        fallback: async () => { calls.fallback++; },
+        fulfill: async () => { calls.fulfill++; },
+        request: () => ({ frame: () => { throw new Error(message); } }),
+      });
+      expect(calls).toEqual({ fallback: 1, fulfill: 0 });
+    }
+  });
+
+  it('applies a subagent\'s rule to every page of its chat, and lists it there only', async () => {
+    const { service, routeCalls, chatA, a, b, register } = twoChats();
+    const pageA = fakePage();
+    await register(pageA, a.id);
+    const sub = service.createAgentScope('sub-a', chatA);
+    sub.addInterceptRule({ pattern: '**/tracker.png', action: 'block' });
+
+    const fromA = fakeRoute({}, pageA);
+    await routeCalls[0]!.handler(fromA.route);
+    expect(fromA.calls.abort).toBe(1);
+    expect(a.listInterceptRules().map((r) => r.pattern)).toEqual(['**/tracker.png']);
+    expect(sub.listInterceptRules()).toHaveLength(1);
+    expect(b.listInterceptRules()).toEqual([]);
+  });
+
+  it('passes on a request of a page still registering without waiting for it, and applies its chat\'s rule once it registered', async () => {
+    let attach!: (s: unknown) => void;
+    const { routeCalls, a, register } = twoChats(() => new Promise((resolve) => { attach = resolve; }));
+    a.addInterceptRule({ pattern: '**/api/data', action: 'fulfill', fulfill: { status: 204 } });
+    const popup = fakePage();
+    const registered = register(popup, a.id);
+    const first = fakeRoute({}, popup);
+    await routeCalls[0]!.handler(first.route);
+    expect(first.calls.fallback).toBe(1);
+    expect(terminalCount(first.calls)).toBe(1);
+
+    attach(session);
+    await registered;
+    const later = fakeRoute({}, popup);
+    await routeCalls[0]!.handler(later.route);
+    expect(later.calls.fulfill).toEqual([{ status: 204 }]);
+  });
+
+  it('lists and clears only the calling chat\'s rules', () => {
+    const { routeCalls, unrouteCalls, a, b } = twoChats();
+    a.addInterceptRule({ pattern: '**/a1.png', action: 'block' });
+    a.addInterceptRule({ pattern: '**/a2.png', action: 'block' });
+    b.addInterceptRule({ pattern: '**/b.png', action: 'block' });
+    expect(a.listInterceptRules().map((r) => r.pattern)).toEqual(['**/a1.png', '**/a2.png']);
+    expect(b.listInterceptRules().map((r) => r.pattern)).toEqual(['**/b.png']);
+
+    b.clearInterceptRules();
+    expect(unrouteCalls.map((c) => c.handler)).toEqual([routeCalls[2]!.handler]);
+    expect(b.listInterceptRules()).toEqual([]);
+    expect(a.listInterceptRules()).toHaveLength(2);
+  });
+
+  it('unroutes a chat\'s rules when the chat closes, its subagents\' included', () => {
+    const { service, routeCalls, unrouteCalls, chatA, a, b } = twoChats();
+    a.addInterceptRule({ pattern: '**/a.png', action: 'block' });
+    service.createAgentScope('sub-a', chatA).addInterceptRule({ pattern: '**/sub.png', action: 'block' });
+    b.addInterceptRule({ pattern: '**/b.png', action: 'block' });
+
+    chatA.close();
+    expect(unrouteCalls.map((c) => c.handler)).toEqual([routeCalls[0]!.handler, routeCalls[1]!.handler]);
+    expect(b.listInterceptRules().map((r) => r.pattern)).toEqual(['**/b.png']);
+    expect(() => a.addInterceptRule({ pattern: '**/late.png', action: 'block' })).toThrow(/disposed/);
+  });
+
+  it('ends the rules of a chat whose only scope is an agent\'s, as a remote chat\'s view proxy can be', () => {
+    const { service, platform, routeCalls, unrouteCalls } = twoChats();
+    const proxy = platform.window.createPanel({ kind: 'chat', title: 'remote view', localResourceRoots: [] });
+    service.createAgentScope('view-1/agent-7', proxy).addInterceptRule({ pattern: '**/remote.png', action: 'block' });
+
+    proxy.close();
+    expect(unrouteCalls.map((c) => c.handler)).toEqual([routeCalls[0]!.handler]);
+  });
+
+  it('refuses a rule from a scope that has no chat', () => {
+    const { service } = twoChats();
+    expect(() => service.createAgentScope('no-chat').addInterceptRule({ pattern: '**/x.png', action: 'block' })).toThrow(/belongs to no chat/);
+  });
+
+  it('registers no scope for a chat that already closed, so a late agent scope of it adds no rule', () => {
+    const { service, routeCalls, chatA } = twoChats();
+    chatA.close();
+    const late = service.createAgentScope('late-agent', chatA);
+    expect(() => late.addInterceptRule({ pattern: '**/late.png', action: 'block' })).toThrow(/disposed/);
+    expect(routeCalls).toEqual([]);
+    expect(late.listInterceptRules()).toEqual([]);
+  });
+
+  describe("a served grant host the rule's chat does not hold", () => {
+    const GRANT_A = `http://${'a'.repeat(32)}.localhost:5000`;
+    const GRANT_B = `http://${'b'.repeat(32)}.localhost:5001`;
+    const servedPages = (owned: string) => ({ toFile: (url: string) => url, restoreTarget: async () => ({ refused: 'not here' }), ownsOrigin: (origin: string) => origin === owned });
+
+    it("aborts the request so no rule answers it, and applies the rule on the chat's own grant host and any other address as before", async () => {
+      const { service, routeCalls, chatA, chatB, a, b, register } = twoChats();
+      service.bindServedPages(chatA, servedPages(GRANT_A));
+      service.bindServedPages(chatB, servedPages(GRANT_B));
+      const pageA = fakePage();
+      const pageB = fakePage();
+      await register(pageA, a.id);
+      await register(pageB, b.id);
+      b.addInterceptRule({ pattern: '**/p.html', action: 'fulfill', fulfill: { status: 200, body: 'stub' } });
+      b.addInterceptRule({ pattern: '**/app.js', action: 'continue', modify: { headers: { 'x-b': '1' } } });
+      const [fulfill, modify] = routeCalls.map((call) => call.handler);
+
+      // B's page, an out-of-process frame of it included, asking for A's served page
+      for (const [handler, url] of [[fulfill!, `${GRANT_A}/p.html`], [modify!, `${GRANT_A}/app.js`]] as const) {
+        const toA = fakeRoute({}, pageB, url);
+        await handler(toA.route);
+        expect(toA.calls.abortCodes, url).toEqual(['blockedbyclient']);
+        expect(terminalCount(toA.calls)).toBe(1);
+      }
+
+      const ownGrant = fakeRoute({}, pageB, `${GRANT_B}/p.html`);
+      await fulfill!(ownGrant.route);
+      expect(ownGrant.calls.fulfill).toEqual([{ status: 200, body: 'stub' }]);
+      const ownModified = fakeRoute({ 'x-existing': '1' }, pageB, `${GRANT_B}/app.js`);
+      await modify!(ownModified.route);
+      expect(ownModified.calls.continue).toEqual([{ headers: { 'x-existing': '1', 'x-b': '1' } }]);
+      const elsewhere = fakeRoute({}, pageB, 'https://site.example/p.html');
+      await fulfill!(elsewhere.route);
+      expect(elsewhere.calls.fulfill).toEqual([{ status: 200, body: 'stub' }]);
+
+      // A's own request to its grant host passes B's rule untouched, to A's guard and the network
+      const fromA = fakeRoute({}, pageA, `${GRANT_A}/p.html`);
+      await fulfill!(fromA.route);
+      expect(fromA.calls.fallback).toBe(1);
+      expect(terminalCount(fromA.calls)).toBe(1);
+    });
+
+    it('holds no grant host for a chat whose served pages are not bound', async () => {
+      const { service, routeCalls, chatB, b, register } = twoChats();
+      const pageB = fakePage();
+      await register(pageB, b.id);
+      const binding = service.bindServedPages(chatB, servedPages(GRANT_B));
+      b.addInterceptRule({ pattern: '**/p.html', action: 'fulfill', fulfill: { status: 200, body: 'stub' } });
+      binding.dispose();
+      const own = fakeRoute({}, pageB, `${GRANT_B}/p.html`);
+      await routeCalls[0]!.handler(own.route);
+      expect(own.calls.abortCodes).toEqual(['blockedbyclient']);
+    });
   });
 });
 

@@ -3,7 +3,7 @@ import { LocalizedError, type LocalizedText } from "../../shared/localized-text"
 import type { Platform } from "../../platform/platform";
 import { FOLDER_IDENTITIES_PATH } from "../paths";
 import { FolderIdentityStore } from "../project-relocation/identity-store";
-import { createFolderPresenceProbe, type FolderPresenceProbe } from "../workspace-folders/folder-presence-probe";
+import { checkWhenAdmitted, createFolderPresenceProbe, type FolderPresenceProbe } from "../workspace-folders/folder-presence-probe";
 import { folderKey } from "../workspace-folders/folder-key";
 import { log } from "../logger";
 
@@ -40,20 +40,31 @@ export function isFolderAbsent(err: unknown): err is FolderAbsentError {
   return err instanceof FolderMissingError || err instanceof FolderUnavailableError;
 }
 
+/** The hung gate refused the chat's folder check, and still did after the wait: nothing is known about the folder. */
+export class FolderChecksBusyError extends LocalizedError {
+  readonly folder: string;
+
+  constructor(folder: string) {
+    super(l("Damocles can't check the folder {0} right now: its drive checks are busy. Try again in a moment.", folder));
+    this.name = "FolderChecksBusyError";
+    this.folder = folder;
+  }
+}
+
+// a check the gate refused reads false, so the caller's work waits for a later check
 export async function folderPresent(folder: string): Promise<boolean> {
   return (await folderPresenceProbe.presence(folder)) === "present";
 }
 
-// The folder's absence as the error a session start reports; undefined while it is there.
-async function absenceOf(folder: string): Promise<FolderAbsentError | undefined> {
-  const presence = await folderPresenceProbe.presence(folder);
-  if (presence === "present") return undefined;
+function absenceError(folder: string, presence: "missing" | "unavailable"): FolderAbsentError {
   return presence === "missing" ? new FolderMissingError(folder) : new FolderUnavailableError(folder);
 }
 
+/** Refuses a session start in a folder that is not there, or whose check the hung gate still refuses after the wait. */
 export async function assertFolderPresent(folder: string): Promise<void> {
-  const absent = await absenceOf(folder);
-  if (absent) throw absent;
+  const presence = await checkWhenAdmitted(() => folderPresenceProbe.presence(folder), folderPresenceProbe);
+  if (presence === "present") return;
+  throw presence === "unchecked" ? new FolderChecksBusyError(folder) : absenceError(folder, presence);
 }
 
 /**
@@ -61,8 +72,10 @@ export async function assertFolderPresent(folder: string): Promise<void> {
  * missing folder with its own `MissingSessionCwdError`, which it does not export, so its text is never parsed.
  */
 export async function folderFailure(folder: string, err: unknown): Promise<unknown> {
-  if (isFolderAbsent(err)) return err;
-  return (await absenceOf(folder)) ?? err;
+  if (isFolderAbsent(err) || err instanceof FolderChecksBusyError) return err;
+  const presence = await folderPresenceProbe.presence(folder);
+  // a check the gate refused knows nothing, so pi's own error stands
+  return presence === "present" || presence === "unchecked" ? err : absenceError(folder, presence);
 }
 
 /**
@@ -79,5 +92,5 @@ export function tellFolderAbsent(platform: Pick<Platform, "notifications" | "win
 
 /** The notice for a failed session: a folder error is a whole sentence, any other failure is told inside `headline`. */
 export function failureNotice(err: unknown, headline: (detail: LocalizedText) => LocalizedText): LocalizedText {
-  return isFolderAbsent(err) ? err.text : headline(errorTextOf(err));
+  return isFolderAbsent(err) || err instanceof FolderChecksBusyError ? err.text : headline(errorTextOf(err));
 }

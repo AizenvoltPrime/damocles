@@ -38,9 +38,10 @@ export const EXTENSION_EXTERNALS = [
   // into the VSIX allowlist automatically via the production-dependency closure walk. NO browsers are
   // bundled — Chrome is launched via channel:'chrome'.
   'patchright',
-  // koffi (native FFI), used only by the Windows job object that kills a stopped shell's background
-  // jobs, and required lazily on win32 only. Must stay external: koffi resolves its own .node out of a
-  // per-platform `@koromix/koffi-<platform>-<arch>` package at runtime, which bundling would break. That
+  // koffi (native FFI), used by the Windows job objects of the process launcher and by the drive
+  // mappings the walk process and the permission gate read (dos-devices.ts), and required lazily on
+  // win32 only. Must stay external: koffi resolves its own .node out of a per-platform
+  // `@koromix/koffi-<platform>-<arch>` package at runtime, which bundling would break. That
   // package is an optionalDependency of koffi, so the closure walk carries it and its .node into the
   // VSIX allowlist. Keep koffi itself in `optionalDependencies`: it has no musl prebuild and compiles
   // from source on Alpine, where nothing ever loads it, and the release workflow asserts its `.node`

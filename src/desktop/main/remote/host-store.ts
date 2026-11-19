@@ -1283,11 +1283,21 @@ export class HostStore {
     await this.change((file) => (file.wslNoticeDismissed.includes(projectKey) ? file : { ...file, wslNoticeDismissed: [...file.wslNoticeDismissed, projectKey] }));
   }
 
-  async grantTrust(authorityKey: string, folderKey: string): Promise<void> {
-    await this.change((file) => {
+  /** Resolves whether this call trusted the folder; false when it was trusted already. */
+  grantTrust(authorityKey: string, folderKey: string): Promise<boolean> {
+    return this.change((file) => {
       const record = file.authorities.get(authorityKey) ?? { projects: [], trusted: [] };
       if (record.trusted.includes(folderKey)) return file;
       return { ...file, authorities: new Map(file.authorities).set(authorityKey, { ...record, trusted: [...record.trusted, folderKey] }) };
+    });
+  }
+
+  /** The folder is trusted no more, by exact folder key as grantTrust trusts it; a second call writes nothing. */
+  async revokeTrust(authorityKey: string, folderKey: string): Promise<void> {
+    await this.change((file) => {
+      const record = file.authorities.get(authorityKey);
+      if (!record?.trusted.includes(folderKey)) return file;
+      return { ...file, authorities: new Map(file.authorities).set(authorityKey, { ...record, trusted: record.trusted.filter((key) => key !== folderKey) }) };
     });
   }
 

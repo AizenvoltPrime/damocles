@@ -6,7 +6,8 @@ import { rgPath } from '@vscode/ripgrep';
 import { describe, expect, it } from 'vitest';
 import type { SearchQuery } from '../../../shared/text-search';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
-import { excludeSettingGlobs, parseGlobList, rgSearchArgs } from '../search/rg-args';
+import { ALL_IGNORE_FILES, type WalkIgnore } from '../../../core/search-walk';
+import { excludeSettingGlobs, parseGlobList, searchRequest } from '../search/rg-args';
 
 const query = (overrides: Partial<SearchQuery> = {}): SearchQuery => ({
   pattern: 'needle',
@@ -20,23 +21,23 @@ const query = (overrides: Partial<SearchQuery> = {}): SearchQuery => ({
   ...overrides,
 });
 
-const args = (overrides: Partial<SearchQuery> = {}, extra: { include?: string[]; exclude?: string[]; excludeSettings?: string[]; ignoreArgs?: string[]; contextLines?: number } = {}) =>
-  rgSearchArgs({
+const request = (overrides: Partial<SearchQuery> = {}, extra: { include?: string[]; exclude?: string[]; excludeSettings?: string[]; ignore?: WalkIgnore; contextLines?: number } = {}) =>
+  searchRequest({
     query: query(overrides),
     include: extra.include ?? [],
     exclude: extra.exclude ?? [],
     excludeSettings: extra.excludeSettings ?? [],
-    ignoreArgs: extra.ignoreArgs ?? [],
+    ignore: extra.ignore ?? ALL_IGNORE_FILES,
     contextLines: extra.contextLines ?? 0,
   });
+const args = (overrides: Partial<SearchQuery> = {}, extra: { contextLines?: number } = {}): readonly string[] => request(overrides, extra).match;
 
-describe('rgSearchArgs', () => {
-  it('always reads no config file, reports JSON, treats CRLF as a line end, searches hidden files and never follows links', () => {
-    const argv = args();
-    expect(argv.slice(0, 4)).toEqual(['--json', '--no-config', '--crlf', '--hidden']);
-    expect(argv).not.toContain('--follow');
-    expect(argv).not.toContain('-L');
-    expect(argv.at(-1)).toBe('.');
+describe('searchRequest', () => {
+  it('names no file, follows no link and treats CRLF as a line end: the walk lists the files', () => {
+    const match = args();
+    expect(match[0]).toBe('--crlf');
+    for (const flag of ['--follow', '-L', '--hidden', '--json', '.', '--', 'needle']) expect(match).not.toContain(flag);
+    expect(request().pattern).toBe('needle');
   });
 
   it('searches a file larger than the editor opens, as VS Code sets no file size limit', () => {
@@ -45,33 +46,36 @@ describe('rgSearchArgs', () => {
     try {
       const line = `${'x'.repeat(80)}\n`;
       fs.writeFileSync(path.join(folder, 'big.txt'), `${line.repeat(Math.ceil(EDITOR_CONFIRM_DOCUMENT_BYTES / line.length) + 1)}needle\n`);
-      const out = execFileSync(rgPath, args(), { cwd: folder, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+      const out = execFileSync(rgPath, ['--json', '--no-config', ...args(), '--regexp', 'needle', 'big.txt'], { cwd: folder, encoding: 'utf8', maxBuffer: 1024 * 1024 });
       const matches = out.split('\n').filter((event) => event.startsWith('{"type":"match"'));
       expect(matches).toHaveLength(1);
-      expect(JSON.parse(matches[0]!).data.path.text).toMatch(/big\.txt$/);
+      expect(JSON.parse(matches[0]!).data.path.text).toBe('big.txt');
     } finally {
       fs.rmSync(folder, { recursive: true, force: true });
     }
   });
 
-  it('puts a fixed string after --, so a pattern starting with - is text', () => {
-    const argv = args({ pattern: '--pre=evil' });
-    expect(argv.slice(-4)).toEqual(['--fixed-strings', '--', '--pre=evil', '.']);
-    expect(argv.indexOf('--pre=evil')).toBeGreaterThan(argv.indexOf('--'));
+  it('keeps the pattern out of the flags, a fixed string read as one by --fixed-strings', () => {
+    const fixed = request({ pattern: '--pre=evil' });
+    expect(fixed.match.at(-1)).toBe('--fixed-strings');
+    expect(fixed.match).not.toContain('--pre=evil');
+    expect(fixed.pattern).toBe('--pre=evil');
   });
 
-  it('passes a regex as the value of --regexp with the auto engine, and only then the path after --', () => {
-    const argv = args({ pattern: '-e|--follow', isRegex: true });
-    expect(argv.slice(-6)).toEqual(['--engine', 'auto', '--regexp', '-e|--follow', '--', '.']);
-    expect(argv.filter((arg) => arg === '--follow')).toHaveLength(0);
-    expect(argv).not.toContain('--multiline');
+  it('searches a regex with the auto engine, the pattern apart from the flags', () => {
+    const regex = request({ pattern: '-e|--follow', isRegex: true });
+    const match = regex.match;
+    expect(match.slice(-2)).toEqual(['--engine', 'auto']);
+    expect(regex.pattern).toBe('-e|--follow');
+    expect(match.filter((arg) => arg === '--follow')).toHaveLength(0);
+    expect(match).not.toContain('--multiline');
     expect(args({ pattern: 'a\\nb', isRegex: true })).toContain('--multiline');
   });
 
   it('asks for VS Code\'s context lines only for a Search Editor with some, and refuses a count out of range', () => {
     expect(args()).not.toContain('--before-context');
-    const argv = args({}, { contextLines: 2 });
-    expect(argv.slice(argv.indexOf('--before-context'), argv.indexOf('--before-context') + 4)).toEqual(['--before-context', '2', '--after-context', '2']);
+    const match = args({}, { contextLines: 2 });
+    expect(match.slice(match.indexOf('--before-context'), match.indexOf('--before-context') + 4)).toEqual(['--before-context', '2', '--after-context', '2']);
     expect(() => args({}, { contextLines: 101 })).toThrow('Context lines out of range');
     expect(() => args({}, { contextLines: 1.5 })).toThrow('Context lines out of range');
   });
@@ -83,15 +87,12 @@ describe('rgSearchArgs', () => {
     expect(args({ wholeWord: false })).not.toContain('--word-regexp');
   });
 
-  it('applies the exclude settings and ignore files only while the toggle is on', () => {
-    const on = args({}, { include: ['src/**'], exclude: ['**/gen'], excludeSettings: ['**/node_modules'], ignoreArgs: ['--no-ignore-parent'] });
-    expect(on).toEqual(expect.arrayContaining(['-g', 'src/**', '-g', '!**/gen', '-g', '!**/node_modules', '--no-ignore-parent']));
-    expect(on).not.toContain('--no-ignore');
-    const off = args({ useExcludeSettingsAndIgnoreFiles: false }, { exclude: ['**/gen'], excludeSettings: ['**/node_modules'], ignoreArgs: ['--no-ignore-parent'] });
-    expect(off).toContain('--no-ignore');
-    expect(off).toContain('!**/gen');
-    expect(off).not.toContain('!**/node_modules');
-    expect(off).not.toContain('--no-ignore-parent');
+  it('walks with the exclude settings and ignore files only while the toggle is on', () => {
+    const ignore: WalkIgnore = { files: true, global: true, parents: false };
+    const on = request({}, { include: ['src/**'], exclude: ['**/gen'], excludeSettings: ['**/node_modules', '**/.git'], ignore });
+    expect(on.walk).toEqual({ ignore, overrides: ['src/**', '!**/gen', '!**/node_modules', '!**/.git'] });
+    const off = request({ useExcludeSettingsAndIgnoreFiles: false }, { exclude: ['**/gen'], excludeSettings: ['**/node_modules', '**/.git'], ignore });
+    expect(off.walk).toEqual({ ignore: { files: false, global: false, parents: false }, overrides: ['!**/gen'] });
   });
 });
 

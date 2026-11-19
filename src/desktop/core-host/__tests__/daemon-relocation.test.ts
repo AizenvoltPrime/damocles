@@ -66,7 +66,7 @@ function daemonRelocations(trust: ConstructorParameters<typeof ProjectRelocation
   return relocations;
 }
 
-const noTrust = { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) };
+const noTrust = { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) };
 
 describe('a relocation on a daemon\'s core', () => {
   it('has no forge step target: a daemon\'s core starts no forge service', () => {
@@ -104,7 +104,7 @@ describe('a relocation on a daemon\'s core', () => {
     const loop = createLoopback();
     const main = createMainEndpoint(loop.main, () => undefined);
     const core = createCoreEndpoint(loop.core, () => undefined);
-    const trust = createTrustMirror(core, { mirrors: { trust: { keys: [] } } } as unknown as CoreInit, () => undefined);
+    const trust = createTrustMirror(core, { mirrors: { trust: { keys: [] } } } as unknown as CoreInit);
     opened.push(trust);
     const relocations = daemonRelocations(trust, []);
     await relocations.whenIdle();

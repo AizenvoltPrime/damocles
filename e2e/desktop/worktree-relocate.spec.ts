@@ -223,6 +223,8 @@ test('declining trust at Locate moves the worktree chats unlinked, a toast offer
     await answerDialogs(app, { [TRUST_PROMPT]: 'Don\'t Trust', [CONFIRM_TITLE]: 'Move Chats' });
     await locate(app, seeded.key, moved);
     await expect.poll(() => listedAndPresent(app, moved), { timeout: 120_000 }).toBe(true);
+    // the moved project opens its last chat, which works in a chat worktree, never a new empty one
+    await expect((await activeChat(app)).getByText('A2 ready')).toBeVisible({ timeout: 60_000 });
     const a = expectFollowed(home, seeded.a, moved);
     expect(fs.readFileSync(path.join(a.workingFolder, 'a.ts'), 'utf8')).toBe('export const a = 1;\n');
     expect(trustedFolders(home)).not.toContain(moved);
@@ -322,7 +324,8 @@ test('a chat worktree open as a project whose folder was moved is never offered 
     await expect(reason).toHaveText(`${seeded.a.workingFolder} is a chat worktree of ${seeded.a.projectPath!}, which Damocles keeps in place, so it can't be located. Move the folder back if you moved it, or remove this project.`);
     await expect(notice.getByTestId('project-locate-button')).toHaveCount(0);
 
-    // Locate asked for anyway runs to core's preflight, which refuses it: nothing is journaled, moved or asked
+    // Locate asked for anyway is refused by core's preflight before the trust question, which needs no trust: nothing is
+    // journaled, moved, confirmed or asked
     await app.evaluate(({ dialog }, picked) => {
       const g = globalThis as unknown as { __e2ePicks?: number };
       dialog.showOpenDialog = (() => {
@@ -338,6 +341,8 @@ test('a chat worktree open as a project whose folder was moved is never offered 
     expect(fs.existsSync(path.join(home.damoclesDir, 'project-relocations.json'))).toBe(false);
     expect(recordById(home, seeded.a.id)).toMatchObject({ projectPath: seeded.a.projectPath, worktreeRoot: seeded.a.worktreeRoot, workingFolder: seeded.a.workingFolder });
     expect((await askedDialogs(app)).filter((dialog) => dialog.message.includes(CONFIRM_TITLE))).toEqual([]);
+    expect((await askedDialogs(app)).filter((dialog) => dialog.message.includes(TRUST_PROMPT))).toEqual([]);
+    expect(trustedFolders(home)).not.toContain(elsewhere);
     expect((await projectAt(app, seeded.a.workingFolder))?.key).toBe(worktreeKey);
     expect(await projectAt(app, elsewhere)).toBeUndefined();
     expect(fs.readFileSync(path.join(elsewhere, 'a.ts'), 'utf8')).toBe('export const a = 1;\n');

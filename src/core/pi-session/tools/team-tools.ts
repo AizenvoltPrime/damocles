@@ -75,7 +75,7 @@ const TEAM_AGENT_ENTRIES: ReadonlyArray<{ name: string; access: ToolAccess; desc
   { name: 'team_get_status', access: 'both', description: 'Get the status of all team members.' },
   { name: 'team_spawn_specialist', access: 'lead', description: 'Spawn a specialist with a task.' },
   { name: 'team_redispatch_specialist', access: 'lead', description: 'Re-run a failed or cancelled specialist as a fresh attempt.' },
-  { name: 'team_cancel_specialist', access: 'lead', description: 'Cancel a running specialist.' },
+  { name: 'team_cancel_specialist', access: 'lead', description: 'Cancel a running specialist, or one never started that is not needed.' },
   { name: 'team_request_revision', access: 'lead', description: 'Send revision instructions.' },
   { name: 'team_approve_specialist', access: 'lead', description: 'Approve a specialist\'s work.' },
   { name: 'team_standby', access: 'specialist', description: 'Pause until peer content arrives.' },
@@ -745,7 +745,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
     pi.defineTool<typeof teamCancelSpecialistSchema, undefined>({
       name: 'team_cancel_specialist',
       label: 'team_cancel_specialist',
-      description: 'Cancel a running specialist that is stuck or no longer needed. Lead-only. The specialist will be terminated and marked as cancelled.',
+      description: 'Cancel a specialist that is running and stuck or no longer needed, or one that was never started and is not needed. Lead-only. A running specialist is terminated, and either one is marked as cancelled.',
       parameters: teamCancelSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -933,7 +933,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         if (recentlyCancelled.length > 0) {
           throw new TeamToolError(
             `Cannot synthesize yet. Specialists were recently cancelled: ${recentlyCancelled.join(', ')}. ` +
-              `Wait at least 30 seconds after cancellation or verify their scratchpad sections have findings before synthesizing.`,
+              `Wait at least 30 seconds after cancelling a running specialist before synthesizing.`,
           );
         }
         const specialists = ctx.getAllAgents().filter((a) => a.role === 'specialist');

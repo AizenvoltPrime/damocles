@@ -13,7 +13,7 @@ import { shownProjectOrder } from '../desktop/support/projects';
 import { openProjectChat } from '../desktop/support/screenshots';
 import { answerToast, overlayPage, recordedToasts, recordToasts, shellPage, shellState } from '../desktop/support/shell';
 import { chatRow, cssString, listChats, projectRow, readyShell } from '../desktop/support/shell-ui';
-import { answerDialogs, awaitTurnEnd, clickMenu, TRUST_PROMPT } from '../desktop/support/ui';
+import { answerDialogs, askedDialogs, awaitTurnEnd, clickMenu, TRUST_PROMPT } from '../desktop/support/ui';
 import { optIn } from '../desktop/support/worktree-chat';
 import { browserEntry, pickBrowser } from './support/connect-ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
@@ -172,6 +172,12 @@ test('Locate of a renamed SSH project moves its chats on the target and re-point
     await remoteProjectKey(app, { authorityKey: authority }, REPO);
     await locate(app, key, MOVED);
     await expect.poll(() => listedAndPresent(app, authority, MOVED), { timeout: 120_000 }).toBe(true);
+    // the host's trust question comes before the preflight that reads identities, so the host's core reads the new folder's root
+    // commits there
+    const asked = await askedDialogs(app);
+    const trustAsked = asked.findIndex((dialog) => dialog.message.startsWith(TRUST_PROMPT) && dialog.message.includes(MOVED) && dialog.answered === 'Trust Folder');
+    expect(trustAsked).toBeGreaterThanOrEqual(0);
+    expect(trustAsked).toBeLessThan(asked.findIndex((dialog) => dialog.message.includes(CONFIRM_TITLE) && dialog.answered === 'Move Chats'));
     const moved = (await projectAt(app, authority, MOVED))!;
     expect(moved.connection).toBe('connected');
     expect(moved.trusted).toBe(true);

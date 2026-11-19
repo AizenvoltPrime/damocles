@@ -239,6 +239,10 @@ Revisit if a cold-start measurement shows a larger gain, with the per-module `im
 
 Node's compile cache (`module.enableCompileCache`) is off on purpose. The desktop build enforces `enableEmbeddedAsarIntegrityValidation` and `onlyLoadAppFromAsar` (`electron-builder.yml`), and the cache reads and writes a folder outside `app.asar`: Node 24 has no read-only mode, so the app would load V8 bytecode that integrity validation never checks, and anyone who can write the user profile could inject code through it.
 
+### First provider call pauses Damocles Core (accepted)
+
+The first call through a provider API Damocles Core has not used yet pauses its thread for about 1 s while pi loads that API's code. pi-ai loads each API module on first use through `lazyApi` (`dist/api/lazy.js`), whose `load` callback in each `dist/api/<api>.lazy.js` (for example `openai-completions.lazy.js`) runs the `import()`, and the module pulls in its provider SDK: the `openai` package alone is 393 modules. A stall profile shows it at the first DeepSeek call (`openai-completions`). A preload would run on the same thread, so it only moves the pause, and it could land while another chat streams. The two ways to make module loading itself cheaper were measured and rejected above: "Bundled pi (S10 spike): not adopted" and "No V8 compile cache".
+
 ## Benchmarks
 
 Run from PowerShell; neither needs VS Code:
@@ -303,6 +307,165 @@ After the session metadata index (a SQLite index owned by a worker thread, `docs
 
 A cold list now shows its valid rows after the first answer and fills in as batches arrive. The complete cold list takes about twice the earlier single-thread parse (269 to 344 ms) because it adds the index writes, one transaction per batch of 16 files, and the per-message round trips; a separate timing of 300 small files measured 189 ms for the bare parses against 253 to 265 ms for the complete list.
 
+### Quick Open listing: the walk process against ripgrep's walk
+
+Quick Open lists a project through the walk process (`dist/walk-child.js`, `docs/invariants.md` "Quick Open"), not with `rg --files`. The measurement compares the two on one generated tree, and shows how much of the listing runs on the thread that asks for it, which is main for a local project.
+
+The tree had 213,201 files in 2,401 folders: 200 packages of 10 folders with 100 `.ts` files each, a `.gitignore` per package ignoring `*.log`, an `x.log` per folder, a `.git` folder of 1,001 files and a `node_modules` folder of 10,000 files. A separate folder held 20,000 files in one listing. Every run used Quick Open's default excludes (`files.exclude` and `search.exclude`, as `!` overrides) and all ignore files. The "200k" rows exclude the 20,000-file folder and list 200,200 files. The "50k" rows also exclude 150 packages (`pkg1*`, `pkg0[5-9]*`) and list 50,050 files. The "one folder" rows exclude every package and list the 20,000 files of the single folder. Every walk listed as many files as rg did.
+
+The harness was a script bundled with esbuild from the sources (koffi external) and run under Node 24.21.0, not inside Electron. Its thread played main's part: it installed the process launcher pool as main does (`lockThreadSpawns`, the built `dist/process-launcher-worker.js`), and it relayed every batch, or every chunk of rg's output, to a worker thread, as main relays them to the Quick Open worker. The variants:
+
+- **rg**: `rg --files --hidden --no-config -g !<exclude>... -- <root>`, ripgrep 15.0.0, spawned on the harness thread. The app started rg on the process launcher, so the synchronous spawn in this row's longest task did not reach main.
+- **Walk process**: `createQuickOpenListing` over `createWalkHost` and `startWalkChild` with the built `dist/walk-child.js`, as Damocles Core runs it (main forks it as a utility process; the two transports are compared below the second table); the process ran under the harness's own Node.
+- **Walk worker (removed)**: the same listing over the worker-thread host the walk process replaced, built from its last sources over the same walk code.
+- **Walk on the calling thread**: `walkFiles` on the harness thread, which is what main would pay without the walk process.
+- **First query**: the built `dist/quick-open-worker.js` asks for the list, the harness relays the walk process's batches to it, and the time runs until the worker answers the query `file050`.
+- **First query over rg**: the same, with rg's output relayed to the Quick Open worker in batches of 1,000 instead, which is what a first query cost when rg listed the files.
+
+Each variant ran 5 times after a warm-up of each, so the file system cache was warm. The order alternated between runs. Each run was timed twice. The plain pass gave the wall time and the event-loop utilization of the harness thread (`performance.eventLoopUtilization`: its busy time and busy share). The probed pass kept a `setImmediate` chain going and recorded the longest gap between two turns, which is the longest task the listing ran on that thread. The figures are medians; the range is minimum to maximum. Measured 2026-11-18 under Node 24.21.0. Intel Core i7-13650HX (20 threads), 32 GB, Windows 11 Pro 10.0.26300, NTFS SSD.
+
+| Tree | Variant | Files | Wall ms | Range ms | Thread busy ms | Busy share | Longest task ms (median, max) |
+|---|---|---|---|---|---|---|---|
+| 50k | rg | 50,050 | 93 | 78-97 | 30 | 32% | 10.1, 13.7 |
+| 50k | Walk process | 50,050 | 96 | 93-101 | 30 | 31% | 0.9, 2.1 |
+| 50k | Walk worker (removed) | 50,050 | 97 | 88-101 | 26 | 27% | 0.9, 1.0 |
+| 50k | Walk on the calling thread | 50,050 | 82 | 71-85 | 71 | 87% | 2.8, 3.3 |
+| 50k | First query | 50,050 | 187 | 171-200 | 29 | 15% | 0.9, 1.9 |
+| 50k | First query over rg | 50,050 | 170 | 164-172 | 47 | 28% | 9.8, 22.0 |
+| 200k | rg | 200,200 | 253 | 247-286 | 79 | 31% | 9.8, 15.0 |
+| 200k | Walk process | 200,200 | 335 | 311-376 | 111 | 33% | 1.2, 2.6 |
+| 200k | Walk worker (removed) | 200,200 | 307 | 297-437 | 96 | 31% | 1.0, 2.2 |
+| 200k | Walk on the calling thread | 200,200 | 258 | 237-338 | 229 | 89% | 2.8, 3.8 |
+| 200k | First query | 200,200 | 665 | 643-759 | 107 | 16% | 1.6, 2.1 |
+| 200k | First query over rg | 200,200 | 590 | 573-673 | 141 | 24% | 11.0, 12.9 |
+| One folder | rg | 20,000 | 122 | 95-251 | 18 | 15% | 12.5, 20.3 |
+| One folder | Walk process | 20,000 | 50 | 38-62 | 12 | 23% | 0.2, 2.9 |
+| One folder | Walk worker (removed) | 20,000 | 32 | 29-54 | 8 | 25% | 0.3, 0.7 |
+| One folder | Walk on the calling thread | 20,000 | 33 | 24-61 | 26 | 77% | 2.3, 4.4 |
+| One folder | First query | 20,000 | 60 | 52-84 | 9 | 15% | 13.2, 15.4 |
+| One folder | First query over rg | 20,000 | 117 | 100-138 | 23 | 20% | 11.7, 13.8 |
+
+A run of the same harness without the removed worker's rows, the same day, gave the same picture: on the 200k tree rg 251 ms, the walk process 326 ms (main busy 110 ms, longest task 1.3 and 2.1 ms), the walk on the calling thread 265 ms, a first query 687 ms and a first query over rg 593 ms.
+
+Two walks at once: a 200k Quick Open listing and a Search walk of the same tree (command-line batches as Search runs them, its rg left out), each alone one after the other, then both started together, on one walk host and on two; each walk's own wall time, 5 rounds in alternating order after a warm-up, medians and ranges. In runs 1 and 2 a walk host ran one walk process, so "one process" is one host; runs 3 and 4 used the host as it is now, which starts a second process for the second walk.
+
+| Run | Walks | Listing ms | Range ms | Search walk ms | Range ms |
+|---|---|---|---|---|---|
+| 1 | alone | 504 | 482-543 | 497 | 444-573 |
+| 1 | at once, one process | 932 | 811-954 | 933 | 808-953 |
+| 1 | at once, two processes | 571 | 534-627 | 555 | 541-649 |
+| 2 | alone | 496 | 413-563 | 539 | 420-675 |
+| 2 | at once, one process | 1,018 | 664-1,126 | 1,020 | 664-1,122 |
+| 2 | at once, two processes | 508 | 486-580 | 512 | 502-577 |
+| 3 | alone | 436 | 316-773 | 364 | 314-679 |
+| 3 | at once, one host | 443 | 351-773 | 480 | 374-834 |
+| 3 | at once, two hosts | 583 | 402-667 | 574 | 382-668 |
+| 4 | alone | 556 | 334-653 | 578 | 319-625 |
+| 4 | at once, one host | 398 | 349-712 | 411 | 368-740 |
+| 4 | at once, two hosts | 520 | 408-633 | 505 | 385-624 |
+
+The alone rows of this mode took longer than the table's walk process row (about 500 against 335 ms for the same listing), and their ranges are wide; this mode starts two walk processes, and the cause of the difference was not found.
+
+Start and memory: from a fresh walk host's first walk to the first batch of the one-folder tree took 113 ms (105-157, 7 starts) with the process under Node and 104 ms (87-147) under Electron 45.2.1 as Node (the harness itself run with `ELECTRON_RUN_AS_NODE=1`), and to that walk's end 124 and 111 ms. After a 200k listing, the walk process under Electron held a 68.8 MB working set and 73.8 MB of private bytes (one reading). A walk host keeps each of the up to two processes it started until it has had no walk and no held read for `WALK_IDLE_MS` (60 s), so main's and Damocles Core's hosts on desktop, and a daemon's and its Core's on a target, may hold about four such processes, near 280 MB and more for main's utility processes (below), for a minute after each has run two walks at once, and none once their walks have been idle that long.
+
+Main's walk processes are utility processes, and the other hosts' are started on the launcher ("Concurrent starts on Windows" says why). The two transports, measured 2026-11-19 in Electron 45.2.1's main on the machine above (`harness5.ts`, bundled with esbuild and run by the app's `electron.exe`, the launcher pool installed as main installs it): a host over each listed the trees above with the built `dist/walk-child.js` in Quick Open's mode, 15 rounds in alternating order after a warm-up, an idle second before each. Main CPU is `process.cpuUsage()` of the whole main process over the listing (every thread, so the launcher worker's relay counts for stdio and Chromium's IO thread for the port), median.
+
+| Tree | Transport | Files | Wall ms | Range ms | Main CPU ms |
+|---|---|---|---|---|---|
+| 200k | Launcher, stdio lines | 200,200 | 318 | 289-363 | 94 |
+| 200k | Utility process, parent port | 200,200 | 338 | 323-379 | 63 |
+| One folder | Launcher, stdio lines | 20,000 | 32 | 25-54 | under 16 |
+| One folder | Utility process, parent port | 20,000 | 30 | 25-46 | under 16 |
+
+From a fresh host's first walk to the first batch of the one-folder tree took 90 ms (88-125, 7 starts) on the launcher and 105 ms (94-141) as a utility process. The port carries the same batches of up to `WALK_BATCH_FILES` files as structured clones, so no line is parsed as JSON in main, and the walk's own time is the same on both; three earlier runs of fewer rounds on a busier machine gave wider ranges with the same picture (200k medians 602 and 595 ms, 654 and 653 ms, 346 and 507 ms with ranges of 313-638 and 316-591 ms). After the runs the utility walk process held a 108.4 MB working set and 96.5 MB of private bytes (one reading; 87 to 148 MB over the four runs).
+
+Findings:
+
+- **Main's longest task does not grow with the tree.** In the "Walk process" rows its median stayed between 0.2 and 1.2 ms from 20,000 to 200,200 files, and its longest was 2.9 ms. The "First query" rows also relay the batches to the Quick Open worker; for the one folder their longest task was 13.2 ms (median), as over rg's output, against 1.6 ms for 200,200 files, and its cause was not found. Main's total work is reading the process's lines, parsing them and checking each path, about 0.55 µs per file (111 ms for 200,200 files, spread over batches of up to 1,000). On the calling thread, the walk would hold main for the whole listing (89% busy).
+- **The walk process costs a little over the worker thread it replaced.** For 200,200 files it took 335 ms against the worker's 307 ms, and main's busy time was 111 against 96 ms: each line crosses the launcher worker that started the process and is parsed as JSON, where the worker's batches arrived as structured clones. For 50,050 files the two were even (96 and 97 ms); for the one folder the process took 50 ms against 32 ms, with ranges that overlap.
+- **The walk takes about 1.3 times rg's time on a deep tree, and less on one large folder.** On the 200k tree the walk process took 0.34 s against rg's 0.25 s, and a first query took 0.67 s against 0.59 s over rg's output. The list is cached per project until a create or delete under it, so later queries do not pay for the walk again.
+- **Two walks on one walk process each take about the sum of their times; on two processes, about their own.** One process interleaves its walks folder by folder on one thread: a listing and a Search walk started together took 932 and 933 ms (1,018 and 1,020 ms in the second run) against about 500 ms alone, and 571 and 555 ms (508 and 512 ms) on two processes. So the walk host starts a second process for a walk that finds every running one busy (`MAX_WALK_PROCESSES`), and with it the two walks took 443 and 480 ms (398 and 411 ms) against alone rows of 436 and 364 ms (556 and 578 ms). A third walk at once shares the process with the fewest walks.
+- **A child process start slowed the starting process in an earlier measurement, and not in these runs.** The earlier table, measured with the same tree and method on the same machine, found that any child start, even a `rg --version` one second earlier, made later CPU work in the harness process take about twice as long (the 200k walk on the calling thread 549 ms, against 251 ms with no other variant run); its cause was not found. In these runs, which start rg and the walk process before any timed run, that row took 258 and 265 ms, and a rerun of the earlier harness the same day took 310 ms for it. Every row here ran after child starts, as the app's processes run after git and rg starts.
+- **The walk's time is CPU on its thread, not disk waits.** Before this tuning, the same harness measured the 200k walk, then on a worker thread, at 1.13 s and the first query at 1.57 s. Its profile was 98% busy: each entry tested every ignore and exclude glob's regular expression (a `**/name` glob backtracks over every `/`), walked up its folder chain to find the rules that apply, and was handed over in an async generator step of its own. The walk now matches as globset does, by looking up the path, its basename or its extension for the globs that allow it (`rg-ignore.ts`); computes each folder's rule chain once (`walk.ts` `childFolder`); and hands over one batch per folder. The walk process checks its flush interval once per folder: checked per file, it sent a nearly empty batch each time the walk resumed after waiting for credit. Reading 4, 8, 16 or 32 folders ahead made no difference (227 to 253 ms for the walk alone), so `READ_AHEAD` stays 8.
+- **Most of a first query is now the Quick Open worker's own indexing.** Fed rg's output, which arrives in 0.25 s, a first query on the 200k tree still took 0.59 s.
+
+### Search: walked batches against ripgrep's walk
+
+Search lists a project through the walk process and runs rg on the listed files in batches, up to `walkedRgRuns()` at once: half the logical CPUs, at least 1 and at most 4 (`runWalkedRg`, `docs/invariants.md` "Search" and "Tool overrides"). The first measurement ran one rg at a time, as Search did then, and compares it with rg searching over its own walk; "Runs at once" below measures the runs at once. Both ran on the "200k" tree of the Quick Open section with the same excludes: 200,200 files, of which one per package (`pkgNNN/dir5/file050.ts`, 200 files) holds the pattern and every other is empty. The query was a fixed string with `--crlf --ignore-case`, all ignore files on.
+
+The harness was a script bundled with esbuild from the sources and run under Node 24.21.0, with the process launcher pool as main installs it and the walk process bundled from the current sources. The variants:
+
+- **rg's own walk**: `rg --json --no-config --hidden -g !<exclude>... --crlf --ignore-case --fixed-strings -- needle <root>`, started on the launcher.
+- **Walked, budget**: `runWalkedRg` over a walk host's walk with that command-line budget (`lineBudget`), as the Search runner runs it.
+- **Search runner**: `createSearchRunner` itself, which uses `BATCH_COMMAND_LINE`.
+
+Each variant ran 5 times after a warm-up of each, in alternating order, with an idle second before each run. First match is the time to the first match event; Total, to the search's end. The figures are medians; the range is minimum to maximum. Measured 2026-11-18. Windows: Intel Core i7-13650HX (20 threads), 32 GB, Windows 11 Pro 10.0.26300, NTFS SSD. Linux: the same machine, WSL 2 (Ubuntu 24.04, kernel 6.18.58.1), ext4, `ARG_MAX` 2 MiB.
+
+| OS | Variant | rg runs | First match ms | Range ms | Total ms | Range ms |
+|---|---|---|---|---|---|---|
+| Windows | rg's own walk | 1 | 99 | 61-152 | 6,732 | 5,212-8,205 |
+| Windows | Walked, 16,000 | 292 | 135 | 125-150 | 39,330 | 36,699-41,008 |
+| Windows | Walked, 32,000 | 145 | 278 | 270-303 | 41,848 | 40,717-42,695 |
+| Windows | Search runner (32,000) | not counted | 282 | 278-295 | 41,255 | 40,871-42,113 |
+| Linux | rg's own walk | 1 | 8 | 6-11 | 136 | 133-150 |
+| Linux | Walked, 32,000 | 196 | 10 | 10-11 | 1,555 | 1,528-1,602 |
+| Linux | Walked, 65,536 | 96 | 14 | 12-15 | 998 | 950-1,045 |
+| Linux | Walked, 98,304 | 64 | 15 | 15-19 | 815 | 770-911 |
+| Linux | Walked, 131,072 | 48 | 19 | 16-20 | 731 | 669-828 |
+| Linux | Search runner (98,304) | not counted | 16 | 15-19 | 810 | 777-882 |
+
+Every variant found the same 200 matches.
+
+Findings:
+
+- **With one rg at a time, Search over the walk took about six times rg's own walk on Windows and on Linux.** On Windows 41 s against 6.7 s, on Linux 0.81 s against 0.14 s. The walk itself takes about 0.3 to 0.5 s of that on Windows (the Quick Open section).
+- **On Windows the cost is rg's per-file work on named files, not the process starts.** One rg over 1,000 files of a package named on its command line took 136 to 187 ms, against 48 to 56 ms for its own walk of the same package; ten runs of 100 named files took 274 to 316 ms. A run of a 32,000-unit batch (about 1,400 files) took about 300 ms and one of 16,000 units about 150 ms, so halving the batch doubled the runs and left the total even. `BATCH_COMMAND_LINE` stays 32,000 on Windows, where `CreateProcessW` sets the bound.
+- **On Linux the process starts weigh, so a larger batch helps.** From 32,000 to 96 KiB of argv the runs fell from 196 to 64 and the total from 1.56 to 0.82 s; 128 KiB gained another 0.08 s. `BATCH_COMMAND_LINE` is 96 KiB on POSIX, the most that leaves the environment 32 KiB of the 128 KiB Linux never sets `ARG_MAX` below (`fs/exec.c` `bprm_stack_limits`, which also counts each argument's pointer); macOS allows 1 MiB.
+- **The first match waits for the first run.** It came after 0.28 s on Windows, the walk's first full batch plus its rg run, and after 0.14 s with 16,000-unit batches. On this warm tree a full batch fills well within `WALK_FLUSH_MS`, so the flush, which sends a batch whose first file waited 200 ms at the next folder listed, matters only on a slow file system, where it starts the first rg early instead of after a full batch.
+
+#### Runs at once
+
+rg takes no list of files to search (BurntSushi/ripgrep#273; PR #3462 adds one and is not in 15.0.0), so each batch is named on its command line, and rg stats every path named there on one thread before its search threads start (the ignore crate's `WalkParallel::visit`, its loop over the roots). On this Windows machine that stat costs about 115 µs a file, against about 62 µs for Node's `lstat` of the same file (Kaspersky is installed), so a batch's time is mostly those stats; several runs at once share them out, as `xargs -P` does.
+
+rg alone first, with `rg-parallel.mjs`: the 200,000 `.ts` files of the 200 packages, named in batches within a command-line budget (98,304 on Linux), each run with rg's own thread count and the walked flags (`--json --no-config --no-ignore --no-mmap --crlf --ignore-case --fixed-strings`), k runs at once, started with Node's `spawn` outside the launcher, against one rg walking the 200 package folders itself; no walk process and no Damocles code. Median of 3, the same machine and day.
+
+| OS | rg's own walk | 1 at once | 2 at once | 4 at once | 8 at once |
+|---|---|---|---|---|---|
+| Windows | 7.1 s | 49.0 s | 26.4 s | 24.8 s | 21.3 s |
+| Linux | 0.13 s | 0.58 s | 0.35 s | 0.24 s | 0.23 s |
+
+End to end, with a second harness built as the first: the Search runner (`createSearchRunner`) as the first table's row, and the agent's Grep (`createGrepTool`, with stand-ins for pi's output helpers, which every variant pays alike) on the whole tree (no excludes: 230,200 files with `node_modules` and the 20,000-file folder, `.git` skipped), once with its default `limit` of 100, which ends the search at the 101st match, and once with 1,000, which searches every file. The number of runs was set through `os.availableParallelism`, which `walkedRgRuns()` reads. Grep's "rg's own walk" rows ran `rg --json --line-number --color=never --hidden -- needle .` in the tree, as pi's own grep runs it, killed at the match past the limit. First match is not measured for Grep, which returns at its end. Windows: 3 rounds after a warm-up of each variant; Linux: 5. Medians, ranges minimum to maximum, alternating order, an idle second before each run. Measured 2026-11-18 on the machines of the first table.
+
+| OS | Variant | Matches | First match ms | Range ms | Total ms | Range ms |
+|---|---|---|---|---|---|---|
+| Windows | Search: rg's own walk | 200 | 67 | 66-257 | 6,619 | 6,343-7,029 |
+| Windows | Search runner, 1 run at once | 200 | 303 | 279-303 | 48,333 | 43,161-51,220 |
+| Windows | Search runner, 2 runs at once | 200 | 475 | 458-596 | 32,944 | 32,396-33,297 |
+| Windows | Search runner, 4 runs at once | 200 | 436 | 297-1,088 | 27,426 | 24,307-30,789 |
+| Windows | Grep, limit 100: rg's own walk | 100 | n/a | n/a | 3,868 | 3,861-4,266 |
+| Windows | Grep, limit 100, 1 run at once | 100 | n/a | n/a | 29,997 | 27,091-31,634 |
+| Windows | Grep, limit 100, 4 runs at once | 100 | n/a | n/a | 16,437 | 14,866-21,839 |
+| Windows | Grep, limit 1,000: rg's own walk | 200 | n/a | n/a | 8,021 | 6,868-8,394 |
+| Windows | Grep, limit 1,000, 1 run at once | 200 | n/a | n/a | 56,314 | 53,492-60,641 |
+| Windows | Grep, limit 1,000, 4 runs at once | 200 | n/a | n/a | 31,579 | 29,975-34,968 |
+| Linux | Search: rg's own walk | 200 | 7 | 6-8 | 150 | 141-162 |
+| Linux | Search runner, 1 run at once | 200 | 17 | 16-27 | 961 | 876-983 |
+| Linux | Search runner, 2 runs at once | 200 | 18 | 16-20 | 544 | 479-569 |
+| Linux | Search runner, 4 runs at once | 200 | 19 | 16-29 | 366 | 341-504 |
+| Linux | Grep, limit 100: rg's own walk | 100 | n/a | n/a | 73 | 72-86 |
+| Linux | Grep, limit 100, 1 run at once | 100 | n/a | n/a | 562 | 517-649 |
+| Linux | Grep, limit 100, 4 runs at once | 100 | n/a | n/a | 247 | 241-287 |
+| Linux | Grep, limit 1,000: rg's own walk | 200 | n/a | n/a | 163 | 154-196 |
+| Linux | Grep, limit 1,000, 1 run at once | 200 | n/a | n/a | 1,018 | 948-1,200 |
+| Linux | Grep, limit 1,000, 4 runs at once | 200 | n/a | n/a | 428 | 397-526 |
+
+Findings:
+
+- **Four runs at once take a little over half the time of one on Windows, and under half on Linux.** Search: 27.4 s against 48.3 s on Windows, 0.37 s against 0.96 s on Linux; Grep of every file: 31.6 s against 56.3 s, and 0.43 s against 1.02 s; Grep to its limit: 16.4 s against 30.0 s, and 0.25 s against 0.56 s. Two runs gave most of the Windows gain (Search 32.9 s), as with rg alone (26.4 s at 2, 24.8 s at 4).
+- **The one-at-a-time Search runner took 48 s here and 41 s in the first table**, the same harness method on the same day; its range here was 43 to 51 s.
+- **On Windows the first match comes later with runs at once.** 0.44 to 0.48 s at 2 or 4 runs, against 0.30 s with one: the first batches start together and share the stats. On Linux it stayed between 17 and 19 ms.
+- **Search still takes about four times rg's own walk on Windows** (27 s against 6.6 s), and Grep of every file about four times (32 s against 8 s). The cause is in rg: the stat of every named path on one thread, which more runs share only up to about 4 (21.3 s at 8 runs of rg alone), since the opens stop scaling past 2 to 4 processes. Only rg's own walk avoids it, and Damocles does not use that walk because on Windows it opens a link's target ("Tool overrides" in `docs/invariants.md`). A file-list input in rg (#273, PR #3462) is what would let one rg take a whole listing. On Linux the gap is about 2.5 times (0.37 s against 0.15 s).
+
 ## Process launcher (S2 measurements)
 
 libuv's `uv_spawn` calls `CreateProcessW` synchronously on the thread that starts a process, so every start Damocles owns is meant to run on the process launcher (`src/core/process-launcher/`, `docs/invariants.md` "Shell cancellation and process lifetime"). The host thread pays one `postMessage` per request.
@@ -334,7 +497,7 @@ Measuring again: the spike scripts are not kept; time `spawn()` with `process.hr
 
 ### Starts outside the launcher
 
-Every process start Damocles owns goes through the launcher: git (source control, checkpoints and rewind with their `tasklist` and `ps` liveness probes, chat review, the team fingerprint, the `mcp.local.json` ignore check, the desktop startup probe); the Bash and PowerShell tools, the hooks runner and the POSIX shell sentinel, which the launcher worker owning its session job starts, with `killProcessTree`'s `taskkill` fallback; MCP stdio servers (`mcp/launcher-transport.ts`), the npx resolver's npm calls and `config-value.ts`'s `!command` values; ripgrep for `grep`, `find`, the `@` file list, Search and Quick Open; `wsl.exe` for the terminal profiles; voice (the sidecar, the recorder, the lock file's `icacls`, the graceful `taskkill`, the runtime probes and `python-installer.ts`); and the desktop login-shell read at startup (`mergeLoginShellEnv`). Lint refuses a `child_process` or `cross-spawn` import outside the files allowed to start processes ("Synchronous calls (lint)" above, `docs/invariants.md` "Shell cancellation and process lifetime"). On desktop, main and Damocles Core each install their own pool: core's starts the engine's processes (git, the shell tools and hooks, MCP, voice, the `@` file list), and main's starts the few main runs (Search, Quick Open, terminal profiles, the login-shell read and the startup git probe).
+Every process start Damocles owns goes through the launcher: git (source control, checkpoints and rewind with their `tasklist` and `ps` liveness probes, chat review, the team fingerprint, the `mcp.local.json` ignore check, the desktop startup probe); the Bash and PowerShell tools, the hooks runner and the POSIX shell sentinel, which the launcher worker owning its session job starts, with `killProcessTree`'s `taskkill` fallback; MCP stdio servers (`mcp/launcher-transport.ts`), the npx resolver's npm calls and `config-value.ts`'s `!command` values; ripgrep for `grep`, which matches over the files the walk lists, and for Search; the walk processes of Damocles Core, the daemon and the extension host (`startWalkChild`), which run every walk of the `@` list, Grep and Glob, and a remote project's Quick Open and Search (main's own walk processes are utility processes, below); `wsl.exe` for the terminal profiles; voice (the sidecar, the recorder, the lock file's `icacls`, the graceful `taskkill`, the runtime probes and `python-installer.ts`); and the desktop login-shell read at startup (`mergeLoginShellEnv`). Lint refuses a `child_process` or `cross-spawn` import outside the files allowed to start processes ("Synchronous calls (lint)" above, `docs/invariants.md` "Shell cancellation and process lifetime"). On desktop, main and Damocles Core each install their own pool: core's starts the engine's processes (git, the shell tools and hooks, MCP, voice, `grep`'s ripgrep, its walk processes), and main's starts the few main runs (Search's ripgrep, terminal profiles, the login-shell read and the startup git probe).
 
 These stay outside, each for its reason:
 
@@ -342,7 +505,7 @@ These stay outside, each for its reason:
 - **pi's own starts:** its `!command` API keys and headers in `models.json` and `!command` keys in `auth.json`, which pi runs with async `spawn` (patch 003, `patches/README.md`), built-in tools Damocles does not replace and users' pi extensions. Damocles patches pi only to carry a fix upstream has not released yet; these starts run in Damocles Core, so a synchronous one blocks the engine, never the window.
 - **Libraries that start their own processes:** Patchright's driver and Chrome (browser tools, on by default) and electron-updater's installer at quit. Neither takes a spawn function.
 - **Compass's git**, which runs `execFile` on the Compass worker thread (`src/core/compass/git.ts`, which no host bundle includes) under the spawn lock ("Concurrent starts on Windows" below).
-- **Electron utility processes** (Damocles Core and the pty and formatter hosts), which Chromium starts on its own launcher thread; node-pty's shells start in the pty host, off every UI and chat thread.
+- **Electron utility processes** (Damocles Core, the pty and formatter hosts, and main's walk processes, `main/walk-process.ts`), which Chromium starts on its own launcher thread; node-pty's shells start in the pty host, off every UI and chat thread. Main's walk processes are utility processes rather than launcher children because a launcher child receives any handle Chromium's launcher marks inheritable while their starts overlap, and a walk process may live long ("Concurrent starts on Windows" below).
 - **The design renderer** (`src/desktop/main/design/design-renderer-start.ts`, `PROCESS_STARTERS_MAIN`), the app's executable started again to hold core's design render windows (`docs/invariants.md` D85). Main starts it with `child_process.spawn` on its own thread, because its IPC channel belongs to the thread that starts it and the launcher has none; `lockThreadSpawns` holds the spawn lock around the start. It starts at the first render of a session at most once per renderer life, so the one `CreateProcessW` on the UI thread is rare.
 - **The daemon's children and the bridge's daemon start** (`src/desktop/daemon/process-starts.ts`, the one file there lint allows). The daemon forks the pty host, the formatter hosts and Damocles Core with `child_process.fork` and `serialization: 'advanced'` from its main thread, because an IPC channel belongs to the thread that forked and the launcher has neither fork nor IPC. The attach bridge starts the daemon detached (setsid on POSIX, `Win32_Process.Create` through WMI on Windows, so it leaves the caller's job object). Each start runs inside `withSpawnLock`; every other daemon start (ripgrep, git, the login-shell read, `icacls`, `whoami`) goes through the daemon's own launcher pool.
 - **The `damocles` command's start of the app** (`src/desktop/cli/cli.ts`, `PROCESS_STARTERS_CLI` in `eslint.config.mjs`). `dist/cli.js` is a program of its own, which `resources/bin/damocles` or `damocles.cmd` runs under the app's binary as Node outside any Damocles process, so there is no launcher pool to use and no app thread a start could block. It makes one start, the app with the request on its command line, detached with its stdio ignored so the app outlives the terminal, and then exits or polls its `--wait` marker. The rest of `src/desktop/cli` starts nothing.
@@ -368,4 +531,4 @@ What holds the lock, per thread that starts processes:
 What does not, and what that costs:
 
 - **Synchronous starts by code Damocles does not own on a host thread,** which publish no channel event: pi's `where` lookups for its shell (`utils/shell.js`, `spawnSync` with a 5 s timeout) and other extensions' synchronous starts in the extension host. The window is one `uv_spawn`, about one `CreateProcessW` (tens of milliseconds, seconds at worst, as measured above). A launcher start whose `CreateProcessW` lands in it gives its child the lookup's stdout; if that child lives long, pi's `spawnSync` waits until its timeout kills the lookup and closes the pipes (`SyncProcessRunner::Kill`), so Core's thread is blocked that long and the lookup finds nothing. The other way round, the lookup inherits the launcher child's pipe ends and delays that child's `close` until it exits. pi's `!command` config values are async starts (patch 003) under the host thread's lock above; its synchronous resolvers (`resolve-config-value.js`: `spawnSync` or `execSync`, 10 s timeout) are left only to its built-in MCP extension (`extensions/mcp/runtime.js`), which Damocles never loads. Damocles' own `!command` values (MCP config, `config-value.ts`) start on the launcher.
-- **Chromium's launcher thread** in desktop main: `base::LaunchProcess` passes `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, so Chromium's children inherit nothing of ours. It marks the handles it passes inheritable just before its `CreateProcessW`, so a main launcher start overlapping a Chromium launch can receive one of them; main's starts (Search, Quick Open, terminal profiles, the login-shell read, the git probe) are short-lived, so such a copy lives only as long as they do.
+- **Chromium's launcher thread** in desktop main: `base::LaunchProcess` passes `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, so Chromium's children inherit nothing of ours. It marks the handles it passes inheritable just before its `CreateProcessW`, so a main launcher start overlapping a Chromium launch can receive one of them; main's launcher starts (Search's ripgrep, terminal profiles, the login-shell read, the git probe) are short-lived, so such a copy lives only as long as they do. Main's walk processes, which may live long, are utility processes that Chromium's launcher itself starts with its handle list, so they receive none.

@@ -58,6 +58,22 @@ describe('browser panel script on the desktop bridge', () => {
     expect(bridge.setState).toHaveBeenCalledWith({ url: 'https://next.example/' });
   });
 
+  it('keeps the chat token the host names beside the address in its state, for a window reload to restore the page into', () => {
+    const { bridge, deliver } = mount();
+    const owner = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+    deliver({ type: 'urlChanged', url: 'https://next.example/', owner });
+    expect(bridge.setState).toHaveBeenLastCalledWith({ url: 'https://next.example/', owner });
+  });
+
+  it('keeps a served page\'s file: address beside the served address its address bar shows', () => {
+    const { bridge, deliver } = mount();
+    const owner = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+    const served = `http://${'a'.repeat(32)}.localhost:5000/docs/a.html`;
+    deliver({ type: 'urlChanged', url: served, owner, file: 'file:///home/u/proj/docs/a.html' });
+    expect((document.getElementById('url-input') as HTMLInputElement).value).toBe(served);
+    expect(bridge.setState).toHaveBeenLastCalledWith({ url: served, owner, file: 'file:///home/u/proj/docs/a.html' });
+  });
+
   it('runs without the in-page toolbar and still handles every host message it draws', () => {
     const { bridge, deliver } = mount(false);
     expect(bridge.postMessage).toHaveBeenCalledWith({ type: 'ready' });

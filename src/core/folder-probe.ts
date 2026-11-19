@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
+import type { Disposable } from '../platform/disposable';
 
 type FolderCheck = { result: Promise<boolean>; startedAt: number; settledAt: number | null };
 
@@ -12,22 +13,34 @@ export interface HungGate {
   admits(): boolean;
   /** Counts `check` from now until it settles; it hangs once `timeoutMs` passed. */
   track(check: Promise<unknown>, timeoutMs: number): void;
+  /** A hung check settled and the gate, which admitted none, admits again. */
+  onDidAdmit(listener: () => void): Disposable;
 }
 
 export function createHungGate(maxHung: number, now: () => number = () => performance.now()): HungGate {
   const running = new Set<{ readonly hungAt: number }>();
+  const listeners = new Set<() => void>();
+  const admits = (): boolean => {
+    const at = now();
+    let hung = 0;
+    for (const check of running) if (at >= check.hungAt) hung++;
+    return hung < maxHung;
+  };
   return {
-    admits: () => {
-      const at = now();
-      let hung = 0;
-      for (const check of running) if (at >= check.hungAt) hung++;
-      return hung < maxHung;
-    },
+    admits,
     track: (check, timeoutMs) => {
       const entry = { hungAt: now() + timeoutMs };
       running.add(entry);
-      const settled = (): void => { running.delete(entry); };
+      const settled = (): void => {
+        const closed = !admits();
+        running.delete(entry);
+        if (closed && admits()) for (const listener of [...listeners]) listener();
+      };
       check.then(settled, settled);
+    },
+    onDidAdmit: (listener) => {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
     },
   };
 }

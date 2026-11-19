@@ -27,6 +27,7 @@ defineProps<{ card: ScmStateCard }>();
       {{ card.text }}
     </p>
     <Button
+      v-if="card.primary"
       type="button"
       data-testid="scm-state-action"
       class="d-press h-7 w-full rounded-7 bg-(--d-accent) text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-[1.08]"

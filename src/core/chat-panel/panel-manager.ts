@@ -3,6 +3,7 @@ import { AsyncResource } from "node:async_hooks";
 import type { Disposable } from "../../platform/disposable";
 import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
+import type { BrowserChatOwners } from "../browser";
 import { PermissionHandler, type ChatPermissions } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
 import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, TerminalAttachmentManager } from "./terminal-attachment-manager";
@@ -94,6 +95,7 @@ interface MessageGate {
   // settles once the first `ready` was handled, or the panel closed
   readonly readied: Promise<void>;
   readonly signalReadied: () => void;
+  firstReadyHandled: boolean;
   queue: Array<{ message: WebviewToExtensionMessage; view?: AttachedView; viewKey?: string; within: <T>(body: () => T) => T }>;
 }
 
@@ -187,6 +189,8 @@ export class PanelManager {
   private readonly sendFolderState: PanelManagerConfig["sendFolderState"];
   private readonly releaseFolder: PanelManagerConfig["releaseFolder"];
   private readonly messageGates = new Map<string, MessageGate>();
+  // Called when a panel's first `ready` was handled.
+  private readonly chatsChangedListeners = new Set<() => void>();
   /** Per-panel tail of folder work, so switches and removals on one panel never interleave. */
   private readonly folderChains = new Map<string, Promise<unknown>>();
   private readonly folderChangeSubscription: Disposable;
@@ -607,6 +611,34 @@ export class PanelManager {
     return this.messageGates.get(panelId)?.readied ?? Promise.resolve();
   }
 
+  /** The chats a browser page names by their webview's `ready.panelToken`, which a page restored after a window reload reopens into. */
+  browserChatOwners(): BrowserChatOwners {
+    return {
+      tokenOf: (chat) => {
+        for (const instance of this.panels.values()) if (instance.host === chat) return instance.panelToken ?? undefined;
+        return undefined;
+      },
+      readiedChat: (token) => {
+        for (const [panelId, instance] of this.panels) {
+          if (instance.panelToken === token && this.messageGates.get(panelId)?.firstReadyHandled === true) return instance.host;
+        }
+        return undefined;
+      },
+      onDidChange: (listener) => {
+        this.chatsChangedListeners.add(listener);
+        return { dispose: (): void => { this.chatsChangedListeners.delete(listener); } };
+      },
+    };
+  }
+
+  private chatsChanged(): void {
+    for (const listener of [...this.chatsChangedListeners]) listener();
+  }
+
+  private dropGate(panelId: string): void {
+    this.messageGates.delete(panelId);
+  }
+
   private setUpOf(host: PanelHost): HostSetUp {
     let entry = this.setUps.get(host);
     if (!entry) {
@@ -629,7 +661,7 @@ export class PanelManager {
 
     let signalReadied!: () => void;
     const readied = new Promise<void>((resolve) => { signalReadied = resolve; });
-    const gate: MessageGate = { open: false, readying: false, readied, signalReadied, queue: [] };
+    const gate: MessageGate = { open: false, readying: false, readied, signalReadied, firstReadyHandled: false, queue: [] };
     this.messageGates.set(panelId, gate);
 
     // Resolves when the webview posts its first `ready` message (mounted + listener live). VS Code drops
@@ -665,7 +697,7 @@ export class PanelManager {
         this.releasePanel(panelId, instance);
         this.worktrees.panelClosed(panelId);
         this.panels.delete(panelId);
-        this.messageGates.delete(panelId);
+        this.dropGate(panelId);
         this.folderChains.delete(panelId);
         if (this.lastActivePanelId === panelId) {
           this.setLastActivePanel(this.findFallbackActivePanelId());
@@ -684,18 +716,20 @@ export class PanelManager {
 
     const source = options?.sourcePanelId ? this.panels.get(options.sourcePanelId) : undefined;
     // A fork continues its source's conversation, whose session file lives under the source's folder. A new chat in a worktree
-    // is bound before its session exists, so no session ever starts in the project folder for it.
+    // is bound before its session exists, so no session ever starts in the project folder for it. A chat restored in a working
+    // folder no chat holds yet starts in that worktree's project.
     let folder: FolderTarget;
     try {
+      const initialKey = options?.initialFolderKey;
       folder = options?.worktree
         ? this.worktrees.bindNewPanel(panelId, options.worktree.projectKey, options.worktree.worktreeId)
         : source?.folder
-          ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
+          ?? (initialKey !== undefined ? this.folderRegistry.resolve(initialKey) ?? this.worktrees.projectOfWorkingFolder(initialKey) : undefined)
           ?? this.folderRegistry.defaultTarget();
       if (!options?.worktree && options?.sourcePanelId !== undefined && source?.folder.ownerKey !== undefined) this.worktrees.holdAsSource(panelId, options.sourcePanelId);
     } catch (err) {
       disposables.forEach((d) => d.dispose());
-      this.messageGates.delete(panelId);
+      this.dropGate(panelId);
       throw err;
     }
 
@@ -747,7 +781,7 @@ export class PanelManager {
       disposables.forEach((d) => d.dispose());
       void permissionHandler.dispose().catch((disposeErr: unknown) => log("[PanelManager] permission handler dispose failed: %O", disposeErr));
       this.cleanupPanelModel(panelId);
-      this.messageGates.delete(panelId);
+      this.dropGate(panelId);
       throw err;
     }
 
@@ -768,7 +802,7 @@ export class PanelManager {
       // The host closed while the session was being created, before the panel was registered.
       this.releasePanel(panelId, instance);
       this.worktrees.panelClosed(panelId);
-      this.messageGates.delete(panelId);
+      this.dropGate(panelId);
       if (options?.worktree) throw new Error("The chat closed before its session started");
       return panelId;
     }
@@ -835,8 +869,8 @@ export class PanelManager {
           this.sendThinkingForPanel(target, panelId, current.folder);
         }
       }),
-      // A grant changes whether the Workspace section can be written even when no setting changed.
-      this.platform.trust.onDidGrantTrust(() => {
+      // A trust change changes whether the Workspace section can be written even when no setting changed.
+      this.platform.trust.onDidChangeTrust(() => {
         const current = this.panels.get(panelId);
         if (current) void this.sendCurrentSettings(host, permissionHandler, current.folder);
       }),
@@ -966,7 +1000,10 @@ export class PanelManager {
       void within(() => this.handleWebviewMessage(message, panelId, undefined, viewKey)).finally(() => {
         gate.readying = false;
         gate.signalReadied();
+        const first = !gate.firstReadyHandled;
+        gate.firstReadyHandled = true;
         this.drainGate(panelId, gate);
+        if (first) this.chatsChanged();
       });
     }
   }

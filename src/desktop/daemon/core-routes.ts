@@ -10,8 +10,6 @@ import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreTransport, type MainEndpoint } from '../core-protocol';
 import { MAX_ITEMS } from '../core-protocol/messages';
-import { confineExisting, projectOfPath } from '../local-services/confine';
-import { readFileBytes } from '../local-services/file-bytes';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
 import { USER_FORGE_FEATURE } from '../../shared/forge/tools';
 import { DESIGN_JOURNEY_UPDATE_NEEDED, DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../shared/design-render';
@@ -26,11 +24,10 @@ import type { RunRegistry } from './run-registry';
 import { createViewKeys, joinView } from './views-join';
 
 /**
- * What a route answers from when no client is attached: the folders core works in, the features attached clients list, and
- * whether a present client shows the view or chat but its attach did not list the route's needs (viewClient, chatClient).
+ * What a route answers from when no client is attached: the features attached clients list, and whether a present client
+ * shows the view or chat but its attach did not list the route's needs (viewClient, chatClient).
  */
 export interface NoClientContext {
-  readonly folders: readonly OpenFolder[];
   readonly attached: (feature: string) => boolean;
   readonly viewerLacksNeeds: boolean;
 }
@@ -39,7 +36,7 @@ export interface NoClientContext {
  * client: what surfaces on a device (a dialog, notice, prompt, open, terminal): inside a client's work only that client, held
  * in the actor outbox while it is away and noClient once the intent expired, never another device; outside any, the acting
  * client, else another attached one, else noClient (a client inside its reconnection grace is skipped). workClient: a request
- * that surfaces nothing and only returns data (a read, a render): the actor while present, else the acting client, else another
+ * that surfaces nothing and only returns data (a render): the actor while present, else the acting client, else another
  * attached one, never held, else noClient at once. issuingClient: the client that sent the scm.commit the token names;
  * viewClient: a client showing params.viewId, the actor's first; chatClient: a client showing the chat params.panelId names,
  * inside a client's work only the actor (a UI action never lands on another device), else any; pinnedClient: exactly the
@@ -57,27 +54,6 @@ export type CoreRequestRoute<M extends keyof CoreRequests> =
   | { readonly to: 'refused' };
 
 const nothing = (): undefined => undefined;
-const utf8 = new TextDecoder('utf-8', { fatal: true });
-
-// editor.readText with no client: a regular text file inside an open project, within the document size limit.
-async function readConfinedText(target: string, folders: readonly OpenFolder[]): Promise<string> {
-  const projects = folders.map((folder) => ({ key: folderKey(folder.fsPath), fsPath: folder.fsPath, name: folder.name }));
-  const found = await projectOfPath(projects, target);
-  if (!found) throw new Error(`${target} is outside the open projects`);
-  const confined = await confineExisting(found.project, found.relativePath);
-  if (!confined.ok) throw new Error(`${target} cannot be read: ${confined.reason}`);
-  const read = await readFileBytes(confined.path);
-  if (read.kind === 'missing') throw Object.assign(new Error(`ENOENT: no such file, open '${target}'`), { code: 'ENOENT' });
-  if (read.kind === 'tooLarge') throw new Error(`${target} is ${read.bytes} bytes, over the document limit`);
-  if (read.kind === 'notAFile') throw new Error(`${target} is not a file`);
-  if (read.kind === 'unreadable') throw new Error(read.error);
-  if (read.bytes.includes(0)) throw new Error(`${target} is a binary file`);
-  try {
-    return utf8.decode(read.bytes);
-  } catch {
-    throw new Error(`${target} is not UTF-8 text`);
-  }
-}
 const answer = <R>(value: R) => (): R => value;
 const noClientFor = (what: string) => (): never => {
   throw new Error(`No client is attached to ${what}`);
@@ -118,8 +94,10 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'shell.revealPath': { to: 'client', noClient: nothing },
   'editor.openFile': { to: 'client', noClient: nothing },
   'editor.openUntitled': { to: 'client', noClient: nothing },
-  // the base text of an Edit or Write diff, which every approval waits for
-  'editor.readText': { to: 'workClient', noClient: ({ path }, { folders }) => readConfinedText(path, folders) },
+  // an older core's request, which a core of this daemon never sends
+  'editor.readText': { to: 'refused' },
+  // no attached app that can answer holds unsaved changes core could note
+  'editor.isDirty': { to: 'workClient', noClient: answer(false), needs: 'editor.isDirty' },
   'editor.showDiff': { to: 'client', noClient: noClientFor('show a diff') },
   'editor.closeDiff': { to: 'client', noClient: nothing },
   'editor.showMarkdownPreview': { to: 'client', noClient: nothing },
@@ -693,7 +671,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const liveViewers = (viewId: string): Viewer[] => [...(viewers.get(viewId)?.values() ?? [])].filter((viewer) => live(viewer.session));
   const viewerOf = (session: Session, viewId: string): Viewer | undefined => liveViewers(viewId).find((viewer) => viewer.session === session);
   const capable = (session: Session, needs: string | undefined): boolean => needs === undefined || session.client.features?.has(needs) === true;
-  const noClientContext = (viewerLacksNeeds = false): NoClientContext => ({ folders: deps.mirrors.folders, attached: (feature) => [...sessions.values()].some((session) => present(session) && capable(session, feature)), viewerLacksNeeds });
+  const noClientContext = (viewerLacksNeeds = false): NoClientContext => ({ attached: (feature) => [...sessions.values()].some((session) => present(session) && capable(session, feature)), viewerLacksNeeds });
   // the first present client that lists needs: the preferred one, then the acting client, then the latest attached
   const capableSession = (preferred: Session | undefined, needs: string | undefined): Session | undefined =>
     [preferred, actingSession(), ...[...sessions.values()].reverse()].find((candidate) => present(candidate) && capable(candidate, needs));
@@ -1219,8 +1197,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       .catch((err: unknown) => log(`[core-host] the folder set was not updated: ${err instanceof Error ? err.message : String(err)}`));
   };
 
-  // a key leaves core's set only once no client's set holds it, a detached client's included
-  const setClientTrust = (clientId: string, keys: readonly string[], granted: readonly string[]): void => {
+  // a key leaves core's set, and its revoke reaches core, only once no client's set holds it, a detached client's included
+  const setClientTrust = (clientId: string, keys: readonly string[], granted: readonly string[], revoked: readonly string[]): void => {
     deps.mirrors.clientTrust.set(clientId, keys);
     const held = new Set([...deps.mirrors.clientTrust.values()].flat());
     const union = [...[...deps.mirrors.trust].filter((key) => held.has(key)), ...[...held].filter((key) => !deps.mirrors.trust.has(key))];
@@ -1230,7 +1208,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     const changed = keysNow.length !== deps.mirrors.trust.size || keysNow.some((key) => !deps.mirrors.trust.has(key));
     deps.mirrors.trust.clear();
     for (const key of keysNow) deps.mirrors.trust.add(key);
-    if (changed || granted.length > 0) core.publish('trust', { keys: keysNow, granted });
+    const revokedNow = revoked.filter((folder) => !deps.mirrors.trust.has(folderKey(folder)));
+    if (changed || granted.length > 0 || revokedNow.length > 0) core.publish('trust', { keys: keysNow, granted, revoked: revokedNow });
   };
 
   const serveClient = (session: Session): void => {
@@ -1365,8 +1344,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       session.disposables.push(endpoint.onMirror(topic, touch((patch: unknown) => {
         switch (topic) {
           case 'trust': {
-            const { keys, granted } = patch as MirrorTopics['trust'];
-            setClientTrust(client.clientId, keys, granted);
+            const { keys, granted, revoked } = patch as MirrorTopics['trust'];
+            setClientTrust(client.clientId, keys, granted, revoked ?? []);
             return;
           }
           case 'folders':
@@ -1509,7 +1488,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       }));
       publishActing();
       serveClient(session);
-      setClientTrust(client.clientId, client.mirrors.trust.keys, []);
+      setClientTrust(client.clientId, client.mirrors.trust.keys, [], []);
       deps.mirrors.clientFolders.set(client.clientId, client.mirrors.folders.folders);
       publishFolders();
       // a snapshot the wire refuses detaches a session already whole; what its work held follows the snapshot

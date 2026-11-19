@@ -1166,6 +1166,7 @@ provideSendPrompt(handleSuggestion);
               :image-model="currentPermission.imageModel"
               :patch="currentPermission.patch"
               :patch-omitted="currentPermission.patchOmitted"
+              :unsaved-changes="currentPermission.unsavedChanges"
               :command="currentPermission.command"
               :owner="currentPermission.owner"
               :agent-description="currentPermission.agentDescription"

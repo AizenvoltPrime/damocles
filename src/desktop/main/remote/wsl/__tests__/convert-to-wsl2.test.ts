@@ -22,6 +22,8 @@ function fakeWsl(output: readonly string[], code: number): { readonly launcher: 
     });
     return {
       pid: Promise.resolve(4242),
+      pauseOutput: () => undefined,
+      resumeOutput: () => undefined,
       onData: (stream, listener) => {
         if (stream === 'stdout') listeners.push(listener);
       },

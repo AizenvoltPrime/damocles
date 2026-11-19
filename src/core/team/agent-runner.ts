@@ -556,7 +556,7 @@ export class AgentRunner {
           }
           if (!wokenAfterRejection()) {
             if (!config.keepAlive?.()) {
-              config.onReconcileBeforeEnd?.();   // specialist-only: may arm a grace hold
+              config.onReconcileBeforeEnd?.();   // may arm a grace hold
               if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
             }
             config.onTurnEnd?.();

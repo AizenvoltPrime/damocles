@@ -937,10 +937,13 @@ export class PiSession implements ChatSession {
       if (this.design.enabled()) this.design.idle();
     });
     // a daemon's core has no browser: a remote chat's pages are in the client's
-    const browser = options.browserService;
-    const chat = options.browserChat;
-    this.servedPagesBinding = browser && chat && !options.platform.remote
-      ? browser.bindServedPages(chat, { toFile: (url) => this.browserServedFiles().toFile(url), restoreTarget: (url) => this.browserRestoreTarget(url) })
+    const browser = options.browser;
+    this.servedPagesBinding = browser && !options.platform.remote
+      ? browser.service.bindServedPages(browser.chat, {
+        toFile: (url) => this.browserServedFiles().toFile(url),
+        restoreTarget: (url) => this.browserRestoreTarget(url),
+        ownsOrigin: (origin) => this.browserServedFiles().ownsOrigin(origin),
+      })
       : undefined;
     this.chatReview = new ChatReview({
       // A design chat's changes are design files, which the project's review never shows.
@@ -1130,8 +1133,7 @@ export class PiSession implements ChatSession {
         permissionHandler: this.options.permissionHandler,
         ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
         ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
-        ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
-        ...(this.options.browserChat ? { browserChat: this.options.browserChat } : {}),
+        ...(this.options.browser ? { browser: this.options.browser } : {}),
         ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
         browserServedFiles: this.browserServedFiles(),
         ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
@@ -3969,16 +3971,14 @@ export class PiSession implements ChatSession {
 
   /** An agent's browser scope at its settle; on a daemon's core its tabs are on the client showing the chat, which disposes it. */
   private disposeAgentBrowserScope(scopeId: string, closeTabs: boolean): void {
-    const browser = this.options.browserService;
+    const browser = this.options.browser;
     if (!browser) return;
     const remote = this.options.platform.remote;
-    const chat = this.options.browserChat;
     if (!remote) {
-      browser.disposeScope(scopeId, closeTabs);
+      browser.service.disposeScope(scopeId, closeTabs);
       return;
     }
-    if (!chat) return;
-    void remote.browserRelease(chat, scopeId, closeTabs).catch((err: unknown) => {
+    void remote.browserRelease(browser.chat, scopeId, closeTabs).catch((err: unknown) => {
       log(`[PiSession] The client could not release browser scope ${scopeId}: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
@@ -3987,13 +3987,12 @@ export class PiSession implements ChatSession {
    *  for inspection. Runs when the conversation ends (dispose) or is replaced (reset/clear). On a daemon's core the
    *  tabs are on the client showing the chat, which discards each scope there. */
   private releaseBrowserScopes(): void {
-    const browser = this.options.browserService;
+    const browser = this.options.browser;
     const remote = this.options.platform.remote;
-    const chat = this.options.browserChat;
     for (const scopeId of this.ownedBrowserScopes) {
-      if (!remote) browser?.discardScope(scopeId);
-      else if (browser && chat) {
-        void remote.browserDiscard(chat, scopeId).catch((err: unknown) => {
+      if (!remote) browser?.service.discardScope(scopeId);
+      else if (browser) {
+        void remote.browserDiscard(browser.chat, scopeId).catch((err: unknown) => {
           log(`[PiSession] The client could not discard browser scope ${scopeId}: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
@@ -5051,7 +5050,7 @@ export class PiSession implements ChatSession {
       teamAvailable: !!this.options.teamService,
       ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
-      browserAvailable: !!this.options.browserService,
+      browserAvailable: this.options.browser !== undefined,
       browserEnabled: this.isBrowserEnabled(),
       imageEnabled: this.options.platform.settings.get<boolean>(IMAGE_ENABLED_SETTING, false),
       imageAvailability: imageAvailability(this.imageModelId(), this.imageRuntime()),
@@ -5408,7 +5407,7 @@ export class PiSession implements ChatSession {
 
   /** The roots the chat's browser opens file:// addresses of, with the served origins its pages got, for the session's life. */
   private browserServedFiles(): ChatServedFiles {
-    const chat = this.options.browserChat;
+    const chat = this.options.browser?.chat;
     const served = this.options.platform.browserServedFiles;
     this.servedFiles ??= new ChatServedFiles({
       roots: () => {
@@ -5707,9 +5706,8 @@ export class PiSession implements ChatSession {
       permissionHandler: this.options.permissionHandler,
       ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
-      ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
+      ...(this.options.browser ? { browser: this.options.browser } : {}),
       ...(browserScopeId ? { browserScopeId } : {}),
-      ...(this.options.browserChat ? { browserChat: this.options.browserChat } : {}),
       ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
       browserServedFiles: this.browserServedFiles(),
       ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
@@ -7418,22 +7416,21 @@ export class PiSession implements ChatSession {
 
   /** DesignParity's app capture in a scope made for one call: this computer's browser, or on a daemon's core the browser of the client showing the chat. */
   private parityAppCapture(): ParityAppCapture | undefined {
-    const browser = this.options.browserService;
+    const browser = this.options.browser;
     if (!browser) return undefined;
-    const chat = this.options.browserChat;
+    const { service, chat } = browser;
     const remote = this.options.platform.remote;
     if (!remote) {
       return {
         remote: false,
-        capture: (scope, url, width, signal) => captureAppFrame(browser.createAgentScope(scope, chat), url, width, signal),
+        capture: (scope, url, width, signal) => captureAppFrame(service.createAgentScope(scope, chat), url, width, signal),
         // the tabs' close lands before the call ends, so a last-tab teardown is queued ahead of the next call's launch
         release: async (scope) => {
-          await browser.closeScopeTabs(scope);
-          browser.disposeScope(scope, false);
+          await service.closeScopeTabs(scope);
+          service.disposeScope(scope, false);
         },
       };
     }
-    if (!chat) return undefined;
     return {
       remote: true,
       capture: (scope, url, width, signal) => remote.browserTool(chat, scope, PARITY_CAPTURE_TOOL, { url, width }, signal),

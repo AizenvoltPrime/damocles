@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { dirname } from 'node:path';
-import { access, readFile, writeFile } from 'fs/promises';
+import { access, stat } from 'fs/promises';
 import { Type } from 'typebox';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ToolDefinition, EditOperations, EditToolDetails, EditToolInput } from '@earendil-works/pi-coding-agent';
@@ -10,7 +9,7 @@ import type { FilePatch } from '../../../shared/types/file-patch';
 import { TOOL_EDIT } from '../../../shared/tool-names';
 import { applyReplacementsToOriginal, generateEditDiff, normalizeToLF, type TextReplacement } from './edit-diff';
 import { filePatch } from './file-patch';
-import { editOperations, onFileQueue } from './local-file-operations';
+import { couldNotEdit, editOperations, notARegularFile, onFileQueue } from './local-file-operations';
 import { resolveToCwd } from './search-tools';
 
 /**
@@ -36,6 +35,18 @@ type EditParams = { file_path: string; old_string: string; new_string: string; r
 
 /** pi's `EditToolDetails`, with the patch bounded as a write's is. */
 type EditDetails = Pick<EditToolDetails, 'diff' | 'firstChangedLine'> & FilePatch;
+
+/** The Edit tool's refusal of an empty old_string, for either path, before anything else; its approval refuses with it too. */
+export const EDIT_EMPTY_OLD_STRING = 'Edit cannot create a file: old_string is empty. Use the Write tool to create a new file.';
+
+/** `replace_all`'s refusals, which its approval gives too. */
+export function replaceAllNotFound(path: string): string {
+  return `String to replace not found in file: ${path}`;
+}
+
+export function replaceAllUnchanged(path: string): string {
+  return `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`;
+}
 
 /** A `replace_all` Edit of a file's text. */
 export interface ExactEdit {
@@ -94,23 +105,20 @@ function replaceAll(pi: PiCodingAgentModule, cwd: string, params: EditParams, si
       await access(absolutePath, constants.R_OK | constants.W_OK);
     } catch (error) {
       throwIfAborted();
-      const reason = error instanceof Error && 'code' in error ? `Error code: ${String(error.code)}` : String(error);
-      throw new Error(`Could not edit file: ${path}. ${reason}.`);
+      throw new Error(couldNotEdit(path, error));
     }
     throwIfAborted();
-    const raw = (await readFile(absolutePath)).toString('utf-8');
+    const raw = (await editOperations.readFile(absolutePath)).toString('utf-8');
     throwIfAborted();
     const edit = exactEdit(raw, params.old_string, params.new_string);
-    if (!edit) throw new Error(`String to replace not found in file: ${path}`);
+    if (!edit) throw new Error(replaceAllNotFound(path));
     const { baseContent, newContent, replacements, written } = edit;
-    if (baseContent === newContent) {
-      throw new Error(`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`);
-    }
+    if (baseContent === newContent) throw new Error(replaceAllUnchanged(path));
     // Before the write, so neither can fail after it.
     const { diff, firstChangedLine } = generateEditDiff(path, baseContent, newContent, replacements);
     const patch = filePatch(path, baseContent, newContent);
     throwIfAborted();
-    await writeFile(absolutePath, written, 'utf-8');
+    await editOperations.writeFile(absolutePath, written);
     throwIfAborted();
     return {
       content: [{ type: 'text', text: `Successfully replaced 1 block(s) in ${path}.` }],
@@ -131,15 +139,19 @@ export interface EditPreview {
 }
 
 /**
- * pi's edit of a file holding `original`, run on an in-memory copy: the text it would write, or pi's own message where it refuses
- * the edit (old_string empty, absent or found more than once, or a change that changes nothing).
+ * pi's edit of a file holding `original` (undefined: no such file), run on an in-memory copy after the file's own access check: the
+ * text it would write, or pi's own message where it refuses the edit (a missing file, one it cannot read and write, old_string empty,
+ * absent or found more than once, or a change that changes nothing). `cwd` and `filePath` are the call's own, so a refusal names
+ * the path as the model wrote it, as the tool's does.
  */
-export async function previewEdit(pi: PiCodingAgentModule, filePath: string, original: string, oldString: string, newString: string): Promise<EditPreview | { refused: string }> {
+export async function previewEdit(pi: PiCodingAgentModule, cwd: string, filePath: string, original: string | undefined, oldString: string, newString: string): Promise<EditPreview | { refused: string }> {
   let written: string | undefined;
   const queueKey = `damocles-edit-preview:${randomUUID()}`;
   const operations: EditOperations = {
-    access: () => Promise.resolve(),
-    readFile: () => Promise.resolve(Buffer.from(original, 'utf-8')),
+    access: (absolutePath) => (original === undefined
+      ? Promise.reject(Object.assign(new Error(`ENOENT: no such file or directory, access '${absolutePath}'`), { code: 'ENOENT' }))
+      : editOperations.access(absolutePath)),
+    readFile: () => Promise.resolve(Buffer.from(original ?? '', 'utf-8')),
     writeFile: (_path, content) => {
       written = content;
       return Promise.resolve();
@@ -147,7 +159,7 @@ export async function previewEdit(pi: PiCodingAgentModule, filePath: string, ori
     // No file's key, so the preview neither waits behind nor holds up a write queued on the file.
     realpath: () => Promise.resolve(queueKey),
   };
-  const piEdit = pi.createEditTool(dirname(filePath), { operations });
+  const piEdit = pi.createEditTool(cwd, { operations });
   // pi's edit rejects exactly where it refuses the edit; its message goes to the model unread.
   const result: AgentToolResult<EditToolDetails | undefined> | { refused: string } = await piEdit
     .execute('edit-preview', piEditInput(filePath, oldString, newString))
@@ -177,9 +189,10 @@ export function createEditTool(pi: PiCodingAgentModule, cwd: string): ToolDefini
     execute: async (toolCallId, params, signal, onUpdate, ctx) => {
       // pi's edit rejects an empty `oldText`, and CC's empty-old_string "create file" idiom does not apply
       // here — Write is the only text-file creation path.
-      if (params.old_string === '') {
-        throw new Error('Edit cannot create a file: old_string is empty. Use the Write tool to create a new file.');
-      }
+      if (params.old_string === '') throw new Error(EDIT_EMPTY_OLD_STRING);
+      // Refused here in the path's own spelling; the operations refuse one swapped in after this stat from their handles. A stat error is pi's access check's to report.
+      const entry = await stat(resolveToCwd(params.file_path, ctx?.cwd || cwd)).catch(() => undefined);
+      if (entry !== undefined && !entry.isFile()) throw new Error(notARegularFile(params.file_path));
       if (params.replace_all) return replaceAll(pi, ctx?.cwd || cwd, params, signal);
       return piEdit.execute(toolCallId, piEditInput(params.file_path, params.old_string, params.new_string), signal, onUpdate, ctx);
     },

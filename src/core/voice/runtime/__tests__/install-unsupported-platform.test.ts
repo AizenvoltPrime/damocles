@@ -18,7 +18,7 @@ const calls = vi.hoisted(() => ({
 }));
 
 vi.mock("../gpu-detect", () => ({ detectGpu: calls.detectGpu }));
-vi.mock("../disk-check", async (importOriginal) => ({ ...(await importOriginal<typeof import("../disk-check")>()), checkDiskSpace: calls.checkDiskSpace }));
+vi.mock("../../../disk-space", () => ({ checkDiskSpace: calls.checkDiskSpace }));
 vi.mock("../compiler-check", async (importOriginal) => ({ ...(await importOriginal<typeof import("../compiler-check")>()), ensureCxxToolchain: calls.ensureCxxToolchain }));
 vi.mock("../system-libs-check", async (importOriginal) => ({ ...(await importOriginal<typeof import("../system-libs-check")>()), ensurePortAudio: calls.ensurePortAudio }));
 vi.mock("../smoke-check", () => ({ runImportSmokeCheck: calls.runImportSmokeCheck }));

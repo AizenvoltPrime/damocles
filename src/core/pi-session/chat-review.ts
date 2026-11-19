@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { readFileBytes } from '../file-bytes';
 import { log } from '../logger';
 import { folderKey } from '../workspace-folders/folder-key';
 import {
@@ -134,16 +135,16 @@ function isStale(file: ChatChangeFile | undefined, draft: DraftComment): boolean
 
 /** The file on disk now, as the review compares it: an unsaved buffer is not now. A read that fails lists the file unread. */
 export async function readDiskText(absolute: string): Promise<DiskRead> {
-  try {
-    const stat = await fs.stat(absolute);
-    if (!stat.isFile()) return { kind: 'absent' };
-    if (stat.size > EDITOR_CONFIRM_DOCUMENT_BYTES) return { kind: 'tooLarge' };
-    return classifyFileBytes(await fs.readFile(absolute));
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
-    log('[ChatReview] reading %s failed: %s', absolute, code ?? String(err));
-    return { kind: 'unreadable' };
+  const read = await readFileBytes(absolute, EDITOR_CONFIRM_DOCUMENT_BYTES);
+  switch (read.kind) {
+    case 'bytes': return classifyFileBytes(read.bytes);
+    case 'missing':
+    case 'notAFile': return { kind: 'absent' };
+    case 'tooLarge': return { kind: 'tooLarge' };
+    case 'unreadable':
+      if (read.code === 'ENOTDIR') return { kind: 'absent' };
+      log('[ChatReview] reading %s failed: %s', absolute, read.code ?? read.error);
+      return { kind: 'unreadable' };
   }
 }
 

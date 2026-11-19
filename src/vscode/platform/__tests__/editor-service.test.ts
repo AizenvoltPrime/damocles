@@ -1,3 +1,4 @@
+import * as nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type Listener<T> = (e: T) => void;
@@ -16,6 +17,7 @@ const H = vi.hoisted(() => {
     showTextDocument: vi.fn((..._args: unknown[]) => Promise.resolve(undefined)),
     closeTab: vi.fn((..._args: unknown[]) => Promise.resolve(true)),
     extensions: new Map<string, { isActive: boolean }>(),
+    textDocuments: [] as Array<{ uri: { scheme: string; fsPath: string }; isDirty: boolean }>,
   };
 });
 
@@ -64,6 +66,7 @@ vi.mock('vscode', async (importOriginal) => {
         return { dispose: () => H.providers.delete(scheme) };
       },
       openTextDocument: H.openTextDocument,
+      get textDocuments() { return H.textDocuments; },
     },
     window: {
       ...actual.window,
@@ -110,6 +113,7 @@ beforeEach(() => {
   H.selectionListeners.length = 0;
   H.activeTextEditor = undefined;
   H.extensions.clear();
+  H.textDocuments = [];
   H.executeCommand.mockClear();
   H.openTextDocument.mockClear();
   H.showTextDocument.mockClear();
@@ -170,11 +174,6 @@ describe('documents', () => {
 
     expect(H.openTextDocument).toHaveBeenCalledWith({ content: '<div></div>', language: 'html' });
     expect(H.showTextDocument).toHaveBeenCalledWith(expect.anything(), { preview: true });
-  });
-
-  it('reads the text the editor holds for a file', async () => {
-    await expect(service.readText('/ws/a.ts')).resolves.toBe('buffer text');
-    expect(H.openTextDocument).toHaveBeenCalledWith(vscode.Uri.file('/ws/a.ts'));
   });
 
   it('shows the markdown preview of a file', async () => {
@@ -361,5 +360,25 @@ describe('host settings and extensions', () => {
 
     await service.searchHostExtensions('@id:ms-vscode.vscode-speech');
     expect(H.executeCommand).toHaveBeenCalledWith('workbench.extensions.search', '@id:ms-vscode.vscode-speech');
+  });
+});
+
+describe('isDirty', () => {
+  it('answers from the open document of the file on disk, by its path as the file system compares it', async () => {
+    const file = nodePath.resolve('ws', 'a.ts');
+    const clean = nodePath.resolve('ws', 'b.ts');
+    // VS Code's fsPath of a win32 file has a lowercase drive letter
+    const opened = process.platform === 'win32' ? file.toLowerCase() : file;
+    H.textDocuments = [
+      { uri: { scheme: 'untitled', fsPath: clean }, isDirty: true },
+      { uri: { scheme: 'file', fsPath: opened }, isDirty: true },
+      { uri: { scheme: 'file', fsPath: clean }, isDirty: false },
+    ];
+
+    expect(await service.isDirty(file)).toBe(true);
+    expect(await service.isDirty(clean)).toBe(false);
+    expect(await service.isDirty(nodePath.resolve('ws', 'c.ts'))).toBe(false);
+    H.textDocuments[1]!.isDirty = false;
+    expect(await service.isDirty(file)).toBe(false);
   });
 });

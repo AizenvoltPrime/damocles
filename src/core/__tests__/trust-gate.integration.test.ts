@@ -51,7 +51,7 @@ afterEach(() => {
   rmSync(ws, { recursive: true, force: true });
 });
 
-describe('trust gate: an untrusted folder loads no repository-authored input, and a grant enables it live', () => {
+describe('trust gate: an untrusted folder loads no repository-authored input, a grant enables it live and a revoke withdraws it', () => {
   it('project hooks', () => {
     const hooks = new HooksConfigService(ws, fake.trust, fake.fileWatchers);
     disposables.push(hooks);
@@ -60,6 +60,9 @@ describe('trust gate: an untrusted folder loads no repository-authored input, an
     fake.trust.grantTrust();
     expect(hooks.getEntries('tool_call').map((e) => e.command)).toEqual(['echo project-hook']);
     expect(fake.trust.checkedPaths).toContain(ws);
+
+    fake.trust.revokeTrust();
+    expect(hooks.getEntries('tool_call')).toEqual([]);
   });
 
   it('project subagents', () => {
@@ -73,6 +76,10 @@ describe('trust gate: an untrusted folder loads no repository-authored input, an
     fake.trust.grantTrust();
     expect(reloaded).toHaveBeenCalledOnce();
     expect(agents.getRegistry().getAgentConfig('RepoAgent')?.description).toBe('repo agent');
+
+    fake.trust.revokeTrust();
+    expect(reloaded).toHaveBeenCalledTimes(2);
+    expect(agents.getRegistry().getAgentConfig('RepoAgent')).toBeUndefined();
   });
 
   it('project skills', async () => {
@@ -80,6 +87,9 @@ describe('trust gate: an untrusted folder loads no repository-authored input, an
 
     fake.trust.grantTrust();
     expect(await loadSkillDescription('repo-skill', ws)).toBe('repo skill');
+
+    fake.trust.revokeTrust();
+    expect(await loadSkillDescription('repo-skill', ws)).toBeUndefined();
   });
 
   it('project permission rules', async () => {
@@ -89,6 +99,9 @@ describe('trust gate: an untrusted folder loads no repository-authored input, an
 
     fake.trust.grantTrust();
     expect(await evaluator.evaluate('Bash', { command: 'x' }, ws)).toBe('allow');
+
+    fake.trust.revokeTrust();
+    expect(await evaluator.evaluate('Bash', { command: 'x' }, ws)).toBe('ask');
   });
 
   it('project MCP servers', async () => {
@@ -99,10 +112,15 @@ describe('trust gate: an untrusted folder loads no repository-authored input, an
     expect(Object.keys(mcp.getEnabledServers(target.key).folder)).not.toContain('repo-server');
     expect(mcp.getServersForUI(target.key).find((s) => s.name === 'repo-server')?.untrusted).toBe(true);
 
-    // chat-panel/index.ts reloads MCP config from its onDidGrantTrust listener.
+    // chat-panel/index.ts reloads MCP config from its onDidChangeTrust listener.
     fake.trust.grantTrust();
     await mcp.loadConfig();
     expect(Object.keys(mcp.getEnabledServers(target.key).folder)).toContain('repo-server');
     expect(mcp.getServersForUI(target.key).find((s) => s.name === 'repo-server')?.untrusted).toBeUndefined();
+
+    fake.trust.revokeTrust();
+    await mcp.loadConfig();
+    expect(Object.keys(mcp.getEnabledServers(target.key).folder)).not.toContain('repo-server');
+    expect(mcp.getServersForUI(target.key).find((s) => s.name === 'repo-server')?.untrusted).toBe(true);
   });
 });

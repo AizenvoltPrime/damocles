@@ -30,6 +30,7 @@ import {
   type MigrationMemory,
   type NoticeMemory,
   type PersonalToolLists,
+  type RuleMigrationFolder,
   type ToolNameList,
   type ToolRenames,
 } from '../tool-name-migration';
@@ -83,15 +84,20 @@ function memory(): MigrationMemory {
   return { notices: noticeMemory(), additions: additionMemory() };
 }
 
+type MigrationRest = Parameters<typeof migrateRenamedToolRules> extends [unknown, ...infer Rest] ? Rest : never;
+
+/** A trusted folder whose personal files apply. */
+const trustedFolder = (folder: string): RuleMigrationFolder => ({ path: folder, personalFiles: true });
+
 /** A run's notices as the folder's panels get them, remembered as the folder runtime remembers them. */
-async function showRun(...args: Parameters<typeof migrateRenamedToolRules>): Promise<McpRenamedToolRuleNotice[]> {
-  const { notices } = await migrateRenamedToolRules(...args);
-  for (const notice of notices) await args[2].notices.add(notice, notice.rules);
+async function showRun(folder: string, ...rest: MigrationRest): Promise<McpRenamedToolRuleNotice[]> {
+  const { notices } = await migrateRenamedToolRules(trustedFolder(folder), ...rest);
+  for (const notice of notices) await rest[1].notices.add(notice, notice.rules);
   return notices.map(noticeForDisplay);
 }
 
-const migrate = async (...args: Parameters<typeof migrateRenamedToolRules>): Promise<McpRenamedToolRuleNotice[]> =>
-  (await migrateRenamedToolRules(...args)).notices.map(noticeForDisplay);
+const migrate = async (folder: string, ...rest: MigrationRest): Promise<McpRenamedToolRuleNotice[]> =>
+  (await migrateRenamedToolRules(trustedFolder(folder), ...rest)).notices.map(noticeForDisplay);
 
 /** Personal lists held in `list.value`, rewritten entry by entry as the settings store's rewrite does. */
 function personalList(initial: string[], lists: () => ToolNameList[] = () => []): PersonalToolLists & { value: string[] } {
@@ -671,11 +677,11 @@ describe('retired get_* resource tools: patterns and files that named them indir
     writeSettings(project, { deny: ['mcp__secret__get_passwords'] });
     const personal: PersonalToolLists = { rewrite: async () => { throw Object.assign(new Error('locked'), { code: 'EBUSY' }); }, lists: () => [] };
 
-    const result = await migrateRenamedToolRules(folder, renames(), memory(), [], personal);
+    const result = await migrateRenamedToolRules(trustedFolder(folder), renames(), memory(), [], personal);
 
     expect(result.notices.map(renamedRuleNoticeKey)).toEqual([project]);
     expect(result.complete).toBe(false);
-    await expect(migrateRenamedToolRules(folder, renames(), memory(), [], personalList([]))).resolves.toMatchObject({ complete: true });
+    await expect(migrateRenamedToolRules(trustedFolder(folder), renames(), memory(), [], personalList([]))).resolves.toMatchObject({ complete: true });
   });
 
   it('lists the project scope kept as a host setting (VS Code workspace settings) under the setting, once', async () => {
@@ -795,6 +801,19 @@ describe('retired get_* resource tools in places every folder shares', () => {
       const notices = await migrate(folder, renames(), memory());
 
       expect(notices.map(renamedRuleNoticeKey)).toEqual([projectClaude]);
+    });
+
+    it('neither rewrites nor lists the project\u2019s personal files while they do not apply', async () => {
+      const projectLocal = join(project, '.damocles', 'settings.local.json');
+      const projectClaude = join(project, '.claude', 'settings.local.json');
+      writeSettings(projectLocal, { deny: ['mcp__secret__get_passwords', 'mcp__docs__get_readme'] });
+      writeSettings(projectClaude, { deny: ['mcp__secret__get_passwords'] });
+      const before = readFileSync(projectLocal, 'utf-8');
+
+      const { notices } = await migrateRenamedToolRules({ path: folder, personalFiles: false }, renames(), memory());
+
+      expect(readFileSync(projectLocal, 'utf-8')).toBe(before);
+      expect(notices).toEqual([]);
     });
   });
 });

@@ -18,8 +18,9 @@ import {
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import type { SearchBufferWarning, SearchCopyTarget, SearchDone, SearchFileUpdate, SearchResultsBatch, SearchStartResult } from '../../preload/shell-channels';
 import { keepMatchText, lineStarts, type KeptText } from '../../workspace/search/replace';
-import { parseGlobList, rgSearchArgs } from '../../workspace/search/rg-args';
-import type { RgEvent, SearchRun, SearchRunEnd } from '../../workspace/search/search-runner';
+import type { WalkIgnore } from '../../../core/search-walk';
+import { parseGlobList, searchRequest } from '../../workspace/search/rg-args';
+import type { RgEvent, SearchRequest, SearchRun, SearchRunEnd } from '../../workspace/search/search-runner';
 import { runWithin } from '../../workspace/search/time-bound';
 import type { RecordedMatch, RecordedSearch, SearchFolder } from '../../workspace/search/types';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
@@ -57,8 +58,8 @@ export interface SearchServiceDeps {
   readonly workspaces: Workspaces;
   // the OS a project's files are on: this computer's, or its remote host's
   readonly osOf: (projectKey: string) => NodeJS.Platform;
-  // getRipgrepSearchOptions: the search.use*IgnoreFiles switches
-  readonly ignoreArgs: () => readonly string[];
+  // walkIgnoreOf: the search.use*IgnoreFiles switches
+  readonly ignore: () => WalkIgnore;
   // the true entries of damocles.desktop.files.exclude and damocles.desktop.search.exclude
   readonly excludeSettings: () => readonly string[];
   readonly settings: () => SearchSettings;
@@ -154,7 +155,8 @@ export function relativeResultPath(printed: string, platform: NodeJS.Platform = 
 
 /** The user-facing part of ripgrep's stderr, as VS Code shows it: a regex or glob error; other messages are only logged. */
 export function rgErrorForDisplay(stderr: string): string | undefined {
-  const lines = stderr.trim().split(/\r?\n/);
+  // rg prefixes its own messages with "rg: "; the walk's glob errors carry none.
+  const lines = stderr.trim().replace(/^rg: /, '').split(/\r?\n/);
   if (lines.some((line) => line.startsWith('regex parse error'))) return lines.join('\n').trim();
   const first = lines[0]?.trim() ?? '';
   return /^(error parsing glob|the literal|PCRE2:|unsupported encoding)/i.test(first) ? first : undefined;
@@ -463,25 +465,25 @@ export class SearchService {
       editorChars: 0,
     };
     this.runs.set(ownerId, run);
-    const args = query.onlyOpenEditors
+    const request = query.onlyOpenEditors
       ? undefined
-      : rgSearchArgs({
+      : searchRequest({
         query: pattern,
         include: include.globs,
         exclude: exclude.globs,
         excludeSettings,
-        ignoreArgs: this.deps.ignoreArgs(),
+        ignore: this.deps.ignore(),
         contextLines: owner.kind === 'editor' ? owner.contextLines : 0,
       });
     const begin = (): void => {
       run.debounce = undefined;
       this.searchBuffers(run, admittedBuffers);
       if (run.done) return;
-      if (!args) {
+      if (!request) {
         this.finish(run, undefined, false);
         return;
       }
-      this.execute(run, args);
+      this.execute(run, request);
     };
     if (owner.kind === 'editor' || owner.immediate) begin();
     else run.debounce = setTimeout(begin, settings.debounceMs);
@@ -578,7 +580,7 @@ export class SearchService {
     }
   }
 
-  private execute(run: Run, args: readonly string[]): void {
+  private execute(run: Run, request: SearchRequest): void {
     let workspace: ProjectWorkspace;
     try {
       workspace = this.deps.workspaces.forProject(run.folder.projectKey);
@@ -587,7 +589,7 @@ export class SearchService {
       this.finish(run, err.message, false);
       return;
     }
-    run.process = workspace.search.run(run.folder.fsPath, args, {
+    run.process = workspace.search.run(run.folder.fsPath, request, {
       event: (event) => {
         if (!run.done) this.onEvent(run, event);
       },

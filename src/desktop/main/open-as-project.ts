@@ -15,6 +15,8 @@ export interface OpenAsProjectDeps {
   readonly isProject: (projectKey: string) => boolean;
   // writes the folder into the project stores, right after `after` in the sidebar order, else last
   readonly add: (authorityKey: string, folder: string, projectKey: string, after: string | undefined) => Promise<void>;
+  // once the folder is listed: a remote host's session mirror syncs its projects again
+  readonly added: (authorityKey: string) => void;
   // the new-project trust question, asked only while the project is untrusted
   readonly requestTrust: (projectKey: string) => Promise<void>;
   readonly select: (projectKey: string) => Promise<void>;
@@ -27,16 +29,23 @@ export interface OpenAsProjectDeps {
  * it; a folder that is a project already is selected instead.
  */
 export async function openFolderAsProject(deps: OpenAsProjectDeps, authorityKey: string, folder: string, after?: string): Promise<OpenAsProjectResult> {
-  if (!(await deps.isDirectory(authorityKey, folder))) throw deps.notFolder(authorityKey, folder);
-  const projectKey = await deps.projectKeyOf(authorityKey, folder);
-  if (deps.isProject(projectKey)) {
+  const { projectKey, listed } = await folderProject(deps, authorityKey, folder);
+  if (listed) {
     await deps.select(projectKey);
     return { projectKey, added: false };
   }
   await deps.add(authorityKey, folder, projectKey, after);
+  deps.added(authorityKey);
   await deps.requestTrust(projectKey);
   await deps.select(projectKey);
   return { projectKey, added: true };
+}
+
+/** The key the authority's folder has as a project, and whether it is one already; a folder that is not a directory there is refused. */
+export async function folderProject(deps: Pick<OpenAsProjectDeps, 'isDirectory' | 'projectKeyOf' | 'isProject' | 'notFolder'>, authorityKey: string, folder: string): Promise<{ readonly projectKey: string; readonly listed: boolean }> {
+  if (!(await deps.isDirectory(authorityKey, folder))) throw deps.notFolder(authorityKey, folder);
+  const projectKey = await deps.projectKeyOf(authorityKey, folder);
+  return { projectKey, listed: deps.isProject(projectKey) };
 }
 
 /** Files' Open as project: a folder inside a shown project or worktree, opened on that project's authority after it. */

@@ -85,6 +85,8 @@ export interface PendingPermissionInfo extends PermissionDetail {
   /** Edit and Write: the change's patch with real line numbers, or why there is none. */
   patch?: string;
   patchOmitted?: import('./file-patch').FilePatchOmitted;
+  /** Edit and Write: the host's editor holds unsaved changes to the file. */
+  unsavedChanges?: true;
   command?: string;
   parentToolUseId?: string | null;
   agentDescription?: string;

@@ -1,12 +1,13 @@
 import * as path from 'node:path';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
+import type { WalkHost } from '../../../core/search-walk';
 import { DAMOCLES_HOME_DIR } from '../../../core/paths';
 import type { AppPaths } from '../../../platform/app-paths';
 import { createFileSystem } from '../../workspace/file-system';
 import { createFormatter } from '../../workspace/format/formatter';
 import type { HostStarters } from '../../workspace/host-starters';
-import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import type { LocalWorkspace } from '../../workspace/project-workspace';
 import { createQuickOpenListing } from '../../workspace/quick-open-listing';
 import { createSearchRunner } from '../../workspace/search/search-runner';
 import { createTerminalBackend } from '../../workspace/terminal/terminal-backend';
@@ -19,6 +20,8 @@ import { windowsTerminalEnvironment } from './windows-terminal-environment';
 export interface LocalWorkspaceDeps {
   readonly paths: AppPaths;
   readonly watchers: FileWatcherFactory;
+  // the walk processes Quick Open's and Search's walks run on, which main's quit closes
+  readonly walks: WalkHost;
   // Electron's shell.trashItem, and the permanent delete Files offers when it fails
   readonly trash: (absolutePath: string) => Promise<void>;
   readonly remove: (absolutePath: string) => Promise<void>;
@@ -29,7 +32,7 @@ export interface LocalWorkspaceDeps {
 }
 
 /** This computer's workspace, run in main with utility process hosts. */
-export function createLocalWorkspace(deps: LocalWorkspaceDeps): ProjectWorkspace {
+export function createLocalWorkspace(deps: LocalWorkspaceDeps): LocalWorkspace {
   const pty = ptyHostPaths(deps.paths);
   const starters: HostStarters = {
     startPtyHost: () => spawnPtyHost(pty.script, pty.nodePty),
@@ -39,8 +42,8 @@ export function createLocalWorkspace(deps: LocalWorkspaceDeps): ProjectWorkspace
   return {
     files: createFileSystem({ watchers: deps.watchers, trash: deps.trash, remove: deps.remove, damoclesHome: DAMOCLES_HOME_DIR, log: deps.log }),
     tree: createTreeListing(deps.log),
-    search: createSearchRunner({ rgPath, log: deps.log }),
-    quickOpen: createQuickOpenListing({ rgPath, log: deps.log }),
+    search: createSearchRunner({ rgPath, walks: deps.walks, log: deps.log }),
+    quickOpen: createQuickOpenListing({ walks: deps.walks, log: deps.log }),
     format: createFormatter({ starters, watchers: deps.watchers, log: deps.log }),
     terminals: createTerminalBackend({
       starters,

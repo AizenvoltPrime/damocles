@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { PermissionHandler } from '../index';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { CanUseToolContext } from '../types';
@@ -16,9 +19,19 @@ beforeAll(async () => {
   await initPiLoader();
 });
 
-/** Stand in for a file on disk, so `prepareDiff` produces a real original and proposed content pair. */
-function stubFileOnDisk(platform: FakePlatform, content: string): void {
-  vi.spyOn(platform.editor, 'readText').mockResolvedValue(content);
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** A file on disk holding `content`, so `prepareDiff` produces a real original and proposed content pair. */
+function fileOnDisk(content: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-prompt-'));
+  dirs.push(dir);
+  const file = path.join(dir, 'a.txt');
+  fs.writeFileSync(file, content);
+  return file;
 }
 
 /** A handler wired to a message list, which is the only thing the webview side of a prompt is. */
@@ -158,12 +171,12 @@ describe('a webview reload gets every live prompt posted again', () => {
   });
 
   it('re-posts a file approval with its diff payload intact, which nothing could rebuild later', async () => {
-    const { handler, messages, platform } = handlerWith();
-    stubFileOnDisk(platform, 'alpha\nbeta\n');
+    const { handler, messages } = handlerWith();
+    const file = fileOnDisk('alpha\nbeta\n');
 
     void handler.canUseTool(
       'Edit',
-      { file_path: '/tmp/a.txt', old_string: 'alpha', new_string: 'omega' },
+      { file_path: file, old_string: 'alpha', new_string: 'omega' },
       liveCtx('t1'),
     );
     await waitFor(() => handler.pendingPrompts().length > 0);
@@ -189,11 +202,11 @@ describe('a webview reload gets every live prompt posted again', () => {
 describe('resolveApproval settles the tool call even when the diff view will not close', () => {
   it('resolves when closing the diff tab rejects, instead of stranding the call for good', async () => {
     const { handler, platform } = handlerWith();
-    stubFileOnDisk(platform, 'alpha\nbeta\n');
+    const file = fileOnDisk('alpha\nbeta\n');
 
     const approval = handler.canUseTool(
       'Edit',
-      { file_path: '/tmp/a.txt', old_string: 'alpha', new_string: 'omega' },
+      { file_path: file, old_string: 'alpha', new_string: 'omega' },
       liveCtx('t1'),
     );
     await waitFor(() => handler.pendingPrompts().length > 0);

@@ -1,4 +1,9 @@
+import type { WalkIgnore } from '../../../core/search-walk';
 import { isMultilineRegexSource, MAX_CONTEXT_LINES, type SearchQuery } from '../../../shared/text-search';
+import type { SearchRequest } from './search-runner';
+
+// rg's --no-ignore: no ignore file of any kind, above the shown folder or below it, and no global excludes
+const NO_IGNORE_FILES: WalkIgnore = { files: false, global: false, parents: false };
 
 export type GlobsResult = { readonly ok: true; readonly globs: string[] } | { readonly ok: false; readonly glob: string };
 
@@ -68,7 +73,7 @@ export function excludeSettingGlobs(setting: Readonly<Record<string, unknown>>):
   return Object.entries(setting).filter(([, on]) => on === true).map(([glob]) => glob);
 }
 
-export interface RgSearchArgs {
+export interface SearchRequestArgs {
   // the pattern as matchingPattern gives it, case as smart case decided
   readonly query: SearchQuery;
   // parsed include and exclude lists (parseGlobList)
@@ -76,37 +81,30 @@ export interface RgSearchArgs {
   readonly exclude: readonly string[];
   // the true entries of files.exclude and search.exclude
   readonly excludeSettings: readonly string[];
-  // getRipgrepSearchOptions: the search.use*IgnoreFiles switches
-  readonly ignoreArgs: readonly string[];
+  // walkIgnoreOf: the search.use*IgnoreFiles switches
+  readonly ignore: WalkIgnore;
   // a Search Editor's context lines, 0..MAX_CONTEXT_LINES
   readonly contextLines: number;
 }
 
 /**
- * ripgrep's argv for a content search run with the shown folder as its working directory. No config file, no link following,
- * and the user's pattern never in an option position: a regex is the value of --regexp and a fixed string follows `--`.
- * The exclude settings and ignore files apply only while the query's toggle is on; off, ripgrep reads no ignore file at all.
+ * A content search of the shown folder: rg's matching flags, the pattern, which the engine passes as the value of --regexp
+ * (--fixed-strings reads it as a fixed string), and the walk that lists the files rg matches. The exclude settings and ignore
+ * files apply only while the query's toggle is on; off, the walk reads no ignore file at all. `.git` is left to the excludes.
  */
-export function rgSearchArgs({ query, include, exclude, excludeSettings, ignoreArgs, contextLines }: RgSearchArgs): string[] {
+export function searchRequest({ query, include, exclude, excludeSettings, ignore, contextLines }: SearchRequestArgs): SearchRequest {
   if (!Number.isInteger(contextLines) || contextLines < 0 || contextLines > MAX_CONTEXT_LINES) throw new Error('Context lines out of range');
-  const args = ['--json', '--no-config', '--crlf', '--hidden'];
-  if (contextLines > 0) args.push('--before-context', String(contextLines), '--after-context', String(contextLines));
-  args.push(query.matchCase ? '--case-sensitive' : '--ignore-case');
-  if (query.wholeWord) args.push('--word-regexp');
-  for (const glob of include) args.push('-g', glob);
-  for (const glob of exclude) args.push('-g', `!${glob}`);
-  if (query.useExcludeSettingsAndIgnoreFiles) {
-    for (const glob of excludeSettings) args.push('-g', `!${glob}`);
-    args.push(...ignoreArgs);
-  } else {
-    args.push('--no-ignore');
-  }
+  const match = ['--crlf'];
+  if (contextLines > 0) match.push('--before-context', String(contextLines), '--after-context', String(contextLines));
+  match.push(query.matchCase ? '--case-sensitive' : '--ignore-case');
+  if (query.wholeWord) match.push('--word-regexp');
   if (query.isRegex) {
-    args.push('--engine', 'auto');
-    if (isMultilineRegexSource(query.pattern)) args.push('--multiline');
-    args.push('--regexp', query.pattern, '--', '.');
+    match.push('--engine', 'auto');
+    if (isMultilineRegexSource(query.pattern)) match.push('--multiline');
   } else {
-    args.push('--fixed-strings', '--', query.pattern, '.');
+    match.push('--fixed-strings');
   }
-  return args;
+  const on = query.useExcludeSettingsAndIgnoreFiles;
+  const overrides = [...include, ...exclude.map((glob) => `!${glob}`), ...(on ? excludeSettings.map((glob) => `!${glob}`) : [])];
+  return { match, pattern: query.pattern, walk: { ignore: on ? ignore : NO_IGNORE_FILES, overrides } };
 }

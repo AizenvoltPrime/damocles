@@ -277,6 +277,13 @@ describe('buildToolStatus', () => {
     expect(group(snap, 'memory').available).toBe(false);
   });
 
+  it('makes the browser tools eligible only for a session that has a browser, as their group\'s availability says', () => {
+    const without = fullActiveToolNames(deps({ browserAvailable: false, browserEnabled: true }));
+    for (const name of BROWSER_PI_TOOL_NAMES) expect(without, name).not.toContain(name);
+    const within = fullActiveToolNames(deps({ browserAvailable: true, browserEnabled: true }));
+    for (const name of BROWSER_PI_TOOL_NAMES) expect(within, name).toContain(name);
+  });
+
   it('team group enabled reflects the raw flag even without availability', () => {
     const snap = buildToolStatus(deps({ teamEnabled: true, teamAvailable: false }));
     const team = snap.groups.find((g) => g.group === 'team')!;
@@ -435,14 +442,14 @@ describe('design tools in the active set (PD-15, PD-25)', () => {
   });
 
   it('lets a design chat load only the read browser tools, and ToolSearch lists exactly the loadable set', () => {
-    const chat = deps({ designEnabled: true, designRole: true, browserEnabled: true });
+    const chat = deps({ designEnabled: true, designRole: true, browserAvailable: true, browserEnabled: true });
     const eligible = fullActiveToolNames(chat);
     const browser = eligible.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n));
     expect(new Set(browser)).toEqual(DESIGN_BROWSER_TOOL_NAMES);
     expect(eligible).not.toContain('BrowserClick');
     const loadable = loadableToolNames(deferredToolNames(eligible, []), { browser: true, forge: true, relayedTool: () => true }, true);
     expect(loadable.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n)).sort()).toEqual([...DESIGN_BROWSER_TOOL_NAMES].sort());
-    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserEnabled: true })), []), { browser: true, forge: true, relayedTool: () => true }, false);
+    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserAvailable: true, browserEnabled: true })), []), { browser: true, forge: true, relayedTool: () => true }, false);
     expect(parent).toContain('BrowserClick');
   });
 });

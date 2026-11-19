@@ -359,6 +359,22 @@ describe('DesktopFileWatcherFactory', { timeout: 20_000 }, () => {
     watcher.dispose();
   });
 
+  it('reports a dangling link in a shallow watch as created, and as deleted once removed', async () => {
+    const watcher = factory.watch(dir, '*');
+    const created = vi.fn();
+    const deleted = vi.fn();
+    watcher.onDidCreate(created);
+    watcher.onDidDelete(deleted);
+    const link = path.join(dir, 'link');
+    fs.symlinkSync(path.join(dir, 'missing-target'), link, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await vi.waitFor(() => expect(created).toHaveBeenCalledWith(link), WAIT);
+    if (process.platform === 'win32') fs.rmdirSync(link);
+    else fs.unlinkSync(link);
+    await vi.waitFor(() => expect(deleted).toHaveBeenCalledWith(link), WAIT);
+    watcher.dispose();
+  });
+
   it('settles ready at once for a shallow watch, one waiting for a missing root, one that could not start and one disposed', async () => {
     const shallow = factory.watch(dir, 'a.json');
     const waiting = factory.watch(path.join(dir, 'missing', 'deeper'), 'a.json');

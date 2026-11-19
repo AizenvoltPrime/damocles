@@ -6,6 +6,7 @@ import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE, isShellTool } from '../../s
 import type { PendingPrompt, RaisedPrompt } from './session-state';
 import { AGENT_NAME_MAX_CHARS, agentLabel } from './extension-ui-context';
 import { oneLine } from './untrusted-text';
+import { resolveToCwd } from './tools/search-tools';
 import { l, verbatim } from '../l10n';
 import type { LocalizedText } from '../../shared/localized-text';
 import { log } from '../logger';
@@ -36,9 +37,9 @@ export function promptOwnerOf(parentToolUseId: string | null | undefined, owners
   return agentId !== undefined ? { kind: 'subagent', agentId } : { kind: 'main' };
 }
 
-/** The file relative to the chat folder when it lies inside it, else as an absolute path. */
+/** The file the tool resolves, relative to the chat folder when it lies inside it, else as an absolute path. */
 function displayPath(filePath: string, cwd: string): string {
-  const absolute = path.resolve(cwd, filePath);
+  const absolute = resolveToCwd(filePath, cwd);
   const relative = path.relative(cwd, absolute);
   const outside = !relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
   return outside ? absolute : relative;

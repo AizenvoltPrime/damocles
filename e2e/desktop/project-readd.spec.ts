@@ -28,8 +28,11 @@ const trustedFolders = (home: HermeticHome): string[] => {
   return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { folders: string[] }).folders : [];
 };
 
-/** A trusted project in a repository of REMOTE with one chat, whose identity core recorded; its folder is deleted after the app closes. */
-async function seedMissingProject(home: HermeticHome, launch: () => Promise<DesktopApp>): Promise<{ key: string; chatId: string }> {
+/**
+ * A trusted project in a repository of REMOTE with one chat, whose identity core recorded; its folder is deleted after the app
+ * closes and `beforeDelete` ran.
+ */
+async function seedMissingProject(home: HermeticHome, launch: () => Promise<DesktopApp>, beforeDelete?: () => Promise<void>): Promise<{ key: string; chatId: string }> {
   await initRepo(home, home.project);
   await git(home, home.project, 'remote', 'add', 'origin', REMOTE);
   const desktop = await launch();
@@ -42,6 +45,7 @@ async function seedMissingProject(home: HermeticHome, launch: () => Promise<Desk
   const identities = path.join(home.damoclesDir, 'folder-identities.json');
   await expect.poll(() => (fs.existsSync(identities) ? fs.readFileSync(identities, 'utf8') : '')).toContain('git.example.invalid/acme/widgets');
   await desktop.close();
+  await beforeDelete?.();
   fs.rmSync(home.project, { recursive: true, force: true });
   return { key, chatId: chatId! };
 }
@@ -52,7 +56,7 @@ async function cloneAt(home: HermeticHome, folder: string, remote = 'git@git.exa
   await git(home, folder, 'remote', 'add', 'origin', remote);
 }
 
-test('adding a clone of a missing project\'s repository asks, and Move Chats merges its chats there, selects the moved chat and moves trust', async ({ home, launch }) => {
+test('adding a clone of a missing project\'s repository asks trust first, and Move Chats merges its chats there, selects the moved chat and moves trust', async ({ home, launch }) => {
   test.setTimeout(300_000);
   const stub = await startOpenAIStub();
   try {
@@ -79,8 +83,10 @@ test('adding a clone of a missing project\'s repository asks, and Move Chats mer
     const offer = asked.find((dialog) => dialog.message.includes(OFFER_TITLE));
     expect(offer?.message).toBe(`Move ${path.basename(home.project)}'s chats here?`);
     expect(offer?.answered).toBe('Move Chats');
+    // core reads the folder's root commits only once it is trusted, so the trust question comes before the match
     const trustAsked = asked.findIndex((dialog) => dialog.message.startsWith(TRUST_PROMPT));
-    expect(trustAsked).toBeGreaterThan(asked.indexOf(offer!));
+    expect(trustAsked).toBeGreaterThanOrEqual(0);
+    expect(trustAsked).toBeLessThan(asked.indexOf(offer!));
     await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message)).toContain(`Moved 1 chat of ${path.basename(home.project)} to ${clone}.`);
     await expect.poll(() => trustedFolders(home)).toContain(clone);
     expect(trustedFolders(home)).not.toContain(home.project);
@@ -121,6 +127,52 @@ test('another repository asks nothing, and Not Now adds the clone normally and k
     expect((await projectAt(app, home.project))?.presence).toBe('missing');
     expect(chatIdsIn(home, home.project)).toEqual([seeded.chatId]);
     expect(chatIdsIn(home, clone)).toEqual([]);
+  } finally {
+    await stub.close();
+  }
+});
+
+// A clone made from the folder itself names only that local path as its origin, so it shares no network remote with the
+// missing project, and only its first commit, which core reads once the clone is trusted, names it the same repository.
+test('a local clone of a missing project is offered its chats once trusted at Add Project, and not when its trust is declined', async ({ home, launch }) => {
+  test.setTimeout(300_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const declined = path.join(path.dirname(home.project), 'widgets-declined');
+    const trusted = path.join(path.dirname(home.project), 'widgets-trusted');
+    const seeded = await seedMissingProject(home, launch, async () => {
+      const root = await git(home, home.project, 'rev-list', '--max-parents=0', 'HEAD');
+      expect(fs.readFileSync(path.join(home.damoclesDir, 'folder-identities.json'), 'utf8')).toContain(root);
+      for (const clone of [declined, trusted]) await git(home, path.dirname(home.project), 'clone', '--template=', home.project, clone);
+    });
+
+    const { app } = await launch();
+    await answerDialogs(app, { [TRUST_PROMPT]: 'Don\'t Trust', [OFFER_TITLE]: 'Move Chats' });
+    await expect.poll(async () => (await projectAt(app, home.project))?.presence).toBe('missing');
+    await answerOpenDialog(app, declined);
+    await clickMenu(app, 'damocles.addProject');
+    // declined trust still adds the folder, untrusted, and matches by remotes only, which it shares none of
+    await expect.poll(async () => {
+      const state = await shellState(app);
+      const added = state.projects.find((p) => p.fsPath === declined);
+      return added !== undefined && state.selected.projectKey === added.key && state.selected.chatId?.startsWith('new:') === true;
+    }, { timeout: 30_000 }).toBe(true);
+    expect((await askedDialogs(app)).filter((dialog) => dialog.message.includes(OFFER_TITLE))).toEqual([]);
+    expect(trustedFolders(home)).not.toContain(declined);
+
+    await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder', [OFFER_TITLE]: 'Move Chats' });
+    await answerOpenDialog(app, trusted);
+    await clickMenu(app, 'damocles.addProject');
+    await expect.poll(() => chatIdsIn(home, trusted), { timeout: 60_000 }).toEqual([seeded.chatId]);
+    const asked = await askedDialogs(app);
+    const offer = asked.find((dialog) => dialog.message.includes(OFFER_TITLE));
+    expect(offer?.message).toBe(`Move ${path.basename(home.project)}'s chats here?`);
+    const trustAsked = asked.findIndex((dialog) => dialog.message.startsWith(TRUST_PROMPT) && dialog.message.includes(trusted));
+    expect(trustAsked).toBeGreaterThanOrEqual(0);
+    expect(trustAsked).toBeLessThan(asked.indexOf(offer!));
+    expect(asked[trustAsked]?.answered).toBe('Trust Folder');
+    await expect.poll(() => trustedFolders(home)).toContain(trusted);
   } finally {
     await stub.close();
   }

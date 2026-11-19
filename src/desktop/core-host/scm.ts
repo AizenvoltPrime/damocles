@@ -17,6 +17,7 @@ import { createGitRunner, type GitCloner, type GitRunner } from '../../core/scm/
 import type { Repository } from '../../core/scm/repository';
 import { ScmService, type CommitVariant, type RepoSnapshot, type ScmEvent } from '../../core/scm/scm-service';
 import { folderKey } from '../../core/workspace-folders/folder-key';
+import { folderPresenceProbe } from '../../core/pi-session/folder-presence';
 import { verbatim } from '../../core/l10n';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import type { Disposable } from '../../platform/disposable';
@@ -310,6 +311,8 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
       ? { trash: (absolutePath: string) => fs.rm(absolutePath, { recursive: true }), deletesPermanently: true }
       : { trash: (absolutePath: string) => endpoint.request('shell.trash', { path: absolutePath }) }),
     log,
+    // a check the hung gate refused runs again once it admits, and a check that gave up on a hung stat once that stat answers
+    presence: folderPresenceProbe,
   });
 
   // the repositories each project's last published view listed, so a view that drops one publishes its close

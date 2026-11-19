@@ -8,6 +8,7 @@ import { readyOverlay } from './support/overlay';
 import { recordedToasts, recordToasts, shellState } from './support/shell';
 import { chatRow, clickChat, projectRow, readyShell } from './support/shell-ui';
 import { addProject, chatInput, sendAndAwaitEcho } from './support/ui';
+import { scmSection } from './support/scm';
 
 function savedSessionIds(home: HermeticHome): string[] {
   const file = path.join(home.userData, 'panels.json');
@@ -71,6 +72,12 @@ test('a project whose folder moved while the app was closed shows Folder not fou
     await expect(shell.getByTestId('absent-project-path')).toHaveText(home.project);
     expect(await loadedSessionIds(app)).not.toContain(sessionId);
     expect(savedSessionIds(home)).toContain(sessionId);
+    // Source control says the folder is not there, and offers neither Initialize Repository nor Clone
+    const scmState = scmSection(shell).getByTestId('scm-state');
+    await expect(scmState).toHaveAttribute('data-state', 'absent');
+    await expect(scmState).toContainText('Folder not found.');
+    await expect(scmState.getByTestId('scm-state-action')).toHaveCount(0);
+    await expect(scmState.getByTestId('scm-state-secondary')).toHaveCount(0);
 
     // its listed chat shows the placeholder too, and opens nothing
     await expect(chatRow(shell, sessionId!)).toBeVisible();
@@ -84,6 +91,7 @@ test('a project whose folder moved while the app was closed shows Folder not fou
     await focusWindow(app);
     await expect.poll(async () => (await shellState(app)).projects.find((p) => p.key === projectKey)?.presence).toBeUndefined();
     await expect(row.getByTestId('presence-badge')).toHaveCount(0);
+    await expect(scmState).toHaveAttribute('data-state', 'noRepository');
     await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey, chatId: sessionId });
     await expect.poll(() => loadedSessionIds(app)).toContain(sessionId);
     await expect((await activeChat(app)).getByText('Echo: a chat in the folder that moves', { exact: true })).toBeVisible();
@@ -118,6 +126,29 @@ test('a project folder deleted while the app runs shows as missing on focus, and
   await shell.getByTestId('absent-project-remove').click();
   await expect.poll(async () => (await shellState(app)).projects.map((p) => p.key)).toEqual([keptKey]);
   await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(keptKey);
+});
+
+// core watches nothing that tells it a folder went, so it hears it from main, checks the folder itself and runs no git there
+test('Source control of a selected project whose folder is deleted while the app runs says the folder was not found', async ({ home, launch }) => {
+  test.setTimeout(180_000);
+  const doomed = path.join(path.dirname(home.project), 'doomed-scm');
+  fs.mkdirSync(doomed, { recursive: true });
+  const { app } = await launch();
+  await expect(chatInput(await activeChat(app))).toBeVisible();
+  await addProject(app, doomed, true);
+  const doomedKey = (await shellState(app)).projects.find((p) => p.fsPath === doomed)!.key;
+  const shell = await readyShell(app);
+  await projectRow(shell, doomedKey).click();
+  await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(doomedKey);
+  const scmState = scmSection(shell).getByTestId('scm-state');
+  await expect(scmState).toHaveAttribute('data-state', 'noRepository', { timeout: 30_000 });
+
+  fs.rmSync(doomed, { recursive: true, force: true, maxRetries: 10 });
+  await focusWindow(app);
+  await expect.poll(async () => (await shellState(app)).projects.find((p) => p.key === doomedKey)?.presence).toBe('missing');
+  await expect(scmState).toHaveAttribute('data-state', 'absent', { timeout: 30_000 });
+  await expect(scmState).toContainText('Folder not found.');
+  await expect(scmState.getByTestId('scm-state-action')).toHaveCount(0);
 });
 
 test('Remove project of a missing folder asks about a kept chat holding its first prompt: Cancel keeps it saved, Remove Project drops it', async ({ home, launch }) => {

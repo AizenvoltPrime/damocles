@@ -50,6 +50,19 @@ describe.skipIf(!HAS_GIT)('the trust of the nearest registered project', { timeo
     expect(fs.existsSync(innerMarker) && fs.existsSync(dottedMarker)).toBe(true);
   });
 
+  it('closes a trusted project\'s nested repository and shows the nested project untrusted once a revoke takes its trust', async () => {
+    const outer = makeRepo(path.join(sandbox, 'outer-revoked'));
+    const inner = makeRepo(path.join(outer, 'inner'));
+    const h = harness({ trusted: [outer, inner] });
+    h.service.setProjects([{ key: 'o', path: outer }, { key: 'i', path: inner }]);
+    await ready(h, 2, 'o');
+    h.trust.revokeAndNotify(inner);
+    expect(viewOf(h, 'i').state).toBe('untrusted');
+    await waitFor(() => viewOf(h, 'o').repos.length === 1, 'the nested repository leaves the outer view');
+    expect(viewOf(h, 'o').repos.map((repo) => repo.root)).toEqual([outer]);
+    h.service.dispose();
+  });
+
   it('stops a nested repository at its next git call once a project registered later, or untrusted, holds it', async () => {
     const outer = makeRepo(path.join(sandbox, 'outer-b'));
     const inner = makeRepo(path.join(outer, 'inner'));

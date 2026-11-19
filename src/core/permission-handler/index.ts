@@ -391,6 +391,9 @@ export class PermissionHandler {
 
     // Its diff would read the file, which on a network host sends the user's Windows credentials there before they answer.
     if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && context.reachesNetwork !== true) {
+      if (await this.evaluatorManager.readAskCovers(toolName, input, this.state.workspacePath)) {
+        return this.approvalManager.handleUnpreviewedFilePermission(toolName, input, context);
+      }
       return this.approvalManager.handleFilePermission(toolName, input, context);
     }
 

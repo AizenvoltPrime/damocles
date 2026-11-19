@@ -50,7 +50,9 @@ describe("the browser on a daemon's core", () => {
 
   it('restores no page', async () => {
     await service.restoreChatPages(chat, ['https://example.com'], 0);
-    await service.restorePanel(chat, 'https://example.com');
+    const token = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+    service.setChatOwners({ tokenOf: () => token, readiedChat: () => chat, onDidChange: () => ({ dispose: () => {} }) });
+    await service.restorePanel(createFakePlatform().window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }), 'https://example.com', token);
     launchedNothing();
   });
 

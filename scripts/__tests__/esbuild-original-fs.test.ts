@@ -182,6 +182,7 @@ describe('the getBuiltinModule lint guard', () => {
     'src/desktop/local-services/probe.ts',
     'src/desktop/watch-worker/probe.ts',
     'src/desktop/watch-worker/__tests__/probe.test.ts',
+    'src/core/search-walk/walk-child.ts',
     'src/desktop/formatter-host/probe.ts',
     'src/vscode/probe.ts',
     'src/vscode/__tests__/probe.test.ts',

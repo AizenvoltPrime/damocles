@@ -256,8 +256,8 @@ describe('the endpoint', () => {
 
   it('rejects with the handler\'s error message', async () => {
     const { main, core } = pair();
-    main.serve('editor.readText', () => Promise.reject(new Error('ENOENT: no such file')));
-    await expect(core.request('editor.readText', { path: '/x' })).rejects.toThrow('ENOENT: no such file');
+    main.serve('shell.revealPath', () => Promise.reject(new Error('ENOENT: no such file')));
+    await expect(core.request('shell.revealPath', { path: '/x' })).rejects.toThrow('ENOENT: no such file');
   });
 
   it('aborts the handler\'s signal when the caller aborts', async () => {

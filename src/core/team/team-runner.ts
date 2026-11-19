@@ -11,7 +11,7 @@ import { AgentRunner, busMessageDelivery } from './agent-runner';
 import { TeamPersistence, deliveredIdsInSessionFile } from './persistence';
 import type { CheckpointWriter } from './checkpoint-writer';
 import type { TeamRunTotals } from './runs';
-import { buildFailedResumePrompt, buildInterruptedResumePrompt, buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
+import { buildFailedResumePrompt, buildInterruptedResumePrompt, buildLeadSystemPrompt, buildPendingDispatchNudge, buildSpecialistSystemPrompt } from './prompts';
 import type { DomainProfile } from './prompts';
 import {
   checkApprovalReadGate,
@@ -58,6 +58,7 @@ import type {
   ReviewStamp,
   ReviewVerdictInput,
   MemberTranscriptSource,
+  AgentMessageEntry,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type {
@@ -260,6 +261,16 @@ function liveRoster(
   return { members, respawned };
 }
 
+/**
+ * Whether the log's last pending-dispatch nudge has no start of a pending member after it, the start that re-arms the
+ * nudge. A pending member is at attempt 0 and a redispatch advances the attempt, so such a start is a specialist's attempt-0 spawn.
+ */
+function pendingDispatchNudgedInLog(log: TeamEventLog): boolean {
+  let last = -1;
+  log.messages.forEach((m, i) => { if (m.pendingDispatchNudge) last = i; });
+  return last !== -1 && !log.spawns.some((s) => s.role === 'specialist' && s.attempt === 0 && s.messagesBefore > last);
+}
+
 function usageTotals(agent: TeamAgent): AgentUsageTotals {
   return {
     totalInputTokens: agent.totalInputTokens,
@@ -322,6 +333,11 @@ export class TeamRunner {
   // By name, the call pi ended a member's latest run on, until it runs again. A live specialist waits for the lead with
   // no nudge (`parkedOnRejection`), and a settled member's stop records it. Synthesis leaves it, so the settle can read it.
   private rejections = new Map<string, TerminatedCall>();
+  // Holds the lead's turn end for one nudge about specialists it never started; set only while nothing else keeps it alive.
+  private owedDispatchNudge = false;
+  // Set when that nudge goes out, and checkpointed, since the nudge promises the next bare turn end completes the
+  // team, a resumed run's included. Only startSpecialist clears it, so the roster size bounds the nudges.
+  private pendingDispatchNudged = false;
   // Open brief conflicts a specialist raised (name → detail). While non-empty the lead cannot explicitly
   // synthesize; on lead turn-end it is nudged (bounded); any completion with an open flag fails loud.
   private briefConflicts = new Map<string, string>();
@@ -613,16 +629,21 @@ export class TeamRunner {
       teamId: this.config.teamId,
       onTurnEnd: () => {
         leadAgent.status = 'monitoring';
-        this.onMessage({
-          type: 'teamAgentStatusUpdate',
-          teamId: this.config.teamId,
-          agentId: leadAgent.agentId,
-          status: 'monitoring',
-          progressSummary: 'Waiting for specialists',
-        });
+        // The owed nudge wakes the lead at once with nothing running, so its card stays as it is.
+        if (!this.owedDispatchNudge) {
+          this.onMessage({
+            type: 'teamAgentStatusUpdate',
+            teamId: this.config.teamId,
+            agentId: leadAgent.agentId,
+            status: 'monitoring',
+            progressSummary: 'Waiting for specialists',
+          });
+        }
         this.nudgeLeadOnOpenConflicts(leadName);
         this.nudgeLeadOnOpenReviewRound(leadName);
+        this.nudgeLeadOnPendingDispatch(leadName);
       },
+      onReconcileBeforeEnd: () => this.reconcilePendingDispatch(),
       onKeepAliveResume: () => {
         leadAgent.status = 'running';
         this.onMessage({
@@ -633,11 +654,8 @@ export class TeamRunner {
         });
       },
       shouldDeliverMessage: leadShouldDeliverMessage,
-      // A specialist parked on a rejection waits for the lead, so it gives the lead nothing to wait for.
-      keepAlive: () => !this.completionResolved && [...this.agents.values()].some(
-        a => a.role === 'specialist' && !this.parkedOnRejection(a.name)
-          && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
-      ),
+      // A pending specialist has no run that could wake the lead, so only the owed nudge holds the lead for it.
+      keepAlive: () => !this.completionResolved && (this.owedDispatchNudge || this.leadHasSpecialistToAwait()),
       onToolCall: (_toolName, count) => {
         leadAgent.toolCallCount = leadAgent.carriedToolCallCount + count;
         this.currentRun.toolCount++;
@@ -875,7 +893,7 @@ export class TeamRunner {
    */
   private installSubscribers(): void {
     this.messageBus.subscribe((msg) => {
-      const logged = this.appendEntry({
+      const entry: AgentMessageEntry = {
         type: 'agent-message',
         teamId: this.config.teamId,
         messageId: msg.messageId,
@@ -883,8 +901,10 @@ export class TeamRunner {
         to: msg.to,
         content: msg.content,
         ...(msg.kind ? { kind: msg.kind } : {}),
+        ...(msg.pendingDispatchNudge ? { pendingDispatchNudge: true } : {}),
         timestamp: new Date(msg.timestamp).toISOString(),
-      });
+      };
+      const logged = this.appendEntry(entry);
       if (logged) this.lastLoggedMessageId = msg.messageId;
 
       this.onMessage({
@@ -982,6 +1002,7 @@ export class TeamRunner {
     // Any lead progress action resets the stall budget (consecutive-stall semantics): a lead spawning
     // work is not stranded, even if an open review round outlives this turn.
     this.leadReviewStalls = 0;
+    this.pendingDispatchNudged = false;
 
     agent.specialization = task;
     agent.description = description;
@@ -1492,6 +1513,13 @@ export class TeamRunner {
         timestamp: new Date().toISOString(),
       });
     }
+    // Finalize turns them cancelled. A stopped or failed team keeps them pending in its resumable checkpoint, so only a completion lists them.
+    const neverDispatched = this.status === 'running' ? this.getPendingSpecialistNames() : [];
+    if (neverDispatched.length > 0) {
+      finalResult =
+        `Never dispatched (cancelled): the lead never started these roster specialists, so they did no work:\n` +
+        `${neverDispatched.map((n) => `- ${n}`).join('\n')}\n\n---\n\n${finalResult}`;
+    }
     // Read before the release below turns awaiting-review members into completed ones. The result's reader
     // can no longer act on the team, so it gets each fact without the lead's move.
     const unsatisfied = this.coverage.unsatisfied(this.coverageView).map((u) => this.coverage.describeUnsatisfied(u, this.coverageView).fact);
@@ -1596,9 +1624,10 @@ export class TeamRunner {
     this.coverage.clearReReview(name);
     // The lead's cancel is the member's stop, not the rejection it was parked on.
     this.rejections.delete(name);
-    this.cancellationTimestamps.set(name, Date.now());
     const abort = this.specialistAborts.get(name);
     if (abort) {
+      // Only a run can still write findings after its cancel, so a never-started member holds no synthesis.
+      this.cancellationTimestamps.set(name, Date.now());
       abort.abort();
     } else {
       agent.status = 'cancelled';
@@ -2019,12 +2048,38 @@ export class TeamRunner {
     });
   }
 
+  /** A specialist whose run can still wake the lead. One parked on a rejection waits for the lead instead. */
+  private leadHasSpecialistToAwait(): boolean {
+    return [...this.agents.values()].some(
+      a => a.role === 'specialist' && !this.parkedOnRejection(a.name)
+        && (a.status === 'running' || a.status === 'awaiting-review' || a.status === 'standby'),
+    );
+  }
+
+  /**
+   * The lead's keepAlive-false boundary: with nothing to wait for but specialists it never started, it is held for one
+   * nudge instead of completing the team. The runner re-checks keepAlive right after, so the hold parks the lead.
+   */
+  private reconcilePendingDispatch(): void {
+    if (this.completionResolved || this.pendingDispatchNudged || this.leadHasSpecialistToAwait()) return;
+    if (this.getPendingSpecialistNames().length > 0) this.owedDispatchNudge = true;
+  }
+
+  /** Sends the nudge the boundary owed. Deferred, because the lead's wait-resolver is armed only once this turn-end returns. */
+  private nudgeLeadOnPendingDispatch(leadName: string): void {
+    if (!this.owedDispatchNudge) return;
+    this.owedDispatchNudge = false;
+    this.pendingDispatchNudged = true;
+    const nudge = buildPendingDispatchNudge(this.getPendingSpecialistNames());
+    queueMicrotask(() => {
+      if (!this.completionResolved) this.messageBus.send('system', leadName, nudge, { pendingDispatchNudge: true });
+    });
+  }
+
   /**
    * Fail-loud terminal path when the lead abandons an open review round past the nudge budget: synthesize
-   * with a SUSPECT banner + partial results so the run resolves instead of hanging. The banner is placed at
-   * the FRONT of the text passed to synthesizeResult, which itself PREPENDS its own unresolved-brief-conflict
-   * block when conflicts are open — the two banners compose (conflict block first, then SUSPECT banner, then
-   * partial results); we deliberately do not touch that prepend.
+   * with a SUSPECT banner + partial results so the run resolves instead of hanging. The banner heads only the
+   * text passed in, and synthesizeResult prepends its own blocks above it.
    *
    * Verified concurrency trap: this fires from the lead's onTurnEnd — AFTER the loop's keepAlive check
    * passed, BEFORE the lead parks. synthesizeResult resolves completion but sends the lead nothing, so the
@@ -2331,6 +2386,7 @@ export class TeamRunner {
         briefConflicts: [...this.briefConflicts],
         conflictNudges: this.conflictNudges,
         leadReviewStalls: this.leadReviewStalls,
+        pendingDispatchNudged: this.pendingDispatchNudged,
         lastReviewRoundNotification: this.lastReviewRoundNotification,
         coverage: this.coverage.serialize(),
         rejectedCalls: [...this.rejections].map(([name, call]) => [name, { ...call }]),
@@ -2446,6 +2502,9 @@ export class TeamRunner {
     this.briefConflicts = new Map(review.briefConflicts);
     this.conflictNudges = review.conflictNudges;
     this.leadReviewStalls = review.leadReviewStalls;
+    // A start the log holds after a live snapshot cleared the flag, as startSpecialist does.
+    this.pendingDispatchNudged = pendingDispatchNudgedInLog(log) || (review.pendingDispatchNudged === true
+      && !checkpoint.members.some((m) => m.status === 'pending' && respawned.has(m.name)));
     this.lastReviewRoundNotification = review.lastReviewRoundNotification;
     this.rejections = new Map(review.rejectedCalls ?? []);
     for (const name of respawned) this.clearAttemptReview(name);

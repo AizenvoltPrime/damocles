@@ -3,8 +3,8 @@ import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { detectGpu } from "./gpu-detect";
 import type { CpuInfo, GpuDetection } from "./gpu-detect";
-import { checkDiskSpace, INSTALL_SIZE_BYTES } from "./disk-check";
-import type { DiskCheck } from "./disk-check";
+import { INSTALL_SIZE_BYTES } from "./install-sizes";
+import { checkDiskSpace, type DiskCheck } from "../../disk-space";
 import { runImportSmokeCheck } from "./smoke-check";
 import type { SmokeCheckOptions, SmokeCheckResult } from "./smoke-check";
 import {
@@ -569,5 +569,5 @@ export function smokeFailureText(result: Extract<SmokeCheckResult, { ok: false }
   return withDetail(headline, result.logPath !== undefined ? l("{0}\nThe full traceback was written to {1}", tail, result.logPath) : tail);
 }
 
-export { detectGpu, runImportSmokeCheck, checkDiskSpace, INSTALL_SIZE_BYTES, detectInstalledRuntime, detectInstalledTorchChannel };
+export { detectGpu, runImportSmokeCheck, INSTALL_SIZE_BYTES, detectInstalledRuntime, detectInstalledTorchChannel };
 export type { GpuDetection, DiskCheck, SmokeCheckResult };

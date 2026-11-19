@@ -77,6 +77,7 @@ export const WEBVIEW_LOCALIZED_TEXT: Readonly<Record<string, readonly string[]>>
   subagentMessagesUpdate: ['.messages[].error'],
   subscriptionUsage: ['.data.claude.error', '.data.claude.profileError', '.data.gpt.error', '.data.gpt.profileError'],
   teamAgentDataLoaded: ['.messages[].error'],
+  thinkingDroppedNotice: ['.reasons[].text'],
   toolMetadata: ['.metadata.refusal', '.metadata.widthChecks.skipped'],
   transcriptionError: ['.message'],
   usageStats: ['.error'],

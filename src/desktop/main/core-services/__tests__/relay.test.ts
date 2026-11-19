@@ -52,7 +52,7 @@ it('relays a 28 MB conversation as JSON text that main forwards without parsing'
   const host = createHostServices({
     endpoint,
     platform: main,
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     resolveProxy: async () => 'DIRECT',
@@ -101,7 +101,7 @@ it('drops a post type this core may not send, and relays the rest', () => {
   const host = createHostServices({
     endpoint,
     platform: main,
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     resolveProxy: async () => 'DIRECT',
@@ -147,7 +147,7 @@ function crafting(refusedPosts: ReadonlySet<string>) {
   const host = createHostServices({
     endpoint,
     platform: main,
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     resolveProxy: async () => 'DIRECT',
@@ -224,7 +224,7 @@ function relayServices(divert: (view: RelayView, message: unknown) => boolean = 
   const host = createHostServices({
     endpoint,
     platform: main,
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     resolveProxy: async () => 'DIRECT',
@@ -307,7 +307,7 @@ it('serves design.openPreview with a tab of the chat and never opens a URL', asy
   const host = createHostServices({
     endpoint,
     platform: main,
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     ...hostExtras(),
@@ -349,7 +349,7 @@ it("serves a daemon's chats.showSession by showing the chat on this device, answ
   const host = createHostServices({
     endpoint,
     platform: createFakePlatform(),
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     ...hostExtras(),
@@ -384,7 +384,7 @@ it("fails a daemon's chats.showSession whose chat did not open on this device, s
   const host = createHostServices({
     endpoint,
     platform: createFakePlatform(),
-    trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
     state: createDesktopKeyValueState(userData, () => undefined),
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     ...hostExtras(),

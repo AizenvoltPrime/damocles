@@ -109,7 +109,6 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('files.realpath', ({ target }) => files.realpath(target));
       endpoint.serve('files.folderKey', ({ path }) => folderKey(path));
       endpoint.serve('files.read', ({ path, limitBytes }) => files.read(path, limitBytes));
-      endpoint.serve('files.readText', ({ path }) => files.readText(path));
       endpoint.serve('files.writeInPlace', ({ project, location, bytes }) => files.writeInPlace(project, location, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
       endpoint.serve('files.readHostSettings', () => files.readHostSettings());
       endpoint.serve('files.writeHostSettings', ({ bytes }) => files.writeHostSettings(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
@@ -197,9 +196,9 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('files.verifyLink', ({ project, relativePath, within }) => files.verifyLink(project, relativePath, within));
       endpoint.serve('files.removeFolder', ({ project, relativePath, confirmed }) => files.removeFolder(project, relativePath, fromWireIdentity(confirmed)));
       endpoint.serve('tree.list', ({ project, relativeDir, excludes }) => tree.list(project, relativeDir, excludes));
-      endpoint.serve('search.run', ({ runId, cwd, args }) => {
+      endpoint.serve('search.run', ({ runId, cwd, match, pattern, walk }) => {
         fresh(searches, runId, 'search');
-        searches.set(runId, search.run(cwd, args, {
+        searches.set(runId, search.run(cwd, { match, pattern, walk }, {
           event: (event) => endpoint.emit('search.event', { runId, event }),
           dropped: () => endpoint.emit('search.dropped', { runId }),
           end: (end) => {
@@ -212,10 +211,10 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         searches.get(runId)?.kill();
         searches.delete(runId);
       });
-      endpoint.serve('quickOpen.list', ({ runId, root, ignoreArgs, excludes }) => {
+      endpoint.serve('quickOpen.list', ({ runId, root, ignore, excludes }) => {
         fresh(listings, runId, 'listing');
-        listings.set(runId, quickOpen.list(root, ignoreArgs, excludes, {
-          data: (chunk) => endpoint.emit('quickOpen.data', { runId, chunk }),
+        listings.set(runId, quickOpen.list(root, ignore, excludes, {
+          files: (files) => endpoint.emit('quickOpen.files', { runId, files }),
           end: (error) => {
             listings.delete(runId);
             endpoint.emit('quickOpen.end', { runId, ...(error !== undefined ? { error } : {}) });

@@ -1,10 +1,10 @@
-import { stat } from 'fs/promises';
 import * as path from 'path';
 import type { DiffView, EditorService } from '../../platform/editor-service';
 import { TOOL_WRITE } from '../../shared/tool-names';
-import type { FilePatch, FilePatchOmitted } from '../../shared/types/file-patch';
-import { FILE_PATCH_MAX_BYTES, filePatch } from '../pi-session/tools/file-patch';
-import { exactEdit, previewEdit } from '../pi-session/tools/edit-tool';
+import type { FilePatch } from '../../shared/types/file-patch';
+import { filePatch, readTextForPatch } from '../pi-session/tools/file-patch';
+import { EDIT_EMPTY_OLD_STRING, exactEdit, previewEdit, replaceAllNotFound, replaceAllUnchanged } from '../pi-session/tools/edit-tool';
+import { couldNotEdit, editOperations, notARegularFile, notARegularFileToWrite } from '../pi-session/tools/local-file-operations';
 import type { PiCodingAgentModule } from '../pi-session/pi-loader';
 import { l } from '../l10n';
 import { log } from '../logger';
@@ -12,26 +12,13 @@ import { log } from '../logger';
 export interface DiffInfo {
   /** Empty for a new file; absent when the file exists but cannot be read as text, so no diff of it can be shown. */
   originalContent?: string;
-  proposedContent: string;
+  /** Absent for an Edit of a file that cannot be read as text, whose new text is not known before it runs. */
+  proposedContent?: string;
   editLineNumber?: number;
   /** The change's real-numbered patch, as its result will record it, or why there is none; absent for a new file. */
   patch?: FilePatch;
-}
-
-/**
- * The file's text as the editor holds it, undefined when it does not exist, or why it cannot be diffed.
- * Neither host's `readText` rejection says which (VS Code's carries only a message), so the path is stat'ed.
- */
-async function readOriginal(editor: EditorService, filePath: string): Promise<string | { patchOmitted: FilePatchOmitted } | undefined> {
-  try {
-    return await editor.readText(filePath);
-  } catch {
-    try {
-      return { patchOmitted: (await stat(filePath)).size > FILE_PATCH_MAX_BYTES ? 'tooLarge' : 'binary' };
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : { patchOmitted: 'binary' };
-    }
-  }
+  /** The host's editor holds unsaved changes to the file, which the diff of the file on disk leaves out. */
+  unsavedChanges?: true;
 }
 
 export class DiffManager {
@@ -46,49 +33,63 @@ export class DiffManager {
     this.pi = pi;
   }
 
+  /**
+   * `filePath` is absolute, resolved as the tool resolves it; the file is read as pi's edit reads it, never as an editor holds it.
+   * `call` is the tool call's own folder and path as written, which pi's refusals name.
+   */
   async prepareDiff(
     _diffId: string,
     toolName: string,
     filePath: string,
-    input: { content?: string; old_string?: string; new_string?: string; replace_all?: boolean }
-  ): Promise<DiffInfo | { refused: string } | null> {
-    const original = await readOriginal(this.editor, filePath);
+    input: { content?: string; old_string?: string; new_string?: string; replace_all?: boolean },
+    call: { readonly cwd: string; readonly path: string } = { cwd: path.dirname(filePath), path: filePath },
+  ): Promise<DiffInfo | { refused: string }> {
+    const oldString = input.old_string ?? '';
+    if (toolName !== TOOL_WRITE && oldString === '') return { refused: EDIT_EMPTY_OLD_STRING };
+    const original = await readTextForPatch(filePath);
     const originalContent = typeof original === 'string' ? original : '';
 
     let proposedContent: string;
     let editLineNumber: number | undefined;
 
     if (toolName === TOOL_WRITE) {
+      // The write tool refuses a non-regular file before it writes, in every mode.
+      if (typeof original !== 'string' && original?.patchOmitted === 'notAFile') return { refused: notARegularFileToWrite(call.path) };
       proposedContent = input.content || '';
       editLineNumber = 1;
-    } else if (input.replace_all === true) {
-      if (!originalContent) {
-        return null;
+    } else if (original !== undefined && (typeof original !== 'string' || input.replace_all === true)) {
+      // The Edit tool refuses a non-regular file before pi's access check, which pi's edit and replace_all run next; a single edit of a text file gets it from previewEdit.
+      if (typeof original !== 'string' && original.patchOmitted === 'notAFile') return { refused: notARegularFile(call.path) };
+      const denied = await editOperations.access(filePath).then(() => undefined, (error: unknown) => couldNotEdit(call.path, error));
+      if (denied !== undefined) return { refused: denied };
+      if (typeof original !== 'string') {
+        // Asked without a diff; the card names why.
+        return this.withEditorState(filePath, { patch: original });
       }
-
-      const edit = exactEdit(originalContent, input.old_string ?? '', input.new_string ?? '');
-      if (!edit || edit.newContent === edit.baseContent) {
-        return null;
-      }
+      const edit = exactEdit(original, oldString, input.new_string ?? '');
+      if (!edit) return { refused: replaceAllNotFound(call.path) };
+      if (edit.newContent === edit.baseContent) return { refused: replaceAllUnchanged(call.path) };
       editLineNumber = edit.baseContent.slice(0, edit.replacements[0]!.matchIndex).split('\n').length;
       proposedContent = edit.written;
     } else {
-      if (typeof original !== 'string') {
-        return null;
-      }
       const pi = this.pi();
       if (!pi) throw new Error('An Edit approval needs pi\'s edit, which is not loaded');
-      // The edit pi runs, on the text this diff shows as the original.
-      const edit = await previewEdit(pi, filePath, original, input.old_string ?? '', input.new_string ?? '');
+      // The edit pi runs, on the text this diff shows as the original; a missing file gets pi's own refusal.
+      const edit = await previewEdit(pi, call.cwd, call.path, original, oldString, input.new_string ?? '');
       if ('refused' in edit) return edit;
       editLineNumber = edit.firstChangedLine;
       proposedContent = edit.written;
     }
 
     const lineNumber = editLineNumber !== undefined ? { editLineNumber } : {};
-    if (original === undefined) return { originalContent, proposedContent, ...lineNumber };
-    if (typeof original !== 'string') return { proposedContent, ...lineNumber, patch: original };
-    return { originalContent, proposedContent, ...lineNumber, patch: filePatch(filePath, originalContent, proposedContent) };
+    if (original === undefined) return this.withEditorState(filePath, { originalContent, proposedContent, ...lineNumber });
+    if (typeof original !== 'string') return this.withEditorState(filePath, { proposedContent, ...lineNumber, patch: original });
+    return this.withEditorState(filePath, { originalContent, proposedContent, ...lineNumber, patch: filePatch(call.path, originalContent, proposedContent) });
+  }
+
+  /** The diff, noting when the host's editor holds unsaved changes to the file, which the diff of the file on disk leaves out. */
+  private async withEditorState(filePath: string, diff: DiffInfo): Promise<DiffInfo> {
+    return (await this.editor.isDirty(filePath)) ? { ...diff, unsavedChanges: true } : diff;
   }
 
   // diffId is the tool use id the pending permission prompt is keyed by.

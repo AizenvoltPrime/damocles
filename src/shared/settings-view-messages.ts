@@ -100,6 +100,8 @@ export const SETTINGS_VIEW_REQUESTS = [
   "setMemoryProfile",
   "setMemoryInjectRerank",
   "setBrowserHeadless",
+  "setBrowserUploadFolderMaxEntries",
+  "setBrowserUploadFolderMaxSize",
   "setPermissionMode",
   "setDefaultPermissionMode",
   "setDefaultDangerouslySkipPermissions",

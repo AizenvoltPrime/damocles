@@ -66,11 +66,9 @@ export interface EditorService {
   openFile(path: string, opts?: OpenFileOptions): Promise<void>;
   // untitled document with this language, opened as a preview tab
   openUntitled(content: string, language: string, opts?: OpenUntitledOptions): Promise<void>;
-  // Text of the file without a byte order mark; rejects when it cannot be opened as text (missing, binary, or over the host's
-  // document size limit). VS Code returns the editor's text, unsaved edits included; desktop returns the disk text, so a
-  // proposal diff's original side equals what the agent's tools read and write.
-  readText(path: string): Promise<string>;
   showDiff(req: DiffRequest): Promise<DiffView>;
+  // whether an editor of the host holds unsaved changes to the file at this absolute path
+  isDirty(path: string): Promise<boolean>;
   /**
    * panelId names the chat that asked, so a host that shows documents per chat opens it there; content is the file's text,
    * for a host that cannot read the file where core wrote it.

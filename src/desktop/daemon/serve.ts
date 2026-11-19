@@ -17,6 +17,7 @@ import { DesktopFileWatcherFactory } from '../local-services/file-watcher-factor
 import { createDesktopLogSinkFactory } from '../local-services/log-sink';
 import { logUncaughtErrors } from '../local-services/process-errors';
 import { mergeLoginShellEnv, probeGit, type GitProbe } from '../local-services/shell-env';
+import { createWalkHost, startWalkChild, type WalkChild } from '../../core/search-walk';
 import { createWorkerTreeHost } from '../local-services/watch-worker-host';
 import { NODE_PTY_ARG_PREFIX, SELF_ACKNOWLEDGE_ARG } from '../pty-host/protocol';
 import { createFileSystem } from '../workspace/file-system';
@@ -89,6 +90,8 @@ export interface DaemonDeps {
   readonly socketBase?: () => Promise<string>;
   // the watch worker's bundle; default: dist/watch-worker.js
   readonly watchWorker?: string;
+  // starts a walk process; default: dist/walk-child.js on the daemon's launcher
+  readonly walkChild?: () => WalkChild;
   // stops accepting and removes the endpoint's files; runs first on shutdown
   readonly closeEndpoint: () => Promise<void>;
   // stops accepting and removes only the files no other daemon can own; runs first once the lock was lost
@@ -153,6 +156,8 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
   });
   const watchers = new DesktopFileWatcherFactory({ folders: () => [], onDidChange: () => ({ dispose: () => undefined }) }, log, createWorkerTreeHost(() => new Worker(deps.watchWorker ?? path.join(root, 'dist', 'watch-worker.js')), log));
   const rgPath = (): Promise<string> => resolveRgPath({ resourceRoot: root, unpackedRoot: root });
+  // one walk host serves every client's Quick Open and Search walks (docs/invariants.md "Quick Open")
+  const walks = createWalkHost(deps.walkChild ?? (() => startWalkChild(path.join(root, 'dist', 'walk-child.js'))), log);
   // in WSL the client probes whether WSL forwards loopback ports; the probe's own listener is no port of the user's
   const probe = process.platform === 'linux' && isWsl(os.release()) ? openPortProbe(log) : undefined;
   const scan = scannerFor(process.platform);
@@ -189,8 +194,8 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       log,
     }),
     tree: createTreeListing(log),
-    search: createSearchRunner({ rgPath, log }),
-    quickOpen: createQuickOpenListing({ rgPath, log }),
+    search: createSearchRunner({ rgPath, walks, log }),
+    quickOpen: createQuickOpenListing({ walks, log }),
     format,
     terminals,
     hub,
@@ -288,6 +293,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       await step('ending the terminals', () => hub.shutdown());
       await step('stopping the formatter hosts', () => format.dispose());
       await step('closing the file watchers', () => watchers.close());
+      await step('stopping the walk processes', () => walks.close());
       await step('releasing the daemon lock', () => deps.releaseLock());
       if (removalConnections.size > 0) await step('ending the removal connections', () => connections.endAll());
       if (!lost) deps.exit(reason, failed ? EXIT_SHUTDOWN_FAILED : 0);
@@ -311,6 +317,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
         attempt('killing the formatter hosts', () => format.dispose()),
       ]);
       await attempt('closing the file watchers', () => watchers.close());
+      await attempt('killing the walk processes', () => walks.close());
       connections.destroyAll();
       deps.exit(reason, EXIT_LOCK_LOST);
     })();

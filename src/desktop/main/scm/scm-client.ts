@@ -7,6 +7,7 @@ import type { GitVersion } from '../../../core/scm/git-runner';
 import type { ChangeGroup, RepoKind, Repository, RepositoryStatus } from '../../../core/scm/repository';
 import type { CloneState, CommitHooks, CommitVariant, Decoration, ProjectView, RepoSnapshot, ScmEvent, ScmService } from '../../../core/scm/scm-service';
 import type { Disposable } from '../../../platform/disposable';
+import type { FolderPresence } from '../../../core/workspace-folders/folder-presence-probe';
 import { SCM_CALLS, type RepositoryCall, type ScmCall, type ScmCommitOutcome, type ScmMirrorPatch, type ScmRepositoryEntry } from '../../core-protocol';
 import type { CoreClient } from '../core-client';
 import { authorityKeyOfProject } from '../../../shared/project-location';
@@ -66,16 +67,21 @@ export interface ScmClient extends ScmServiceClient, Disposable {
   // core's scm mirror and events from now on, for its authority; the detach forgets them and tells ScmHost every view and
   // repository of that authority closed
   attach(client: CoreClient): Disposable;
+  // what main's check of a project folder found: core watches nothing in an absent folder and sees only file deletes when one
+  // goes, so it hears of every folder not there, which it checks itself, and of one back while its view shows it absent
+  folderChecked(projectKey: string, presence: FolderPresence): void;
 }
 
 type RepositoryEntry = Omit<ScmRepositoryEntry, 'snapshot'> & { readonly snapshot: RepoSnapshot };
 
 // A void method of ScmService goes to the attached core without its caller waiting, and a failure is logged; with no core
 // attached it has nothing to act on. The last project list and autofetch project are sent again to each core that attaches.
-const FIRE_AND_FORGET: ReadonlySet<ScmCall> = new Set(['setProjects', 'setAutofetchProject', 'refresh', 'cancel', 'cancelClone', 'noteWorktreeConflicts']);
+const FIRE_AND_FORGET: ReadonlySet<ScmCall> = new Set(['setProjects', 'setAutofetchProject', 'refresh', 'rediscover', 'cancel', 'cancelClone', 'noteWorktreeConflicts']);
 const REPLAYED: readonly ScmCall[] = ['setProjects', 'setAutofetchProject'];
 // The calls whose first argument is a project key; clone, cancelClone and autofetchNow without a project run on this computer.
-const BY_PROJECT: ReadonlySet<ScmCall> = new Set(['init', 'openFolder', 'reopen', 'openParents', 'trustUnsafe']);
+const BY_PROJECT: ReadonlySet<ScmCall> = new Set(['rediscover', 'init', 'openFolder', 'reopen', 'openParents', 'trustUnsafe']);
+/** A remote core serves rediscover and shows a project whose folder is not there as absent. */
+export const ABSENT_PROJECT_FEATURE = 'scm.absentProject';
 const LOCAL_ONLY: ReadonlySet<ScmCall> = new Set(['clone', 'cancelClone']);
 const NO_CLONE: CloneState = { running: null, last: null };
 
@@ -86,6 +92,8 @@ export interface ScmClientDeps {
   readonly core: <T>(authority: string, label: string, work: (client: CoreClient) => Promise<T>) => Promise<T>;
   readonly gitVersion: GitVersion | undefined;
   readonly log: (line: string) => void;
+  // what a remote authority's daemon lists in welcome.features; undefined while it is not connected
+  readonly features: (authority: string) => readonly string[] | undefined;
 }
 
 export function createScmClient(deps: ScmClientDeps): ScmClient {
@@ -202,11 +210,12 @@ export function createScmClient(deps: ScmClientDeps): ScmClient {
       return Promise.resolve();
     }
     const authority = authorityOfCall(method, args);
-    if (!FIRE_AND_FORGET.has(method)) {
-      return core(authority, `scm ${method}`, (client) => client.scmCall(method, BY_PROJECT.has(method) ? [client.keys.toCore(String(args[0])), ...args.slice(1)] : args));
-    }
+    // an older remote core parses scm.call strictly and closes the connection on a call it lacks
+    if (method === 'rediscover' && authority !== 'local' && deps.features(authority)?.includes(ABSENT_PROJECT_FEATURE) !== true) return Promise.resolve();
+    const keyed = (client: CoreClient): readonly unknown[] => (BY_PROJECT.has(method) ? [client.keys.toCore(String(args[0])), ...args.slice(1)] : args);
+    if (!FIRE_AND_FORGET.has(method)) return core(authority, `scm ${method}`, (client) => client.scmCall(method, keyed(client)));
     const client = attached.get(authority);
-    if (client) send(client, method, args);
+    if (client) send(client, method, keyed(client));
     return Promise.resolve();
   }])) as unknown as ScmCalls;
 
@@ -246,6 +255,10 @@ export function createScmClient(deps: ScmClientDeps): ScmClient {
           if (authority === 'local') changed.fire({ kind: 'clone' });
         },
       };
+    },
+    folderChecked: (projectKey, presence) => {
+      if (presence === 'present' && views.get(projectKey)?.view.state !== 'absent') return;
+      void calls.rediscover(projectKey);
     },
     onDidChange: (listener) => changed.add(listener),
     projectKeys: () => [...views.keys()],

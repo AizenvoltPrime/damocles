@@ -4,56 +4,54 @@ import * as path from 'node:path';
 import * as v8 from 'node:v8';
 import * as vm from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OutputStream, ProcessExit } from '../../../core/process-launcher';
-import { getRipgrepSearchOptions, resolveRgPath } from '../../../core/chat-panel/ripgrep';
+import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
+import { ALL_IGNORE_FILES } from '../../../core/search-walk';
+import { walkIgnoreOf } from '../../../core/search-walk/ignore-settings';
 import { MAX_SEARCH_RESULTS, type SearchQuery, type SearchRange } from '../../../shared/text-search';
 import type { SearchDone, SearchFileUpdate, SearchResultsBatch } from '../../preload/shell-channels';
 import { DEFAULT_FILES_EXCLUDE, DEFAULT_SEARCH_EXCLUDE } from '../../local-services/desktop-configuration';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { excludeSettingGlobs } from '../../workspace/search/rg-args';
-import { MAX_RG_EVENT_BYTES, type RgProcess } from '../../workspace/search/search-runner';
+import type { SearchRequest, SearchRun, SearchRunSink } from '../../workspace/search/search-runner';
 import type { WorkspaceFileSystem } from '../../workspace/file-system';
-import { findBufferMatches, GLOB_TIMEOUT_MS, LIVE_UPDATE_MS, relativeResultPath, SearchService, type BufferDocument, type EditorRunResult, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
+import { findBufferMatches, GLOB_TIMEOUT_MS, LIVE_UPDATE_MS, relativeResultPath, rgErrorForDisplay, SearchService, type BufferDocument, type EditorRunResult, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
 import { NotConnectedError } from '../workspace/workspaces';
 import { testWorkspaces } from './test-workspaces';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-// A launched ripgrep as the search service reads it.
-class FakeRg implements RgProcess {
+// A workspace's search run as the search service reads it: the test plays ripgrep's events, stderr and exit through its sink.
+class FakeRg implements SearchRun {
   killed = false;
   readonly args: readonly string[];
   readonly cwd: string;
-  readonly exited: Promise<ProcessExit>;
-  readonly closed: Promise<void>;
-  private readonly listeners: Record<OutputStream, Array<(chunk: Buffer) => void>> = { stdout: [], stderr: [] };
+  private readonly sink: SearchRunSink;
+  private stderr = '';
   private ended = false;
-  private end!: (exit: ProcessExit) => void;
-  constructor(args: readonly string[], cwd: string) {
-    this.args = args;
+  constructor(cwd: string, request: SearchRequest, sink: SearchRunSink) {
+    this.args = [...request.match, request.pattern];
     this.cwd = cwd;
-    this.exited = new Promise((resolve) => (this.end = resolve));
-    this.closed = this.exited.then(() => undefined);
-  }
-  onData(stream: OutputStream, listener: (chunk: Buffer) => void): void {
-    this.listeners[stream].push(listener);
+    this.sink = sink;
   }
   kill(): void {
-    if (this.killed) return;
     this.killed = true;
-    this.close(null);
   }
-  write(stream: OutputStream, text: string): void {
-    for (const listener of this.listeners[stream]) listener(Buffer.from(text, 'utf8'));
+  write(_stream: 'stderr', text: string): void {
+    this.stderr += text;
   }
-  // A killed ripgrep prints nothing more.
+  // A killed run sends nothing more; each event is decoded afresh, as from ripgrep's output.
   emitJson(event: unknown): void {
-    if (!this.killed) this.write('stdout', `${JSON.stringify(event)}\n`);
+    if (!this.killed) this.sink.event(JSON.parse(JSON.stringify(event)));
+  }
+  drop(): void {
+    if (!this.killed) this.sink.dropped();
   }
   close(code: number | null): void {
     if (this.ended) return;
     this.ended = true;
-    setImmediate(() => this.end({ code, signal: null }));
+    setImmediate(() => {
+      if (!this.killed) this.sink.end({ code, stderr: this.stderr.trim() });
+    });
   }
 }
 
@@ -73,11 +71,12 @@ function service(overrides: Partial<SearchServiceDeps> & { readonly mtimes?: Wor
   const { mtimes, ...rest } = overrides;
   const workspaces = testWorkspaces({
     watchers: createFakePlatform().fileWatchers,
-    rgPath: async () => 'rg',
-    spawnSearchRg: (_rgPath, args, cwd) => {
-      const rg = new FakeRg(args, cwd);
-      spawned.push(rg);
-      return rg;
+    search: {
+      run: (cwd, request, sink) => {
+        const rg = new FakeRg(cwd, request, sink);
+        spawned.push(rg);
+        return rg;
+      },
     },
   });
   const local = mtimes ? { ...workspaces.local, files: { ...workspaces.local.files, mtimes } } : workspaces.local;
@@ -85,7 +84,7 @@ function service(overrides: Partial<SearchServiceDeps> & { readonly mtimes?: Wor
     folder: () => ({ projectKey: 'p', fsPath: '/proj' }),
     workspaces: { ...workspaces, local, forProject: () => local },
     osOf: () => process.platform,
-    ignoreArgs: () => [],
+    ignore: () => ALL_IGNORE_FILES,
     excludeSettings: () => ['**/node_modules'],
     settings: () => settings,
     buffers: () => buffers,
@@ -276,10 +275,17 @@ describe('search service', () => {
     const search = service();
     search.start(1, query({ pattern: '(', isRegex: true }), true);
     await settle();
-    spawned[0]!.write('stderr', 'regex parse error:\n    (\n    ^\nerror: unclosed group\n');
+    // rg 15's own wording, with its "rg: " prefix
+    spawned[0]!.write('stderr', 'rg: regex parse error:\n    (?:()\n    ^\nerror: unclosed group\n');
     spawned[0]!.close(2);
     await settle();
-    expect(dones[0]).toMatchObject({ searchId: 1, resultCount: 0, error: expect.stringContaining('unclosed group') });
+    expect(dones[0]).toMatchObject({ searchId: 1, resultCount: 0, error: 'regex parse error:\n    (?:()\n    ^\nerror: unclosed group' });
+  });
+
+  it('shows a glob error with or without rg\'s prefix, and no other message', () => {
+    expect(rgErrorForDisplay('rg: error parsing glob \'a}\': unopened alternate group\n')).toBe('error parsing glob \'a}\': unopened alternate group');
+    expect(rgErrorForDisplay('error parsing glob \'a}\': unopened alternate group')).toBe('error parsing glob \'a}\': unopened alternate group');
+    expect(rgErrorForDisplay('rg: ./gone.txt: The system cannot find the file specified. (os error 2)')).toBeUndefined();
   });
 
   it('drops a path ripgrep prints outside its working directory', () => {
@@ -328,7 +334,7 @@ describe('search service with the bundled ripgrep', () => {
         folder: () => ({ projectKey: 'p', fsPath: project }),
         osOf: () => process.platform,
         workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
-        ignoreArgs: () => getRipgrepSearchOptions({ get: () => undefined } as never),
+        ignore: () => walkIgnoreOf({ get: () => undefined }),
         excludeSettings: () => [...excludeSettingGlobs(DEFAULT_FILES_EXCLUDE), ...excludeSettingGlobs(DEFAULT_SEARCH_EXCLUDE)],
         settings: () => settings,
         buffers: () => buffers,
@@ -823,13 +829,13 @@ describe('memory a run keeps', () => {
 });
 
 describe('what main takes from ripgrep', () => {
-  it('drops an event line past the bound without throwing, says the results are a subset, and reads on', async () => {
+  it('says the results are a subset when the run dropped an event past the bound, and reads on', async () => {
     const search = service();
     search.start(1, query({ pattern: 'needle' }), true);
     await settle();
     const rg = spawned[0]!;
     rg.emitJson(begin('big.txt'));
-    rg.emitJson(match('big.txt', 1, { text: `needle${'x'.repeat(MAX_RG_EVENT_BYTES)}\n` }, [[0, 6]]));
+    rg.drop();
     rg.emitJson(end('big.txt'));
     rg.emitJson(begin('small.txt'));
     rg.emitJson(match('small.txt', 1, { text: 'needle\n' }, [[0, 6]]));

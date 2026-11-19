@@ -4,13 +4,13 @@ import { PageController, CDP_ALLOWED_METHODS } from '../page-controller';
 /**
  * The single enforced invariant of the whole Patchright migration: the leak-free CDPSession inside
  * PageController must NEVER send `Runtime.enable` (the biggest CDP bot-detection tell), nor the other
- * fingerprinting enables `Console.enable` / `Network.enable`. This guard asserts both statically (the
+ * fingerprinting enable `Console.enable`. This guard asserts both statically (the
  * exported allow-list excludes them) and dynamically (driving a representative set of PageController
  * calls through a fake CDPSession and asserting the forbidden methods are never issued, and that every
  * method actually sent is in the allow-list).
  */
 
-const FORBIDDEN_METHODS = ['Runtime.enable', 'Console.enable', 'Network.enable'];
+const FORBIDDEN_METHODS = ['Runtime.enable', 'Console.enable'];
 
 /** Canned CDP responses keyed by method so the exercised PageController calls resolve realistically. */
 function fakeResponse(method: string): unknown {
@@ -126,6 +126,10 @@ describe('PageController no-Runtime.enable invariant', () => {
     await controller.startScreencast();
     await controller.stopScreencast();
     await controller.ackScreencastFrame(1);
+    await controller.enableFetch([{ resourceType: 'Document', requestStage: 'Response' }]);
+    await controller.continueRequest('req-1');
+    await controller.failRequest('req-2', 'BlockedByClient');
+    await controller.bypassServiceWorkers();
 
     expect(session.sent.length).toBeGreaterThan(0);
 
@@ -411,7 +415,12 @@ describe('C7 — captureScreenshot with a known viewport', () => {
       'Input.insertText',
       'Emulation.setDeviceMetricsOverride',
       'Emulation.setUserAgentOverride',
+      'Fetch.enable',
+      'Fetch.continueRequest',
+      'Fetch.failRequest',
+      'Network.enable',
+      'Network.setBypassServiceWorker',
     ]);
-    expect(CDP_ALLOWED_METHODS).toHaveLength(34);
+    expect(CDP_ALLOWED_METHODS).toHaveLength(39);
   });
 });

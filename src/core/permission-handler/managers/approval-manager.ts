@@ -5,8 +5,11 @@ import { registerAbortablePrompt, unaskedCheck, postApprovedUnasked, type Permis
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier, SettledApproval, PendingApproval } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUserFileEditDenyResult, buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
-import { TOOL_WRITE, TOOL_EDIT, TOOL_GENERATE_IMAGE, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
+import { TOOL_WRITE, TOOL_GENERATE_IMAGE, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
 import { log } from '../../logger';
+import { l } from '../../l10n';
+import { visibleText } from '../../../shared/visible-text';
+import { resolveToCwd } from '../../pi-session/tools/search-tools';
 
 /**
  * Generate permission pattern suggestions in Claude Code CLI format.
@@ -67,6 +70,34 @@ export class ApprovalManager {
       ...buildAllowResult(input),
       ...(result.updatedPermissions?.length ? { updatedPermissions: result.updatedPermissions } : {}),
     };
+  }
+
+  /**
+   * An Edit or Write of a file a `Read` ask rule covers: a card naming the file, with no diff and no preview, so nothing reads
+   * the file and no refusal reaches the model before the user answers. A yes runs the tool as it is.
+   */
+  async handleUnpreviewedFilePermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    context: CanUseToolContext
+  ): Promise<PermissionResult> {
+    const filePath = typeof input['file_path'] === 'string' ? input['file_path'] : '';
+    const detail: PermissionDetail = {
+      title: l('Change a file your Read rules ask about?'),
+      subtitle: l('no preview of it is shown before you answer'),
+      facts: [{ label: l('File'), value: visibleText(filePath) }],
+    };
+    const result = await this.requestPermissionFromWebview(toolName, input, context, detail, {
+      message: `Damocles is waiting for your approval to change ${filePath}`,
+    });
+
+    if (!result.approved) {
+      return result.userAnswered
+        ? buildUserFileEditDenyResult(result.customMessage, 'User rejected the file modification')
+        : buildUnaskedDenyResult(result.customMessage, UNASKED_DENY_DEFAULT);
+    }
+
+    return buildAllowResult(input);
   }
 
   async handleShellPermission(
@@ -239,14 +270,14 @@ export class ApprovalManager {
       ? { content: (input as FileWriteInput).content }
       : { old_string: editInput.old_string, new_string: editInput.new_string, ...(editInput.replace_all ? { replace_all: true } : {}) };
 
-    const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, filePath, diffInput);
-    if (diffResult !== null && 'refused' in diffResult) return { approved: false, customMessage: diffResult.refused };
-    if (!diffResult && toolName === TOOL_EDIT) {
-      return { approved: false, customMessage: 'Could not find the text to replace in the file' };
-    }
+    // The file the tool changes; the card and notice keep the path as the model wrote it.
+    const cwd = this.state.sessionCwd();
+    const absolutePath = resolveToCwd(filePath, cwd);
+    const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, absolutePath, diffInput, { cwd, path: filePath });
+    if ('refused' in diffResult) return { approved: false, customMessage: diffResult.refused };
 
-    if (diffResult?.originalContent !== undefined) {
-      await this.diffManager.showDiffView(toolUseId, filePath, diffResult.originalContent, diffResult.proposedContent);
+    if (diffResult.originalContent !== undefined && diffResult.proposedContent !== undefined) {
+      await this.diffManager.showDiffView(toolUseId, absolutePath, diffResult.originalContent, diffResult.proposedContent);
     }
 
     return new Promise<ApprovalResult>((resolve) => {
@@ -273,10 +304,11 @@ export class ApprovalManager {
         toolName: toolName as 'Write' | 'Edit',
         toolInput: input as unknown as Record<string, unknown>,
         filePath,
-        ...diffResult?.patch,
+        ...diffResult.patch,
+        ...(diffResult.unsavedChanges ? { unsavedChanges: true as const } : {}),
         owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-        ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
+        ...(diffResult.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
         ...(suggestions.length ? { suggestions } : {}),
       };
 

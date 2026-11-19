@@ -29,8 +29,11 @@ export interface BrowserRelayDeps {
     grant(request: { readonly root: GrantedRoot; readonly viewId: string; readonly displayRoot: string }): Promise<ServedGrant | { readonly refused: string }>;
     // the view's own grants: another view's grant URL in an answer is written as a page the chat cannot open
     mappings(viewId: string): readonly ServedMapping[];
+    // the origins of every grant the view holds, one with no display path included
+    viewOrigins(viewId: string): readonly string[];
   };
-  readonly run: (params: { readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, signal: AbortSignal) => Promise<BrowserToolAnswer>;
+  // servedOrigins: the view's own grant origins, which this computer's core lets its pages alone reach
+  readonly run: (params: { readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown; readonly servedOrigins: readonly string[] }, signal: AbortSignal) => Promise<BrowserToolAnswer>;
 }
 
 const refused = (text: string): BrowserToolAnswer => ({ content: [{ type: 'text', text }], isError: true });
@@ -126,7 +129,9 @@ export async function relayBrowserTool(deps: BrowserRelayDeps, request: { readon
   }
   const pattern = request.tool === 'BrowserIntercept' && typeof input === 'object' && input !== null ? (input as Record<string, unknown>)['pattern'] : undefined;
   if (typeof pattern === 'string') input = { ...(input as Record<string, unknown>), pattern: await interceptPattern(pattern, deps.authority, deps.tunnels()) };
-  const answer = await deps.run({ authority: deps.authority, viewId: request.viewId, scope: request.scope, tool: request.tool, input }, signal);
+  // read after the grant above, so a page opened at a new grant's URL may load it
+  const servedOrigins = deps.served.viewOrigins(request.viewId);
+  const answer = await deps.run({ authority: deps.authority, viewId: request.viewId, scope: request.scope, tool: request.tool, input, servedOrigins }, signal);
   const tunnels = deps.tunnels().list(deps.authority);
   const mappings = deps.served.mappings(request.viewId);
   // served URLs first, while every port is still a local one: a target port in the rewritten text may equal a served port

@@ -39,6 +39,8 @@ Skills and slash commands still follow file priority: `.damocles` is read first 
 
 In a restricted window the four project files are ignored, deny and ask rules included, and only your user files apply. Granting trust loads the project rules with no window reload.
 
+A chat working in a worktree reads the two `settings.local.json` files from its main project folder. They apply only while the main project is trusted too, also when you trusted the worktree itself by opening it as a project.
+
 ### Example settings file
 
 ```json

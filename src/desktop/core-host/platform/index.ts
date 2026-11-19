@@ -74,7 +74,7 @@ export function createCorePlatform(
   // only a daemon names the client a request or panel message came from
   const endpoint = createCoreEndpoint(channel, (line) => log(line), onViolation, init.remote ? processActor : undefined);
   let worktrees: WorktreeHostServices | undefined;
-  const trust = createTrustMirror(endpoint, init, () => worktrees);
+  const trust = createTrustMirror(endpoint, init);
   const state = createStateMirror(endpoint, init);
   const workspaceFolders = createFoldersMirror(endpoint, init);
   const notifications = createNotificationsProxy(endpoint);
@@ -147,6 +147,7 @@ export function createCorePlatform(
     },
     setWorktrees: (next) => {
       worktrees = next;
+      trust.followRegistry(next.registry);
     },
     dispose: () => {
       endpoint.close('Damocles Core closed its channel');

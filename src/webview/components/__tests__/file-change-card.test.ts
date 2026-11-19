@@ -142,6 +142,8 @@ describe('a Write card', () => {
   it.each([
     ['tooLarge', 'Diff too large to show'],
     ['binary', 'Binary file'],
+    ['unreadable', 'File could not be read'],
+    ['notAFile', 'Not a regular file'],
   ])('says why an overwrite recorded no patch (%s)', async (reason, text) => {
     const wrapper = await card(write({ metadata: { patchOmitted: reason } }));
 

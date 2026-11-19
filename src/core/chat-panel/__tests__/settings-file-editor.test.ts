@@ -198,4 +198,13 @@ describe('availability', () => {
     platform.trust.grantTrust();
     expect(posted).toHaveLength(2);
   });
+
+  it('tells each panel that asked when trust is taken back', () => {
+    setup();
+    feed.availability('p1', hostA);
+    posted = [];
+
+    platform.trust.revokeTrust();
+    expect(posted).toEqual([{ host: hostA, message: { type: 'settingsFileAvailability', files: { user: { available: true }, project: { available: false, reason: 'untrusted' }, local: { available: false, reason: 'untrusted' } } } }]);
+  });
 });

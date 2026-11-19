@@ -19,6 +19,9 @@ export interface LaunchedProcess {
   // rejects with Node's spawn error when the process could not start
   readonly pid: Promise<number>;
   onData(stream: OutputStream, listener: (chunk: Buffer) => void): void;
+  // output delivered while paused stays unacknowledged, so the worker pauses the process once MAX_UNACKED_BYTES of it wait
+  pauseOutput(): void;
+  resumeOutput(): void;
   // resolves once the chunk reached the process's stdin; rejects with the write error, or when the process closes or fails first
   write(chunk: string | Uint8Array): Promise<void>;
   end(chunk?: string | Uint8Array): void;
@@ -173,6 +176,8 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
   let started = false;
   let exitedDone = false;
   let settled = false;
+  let outputPaused = false;
+  let unacked = 0;
   const onAbort = (): void => send({ type: 'kill', id, tree: true });
   const finish = (writeError: Error): void => {
     settled = true;
@@ -200,6 +205,15 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
     closed: closed.promise,
     leftRunning: leftRunning.promise,
     onData: (stream, listener) => void listeners[stream].push(listener),
+    pauseOutput: () => {
+      outputPaused = true;
+    },
+    resumeOutput: () => {
+      outputPaused = false;
+      if (unacked === 0 || settled) return;
+      send({ type: 'ack', id, bytes: unacked });
+      unacked = 0;
+    },
     write: (chunk) => {
       const written = deferred<void>();
       if (settled) {
@@ -242,8 +256,9 @@ export function createRemoteProcess(id: number, send: (request: LauncherRequest,
           try {
             for (const listener of listeners[event.stream]) listener(chunk);
           } finally {
-            // an unacknowledged chunk would hold the process's output paused for good
-            send({ type: 'ack', id, bytes: chunk.byteLength });
+            // an unacknowledged chunk holds the process's output paused until resumeOutput acknowledges it
+            if (outputPaused) unacked += chunk.byteLength;
+            else send({ type: 'ack', id, bytes: chunk.byteLength });
           }
           return;
         }

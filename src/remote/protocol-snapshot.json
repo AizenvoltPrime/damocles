@@ -230,7 +230,23 @@
   "chats.listMirroredProject",
   "browser.servedFileUnavailableRemoved",
   "user.browser.servedFolders",
-  "control.shutdownWhenIdle.clients"
+  "control.shutdownWhenIdle.clients",
+  "quickOpen.walk",
+  "search.walk",
+  "editor.readTextRemoved",
+  "scm.absentProject",
+  "user.browser.servedOrigins",
+  "settings.browserUploadFolderCaps",
+  "editor.isDirty",
+  "editor.readTextRefused",
+  "files.readTextRemoved",
+  "permission.patchOmittedReasons",
+  "permission.unsavedChanges",
+  "trust.revoked",
+  "projects.preflightSkipIdentity",
+  "paths.walkChild",
+  "projects.preflightChecksBusy",
+  "chat.thinkingDroppedText"
  ],
  "contracts": {
   "CoreRequests": {
@@ -2044,6 +2060,28 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "editor.isDirty": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "path": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "boolean"
        }
       }
      }
@@ -13529,6 +13567,10 @@
            "optional": true,
            "type": "\"ignore\""
           },
+          "identity": {
+           "optional": true,
+           "type": "\"skip\""
+          },
           "listed": {
            "optional": false,
            "type": {
@@ -14123,6 +14165,7 @@
              "\"pushTags\"",
              "\"push\"",
              "\"quickDiffBase\"",
+             "\"rediscover\"",
              "\"refresh\"",
              "\"remoteBranches\"",
              "\"remoteEndpoints\"",
@@ -14705,6 +14748,12 @@
           "scope": {
            "optional": false,
            "type": "string"
+          },
+          "servedOrigins": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
           },
           "tool": {
            "optional": false,
@@ -20100,6 +20149,12 @@
         "type": {
          "array": "string"
         }
+       },
+       "revoked": {
+        "optional": true,
+        "type": {
+         "array": "string"
+        }
        }
       }
      }
@@ -21236,6 +21291,10 @@
            "type": "string"
           },
           "voiceExtract": {
+           "optional": false,
+           "type": "string"
+          },
+          "walkChild": {
            "optional": false,
            "type": "string"
           }
@@ -23114,33 +23173,6 @@
       }
      }
     },
-    "files.readText": {
-     "optional": false,
-     "type": {
-      "object": {
-       "params": {
-        "optional": false,
-        "type": {
-         "object": {
-          "path": {
-           "optional": false,
-           "type": "string"
-          }
-         }
-        }
-       },
-       "result": {
-        "optional": false,
-        "type": {
-         "union": [
-          "string",
-          "undefined"
-         ]
-        }
-       }
-      }
-     }
-    },
     "files.realpath": {
      "optional": false,
      "type": {
@@ -24479,10 +24511,23 @@
             "array": "string"
            }
           },
-          "ignoreArgs": {
+          "ignore": {
            "optional": false,
            "type": {
-            "array": "string"
+            "object": {
+             "files": {
+              "optional": false,
+              "type": "boolean"
+             },
+             "global": {
+              "optional": false,
+              "type": "boolean"
+             },
+             "parents": {
+              "optional": false,
+              "type": "boolean"
+             }
+            }
            }
           },
           "root": {
@@ -24533,19 +24578,55 @@
         "optional": false,
         "type": {
          "object": {
-          "args": {
+          "cwd": {
+           "optional": false,
+           "type": "string"
+          },
+          "match": {
            "optional": false,
            "type": {
             "array": "string"
            }
           },
-          "cwd": {
+          "pattern": {
            "optional": false,
            "type": "string"
           },
           "runId": {
            "optional": false,
            "type": "number"
+          },
+          "walk": {
+           "optional": false,
+           "type": {
+            "object": {
+             "ignore": {
+              "optional": false,
+              "type": {
+               "object": {
+                "files": {
+                 "optional": false,
+                 "type": "boolean"
+                },
+                "global": {
+                 "optional": false,
+                 "type": "boolean"
+                },
+                "parents": {
+                 "optional": false,
+                 "type": "boolean"
+                }
+               }
+              }
+             },
+             "overrides": {
+              "optional": false,
+              "type": {
+               "array": "string"
+              }
+             }
+            }
+           }
           }
          }
         }
@@ -25308,15 +25389,13 @@
       }
      }
     },
-    "quickOpen.data": {
+    "quickOpen.end": {
      "optional": false,
      "type": {
       "object": {
-       "chunk": {
-        "optional": false,
-        "type": {
-         "named": "Uint8Array<ArrayBufferLike>"
-        }
+       "error": {
+        "optional": true,
+        "type": "string"
        },
        "runId": {
         "optional": false,
@@ -25325,13 +25404,15 @@
       }
      }
     },
-    "quickOpen.end": {
+    "quickOpen.files": {
      "optional": false,
      "type": {
       "object": {
-       "error": {
-        "optional": true,
-        "type": "string"
+       "files": {
+        "optional": false,
+        "type": {
+         "array": "string"
+        }
        },
        "runId": {
         "optional": false,
@@ -42359,7 +42440,9 @@
        "type": {
         "union": [
          "\"binary\"",
-         "\"tooLarge\""
+         "\"notAFile\"",
+         "\"tooLarge\"",
+         "\"unreadable\""
         ]
        }
       },
@@ -42541,6 +42624,10 @@
       "type": {
        "optional": false,
        "type": "\"requestPermission\""
+      },
+      "unsavedChanges": {
+       "optional": true,
+       "type": "true"
       }
      }
     },
@@ -44589,6 +44676,14 @@
          "browserHeadless": {
           "optional": false,
           "type": "boolean"
+         },
+         "browserUploadFolderMaxEntries": {
+          "optional": false,
+          "type": "number"
+         },
+         "browserUploadFolderMaxSize": {
+          "optional": false,
+          "type": "number"
          },
          "cacheWarming": {
           "optional": false,
@@ -48189,7 +48284,47 @@
       "reasons": {
        "optional": false,
        "type": {
-        "array": "string"
+        "array": {
+         "object": {
+          "count": {
+           "optional": false,
+           "type": "number"
+          },
+          "text": {
+           "optional": false,
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          }
+         }
+        }
        }
       },
       "timestamp": {
@@ -56220,6 +56355,30 @@
       "type": {
        "optional": false,
        "type": "\"setBrowserHeadless\""
+      }
+     }
+    },
+    "\"setBrowserUploadFolderMaxEntries\"": {
+     "object": {
+      "count": {
+       "optional": false,
+       "type": "number"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setBrowserUploadFolderMaxEntries\""
+      }
+     }
+    },
+    "\"setBrowserUploadFolderMaxSize\"": {
+     "object": {
+      "mebibytes": {
+       "optional": false,
+       "type": "number"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setBrowserUploadFolderMaxSize\""
       }
      }
     },

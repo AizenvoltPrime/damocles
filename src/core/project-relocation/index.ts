@@ -22,7 +22,7 @@ import { runProcess } from '../process-launcher/run';
 import type { GitRunner } from '../scm/git-runner';
 import { REGISTRY_FILE, WorktreeRegistry, type ChatWorktreeRecord, type WorktreeRecord } from '../worktrees/registry';
 import { folderKey } from '../workspace-folders/folder-key';
-import { mountPointOf } from '../workspace-folders/folder-presence-probe';
+import { checkWhenAdmitted, mountPointOf } from '../workspace-folders/folder-presence-probe';
 import { currentPathOf, foldAliases } from './aliases';
 import { currentRelocations, installRelocations, isPendingRecord, relocationsSnapshot } from './current';
 import { needsRun, RelocationEngine, type StepRunner } from './engine';
@@ -70,7 +70,7 @@ export interface ProjectRelocationsDeps {
    * The repair step runs git only in a project this answers trusted for that folder alone (`folderTrust` on a host whose trust
    * is window wide), and runs again when trust is granted.
    */
-  readonly trust: Pick<TrustService, 'isTrusted' | 'onDidGrantTrust'>;
+  readonly trust: Pick<TrustService, 'isTrusted' | 'onDidChangeTrust'>;
   /** The host's project folders, whose identities are recorded while they exist. */
   readonly projectFolders: () => readonly string[];
   readonly log: (line: string) => void;
@@ -152,7 +152,7 @@ export class ProjectRelocations implements Disposable {
     };
     this.engine = new RelocationEngine({ store: this.store, steps, ...(deps.lockDir !== undefined ? { lockDir: deps.lockDir } : {}), log: deps.log, onChange: () => this.emit() });
     this.subscription = this.store.onDidChange(() => this.storeChanged());
-    this.trustSubscription = deps.trust.onDidGrantTrust(() => {
+    this.trustSubscription = deps.trust.onDidChangeTrust(() => {
       this.trustGranted();
       void this.recordIdentities();
     });
@@ -294,7 +294,7 @@ export class ProjectRelocations implements Disposable {
         if (agentRun !== undefined) return { holder: agentRun, by: 'agentRun' };
         return chat && { holder: chat, by: 'chat' };
       },
-      presence: (target) => folderPresenceProbe.path(target),
+      presence: (target) => checkWhenAdmitted(() => folderPresenceProbe.path(target), folderPresenceProbe),
       volumeOf: (target) => folderPresenceProbe.volumeOf(target),
       worktrees: () => ({ records, unreadable, known }),
       chatWorktreeOf: (folder) => this.chatWorktreeOf(folder, all),
@@ -303,7 +303,7 @@ export class ProjectRelocations implements Disposable {
       ...(this.deps.worktreeActivity ? { worktreeActivity: this.deps.worktreeActivity } : {}),
       damoclesHome: DAMOCLES_HOME_DIR,
     });
-    if (answer.ok && (await this.sharesNothing(request.from, request.to))) return { answer: { ...answer, notices: [...answer.notices, { code: 'otherRepository' }] }, worktrees: records };
+    if (answer.ok && request.identity !== 'skip' && (await this.sharesNothing(request.from, request.to))) return { answer: { ...answer, notices: [...answer.notices, { code: 'otherRepository' }] }, worktrees: records };
     return { answer, worktrees: records };
   }
 
@@ -542,10 +542,10 @@ export class ProjectRelocations implements Disposable {
 }
 
 /** A window-wide trust (VS Code's) as a folder's own: trusted only for a folder the window has open. */
-export function folderTrust(trust: Pick<TrustService, 'isTrusted' | 'onDidGrantTrust'>, folders: Pick<WorkspaceFolders, 'folders'>): Pick<TrustService, 'isTrusted' | 'onDidGrantTrust'> {
+export function folderTrust(trust: Pick<TrustService, 'isTrusted' | 'onDidChangeTrust'>, folders: Pick<WorkspaceFolders, 'folders'>): Pick<TrustService, 'isTrusted' | 'onDidChangeTrust'> {
   return {
     isTrusted: (folder) => trust.isTrusted(folder) && folders.folders().some((open) => folderKey(open.fsPath) === folderKey(folder)),
-    onDidGrantTrust: (cb) => trust.onDidGrantTrust(cb),
+    onDidChangeTrust: (cb) => trust.onDidChangeTrust(cb),
   };
 }
 

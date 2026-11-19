@@ -1,6 +1,7 @@
 // Opening a folder of the same repository as a project folder that is gone (docs/invariants.md "Project relocation"): VS Code has
-// no project list, so it offers to move the chats of each such folder here, in merge mode, at activation and when a folder is
-// added; Damocles: Move Chats Here asks again, declined folders included.
+// no project list, so it offers to move the chats of each such folder here, in merge mode, at activation, when a folder is added
+// and when the workspace is trusted, which lets the match read root commits; Damocles: Move Chats Here asks again, declined
+// folders included.
 import * as vscode from 'vscode';
 import type { ProjectRelocations } from '../core/project-relocation';
 import type { Coded, MovedFromCandidate, PreflightAnswer, RelocationCode, RelocationView } from '../core/project-relocation/types';
@@ -19,6 +20,7 @@ export function registerRelocationOffer(context: Pick<vscode.ExtensionContext, '
   const offer = new RelocationOffer(relocations, context.globalState);
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders((event) => { void offer.check(event.added, false); }),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => { void offer.checkTrusted(vscode.workspace.workspaceFolders ?? []); }),
     vscode.commands.registerCommand('damocles.moveChatsHere', () => offer.check(vscode.workspace.workspaceFolders ?? [], true)),
   );
   void offer.check(vscode.workspace.workspaceFolders ?? [], false);
@@ -53,14 +55,23 @@ export class RelocationOffer {
     if (again && found === 0) void vscode.window.showInformationMessage(vscode.l10n.t('Damocles found no chats of a missing folder of this repository.'));
   }
 
+  /** As check, for a workspace trust grant: a lookup started before it read the folders untrusted, so none is shared. */
+  checkTrusted(folders: readonly vscode.WorkspaceFolder[]): Promise<void> {
+    this.checking.clear();
+    return this.check(folders, false);
+  }
+
   private candidatesOf(to: string): Promise<readonly MovedFromCandidate[]> {
     const key = folderKey(to);
     const running = this.checking.get(key);
     if (running) return running;
-    const lookup = this.relocations.movedFrom(to).catch((err: unknown) => {
+    const lookup: Promise<readonly MovedFromCandidate[]> = this.relocations.movedFrom(to).catch((err: unknown) => {
       log(`[RelocationOffer] looking for moved folders of ${to} failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
-    }).finally(() => this.checking.delete(key));
+    }).finally(() => {
+      // a trust grant may have replaced this lookup with its own
+      if (this.checking.get(key) === lookup) this.checking.delete(key);
+    });
     this.checking.set(key, lookup);
     return lookup;
   }
@@ -191,6 +202,7 @@ export function failureText(coded: Coded, from: string): string {
     case 'fromExists': return vscode.l10n.t('{0} exists again, so its chats stay with it.', from);
     case 'toMissing': return vscode.l10n.t('The opened folder no longer exists.');
     case 'toNotDirectory': return vscode.l10n.t('The opened folder is no longer a folder.');
+    case 'checksBusy': return vscode.l10n.t('Damocles can\'t check these folders right now: its drive checks are busy. Try again in a moment.');
     case 'repositoryLayout': return vscode.l10n.t('The new folder does not lie in its repository as {0} did in {1}, so its chat worktrees can\'t follow it.', from, param(coded, 'path'));
     case 'noRepository': return vscode.l10n.t('{0} is not a Git repository, so {1}\'s chat worktrees can\'t be linked to it.', param(coded, 'path'), from);
     case 'worktreeFinishing': return vscode.l10n.t('Apply, Merge, Update or Delete is running on the chat worktree {0}. Try again when it ends.', param(coded, 'branch'));

@@ -747,6 +747,42 @@ describe('integration sub-rows', () => {
     expect(posted).toContainEqual({ type: 'setBrowserHeadless', headless: false });
   });
 
+  it('shows the folder upload caps beside the headless row only while the browser is on', async () => {
+    groups(false, false);
+    await open(NO_HOST_SETTINGS, 'integrations');
+    expect(row('damocles.browser.uploadFolderMaxEntries')).toBeNull();
+    expect(row('damocles.browser.uploadFolderMaxSize')).toBeNull();
+
+    groups(false, true);
+    await nextTick();
+    expect(row('damocles.browser.uploadFolderMaxEntries')!.querySelector('input')!.value).toBe('10000');
+    expect(row('damocles.browser.uploadFolderMaxSize')!.querySelector('input')!.value).toBe('500');
+  });
+
+  it('each folder upload cap saves a whole number in its range on Enter, and shows an inline error otherwise', async () => {
+    groups(false, true);
+    await open(NO_HOST_SETTINGS, 'integrations');
+    const enter = async (id: string, text: string): Promise<void> => {
+      const input = row(id)!.querySelector('input')!;
+      input.value = text;
+      input.dispatchEvent(new Event('input'));
+      press('Enter', {}, input);
+      await nextTick();
+    };
+    await enter('damocles.browser.uploadFolderMaxEntries', '100001');
+    await enter('damocles.browser.uploadFolderMaxSize', '0');
+    expect(row('damocles.browser.uploadFolderMaxEntries')!.querySelector('[data-testid="setting-invalid"]')!.textContent).toContain('100000');
+    expect(row('damocles.browser.uploadFolderMaxSize')!.querySelector('[data-testid="setting-invalid"]')!.textContent).toContain('10240');
+    expect(posted.filter((m) => m.type === 'setBrowserUploadFolderMaxEntries' || m.type === 'setBrowserUploadFolderMaxSize')).toEqual([]);
+
+    await enter('damocles.browser.uploadFolderMaxEntries', '25000');
+    await enter('damocles.browser.uploadFolderMaxSize', '2048');
+    expect(posted).toContainEqual({ type: 'setBrowserUploadFolderMaxEntries', count: 25000 });
+    expect(posted).toContainEqual({ type: 'setBrowserUploadFolderMaxSize', mebibytes: 2048 });
+    expect(useSettingsStore().currentSettings.browserUploadFolderMaxEntries).toBe(25000);
+    expect(useSettingsStore().currentSettings.browserUploadFolderMaxSize).toBe(2048);
+  });
+
   it('the design mode switch shows once core lists the group and toggles its tool group', async () => {
     groups(false, false);
     await open(NO_HOST_SETTINGS, 'integrations');

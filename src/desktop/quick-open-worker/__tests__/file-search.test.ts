@@ -1,13 +1,15 @@
-import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { rgPath } from '@vscode/ripgrep';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import { createQuickOpenFileSearch, fileListReader, SCORE_BATCH } from '../file-search';
-import { ripgrepFileArgs, WORKER_PROGRESS_INTERVAL_MS, type WorkerProject, type WorkerQueryContext, type WorkerReply, type WorkerRequest, type WorkerResult } from '../protocol';
+import { ALL_IGNORE_FILES, type WalkIgnore } from '../../../core/search-walk';
+import { createWalkHost } from '../../../core/search-walk';
+import { InThreadWalkChild } from '../../../__mocks__/in-thread-walk-child';
+import { createQuickOpenListing } from '../../workspace/quick-open-listing';
+import { createQuickOpenFileSearch, fileListBuilder, SCORE_BATCH } from '../file-search';
+import { WORKER_PROGRESS_INTERVAL_MS, type WorkerProject, type WorkerQueryContext, type WorkerReply, type WorkerRequest, type WorkerResult } from '../protocol';
 
 vi.mock('../../../core/quick-open/fuzzy-match', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../../core/quick-open/fuzzy-match')>();
@@ -30,25 +32,27 @@ function touch(owner: WorkerProject, relativePath: string): void {
   fs.writeFileSync(file, '');
 }
 
-/** Main's side of a listing, as QuickOpenIndex runs it: ripgrep's output streamed to the worker, then the listing's end. */
-function serveListing(receive: (request: WorkerRequest) => void, listing: number, projectKey: string): void {
+// Quick Open's listing as a workspace runs it, its walks on this thread.
+const listing = createQuickOpenListing({ walks: createWalkHost(() => new InThreadWalkChild(), () => undefined), log: () => undefined });
+
+/** Main's side of a listing, as QuickOpenIndex runs it: the walk's batches relayed to the worker, then the listing's end. */
+function serveListing(receive: (request: WorkerRequest) => void, listingId: number, projectKey: string): void {
   const project = [alpha, beta].find((candidate) => candidate.key === projectKey)!;
-  const rg = spawn(rgPath, ripgrepFileArgs(project.fsPath, [], ['**/.git']), { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  let stderr = '';
-  rg.stdout.on('data', (data: Buffer) => receive({ kind: 'listOutput', listing, data }));
-  rg.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
-  rg.on('close', (code) => receive(code === 0 || code === 1 ? { kind: 'listEnd', listing } : { kind: 'listEnd', listing, error: `ripgrep exited with ${String(code)}: ${stderr.trim()}` }));
+  listing.list(project.fsPath, ALL_IGNORE_FILES, ['**/.git'], {
+    files: (files) => receive({ kind: 'listFiles', listing: listingId, files }),
+    end: (error) => receive(error === undefined ? { kind: 'listEnd', listing: listingId } : { kind: 'listEnd', listing: listingId, error }),
+  });
 }
 
-/** ripgrep's file list for root, read as the worker reads what main streams. */
-function listed(root: string, excludes: readonly string[], progress: () => void = () => undefined): Promise<string[]> {
-  const reader = fileListReader(root, progress);
-  const rg = spawn(rgPath, ripgrepFileArgs(root, [], excludes), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
-  rg.stdout.on('data', (data: Buffer) => reader.write(data));
-  return new Promise((resolve) => rg.on('close', () => resolve(reader.end())));
+/** The listing of root, read as the worker reads what main relays. */
+function listed(root: string, excludes: readonly string[], progress: () => void = () => undefined, ignore: WalkIgnore = ALL_IGNORE_FILES): Promise<string[]> {
+  const builder = fileListBuilder(progress);
+  return new Promise((resolve, reject) => {
+    listing.list(root, ignore, excludes, { files: (files) => builder.add(files), end: (error) => (error === undefined ? resolve(builder.end()) : reject(new Error(error))) });
+  });
 }
 
-/** The worker's side driven in process: each query resolves with its reply, and main's listings run real ripgrep. */
+/** The worker's side driven in process: each query resolves with its reply, and main's listings run the real walk. */
 function fileSearch(list?: (root: string) => string[]): {
   query: (raw: string, context: WorkerQueryContext, search?: { id: number; generation: number }) => Promise<WorkerReply>;
   receive: ReturnType<typeof createQuickOpenFileSearch>;
@@ -88,7 +92,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('ripgrep file list', () => {
+describe('the walked file list', () => {
   it('lists every file as a relative path in path order, honouring .gitignore and the excludes', async () => {
     touch(alpha, 'src/a.ts');
     touch(alpha, 'src/b.ts');
@@ -104,36 +108,56 @@ describe('ripgrep file list', () => {
     }
   });
 
-  it('reports progress for every file it lists, so main sees a slow listing still moving', async () => {
+  it('lists .git and ignored files only when the excludes and the ignore switches let them through', async () => {
+    touch(alpha, 'a.ts');
+    touch(alpha, '.git/HEAD');
+    touch(alpha, 'ignored.log');
+    fs.writeFileSync(path.join(alpha.fsPath, '.gitignore'), '*.log\n');
+    expect(await listed(alpha.fsPath, [])).toEqual(['.git/HEAD', '.gitignore', 'a.ts']);
+    expect(await listed(alpha.fsPath, ['**/.git'], undefined, { files: false, global: true, parents: true })).toEqual(['.gitignore', 'a.ts', 'ignored.log']);
+  });
+
+  it('reports progress for every batch, so main sees a slow listing still moving', async () => {
     for (const name of ['a.ts', 'b.ts', 'c/d.ts']) touch(alpha, name);
     const progress = vi.fn();
     await listed(alpha.fsPath, [], progress);
-    expect(progress).toHaveBeenCalledTimes(3);
+    expect(progress).toHaveBeenCalledTimes(1);
   });
 
-  it('never follows a junction out of the project', async () => {
+  it('never follows a junction out of the project, nor lists the junction', async () => {
     touch(beta, 'secret.ts');
     fs.symlinkSync(beta.fsPath, path.join(alpha.fsPath, 'link'), 'junction');
     touch(alpha, 'mine.ts');
     expect(await listed(alpha.fsPath, [])).toEqual(['mine.ts']);
   });
 
-  it('reads lines and a character split across chunks and CRLF, and drops a path outside the root', () => {
-    const progress = vi.fn();
-    const reader = fileListReader(alpha.fsPath, progress);
-    const output = Buffer.from([path.join(alpha.fsPath, 'z', 'é.ts'), path.join(alpha.fsPath, 'a.ts'), path.join(beta.fsPath, 'x.ts'), ''].join('\r\n'), 'utf8');
-    const split = output.indexOf(Buffer.from('é', 'utf8')) + 1;
-    reader.write(output.subarray(0, 3));
-    reader.write(output.subarray(3, split));
-    reader.write(output.subarray(split));
-    expect(reader.end()).toEqual(['a.ts', 'z/é.ts']);
-    expect(progress).toHaveBeenCalledTimes(3);
+  it('never reads a .gitignore that is a link, which ripgrep follows', async (context) => {
+    fs.writeFileSync(path.join(beta.fsPath, 'rules'), 'hidden.ts\n');
+    touch(alpha, 'hidden.ts');
+    touch(alpha, 'shown.ts');
+    fs.mkdirSync(path.join(alpha.fsPath, '.git'));
+    try {
+      fs.symlinkSync(path.join(beta.fsPath, 'rules'), path.join(alpha.fsPath, '.gitignore'), 'file');
+    } catch (err) {
+      // creating a file symlink on Windows needs Developer Mode or an elevated process
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') context.skip();
+      throw err;
+    }
+    expect(await listed(alpha.fsPath, ['**/.git'])).toEqual(['hidden.ts', 'shown.ts']);
   });
 
-  it('keeps a last line ripgrep ended without a newline', () => {
-    const reader = fileListReader(alpha.fsPath, () => undefined);
-    reader.write(Buffer.from(`${path.join(alpha.fsPath, 'b.ts')}\n${path.join(alpha.fsPath, 'a.ts')}`, 'utf8'));
-    expect(reader.end()).toEqual(['a.ts', 'b.ts']);
+  it.runIf(process.platform !== 'win32')('lists a name holding a newline as one file, which a line of ripgrep output split', async () => {
+    touch(alpha, 'two\nlines.ts');
+    expect(await listed(alpha.fsPath, [])).toEqual(['two\nlines.ts']);
+  });
+
+  it('drops a path outside the root from a batch and sorts the list at its end', () => {
+    const progress = vi.fn();
+    const builder = fileListBuilder(progress);
+    builder.add(['z/é.ts', '../x.ts', path.join(beta.fsPath, 'x.ts')]);
+    builder.add(['a.ts', 'b/./c.ts', 'C:/x.ts']);
+    expect(builder.end()).toEqual(['a.ts', 'z/é.ts']);
+    expect(progress).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -277,7 +301,7 @@ describe('Quick Open queries in the worker', () => {
     fs.rmSync(alpha.fsPath, { recursive: true });
     worker.receive({ kind: 'invalidate' });
     expect(results(await worker.query('a', context, { id: 3, generation: 0 }))).toEqual([]);
-    expect(worker.logs.some((line) => line.includes('ripgrep'))).toBe(true);
+    expect(worker.logs.some((line) => line.includes('ENOENT'))).toBe(true);
     touch(alpha, 'a.ts');
     expect(named(await worker.query('a', context, { id: 3, generation: 1 }))).toEqual(['alpha/a.ts']);
   });
@@ -292,7 +316,7 @@ describe('Quick Open queries in the worker', () => {
       if (reply.kind === 'log') logs.push(reply.line);
       else if (reply.kind === 'list') {
         asked.push(reply.projectKey === alpha.key ? 'alpha' : 'beta');
-        if (fail && reply.projectKey === alpha.key) setImmediate(() => receive({ kind: 'listEnd', listing: reply.listing, error: 'ripgrep exited with 2: denied' }));
+        if (fail && reply.projectKey === alpha.key) setImmediate(() => receive({ kind: 'listEnd', listing: reply.listing, error: 'EACCES: permission denied' }));
         else serveListing(receive, reply.listing, reply.projectKey);
       } else if (reply.kind !== 'progress') answers.get(reply.id)?.(reply);
     });
@@ -306,7 +330,7 @@ describe('Quick Open queries in the worker', () => {
     fail = true;
     receive({ kind: 'invalidate', projectKey: alpha.key });
     expect(results(await query(2))).toEqual([]);
-    expect(logs).toEqual([`[quick-open] listing ${alpha.fsPath} failed: ripgrep exited with 2: denied`]);
+    expect(logs).toEqual([`[quick-open] listing ${alpha.fsPath} failed: EACCES: permission denied`]);
     fail = false;
     expect(named(await query(3))).toEqual(['alpha/a.ts']);
     expect(asked).toEqual(['alpha', 'beta', 'alpha', 'alpha']);
@@ -315,9 +339,9 @@ describe('Quick Open queries in the worker', () => {
   it('keeps a project\'s list as it was when output arrives for its listing after the listing ended', async () => {
     const receive = createQuickOpenFileSearch((reply) => {
       if (reply.kind === 'list') {
-        receive({ kind: 'listOutput', listing: reply.listing, data: Buffer.from(`${path.join(alpha.fsPath, 'a.ts')}\n`, 'utf8') });
+        receive({ kind: 'listFiles', listing: reply.listing, files: ['a.ts'] });
         receive({ kind: 'listEnd', listing: reply.listing });
-        receive({ kind: 'listOutput', listing: reply.listing, data: Buffer.from(`${path.join(alpha.fsPath, 'stray.ts')}\n`, 'utf8') });
+        receive({ kind: 'listFiles', listing: reply.listing, files: ['stray.ts'] });
       } else if (reply.kind === 'answer') answers.get(reply.id)?.(reply);
     });
     const answers = new Map<number, (reply: WorkerReply) => void>();

@@ -22,7 +22,7 @@ export function homeDirectory(): string {
 /** The folder a chat on `target` reads settings for; the home target has none, so its reads are user-level. */
 export function settingsFolderOf(target: FolderTarget): SettingsFolder | undefined {
   if (!target.projectScope) return undefined;
-  // D34: a worktree chat's local layer and trust are its project's.
+  // D34: a worktree chat's local layer is its project's, applied while both folders are trusted (settingsFileTrusted).
   const personal = personalConfigRoot(target.fsPath);
   return personal === target.fsPath ? { path: target.fsPath } : { path: target.fsPath, personalPath: personal };
 }

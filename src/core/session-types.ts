@@ -27,6 +27,12 @@ export interface McpScope {
   relayed?: readonly string[];
 }
 
+/** A session's browser and the chat panel its pages belong to, given together, so no session has one without the other. */
+export interface SessionBrowser {
+  readonly service: BrowserService;
+  readonly chat: PanelHost;
+}
+
 /** Options for creating a chat session. */
 export interface SessionOptions {
   cwd: string;
@@ -51,9 +57,8 @@ export interface SessionOptions {
   /** The chat's model; absent when the panel holds none and `damocles.model` is unset in every scope, the only case a start may replace it with a signed-in one. */
   model?: string;
   memoryService?: MemoryService;
-  browserService?: BrowserService;
-  /** The chat panel this session runs in; its agents' browser pages belong to it. */
-  browserChat?: PanelHost;
+  /** The browser, and the chat panel this session runs in, which owns its agents' pages; absent, the session has no browser tools. */
+  browser?: SessionBrowser;
   /** A desktop chat's GitHub and GitLab tools, for the working folder `folder` reads at each call. */
   forgeTools?: (folder: () => string) => ForgeToolsPort;
   panelId?: string;

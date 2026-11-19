@@ -3,13 +3,14 @@ import { join } from 'path';
 import type { Download } from 'patchright';
 import { log } from '../logger';
 import { DAMOCLES_BROWSER_DOWNLOADS_DIR } from '../paths';
+import type { PanelHost } from '../../platform/window-service';
 import type { DownloadEntry } from '../../shared/types/browser';
 
 /** Keep only the most-recent N per-launch download dirs to bound cross-launch on-disk growth. */
 const DOWNLOAD_DIR_RETENTION = 10;
 
-// Ring-buffer cap for captured downloads. Bounded so a long session that downloads many files never
-// grows the in-memory list unbounded; the oldest entry is dropped once the cap is exceeded.
+// Ring-buffer cap for each chat's captured downloads, so one chat's downloads never push out another's. Bounded so a long
+// session that downloads many files never grows the in-memory list unbounded; the chat's oldest entry is dropped past the cap.
 const DOWNLOADS_MAX = 50;
 
 /** Largest single download that may be saved. */
@@ -22,7 +23,8 @@ const WINDOWS_RESERVED_DEVICE_NAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\
 
 /**
  * Owns everything about captured downloads: the per-launch directory, the bounded capture list, the
- * reserved-path set and the per-launch byte budget.
+ * reserved-path set and the per-launch byte budget. Each download is listed only to the chat whose page
+ * made it, while the byte budget protects the disk for every chat at once.
  *
  * INVARIANT INHERITED FROM `BrowserService`, stated so the extraction does not quietly lose it:
  * {@link DownloadManager.prepareLaunchDir} is NOT internally concurrency-safe (it awaits before
@@ -39,15 +41,23 @@ export class DownloadManager {
   }
 
   private downloadsDir: string | null = null;
-  private downloads: DownloadEntry[] = [];
+  private downloads: Array<{ readonly entry: DownloadEntry; readonly chat: PanelHost }> = [];
+  // A closed chat's download that finishes later is recorded for nobody, and would hold the closed chat.
+  private readonly forgottenChats = new WeakSet<PanelHost>();
   // Saved download paths reserved this launch, so concurrent same-name downloads never collide on disk.
   private takenDownloadPaths = new Set<string>();
   // Bytes saved this launch, measured against DOWNLOAD_LAUNCH_MAX_BYTES. Reset in reset().
   private downloadedBytes = 0;
 
-  /** A copy of the captured-downloads ring buffer (newest last). */
-  list(): DownloadEntry[] {
-    return [...this.downloads];
+  /** `chat`'s captured downloads (newest last); a scope with no chat has none. */
+  list(chat: PanelHost | undefined): DownloadEntry[] {
+    return this.downloads.filter((download) => download.chat === chat).map((download) => download.entry);
+  }
+
+  /** A closed chat's downloads are listed to nobody, so they go; their files stay on disk until the launch dir is pruned. */
+  forgetChat(chat: PanelHost): void {
+    this.forgottenChats.add(chat);
+    this.downloads = this.downloads.filter((download) => download.chat !== chat);
   }
 
   /**
@@ -179,13 +189,15 @@ export class DownloadManager {
   // only cancel/failure/path/delete/saveAs, so the caps are enforced by stat-ing that temp file and
   // delete()ing it instead of copying. That bounds OUR downloads directory absolutely and evicts a
   // hostile temp file promptly, but it CANNOT prevent Chromium writing one over-cap temp file first.
-  async handleDownload(download: Download): Promise<void> {
+  async handleDownload(download: Download, chat: PanelHost): Promise<void> {
     const dir = this.downloadsDir;
     if (!dir) return;
     const url = download.url();
     const record = (entry: DownloadEntry): void => {
-      this.downloads.push(entry);
-      if (this.downloads.length > DOWNLOADS_MAX) this.downloads.shift();
+      if (this.forgottenChats.has(chat)) return;
+      this.downloads.push({ entry, chat });
+      const own = this.downloads.filter((download) => download.chat === chat);
+      if (own.length > DOWNLOADS_MAX) this.downloads.splice(this.downloads.indexOf(own[0]!), 1);
     };
     const filename = this.sanitizeDownloadFilename(download.suggestedFilename());
     let attemptedPath = '';

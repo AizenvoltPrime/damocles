@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs, type BigIntStats } from 'node:fs';
 import * as path from 'node:path';
 import { renameWithRetry } from '../../core/config/json-config-write';
+import { OPEN_READ_NONBLOCKING } from '../../core/file-bytes';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import { confineEntry, confineExisting, isInsideRealRoot, type ConfineFailure, type Project } from '../local-services/confine';
 import { isValidFileName } from '../preload/file-names';
@@ -217,7 +218,7 @@ export async function* walkPath(absolute: string): AsyncGenerator<readonly Trans
 
 // the file at absolute opened for reading, which must still be the file stat found, never a link swapped in after it
 async function openSame(absolute: string, stat: BigIntStats): Promise<{ readonly handle: fs.FileHandle; readonly size: number }> {
-  const handle = await fs.open(absolute, 'r');
+  const handle = await fs.open(absolute, OPEN_READ_NONBLOCKING);
   try {
     const opened = await handle.stat({ bigint: true });
     if (opened.isFile() && sameEntry(opened, stat)) return { handle, size: Number(opened.size) };

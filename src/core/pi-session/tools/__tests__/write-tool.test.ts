@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -6,22 +7,9 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { AgentSession, SessionManager, createExtensionRuntime, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { initPiLoader, type PiCodingAgentModule } from '../../pi-loader';
 import { createWriteTool } from '../write-tool';
+import { notARegularFileToWrite } from '../local-file-operations';
 import { FILE_PATCH_MAX_BYTES, FILE_PATCH_MAX_CHANGED_LINES, filePatch } from '../file-patch';
 import type { WriteDetails } from '../../../../shared/types/file-patch';
-
-/** The one path the override's diff read is refused on, as a write-only file refuses it. */
-const unreadable = vi.hoisted(() => ({ path: null as string | null }));
-
-vi.mock('fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs/promises')>();
-  return {
-    ...actual,
-    readFile: (async (file: string, ...rest: never[]) => {
-      if (file === unreadable.path) throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
-      return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(file, ...rest);
-    }) as typeof actual.readFile,
-  };
-});
 
 let pi: PiCodingAgentModule;
 const dirs: string[] = [];
@@ -31,9 +19,20 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  unreadable.path = null;
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/** The override's diff read of `file` is refused, as a write-only file refuses it; an open for writing is not. */
+function refuseReadOf(file: string): void {
+  const open = fs.promises.open.bind(fs.promises);
+  const writes = fs.constants.O_WRONLY | fs.constants.O_RDWR;
+  vi.spyOn(fs.promises, 'open').mockImplementation((async (target: fs.PathLike, flags?: string | number, mode?: fs.Mode) => {
+    const reads = typeof flags === 'number' ? (flags & writes) === 0 : flags === undefined || flags === 'r';
+    if (String(target) === file && reads) throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
+    return open(target, flags, mode);
+  }) as typeof fs.promises.open);
+}
 
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-write-'));
@@ -120,15 +119,15 @@ describe('the write override', () => {
     expect(result.details).toEqual({ patchOmitted: 'tooLarge' });
   });
 
-  it('still writes when the old content cannot be read for the diff, and records no details', async () => {
+  it('still writes when the old content cannot be read for the diff, and records it as unreadable, never as binary', async () => {
     const cwd = tempDir();
     const file = path.join(cwd, 'f.txt');
     fs.writeFileSync(file, 'old\n');
-    unreadable.path = file;
+    refuseReadOf(file);
 
     const result = await run(createWriteTool(pi, cwd), cwd, { path: 'f.txt', content: 'new\n' });
 
-    expect(result.details).toBeUndefined();
+    expect(result.details).toEqual({ patchOmitted: 'unreadable' });
     expect(result.content).toEqual([{ type: 'text', text: 'Successfully wrote to f.txt' }]);
     expect(fs.readFileSync(file, 'utf-8')).toBe('new\n');
   });
@@ -198,5 +197,70 @@ describe('filePatch', () => {
     expect(patch).toContain('@@ -1,3 +1,3 @@');
     expect(patch).not.toContain('\r');
     expect(patch).not.toContain('\uFEFF');
+  });
+});
+
+/** The call's outcome, or that it was still waiting after two seconds, as a blocked open waits for a peer that never comes. */
+function within2s(promise: Promise<unknown>): Promise<unknown> {
+  const settled = promise.then((value) => ({ value }), (error: unknown) => ({ error: (error as Error).message }));
+  return Promise.race([settled, new Promise((resolve) => setTimeout(() => resolve('still waiting after 2 s'), 2000))]);
+}
+
+/** Lets a write open that waits on the FIFO at `fifo` go on, so a failing run leaves no thread blocked. */
+function releaseFifo(fifo: string): void {
+  const reader = fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  setTimeout(() => fs.closeSync(reader), 100);
+}
+
+describe('a write to a path that is not a regular file', () => {
+  it('refuses a folder in the tool\'s words, naming the path as written', async () => {
+    const cwd = tempDir();
+    fs.mkdirSync(path.join(cwd, 'dir'));
+
+    expect(await within2s(run(createWriteTool(pi, cwd), cwd, { path: 'dir', content: 'x\n' }))).toEqual({ error: 'Could not write file: dir. It is not a regular file.' });
+    expect(fs.statSync(path.join(cwd, 'dir')).isDirectory()).toBe(true);
+  });
+
+  it.runIf(process.platform !== 'win32')('refuses a FIFO at once, never waiting for a reader', async () => {
+    const cwd = tempDir();
+    const fifo = path.join(cwd, 'pipe');
+    execFileSync('mkfifo', [fifo]);
+
+    try {
+      expect(await within2s(run(createWriteTool(pi, cwd), cwd, { path: 'pipe', content: 'x\n' }))).toEqual({ error: notARegularFileToWrite('pipe') });
+    } finally {
+      releaseFifo(fifo);
+    }
+  });
+
+  it.runIf(process.platform !== 'win32')('refuses a FIFO swapped in after the tool\'s stat from its handle, never waiting for a reader', async () => {
+    const cwd = tempDir();
+    const file = path.join(cwd, 'swapped');
+    fs.writeFileSync(file, 'regular\n');
+    const stat = fs.promises.stat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'stat').mockImplementationOnce((async (target: fs.PathLike) => {
+      const stats = await stat(target);
+      fs.rmSync(file);
+      execFileSync('mkfifo', [file]);
+      return stats;
+    }) as typeof fs.promises.stat);
+
+    try {
+      expect(await within2s(run(createWriteTool(pi, cwd), cwd, { path: 'swapped', content: 'x\n' }))).toEqual({ error: notARegularFileToWrite(file) });
+    } finally {
+      releaseFifo(file);
+    }
+  });
+
+  it('cuts a longer file to the new content, written in place', async () => {
+    const cwd = tempDir();
+    const file = path.join(cwd, 'f.txt');
+    fs.writeFileSync(file, 'a much longer old content\n');
+    const before = fs.statSync(file).ino;
+
+    await run(createWriteTool(pi, cwd), cwd, { path: 'f.txt', content: 'short\n' });
+
+    expect(fs.readFileSync(file, 'utf-8')).toBe('short\n');
+    expect(fs.statSync(file).ino).toBe(before);
   });
 });

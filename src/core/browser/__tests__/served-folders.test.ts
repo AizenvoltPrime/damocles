@@ -35,6 +35,8 @@ describe('ChatServedFiles granted folders', () => {
     expect(await files.localTarget(`${fileUrl(path.join(OUTSIDE, 'week', 'a.html'))}?x=1#top`)).toEqual({ url: `${SERVED.url}&q=x%3D1#top` });
     expect(serve).toHaveBeenCalledWith({ kind: 'folder', folder: OUTSIDE, relPath: 'week/a.html' }, OUTSIDE);
     expect(files.toFile(`[URL] ${SERVED.origin}/week/a.html`)).toBe(`[URL] ${fileUrlOfRoot(OUTSIDE)}/week/a.html`);
+    // its pages' origin is the chat's, as a root's is
+    expect(files.ownsOrigin(SERVED.origin)).toBe(true);
     // the folder's parent and a sibling are still outside: they ask, and the tool refuses them unasked
     const sibling = path.join(path.dirname(OUTSIDE), 'other', 'b.html');
     expect(files.folderAsk('BrowserOpen', fileUrl(sibling))).toEqual({ file: sibling, folder: path.dirname(sibling) });
@@ -47,6 +49,7 @@ describe('ChatServedFiles granted folders', () => {
     expect(other.folderAsk('BrowserOpen', fileUrl(path.join(OUTSIDE, 'week', 'a.html')))).toEqual({ file: path.join(OUTSIDE, 'week', 'a.html'), folder: path.join(OUTSIDE, 'week') });
     expect(await other.localTarget(fileUrl(path.join(OUTSIDE, 'week', 'a.html')))).toMatchObject({ refused: expect.stringContaining('asks the user') });
     expect(other.toFile(`[URL] ${SERVED.origin}/week/a.html`)).toBe(`[URL] ${UNMAPPED_SERVED_PAGE}`);
+    expect(other.ownsOrigin(SERVED.origin)).toBe(false);
   });
 
   it('never reopens a saved page of a granted folder, since grants are not saved and saved addresses are page-controlled', async () => {

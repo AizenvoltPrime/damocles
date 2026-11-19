@@ -7,18 +7,53 @@
 /** Whether a set of rules ignores a path, lets it through over lower rules (`!`), or says nothing about it. */
 export type IgnoreMatch = 'ignore' | 'whitelist' | undefined;
 
+// globset's `MatchStrategy` for the forms ignore files mostly hold, each true exactly when the glob's regex matches, except that a
+// path whose basename is `..` has none (globset's `file_name`), so its basename and extension strategies match nothing; any other
+// glob is matched by its regex.
+type Strategy =
+  // `{literal}`: the whole path
+  | { readonly kind: 'literal'; readonly bytes: string }
+  // `**/{literal}`, no `/` in it: the path's basename
+  | { readonly kind: 'basename'; readonly bytes: string }
+  // `**/*.{literal}`, no `.` or `/` in it: the path's extension, from the basename's last `.`
+  | { readonly kind: 'extension'; readonly bytes: string }
+  | { readonly kind: 'regex' };
+
 interface IgnoreGlob {
   readonly whitelist: boolean;
   readonly onlyDir: boolean;
   readonly regex: RegExp;
+  readonly strategy: Strategy;
 }
 
-/** The globs of one ignore file or one set of `--glob` overrides, in file order. */
+/** The globs of one ignore file or one set of `--glob` overrides, in file order, grouped as globset's `GlobSet` groups them. */
 export interface IgnoreRules {
   readonly globs: readonly IgnoreGlob[];
+  // each strategy's globs by the bytes they match, as indexes into globs in ascending order
+  readonly literals: ReadonlyMap<string, readonly number[]>;
+  readonly basenames: ReadonlyMap<string, readonly number[]>;
+  readonly extensions: ReadonlyMap<string, readonly number[]>;
+  // the regex strategy's indexes, descending
+  readonly regexes: readonly number[];
 }
 
-export const NO_RULES: IgnoreRules = { globs: [] };
+function ruleSet(globs: readonly IgnoreGlob[]): IgnoreRules {
+  const literals = new Map<string, number[]>();
+  const basenames = new Map<string, number[]>();
+  const extensions = new Map<string, number[]>();
+  const regexes: number[] = [];
+  globs.forEach(({ strategy }, index) => {
+    if (strategy.kind === 'regex') return void regexes.push(index);
+    const byBytes = strategy.kind === 'literal' ? literals : strategy.kind === 'basename' ? basenames : extensions;
+    const hits = byBytes.get(strategy.bytes);
+    if (hits) hits.push(index);
+    else byBytes.set(strategy.bytes, [index]);
+  });
+  regexes.reverse();
+  return { globs, literals, basenames, extensions, regexes };
+}
+
+export const NO_RULES: IgnoreRules = ruleSet([]);
 
 /** A glob globset refuses; a gitignore file skips the line, an rg `--glob` fails the search. */
 export class GlobSyntaxError extends Error {
@@ -164,7 +199,7 @@ function parseGlob(glob: string, allowUnclosedClass: boolean, original: string):
 // A character as its UTF-8 bytes, each escaped, since the regex runs over a path's bytes (globset's `(?-u)` regex).
 const byteLiteral = (char: string): string => [...Buffer.from(char, 'utf8')].map((byte) => `\\x${byte.toString(16).padStart(2, '0')}`).join('');
 
-// globset's `Tokens::tokens_to_regex`; Rust's `.` is every byte but `\n`.
+// globset's `Tokens::tokens_to_regex`, compiled with the `s` flag: globset's `new_regex` sets `dot_matches_new_line`.
 function tokensToRegex(tokens: readonly Token[]): string {
   let regex = '';
   for (const token of tokens) {
@@ -172,9 +207,9 @@ function tokensToRegex(tokens: readonly Token[]): string {
       case 'literal': regex += byteLiteral(token.char); break;
       case 'any': regex += '[^/]'; break;
       case 'zeroOrMore': regex += '[^/]*'; break;
-      case 'recursivePrefix': regex += '(?:/?|[^\\n]*/)'; break;
-      case 'recursiveSuffix': regex += '/[^\\n]*'; break;
-      case 'recursiveZeroOrMore': regex += '(?:/|/[^\\n]*/)'; break;
+      case 'recursivePrefix': regex += '(?:/?|.*/)'; break;
+      case 'recursiveSuffix': regex += '/.*'; break;
+      case 'recursiveZeroOrMore': regex += '(?:/|/.*/)'; break;
       case 'class':
         regex += `[${token.negated ? '^' : ''}${token.ranges.map(([from, to]) => (from === to ? byteLiteral(from) : `${byteLiteral(from)}-${byteLiteral(to)}`)).join('')}]`;
         break;
@@ -188,11 +223,34 @@ function tokensToRegex(tokens: readonly Token[]): string {
   return regex;
 }
 
-function globRegex(glob: string, allowUnclosedClass: boolean, original: string): RegExp {
+// The literal tokens' text, or undefined when a token is no literal or one is in `refused`.
+function literalText(tokens: readonly Token[], refused: string): string | undefined {
+  let text = '';
+  for (const token of tokens) {
+    if (token.kind !== 'literal' || refused.includes(token.char)) return undefined;
+    text += token.char;
+  }
+  return text;
+}
+
+/** globset's `MatchStrategy::new` for its literal, basename literal and extension forms, with `literal_separator` on. */
+function strategyOf(tokens: readonly Token[]): Strategy {
+  const prefixed = tokens[0]?.kind === 'recursivePrefix';
+  const basename = prefixed && tokens.length > 1 ? literalText(tokens.slice(1), '/') : undefined;
+  if (basename !== undefined) return { kind: 'basename', bytes: pathBytes(basename) };
+  const literal = tokens.length > 0 ? literalText(tokens, '') : undefined;
+  if (literal !== undefined) return { kind: 'literal', bytes: pathBytes(literal) };
+  // `*` without `**/` before it cannot cross a `/`, so it matches no extension alone
+  const dot = tokens[2];
+  const extension = prefixed && tokens[1]?.kind === 'zeroOrMore' && dot?.kind === 'literal' && dot.char === '.' ? literalText(tokens.slice(3), './') : undefined;
+  return extension === undefined ? { kind: 'regex' } : { kind: 'extension', bytes: pathBytes(`.${extension}`) };
+}
+
+function compiledGlob(glob: string, allowUnclosedClass: boolean, original: string): { regex: RegExp; strategy: Strategy } {
   const tokens = parseGlob(glob, allowUnclosedClass, original);
   // globset matches everything for a lone `**`
-  if (tokens.length === 1 && tokens[0]!.kind === 'recursivePrefix') return /^[^\n]*$/;
-  return new RegExp(`^${tokensToRegex(tokens)}$`);
+  if (tokens.length === 1 && tokens[0]!.kind === 'recursivePrefix') return { regex: /^.*$/s, strategy: { kind: 'regex' } };
+  return { regex: new RegExp(`^${tokensToRegex(tokens)}$`, 's'), strategy: strategyOf(tokens) };
 }
 
 // Rust's `str::trim_end`: Unicode White_Space, which differs from JavaScript's trimEnd at U+0085 and U+FEFF.
@@ -229,7 +287,7 @@ function ignoreGlobOf(text: string, allowUnclosedClass: boolean): IgnoreGlob | u
   let actual = line;
   if (!absolute && !line.includes('/') && !(actual.startsWith('**/') || actual === '**')) actual = `**/${actual}`;
   if (actual.endsWith('/**')) actual = `${actual}/*`;
-  return { whitelist, onlyDir, regex: globRegex(actual, allowUnclosedClass, original) };
+  return { whitelist, onlyDir, ...compiledGlob(actual, allowUnclosedClass, original) };
 }
 
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -266,31 +324,65 @@ export function ignoreFileRules(bytes: Buffer): IgnoreRules {
       if (!(err instanceof GlobSyntaxError)) throw err;
     }
   });
-  return { globs };
+  return ruleSet(globs);
 }
 
 /** rg's `--glob` overrides (`OverrideBuilder`): each line as a gitignore line, inverted; throws GlobSyntaxError as rg fails. */
 export function overrideRules(lines: readonly string[]): IgnoreRules & { readonly includes: boolean } {
   const globs = lines.map((line) => ignoreGlobOf(line, false)).filter((glob): glob is IgnoreGlob => glob !== undefined);
-  return { globs, includes: globs.some((glob) => !glob.whitelist) };
+  return { ...ruleSet(globs), includes: globs.some((glob) => !glob.whitelist) };
 }
 
-/** A path's UTF-8 bytes, one character each, as the rules' regular expressions read it. */
-export const pathBytes = (path: string): string => Buffer.from(path, 'utf8').toString('latin1');
+/** A path's UTF-8 bytes, one character each, as the rules' regular expressions read it; an ASCII path is its own. */
+export const pathBytes = (path: string): string => (Buffer.byteLength(path, 'utf8') === path.length ? path : Buffer.from(path, 'utf8').toString('latin1'));
 
-/** `Gitignore::matched_stripped` of a path's bytes (`pathBytes`): the last glob that matches decides, a directory-only glob only for a directory. */
-export function matchRules(rules: IgnoreRules, bytes: string, isDir: boolean): IgnoreMatch {
-  for (let index = rules.globs.length - 1; index >= 0; index--) {
-    const glob = rules.globs[index]!;
-    if ((!glob.onlyDir || isDir) && glob.regex.test(bytes)) return glob.whitelist ? 'whitelist' : 'ignore';
+/** globset's `Candidate`: a path's bytes (`pathBytes`) and its basename's and extension's, which the strategies read. */
+export interface Candidate {
+  readonly path: string;
+  readonly basename: string;
+  // from the basename's last `.`, the `.` included; '' without one
+  readonly extension: string;
+}
+
+/** globset's `Candidate::new` of a path's bytes: a basename of `..` is none. */
+export function candidateOf(path: string): Candidate {
+  const last = path.slice(path.lastIndexOf('/') + 1);
+  const basename = last === '..' ? '' : last;
+  const dot = basename.lastIndexOf('.');
+  return { path, basename, extension: dot < 0 ? '' : basename.slice(dot) };
+}
+
+// The highest index of hits above best whose glob applies to the entry's type, else best.
+function highest(globs: readonly IgnoreGlob[], hits: readonly number[] | undefined, isDir: boolean, best: number): number {
+  if (hits === undefined) return best;
+  for (let at = hits.length - 1; at >= 0 && hits[at]! > best; at--) {
+    if (isDir || !globs[hits[at]!]!.onlyDir) return hits[at]!;
   }
-  return undefined;
+  return best;
+}
+
+/** `Gitignore::matched_stripped`: the last glob that matches decides, a directory-only glob only for a directory. */
+export function matchRules(rules: IgnoreRules, candidate: Candidate, isDir: boolean): IgnoreMatch {
+  const { globs } = rules;
+  if (globs.length === 0) return undefined;
+  let best = highest(globs, rules.literals.get(candidate.path), isDir, -1);
+  best = highest(globs, rules.basenames.get(candidate.basename), isDir, best);
+  best = highest(globs, rules.extensions.get(candidate.extension), isDir, best);
+  for (const index of rules.regexes) {
+    if (index <= best) break;
+    const glob = globs[index]!;
+    if ((isDir || !glob.onlyDir) && glob.regex.test(candidate.path)) {
+      best = index;
+      break;
+    }
+  }
+  return best < 0 ? undefined : globs[best]!.whitelist ? 'whitelist' : 'ignore';
 }
 
 /** `Override::matched`: an include glob lets a path through, an exclude glob ignores it, and with any include a file no glob names is ignored. */
-export function matchOverrides(rules: IgnoreRules & { readonly includes: boolean }, bytes: string, isDir: boolean): IgnoreMatch {
+export function matchOverrides(rules: IgnoreRules & { readonly includes: boolean }, candidate: Candidate, isDir: boolean): IgnoreMatch {
   if (rules.globs.length === 0) return undefined;
-  const matched = matchRules(rules, bytes, isDir);
+  const matched = matchRules(rules, candidate, isDir);
   if (matched === undefined) return rules.includes && !isDir ? 'ignore' : undefined;
   return matched === 'ignore' ? 'whitelist' : 'ignore';
 }

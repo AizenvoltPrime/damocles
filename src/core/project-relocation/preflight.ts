@@ -5,7 +5,7 @@ import { authorityKeyOfProject } from '../../shared/project-location';
 import { folderKey } from '../workspace-folders/folder-key';
 import { chatRecordHolding, folderContains, relocatedRepositoryRoot } from '../worktrees/records';
 import type { ChatWorktreeRecord, WorktreeRecord } from '../worktrees/registry';
-import type { PathPresence } from '../workspace-folders/folder-presence-probe';
+import type { PathCheck } from '../workspace-folders/folder-presence-probe';
 import type { AliasSource } from './aliases';
 import { pendingRefusal } from './engine';
 import type { Coded, PreflightAnswer, PreflightRequest, RelocationFolder, RelocationMode, RelocationRecord, RelocationRefusalCode } from './types';
@@ -29,8 +29,8 @@ export interface PreflightDeps {
    * another process, a panel, writer or run of this one, or nobody.
    */
   readonly holderOf: (sessionId: string) => Promise<ChatHold | undefined>;
-  /** The path's presence, its volume asked first (folder-presence-probe.ts). */
-  readonly presence: (target: string) => Promise<PathPresence>;
+  /** The path's presence, its volume asked first (folder-presence-probe.ts); `unchecked` once the wait for the hung gate ran out. */
+  readonly presence: (target: string) => Promise<PathCheck>;
   /** The drive, share, WSL distro or mount point the path's presence hangs on; undefined on the system root. */
   readonly volumeOf: (target: string) => Promise<string | undefined>;
   /**
@@ -94,10 +94,12 @@ export async function runPreflight(request: PreflightRequest, deps: PreflightDep
 
   // Copying a folder is not moving it, so the old folder must be gone; a volume that does not answer cannot say so.
   const fromPresence = await deps.presence(from);
+  if (fromPresence === 'unchecked') return refuse('checksBusy');
   if (fromPresence === 'directory' || fromPresence === 'other') return refuse('fromExists');
   if (fromPresence === 'unreachable') notices.push({ code: 'unreachable', params: { root: (await deps.volumeOf(from)) ?? path.parse(path.resolve(from)).root } });
 
   const toPresence = await deps.presence(to);
+  if (toPresence === 'unchecked') return refuse('checksBusy');
   if (toPresence === 'missing' || toPresence === 'unreachable') return refuse('toMissing');
   if (toPresence !== 'directory') return refuse('toNotDirectory');
 

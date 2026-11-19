@@ -5,7 +5,6 @@ import { log } from '../logger';
 import type { ICompassService, IndexStatus, CompassConfig } from './types';
 import { CODE_EXTENSIONS } from './types';
 import { createWatcherFileFilter } from './detect';
-import { folderKey } from '../workspace-folders/folder-key';
 import { notifySchemaAhead } from '../schema-skew';
 import { l } from '../l10n';
 import type { CompassWorkerData, WorkerEvent, WorkerProgressEvent } from './worker-protocol';
@@ -87,7 +86,9 @@ export class CompassService implements ICompassService {
 	private _pendingChangedFiles = new Set<string>();
 	private _isIndexableFile: (filePath: string) => boolean;
 	private _trustListener: Disposable | null = null;
-	/** Set by the first `ensureInitialized`; a trust grant starts only a service something asked to start. */
+	/** Counts the stops a trust revoke made, so a start one of them cut short leaves the state as the stop set it. */
+	private _run = 0;
+	/** Set by the first `ensureInitialized`; trust starts only a service something asked to start. */
 	private _startRequested = false;
 
 	constructor(workspacePath: string, platform: CompassPlatform, workerFactory: CompassWorkerFactory = defaultWorkerFactory) {
@@ -99,10 +100,9 @@ export class CompassService implements ICompassService {
 			autoReindex: platform.settings.get<boolean>('damocles.compass.autoReindex', true),
 		};
 		this._isIndexableFile = createWatcherFileFilter(workspacePath, this._config.excludePatterns);
-		// Trust can only be granted, never revoked in place, so this only ever starts Compass.
-		this._trustListener = platform.trust.onDidGrantTrust((folderPaths) => {
-			const key = folderKey(this._workspacePath);
-			if (folderPaths.some(p => folderKey(p) === key)) this._onWorkspaceTrustGranted();
+		this._trustListener = platform.trust.onDidChangeTrust(() => {
+			if (platform.trust.isTrusted(this._workspacePath)) this._onWorkspaceTrustGranted();
+			else this._stopUntrusted();
 		});
 	}
 
@@ -145,7 +145,10 @@ export class CompassService implements ICompassService {
 		if (!this._initPromise) {
 			const { error: _unused, ...rest } = this._cachedStatus;
 			this._cachedStatus = { ...rest, state: 'idle' };
+			const run = this._run;
 			this._initPromise = this._doInit().catch(err => {
+				// a revoke stopped this start and reset the state already
+				if (run !== this._run) throw err;
 				this._initPromise = null;
 				const failure = err instanceof Error ? err : new Error(String(err));
 				if (this._worker) {
@@ -164,6 +167,7 @@ export class CompassService implements ICompassService {
 	}
 
 	private async _doInit(): Promise<void> {
+		const run = this._run;
 		this._cachedStatus = { ...this._cachedStatus, state: 'indexing' };
 		this._emitStatus();
 
@@ -179,7 +183,7 @@ export class CompassService implements ICompassService {
 			grammarDir: path.join(this._platform.paths.unpackedRoot, 'resources', 'grammars'),
 			config: this._config,
 		}, TIMEOUTS.init);
-		if (this._disposed) return;
+		if (this._disposed || run !== this._run) return;
 
 		this._consecutiveFailures = 0;
 
@@ -438,10 +442,26 @@ export class CompassService implements ICompassService {
 		});
 	}
 
-	async dispose(): Promise<void> {
-		this._disposed = true;
-		this._trustListener?.dispose();
-		this._trustListener = null;
+	/** The workspace lost its trust: the worker stops at once and nothing in the tree is read until a later grant. */
+	private _stopUntrusted(): void {
+		if (this._disposed) return;
+		const worker = this._worker;
+		if (!worker && !this._initPromise && !this._retryTimer) return;
+		this._run++;
+		this._stopWatching();
+		this._worker = null;
+		this._initPromise = null;
+		// the WAL store already holds every committed write
+		worker?.terminate();
+		this._rejectAllPending(new Error('Compass stopped: the workspace is no longer trusted'));
+		this._cachedStatus = {
+			state: 'idle', fileCount: 0, nodeCount: 0, edgeCount: 0,
+			communityCount: 0, flowCount: 0, lastIndexedAt: null,
+		};
+		this._emitStatus();
+	}
+
+	private _stopWatching(): void {
 		if (this._debounceTimer) {
 			clearTimeout(this._debounceTimer);
 			this._debounceTimer = null;
@@ -454,6 +474,13 @@ export class CompassService implements ICompassService {
 		this._consecutiveFailures = 0;
 		this._watcher?.dispose();
 		this._watcher = null;
+	}
+
+	async dispose(): Promise<void> {
+		this._disposed = true;
+		this._trustListener?.dispose();
+		this._trustListener = null;
+		this._stopWatching();
 
 		const worker = this._worker;
 		if (worker) {

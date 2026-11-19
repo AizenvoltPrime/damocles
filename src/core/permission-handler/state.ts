@@ -103,6 +103,12 @@ export class PermissionState {
   /** Resolves who raised a prompt from its `parentToolUseId`; the session that runs the nested agents supplies it. */
   promptOwnerResolver: ((parentToolUseId: string | null | undefined) => PromptOwner) | null = null;
 
+  /** `cwd`, which a file rule match and a file approval cannot do without. */
+  sessionCwd(): string {
+    if (this.cwd === null) throw new Error('File rules and approvals need the session cwd, and none is set');
+    return this.cwd;
+  }
+
   /** The owner a prompt raised now states on its message; with no session there is no nested agent to name. */
   promptOwner(parentToolUseId: string | null | undefined): PromptOwner {
     return this.promptOwnerResolver?.(parentToolUseId) ?? { kind: 'main' };

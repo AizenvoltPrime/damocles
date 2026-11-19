@@ -51,6 +51,8 @@ function passwordOnlyHost(password: string) {
       })();
       return {
         pid: Promise.resolve(1),
+        pauseOutput: () => undefined,
+        resumeOutput: () => undefined,
         onData: (stream, listener) => { listeners[stream as 'stdout' | 'stderr'].add(listener); },
         write: async () => undefined,
         end: () => undefined,

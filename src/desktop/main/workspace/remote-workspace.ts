@@ -8,7 +8,7 @@ import type { Project } from '../../local-services/confine';
 import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
 import type { ClientToWorkspace, WireFileBytes, WireIdentity, WireTransferEntry, WorkspaceToClient } from '../../workspace/messages';
 import type { TransferEntry } from '../../workspace/transfer-ops';
-import type { FileBytes } from '../../local-services/file-bytes';
+import type { FileBytes } from '../../../core/file-bytes';
 import type { EntryIdentity, WatchEvent } from '../../workspace/file-system';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import type { SearchRunSink } from '../../workspace/search/search-runner';
@@ -92,6 +92,13 @@ export class ListingUnsupportedError extends Error {
   }
 }
 
+// quickOpen.list and search.run with the walk's ignore switches and overrides, which the host's walk process lists
+export const WALK_FEATURES: readonly string[] = ['quickOpen.walk', 'search.walk'];
+
+export function carriesWalks(features: readonly string[]): boolean {
+  return WALK_FEATURES.every((feature) => features.includes(feature));
+}
+
 export interface RemoteWorkspaceDeps {
   // the workspace channel's endpoint, whose results and events its tables parse before they arrive here
   readonly endpoint: Endpoint<ClientToWorkspace, WorkspaceToClient>;
@@ -112,6 +119,10 @@ export interface RemoteWorkspaceDeps {
   readonly outside: boolean;
   // the daemon lists OUTSIDE_LISTING_FEATURE; without it listOutside throws ListingUnsupportedError before sending
   readonly listing: boolean;
+  // the daemon lists WALK_FEATURES; without them a Quick Open listing ends with no files and a search with searchUnsupported's
+  // localized message, before sending
+  readonly walks: boolean;
+  readonly searchUnsupported: () => string;
   // a stream for a transfer's bytes, held until its reader subscribes
   readonly openStream: () => StreamChannel;
   readonly log: (line: string) => void;
@@ -190,7 +201,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
     searches.delete(runId);
     sink?.end(end);
   });
-  endpoint.onEvent('quickOpen.data', ({ runId, chunk }) => listings.get(runId)?.data(asBuffer(chunk)));
+  endpoint.onEvent('quickOpen.files', ({ runId, files }) => listings.get(runId)?.files(files));
   endpoint.onEvent('quickOpen.end', ({ runId, error }) => {
     const sink = listings.get(runId);
     listings.delete(runId);
@@ -224,7 +235,6 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
       realpath: (target) => call('files.realpath', { target }),
       read: async (filePath, limitBytes) => fromWireBytes(await call('files.read', { path: filePath, ...(limitBytes !== undefined ? { limitBytes } : {}) }), limitBytes ?? EDITOR_CONFIRM_DOCUMENT_BYTES),
-      readText: (filePath) => call('files.readText', { path: filePath }),
       writeInPlace: async (project, location, bytes) => call('files.writeInPlace', { project: toWire(project), location: locationToWire(location), bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) }),
       readHostSettings: async () => {
         const { path, read } = await call('files.readHostSettings', {});
@@ -371,10 +381,11 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       list: async (project, relativeDir, excludes) => call('tree.list', { project: toWire(project), relativeDir, excludes }),
     },
     search: {
-      run: (cwd, args, sink) => {
+      run: (cwd, request, sink) => {
         const runId = nextId++;
         searches.set(runId, sink);
-        call('search.run', { runId, cwd, args }).catch((err: unknown) => {
+        const sent = deps.walks ? call('search.run', { runId, cwd, match: request.match, pattern: request.pattern, walk: request.walk }) : Promise.reject(new Error(deps.searchUnsupported()));
+        sent.catch((err: unknown) => {
           if (!searches.delete(runId)) return;
           sink.end({ error: err instanceof Error ? err.message : String(err) });
         });
@@ -386,13 +397,19 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
     },
     quickOpen: {
-      list: (root, ignoreArgs, excludes, sink) => {
+      list: (root, ignore, excludes, sink) => {
         const runId = nextId++;
         listings.set(runId, sink);
-        call('quickOpen.list', { runId, root, ignoreArgs, excludes }).catch((err: unknown) => {
-          if (!listings.delete(runId)) return;
-          sink.end(err instanceof Error ? err.message : String(err));
-        });
+        if (!deps.walks) {
+          void Promise.resolve().then(() => {
+            if (listings.delete(runId)) sink.end();
+          });
+        } else {
+          call('quickOpen.list', { runId, root, ignore, excludes }).catch((err: unknown) => {
+            if (!listings.delete(runId)) return;
+            sink.end(err instanceof Error ? err.message : String(err));
+          });
+        }
         return {
           kill: () => {
             if (listings.delete(runId)) call('quickOpen.kill', { runId }).catch(report('stopping a file listing'));

@@ -271,6 +271,8 @@ export const MAIN_CORE_IMPORTS = [
   'design/design-http-server',
   'design/serve-policy',
   'executable-path',
+  // the bounded regular-file reader main's editor and workspaces share with core's approval diff
+  'file-bytes',
   // a remote URL's parts, for a daemon without scm.remoteEndpoints and for Clone's URL
   'forge/remote-url',
   // l() and verbatim(): text main hands a chat page, which renders it in its own language
@@ -306,6 +308,10 @@ export const MAIN_CORE_IMPORTS = [
   'scm/settings-keys',
   'scm/stash',
   'scm/worktrees',
+  // the search.use*IgnoreFiles switches Quick Open and Search pass
+  'search-walk/ignore-settings',
+  // main's own walk host, whose processes Quick Open and Search of this computer's projects walk on
+  'search-walk/walk-host',
   // a served root's loopback server and its policy (Open in Browser, the agent's browser), which core runs for VS Code
   'served-pages/preview-http-server',
   'served-pages/preview-reader',
@@ -350,8 +356,8 @@ export const MAIN_WORKSPACE_IMPORTS = [
   'parseGlobList',
   'planReplacements',
   'planWithin',
-  'rgSearchArgs',
   'runWithin',
+  'searchRequest',
   'windowsBuildNumber',
 ];
 const NO_WORKSPACE_IN_MAIN = 'Desktop main reaches the workspace modules through workspaces.forProject (main/workspace/); import a type, or add a pure helper to MAIN_WORKSPACE_IMPORTS.';

@@ -10,7 +10,7 @@ import type { RelayedMcpServer } from "../../../../shared/remote-user";
 import type { RemoteHost } from "../../../../platform/remote-host";
 import { currentPin } from "../../../client-snapshots";
 import { relayedServerConfig, relaysPersonalMcp, remoteAvailableNames } from "../../../pi-session/mcp/relayed-mcp";
-import { personalConfigRoot, worktreeProjectOf } from "../../../worktrees/personal-config";
+import { personalConfigRoot, personalFilesTrusted, worktreeProjectOf } from "../../../worktrees/personal-config";
 import type {
   McpConfigError,
   McpServerConfig,
@@ -138,8 +138,18 @@ function legacyNamesFor(pending: DisabledSplitPending, folderKey: string): strin
   return pending.names.filter(name => !decided.has(name));
 }
 
-function isRepoAuthored(entry: McpServerEntry): boolean {
-  return REPO_AUTHORED_BY_SOURCE[entry.source];
+/** Which of a folder's repository-authored files are trusted: its own while it is, its personal file while personalFilesTrusted admits it too. */
+interface FolderTrust {
+  readonly project: boolean;
+  readonly local: boolean;
+}
+
+const UNTRUSTED: FolderTrust = { project: false, local: false };
+
+/** Whether a source's servers are trusted in a folder; a source outside the working tree always is. */
+function sourceTrusted(source: McpServerSource, trust: FolderTrust): boolean {
+  if (!REPO_AUTHORED_BY_SOURCE[source]) return true;
+  return source === "damocles-local" ? trust.local : trust.project;
 }
 
 /**
@@ -157,16 +167,16 @@ function sourcesFoldedAbove(target: McpServerSource, folded: readonly McpSourceS
 }
 
 /**
- * In an untrusted workspace the sources a repository could have authored are folded LOWEST instead
- * of at their rank, keeping their order relative to each other. Folded at rank they would overwrite
+ * The sources a repository could have authored whose file is not trusted (every one in an untrusted
+ * workspace) are folded LOWEST instead of at their rank, keeping their order relative to each other. Folded at rank they would overwrite
  * same-named user-global servers, and the trust gate would then withhold the merged entry for being
  * repo-authored, so opening an untrusted repo that happens to name a server `github` would silently
  * stop your own trusted `github` from connecting.
  */
-function demoteRepoAuthored(ranked: readonly McpSourceServers[]): McpSourceServers[] {
+function demoteRepoAuthored(ranked: readonly McpSourceServers[], trust: FolderTrust): McpSourceServers[] {
   return [
-    ...ranked.filter(entry => REPO_AUTHORED_BY_SOURCE[entry.source]),
-    ...ranked.filter(entry => !REPO_AUTHORED_BY_SOURCE[entry.source]),
+    ...ranked.filter(entry => !sourceTrusted(entry.source, trust)),
+    ...ranked.filter(entry => sourceTrusted(entry.source, trust)),
   ];
 }
 
@@ -625,7 +635,7 @@ export class McpManager {
   /**
    * What a panel in `folderKey` should connect. Gated by the master `damocles.mcp.enabled` switch (M6:
    * off means none, so disabling tears down live connections) and by workspace trust (M3: servers from
-   * a file in the working tree are withheld in an untrusted workspace). The trust test is
+   * a file in the working tree are withheld while that file is untrusted). The trust test is
    * `REPO_AUTHORED_BY_SOURCE`, read live: `claude-local` is folder-scope but written in `~/.claude.json`,
    * so a repository had no hand in it. This is the single chokepoint feeding the live MCP clients.
    */
@@ -637,7 +647,7 @@ export class McpManager {
     if (!state) return { userUnion, userVisible: [], folder: {}, ...relayed };
 
     const target = this.folders().find(candidate => candidate.key === folderKey)!;
-    const trusted = this.isFolderTrusted(folderKey);
+    const trust = this.folderTrust(folderKey);
     const enabled = state.entries.filter(isLoadable);
     return {
       userUnion,
@@ -645,8 +655,8 @@ export class McpManager {
       folder: Object.fromEntries(
         enabled
           .filter(entry => entry.scope === "folder")
-          .filter(entry => trusted || !isRepoAuthored(entry))
-          .map(entry => [entry.name, serverSpec(entry, entry.config!, target.fsPath, trusted)]),
+          .filter(entry => sourceTrusted(entry.source, trust))
+          .map(entry => [entry.name, serverSpec(entry, entry.config!, target.fsPath, trust.project)]),
       ),
       ...relayed,
     };
@@ -670,14 +680,20 @@ export class McpManager {
     return this.platform.settings.get<boolean>("damocles.mcp.enabled", true);
   }
 
-  /** A server from a working-tree file, withheld from connecting because the workspace is untrusted (M3). */
-  private isUntrustedRepoServer(entry: McpServerEntry, folderTrusted: boolean): boolean {
-    return isRepoAuthored(entry) && !folderTrusted;
+  /** A server from a working-tree file, withheld from connecting because that file is untrusted (M3). */
+  private isUntrustedRepoServer(entry: McpServerEntry, trust: FolderTrust): boolean {
+    return !sourceTrusted(entry.source, trust);
   }
 
-  private isFolderTrusted(folderKey: string): boolean {
+  private folderTrust(folderKey: string): FolderTrust {
     const target = this.folders().find(candidate => candidate.key === folderKey);
-    return target !== undefined && this.isTargetTrusted(target);
+    return target === undefined ? UNTRUSTED : this.targetTrust(target);
+  }
+
+  // The personal file is personalConfigRoot's, a worktree chat's project's (D34).
+  private targetTrust(target: FolderTarget): FolderTrust {
+    const project = this.isTargetTrusted(target);
+    return { project, local: project && personalFilesTrusted((folder) => this.platform.trust.isTrusted(folder), target.fsPath) };
   }
 
   // Rule 8: a worktree chat's working folder is trusted exactly when its owner project is.
@@ -712,11 +728,11 @@ export class McpManager {
 
   getServersForUI(folderKey: string): McpServerStatusInfo[] {
     const state = this.stateFor(folderKey, "getServersForUI");
-    const trusted = this.isFolderTrusted(folderKey);
+    const trust = this.folderTrust(folderKey);
     return (state?.entries ?? []).filter(entry => this.shownToDevice(entry)).map(entry => {
       const status = !entry.enabled ? "disabled" : entry.error ? "failed" : "idle";
       const info = this.toStatusInfo(entry, status);
-      if (this.isUntrustedRepoServer(entry, trusted)) info.untrusted = true;
+      if (this.isUntrustedRepoServer(entry, trust)) info.untrusted = true;
       return info;
     });
   }
@@ -762,17 +778,17 @@ export class McpManager {
    * `damocles.mcp.toolExposure` as `off`, at the scope the entry came from. Prefixes are rebuilt with the
    * legacy algorithm over the servers the legacy managers held, as `legacyToCurrentToolNames` does: the
    * enabled user servers, then each folder's enabled servers with the prefixes of the user servers
-   * visible there reserved. An untrusted folder's repository-authored servers take no part, and nothing
+   * visible there reserved. Repository-authored servers whose file is untrusted take no part, and nothing
    * moves while any config file is unreadable. Only an entry naming exactly one server and differing
    * from that tool's current name moves: `damocles.tools.disabled` still matches current names exactly,
    * so the rest stay, and a server absent for now migrates when it appears. Project scope is left alone:
    * it is the repository's committed file.
    */
-  private async migrateDisabledMcpTools(folderStates: ReadonlyMap<string, FolderMcpState>, trustedByKey: ReadonlyMap<string, boolean>): Promise<void> {
+  private async migrateDisabledMcpTools(folderStates: ReadonlyMap<string, FolderMcpState>, trustByKey: ReadonlyMap<string, FolderTrust>): Promise<void> {
     const enabledByFolder = [...folderStates].map(([key, state]) => ({
       user: state.entries.filter(entry => entry.scope === "user" && isLoadable(entry)).map(entry => entry.name),
       folder: state.entries
-        .filter(entry => entry.scope === "folder" && isLoadable(entry) && (trustedByKey.get(key) === true || !isRepoAuthored(entry)))
+        .filter(entry => entry.scope === "folder" && isLoadable(entry) && sourceTrusted(entry.source, trustByKey.get(key)!))
         .map(entry => entry.name),
     }));
     const userPrefixes = legacyServerPrefixMap([...new Set(enabledByFolder.flatMap(names => names.user))]);
@@ -832,13 +848,13 @@ export class McpManager {
     // One knob governs every Claude-vs-Codex tie-break, so assets and MCP can never disagree about it.
     const precedence = getAssetSourcePrecedence();
     const targets = [...this.folders()];
-    const trustedByKey = new Map(targets.map(target => [target.key, this.isTargetTrusted(target)]));
+    const trustByKey = new Map(targets.map(target => [target.key, this.targetTrust(target)]));
     const projectTargets = targets.filter(target => target.projectScope);
 
     await migrateOwnedFile(DAMOCLES_MCP_CONFIG_PATH);
     const [global, fileReads] = await Promise.all([
       readGlobalMcpSources(projectTargets.map(target => target.fsPath)),
-      Promise.all(projectTargets.map(target => this.readFolderFiles(target, trustedByKey.get(target.key) === true))),
+      Promise.all(projectTargets.map(target => this.readFolderFiles(target, trustByKey.get(target.key)!))),
     ]);
     const relayedSource = this.relayedSource();
     const relayedBatch: McpSourceServers = {
@@ -865,7 +881,7 @@ export class McpManager {
       // The home target of a window with no folder open has no project files, only user servers.
       const read = readsByKey.get(target.key);
       const ranked = orderMcpSources([relayedBatch, ...global.sources, ...(read?.sources ?? [])], precedence);
-      const folded = trustedByKey.get(target.key) === true ? ranked : demoteRepoAuthored(ranked);
+      const folded = demoteRepoAuthored(ranked, trustByKey.get(target.key)!);
       // A folder the split has not reached yet still honours every pre-split name, so nothing disabled
       // before the upgrade connects while its files are unreadable.
       const listKey = listKeyOfTarget(target);
@@ -898,7 +914,7 @@ export class McpManager {
     void this.pruneStaleEnabledOverrides(folderStates).catch(err => log("[McpManager] Pruning stale enabled overrides failed:", err));
     if (folderReads.every(read => read.complete) && global.errors.length === 0) {
       const projectStates = new Map([...folderStates].filter(([key]) => targets.some(target => target.key === key && listKeyOfTarget(target) === key)));
-      await this.migrateDisabledMcpTools(projectStates, trustedByKey);
+      await this.migrateDisabledMcpTools(projectStates, trustByKey);
     }
   }
 
@@ -931,21 +947,21 @@ export class McpManager {
 
   /**
    * One folder's working-tree files. Asking git runs the repository's own `.git/config`, and
-   * `core.fsmonitor` in it is a command git executes, so an untrusted workspace never gets asked.
-   * `.pi/mcp.json` is read only in a trusted folder, as pi does, and the owned-file migration never
-   * rewrites a local file an untrusted repository may have supplied.
+   * `core.fsmonitor` in it is a command git executes, so git is asked in the personal file's folder
+   * only while that file is trusted. `.pi/mcp.json` is read only in a trusted folder, as pi does, and
+   * the owned-file migration never rewrites a local file an untrusted repository may have supplied.
    */
-  private async readFolderFiles(target: FolderTarget, trusted: boolean): Promise<FolderRead> {
+  private async readFolderFiles(target: FolderTarget, trust: FolderTrust): Promise<FolderRead> {
     const localFile = localMcpConfigPath(target.fsPath);
-    if (trusted) await migrateOwnedFile(localFile);
+    if (trust.local) await migrateOwnedFile(localFile);
     const files: readonly (readonly [McpServerSource, string])[] = [
       ["workspace", path.join(target.fsPath, ".mcp.json")],
-      ...(trusted ? [["pi-project", piProjectMcpConfigPath(target.fsPath)] as const] : []),
+      ...(trust.project ? [["pi-project", piProjectMcpConfigPath(target.fsPath)] as const] : []),
       ["damocles-local", localFile],
     ];
     const [reads, localMcpUnignored] = await Promise.all([
       Promise.all(files.map(async ([source, file]) => ({ source, read: await readMcpConfigFile(file) }))),
-      trusted ? isLocalMcpFileUnignored(target.fsPath) : false,
+      trust.local ? isLocalMcpFileUnignored(target.fsPath) : false,
     ]);
     return {
       target,
@@ -959,11 +975,11 @@ export class McpManager {
   buildRuntimeStatus(folderKey: string, sdkStatuses: McpServerStatusInfo[]): McpServerStatusInfo[] {
     const statusMap = new Map(sdkStatuses.map(s => [s.name, s]));
     const state = this.stateFor(folderKey, "buildRuntimeStatus");
-    const trusted = this.isFolderTrusted(folderKey);
+    const trust = this.folderTrust(folderKey);
     const deviceRelayed = this.deviceRelayed();
     return (state?.entries ?? []).filter(entry => this.shownToDevice(entry)).map(entry => {
       const sdkServer = statusMap.get(entry.name);
-      const untrusted = this.isUntrustedRepoServer(entry, trusted);
+      const untrusted = this.isUntrustedRepoServer(entry, trust);
       const status = untrusted
         ? "disabled"
         : entry.enabled

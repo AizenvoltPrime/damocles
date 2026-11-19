@@ -2,10 +2,13 @@
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
+import { UPLOAD_FOLDER_MAX_ENTRIES, UPLOAD_FOLDER_MAX_SIZE } from '@shared/types/constants';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingsRow from '../SettingsRow.vue';
+import SettingInput from '../controls/SettingInput.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
+import { parseWholeNumberIn } from '../parsers';
 import { useSettingWrite } from '../settings-writes';
 import { useToolGroupSwitch, type SwitchableToolGroup } from '../tool-groups';
 import { useSettingsMachineHost, useSettingsPage } from '../settings-view';
@@ -59,6 +62,22 @@ function setBrowserHeadless(headless: boolean): void {
   write('damocles.browser.headless', { type: 'setBrowserHeadless', headless }, {
     apply: () => settingsStore.setSetting('browserHeadless', headless),
     revert: () => settingsStore.setSetting('browserHeadless', !headless),
+  });
+}
+
+function setUploadFolderMaxEntries(count: number): void {
+  const before = currentSettings.value.browserUploadFolderMaxEntries;
+  write('damocles.browser.uploadFolderMaxEntries', { type: 'setBrowserUploadFolderMaxEntries', count }, {
+    apply: () => settingsStore.setSetting('browserUploadFolderMaxEntries', count),
+    revert: () => settingsStore.setSetting('browserUploadFolderMaxEntries', before),
+  });
+}
+
+function setUploadFolderMaxSize(mebibytes: number): void {
+  const before = currentSettings.value.browserUploadFolderMaxSize;
+  write('damocles.browser.uploadFolderMaxSize', { type: 'setBrowserUploadFolderMaxSize', mebibytes }, {
+    apply: () => settingsStore.setSetting('browserUploadFolderMaxSize', mebibytes),
+    revert: () => settingsStore.setSetting('browserUploadFolderMaxSize', before),
   });
 }
 
@@ -137,16 +156,35 @@ function setImageModel(model: string): void {
         />
       </SettingsRow>
     </template>
-    <SettingsRow
-      v-if="entry.group === 'browser' && entry.control.status.value?.enabled"
-      id="damocles.browser.headless"
-    >
-      <SettingSwitch
-        :model-value="currentSettings.browserHeadless"
-        :label="t('settingsModal.rows.browserHeadless.label')"
-        @update:model-value="setBrowserHeadless"
-      />
-    </SettingsRow>
+    <template v-if="entry.group === 'browser' && entry.control.status.value?.enabled">
+      <SettingsRow id="damocles.browser.headless">
+        <SettingSwitch
+          :model-value="currentSettings.browserHeadless"
+          :label="t('settingsModal.rows.browserHeadless.label')"
+          @update:model-value="setBrowserHeadless"
+        />
+      </SettingsRow>
+      <SettingsRow id="damocles.browser.uploadFolderMaxEntries">
+        <SettingInput
+          :model-value="String(currentSettings.browserUploadFolderMaxEntries)"
+          :parse="(raw) => parseWholeNumberIn(raw, UPLOAD_FOLDER_MAX_ENTRIES, t)"
+          :label="t('settingsModal.rows.browserUploadFolderMaxEntries.label')"
+          :suffix="t('settingsModal.units.entries')"
+          inputmode="numeric"
+          @commit="setUploadFolderMaxEntries"
+        />
+      </SettingsRow>
+      <SettingsRow id="damocles.browser.uploadFolderMaxSize">
+        <SettingInput
+          :model-value="String(currentSettings.browserUploadFolderMaxSize)"
+          :parse="(raw) => parseWholeNumberIn(raw, UPLOAD_FOLDER_MAX_SIZE, t)"
+          :label="t('settingsModal.rows.browserUploadFolderMaxSize.label')"
+          :suffix="t('settingsModal.units.mebibytes')"
+          inputmode="numeric"
+          @commit="setUploadFolderMaxSize"
+        />
+      </SettingsRow>
+    </template>
   </template>
 
   <template v-if="imageGeneration">

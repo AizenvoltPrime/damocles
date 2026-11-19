@@ -1,6 +1,6 @@
 // One open git repository: its status, the index writes and the reads the views need (plan AD4).
 // Group and letter rules follow VS Code's extensions/git/src/repository.ts and decorationProvider.ts.
-import { constants, type Stats } from 'node:fs';
+import type { Stats } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -8,6 +8,7 @@ import { StringDecoder } from 'node:string_decoder';
 import type { GitCredentialOrigin } from '../../shared/git-credential';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 import { LETTER_TONE, type StatusLetter, type StatusTone } from '../../shared/scm/status-letter';
+import { OPEN_READ_NONBLOCKING } from '../file-bytes';
 import { followsLocalLinksOnly } from '../local-links';
 import { endOfOptions, MAX_CLI_LENGTH, RepoQueue, revision, splitInChunks, type GitCall, type GitResult, type GitRunner, type GitVersion } from './git-runner';
 import { GitError } from './errors';
@@ -1219,9 +1220,6 @@ function cutAt(text: string, max: number): string {
   return text.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
 }
 
-// O_NONBLOCK where it exists, so a FIFO swapped in after the stat opens at once instead of blocking a thread.
-const OPEN_NONBLOCKING = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
-
 /**
  * A regular file's text up to maxBytes, never ending inside a UTF-8 sequence; undefined when it does not exist or is no
  * regular file. A FIFO or device is never read: the path is checked before it is opened, and the handle again after.
@@ -1232,7 +1230,7 @@ async function readRegularFile(file: string, maxBytes: number): Promise<string |
     throw err;
   });
   if (!stat?.isFile()) return undefined;
-  const handle = await fs.open(file, OPEN_NONBLOCKING);
+  const handle = await fs.open(file, OPEN_READ_NONBLOCKING);
   try {
     if (!(await handle.stat()).isFile()) return undefined;
     const buffer = Buffer.alloc(maxBytes);

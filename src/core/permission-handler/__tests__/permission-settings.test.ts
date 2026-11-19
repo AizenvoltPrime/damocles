@@ -65,7 +65,7 @@ describe('loadPermissionsByPriority', () => {
       writeSettings(segments, { allow: [ruleFor(index)] });
     });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result.map(perms => perms.allow[0])).toEqual(
       ORDERED_FILES.map((_, index) => ruleFor(index)),
@@ -92,7 +92,7 @@ describe('loadPermissionsByPriority', () => {
       writeSettings(segments, { allow: [ruleFor(index)] });
     });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result.map((perms) => perms.root)).toEqual([
       workspace, workspace, workspace, workspace,
@@ -104,7 +104,7 @@ describe('loadPermissionsByPriority', () => {
     writeSettings(ORDERED_FILES[0], { allow: [], deny: [], ask: [] });
     writeSettings(ORDERED_FILES[2], { deny: ['Bash(git push:*)'] });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.deny).toEqual(['Bash(git push:*)']);
@@ -125,7 +125,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     writeRaw(ORDERED_FILES[0], '{ "permissions": { "deny": ["Bash(rm:*)"] }, }');
     writeSettings(ORDERED_FILES[2], { deny: ['Bash(git push:*)'] });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(logMock.mock.calls.flat().join(' ')).toContain('is not valid JSON');
@@ -134,13 +134,13 @@ describe('loadPermissionsByPriority — unusable files', () => {
   it('never puts the parser message in the log, which quotes the file', async () => {
     writeRaw(ORDERED_FILES[0], '{"permissions":{"deny":["Bash(rm:*)"],"note":sk-SUPERSECRET}}');
 
-    await loadPermissionsByPriority(workspace);
+    await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(logMock.mock.calls.flat().join(' ')).not.toContain('SUPERSECRET');
   });
 
   it('says nothing about a file that is simply absent', async () => {
-    await loadPermissionsByPriority(workspace);
+    await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(logMock.mock.calls.flat().join(' ')).not.toContain('could not be read');
   });
@@ -151,7 +151,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     writeRaw(ORDERED_FILES[0], 'null');
     writeSettings(ORDERED_FILES[2], { allow: ['Bash(ls:*)'] });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
@@ -160,7 +160,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
   it('reads a file that starts with a byte order mark, as the settings store does', async () => {
     writeRaw(ORDERED_FILES[0], `\uFEFF${JSON.stringify({ permissions: { deny: ['Read(secret.txt)'] } })}`);
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result[0]?.deny).toEqual(['Read(secret.txt)']);
     expect(logMock).not.toHaveBeenCalled();
@@ -169,7 +169,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
   it('drops a rule that is not a string and logs its file and index, never its value', async () => {
     writeRaw(ORDERED_FILES[0], JSON.stringify({ permissions: { deny: [987654321, 'Read(secret.txt)', { tool: 'Bash-SECRET' }], ask: 'Read(SECRET-STRING)' } }));
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.deny).toEqual(['Read(secret.txt)']);
@@ -189,7 +189,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     writeRaw(ORDERED_FILES[2], JSON.stringify({ note: 'no permissions key at all' }));
     writeSettings(ORDERED_FILES[3], { allow: ['Bash(ls:*)'] });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
@@ -210,7 +210,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     const inert = ['*', 'B*', 'mcp__*', 'mcp__git*__get_x', 'Edit(!secret-a/**)', 'Read(#secret-b)', 'Write(secret-c/**)', 'WebFetch(secret-d.com)', 'WebFetch(domain:*.secret-e.com)'];
     writeSettings(ORDERED_FILES[0], { allow: [...inert, 'mcp__github__get_*', 'Edit(src/**)', 'Write', 'WebFetch(domain:example.com)'], deny: inert, ask: inert });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result[0]?.allow).toEqual(['mcp__github__get_*', 'Edit(src/**)', 'Write', 'WebFetch(domain:example.com)']);
     expect(result[0]?.deny).toEqual(inert);
@@ -236,7 +236,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     ];
     writeSettings(ORDERED_FILES[0], { allow: rules, deny: rules, ask: rules });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result[0]).toMatchObject({ allow: rules, deny: rules, ask: rules });
     expect(logMock).not.toHaveBeenCalled();
@@ -248,7 +248,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     const live = ['mcp__srv__read_mcp_resource(file:///secret/*)', `${'mcp__' + 's'.repeat(50)}_0123abcd(x://secret)`, 'mcp__srv__*'];
     writeSettings(ORDERED_FILES[0], { deny: [...inert, ...live], ask: inert });
 
-    const result = await loadPermissionsByPriority(workspace);
+    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
 
     expect(result[0]).toMatchObject({ deny: live, ask: [] });
     const logged = logMock.mock.calls.flat().join('\n');

@@ -3,8 +3,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
-import type { BrowserService } from '../../browser';
-import type { PanelHost } from '../../../platform/window-service';
+import type { SessionBrowser } from '../../session-types';
 import type { RemoteHost } from '../../../platform/remote-host';
 import {
   TOOL_EDIT,
@@ -93,14 +92,11 @@ export interface CustomToolDeps {
   memoryService?: MemoryService;
   /** Wired only when the panel's compass service is present. */
   compassService?: CompassService;
-  /** Wired only when the integrated browser is enabled (the service has no `isEnabled` flag — its
-   * presence in `SessionOptions` already means enabled). */
-  browserService?: BrowserService;
+  /** The session's browser and the chat panel the agent runs in, which owns every page the agent opens (`SessionOptions.browser`). */
+  browser?: SessionBrowser;
   /** The browser scope id this agent's browser tools bind to: the chat's human scope (main agent + human)
    *  when omitted, or a subagent/team-agent id for per-agent tab isolation. */
   browserScopeId?: string;
-  /** The chat panel the agent runs in; it owns every page the agent opens. */
-  browserChat?: PanelHost;
   /** A daemon's core's relay to the client showing the chat, the session's own `Platform.remote`: its browser calls run there. */
   browserRelay?: RemoteHost;
   /** The chat's project and design roots, whose file:// addresses its browser serves (local desktop) or relays (a daemon's core). */
@@ -224,7 +220,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * file reads take the file's mutation queue slot.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, allowedNetworkHosts, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, browserServedFiles, getSessionId, getPlanFilePath, subagentManager, userInput, teamService, imageGeneration, isTeamEnabled, mcpResources, design, nested } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, allowedNetworkHosts, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browser, browserScopeId, browserRelay, browserServedFiles, getSessionId, getPlanFilePath, subagentManager, userInput, teamService, imageGeneration, isTeamEnabled, mcpResources, design, nested } = deps;
   const nestedDesign = nested?.design;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
@@ -258,7 +254,8 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   if (compassService) {
     tools.push(...buildCompassPiTools({ pi, compassService }));
   }
-  if (browserService) {
+  if (browser) {
+    const { service: browserService, chat: browserChat } = browser;
     // Per-agent scope binding at closure-construction time: the main agent (no scope id) shares its chat's
     // human scope with the human; each subagent/team agent passes its own id for tab isolation.
     // Both are idempotent, so a rebuild (per session / per spawn) reuses the scope.

@@ -78,6 +78,20 @@ describe('pi project layer follows workspace trust', () => {
     }
   }, 60_000);
 
+  it('a revoke turns the project layer off in a folder that loaded it, and a later grant turns it back on', async () => {
+    const { project } = probeProject();
+    const fake = installFakePlatform({ trusted: true, folders: [{ fsPath: project, name: path.basename(project) }] });
+    const folder = await PiRuntime.get(tempDir('damocles-trust-agent-')).folder(project);
+    expect(folder.services.settingsManager.getShellPath()).toBe('/probe/shell');
+
+    fake.trust.revokeTrust();
+    expect(folder.services.settingsManager.isProjectTrusted()).toBe(false);
+    expect(folder.services.settingsManager.getShellPath()).toBeUndefined();
+
+    fake.trust.grantTrust();
+    await vi.waitFor(() => expect(folder.services.settingsManager.getShellPath()).toBe('/probe/shell'), { timeout: 10_000 });
+  }, 60_000);
+
   it('a subagent spawned in a restricted window does not run the project extension', async () => {
     const { project, marker } = probeProject();
     const fake = installFakePlatform({ trusted: false });

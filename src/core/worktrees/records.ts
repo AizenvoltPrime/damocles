@@ -58,6 +58,11 @@ export function liveChatRecordAt(records: readonly WorktreeRecord[], folder: str
   return records.find((r): r is ChatWorktreeRecord => r.kind === 'chat' && r.deletedAt === undefined && key(r.workingFolder) === folderKeyed);
 }
 
+/** The working folder of every live chat record: the folders that answer isTrusted with their project's trust. */
+export function liveWorkingFolders(records: readonly WorktreeRecord[]): string[] {
+  return records.flatMap((r) => (r.kind === 'chat' && r.deletedAt === undefined ? [r.workingFolder] : []));
+}
+
 /** The chat record, live or deleted, whose worktree holds `folder` (its root or a folder inside it). */
 export function chatRecordHolding(records: readonly WorktreeRecord[], folder: string, os?: NodeJS.Platform): ChatWorktreeRecord | undefined {
   return records.find((r): r is ChatWorktreeRecord => r.kind === 'chat' && folderContains(r.worktreeRoot, folder, os));

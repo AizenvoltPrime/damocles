@@ -33,6 +33,12 @@ export type FileDiffSource =
   | { kind: 'change'; oldText: string; newText: string }
   | { kind: 'omitted'; reason: FilePatchOmitted };
 
+const OMITTED_REASONS: ReadonlySet<unknown> = new Set<FilePatchOmitted>(['tooLarge', 'binary', 'unreadable', 'notAFile']);
+
+function isOmittedReason(value: unknown): value is FilePatchOmitted {
+  return OMITTED_REASONS.has(value);
+}
+
 /** Above this, a numberless change is shown as removed then added rather than diffed in the webview. */
 const MAX_CHANGE_DIFF_LINES = 1000;
 
@@ -49,7 +55,7 @@ function parses(patch: string): boolean {
 /** A recorded patch that parses, or the reason none was recorded, from a tool result's metadata or an approval. */
 function recordedSource(record: { patch?: unknown; patchOmitted?: unknown } | undefined): FileDiffSource | null {
   if (typeof record?.patch === 'string') return parses(record.patch) ? { kind: 'patch', patch: record.patch } : null;
-  if (record?.patchOmitted === 'tooLarge' || record?.patchOmitted === 'binary') return { kind: 'omitted', reason: record.patchOmitted };
+  if (isOmittedReason(record?.patchOmitted)) return { kind: 'omitted', reason: record.patchOmitted };
   return null;
 }
 

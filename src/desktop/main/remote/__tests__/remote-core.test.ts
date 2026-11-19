@@ -195,7 +195,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
       serviceFeatures.push(features);
       return {
         platform: main,
-        trust: { trustedKeys: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false },
+        trust: { trustedKeys: () => [], onDidChange: () => ({ dispose: () => undefined }), requestTrust: async () => false },
         state: createDesktopKeyValueState(userData, () => undefined),
         terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
         resolveProxy: async () => 'DIRECT',

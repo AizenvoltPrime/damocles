@@ -1,6 +1,6 @@
 // One ProjectWorkspace suite, run against the local adapter and the remote client served by the daemon's workspace host over
 // a real connection, so the two hosts cannot drift.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,13 +18,17 @@ import { createFormatter } from '../../../workspace/format/formatter';
 import type { HostStarters } from '../../../workspace/host-starters';
 import type { ProjectWorkspace } from '../../../workspace/project-workspace';
 import { createQuickOpenListing } from '../../../workspace/quick-open-listing';
-import { createSearchRunner, type RgEvent, type SearchRunEnd } from '../../../workspace/search/search-runner';
+import { ALL_IGNORE_FILES } from '../../../../core/search-walk';
+import { createWalkHost } from '../../../../core/search-walk';
+import { InThreadWalkChild } from '../../../../__mocks__/in-thread-walk-child';
+import { searchRequest } from '../../../workspace/search/rg-args';
+import { createSearchRunner, type RgEvent, type SearchRequest, type SearchRunEnd } from '../../../workspace/search/search-runner';
 import { createTerminalBackend } from '../../../workspace/terminal/terminal-backend';
 import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injection';
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { carriesOutsideFiles, carriesTransfers, createRemoteWorkspace, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, RANGED_READS_FEATURE, RangedReadsUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
+import { carriesOutsideFiles, carriesTransfers, carriesWalks, createRemoteWorkspace, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, RANGED_READS_FEATURE, RangedReadsUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WALK_FEATURES, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
@@ -57,6 +61,16 @@ afterAll(() => {
   fs.rmSync(path.dirname(watchWorker), { recursive: true, force: true });
 });
 
+/** Lets a read open that waits on the FIFO at `fifo` go on, so a failing run leaves no thread blocked. */
+function releaseFifo(fifo: string): void {
+  try {
+    fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+  } catch (err) {
+    // ENXIO: nothing waits on it
+    if ((err as NodeJS.ErrnoException).code !== 'ENXIO') throw err;
+  }
+}
+
 function watchers(): DesktopFileWatcherFactory {
   return new DesktopFileWatcherFactory({ folders: () => [], onDidChange: () => ({ dispose: () => undefined }) }, () => undefined, createWorkerTreeHost(() => new Worker(watchWorker), () => undefined));
 }
@@ -65,11 +79,12 @@ async function localAdapter(): Promise<Adapter> {
   const factory = watchers();
   const log = (): void => undefined;
   const rg = async (): Promise<string> => rgPath;
+  const walks = createWalkHost(() => new InThreadWalkChild(), log);
   const workspace: ProjectWorkspace = {
     files: createFileSystem({ watchers: factory, trash: () => Promise.reject(new Error('no trash in this suite')), damoclesHome: DAMOCLES_HOME_DIR, log }),
     tree: createTreeListing(log),
-    search: createSearchRunner({ rgPath: rg, log }),
-    quickOpen: createQuickOpenListing({ rgPath: rg, log }),
+    search: createSearchRunner({ rgPath: rg, walks, log }),
+    quickOpen: createQuickOpenListing({ walks, log }),
     format: createFormatter({ starters: NO_HOSTS, watchers: factory, log }),
     terminals: createTerminalBackend({ starters: NO_HOSTS, platform: process.platform, scriptsDir: path.join(REPO_ROOT, 'resources', 'shell-integration'), zshDotDir: path.join(os.tmpdir(), 'zdot'), homedir: os.homedir(), env: process.env, log }),
   };
@@ -78,7 +93,7 @@ async function localAdapter(): Promise<Adapter> {
 
 // features: what the client takes from the daemon's welcome, every name by default; requested: each request method it sends
 async function remoteAdapter(features: (listed: readonly string[]) => readonly string[] = (listed) => listed, requested: string[] = []): Promise<Adapter> {
-  const daemon = await startInProcessDaemon({ starters: NO_HOSTS, watchWorker });
+  const daemon = await startInProcessDaemon({ starters: NO_HOSTS, watchWorker, walkChild: () => new InThreadWalkChild() });
   const connection = await connect({ stream: await daemon.connect(), appVersion: '0.0.0-test', clientId: 'conformance', deviceName: 'test', terminalIdleDays: 30, log: () => undefined });
   const endpoint = connection.workspace;
   const workspace = createRemoteWorkspace({
@@ -98,6 +113,8 @@ async function remoteAdapter(features: (listed: readonly string[]) => readonly s
     rangedReads: features(connection.features).includes(RANGED_READS_FEATURE),
     outside: carriesOutsideFiles(features(connection.features)),
     listing: features(connection.features).includes(OUTSIDE_LISTING_FEATURE),
+    walks: carriesWalks(features(connection.features)),
+    searchUnsupported: () => 'Update the Damocles server on this host to search it.',
     openStream: () => connection.openStream(),
     log: () => undefined,
   });
@@ -113,17 +130,41 @@ async function remoteAdapter(features: (listed: readonly string[]) => readonly s
 
 const ADAPTERS: ReadonlyArray<readonly [string, () => Promise<Adapter>]> = [['local adapter', localAdapter], ['loopback client', () => remoteAdapter()]];
 
-function search(workspace: ProjectWorkspace, cwd: string, args: readonly string[]): Promise<{ events: RgEvent[]; end: SearchRunEnd }> {
+const NEEDLE: SearchRequest = { match: ['--fixed-strings'], pattern: 'needle', walk: { ignore: ALL_IGNORE_FILES, overrides: [] } };
+
+function search(workspace: ProjectWorkspace, cwd: string, request: SearchRequest = NEEDLE): Promise<{ events: RgEvent[]; end: SearchRunEnd }> {
   return new Promise((resolve) => {
     const events: RgEvent[] = [];
-    workspace.search.run(cwd, args, { event: (event) => events.push(event), dropped: () => undefined, end: (end) => resolve({ events, end }) });
+    workspace.search.run(cwd, request, { event: (event) => events.push(event), dropped: () => undefined, end: (end) => resolve({ events, end }) });
   });
 }
 
-function listing(workspace: ProjectWorkspace, root: string): Promise<{ text: string; error: string | undefined }> {
+// Each file's match and context events in rg's order, by its '/'-separated path below the search root.
+function lineEvents(events: readonly RgEvent[]): Record<string, string[]> {
+  const files: Record<string, string[]> = {};
+  for (const { type, data } of events) {
+    if (type !== 'match' && type !== 'context') continue;
+    const { path: printed, line_number: line, lines, submatches } = data as { path: { text: string }; line_number: number; lines: unknown; submatches?: Array<{ start: number; end: number }> };
+    const file = printed.text.replace(/^\.[\\/]/, '').replaceAll('\\', '/');
+    (files[file] ??= []).push(JSON.stringify([type, line, lines, submatches?.map(({ start, end }) => [start, end])]));
+  }
+  return files;
+}
+
+// What Search's rg run over its own walk gave for request: --hidden, the overrides as globs, --no-ignore for every switch off.
+function rgOwnWalk(cwd: string, request: SearchRequest): { files: Record<string, string[]>; code: number | null } {
+  const { ignore, overrides } = request.walk;
+  const ignoreArgs = [...(ignore.files ? [] : ['--no-ignore']), ...(ignore.global ? [] : ['--no-ignore-global']), ...(ignore.parents ? [] : ['--no-ignore-parent'])];
+  const args = ['--json', '--no-config', '--hidden', ...ignoreArgs, ...overrides.flatMap((glob) => ['-g', glob]), ...request.match, '--', request.pattern, '.'];
+  const run = spawnSync(rgPath, args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const events = run.stdout.split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line) as RgEvent);
+  return { files: lineEvents(events), code: run.status };
+}
+
+function listing(workspace: ProjectWorkspace, root: string, excludes: readonly string[] = []): Promise<{ files: string[]; error: string | undefined }> {
   return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    workspace.quickOpen.list(root, [], [], { data: (chunk) => chunks.push(chunk), end: (error) => resolve({ text: Buffer.concat(chunks).toString('utf8'), error }) });
+    const files: string[] = [];
+    workspace.quickOpen.list(root, ALL_IGNORE_FILES, excludes, { files: (batch) => files.push(...batch), end: (error) => resolve({ files: files.sort(), error }) });
   });
 }
 
@@ -171,9 +212,18 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     await expect(workspace.files.isDirectory(`${file('src')}\0`)).rejects.toThrow();
   });
 
-  it('rejects a failed read with the system error code, which crosses the wire as that code', async () => {
-    const failed = await workspace.files.readText(file('src')).catch((err: unknown) => err);
-    expect((failed as NodeJS.ErrnoException).code).toBe('EISDIR');
+  it('rejects a failed call with the system error code, which crosses the wire as that code', async () => {
+    const realpath = fs.promises.realpath.bind(fs.promises);
+    const denied = vi.spyOn(fs.promises, 'realpath').mockImplementation((async (target: fs.PathLike, options?: fs.ObjectEncodingOptions) => {
+      if (String(target) === file('src')) throw Object.assign(new Error(`EACCES: permission denied, realpath '${String(target)}'`), { code: 'EACCES' });
+      return realpath(target, options);
+    }) as typeof fs.promises.realpath);
+    try {
+      const failed = await workspace.files.realpath(file('src')).catch((err: unknown) => err);
+      expect((failed as NodeJS.ErrnoException).code).toBe('EACCES');
+    } finally {
+      denied.mockRestore();
+    }
   });
 
   it('refuses a path a link carries out of the project', async () => {
@@ -183,14 +233,13 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     expect(await workspace.tree.list(project, 'escape', [])).toMatchObject({ ok: false });
   });
 
-  it('reads bytes as a Buffer within the limit, and reads text', async () => {
+  it('reads bytes as a Buffer within the limit', async () => {
     const read = await workspace.files.read(file('README.md'));
     if (read.kind !== 'bytes') throw new Error(read.kind);
     expect(Buffer.isBuffer(read.bytes)).toBe(true);
     expect(read.bytes.toString('utf8')).toBe('# Readme\n');
     expect(await workspace.files.read(file('README.md'), 4)).toEqual({ kind: 'tooLarge', bytes: 9 });
     expect(await workspace.files.read(file('gone.md'))).toEqual({ kind: 'missing' });
-    expect(await workspace.files.readText(file('src/a.ts'))).toBe('export const needle = 1;\n');
   });
 
   it('writes in place, and refuses a write outside the project as WriteRefusedError with its refusal', async () => {
@@ -285,6 +334,31 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     execFileSync('mkfifo', [fifo]);
     expect(await workspace.files.resolveOutside(fifo)).toEqual({ kind: 'other', path: fifo });
     expect(await workspace.files.readOutside(fifo)).toEqual({ kind: 'notAFile', folder: false });
+  });
+
+  it.skipIf(process.platform === 'win32')('reads a file outside every project that a FIFO replaced after its checks as outside, never waiting for a writer', async () => {
+    const file = path.join(fs.realpathSync.native(root), 'swapped.txt');
+    fs.writeFileSync(file, 'regular\n');
+    const open = fs.promises.open.bind(fs.promises);
+    let swapped = false;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (target, flags, mode) => {
+      if (!swapped && String(target) === file) {
+        swapped = true;
+        fs.rmSync(file);
+        execFileSync('mkfifo', [file]);
+      }
+      return open(target, flags, mode);
+    });
+
+    try {
+      const read = await Promise.race([workspace.files.readOutside(file), new Promise((resolve) => setTimeout(() => resolve('still waiting after 2 s'), 2000))]);
+      expect(swapped).toBe(true);
+      // outside when the FIFO took a new inode number, notAFile when it reused the removed file's
+      expect([{ kind: 'outside' }, { kind: 'notAFile', folder: false }]).toContainEqual(read);
+    } finally {
+      vi.mocked(fs.promises.open).mockRestore();
+      releaseFifo(file);
+    }
   });
 
   it('creates, renames and deletes only the entry it confirmed', async () => {
@@ -482,13 +556,81 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     }
   });
 
-  it('runs ripgrep for search and the Quick Open listing in the project', async () => {
-    const found = await search(workspace, project.fsPath, ['--json', '--fixed-strings', '--', 'needle', '.']);
+  it('runs ripgrep for search and walks for the Quick Open listing in the project', async () => {
+    const found = await search(workspace, project.fsPath);
     expect(found.end).toMatchObject({ code: 0 });
     expect(found.events.filter((event) => event.type === 'match')).toHaveLength(1);
-    const listed = await listing(workspace, project.fsPath);
-    expect(listed.error).toBeUndefined();
-    expect(listed.text.split(/\r?\n/).filter(Boolean).map((line) => path.relative(project.fsPath, line).split(path.sep).join('/')).sort()).toEqual(['README.md', 'src/a.ts']);
+    expect(await listing(workspace, project.fsPath)).toEqual({ files: ['README.md', 'src/a.ts'], error: undefined });
+  });
+
+  it('lists hidden files and .git as the excludes allow, in batches, and nothing through or under a junction', async () => {
+    fs.mkdirSync(path.join(root, 'linked'));
+    fs.writeFileSync(path.join(root, 'linked', 'secret.ts'), '');
+    fs.symlinkSync(path.join(root, 'linked'), file('link'), 'junction');
+    fs.mkdirSync(file('.git'));
+    fs.writeFileSync(file('.git/HEAD'), '');
+    fs.writeFileSync(file('.env'), '');
+    fs.mkdirSync(file('many'));
+    const many = Array.from({ length: 1200 }, (_, index) => `many/f${String(index).padStart(4, '0')}.ts`);
+    for (const name of many) fs.writeFileSync(file(name), '');
+    expect(await listing(workspace, project.fsPath, ['**/.git'])).toEqual({ files: ['.env', 'README.md', ...many, 'src/a.ts'], error: undefined });
+    expect((await listing(workspace, project.fsPath, ['**/many'])).files).toEqual(['.env', '.git/HEAD', 'README.md', 'src/a.ts']);
+  });
+
+  it('searches what rg matched over its own walk: .git as the toggle and excludes allow, binary files, CRLF, multiline and context', async () => {
+    fs.mkdirSync(file('.git'));
+    fs.writeFileSync(file('.git/HEAD'), 'needle head\n');
+    fs.writeFileSync(file('.gitignore'), 'ignored.txt\n');
+    fs.writeFileSync(file('ignored.txt'), 'needle ignored\n');
+    fs.mkdirSync(file('node_modules/pkg'), { recursive: true });
+    fs.writeFileSync(file('node_modules/pkg/x.js'), 'needle vendored\n');
+    fs.writeFileSync(file('crlf.txt'), 'one\r\nneedle two\r\nthree\r\n');
+    fs.writeFileSync(file('multi.txt'), 'foo\nbar needle\nbaz\n');
+    // rg's walk shows nothing of a file from the read buffer holding its first NUL (64 KiB) on, and all of a file without one
+    fs.writeFileSync(file('early.bin'), Buffer.from('head\0\nneedle 1\n'));
+    fs.writeFileSync(file('late.bin'), `${Array.from({ length: 2000 }, (_, index) => `needle ${index}`).join('\n')}\n${'filler line\n'.repeat(8000)}x\0y\nneedle tail\n`);
+    fs.writeFileSync(file('wide.txt'), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('before\nneedle wide\nafter\n', 'utf16le')]));
+    const query = { pattern: 'needle', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false };
+    const request = (overrides: Partial<typeof query>, contextLines = 0): SearchRequest =>
+      searchRequest({ query: { ...query, ...overrides }, include: [], exclude: [], excludeSettings: ['**/.git', '**/node_modules'], ignore: ALL_IGNORE_FILES, contextLines });
+    const cases: Array<[string, SearchRequest]> = [
+      ['the toggle on', request({})],
+      ['the toggle off', request({ useExcludeSettingsAndIgnoreFiles: false })],
+      ['context lines', request({}, 1)],
+      ['a multiline regex', request({ pattern: 'bar needle\\nbaz', isRegex: true })],
+      ['a regex end of line at CRLF', request({ pattern: 'two$', isRegex: true })],
+      ['no match', request({ pattern: 'absent' })],
+    ];
+    for (const [label, searched] of cases) {
+      const expected = rgOwnWalk(project.fsPath, searched);
+      const found = await search(workspace, project.fsPath, searched);
+      expect(lineEvents(found.events), label).toEqual(expected.files);
+      expect(found.end, label).toEqual({ code: expected.code, stderr: '' });
+    }
+    expect(Object.keys(rgOwnWalk(project.fsPath, request({ useExcludeSettingsAndIgnoreFiles: false })).files).sort()).toEqual(['.git/HEAD', 'crlf.txt', 'ignored.txt', 'late.bin', 'multi.txt', 'node_modules/pkg/x.js', 'src/a.ts', 'wide.txt']);
+  });
+
+  it('searches nothing through or under a junction, and a dangling junction fails nothing', async () => {
+    fs.mkdirSync(path.join(root, 'linked'));
+    fs.writeFileSync(path.join(root, 'linked', 'secret.ts'), 'needle\n');
+    fs.symlinkSync(path.join(root, 'linked'), file('link'), 'junction');
+    fs.mkdirSync(path.join(root, 'gone'));
+    fs.symlinkSync(path.join(root, 'gone'), file('dangling'), 'junction');
+    fs.rmdirSync(path.join(root, 'gone'));
+    const found = await search(workspace, project.fsPath);
+    expect(Object.keys(lineEvents(found.events))).toEqual(['src/a.ts']);
+    expect(found.events.map((event) => event.type)).toEqual(['begin', 'match', 'end']);
+    expect(found.end).toEqual({ code: 0, stderr: '' });
+    // rg's own walk opens the junction's target, and fails on the one that is gone
+    if (process.platform === 'win32') expect(rgOwnWalk(project.fsPath, NEEDLE).code).toBe(2);
+  });
+
+  it('shows rg\'s own wording for a glob the walk refuses, and rg\'s stderr for a regex it refuses', async () => {
+    const glob = await search(workspace, project.fsPath, { ...NEEDLE, walk: { ...NEEDLE.walk, overrides: ['a}'] } });
+    expect(glob).toEqual({ events: [], end: { code: 2, stderr: expect.stringMatching(/^error parsing glob 'a}'/) } });
+    const regex = await search(workspace, project.fsPath, { ...NEEDLE, match: [], pattern: '(' });
+    expect(regex.events).toEqual([]);
+    expect(regex.end).toEqual({ code: 2, stderr: expect.stringContaining('regex parse error') });
   });
 
   it('answers the terminal backend\'s environment, its kept terminals and a link\'s kind', async () => {
@@ -504,10 +646,10 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
   it('sends no end for a search or a listing it killed', async () => {
     for (let index = 0; index < 200; index++) fs.writeFileSync(file(`src/f${index}.ts`), 'needle\n');
     const ends: string[] = [];
-    workspace.search.run(project.fsPath, ['--json', '--fixed-strings', '--', 'needle', '.'], { event: () => undefined, dropped: () => undefined, end: () => ends.push('search') }).kill();
-    workspace.quickOpen.list(project.fsPath, [], [], { data: () => undefined, end: () => ends.push('listing') }).kill();
+    workspace.search.run(project.fsPath, NEEDLE, { event: () => undefined, dropped: () => undefined, end: () => ends.push('search') }).kill();
+    workspace.quickOpen.list(project.fsPath, ALL_IGNORE_FILES, [], { files: () => undefined, end: () => ends.push('listing') }).kill();
     // a run started after the kills ends after anything the killed ones could still send
-    expect((await search(workspace, project.fsPath, ['--json', '--fixed-strings', '--', 'needle', '.'])).end).toMatchObject({ code: 0 });
+    expect((await search(workspace, project.fsPath)).end).toMatchObject({ code: 0 });
     expect((await listing(workspace, project.fsPath)).error).toBeUndefined();
     expect(ends).toEqual([]);
   });
@@ -596,6 +738,16 @@ describe('transfers over a loopback connection', () => {
     for await (const chunk of read.chunks) expect(Buffer.from(chunk).toString('utf8')).toBe('a');
   });
 
+  it('sends no Quick Open listing or search to a daemon that does not list the walk features, and the connection stays up', async () => {
+    const requested: string[] = [];
+    await start((listed) => listed.filter((feature) => !WALK_FEATURES.includes(feature)), requested);
+    const { workspace } = adapter;
+    expect(await listing(workspace, project.fsPath)).toEqual({ files: [], error: undefined });
+    expect(await search(workspace, project.fsPath)).toEqual({ events: [], end: { error: 'Update the Damocles server on this host to search it.' } });
+    expect(requested).toEqual([]);
+    expect(await workspace.files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+  });
+
   it('sends no listing to a daemon that does not list files.listOutside, and the connection stays up', async () => {
     await start((listed) => listed.filter((feature) => feature !== OUTSIDE_LISTING_FEATURE));
     const { files } = adapter.workspace;
@@ -657,6 +809,13 @@ describe('transfers over a loopback connection', () => {
     expect(await service.start({ op: 'download', sources: [{ kind: 'project', projectKey: project.key, relativePath: 'src' }], destination: { kind: 'download', folder: picked } })).toMatchObject({ ok: true });
     await vi.waitFor(() => expect(ended).toEqual(['done']), { timeout: 30_000 });
   }, 60_000);
+});
+
+describe('the workspace channel\'s file reads', () => {
+  it('carries no whole-file text read, so a host reads a file only through its bounded, confined reads', () => {
+    expect(Object.keys(CLIENT_TO_WORKSPACE.requests)).not.toContain('files.readText');
+    expect(Object.keys(CLIENT_TO_WORKSPACE.requests)).toEqual(expect.arrayContaining(['files.read', 'files.readOutside', 'files.readFileRange']));
+  });
 });
 
 describe('the outside answer on the wire', () => {

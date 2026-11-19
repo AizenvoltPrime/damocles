@@ -173,15 +173,15 @@ export class ServedRoots implements Disposable {
   }
 
   /**
-   * origin -> displayRoot of the view grants of the authority's roots, every view's or only viewId's: every local one, and each
-   * remote one whose core named its path.
+   * origin -> displayRoot of the chat view's grants of the authority's roots: every local one, and each remote one whose core
+   * named its path. Never another view's: its origin maps to nothing, so its address is kept as loaded.
    */
-  mappings(authority: string, viewId?: string): Array<{ readonly origin: string; readonly displayRoot: string }> {
-    const only = viewId === undefined ? undefined : viewHolder(viewId);
+  mappings(authority: string, viewId: string): Array<{ readonly origin: string; readonly displayRoot: string }> {
+    const holder = viewHolder(viewId);
     return this.viewEntries(authority).flatMap((entry) => {
       const displayRoot = entry.displayRoot;
-      if (displayRoot === undefined) return [];
-      return [...entry.origins].flatMap(([holder, origin]) => (only === undefined || holder === only ? [{ origin, displayRoot }] : []));
+      const origin = entry.origins.get(holder);
+      return displayRoot === undefined || origin === undefined ? [] : [{ origin, displayRoot }];
     });
   }
 

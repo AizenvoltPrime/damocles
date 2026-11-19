@@ -7,11 +7,15 @@ import { delimiter, dirname, join } from 'node:path';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { rgPath } from '@vscode/ripgrep';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { commandLineLength, createFindTool, createGrepTool, fdGlobMatcher, GREP_PARAMETER_NAMES, resolveToCwd } from '../search-tools';
+import { createFindTool, createGrepTool, fdGlobMatcher, GREP_PARAMETER_NAMES, resolveToCwd } from '../search-tools';
+import { BATCH_COMMAND_LINE, commandLineCost, walkedRgRuns } from '../../../search-walk';
 import { processLauncher } from '../../../process-launcher';
 import { PermissionHandler } from '../../../permission-handler';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { getPiCodingAgent } from '../../pi-loader';
+
+// 8 logical CPUs, so walked Grep keeps 4 rg runs live on any machine.
+vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), availableParallelism: () => 8 }));
 
 /** Every file the override's own code reads; pi's grep, loaded from node_modules, is not seen here. */
 const filesRead = vi.hoisted(() => [] as string[]);
@@ -240,9 +244,10 @@ describe('grep', () => {
 
   describe('over the files the walk lists', () => {
     const many = 'many';
+    // names of about 100 characters, more than one command line holds; one in four matches, so the output stays within pi's cap
+    const manyFiles = Math.ceil(BATCH_COMMAND_LINE / 80);
     beforeAll(() => {
-      // 400 names of about 100 characters: more than one Windows command line holds
-      for (let index = 0; index < 400; index++) write(`${many}/${String(index).padStart(3, '0')}-${'n'.repeat(90)}.txt`, `needle ${index}\nplain\n`);
+      for (let index = 0; index < manyFiles; index++) write(`${many}/${String(index).padStart(4, '0')}-${'n'.repeat(90)}.txt`, `${index % 4 === 0 ? 'needle' : 'other'} ${index}\nplain\n`);
       write(`${many}/sub dir/spaced name.txt`, 'needle spaced\n');
       // a NUL in rg's first read buffer: rg's own walk skips the file, a file named on its command line is searched
       writeFileSync(join(root, many, 'binary.png'), Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n'), Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR needle\n')]));
@@ -252,14 +257,14 @@ describe('grep', () => {
       rmSync(join(root, many), { recursive: true, force: true });
     });
 
-    it('matches pi grep across several rg runs, each command line within the 32,000-unit batch budget', async () => {
+    it('matches pi grep across several rg runs, each command line within the batch budget', async () => {
       const launch = vi.spyOn(processLauncher(), 'launch');
       try {
-        const params = { pattern: 'needle', path: many, limit: 1000 };
+        const params = { pattern: 'needle', path: many, limit: manyFiles + 10 };
         const actual = await execute(createGrepTool(pi, root, resolveRg, noReadRules, noHosts), params);
-        const lengths = launch.mock.calls.map(([spec]) => [spec.file, ...spec.args].reduce((sum, arg) => sum + commandLineLength(arg) + 1, 0));
+        const lengths = launch.mock.calls.map(([spec]) => [spec.file, ...spec.args].reduce((sum, arg) => sum + commandLineCost(arg), 0));
         expect(lengths.length).toBeGreaterThan(1);
-        for (const length of lengths) expect(length).toBeLessThanOrEqual(32000);
+        for (const length of lengths) expect(length).toBeLessThanOrEqual(BATCH_COMMAND_LINE);
         launch.mockClear();
         const expected = await execute(piGrep(), params);
         expect(sortedText(actual)).toEqual(sortedText(expected));
@@ -276,6 +281,39 @@ describe('grep', () => {
       const expected = await execute(piGrep(), params);
       expect(actual.details).toEqual(expected.details);
       expect(text(actual).split('\n').filter((line) => line.includes(': needle'))).toHaveLength(5);
+    });
+
+    it('runs up to walkedRgRuns() rg at once, stops at exactly the limit and keeps each file\'s lines together', async () => {
+      const launcher = processLauncher();
+      const original = launcher.launch.bind(launcher);
+      let running = 0;
+      let most = 0;
+      const launch = vi.spyOn(launcher, 'launch').mockImplementation((spec, options) => {
+        const child = original(spec, options);
+        most = Math.max(most, ++running);
+        // each run stays live a while past its exit, so the runs overlap
+        const exited = child.exited.then(async (exit) => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          running--;
+          return exit;
+        });
+        return { ...child, exited };
+      });
+      try {
+        const params = { pattern: 'needle|other', path: many, limit: 150, context: 1 };
+        const actual = await execute(createGrepTool(pi, root, resolveRg, noReadRules, noHosts), params);
+        expect(most).toBeGreaterThan(1);
+        expect(most).toBeLessThanOrEqual(walkedRgRuns());
+        launch.mockRestore();
+        const expected = await execute(piGrep(), params);
+        expect(actual.details).toEqual(expected.details);
+        const lines = text(actual).split('\n\n')[0]!.split('\n');
+        expect(lines.filter((line) => /^[^:]+:\d+: /.test(line))).toHaveLength(150);
+        const files = lines.map((line) => /^(.+?)[-:]\d+[-:] /.exec(line)![1]);
+        expect(files.filter((file, index) => file !== files[index - 1])).toEqual([...new Set(files)]);
+      } finally {
+        launch.mockRestore();
+      }
     });
 
     it('stops the walk and rg on an abort while rg runs', async () => {
@@ -298,7 +336,8 @@ describe('grep', () => {
       }
     });
 
-    it('stops rg inside a large file once the limit is past, as pi grep does', async () => {
+    // writes 200,000 lines and runs both greps over them three times, which passes Vitest's 5 s default on a loaded machine
+    it('stops rg inside a large file once the limit is past, as pi grep does', { timeout: 30_000 }, async () => {
       const big = 'big';
       write(`${big}/lines.txt`, Array.from({ length: 200_000 }, (_, index) => `needle ${index}`).join('\n'));
       const launcher = processLauncher();
@@ -403,6 +442,29 @@ describe('grep', () => {
         } finally {
           launch.mockRestore();
         }
+      }
+    });
+
+    it('keeps the matches of a run that could not read a file, names that file, and still fails on a regex rg refuses', async () => {
+      const folder = 'vanishing';
+      write(`${folder}/a.txt`, 'needle a\n');
+      write(`${folder}/gone.txt`, 'needle gone\n');
+      write(`${folder}/z.txt`, 'needle z\n');
+      const launcher = processLauncher();
+      const original = launcher.launch.bind(launcher);
+      // the file goes between the walk's listing and rg's run
+      const launch = vi.spyOn(launcher, 'launch').mockImplementation((spec) => {
+        rmSync(join(root, folder, 'gone.txt'), { force: true });
+        return original(spec);
+      });
+      try {
+        const result = await execute(createGrepTool(pi, root, resolveRg, noReadRules, noHosts), { pattern: 'needle', path: folder });
+        expect(text(result).split('\n\n')[0]!.split('\n').sort()).toEqual(['a.txt:1: needle a', 'z.txt:1: needle z']);
+        expect(text(result)).toContain('[ripgrep could not read gone.txt]');
+        await expect(execute(createGrepTool(pi, root, resolveRg, noReadRules, noHosts), { pattern: '(', path: folder })).rejects.toThrow(/regex parse error/);
+      } finally {
+        launch.mockRestore();
+        rmSync(join(root, folder), { recursive: true, force: true });
       }
     });
 

@@ -3,9 +3,9 @@ import { ChatPanelProvider, flushCoreWrites } from "../core/chat-panel";
 import { SidebarViewProvider } from "./panels/sidebar-view-provider";
 import { restoredWorkspaceFolderKey } from "../shared/restored-folder-key";
 import { installLogSink, log, showLog } from "../core/logger";
-import { errorTextOf, l } from "../core/l10n";
 import { installPlatform } from "../core/platform-host";
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from "../core/process-launcher";
+import { createWalkHost, installWalkHost, startWalkChild, type WalkHost } from "../core/search-walk";
 import { createVsCodePlatform } from "./platform";
 import { wrapBrowserPanel, wrapChatPanel } from "./panels/webview-hosts";
 import { CompassViews } from "./compass/compass-views";
@@ -20,10 +20,14 @@ import { providerKeyStored } from "../core/pi-session/custom-providers";
 import { PROVIDER_SECRET_KEYS } from "../core/pi-session/explore-providers";
 import { runCheckpointMaintenance } from "../core/pi-session/checkpoints";
 import { isNavigableUrl } from "../core/browser/net-guard";
+import { isUuid } from "../shared/uuid";
+import { isFileUrl } from "../shared/served-file-url";
 import { connectGuardedFetchThroughHost } from "../core/pi-session/web-access/safe-fetch";
 import { registerRelocationOffer } from "./relocation-offer";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
+// the extension host's walk processes, which deactivate kills
+let walks: WalkHost | undefined;
 
 /**
  * The URL a persisted browser editor tab may be restored to.
@@ -42,6 +46,18 @@ export function restoredBrowserUrl(state: unknown): string {
   return isNavigableUrl(raw) ? raw : 'about:blank';
 }
 
+/** The token of the chat a persisted browser editor tab names, which it reopens into; undefined for anything but a well-formed token. */
+export function restoredBrowserOwner(state: unknown): string | undefined {
+  const raw = (state as { owner?: unknown } | null)?.owner;
+  return isUuid(raw) ? raw : undefined;
+}
+
+/** The file: address a persisted served page was saved at, which its chat's served files resolve again; undefined for anything else. */
+export function restoredBrowserFile(state: unknown): string | undefined {
+  const raw = (state as { file?: unknown } | null)?.file;
+  return typeof raw === 'string' && isFileUrl(raw) ? raw : undefined;
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // Before the platform, whose content providers and tab listener are part of activation's cost; it reads nothing.
   markActivationStart();
@@ -51,6 +67,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // read at each call: VS Code patches globalThis.fetch with its proxy resolution
   context.subscriptions.push({ dispose: connectGuardedFetchThroughHost((url, init) => globalThis.fetch(url, init)) });
   installProcessLauncher(createLauncherPool({ workerPath: platform.paths.workerEntry("processLauncher"), sentinelPath: platform.paths.workerEntry("sentinel") }));
+  // the @ list's, Grep's and Glob's walks, on walk processes started as walks need them
+  walks = createWalkHost(() => startWalkChild(platform.paths.workerEntry("walkChild")), (line) => log(line));
+  installWalkHost(walks);
   const outputChannel = platform.logSinks.create("Damocles");
   installLogSink(outputChannel);
   context.subscriptions.push(outputChannel);
@@ -109,7 +128,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewPanelSerializer("damocles-browser-view", {
       async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown) {
         try {
-          await chatPanelProvider?.restoreBrowserPanel(wrapBrowserPanel(panel), restoredBrowserUrl(state));
+          await chatPanelProvider?.restoreBrowserPanel(wrapBrowserPanel(panel), restoredBrowserUrl(state), restoredBrowserOwner(state), restoredBrowserFile(state));
         } catch (err) {
           log(`[Deserializer] Browser panel restoration failed: ${err}`);
         }
@@ -140,23 +159,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("damocles.pickBrowserElement", async () => {
-      const browserService = chatPanelProvider?.getBrowserService();
-      if (!browserService?.isConnected()) {
-        void platform.notifications.warn(l("Damocles: No browser session active. Open a browser first."));
-        return;
-      }
-      try {
-        const element = await browserService.pickElement();
-        const delivered = chatPanelProvider?.getPanelManager().postToActivePanel({ type: "browserElementPicked", element }) ?? false;
-        if (!delivered) {
-          void platform.notifications.warn(l("Damocles: No chat panel is open. Open one to receive picked elements."));
-        }
-      } catch (err) {
-        if (err instanceof Error && err.message.includes("cancelled")) return;
-        void platform.notifications.error(l("Damocles: Element pick failed: {0}", errorTextOf(err)));
-      }
-    })
+    vscode.commands.registerCommand("damocles.pickBrowserElement", () => chatPanelProvider?.pickBrowserElementForActiveChat())
   );
 
   context.subscriptions.push(
@@ -204,7 +207,7 @@ export async function deactivate(): Promise<void> {
   try {
     await chatPanelProvider?.dispose();
   } finally {
-    await Promise.all([runtimeDisposed, settleBy(flushCoreWrites(), deadline, 'config writes')]);
+    await Promise.all([runtimeDisposed, settleBy(flushCoreWrites(), deadline, 'config writes'), settleBy(walks?.close() ?? Promise.resolve(), deadline, 'the walk processes')]);
   }
   log("Damocles extension deactivated");
 }

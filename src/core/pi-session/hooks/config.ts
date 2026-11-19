@@ -129,7 +129,7 @@ export class HooksConfigService {
     this.fileWatchers = fileWatchers;
     this.loadAll();
     this.setupWatchers();
-    this.trustListener = trust.onDidGrantTrust(() => this.loadAll());
+    this.trustListener = trust.onDidChangeTrust(() => this.loadAll());
   }
 
   private projectTrusted(): boolean {

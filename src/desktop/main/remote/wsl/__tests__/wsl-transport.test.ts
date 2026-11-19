@@ -32,6 +32,8 @@ function fakeWsl(answer: (stdin: string, emit: (line: string) => void, exit: (co
     };
     return {
       pid: Promise.resolve(1),
+      pauseOutput: () => undefined,
+      resumeOutput: () => undefined,
       onData: (stream, listener) => {
         if (stream === 'stdout' || stream === 'stderr') listeners[stream].push(listener);
       },

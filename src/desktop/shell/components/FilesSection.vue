@@ -55,6 +55,8 @@ const props = defineProps<{
   offline?: boolean | undefined;
   // the host's name while its Damocles server cannot copy files: drops, Paste, Copy files here... and Download... are off
   transfersUnsupportedOn?: string | undefined;
+  // the shown folder is the project's own and is not there (ShellProject.presence): nothing lists until it is back
+  presence?: 'missing' | 'unavailable' | undefined;
 }>();
 const emit = defineEmits<{ toggle: []; expand: [] }>();
 const { t } = useI18n();
@@ -125,7 +127,7 @@ let pending = new Map<string, Promise<void>>();
 // report: a user action waits on the listing, so main reports a failure in the Files toast.
 function load(dir: string, report = false): Promise<void> {
   const key = props.projectKey;
-  if (key === undefined) return Promise.resolve();
+  if (key === undefined || props.presence !== undefined) return Promise.resolve();
   if (!listings.value.has(dir)) setListing(dir, { state: 'loading' });
   const requests = pending;
   const request: Promise<void> = props.api.listFiles({ projectKey: key, relativeDir: dir, ...(report ? { report } : {}) }).then((result): Promise<void> | undefined => {
@@ -178,6 +180,16 @@ function collapseAll(): void {
   scrollTo(0);
 }
 
+// Forgets every listing and lists the root again, which lists nothing while the folder is not there.
+function relist(): void {
+  listings.value = new Map();
+  pending = new Map();
+  expanded.value = new Set();
+  edit.value = null;
+  focusedPath.value = null;
+  void load('');
+}
+
 // The tree fades in afresh when it shows another folder, so a switch between a worktree and the project folder reads as one.
 watch(() => props.projectKey, (key, previous) => {
   const tree = containerProps.ref.value;
@@ -186,13 +198,10 @@ watch(() => props.projectKey, (key, previous) => {
     void tree.offsetWidth;
     tree.classList.add('d-fade-in');
   }
-  listings.value = new Map();
-  pending = new Map();
-  expanded.value = new Set();
-  edit.value = null;
-  focusedPath.value = null;
-  void load('');
+  relist();
 }, { immediate: true });
+
+watch(() => props.presence, relist);
 
 // No directories named means the exclude settings changed: every listing shown may differ.
 const stopChanges = props.api.onFilesChanged((change) => {
@@ -964,6 +973,13 @@ defineExpose({ reveal, startCreate, collapseAll });
       class="px-3 py-2 text-12 text-(--d-faint)"
     >
       {{ t('files.noProject') }}
+    </p>
+    <p
+      v-else-if="presence !== undefined"
+      data-testid="files-absent"
+      class="px-3 py-2 text-12 text-(--d-muted)"
+    >
+      {{ t(`files.absent.${presence}`) }}
     </p>
     <div
       v-else-if="rootListing?.state === 'failed'"

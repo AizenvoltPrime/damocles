@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Disposable } from '../../../platform/disposable';
+import type { TrustChange } from '../../../platform/trust-service';
 import type { Memento } from '../../../platform/key-value-state';
 import type { Platform } from '../../../platform/platform';
 import type { PanelHost } from '../../../platform/window-service';
@@ -16,10 +17,8 @@ import type { MessageQuestion } from '../message-dialog';
 export interface HostTrust {
   // the folder keys core names trusted folders by, as its own folderKey computes them
   trustedKeys(): readonly string[];
-  onDidGrant(listener: (folderPaths: readonly string[]) => void): Disposable;
-  // a key left trustedKeys() (a relocated project's old path; on a remote authority also a removed project or a stopped move's
-  // new folder); absent where nothing revokes trust
-  onDidRevoke?(listener: () => void): Disposable;
+  // revoked: folders whose key left trustedKeys(), on a remote authority also a removed project or a stopped move's new folder
+  onDidChange(listener: (change: TrustChange) => void): Disposable;
   requestTrust(folderPath: string): Promise<boolean>;
 }
 
@@ -350,7 +349,9 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('shell.revealPath', ({ path }) => shell.revealPath(path));
     endpoint.serve('editor.openFile', ({ path, options }) => editor.openFile(path, options));
     endpoint.serve('editor.openUntitled', ({ content, language, panelId }) => editor.openUntitled(content, language, panelId !== undefined ? { panelId } : undefined));
-    endpoint.serve('editor.readText', ({ path }) => editor.readText(path));
+    // an older core falls back on its own read when this refuses; it goes when PROTOCOL_PRE_RELEASE ends
+    endpoint.serve('editor.readText', () => Promise.reject(new Error('This app no longer reads the editor text for a core')));
+    endpoint.serve('editor.isDirty', ({ path }) => editor.isDirty(path));
     endpoint.serve('editor.showDiff', async ({ titleTemplate, ...request }) => {
       const view = await editor.showDiff({ ...request, title: (fileName) => withFileName(titleTemplate, fileName) });
       const viewId = randomUUID();
@@ -472,8 +473,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     }),
     platform.secrets.onDidChange((key) => endpoint.emit('secrets.changed', { key })),
     state.onDidUpdate((scope, key) => endpoint.publish('state', { scope, key, value: state[scope].get(key) })),
-    trust.onDidGrant((granted) => endpoint.publish('trust', { keys: [...trust.trustedKeys()], granted })),
-    ...(trust.onDidRevoke ? [trust.onDidRevoke(() => endpoint.publish('trust', { keys: [...trust.trustedKeys()], granted: [] }))] : []),
+    trust.onDidChange(({ granted, revoked }) => endpoint.publish('trust', { keys: [...trust.trustedKeys()], granted, revoked })),
     platform.workspaceFolders.onDidChange(() => endpoint.publish('folders', { folders: platform.workspaceFolders.folders() })),
     platform.editor.onDidChangeActiveContext((context) => endpoint.publish('editor', editorPatch(context))),
     deps.language.onDidChange(() => endpoint.publish('language', { language: deps.language.current() })),

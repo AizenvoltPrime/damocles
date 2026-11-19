@@ -1061,7 +1061,7 @@ export class ScmHost {
     const active = this.activeResource();
     const settings = this.settings();
     return {
-      available: view !== undefined && view.state !== 'untrusted' && view.state !== 'gitMissing',
+      available: view !== undefined && view.state !== 'untrusted' && view.state !== 'gitMissing' && view.state !== 'absent',
       openRepositoryCount: view?.repos.length ?? 0,
       closedRepositoryCount: view?.closedCount ?? 0,
       operation: selected ? (this.snapshot(selected)?.operation ?? null) : null,
@@ -2352,6 +2352,7 @@ export class ScmHost {
     return {
       projectKey,
       state: view.state,
+      ...(view.presence !== undefined ? { presence: view.presence } : {}),
       repos: view.repos.map((repo) => ({
         repoId: repo.repoId,
         label: path.basename(repo.root),

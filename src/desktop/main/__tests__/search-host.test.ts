@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { noSessionFiles, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
+import { ALL_IGNORE_FILES } from '../../../core/search-walk';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { SearchCommandMessage, SearchDone, SearchEditorHighlights, SearchFocus, SearchResultsBatch } from '../../preload/shell-channels';
@@ -118,7 +119,7 @@ beforeEach(() => {
     projects: () => [project, other],
     selectedFolder: () => ({ projectKey: project.key, fsPath: projectDir }),
     workspaces: testWorkspaces({ watchers: platform.fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
-    ignoreArgs: () => [],
+    ignore: () => ALL_IGNORE_FILES,
     excludeSettings: () => [],
     ask: async () => 0,
     t,

@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BrowserService } from '../index';
+import { BrowserService, type BrowserChatOwners } from '../index';
 import { launchBrowserContext } from '../launcher';
+import { PAGE_GUARD_PATTERNS } from '../page-network-guard';
 import { installFakePlatform, type FakePanelHost, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { PanelHost } from '../../../platform/window-service';
 import * as logger from '../../logger';
@@ -81,6 +82,47 @@ function answerNavigations(svc: BrowserService, answer: (url: string, page: Fake
 
 const loaded = (): NavigateAnswer => ({ frameId: 'f', loaderId: 'l' });
 
+interface GuardedSession {
+  // fires Fetch.requestPaused on the page's guard
+  pause(event: unknown): void;
+  readonly sends: Array<readonly [string, unknown]>;
+}
+
+/** Gives each page a CDP session that records its sends, in `order` too, and lets the test fire its paused requests. */
+function guardedSessions(svc: BrowserService, order: string[] = []): Map<FakePage, GuardedSession> {
+  const sessions = new Map<FakePage, GuardedSession>();
+  (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async (page: FakePage) => {
+    let paused: ((event: unknown) => void) | undefined;
+    const sends: Array<readonly [string, unknown]> = [];
+    sessions.set(page, { pause: (event) => paused!(event), sends });
+    return {
+      on: (event: string, handler: (event: unknown) => void) => { if (event === 'Fetch.requestPaused') paused = handler; },
+      send: vi.fn(async (method: string, params?: unknown) => {
+        order.push(method);
+        sends.push([method, params]);
+        return method === 'Page.navigate' ? loaded() : { currentIndex: 0, entries: [{}] };
+      }),
+      detach: vi.fn(async () => {}),
+    };
+  };
+  return sessions;
+}
+
+/** The answers the page's guard sends to one paused request for `url`. */
+function guardAnswers(session: GuardedSession, url: string): string[] {
+  const before = session.sends.length;
+  session.pause({ requestId: 'r', request: { url } });
+  return session.sends.slice(before).map(([method]) => method);
+}
+
+const GRANT_A = `http://${'a'.repeat(32)}.localhost:5000`;
+const GRANT_B = `http://${'b'.repeat(32)}.localhost:5001`;
+
+/** A chat's served pages holding `owned` only. */
+function servedPages(owned: string) {
+  return { toFile: (url: string) => url, restoreTarget: async () => ({ refused: 'not here' }), ownsOrigin: (origin: string) => origin === owned };
+}
+
 /** A launched context as launchBrowserContext resolves it, whose browser reports `userAgent`. */
 function launchedContext(initial: FakePage, opts: { userAgent?: string; send?: (method: string, params?: Record<string, unknown>) => unknown } = {}) {
   const getVersion = vi.fn(async () => ({ userAgent: opts.userAgent ?? 'Mozilla/5.0 Chrome/155.0.0.0' }));
@@ -128,7 +170,6 @@ type Priv = {
   context: unknown;
   state: string;
   pages: Map<FakePage, Entry>;
-  launchOwnerScopeId: string | null;
   scopes: Map<string, unknown>;
   userAgentCheck: Promise<unknown> | null;
   registerPage(page: FakePage, owner?: string, opener?: Entry): Promise<Entry | null>;
@@ -175,24 +216,51 @@ function hostOf(entry: Entry): FakePanelHost {
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+const TOKEN_A = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+const TOKEN_B = '0b3e7a91-52c4-4d8e-a1f6-9c2d4e6f8a0b';
+
+/** The panel manager's chats as BrowserService reads them: each chat readied with its token. */
+function owners(chats: Map<string, PanelHost>): BrowserChatOwners {
+  return {
+    tokenOf: (chat) => [...chats].find(([, known]) => known === chat)?.[0],
+    readiedChat: (token) => chats.get(token),
+    onDidChange: () => ({ dispose: () => {} }),
+  };
+}
+
 beforeEach(() => {
   created = [];
 });
 
-describe('VS Code: one primary scope shared by every chat', () => {
+describe('VS Code: a browser scope per chat, pages with their own toolbar', () => {
   beforeEach(() => install(false));
 
-  it('gives every chat the primary scope and opens its pages with the in-page toolbar', async () => {
+  it('gives each chat its own scope and opens its pages with the in-page toolbar', async () => {
     const svc = service();
     const [a, b] = [chatHost(), chatHost()];
-    expect(svc.chatScope(a).id).toBe(BrowserService.PRIMARY_SCOPE_ID);
-    expect(svc.chatScope(b).id).toBe(BrowserService.PRIMARY_SCOPE_ID);
+    expect(svc.chatScope(a).id).not.toBe(svc.chatScope(b).id);
     await svc.chatScope(a).open('https://a.example/');
-    const [entry] = entries(svc);
-    expect(entry?.ownerScopeId).toBe(BrowserService.PRIMARY_SCOPE_ID);
-    expect(hostOf(entry!).options.owner).toBeUndefined();
-    expect(hostOf(entry!).html).toContain('<div id="toolbar">');
-    expect(svc.chatScope(b).listTabs()).toHaveLength(1);
+    await svc.chatScope(b).open('https://b.example/');
+    const [pageA, pageB] = entries(svc);
+    expect(pageA?.ownerScopeId).toBe(svc.chatScope(a).id);
+    expect(pageA?.chat).toBe(a);
+    expect(pageB?.chat).toBe(b);
+    expect(hostOf(pageA!).html).toContain('<div id="toolbar">');
+    expect(svc.chatScope(a).listTabs().map((tab) => tab.url)).toEqual(['https://a.example/']);
+    expect(svc.chatScope(b).listTabs().map((tab) => tab.url)).toEqual(['https://b.example/']);
+  });
+
+  it('answers BrowserTabs and BrowserSnapshot from the calling chat\'s own pages only', async () => {
+    const svc = service();
+    const [a, b] = [chatHost(), chatHost()];
+    await svc.chatScope(a).open('https://a.example/');
+    type Tool = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ text?: string }>; isError?: boolean }> };
+    const toolsOf = (chat: FakePanelHost): Tool[] => buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope: svc.chatScope(chat) } as never) as unknown as Tool[];
+    const run = async (chat: FakePanelHost, name: string, input: unknown = {}) => (await toolsOf(chat).find((tool) => tool.name === name)!.execute('t', input)).content[0]?.text;
+
+    expect(await run(a, 'BrowserTabs', { action: 'list' })).toContain('https://a.example/');
+    expect(await run(b, 'BrowserTabs', { action: 'list' })).toBe('No open tabs.');
+    expect(await run(b, 'BrowserSnapshot')).toContain('Browser is not connected. Use BrowserOpen first.');
   });
 
   it('shows the watched page at its address on the header open, instead of navigating it to a blank page', async () => {
@@ -206,22 +274,77 @@ describe('VS Code: one primary scope shared by every chat', () => {
     expect(host.reveals.length).toBe(reveals + 1);
   });
 
-  it('leaves the pages open when a chat closes', async () => {
+  it('closes only the closing chat\'s pages, its kept subagent pages included', async () => {
     const svc = service();
-    const a = chatHost();
-    svc.chatScope(a);
+    const [a, b] = [chatHost(), chatHost()];
     await svc.chatScope(a).open('https://a.example/');
+    await svc.createAgentScope('agent-4', a).open('https://sub.example/');
+    svc.disposeScope('agent-4', false);
+    await svc.chatScope(b).open('https://b.example/');
+    const [pageA, subA, pageB] = created;
     a.close();
-    expect(created[0]?.close).not.toHaveBeenCalled();
+    await settle();
+    expect(pageA?.close).toHaveBeenCalled();
+    expect(subA?.close).toHaveBeenCalled();
+    expect(pageB?.close).not.toHaveBeenCalled();
+    expect(entries(svc).map((entry) => entry.chat)).toEqual([b]);
   });
 
-  it('attributes an unknown-opener page to the launch owner, then the primary scope', async () => {
+  it('closes a page no open chat owns instead of giving it to the chat that launched the browser', async () => {
     const svc = service();
-    const entry = await priv(svc).registerPage(fakePage());
-    expect(entry?.ownerScopeId).toBe(BrowserService.PRIMARY_SCOPE_ID);
+    await svc.chatScope(chatHost()).open('https://a.example/');
+    const orphan = fakePage();
+    expect(await priv(svc).registerPage(orphan)).toBeNull();
+    expect(orphan.close).toHaveBeenCalled();
+    expect(entries(svc)).toHaveLength(1);
   });
 
-  it('broadcasts a toolbar pick without a chat, so the active chat receives it', async () => {
+  it('picks on the requesting chat\'s page, never the page another chat shows', async () => {
+    const svc = service();
+    const [a, b] = [chatHost(), chatHost()];
+    await svc.chatScope(a).open('https://a.example/');
+    await svc.chatScope(b).open('https://b.example/');
+    const [pageA, pageB] = entries(svc);
+    const attachment = { selector: 's', tagName: 'div', boundingBox: { x: 0, y: 0, width: 1, height: 1 }, computedStyles: {} };
+    const pickA = vi.spyOn((pageA as unknown as { picker: { startPicking: () => Promise<unknown> } }).picker, 'startPicking').mockResolvedValue(attachment);
+    const pickB = vi.spyOn((pageB as unknown as { picker: { startPicking: () => Promise<unknown> } }).picker, 'startPicking').mockResolvedValue(attachment);
+    (svc as unknown as { setActivePage: (page: unknown) => void }).setActivePage(pageB!.page);
+    await svc.pickElement(a);
+    expect(pickA).toHaveBeenCalledTimes(1);
+    expect(pickB).not.toHaveBeenCalled();
+  });
+
+  it('shows the requesting chat\'s page before arming its pick, and a cancel stops that pick, not the page shown since', async () => {
+    const svc = service();
+    const [a, b] = [chatHost(), chatHost()];
+    await svc.chatScope(a).open('https://a.example/');
+    await svc.chatScope(b).open('https://b.example/');
+    const [pageA, pageB] = entries(svc);
+    const setActivePage = (page: unknown): void => (svc as unknown as { setActivePage: (page: unknown) => void }).setActivePage(page);
+    setActivePage(pageB!.page);
+    const pickerOf = (entry: Entry) => (entry as unknown as { picker: { startPicking: () => Promise<unknown>; stopPicking: () => Promise<void> } }).picker;
+    const armed: Entry[] = [];
+    vi.spyOn(pickerOf(pageA!), 'startPicking').mockImplementation(() => {
+      armed.push(pageA!);
+      return new Promise(() => {});
+    });
+    const stopA = vi.spyOn(pickerOf(pageA!), 'stopPicking').mockResolvedValue();
+    const stopB = vi.spyOn(pickerOf(pageB!), 'stopPicking').mockResolvedValue();
+    const revealsA = hostOf(pageA!).reveals.length;
+
+    void svc.pickElement(a);
+
+    expect(armed).toEqual([pageA]);
+    expect(hostOf(pageA!).reveals.length).toBe(revealsA + 1);
+    expect(svc.getActivePage()).toBe(pageA!.page);
+    // the user looks at chat B's page again before cancelling
+    setActivePage(pageB!.page);
+    await svc.cancelPicking();
+    expect(stopA).toHaveBeenCalledTimes(1);
+    expect(stopB).not.toHaveBeenCalled();
+  });
+
+  it('posts a toolbar pick to the page\'s chat', async () => {
     const svc = service();
     const picked = vi.fn();
     svc.onElementPickedFromToolbar(picked);
@@ -235,7 +358,17 @@ describe('VS Code: one primary scope shared by every chat', () => {
     vi.spyOn(picker, 'startPicking').mockResolvedValue(attachment);
     hostOf(entry!).fireMessage({ type: 'pickElement' });
     await settle();
-    expect(picked).toHaveBeenCalledWith(attachment, undefined);
+    expect(picked).toHaveBeenCalledWith(attachment, a);
+  });
+
+  it('records the page\'s chat token in the state the page keeps, for a window reload to restore it into', async () => {
+    const svc = service();
+    const [a, b] = [chatHost(), chatHost()];
+    svc.setChatOwners(owners(new Map([[TOKEN_A, a], [TOKEN_B, b]])));
+    await svc.chatScope(a).open('https://a.example/');
+    const [entry] = entries(svc);
+    entry!.page.commit('https://a.example/next');
+    expect(hostOf(entry!).posted.filter((m) => (m as { type: string }).type === 'urlChanged').at(-1)).toEqual({ type: 'urlChanged', url: 'https://a.example/next', notSecure: false, owner: TOKEN_A });
   });
 });
 
@@ -248,7 +381,6 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     const scopeA = svc.chatScope(a);
     const scopeB = svc.chatScope(b);
     expect(scopeA.id).not.toBe(scopeB.id);
-    expect(scopeA.id).not.toBe(BrowserService.PRIMARY_SCOPE_ID);
     expect(svc.chatScope(a).id).toBe(scopeA.id);
 
     await scopeA.open('https://a.example/');
@@ -260,6 +392,17 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     expect(hostOf(pageA!).html).toContain('id="screen"');
     expect(scopeA.listTabs().map((tab) => tab.url)).toEqual(['https://a.example/']);
     expect(scopeB.listTabs().map((tab) => tab.url)).toEqual(['https://b.example/']);
+  });
+
+  it('posts no chat token or file: address to a page, which main restores from its own record', async () => {
+    const svc = service();
+    const a = chatHost();
+    svc.setChatOwners(owners(new Map([[TOKEN_A, a]])));
+    svc.bindServedPages(a, { ...servedPages(GRANT_A), toFile: () => 'file:///home/u/proj/a.html' });
+    await svc.chatScope(a).open(`${GRANT_A}/a.html`);
+    const [entry] = entries(svc);
+    entry!.page.commit(`${GRANT_A}/b.html`);
+    expect(hostOf(entry!).posted.filter((m) => (m as { type: string }).type === 'urlChanged').at(-1)).toEqual({ type: 'urlChanged', url: `${GRANT_A}/b.html`, notSecure: false });
   });
 
   it('gives a subagent scope\'s pages to the chat whose session created the scope', async () => {
@@ -279,9 +422,9 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     const svc = service();
     const [a, b] = [chatHost(), chatHost()];
     const scopeA = svc.chatScope(a);
-    priv(svc).launchOwnerScopeId = svc.chatScope(b).id;
+    await svc.chatScope(b).open('https://b.example/');
     await scopeA.open('https://a.example/');
-    const opener = entries(svc)[0]!;
+    const opener = entries(svc)[1]!;
     const popup = await priv(svc).registerPage(fakePage(opener.page));
     expect(popup?.chat).toBe(a);
     expect(popup?.ownerScopeId).toBe(scopeA.id);
@@ -576,9 +719,13 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
 });
 
 describe('an agent navigation reports what Chromium did with it', () => {
-  beforeEach(() => install(false));
+  let chat: FakePanelHost;
+  beforeEach(() => {
+    install(false);
+    chat = chatHost();
+  });
 
-  const scopeOf = (svc: BrowserService) => svc.chatScope(undefined);
+  const scopeOf = (svc: BrowserService) => svc.chatScope(chat);
 
   it('carries the main frame\'s final navigation response status, ignoring subframes, other requests and redirect hops', async () => {
     const svc = service();
@@ -622,6 +769,112 @@ describe('an agent navigation reports what Chromium did with it', () => {
     const result = await tools.find((tool) => tool.name === 'BrowserOpen')!.execute('t', { url: 'https://files.example/report.pdf?token=secret' });
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toBe('Error: https://files.example started a download instead of loading a page; BrowserDownloads lists it');
+    logSpy.mockRestore();
+  });
+
+  it('names the scheme of a redirect the navigation guard refused in this navigation, and only in it', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    let pausedLoader = 'l';
+    (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async () => {
+      let paused: ((event: unknown) => void) | undefined;
+      return {
+        on: (event: string, handler: (event: unknown) => void) => { if (event === 'Fetch.requestPaused') paused = handler; },
+        send: vi.fn(async (method: string) => {
+          if (method !== 'Page.navigate') return { currentIndex: 0, entries: [{}] };
+          paused!({ requestId: 'r', networkId: pausedLoader, request: { url: 'https://a.example/go?token=secret' }, responseStatusCode: 302, responseHeaders: [{ name: 'Location', value: 'mailto:someone@example.com' }] });
+          return { ...loaded(), errorText: 'net::ERR_BLOCKED_BY_CLIENT' };
+        }),
+        detach: vi.fn(async () => {}),
+      };
+    };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope: scopeOf(svc) } as never) as unknown as Array<{ name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ text?: string }>; isError?: boolean }> }>;
+    const navigate = (url: string) => tools.find((tool) => tool.name === 'BrowserNavigate')!.execute('t', { url });
+    const refused = await navigate('https://a.example/go?token=secret');
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]?.text).toBe('Error: https://a.example redirected to a mailto: address; the browser opens only http and https URLs and about:blank, at every redirect.');
+    // a refusal recorded for another navigation leaves Chromium's own error
+    pausedLoader = 'another';
+    expect((await navigate('https://a.example/go')).content[0]?.text).toBe('Error: Navigation to https://a.example failed: net::ERR_BLOCKED_BY_CLIENT');
+    logSpy.mockRestore();
+  });
+
+  it.each(['Network.enable', 'Network.setBypassServiceWorker', 'Fetch.enable'])('closes a page whose navigation guard did not install (%s refused) instead of showing it', async (refused) => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async () => ({
+      on: () => {},
+      send: vi.fn(async (method: string) => {
+        if (method === refused) throw new Error('Target closed');
+        return {};
+      }),
+      detach: vi.fn(async () => {}),
+    });
+    const page = fakePage();
+    expect(await priv(svc).registerPage(page, scopeOf(svc).id)).toBeNull();
+    expect(page.close).toHaveBeenCalled();
+    expect(priv(svc).pages.size).toBe(0);
+    expect(logLines(logSpy).join('\n')).toContain('Navigation guard did not install — Target closed');
+    logSpy.mockRestore();
+  });
+
+  it('names the origin of the hop that sent a refused redirect, not the first one in the chain', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async () => {
+      let paused: ((event: unknown) => void) | undefined;
+      return {
+        on: (event: string, handler: (event: unknown) => void) => { if (event === 'Fetch.requestPaused') paused = handler; },
+        send: vi.fn(async (method: string) => {
+          if (method !== 'Page.navigate') return { currentIndex: 0, entries: [{}] };
+          // https://a.example/go redirected to https://b.example/next, which redirects to the refused scheme
+          paused!({ requestId: 'r1', networkId: 'l', request: { url: 'https://a.example/go' }, responseStatusCode: 302, responseHeaders: [{ name: 'Location', value: 'https://b.example/next?token=secret' }] });
+          paused!({ requestId: 'r2', networkId: 'l', request: { url: 'https://b.example/next?token=secret' }, responseStatusCode: 302, responseHeaders: [{ name: 'Location', value: 'mailto:someone@example.com' }] });
+          return { ...loaded(), errorText: 'net::ERR_BLOCKED_BY_CLIENT' };
+        }),
+        detach: vi.fn(async () => {}),
+      };
+    };
+    await expect(scopeOf(svc).open('https://a.example/go')).rejects.toThrow(
+      /^https:\/\/b\.example redirected to a mailto: address; the browser opens only http and https URLs and about:blank, at every redirect\.$/,
+    );
+    logSpy.mockRestore();
+  });
+
+  it("gives the reason when the navigation guard refused another chat's served page in this navigation", async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    svc.bindServedPages(chat, servedPages(GRANT_A));
+    (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async () => {
+      let paused: ((event: unknown) => void) | undefined;
+      return {
+        on: (event: string, handler: (event: unknown) => void) => { if (event === 'Fetch.requestPaused') paused = handler; },
+        send: vi.fn(async (method: string, params?: { url?: string }) => {
+          if (method !== 'Page.navigate') return { currentIndex: 0, entries: [{}] };
+          paused!({ requestId: 'r', networkId: 'l', request: { url: params!.url! } });
+          return params!.url!.startsWith(GRANT_B) ? { ...loaded(), errorText: 'net::ERR_BLOCKED_BY_CLIENT' } : loaded();
+        }),
+        detach: vi.fn(async () => {}),
+      };
+    };
+    await scopeOf(svc).open(`${GRANT_A}/index.html`);
+    await expect(scopeOf(svc).open(`${GRANT_B}/index.html?t=token`)).rejects.toThrow(
+      /^Navigation to a served page on port 5001 failed: that served page belongs to another chat \(net::ERR_BLOCKED_BY_CLIENT\)\.$/,
+    );
+    logSpy.mockRestore();
+  });
+
+  it('closes a page whose CDP session does not start instead of leaving it open with no guard', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async () => {
+      throw new Error('Target closed');
+    };
+    const page = fakePage();
+    expect(await priv(svc).registerPage(page, scopeOf(svc).id)).toBeNull();
+    expect(page.close).toHaveBeenCalled();
+    expect(priv(svc).pages.size).toBe(0);
+    expect(logLines(logSpy).join('\n')).toContain('newCDPSession failed — Target closed');
     logSpy.mockRestore();
   });
 
@@ -682,7 +935,7 @@ describe('an agent navigation reports what Chromium did with it', () => {
     const svc = service();
     let release!: (userAgent: string | null) => void;
     priv(svc).userAgentCheck = new Promise((resolve) => { release = resolve; });
-    const registration = priv(svc).registerPage(fakePage(), BrowserService.PRIMARY_SCOPE_ID);
+    const registration = priv(svc).registerPage(fakePage(), scopeOf(svc).id);
     await settle();
     await svc.close();
     release(null);
@@ -703,7 +956,6 @@ describe('an agent navigation reports what Chromium did with it', () => {
       },
     });
     vi.mocked(launchBrowserContext).mockResolvedValueOnce(context as never);
-    const chat = chatHost();
     const createPanel = platform.window.createPanel;
     platform.window.createPanel = (opts) => {
       order.push('presented');
@@ -718,29 +970,103 @@ describe('an agent navigation reports what Chromium did with it', () => {
     await svc.dispose();
   });
 
-  it.each([
-    ['an agent\'s first open', (svc: BrowserService) => svc.chatScope(undefined).open('about:blank')],
-    ['a restored blank tab', (svc: BrowserService) => svc.restorePanel(platform.window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }), 'about:blank')],
-  ] as const)('sends no Page.navigate to about:blank for %s with no browser running', async (_label, open) => {
-    install(false, true);
+  it('bypasses service workers on the page\'s own session and starts its guard before the page is presented', async () => {
     const svc = unlaunchedService();
+    const order: string[] = [];
+    const { context } = launchedContext(fakePage(), {
+      send: (method, params) => {
+        if (method.startsWith('Network.') || method.startsWith('Fetch.')) order.push(`${method} ${JSON.stringify(params)}`);
+        return undefined;
+      },
+    });
+    vi.mocked(launchBrowserContext).mockResolvedValueOnce(context as never);
+    const createPanel = platform.window.createPanel;
+    platform.window.createPanel = (opts) => {
+      order.push('presented');
+      return createPanel(opts);
+    };
+    const opened = svc.showForChat(chat);
+    await vi.waitFor(() => expect(order).toContain('presented'), { timeout: 1000 });
+    await opened;
+    expect(order).toEqual([
+      'Network.enable {"maxTotalBufferSize":0,"maxResourceBufferSize":0}',
+      'Network.setBypassServiceWorker {"bypass":true}',
+      `Fetch.enable ${JSON.stringify({ patterns: PAGE_GUARD_PATTERNS })}`,
+      'presented',
+    ]);
+    await svc.dispose();
+  });
+
+  it.each([
+    ['an agent\'s first open', (svc: BrowserService) => scopeOf(svc).open('about:blank')],
+    ['a restored blank tab', (svc: BrowserService) => svc.restorePanel(platform.window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }), 'about:blank', TOKEN_A)],
+  ] as const)('sends no Page.navigate to about:blank for %s with no browser running', async (_label, open) => {
+    const svc = unlaunchedService();
+    svc.setChatOwners(owners(new Map([[TOKEN_A, chat]])));
     const navigate = vi.fn(() => loaded());
     vi.mocked(launchBrowserContext).mockResolvedValueOnce(launchedContext(fakePage(), { send: (method) => (method === 'Page.navigate' ? navigate() : undefined) }).context as never);
     await open(svc);
-    expect(svc.chatScope(undefined).listTabs()).toHaveLength(1);
+    expect(scopeOf(svc).listTabs()).toHaveLength(1);
     expect(navigate).not.toHaveBeenCalled();
     await svc.dispose();
   });
 
+  it.each([
+    ['two pages', 'https://a.example/', 'https://b.example/'],
+    ['a blank page and another', 'about:blank', 'https://b.example/'],
+  ] as const)('restores both of %s one chat\'s tabs restore at once while the browser launches', async (_label, first, second) => {
+    const svc = unlaunchedService();
+    svc.setChatOwners(owners(new Map([[TOKEN_A, chat]])));
+    const navigated: string[] = [];
+    vi.mocked(launchBrowserContext).mockResolvedValueOnce(launchedContext(fakePage(), {
+      send: (method, params) => {
+        if (method !== 'Page.navigate') return undefined;
+        navigated.push(String(params?.['url']));
+        return loaded();
+      },
+    }).context as never);
+    const tab = (): FakePanelHost => platform.window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }) as FakePanelHost;
+
+    await Promise.all([svc.restorePanel(tab(), first, TOKEN_A), svc.restorePanel(tab(), second, TOKEN_A)]);
+
+    expect(scopeOf(svc).listTabs().map((t) => t.url)).toEqual([first, second]);
+    expect(navigated).toEqual([first, second].filter((url) => url !== 'about:blank'));
+    await svc.dispose();
+  });
+
+  it('opens one chat\'s restored tabs in the order their restores were asked, and shows the last one asked', async () => {
+    const svc = service();
+    svc.setChatOwners(owners(new Map([[TOKEN_A, chat]])));
+    // Chromium answers the first new page after the second
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let opened = 0;
+    (priv(svc).context as { newPage: unknown }).newPage = async () => {
+      if (opened++ === 0) await firstHeld;
+      const page = fakePage();
+      created.push(page);
+      return page;
+    };
+    const tab = (): FakePanelHost => platform.window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }) as FakePanelHost;
+
+    const restores = Promise.all([svc.restorePanel(tab(), 'https://a.example/', TOKEN_A), svc.restorePanel(tab(), 'https://b.example/', TOKEN_A)]);
+    await settle();
+    releaseFirst();
+    await restores;
+
+    expect(scopeOf(svc).listTabs().map((t) => t.url)).toEqual(['https://a.example/', 'https://b.example/']);
+    expect(svc.getActivePage()).toBe(created.at(-1));
+  });
+
   it('logs a restored tab whose load failed once, and not as a failed restore', async () => {
-    install(false, true);
     const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
     const svc = unlaunchedService();
+    svc.setChatOwners(owners(new Map([[TOKEN_A, chat]])));
     vi.mocked(launchBrowserContext).mockResolvedValueOnce(launchedContext(fakePage(), {
       send: (method) => (method === 'Page.navigate' ? { ...loaded(), errorText: 'net::ERR_CONNECTION_REFUSED' } : undefined),
     }).context as never);
-    await svc.restorePanel(platform.window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }), 'https://down.example/a?token=secret');
-    expect(svc.chatScope(undefined).listTabs()).toHaveLength(1);
+    await svc.restorePanel(platform.window.createPanel({ kind: 'browser', title: 'old', localResourceRoots: [] }), 'https://down.example/a?token=secret', TOKEN_A);
+    expect(scopeOf(svc).listTabs()).toHaveLength(1);
     expect(logLines(logSpy).filter((line) => line.includes('down.example') || line.includes('restore'))).toEqual([
       '[Browser] A restored page did not load: Navigation to https://down.example failed: net::ERR_CONNECTION_REFUSED',
     ]);
@@ -755,5 +1081,71 @@ describe('an agent navigation reports what Chromium did with it', () => {
     await scopeOf(svc).openNewTab('about:blank');
     expect(scopeOf(svc).listTabs()).toHaveLength(2);
     expect(navigated).toEqual(['https://a.example/']);
+  });
+});
+
+describe("each page's network guard answers from its own chat's served pages", () => {
+  beforeEach(() => install(true));
+
+  it("continues a request to its chat's own grant host and fails one to another chat's, for chat, subagent and popup pages", async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    const sessions = guardedSessions(svc);
+    const [a, b] = [chatHost(), chatHost()];
+    svc.bindServedPages(a, servedPages(GRANT_A));
+    svc.bindServedPages(b, servedPages(GRANT_B));
+    await svc.chatScope(a).open('https://a.example/');
+    await svc.chatScope(b).open('https://b.example/');
+    await svc.createAgentScope('agent-b', b).open('https://sub.example/');
+    const [pageA, pageB, subB] = created;
+    // popups registered with no owner, each resolved through its opener
+    const popupA = fakePage(pageA!);
+    const popupSubB = fakePage(subB!);
+    expect((await priv(svc).registerPage(popupA))?.chat).toBe(a);
+    expect((await priv(svc).registerPage(popupSubB))?.chat).toBe(b);
+
+    for (const [page, own, other] of [[pageA!, GRANT_A, GRANT_B], [popupA, GRANT_A, GRANT_B], [pageB!, GRANT_B, GRANT_A], [subB!, GRANT_B, GRANT_A], [popupSubB, GRANT_B, GRANT_A]] as const) {
+      const session = sessions.get(page)!;
+      expect(guardAnswers(session, `${own}/index.html`)).toEqual(['Fetch.continueRequest']);
+      expect(guardAnswers(session, `${other}/index.html`)).toEqual(['Fetch.failRequest']);
+      expect(guardAnswers(session, 'http://app.localhost:5173/')).toEqual(['Fetch.continueRequest']);
+    }
+    logSpy.mockRestore();
+  });
+
+  it('starts the guard before it resolves the owner or reads the user agent, and a grant request paused before the owner resolves fails', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const svc = service();
+    const order: string[] = [];
+    const sessions = guardedSessions(svc, order);
+    const a = chatHost();
+    svc.bindServedPages(a, servedPages(GRANT_A));
+    await svc.chatScope(a).open(`${GRANT_A}/index.html`);
+    const [opener] = created;
+    let resolveOpener!: (page: FakePage) => void;
+    const popup = Object.assign(fakePage(), {
+      opener: () => {
+        order.push('opener');
+        return new Promise<FakePage>((resolve) => { resolveOpener = resolve; });
+      },
+    });
+    priv(svc).userAgentCheck = {
+      then: (resolve: (userAgent: string) => void) => {
+        order.push('user agent');
+        resolve('Mozilla/5.0 Chrome/155.0.0.0');
+      },
+    } as never;
+    order.length = 0;
+
+    const registration = priv(svc).registerPage(popup);
+    await settle();
+    expect(order).toEqual(['Network.enable', 'Network.setBypassServiceWorker', 'Fetch.enable', 'opener']);
+    // no chat yet, so the popup holds no grant host
+    expect(guardAnswers(sessions.get(popup)!, `${GRANT_A}/app.js`)).toEqual(['Fetch.failRequest']);
+    resolveOpener(opener!);
+    expect((await registration)?.chat).toBe(a);
+    expect(order.slice(4, 7)).toEqual(['Fetch.failRequest', 'user agent', 'Emulation.setUserAgentOverride']);
+    expect(guardAnswers(sessions.get(popup)!, `${GRANT_A}/app.js`)).toEqual(['Fetch.continueRequest']);
+    logSpy.mockRestore();
   });
 });

@@ -70,9 +70,8 @@ export interface AppSettingsForgeTarget {
 }
 
 export interface WindowService {
-  // Each chat panel owns its browser pages, which the host shows with navigation chrome of its own (desktop: editor tabs of
-  // the chat), so every chat gets its own browser scope and a page omits its own toolbar. False: one browser scope shared by
-  // every chat.
+  // The host draws each browser page's navigation chrome itself (desktop: the chat's editor tabs), so a page omits its own
+  // toolbar and core posts its navigationState. Page ownership and per-chat browser scopes do not depend on it.
   readonly chatBrowserPane: boolean;
   createPanel(opts: PanelOptions): PanelHost;
   // Opens in a column holding only panels of this kind, else in an unused column the host then reserves for them (VS Code: lockEditorGroup).

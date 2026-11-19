@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, onTestFinished, type Mock } from 'vitest';
+import { execFileSync } from 'child_process';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -7,6 +8,7 @@ import { pathToFileURL } from 'url';
 import { runPermissionGate, gateErrorFallback, callFactsOf, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
 import { buildNestedMcpToolset } from '../tools/mcp-tools';
 import { browserUploadPath } from '../tools/browser-tools';
+import { createWriteTool } from '../tools/write-tool';
 
 // The QueryDosDeviceW answer for a drive a test maps, by name (`Q:`); a thrown Error for a failing call; any other asks Windows.
 const dosDevices = vi.hoisted(() => new Map<string, string | Error>());
@@ -28,6 +30,7 @@ import { designFolderOf } from '../../design/design-paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
 import { PermissionHandler, type CanUseToolContext, type PermissionResult } from '../../permission-handler';
 import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
+import { DiffManager } from '../../permission-handler/diff-manager';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { englishText } from '../../../shared/localized-text';
@@ -1124,6 +1127,9 @@ describe('runPermissionGate — checkpoint baseline wait', () => {
     await runPermissionGate(ev('write', 'o1', { path: path.resolve('/elsewhere/notes.txt'), content: 'x' }), panel, undefined);
     await runPermissionGate(ev('edit', 'o2', { file_path: '../sibling/a.ts', old_string: 'a', new_string: 'b' }), panel, undefined);
     await runPermissionGate(ev('write', 'o3', { path: `${FOLDER}-other${path.sep}a.ts`, content: 'x' }), panel, undefined);
+    // pi strips a leading @ and reads a file: URL, so these name files outside the folder
+    await runPermissionGate(ev('edit', 'o4', { file_path: '@../sibling/a.ts', old_string: 'a', new_string: 'b' }), panel, undefined);
+    await runPermissionGate(ev('edit', 'o5', { file_path: pathToFileURL(path.resolve('/elsewhere/b.ts')).href, old_string: 'a', new_string: 'b' }), panel, undefined);
     expect(waited).toEqual([]);
   });
 
@@ -1310,6 +1316,87 @@ describe('ask rules through the real PermissionHandler — the prompt runs where
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain('Plan mode is active');
     expect(prompts).toEqual([]);
+  });
+});
+
+describe('a Read ask rule on an Edit or Write target asks before any preview, in every mode', () => {
+  const workspace = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-read-ask-')));
+  afterAll(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: { ask: ['Read(secrets/**)'] } }));
+  const secret = path.join(workspace, 'secrets', 'k.txt');
+  fs.mkdirSync(path.dirname(secret), { recursive: true });
+  fs.writeFileSync(secret, 'token\ntoken\n');
+  const open = path.join(workspace, 'src', 'a.ts');
+  fs.mkdirSync(path.dirname(open), { recursive: true });
+  fs.writeFileSync(open, 'a\n');
+
+  /** A chat in mode whose webview records each prompt, with every read of the secret file and every diff preparation recorded. */
+  function chat(mode: 'default' | 'acceptEdits' | 'plan', yolo = false) {
+    const platform = createFakePlatform();
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
+    handler.setWorkspacePath(workspace);
+    handler.setCwd(workspace);
+    handler.setPermissionMode(mode);
+    handler.setDangerouslySkipPermissions(yolo);
+    const prompts: Array<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>> = [];
+    handler.setPostMessage((msg) => { if (msg.type === 'requestPermission') prompts.push(msg); });
+    const { panel } = makePanel({ plan: mode === 'plan' });
+    panel.permissionHandler = handler;
+    const prepareDiff = vi.spyOn(DiffManager.prototype, 'prepareDiff');
+    const opens = vi.spyOn(fs.promises, 'open');
+    const readFiles = vi.spyOn(fs.promises, 'readFile');
+    onTestFinished(() => { prepareDiff.mockRestore(); opens.mockRestore(); readFiles.mockRestore(); });
+    const secretReads = (): unknown[] => [...opens.mock.calls, ...readFiles.mock.calls].filter(([target]) => String(target) === secret);
+    return { panel, handler, prompts, platform, prepareDiff, secretReads };
+  }
+
+  for (const mode of ['default', 'acceptEdits'] as const) {
+    it.each([
+      ['an Edit whose old_string the file lacks', ev('Edit', 'e1', { file_path: 'secrets/k.txt', old_string: 'absent', new_string: 'x' })],
+      ['an Edit whose old_string the file holds twice', ev('Edit', 'e1', { file_path: 'secrets/k.txt', old_string: 'token', new_string: 'x' })],
+      ['a Write', ev('write', 'e1', { path: 'secrets/k.txt', content: 'x\n' })],
+    ])(`asks for %s in ${mode} mode with a card that names the file and previews nothing, and runs once approved`, async (_label, call) => {
+      const { panel, handler, prompts, platform, prepareDiff, secretReads } = chat(mode);
+      const pending = runPermissionGate(call, panel, undefined);
+      await expect.poll(() => prompts.length).toBe(1);
+
+      expect(prompts[0]).toMatchObject({
+        toolUseId: 'e1',
+        title: { message: 'Change a file your Read rules ask about?' },
+        facts: [{ label: { message: 'File' }, value: 'secrets/k.txt' }],
+      });
+      expect(prompts[0]).not.toHaveProperty('patch');
+      expect(prompts[0]).not.toHaveProperty('patchOmitted');
+      expect(prepareDiff).not.toHaveBeenCalled();
+      expect(secretReads()).toEqual([]);
+      expect(platform.editor.diffs).toEqual([]);
+      await handler.resolveApproval('e1', true);
+      expect(await pending).toBeUndefined();
+    });
+  }
+
+  it('blocks an Edit of it in plan mode, as plan mode blocks every edit but the plan, previewing nothing', async () => {
+    const { panel, prompts, prepareDiff, secretReads } = chat('plan');
+    const result = await runPermissionGate(ev('Edit', 'e1', { file_path: 'secrets/k.txt', old_string: 'absent', new_string: 'x' }), panel, undefined);
+    expect(result?.reason).toContain('Plan mode is active');
+    expect(prompts).toEqual([]);
+    expect(prepareDiff).not.toHaveBeenCalled();
+    expect(secretReads()).toEqual([]);
+  });
+
+  it('leaves an Edit of a file no Read ask rule covers to the mode and its diff, and YOLO to run unasked', async () => {
+    const accepting = chat('acceptEdits');
+    expect(await runPermissionGate(ev('Edit', 'e1', { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' }), accepting.panel, undefined)).toBeUndefined();
+    const asking = chat('default');
+    const pending = runPermissionGate(ev('Edit', 'e2', { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' }), asking.panel, undefined);
+    await expect.poll(() => asking.prompts.length).toBe(1);
+    expect(asking.prompts[0]).toMatchObject({ patch: expect.stringContaining('-a\n+b') });
+    await asking.handler.resolveApproval('e2', true);
+    expect(await pending).toBeUndefined();
+    const yolo = chat('default', true);
+    expect(await runPermissionGate(ev('Edit', 'e3', { file_path: 'secrets/k.txt', old_string: 'absent', new_string: 'x' }), yolo.panel, undefined)).toBeUndefined();
+    expect(yolo.prompts).toEqual([]);
   });
 });
 
@@ -2217,12 +2304,14 @@ describe.runIf(process.platform === 'win32')('a file tool whose path may reach a
   });
 
   it('asks for a Write of a network path in acceptEdits, with a prompt that reads no file', async () => {
-    const { panel, handler, prompts, platform } = networkChat({ mode: 'acceptEdits' });
-    const readText = vi.spyOn(platform.editor, 'readText');
+    const { panel, handler, prompts } = networkChat({ mode: 'acceptEdits' });
+    // Resolves without a read, so a broken guard fails here without contacting the host.
+    const prepareDiff = vi.spyOn(DiffManager.prototype, 'prepareDiff').mockResolvedValue({});
+    onTestFinished(() => { prepareDiff.mockRestore(); });
     const pending = runPermissionGate(ev('write', 'w1', { path: '\\\\evil\\s\\x.txt', content: 'x' }), panel, undefined);
     await expect.poll(() => prompts.length).toBe(1);
     expect(prompts[0]).toMatchObject({ toolName: 'Write' });
-    expect(readText).not.toHaveBeenCalled();
+    expect(prepareDiff).not.toHaveBeenCalled();
     await handler.resolveApproval('w1', true);
     expect(await pending).toBeUndefined();
   });
@@ -2543,4 +2632,44 @@ describe('the three readers of a shell call\'s read-only verdict agree (plan mod
       ['Bash', 'cat a.txt', windows(), true],
     ]);
   });
+});
+
+describe.runIf(process.platform !== 'win32')('a Write to a FIFO (POSIX)', () => {
+  const STILL_WAITING = 'still waiting after 2 s';
+
+  /** What the promise settles to, or that it was still waiting after two seconds, as a write open waits for a reader that never comes. */
+  function within2s<T>(promise: Promise<T>): Promise<T | typeof STILL_WAITING> {
+    return Promise.race([promise, new Promise<typeof STILL_WAITING>((resolve) => setTimeout(() => resolve(STILL_WAITING), 2000))]);
+  }
+
+  for (const [mode, yolo] of [['default', false], ['acceptEdits', false], ['default', true]] as const) {
+    it(`refuses it unasked in ${mode} mode${yolo ? ' under YOLO' : ''}, the gate or the tool, never waiting for a reader`, async () => {
+      const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'gate-fifo-')));
+      const fifo = path.join(dir, 'pipe');
+      execFileSync('mkfifo', [fifo]);
+      const handler = new PermissionHandler(createFakePlatform(), getPiCodingAgent);
+      handler.setCwd(dir);
+      handler.setWorkspacePath(dir);
+      handler.setPermissionMode(mode);
+      handler.setDangerouslySkipPermissions(yolo);
+      const prompts: ExtensionToWebviewMessage[] = [];
+      handler.setPostMessage((msg) => { if (msg.type === 'requestPermission') prompts.push(msg); });
+      const gate: GatePermissionContext = { permissionHandler: handler, isPlanMode: () => false, shellCancel: new ShellCancelStore().forContext(() => undefined) };
+      const refusal = 'Could not write file: pipe. It is not a regular file.';
+
+      try {
+        const decision = await within2s(runPermissionGate(ev('write', 'w1', { path: 'pipe', content: 'x\n' }), gate, undefined));
+        const outcome = decision === undefined
+          ? await within2s(createWriteTool(getPiCodingAgent()!, dir).execute('w1', { path: 'pipe', content: 'x\n' } as never, undefined, undefined, { cwd: dir } as never).then(() => 'written', (error: Error) => error.message))
+          : decision;
+
+        expect(prompts).toEqual([]);
+        expect(mode === 'default' && !yolo ? (outcome as { reason?: string }).reason : outcome).toContain(refusal);
+      } finally {
+        // lets a write open that waits on it go on, so a failing run leaves no thread blocked
+        fs.closeSync(fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK));
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });

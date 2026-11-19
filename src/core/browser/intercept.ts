@@ -1,6 +1,8 @@
-import type { BrowserContext, Route } from 'patchright';
+import type { BrowserContext, Page, Route } from 'patchright';
 import { log } from '../logger';
+import type { PanelHost } from '../../platform/window-service';
 import type { InterceptRule, RedactedInterceptRule } from './types';
+import { foreignGrantPort } from './page-network-guard';
 
 /**
  * Probe URLs, grouped by scheme. Within a group the URLs share no host, no path segment and no
@@ -32,7 +34,7 @@ const OVER_BROAD_PROBE_GROUPS = [
 /**
  * A pattern is "over-broad" when it matches every request on any scheme, or when it names nothing at
  * all. Used to forbid blanket block/fulfill rules that would abort or stub the entire page —
- * including, since rules are context-wide, the human's tabs.
+ * including, since a rule applies to every page of its chat, the human's tabs there.
  *
  * TWO INDEPENDENT TESTS, BECAUSE THEY CATCH DIFFERENT THINGS.
  *
@@ -199,7 +201,8 @@ function assertHeadersAllowed(headers: Record<string, string>, where: 'fulfill' 
 
 /**
  * Owns the active `BrowserIntercept` rules for one browser context: validation, `context.route`
- * registration, the redacted list view and teardown.
+ * registration, the redacted list view and teardown. Each rule belongs to the chat that added it and
+ * applies only to requests of that chat's pages (docs/invariants.md "Browser").
  *
  * The context is READ THROUGH A SUPPLIER rather than stored. A second copy would be a second source of
  * truth, and every path that swaps or nulls the service's context would have to remember to sync it —
@@ -207,11 +210,17 @@ function assertHeadersAllowed(headers: Record<string, string>, where: 'fulfill' 
  */
 export class InterceptManager {
   private readonly getContext: () => BrowserContext | null;
+  // The chat that owns a registered page; undefined for a page not registered yet or that no chat owns.
+  private readonly pageChat: (page: Page) => PanelHost | undefined;
+  // Whether the chat holds the served grant origin, read at each request; a chat with no served pages holds none.
+  private readonly ownsOrigin: (chat: PanelHost, origin: string) => boolean;
   // Each entry keeps the Playwright route handler reference so it can be removed via context.unroute.
-  private rules: { rule: InterceptRule; handler: (route: Route) => Promise<void> }[] = [];
+  private rules: { rule: InterceptRule; chat: PanelHost; handler: (route: Route) => Promise<void> }[] = [];
 
-  constructor(getContext: () => BrowserContext | null) {
+  constructor(getContext: () => BrowserContext | null, pageChat: (page: Page) => PanelHost | undefined, ownsOrigin: (chat: PanelHost, origin: string) => boolean) {
     this.getContext = getContext;
+    this.pageChat = pageChat;
+    this.ownsOrigin = ownsOrigin;
   }
 
   /** Drop every rule WITHOUT unrouting — for a context that is already dead, where unroute would only
@@ -221,12 +230,12 @@ export class InterceptManager {
   }
 
   /**
-   * Register a network-interception rule against the context via context.route. Validates the rule,
+   * Register `chat`'s network-interception rule against the context via context.route. Validates the rule,
    * generates an id, installs the handler, records it (with its handler reference for later unroute),
    * and returns the id. Throws if the browser is not connected or the rule is malformed. Synchronous by
    * contract: the route() CDP round-trip is fire-and-forget (interception applies to future requests).
    */
-  add(rule: Omit<InterceptRule, 'id'>): string {
+  add(rule: Omit<InterceptRule, 'id'>, chat: PanelHost): string {
     const context = this.getContext();
     if (!context) {
       throw new Error('Browser is not connected — open a page before adding an intercept rule.');
@@ -248,8 +257,8 @@ export class InterceptManager {
     if (rule.action === 'continue' && rule.modify && !rule.modify.headers) {
       throw new Error('A modify rule requires modify.headers.');
     }
-    // Trust boundary, stated rather than implied: rules are CONTEXT-WIDE — a subagent's rule applies to
-    // the human's tabs too — and stubbing a response for an origin the profile is logged into is within
+    // Trust boundary, stated rather than implied: a rule applies to every page of its chat — a subagent's
+    // rule reaches the human's tabs there too — and stubbing a response for an origin the profile is logged into is within
     // the agent's granted power BY DESIGN. Cookie/Authorization on modify are therefore NOT blocked.
     // What is bounded here is only what reaches past mocking: connection-level headers, and a stubbed
     // Set-Cookie that would outlive the rule in the shared profile. Runs before the id exists, so a
@@ -258,19 +267,19 @@ export class InterceptManager {
     if (rule.modify?.headers) assertHeadersAllowed(rule.modify.headers, 'modify');
     const id = `ir_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const fullRule: InterceptRule = { ...rule, id };
-    const handler = this.makeInterceptHandler(fullRule);
+    const handler = this.makeInterceptHandler(fullRule, chat);
     // Fire-and-forget the route() CDP round-trip (the public method is synchronous by contract); log
     // only pattern/action on failure — NEVER any body.
     Promise.resolve(context.route(fullRule.pattern, handler)).catch((err) =>
       log(`[Browser] Intercept route registration failed for ${fullRule.action} ${fullRule.pattern} — ${err instanceof Error ? err.message : String(err)}`),
     );
-    this.rules.push({ rule: fullRule, handler });
+    this.rules.push({ rule: fullRule, chat, handler });
     return id;
   }
 
-  /** A REDACTED view of the active intercept rules — the raw fulfill body is never returned (bodyBytes only). */
-  list(): RedactedInterceptRule[] {
-    return this.rules.map(({ rule }) => {
+  /** A REDACTED view of `chat`'s active intercept rules — the raw fulfill body is never returned (bodyBytes only). */
+  list(chat: PanelHost): RedactedInterceptRule[] {
+    return this.rules.filter((entry) => entry.chat === chat).map(({ rule }) => {
       const redacted: RedactedInterceptRule = { id: rule.id, pattern: rule.pattern, action: rule.action };
       if (rule.fulfill) {
         redacted.status = rule.fulfill.status;
@@ -282,27 +291,39 @@ export class InterceptManager {
     });
   }
 
-  /** Remove every intercept rule (unroute each pattern/handler) and empty the registry. Null-safe. */
-  clear(): void {
+  /** Remove `chat`'s intercept rules (unroute each pattern/handler). Null-safe. */
+  clear(chat: PanelHost): void {
     for (const entry of this.rules) {
+      if (entry.chat !== chat) continue;
       // Fire-and-forget the unroute CDP round-trip; skipped entirely when the context is already gone.
       Promise.resolve(this.getContext()?.unroute(entry.rule.pattern, entry.handler)).catch((err) =>
         log(`[Browser] Intercept unroute failed for ${entry.rule.action} ${entry.rule.pattern} — ${err instanceof Error ? err.message : String(err)}`),
       );
     }
-    this.rules = [];
+    this.rules = this.rules.filter((entry) => entry.chat !== chat);
   }
 
   /**
-   * Build the Playwright route handler for a rule. It ALWAYS terminates in EXACTLY ONE terminal so a
-   * request can NEVER hang: block→abort, fulfill→fulfill, continue+headers→continue (merged headers),
+   * Build the Playwright route handler for `chat`'s rule. It ALWAYS terminates in EXACTLY ONE terminal so a
+   * request can NEVER hang: another chat's request→fallback, a served grant host its chat does not hold→abort, block→abort,
+   * fulfill→fulfill, continue+headers→continue (merged headers),
    * pure let-through→fallback (so Patchright's earlier-registered stealth route still runs). The
    * try/catch is the ONE deliberate never-hang guard: on any error it falls back so the request
    * proceeds, logging ONLY pattern/action — NEVER request/response bodies (they may carry secrets).
    */
-  private makeInterceptHandler(rule: InterceptRule): (route: Route) => Promise<void> {
+  private makeInterceptHandler(rule: InterceptRule, chat: PanelHost): (route: Route) => Promise<void> {
     return async (route: Route) => {
       try {
+        // A request of another chat's page, or of no registered page, passes on to the next route untouched.
+        if (this.requestChat(route) !== chat) {
+          await route.fallback();
+          return;
+        }
+        // The page guard's verdict, here too: a frame in another process makes requests no page guard sees.
+        if (foreignGrantPort(route.request().url(), (origin) => this.ownsOrigin(chat, origin)) !== undefined) {
+          await route.abort('blockedbyclient');
+          return;
+        }
         if (rule.action === 'block') {
           await route.abort();
           return;
@@ -324,12 +345,23 @@ export class InterceptManager {
         // chain and clobber Patchright's route.
         await route.fallback();
       } catch (err) {
-        // DELIBERATE never-hang guard (the ONE place we swallow): a handler that throws without a
+        // DELIBERATE never-hang guard: a handler that throws without a
         // terminal would hang the request forever, so fall back to let it proceed. Log ONLY the
         // pattern/action — NEVER any body.
         log(`[Browser] Intercept handler error for ${rule.action} ${rule.pattern} — ${err instanceof Error ? err.message : String(err)}`);
         await route.fallback().catch(() => {});
       }
     };
+  }
+
+  private requestChat(route: Route): PanelHost | undefined {
+    let page: Page;
+    try {
+      page = route.request().frame().page();
+    } catch {
+      // frame() throws for a service worker's request and for one issued before its frame was created: no page made it.
+      return undefined;
+    }
+    return this.pageChat(page);
   }
 }

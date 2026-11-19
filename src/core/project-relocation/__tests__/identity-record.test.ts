@@ -50,7 +50,7 @@ function open(git?: () => GitRunner | undefined): ProjectRelocations {
     metaIndex: { move: async () => undefined, meta: async () => null },
     memory: { relocateWorkspace: async () => ({}) },
     hostState: { mcp: { relocateFolders: async () => undefined } },
-    trust: { isTrusted: (folder) => trusted.has(folder), onDidGrantTrust: () => ({ dispose: () => undefined }) },
+    trust: { isTrusted: (folder) => trusted.has(folder), onDidChangeTrust: () => ({ dispose: () => undefined }) },
     projectFolders: () => [path.join(dir, 'old')],
     log: () => undefined,
     file: path.join(dir, 'project-relocations.json'),

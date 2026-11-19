@@ -516,7 +516,7 @@ const browserUploadSchema = Type.Object(
     selector: Type.String({ description: 'CSS selector of the <input type=file> (or the control that opens a native chooser)' }),
     paths: Type.Array(Type.String({ description: 'Absolute path to a file to upload' }), {
       minItems: 1,
-      description: 'One or more absolute file paths to upload',
+      description: 'One or more absolute file paths to upload, or one absolute folder path',
     }),
   },
   { additionalProperties: false },
@@ -1815,7 +1815,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserUploadSchema, undefined>({
       name: piName('browser_upload'),
       label: piName('browser_upload'),
-      description: 'Upload local files to the page. Provide the CSS selector of an <input type=file> and one or more absolute file paths. For a control that opens a NATIVE file chooser on click, call this first (the files are staged) then click that control. Returns a screenshot after the files are set.',
+      description: 'Upload local files to the page. Provide the CSS selector of an <input type=file> and one or more absolute file paths. A single folder path uploads a copy of its entries; a folder over the entry or size limit in settings, or one the disk has no room for, is refused. For a control that opens a NATIVE file chooser on click, call this first (the files are staged) then click that control. Returns a screenshot after the files are set.',
       parameters: browserUploadSchema,
       execute: async (_id, input, signal) => {
         // Outer fail-soft wrapper (mirrors every sibling browser tool): a throw AFTER a successful
@@ -1851,7 +1851,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           }
           // Chrome walks a folder it is handed and reads each file later by path, so it gets a copy of the folder's regular files.
           let folder: UploadCopy | undefined;
-          if (files.length === 1 && (await fsp.stat(files[0]!)).isDirectory()) folder = await copyFolderForUpload(files[0]!, await scope.newUploadFolder(), signal);
+          if (files.length === 1 && (await fsp.stat(files[0]!)).isDirectory()) folder = await copyFolderForUpload(files[0]!, scope.uploadTarget(), signal, scope.uploadFolderCaps());
           const upload = folder === undefined ? files : [folder.copy];
           // Stage BEFORE attempting the direct set: if the selector turns out to trigger a native chooser
           // instead of being an <input type=file>, the staged paths let the filechooser handler complete it.
@@ -1884,7 +1884,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_downloads'),
       label: piName('browser_downloads'),
-      description: 'List files the browser has downloaded during this browser launch, saved to disk. The list resets when the browser closes. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown. Oversized downloads are REFUSED, not saved: a single file over 100 MB, or any download once 500 MB has been saved in this browser launch, is discarded and listed as "rejected" with no path — never as a success. NOTE: downloads are context-global — this lists downloads from every tab in the shared browser, not just yours.',
+      description: 'List the files this chat\'s browser pages have downloaded during this browser launch, saved to disk: its own pages and its subagents\' and team agents\' pages, never another chat\'s. The list resets when the browser closes. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown. Oversized downloads are REFUSED, not saved: a single file over 100 MB, or any download once 500 MB has been saved in this browser launch by all chats together, is discarded and listed as "rejected" with no path — never as a success.',
       parameters: emptySchema,
       execute: async () => {
         try {
@@ -1905,7 +1905,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserInterceptSchema, undefined>({
       name: piName('browser_intercept'),
       label: piName('browser_intercept'),
-      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows active rules; "clear" removes all. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". A blanket pattern is rejected for block/fulfill: the pattern is COMPILED and tested against probe URLs, so brace-group spellings ("{**}", "{**,*}") and scheme-wide catch-alls ("https://**") are rejected too. Rules clear automatically when the browser closes. Header names must be RFC 7230 tokens and values must contain no control characters, so CR/LF header injection is rejected; Set-Cookie is rejected in fulfill headers, and hop-by-hop headers (Connection, Transfer-Encoding, Upgrade, Keep-Alive, Proxy-*) are rejected in both fulfill and modify headers. TRUST BOUNDARY: intercept rules are CONTEXT-WIDE — they apply to every tab in the shared browser, including the human\'s, so a subagent\'s rule affects them too. The browser carries the user\'s real logged-in sessions, so stubbing a response for an origin they are signed into is within your granted power by design — do not do it casually.',
+      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows this chat\'s active rules; "clear" removes all of them. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". A blanket pattern is rejected for block/fulfill: the pattern is COMPILED and tested against probe URLs, so brace-group spellings ("{**}", "{**,*}") and scheme-wide catch-alls ("https://**") are rejected too. Rules apply only to this chat\'s pages, including its subagents\' and team agents\' pages, and end when the chat or the browser closes; another chat\'s pages are never touched. Header names must be RFC 7230 tokens and values must contain no control characters, so CR/LF header injection is rejected; Set-Cookie is rejected in fulfill headers, and hop-by-hop headers (Connection, Transfer-Encoding, Upgrade, Keep-Alive, Proxy-*) are rejected in both fulfill and modify headers. TRUST BOUNDARY: a rule applies to every tab of this chat, including the human\'s, so a subagent\'s rule affects them too. The browser carries the user\'s real logged-in sessions, so stubbing a response for an origin they are signed into is within your granted power by design — do not do it casually.',
       parameters: browserInterceptSchema,
       execute: async (_id, input) => {
         try {

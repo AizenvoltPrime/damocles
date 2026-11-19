@@ -680,3 +680,27 @@ describe('the pull request ssh jobs', () => {
     expect(step?.run).toMatch(/koalaman\/shellcheck:v[\d.]+@sha256:[0-9a-f]{64}\s/);
   });
 });
+
+describe('the browser integration nightly (docs/release.md "Browser integration nightly")', () => {
+  const browserWorkflow = readWorkflow('browser-it-nightly.yml');
+  const job = browserWorkflow.jobs['real-chrome']!;
+  const INTEGRATION_FILE = 'src/core/browser/__tests__/patchright-launch.integration.test.ts';
+
+  it('runs the real-Chrome integration file on Windows, nightly and by hand, with the gate the file reads turned on', () => {
+    expect(Object.keys((browserWorkflow as unknown as { on: Record<string, unknown> }).on)).toEqual(['schedule', 'workflow_dispatch']);
+    expect(job['runs-on']).toBe('windows-latest');
+    const step = job.steps.find((candidate) => candidate.run === `npx vitest run ${INTEGRATION_FILE}`);
+    expect(step?.env).toEqual({ DAMOCLES_PATCHRIGHT_IT: '1' });
+    expect(readFileSync(join(__dirname, '..', '..', INTEGRATION_FILE), 'utf8')).toContain("process.env['DAMOCLES_PATCHRIGHT_IT'] === '1'");
+    expect(step?.['timeout-minutes']).toBeTypeOf('number');
+    expect(job['timeout-minutes']).toBeGreaterThanOrEqual(INSTALL_BUDGET_MIN + limitedMinutes(job));
+  });
+
+  it('keeps the token read-only, persists no credentials, pins every action to a full commit SHA and reads no secret', () => {
+    expect(browserWorkflow.permissions).toEqual({ contents: 'read' });
+    expect(job.permissions).toBeUndefined();
+    for (const step of job.steps.filter((candidate) => candidate.uses !== undefined)) expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
+    for (const step of job.steps.filter((candidate) => candidate.uses?.startsWith('actions/checkout@'))) expect(step.with?.['persist-credentials']).toBe(false);
+    expect(JSON.stringify(job)).not.toMatch(/secrets\./);
+  });
+});

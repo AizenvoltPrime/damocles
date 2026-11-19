@@ -4,8 +4,10 @@ import { useI18n } from 'vue-i18n';
 import type { ThinkingDroppedNotice as ThinkingDroppedNoticeType } from '@shared/types/session';
 import { Brain } from 'lucide-vue-next';
 import TranscriptNotice from './TranscriptNotice.vue';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 
 const props = defineProps<{
   notice: ThinkingDroppedNoticeType;
@@ -17,8 +19,13 @@ const title = computed(() =>
     : t('thinkingDropped.titleMany', { count: props.notice.count }),
 );
 
-// The adapter already rendered each reason as a one-line explanation, so this joins and never parses.
-const reasonText = computed(() => props.notice.reasons.join('; '));
+// The title carries the total, so a reason's own count shows only beside other reasons.
+const reasonText = computed(() => {
+  const { reasons } = props.notice;
+  return reasons
+    .map((reason) => (reasons.length > 1 ? t('thinkingDropped.reasonCount', { reason: rt(reason.text), count: reason.count }) : rt(reason.text)))
+    .join('; ');
+});
 </script>
 
 <template>

@@ -26,7 +26,7 @@ const contributed = parseContributedConfiguration({
 const shipped = readContributedConfiguration(fileURLToPath(new URL('../../../../', import.meta.url)));
 const trustAll: TrustService = {
   isTrusted: () => true,
-  onDidGrantTrust: () => ({ dispose: () => undefined }),
+  onDidChangeTrust: () => ({ dispose: () => undefined }),
   requestTrust: () => Promise.resolve(true),
 };
 

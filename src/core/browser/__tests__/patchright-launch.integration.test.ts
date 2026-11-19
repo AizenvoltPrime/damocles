@@ -4,6 +4,7 @@ import { createServer as createPipeServer, type AddressInfo } from 'net';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 
 /**
@@ -17,10 +18,20 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
  *   powershell -Command "$env:DAMOCLES_PATCHRIGHT_IT='1'; npx vitest run src/core/browser/__tests__/patchright-launch.integration.test.ts"
  *
  * patchright must already be installed (npm install) and a branded Chrome/Edge available; NO Chromium
- * download is performed (channel:'chrome').
+ * download is performed (channel:'chrome'). CI runs it nightly: .github/workflows/browser-it-nightly.yml.
  */
 
 const RUN_IT = process.env['DAMOCLES_PATCHRIGHT_IT'] === '1';
+
+// A chat panel of the fake host, which owns the pages its scope opens.
+function chatPanel(platform = createFakePlatform()) {
+  return platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+}
+
+// BrowserIntercept installs and removes a rule with a context.route it does not await: poll a request the change shows on.
+async function untilRuleAnswers(probe: () => Promise<unknown>, answer: unknown): Promise<void> {
+  await expect.poll(probe, { timeout: 10_000, interval: 50 }).toEqual(answer);
+}
 
 const FIXTURE_HTML = `<!doctype html><html><head><title>Damocles Fixture</title></head>
 <body><h1 id="hdr">hello patchright</h1><a href="/next">next</a></body></html>`;
@@ -158,13 +169,105 @@ const TRACKER_PNG = Buffer.from(
   'base64',
 );
 
+// No app is registered for this scheme, so real Chrome following a redirect to it opens nothing.
+const UNREGISTERED_SCHEME = 'damocles-it-unregistered:';
+
+const REDIRECTS: Record<string, { status: number; to: string }> = {
+  '/s11/to-next': { status: 302, to: '/next' },
+  '/s11/to-unregistered': { status: 302, to: `${UNREGISTERED_SCHEME}probe` },
+  '/s11/hop': { status: 301, to: '/s11/to-unregistered' },
+  '/s11/to-download': { status: 307, to: '/download-file' },
+};
+
+const REDIRECT_FRAMES_HTML = `<!doctype html><html><head><title>Redirect Frames</title></head>
+<body><h1>frames</h1><iframe id="ok" src="/s11/to-next"></iframe><iframe id="refused" src="/s11/to-unregistered"></iframe></body></html>`;
+
+// A worker that answers its scope's page, frame, redirect and data requests itself, each unlike the network's answer below.
+const STORED_SERVICE_WORKER = `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', (event) => {
+  const path = new URL(event.request.url).pathname;
+  if (path === '/sw/page' || path === '/sw/frame') event.respondWith(new Response('<!doctype html><title>from worker</title>', { headers: { 'content-type': 'text/html' } }));
+  else if (path === '/sw/hop') event.respondWith(Response.redirect('${UNREGISTERED_SCHEME}worker', 302));
+  else if (path === '/sw/data') event.respondWith(new Response('from-worker'));
+});`;
+
+const STORED_WORKER_ANSWERS: Record<string, { type: string; text: string }> = {
+  '/sw/register': {
+    type: 'text/html',
+    text: `<!doctype html><html><head><title>register</title></head>
+<body><script>navigator.serviceWorker.register('/sw/sw.js').then(() => navigator.serviceWorker.ready).then(() => { document.title = 'sw ready'; });</script></body></html>`,
+  },
+  '/sw/sw.js': { type: 'text/javascript', text: STORED_SERVICE_WORKER },
+  // a worker registered while the agent's browser runs, answering every request in its scope
+  '/sw/sw2.js': {
+    type: 'text/javascript',
+    text: `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', (event) => event.respondWith(new Response('<!doctype html><title>from worker</title>', { headers: { 'content-type': 'text/html' } })));`,
+  },
+  '/sw/x/page': { type: 'text/html', text: '<!doctype html><title>from network</title>' },
+  '/sw/dedicated.js': { type: 'text/javascript', text: "fetch('/sw/data').then((r) => r.text()).then((t) => postMessage(t), (e) => postMessage('failed ' + e.message));" },
+  '/sw/shared.js': {
+    type: 'text/javascript',
+    text: "onconnect = (event) => { const port = event.ports[0]; fetch('/sw/data').then((r) => r.text()).then((t) => port.postMessage(t), (e) => port.postMessage('failed ' + e.message)); };",
+  },
+  '/sw/page': { type: 'text/html', text: '<!doctype html><title>from network</title>' },
+  '/sw/frame': { type: 'text/html', text: '<!doctype html><title>from network</title>' },
+  '/sw/framed': { type: 'text/html', text: '<!doctype html><title>framed</title><iframe src="/sw/frame"></iframe>' },
+  '/sw/data': { type: 'text/plain', text: 'from-network' },
+};
+
+const REDIRECT_LINK_HTML = `<!doctype html><html><head><title>Redirect Link</title></head>
+<body><a id="hop" href="/s11/hop">hop</a></body></html>`;
+
+// A page whose speculation rules ask Chrome to prerender one page and prefetch another, each behind a link.
+const PRELOAD_HOST_HTML = `<!doctype html><html><head><title>preload host</title>
+<script type="speculationrules">{"prerender":[{"source":"list","urls":["/pre/rendered"]}],"prefetch":[{"source":"list","urls":["/pre/fetched"]}]}</script></head>
+<body><a id="rendered" href="/pre/rendered">rendered</a> <a id="fetched" href="/pre/fetched">fetched</a></body></html>`;
+
+// Each chat's intercept rules and downloads: a page that opens a popup and downloads a file, and the answers no rule changed.
+const CHAT_RULES: Record<string, { type: string; text: string }> = {
+  '/s12/opener': {
+    type: 'text/html',
+    text: `<!doctype html><html><head><title>S12 Opener</title></head>
+<body><button id="open" onclick="window.open('/s12/popup', '_blank')">open</button><a id="dl" href="/download-file" download="hello.txt">download</a></body></html>`,
+  },
+  '/s12/popup': { type: 'text/html', text: '<!doctype html><html><head><title>real popup</title></head><body>popup</body></html>' },
+  '/s12/data': { type: 'text/plain', text: 'real-data' },
+  '/s12/sub': { type: 'text/plain', text: 'real-sub' },
+};
+
 describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
   let server: Server;
   let baseUrl = '';
   let userDataDir = '';
+  const redirectRequests: Array<{ path: string; headers: Record<string, string | string[] | undefined> }> = [];
+  const storedWorkerRequests: string[] = [];
+  const preloadRequests: Array<{ path: string; purpose: string | string[] | undefined; rule: string | string[] | undefined }> = [];
 
   beforeAll(async () => {
     server = createServer((req, res) => {
+      if (req.url?.startsWith('/pre/')) {
+        preloadRequests.push({ path: req.url, purpose: req.headers['sec-purpose'], rule: req.headers['x-it-preload'] });
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(req.url === '/pre/host' ? PRELOAD_HOST_HTML : '<!doctype html><title>preload target</title>');
+        return;
+      }
+      if (req.url?.startsWith('/sw/')) {
+        storedWorkerRequests.push(req.url);
+        if (req.url === '/sw/hop') {
+          res.writeHead(302, { location: `${UNREGISTERED_SCHEME}network` });
+          res.end();
+          return;
+        }
+        const answer = STORED_WORKER_ANSWERS[req.url];
+        if (answer !== undefined) {
+          res.writeHead(200, { 'content-type': answer.type });
+          res.end(answer.text);
+          return;
+        }
+      }
       if (req.url === '/next') {
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end(NEXT_HTML);
@@ -271,6 +374,31 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
         pump();
         return;
       }
+      const chatRulesAnswer = CHAT_RULES[req.url ?? ''];
+      if (chatRulesAnswer !== undefined) {
+        res.writeHead(200, { 'content-type': chatRulesAnswer.type });
+        res.end(chatRulesAnswer.text);
+        return;
+      }
+      if (req.url?.startsWith('/s11/')) {
+        redirectRequests.push({ path: req.url, headers: req.headers });
+        const location = REDIRECTS[req.url.split('?')[0]!];
+        if (location !== undefined) {
+          res.writeHead(location.status, { location: location.to });
+          res.end();
+          return;
+        }
+        if (req.url === '/s11/framed') {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(REDIRECT_FRAMES_HTML);
+          return;
+        }
+        if (req.url === '/s11/links') {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(REDIRECT_LINK_HTML);
+          return;
+        }
+      }
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(FIXTURE_HTML);
     });
@@ -326,6 +454,85 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       await context.close();
     }
   }, 60_000);
+
+  // What the navigation guard (page-network-guard.ts) rests on, pinned on raw CDP sessions: Patchright's document route lets
+  // Chrome itself follow a redirect, and Chrome pauses the same document for Playwright's Fetch client and a second one.
+  it('probe: Chrome follows a document redirect under Patchright\'s route and pauses each hop for a second Fetch client', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const context = await launchBrowserContext({ userDataDir, headless: true, viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, devToolsPort: false });
+    try {
+      // An init script turns Patchright's document route on, as the context observers' binding does in production.
+      await context.addInitScript('window.__probeInit = 1');
+      const routed: string[] = [];
+      await context.route('**/*', async (route) => {
+        routed.push(route.request().url());
+        await route.fallback();
+      });
+      const page = context.pages()[0] ?? (await context.newPage());
+      const session = await context.newCDPSession(page);
+      const paused: Array<{ url: string; status: number | undefined; location: string | undefined; networkId: string | undefined }> = [];
+      const answerErrors: string[] = [];
+      let continueWith: 'Fetch.continueResponse' | 'Fetch.continueRequest' = 'Fetch.continueResponse';
+      session.on('Fetch.requestPaused', (event) => {
+        const location = event.responseHeaders?.find((h) => h.name.toLowerCase() === 'location')?.value;
+        paused.push({ url: event.request.url, status: event.responseStatusCode, location, networkId: event.networkId });
+        const answer = location?.startsWith(UNREGISTERED_SCHEME) === true
+          ? session.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'BlockedByClient' })
+          : session.send(continueWith, { requestId: event.requestId });
+        answer.catch((err: unknown) => answerErrors.push(`${continueWith}: ${String(err)}`));
+      });
+      await session.send('Fetch.enable', { patterns: [{ resourceType: 'Document', requestStage: 'Response' }] });
+      const navigate = async (path: string) => {
+        paused.length = 0;
+        routed.length = 0;
+        redirectRequests.length = 0;
+        return session.send('Page.navigate', { url: `${baseUrl}${path}` });
+      };
+
+      // (a) Chrome, not Node, fetches every hop: the server sees Chrome's document requests, and the second client pauses the
+      // 302 with its Location before Chrome follows it, under the navigation's loaderId.
+      for (const method of ['Fetch.continueResponse', 'Fetch.continueRequest'] as const) {
+        continueWith = method;
+        await session.send('Page.navigate', { url: 'about:blank' });
+        await expect.poll(() => page.url()).toBe('about:blank');
+        const reply = await navigate(`/s11/to-next?${method}`);
+        expect(reply.errorText).toBeUndefined();
+        await expect.poll(() => page.url()).toBe(`${baseUrl}/next`);
+        await page.waitForLoadState('load');
+        expect(paused).toEqual([
+          { url: `${baseUrl}/s11/to-next?${method}`, status: 302, location: '/next', networkId: reply.loaderId },
+          { url: `${baseUrl}/next`, status: 200, location: undefined, networkId: reply.loaderId },
+        ]);
+        expect(redirectRequests).toHaveLength(1);
+        expect(redirectRequests[0]!.headers['sec-fetch-dest']).toBe('document');
+        expect(redirectRequests[0]!.headers['user-agent']).toContain('Chrome/');
+        // (b) Playwright's own Fetch client paused the same document, and Patchright's injection still ran.
+        expect(routed).toContain(`${baseUrl}/s11/to-next?${method}`);
+        expect((await session.send('Runtime.evaluate', { expression: 'window.__probeInit', returnByValue: true })).result.value).toBe(1);
+      }
+      // Chrome takes both answers at the Response stage.
+      expect(answerErrors).toEqual([]);
+
+      // A failRequest at a redirect stops the chain at the first and at a later hop.
+      for (const path of ['/s11/to-unregistered', '/s11/hop']) {
+        const reply = await navigate(path);
+        expect(reply.errorText).toBe('net::ERR_BLOCKED_BY_CLIENT');
+        await expect.poll(() => page.url()).toBe('chrome-error://chromewebdata/');
+        expect(paused.at(-1)).toEqual({ url: `${baseUrl}/s11/to-unregistered`, status: 302, location: `${UNREGISTERED_SCHEME}probe`, networkId: reply.loaderId });
+      }
+      // A redirect Playwright's client fulfills reaches the second client's Response stage too.
+      await context.route('**/s11/fulfilled', (route) => route.fulfill({ status: 302, headers: { location: `${UNREGISTERED_SCHEME}fulfilled` } }));
+      expect((await navigate('/s11/fulfilled')).errorText).toBe('net::ERR_BLOCKED_BY_CLIENT');
+      expect(paused).toEqual([{ url: `${baseUrl}/s11/fulfilled`, status: 302, location: `${UNREGISTERED_SCHEME}fulfilled`, networkId: expect.any(String) }]);
+
+      // Without a guard Chrome hands the redirect to the OS's handler for the scheme and the navigation reads as aborted.
+      const bare = await context.newPage();
+      const bareReply = await (await context.newCDPSession(bare)).send('Page.navigate', { url: `${baseUrl}/s11/to-unregistered` });
+      expect(bareReply.errorText).toBe('net::ERR_ABORTED');
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
 
   // Why there is no Page.bringToFront anywhere in the repo. Playwright/Patchright does not issue one
   // before Page.captureScreenshot either (see screenshotter `_screenshot` → `takeScreenshot`), and its
@@ -486,6 +693,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       const scope = {
         getController: () => controller,
         getCurrentPage: () => page,
+        getCurrentUrl: () => page.url(),
         stageUpload: () => {},
         takeUnreportedDialogs: () => [],
         getDialogs: () => [],
@@ -612,10 +820,10 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     const s = service as unknown as Svc;
     s.context = context;
     s.downloadManager.downloadsDir = downloadsDir;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
 
-    // Build the REAL tools over the REAL primary scope (the main agent + human surface).
+    // Build the REAL tools over the REAL chat scope (the main agent + human surface).
     const pi = { defineTool: (cfg: unknown) => cfg };
     type ToolLike = { name: string; execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }> };
     const tools = buildBrowserPiTools({ pi, scope } as never) as unknown as ToolLike[];
@@ -626,7 +834,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     try {
       const page = context.pages()[0] ?? (await context.newPage());
       await s.registerPage(page, PRIMARY);
-      s.scopes.get(PRIMARY)!.currentPage = page; // the primary scope's current tab (bypassing open())
+      s.scopes.get(PRIMARY)!.currentPage = page; // the chat scope's current tab (bypassing open())
       s.setActivePage(page);
       // Wire the real Slice-1 popup path so window.open registers the new tab (owned by the opener's scope).
       context.on('page', (p) => { void s.handleNewPage(p); });
@@ -637,7 +845,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       expect(scope.getCurrentUrl()).toContain('/tabs');
 
       // Open a SECOND tab via window.open; the context 'page' event → handleNewPage registers it, owned
-      // by the opener's (primary) scope but NOT auto-made the scope's current tab (decision #2).
+      // by the opener's (chat) scope but NOT auto-made the scope's current tab (decision #2).
       const popupPromise = context.waitForEvent('page');
       await page.click('#open-popup');
       const popup = await popupPromise;
@@ -670,10 +878,10 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
 
       // (4) Triggering a download saves the file under downloadsDir; BrowserDownloads reports the absolute path.
       await page.click('#dl');
-      for (let i = 0; i < 50 && service.getDownloads().length === 0; i++) {
+      for (let i = 0; i < 50 && scope.getDownloads().length === 0; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
-      const dls = service.getDownloads();
+      const dls = scope.getDownloads();
       expect(dls.length).toBeGreaterThanOrEqual(1);
       const saved = dls[0]!;
       expect(saved.savedPath.startsWith(downloadsDir)).toBe(true);
@@ -737,7 +945,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     const s = service as unknown as Svc;
     s.context = context;
     s.userDataDir = userDataDir;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
     type ToolLike = { name: string; execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
     const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
@@ -811,7 +1019,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     };
     const s = service as unknown as Svc;
     s.context = context;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
 
     const pi = { defineTool: (cfg: unknown) => cfg };
@@ -896,7 +1104,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       setActivePage: (p: unknown) => void;
     };
     s.context = context;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
 
     const pi = { defineTool: (cfg: unknown) => cfg };
@@ -921,12 +1129,13 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       const failedUrls: string[] = [];
       page.on('requestfailed', (req) => failedUrls.push(req.url()));
 
-      // (a) BLOCK rule on the tracker image. Fire-and-forget route() settles quickly; wait a beat so
-      // interception is enabled before navigation.
+      // (a) BLOCK rule on the tracker image, live before the page that loads it.
       const blockRes = await call('BrowserIntercept', { action: 'add', pattern: '**/tracker.png', type: 'block' });
       expect(texts(blockRes)[0]).toContain('Added intercept rule');
       expect(texts(blockRes)[0]).toContain('block');
-      await new Promise((r) => setTimeout(r, 250));
+      await page.goto(`${baseUrl}/next`);
+      await untilRuleAnswers(() => page.evaluate(`fetch('/tracker.png').then(() => 'loaded', () => 'blocked')`), 'blocked');
+      failedUrls.length = 0;
 
       await page.goto(`${baseUrl}/intercept`);
       await page.waitForLoadState('load');
@@ -964,7 +1173,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
         await new Promise((r) => setTimeout(r, 100));
       }
       expect(cursorFired).toBe(true);
-      // The block rule is still active during the observer exercise (rules are context-level).
+      // The block rule is still active during the observer exercise (it applies to every page of its chat).
       expect(failedUrls.some((u) => u.includes('/tracker.png'))).toBe(true);
 
       // (b) FULFILL rule mocks the API. Without the rule the fixture serves {"real":true}; with it the
@@ -979,9 +1188,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
         body: stubBody,
       });
       expect(texts(fulfillRes)[0]).toContain('Added intercept rule');
-      await new Promise((r) => setTimeout(r, 250));
-      const fetched = await page.evaluate(`fetch('/api/data').then((r) => r.text())`);
-      expect(fetched).toBe(stubBody);
+      await untilRuleAnswers(() => page.evaluate(`fetch('/api/data').then((r) => r.text())`), stubBody);
 
       // list shows both rules, REDACTED (bodyBytes, not the raw body).
       const listRes = await call('BrowserIntercept', { action: 'list' });
@@ -993,10 +1200,8 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       // clear removes both; a subsequent fetch hits the REAL endpoint again.
       const clearRes = await call('BrowserIntercept', { action: 'clear' });
       expect(texts(clearRes)[0]).toBe('Cleared 2 intercept rule(s).');
-      expect(service.listInterceptRules()).toHaveLength(0);
-      await new Promise((r) => setTimeout(r, 250));
-      const realAgain = await page.evaluate(`fetch('/api/data').then((r) => r.text())`);
-      expect(realAgain).toBe('{"real":true}');
+      expect(scope.listInterceptRules()).toHaveLength(0);
+      await untilRuleAnswers(() => page.evaluate(`fetch('/api/data').then((r) => r.text())`), '{"real":true}');
 
       // titleFired is best-effort here: on an INSTANT local fixture the first DOMContentLoaded can beat
       // Patchright's post-document_start binding install, so the title observer's first report() may
@@ -1047,7 +1252,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       onConsoleBinding: (p: unknown, payload: string) => void;
     };
     s.context = context;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
 
     let titleFired = false;
@@ -1397,7 +1602,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
 
       // Runtime.enable was never sent on EITHER path — the invariant, re-asserted against real Chrome
       // on the new code path.
-      for (const forbidden of ['Runtime.enable', 'Console.enable', 'Network.enable']) {
+      for (const forbidden of ['Runtime.enable', 'Console.enable']) {
         expect(sent).not.toContain(forbidden);
         expect(probeSent).not.toContain(forbidden);
       }
@@ -1432,7 +1637,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       setActivePage: (p: unknown) => void;
     };
     s.context = context;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
 
     type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
@@ -1462,14 +1667,16 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       expect(refusedFulfill.isError).toBe(true);
       expect(texts(refusedFulfill)[0]).toMatch(/over-broad/i);
       // Nothing was registered by any of the refusals.
-      expect(service.listInterceptRules()).toHaveLength(0);
+      expect(scope.listInterceptRules()).toHaveLength(0);
 
       // (b) POSITIVE CONTROL — a NARROW block on a real asset genuinely aborts that request, and the
       // page itself still loads. This is what the refusals above protect: had `https://**` registered,
       // the document request would have been aborted too and nothing below would load.
       const narrow = await call('BrowserIntercept', { action: 'add', pattern: '**/tracker.png', type: 'block' });
       expect(narrow.isError).toBeFalsy();
-      await new Promise((r) => setTimeout(r, 250));
+      await page.goto(`${baseUrl}/next`);
+      await untilRuleAnswers(() => page.evaluate(`fetch('/tracker.png').then(() => 'loaded', () => 'blocked')`), 'blocked');
+      failedUrls.length = 0;
 
       await page.goto(`${baseUrl}/intercept`);
       await page.waitForLoadState('load');
@@ -1490,8 +1697,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
         headers: { 'content-type': 'application/json' }, body: '{"stubbed":true}',
       });
       expect(scoped.isError).toBeFalsy();
-      await new Promise((r) => setTimeout(r, 250));
-      expect(await page.evaluate(`fetch('/api/data').then((r) => r.text())`)).toBe('{"stubbed":true}');
+      await untilRuleAnswers(() => page.evaluate(`fetch('/api/data').then((r) => r.text())`), '{"stubbed":true}');
 
       // (d) The S5 header bounds hold against the real service too.
       const cookieRule = await call('BrowserIntercept', {
@@ -1505,7 +1711,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       expect(hopRule.isError).toBe(true);
       expect(texts(hopRule)[0]).toMatch(/connection/i);
       // The two refusals added nothing on top of the two live rules.
-      expect(service.listInterceptRules()).toHaveLength(2);
+      expect(scope.listInterceptRules()).toHaveLength(2);
 
       await call('BrowserIntercept', { action: 'clear' });
     } finally {
@@ -1543,7 +1749,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     };
     s.context = context;
     s.downloadManager.downloadsDir = downloadsDir;
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const PRIMARY = service.chatScope(chatPanel()).id;
     const scope = service.createAgentScope(PRIMARY);
 
     type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
@@ -1551,7 +1757,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     const byName = new Map(tools.map((t) => [t.name, t]));
     const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
     const waitForDownloads = async (count: number): Promise<void> => {
-      for (let i = 0; i < 300 && service.getDownloads().length < count; i++) {
+      for (let i = 0; i < 300 && scope.getDownloads().length < count; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
     };
@@ -1570,7 +1776,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       await page.click('#dl-big');
       await waitForDownloads(1);
 
-      const rejected = service.getDownloads()[0]!;
+      const rejected = scope.getDownloads()[0]!;
       expect(rejected.state).toBe('rejected');
       expect(rejected.savedPath).toBe('');
       // The size really was measured off Playwright's temp file before the delete().
@@ -1592,7 +1798,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       await page.click('#dl-small');
       await waitForDownloads(2);
 
-      const saved = service.getDownloads()[1]!;
+      const saved = scope.getDownloads()[1]!;
       expect(saved.state).toBe('completed');
       expect(saved.savedPath.startsWith(downloadsDir)).toBe(true);
       await expect(fsp.readFile(saved.savedPath, 'utf8')).resolves.toBe('hello from download');
@@ -1606,6 +1812,608 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       await fsp.rm(downloadsDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 120_000);
+
+  it('VS Code: two chats each list and read only their own pages, and closing one closes only its pages', async () => {
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    // chatBrowserPane false: the VS Code host, whose pages draw their own toolbar
+    const platform = createFakePlatform();
+    expect(platform.window.chatBrowserPane).toBe(false);
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-chats-'));
+    const service = new BrowserService(platform, { profileDir: profile });
+    const [a, b] = [chatPanel(platform), chatPanel(platform)];
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const text = async (chat: typeof a, name: string, input: unknown = {}): Promise<string> => {
+      const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope: service.chatScope(chat) } as never) as unknown as ToolLike[];
+      const result = await tools.find((tool) => tool.name === name)!.execute('it', input);
+      return result.content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n');
+    };
+    try {
+      await service.chatScope(a).open(`${baseUrl}/tabs`);
+      await service.chatScope(b).open(`${baseUrl}/popup`);
+
+      const tabsA = await text(a, 'BrowserTabs', { action: 'list' });
+      const tabsB = await text(b, 'BrowserTabs', { action: 'list' });
+      expect(tabsA).toContain('Open tabs (1)');
+      expect(tabsA).toContain('/tabs');
+      expect(tabsA).not.toContain('/popup');
+      expect(tabsB).toContain('Open tabs (1)');
+      expect(tabsB).toContain('/popup');
+      expect(tabsB).not.toContain('/tabs');
+      // the header names the page the snapshot read
+      const snapshotB = await text(b, 'BrowserSnapshot');
+      expect(snapshotB).toContain('[Page] Popup Tab');
+      expect(snapshotB).toContain(`[URL] ${baseUrl}/popup`);
+      expect(snapshotB).not.toContain('Tabs Fixture');
+
+      a.close();
+      const pages = (service as unknown as { pages: Map<unknown, unknown> }).pages;
+      for (let i = 0; i < 50 && pages.size > 1; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(pages.size).toBe(1);
+      expect(service.chatScope(b).listTabs().map((tab) => tab.url)).toEqual([`${baseUrl}/popup`]);
+      expect(await text(b, 'BrowserSnapshot')).toContain(`[URL] ${baseUrl}/popup`);
+    } finally {
+      await service.dispose();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+
+  it('BrowserIntercept rules and BrowserDownloads belong to the chat whose page made them', async () => {
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    const platform = createFakePlatform();
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-chat-rules-'));
+    const service = new BrowserService(platform, { profileDir: profile });
+    const [a, b] = [chatPanel(platform), chatPanel(platform)];
+    const scopeA = service.chatScope(a);
+    const scopeB = service.chatScope(b);
+    const subA = service.createAgentScope('sub-a', a);
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const call = async (scope: typeof scopeA, name: string, input: unknown = {}): Promise<string> => {
+      const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+      const result = await tools.find((tool) => tool.name === name)!.execute('it', input);
+      return result.content.map((c) => c.text ?? '').join('\n');
+    };
+    const fetched = (page: { evaluate: (script: string) => Promise<unknown> }, path: string): Promise<unknown> => page.evaluate(`fetch('${path}').then((r) => r.text())`);
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 50 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const pages = (service as unknown as { pages: Map<unknown, { readonly chat: unknown }> }).pages;
+    try {
+      await scopeA.open(`${baseUrl}/s12/opener`);
+      await scopeB.open(`${baseUrl}/s12/opener`);
+      const pageA = scopeA.getCurrentPage()!;
+      const pageB = scopeB.getCurrentPage()!;
+
+      // chat A's rule and its subagent's rule stub A's page, and chat B's page gets the real answers
+      expect(await call(scopeA, 'BrowserIntercept', { action: 'add', pattern: '**/s12/data', type: 'fulfill', status: 200, body: 'stub-a' })).toContain('Added intercept rule');
+      expect(await call(subA, 'BrowserIntercept', { action: 'add', pattern: '**/s12/sub', type: 'fulfill', status: 200, body: 'stub-sub' })).toContain('Added intercept rule');
+      await untilRuleAnswers(() => fetched(pageA, '/s12/data'), 'stub-a');
+      await untilRuleAnswers(() => fetched(pageA, '/s12/sub'), 'stub-sub');
+      expect(await fetched(pageB, '/s12/data')).toBe('real-data');
+      expect(await fetched(pageB, '/s12/sub')).toBe('real-sub');
+      expect(await call(scopeB, 'BrowserIntercept', { action: 'list' })).toBe('No intercept rules.');
+      expect(await call(scopeA, 'BrowserIntercept', { action: 'list' })).toContain('Intercept rules (2)');
+      expect(await call(scopeB, 'BrowserIntercept', { action: 'clear' })).toBe('Cleared 0 intercept rule(s).');
+      expect(await fetched(pageA, '/s12/data')).toBe('stub-a');
+
+      // A popup of A's page: its first request, the document, starts before the popup registers, so no rule touches it
+      // (a route never waits for a registration); once registered it gets A's rules.
+      const stubbedPopup = '<!doctype html><html><head><title>stubbed popup</title></head><body>stub</body></html>';
+      expect(await call(scopeA, 'BrowserIntercept', {
+        action: 'add', pattern: '**/s12/popup', type: 'fulfill', status: 200, headers: { 'content-type': 'text/html' }, body: stubbedPopup,
+      })).toContain('Added intercept rule');
+      // Patchright adds its init scripts to a fulfilled HTML body
+      await untilRuleAnswers(async () => String(await fetched(pageA, '/s12/popup')).includes('<title>stubbed popup</title>'), true);
+      const popupOpened = pageA.context().waitForEvent('page');
+      await pageA.click('#open');
+      const popup = await popupOpened;
+      await popup.waitForLoadState('load');
+      await until(() => pages.get(popup)?.chat === a);
+      expect(pages.get(popup)?.chat).toBe(a);
+      // the first document gets A's rule only when the popup registered before that load began, which nothing orders
+      expect(['real popup', 'stubbed popup']).toContain(await popup.title());
+      expect(await fetched(popup, '/s12/data')).toBe('stub-a');
+      expect(await fetched(popup, '/s12/popup')).toContain('stubbed popup');
+
+      // a download of A's page is listed to chat A only
+      await pageA.click('#dl');
+      await until(() => scopeA.getDownloads().length > 0);
+      expect(await call(scopeA, 'BrowserDownloads')).toContain('hello.txt');
+      expect(await call(scopeB, 'BrowserDownloads')).toBe('No downloads captured.');
+      expect(scopeB.getDownloads()).toEqual([]);
+
+      // closing chat A ends its rules and its downloads list with its pages
+      a.close();
+      await until(() => pages.size === 1);
+      expect([...pages.values()].map((entry) => entry.chat)).toEqual([b]);
+      expect((service as unknown as { interceptManager: { rules: unknown[] } }).interceptManager.rules).toEqual([]);
+      expect(await fetched(pageB, '/s12/data')).toBe('real-data');
+    } finally {
+      await service.dispose();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 90_000);
+
+  it('an agent navigation whose redirect chain reaches another app\'s scheme fails naming it, and every other load still works', async () => {
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    const platform = createFakePlatform();
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-redirects-'));
+    const service = new BrowserService(platform, { profileDir: profile });
+    const scope = service.chatScope(chatPanel(platform));
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+    const call = async (name: string, input: unknown): Promise<{ text: string; isError: boolean }> => {
+      const result = await tools.find((tool) => tool.name === name)!.execute('it', input);
+      return { text: result.content.map((c) => c.text ?? '').join('\n'), isError: result.isError === true };
+    };
+    const refusal = `redirected to a ${UNREGISTERED_SCHEME} address`;
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 50 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    try {
+      // A 200 page loads, and of its frames the http redirect loads while the refused one does not.
+      const framed = await call('BrowserOpen', { url: `${baseUrl}/s11/framed` });
+      expect(framed.isError, framed.text).toBe(false);
+      const page = scope.getCurrentPage()!;
+      await until(() => page.frames().some((frame) => frame.url() === `${baseUrl}/next`));
+      expect(page.frames().map((frame) => frame.url())).toContain(`${baseUrl}/next`);
+      expect(page.frames().some((frame) => frame.url().startsWith(UNREGISTERED_SCHEME))).toBe(false);
+
+      const followed = await call('BrowserNavigate', { url: `${baseUrl}/s11/to-next` });
+      expect(followed.isError, followed.text).toBe(false);
+      expect(scope.getCurrentUrl()).toBe(`${baseUrl}/next`);
+
+      // Refused at the first hop and at a later one, through each agent path.
+      const first = await call('BrowserNavigate', { url: `${baseUrl}/s11/to-unregistered` });
+      expect(first.isError).toBe(true);
+      expect(first.text).toBe(`Error: ${baseUrl} ${refusal}; the browser opens only http and https URLs and about:blank, at every redirect.`);
+      const later = await call('BrowserOpen', { url: `${baseUrl}/s11/hop` });
+      expect(later.isError).toBe(true);
+      expect(later.text).toContain(refusal);
+      const tab = await call('BrowserTabs', { action: 'new', url: `${baseUrl}/s11/hop` });
+      expect(tab.isError).toBe(true);
+      expect(tab.text).toContain(refusal);
+      await expect.poll(() => scope.getCurrentPage()!.url()).toBe('chrome-error://chromewebdata/');
+
+      // A redirect to a download still downloads.
+      const download = await call('BrowserNavigate', { url: `${baseUrl}/s11/to-download` });
+      expect(download.isError).toBe(true);
+      expect(download.text).toContain('started a download');
+      await until(() => scope.getDownloads().some((entry) => entry.state === 'completed'));
+      const saved = scope.getDownloads().find((entry) => entry.state === 'completed')!;
+      await expect(fsp.readFile(saved.savedPath, 'utf8')).resolves.toBe('hello from download');
+
+      // A page's own link that redirects to the scheme ends on Chrome's error page.
+      expect((await call('BrowserNavigate', { url: `${baseUrl}/s11/links` })).isError).toBe(false);
+      const linkPage = scope.getCurrentPage()!;
+      await call('BrowserClick', { selector: '#hop' });
+      await expect.poll(() => linkPage.url()).toBe('chrome-error://chromewebdata/');
+
+      // Intercept rules neither bypass the guard nor stop applying: a continue rule on every request adds its header to a
+      // page it alone matches, and a later modify rule adds its header to the hop it matches, which the guard still fails.
+      expect((await call('BrowserIntercept', { action: 'add', pattern: '**/*', type: 'modify', headers: { 'x-it-all': '1' } })).isError).toBe(false);
+      expect((await call('BrowserIntercept', { action: 'add', pattern: '**/s11/hop', type: 'modify', headers: { 'x-it-hop': '1' } })).isError).toBe(false);
+      const ruled = async (path: string): Promise<unknown> => {
+        redirectRequests.length = 0;
+        const result = await call('BrowserNavigate', { url: `${baseUrl}${path}` });
+        const headers = redirectRequests.find((r) => r.path === path)?.headers;
+        return { isError: result.isError, refused: result.text.includes(refusal), all: headers?.['x-it-all'], hop: headers?.['x-it-hop'] };
+      };
+      // the later rule runs first and ends the route
+      await untilRuleAnswers(() => ruled('/s11/hop'), { isError: true, refused: true, all: undefined, hop: '1' });
+      await untilRuleAnswers(() => ruled('/s11/plain'), { isError: false, refused: false, all: '1', hop: undefined });
+      await call('BrowserIntercept', { action: 'clear' });
+    } finally {
+      await service.dispose();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 90_000);
+
+  it('VS Code: a served grant opens only from pages of the chat that holds it, and no grant host keeps a service worker', async () => {
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    const { ChatServedFiles } = await import('../served-files');
+    const { LocalServedRoots } = await import('../../served-pages/local-served-roots');
+    const { captureAppFrame } = await import('../../design/parity-capture');
+    const platform = createFakePlatform();
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-grants-'));
+    const folder = await fsp.realpath(await fsp.mkdtemp(join(tmpdir(), 'damocles-it-grant-files-')));
+    const project = join(folder, 'proj');
+    const design = join(folder, 'designs', 'd1');
+    await fsp.mkdir(join(design, 'screens'), { recursive: true });
+    await fsp.mkdir(project, { recursive: true });
+    await fsp.writeFile(join(project, 'index.html'), `<!doctype html><html><head><title>A page</title><link rel="stylesheet" href="style.css"></head>
+<body><button id="popup" onclick="window.open('popup.html', '_blank')">popup</button></body></html>`);
+    await fsp.writeFile(join(project, 'style.css'), 'body { background-color: rgb(1, 2, 3); }');
+    await fsp.writeFile(join(project, 'data.txt'), 'project-data');
+    await fsp.writeFile(join(project, 'popup.html'), '<!doctype html><html><head><title>A popup</title></head><body>popup</body></html>');
+    await fsp.writeFile(join(project, 'sw.js'), "self.addEventListener('fetch', () => undefined);");
+    await fsp.writeFile(join(design, 'screens', 'S1.html'), '<!doctype html><html><head><title>A design</title></head><body>S1</body></html>');
+    const roots = new LocalServedRoots({ isTrusted: () => true, refusalText: () => 'Open this preview from Damocles.', log: () => undefined });
+    const service = new BrowserService(platform, { profileDir: profile });
+    const [a, b] = [chatPanel(platform), chatPanel(platform)];
+    // each chat's served files lent to the browser, as PiSession lends them
+    const filesOf = (chat: typeof a) => {
+      const files = new ChatServedFiles({ roots: () => ({ project, designs: [{ designId: 'd1', folder: design }] }), serve: (file, root) => roots.url(chat, file, root) });
+      service.bindServedPages(chat, { toFile: (url) => files.toFile(url), restoreTarget: (url) => files.restoreTarget(url), ownsOrigin: (origin) => files.ownsOrigin(origin) });
+      return files;
+    };
+    const [filesA, filesB] = [filesOf(a), filesOf(b)];
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const call = async (chat: typeof a, name: string, input: unknown): Promise<{ text: string; isError: boolean }> => {
+      const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope: service.chatScope(chat), served: chat === a ? filesA : filesB } as never) as unknown as ToolLike[];
+      const result = await tools.find((tool) => tool.name === name)!.execute('it', input);
+      return { text: result.content.map((c) => c.text ?? '').join('\n'), isError: result.isError === true };
+    };
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 50 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const pages = (service as unknown as { pages: Map<unknown, { readonly chat: unknown; readonly panel: { readonly panel: { fireMessage(message: unknown): void } } }> }).pages;
+    const fetched = (page: { evaluate: (script: string) => Promise<unknown> }, path: string): Promise<unknown> => page.evaluate(`fetch('${path}').then((r) => r.status === 200 ? r.text() : 'status ' + r.status, (e) => 'failed: ' + e.message)`);
+    const blocked = 'net::ERR_BLOCKED_BY_CLIENT';
+    try {
+      // chat A's own page, its subresources, its design page and its same-grant popup load
+      const opened = await call(a, 'BrowserOpen', { url: pathToFileURL(join(project, 'index.html')).href });
+      expect(opened.isError, opened.text).toBe(false);
+      const pageA = service.chatScope(a).getCurrentPage()!;
+      expect(await pageA.title()).toBe('A page');
+      const origin = new URL(pageA.url()).origin;
+      expect(new URL(origin).hostname).toMatch(/^[0-9a-f]{32}\.localhost$/);
+      expect(await pageA.evaluate('getComputedStyle(document.body).backgroundColor')).toBe('rgb(1, 2, 3)');
+      expect(await fetched(pageA, '/data.txt')).toBe('project-data');
+      const popupOpened = pageA.context().waitForEvent('page');
+      await pageA.click('#popup');
+      const popup = await popupOpened;
+      await popup.waitForLoadState('load');
+      expect(await popup.title()).toBe('A popup');
+      await until(() => pages.get(popup)?.chat === a);
+      expect(pages.get(popup)?.chat).toBe(a);
+      expect(await fetched(popup, '/data.txt')).toBe('project-data');
+      const screen = await call(a, 'BrowserTabs', { action: 'new', url: pathToFileURL(join(design, 'screens', 'S1.html')).href });
+      expect(screen.isError, screen.text).toBe(false);
+      expect(await service.chatScope(a).getCurrentPage()!.title()).toBe('A design');
+      // an agent scope of A (a subagent, DesignParity's capture) opens A's page by its address, the grant cookie in the profile
+      const capturedA = await captureAppFrame(service.createAgentScope('parity-a', a), `${origin}/index.html`, 768);
+      expect(capturedA.isError, JSON.stringify(capturedA.content[0])).toBeUndefined();
+
+      // a service worker never registers on a grant host
+      const registered = await pageA.evaluate("navigator.serviceWorker.register('/sw.js').then(() => 'registered', (e) => 'refused: ' + e.message)");
+      expect(registered).toMatch(/^refused: .*403/);
+
+      // chat B's BrowserNavigate, BrowserTabs new, address bar and DesignParity capture of A's page all fail
+      await service.chatScope(b).open(`${baseUrl}/next`);
+      const pageB = service.chatScope(b).getCurrentPage()!;
+      const navigated = await call(b, 'BrowserNavigate', { url: `${origin}/index.html` });
+      expect(navigated).toEqual({ isError: true, text: `Error: Navigation to a served page on port ${new URL(origin).port} failed: that served page belongs to another chat (${blocked}).` });
+      const tab = await call(b, 'BrowserTabs', { action: 'new', url: `${origin}/index.html` });
+      expect(tab.isError).toBe(true);
+      expect(tab.text).toContain(blocked);
+      await pageB.goto(`${baseUrl}/next`);
+      expect(pageB.url()).toBe(`${baseUrl}/next`);
+      pages.get(pageB)!.panel.panel.fireMessage({ type: 'navigate', url: `${origin}/index.html` });
+      await expect.poll(() => pageB.url()).toBe('chrome-error://chromewebdata/');
+      const capturedB = await captureAppFrame(service.createAgentScope('parity-b', b), `${origin}/index.html`, 768);
+      expect(capturedB).toEqual({ content: [{ type: 'text', text: JSON.stringify({ failure: 'load', detail: blocked }) }], isError: true });
+
+      // B's continue rule on every request applies to B's pages and does not skip the guard
+      expect((await call(b, 'BrowserIntercept', { action: 'add', pattern: '**/*', type: 'modify', headers: { 'x-it-b': '1' } })).isError).toBe(false);
+      await untilRuleAnswers(async () => {
+        redirectRequests.length = 0;
+        await call(b, 'BrowserNavigate', { url: `${baseUrl}/s11/rule-probe` });
+        return redirectRequests.find((r) => r.path === '/s11/rule-probe')?.headers['x-it-b'];
+      }, '1');
+      const ruled = await call(b, 'BrowserNavigate', { url: `${origin}/index.html` });
+      expect(ruled.isError).toBe(true);
+      expect(ruled.text).toContain(blocked);
+      // B's page framing A's address: the frame's first navigation pauses on B's page session, so B's guard fails it before
+      // the server answers (a server refusal would be a 403 response, not a failed request)
+      await call(b, 'BrowserNavigate', { url: `${baseUrl}/next` });
+      const pageB2 = service.chatScope(b).getCurrentPage()!;
+      const frameFailures: string[] = [];
+      const frameStatuses: number[] = [];
+      pageB2.on('requestfailed', (request) => { if (request.url().startsWith(origin)) frameFailures.push(request.failure()?.errorText ?? ''); });
+      pageB2.on('response', (response) => { if (response.url().startsWith(origin)) frameStatuses.push(response.status()); });
+      await pageB2.evaluate(`document.body.appendChild(Object.assign(document.createElement('iframe'), { src: '${origin}/index.html' }))`);
+      await until(() => frameFailures.length + frameStatuses.length > 0);
+      expect({ frameFailures, frameStatuses }).toEqual({ frameFailures: [blocked], frameStatuses: [] });
+      expect(pageB2.frames().map((each) => each.url())).toEqual([`${baseUrl}/next`, 'chrome-error://chromewebdata/']);
+      // a popup another site's page opens starts loading before it registers, so no guard sees its first load: it is
+      // cross-site, which the server refuses before any cookie counts
+      const foreignPopupOpened = pageB2.context().waitForEvent('page');
+      await pageB2.evaluate(`window.open('${origin}/index.html', '_blank')`);
+      const foreignPopup = await foreignPopupOpened;
+      await foreignPopup.waitForLoadState('load');
+      expect(await foreignPopup.evaluate('document.body.innerText')).toBe('Open this preview from Damocles.');
+
+      // B's own grant of the same root still opens for B
+      const own = await call(b, 'BrowserNavigate', { url: pathToFileURL(join(project, 'index.html')).href });
+      expect(own.isError, own.text).toBe(false);
+      expect(new URL(service.chatScope(b).getCurrentPage()!.url()).origin).not.toBe(origin);
+
+      // B's fulfill rule for every index.html answers B's page on another site, and gives B no document on A's origin
+      expect((await call(b, 'BrowserIntercept', { action: 'add', pattern: '**/index.html', type: 'fulfill', status: 200, headers: { 'content-type': 'text/html' }, body: '<title>stub</title>' })).isError).toBe(false);
+      await untilRuleAnswers(async () => {
+        const stubbed = await call(b, 'BrowserNavigate', { url: `${baseUrl}/index.html` });
+        return stubbed.isError ? stubbed.text : service.chatScope(b).getCurrentPage()!.title();
+      }, 'stub');
+      const fulfilled = await call(b, 'BrowserNavigate', { url: `${origin}/index.html` });
+      expect(fulfilled.isError, fulfilled.text).toBe(true);
+      expect(fulfilled.text).toContain(blocked);
+
+      // A's page still loads with B's rules in place
+      expect(await fetched(pageA, '/data.txt')).toBe('project-data');
+    } finally {
+      await service.dispose();
+      roots.dispose();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+      await fsp.rm(folder, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 120_000);
+
+  // What each page's service-worker bypass (page-network-guard.ts) rests on, pinned on raw sessions against a worker an earlier
+  // launch of the same profile stored: the bypass needs Network enabled on its session, and serviceWorkers 'block' alone
+  // leaves a stored worker answering.
+  it('probe: a stored service worker stops answering a page only once its own session enables Network and bypasses workers', async () => {
+    const { chromium } = await import('patchright');
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-sw-probe-'));
+    const launch = (serviceWorkers: 'allow' | 'block') => chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, chromiumSandbox: true, serviceWorkers });
+    const answers = async (serviceWorkers: 'allow' | 'block', commands: ReadonlyArray<readonly [string, Record<string, unknown>]>) => {
+      const context = await launch(serviceWorkers);
+      try {
+        // Patchright's document route on, as the context observers' binding turns it on in production
+        await context.addInitScript('window.__probeInit = 1');
+        await context.route('**/*', (route) => route.fallback());
+        const page = await context.newPage();
+        const session = await context.newCDPSession(page);
+        for (const [method, params] of commands) await session.send(method as never, params as never);
+        const main = async (expression: string): Promise<unknown> => (await session.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result.value;
+        await session.send('Page.navigate', { url: `${baseUrl}/sw/page` });
+        await page.waitForLoadState('load');
+        const navigation = await main('document.title');
+        const subresource = await main("fetch('/sw/data').then((r) => r.text())");
+        const dedicatedWorker = await main("new Promise((resolve) => { const w = new Worker('/sw/dedicated.js'); w.onmessage = (e) => resolve(e.data); })");
+        const sharedWorker = await main("new Promise((resolve) => { const w = new SharedWorker('/sw/shared.js'); w.port.onmessage = (e) => resolve(e.data); })");
+        storedWorkerRequests.length = 0;
+        // no guard here: either answer ends at the unregistered scheme, which opens nothing
+        await session.send('Page.navigate', { url: `${baseUrl}/sw/hop` });
+        const redirect = storedWorkerRequests.includes('/sw/hop') ? 'from network' : 'from worker';
+        await session.send('Page.navigate', { url: `${baseUrl}/sw/framed` });
+        await page.waitForLoadState('load');
+        await expect.poll(() => main("document.querySelector('iframe')?.contentDocument?.title ?? ''")).not.toBe('');
+        const frame = await main("document.querySelector('iframe').contentDocument.title");
+        return { navigation, subresource, dedicatedWorker, sharedWorker, redirect, frame };
+      } finally {
+        await context.close();
+      }
+    };
+    const worker = { navigation: 'from worker', subresource: 'from-worker', dedicatedWorker: 'from-worker', sharedWorker: 'from-worker', redirect: 'from worker', frame: 'from worker' };
+    const network = { navigation: 'from network', subresource: 'from-network', dedicatedWorker: 'from-network', sharedWorker: 'from-network', redirect: 'from network', frame: 'from network' };
+    const bypass = ['Network.setBypassServiceWorker', { bypass: true }] as const;
+    try {
+      const earlier = await launch('allow');
+      try {
+        const page = earlier.pages()[0] ?? (await earlier.newPage());
+        await page.goto(`${baseUrl}/sw/register`);
+        await expect.poll(() => page.title(), { timeout: 10_000 }).toBe('sw ready');
+      } finally {
+        await earlier.close();
+      }
+      expect(await answers('allow', [])).toEqual(worker);
+      expect(await answers('allow', [bypass])).toEqual(worker);
+      expect(await answers('block', [])).toEqual(worker);
+      expect(await answers('allow', [['Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }], bypass])).toEqual(network);
+
+      // a document the worker answered and controls, as a popup's first load can be, sends its later requests to the network
+      // once its session bypasses workers
+      const context = await launch('allow');
+      try {
+        await context.addInitScript('window.__probeInit = 1');
+        await context.route('**/*', (route) => route.fallback());
+        const page = await context.newPage();
+        const session = await context.newCDPSession(page);
+        const main = async (expression: string): Promise<unknown> => (await session.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result.value;
+        await session.send('Page.navigate', { url: `${baseUrl}/sw/page` });
+        await page.waitForLoadState('load');
+        expect(await main('document.title + (navigator.serviceWorker.controller === null ? "" : ", controlled")')).toBe('from worker, controlled');
+        await session.send('Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
+        await session.send('Network.setBypassServiceWorker', { bypass: true });
+        expect(await main("fetch('/sw/data').then((r) => r.text())")).toBe('from-network');
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 120_000);
+
+  it('no request of an agent page reaches a service worker, stored by an earlier launch or registered since', async () => {
+    const { chromium } = await import('patchright');
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-sw-'));
+    // an earlier launch that let pages register workers stores one in the profile and sees it answer
+    const earlier = await chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, chromiumSandbox: true });
+    try {
+      const page = earlier.pages()[0] ?? (await earlier.newPage());
+      await page.goto(`${baseUrl}/sw/register`);
+      await expect.poll(() => page.title(), { timeout: 10_000 }).toBe('sw ready');
+      await page.goto(`${baseUrl}/sw/page`);
+      expect(await page.title()).toBe('from worker');
+    } finally {
+      await earlier.close();
+    }
+    const platform = createFakePlatform();
+    const service = new BrowserService(platform, { profileDir: profile });
+    const scope = service.chatScope(chatPanel(platform));
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+    const call = async (name: string, input: unknown): Promise<{ text: string; isError: boolean }> => {
+      const result = await tools.find((tool) => tool.name === name)!.execute('it', input);
+      return { text: result.content.map((c) => c.text ?? '').join('\n'), isError: result.isError === true };
+    };
+    type Entry = {
+      readonly controller: { evaluate(expression: string): Promise<{ value?: unknown }>; navigate(url: string): Promise<{ loaderId: string; errorText?: string }> };
+      readonly guard: { refusal(loaderId: string): unknown };
+    };
+    const pages = (service as unknown as { pages: Map<unknown, Entry> }).pages;
+    // a page's main world, through the controller on its guard's session
+    const mainOf = async (page: unknown, expression: string): Promise<unknown> => (await pages.get(page)!.controller.evaluate(expression)).value;
+    const main = (expression: string): Promise<unknown> => mainOf(scope.getCurrentPage(), expression);
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 50 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const refusal = `Error: ${baseUrl} redirected to a ${UNREGISTERED_SCHEME} address; the browser opens only http and https URLs and about:blank, at every redirect.`;
+    // Chrome fetches a registered worker's script for its own update checks, whenever it makes them
+    const workerScripts = ['/sw/sw.js', '/sw/sw2.js'];
+    const expectOnlyPageRequests = (paths: readonly string[]): void => {
+      expect(storedWorkerRequests).toEqual(expect.arrayContaining([...paths]));
+      expect(storedWorkerRequests.filter((path) => !paths.includes(path) && !workerScripts.includes(path))).toEqual([]);
+    };
+    try {
+      storedWorkerRequests.length = 0;
+      const opened = await call('BrowserOpen', { url: `${baseUrl}/sw/page` });
+      expect(opened.isError, opened.text).toBe(false);
+      expect(await main('document.title')).toBe('from network');
+      expect(await main('navigator.serviceWorker.controller')).toBeNull();
+      expect(await main("fetch('/sw/data').then((r) => r.text())")).toBe('from-network');
+      // a stored worker's redirect would never reach the navigation guard; the network's does
+      expect(await call('BrowserNavigate', { url: `${baseUrl}/sw/hop` })).toEqual({ isError: true, text: refusal });
+      const framed = await call('BrowserNavigate', { url: `${baseUrl}/sw/framed` });
+      expect(framed.isError, framed.text).toBe(false);
+      await expect.poll(() => main("document.querySelector('iframe').contentDocument?.title ?? ''")).toBe('from network');
+      expect(storedWorkerRequests).toEqual(expect.arrayContaining(['/sw/page', '/sw/data', '/sw/hop', '/sw/framed', '/sw/frame']));
+
+      // the chat's BrowserIntercept rule sees the subresource a worker would have answered
+      expect((await call('BrowserIntercept', { action: 'add', pattern: '**/sw/data', type: 'fulfill', status: 200, headers: { 'content-type': 'text/plain' }, body: 'from-rule' })).isError).toBe(false);
+      await untilRuleAnswers(() => main("fetch('/sw/data').then((r) => r.text())"), 'from-rule');
+      await call('BrowserIntercept', { action: 'clear' });
+
+      // a page's dedicated and shared workers fetch from the network too
+      expect(await main("new Promise((resolve) => { const w = new Worker('/sw/dedicated.js'); w.onmessage = (e) => resolve(e.data); })")).toBe('from-network');
+      expect(await main("new Promise((resolve) => { const w = new SharedWorker('/sw/shared.js'); w.port.onmessage = (e) => resolve(e.data); })")).toBe('from-network');
+
+      // a popup's first document starts loading before its registration bypasses workers, so the stored worker may answer
+      // it; once registered, its requests reach the network and the guard
+      const popupOpened = scope.getCurrentPage()!.context().waitForEvent('page');
+      await scope.getCurrentPage()!.evaluate("window.open('/sw/page', '_blank')");
+      const popup = await popupOpened;
+      await until(() => pages.has(popup));
+      expect(['from worker', 'from network']).toContain(await mainOf(popup, 'document.title'));
+      storedWorkerRequests.length = 0;
+      expect(await mainOf(popup, "fetch('/sw/data').then((r) => r.text())")).toBe('from-network');
+      const popupHop = await pages.get(popup)!.controller.navigate(`${baseUrl}/sw/hop`);
+      expect(popupHop.errorText).toBe('net::ERR_BLOCKED_BY_CLIENT');
+      expect(pages.get(popup)!.guard.refusal(popupHop.loaderId)).toEqual({ kind: 'redirect', hop: `${baseUrl}/sw/hop`, scheme: UNREGISTERED_SCHEME });
+      expectOnlyPageRequests(['/sw/data', '/sw/hop']);
+
+      // a page may register a worker, whose scope answers everything, and it answers no agent page either
+      const activated = "navigator.serviceWorker.register('/sw/sw2.js', { scope: '/sw/x/' }).then((r) => new Promise((resolve) => { const w = r.installing ?? r.waiting ?? r.active; if (w.state === 'activated') resolve(w.state); w.addEventListener('statechange', () => { if (w.state === 'activated') resolve(w.state); }); }))";
+      expect(await main(activated)).toBe('activated');
+      storedWorkerRequests.length = 0;
+      const second = await call('BrowserNavigate', { url: `${baseUrl}/sw/x/page` });
+      expect(second.isError, second.text).toBe(false);
+      expect(await main('document.title')).toBe('from network');
+      expectOnlyPageRequests(['/sw/x/page']);
+    } finally {
+      await service.dispose();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 90_000);
+
+  // What the launch's preload preference (client-certificate-rules.ts writeLaunchPreferences) rests on, pinned on a context
+  // with Chrome's default preferences: Chrome fetches each page a page's speculation rules name, a prerender's page through
+  // the prefetch it makes first, from no page's own session, so no navigation guard or BrowserIntercept rule sees it, and a
+  // link click then commits that answer with no request of the page.
+  it('probe: Chrome preloads a page\'s speculation rules outside the page\'s own session, and a link click commits the preloaded answer', async () => {
+    const { chromium } = await import('patchright');
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-preload-probe-'));
+    const context = await chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, chromiumSandbox: true });
+    try {
+      // Patchright's document route on, as the context observers' binding turns it on in production
+      await context.addInitScript('window.__probeInit = 1');
+      await context.route('**/*', (route) => route.fallback());
+      const page = context.pages()[0] ?? (await context.newPage());
+      const session = await context.newCDPSession(page);
+      const paused: string[] = [];
+      session.on('Fetch.requestPaused', (event) => {
+        paused.push(new URL(event.request.url).pathname);
+        void session.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => undefined);
+      });
+      await session.send('Fetch.enable', { patterns: [{ urlPattern: `${baseUrl}/pre/*`, requestStage: 'Request' }] });
+      const prefetches = new Map<string, string>();
+      session.on('Preload.prefetchStatusUpdated', (event) => prefetches.set(new URL(event.prefetchUrl).pathname, event.prefetchStatus));
+      await session.send('Preload.enable');
+      preloadRequests.length = 0;
+      await page.goto(`${baseUrl}/pre/host`);
+      await expect.poll(() => Object.fromEntries(prefetches), { timeout: 10_000 }).toEqual({ '/pre/rendered': 'PrefetchSuccessfulButNotUsed', '/pre/fetched': 'PrefetchSuccessfulButNotUsed' });
+      expect(preloadRequests).toEqual(expect.arrayContaining([
+        { path: '/pre/rendered', purpose: 'prefetch;prerender', rule: undefined },
+        { path: '/pre/fetched', purpose: 'prefetch', rule: undefined },
+      ]));
+      await page.click('#rendered');
+      await expect.poll(() => prefetches.get('/pre/rendered')).toBe('PrefetchResponseUsed');
+      await page.waitForLoadState('load');
+      const loaded = await session.send('Runtime.evaluate', { expression: "document.title + ', ' + performance.getEntriesByType('navigation')[0].deliveryType", returnByValue: true });
+      expect(loaded.result.value).toBe('preload target, navigational-prefetch');
+      expect(paused).toEqual(['/pre/host']);
+      expect(preloadRequests.filter((request) => request.path === '/pre/rendered')).toHaveLength(1);
+    } finally {
+      await context.close();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+
+  it('the agent\'s browser preloads nothing a page\'s speculation rules name, so the page a link opens is a request of the page itself', async () => {
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+    const platform = createFakePlatform();
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-preload-'));
+    const service = new BrowserService(platform, { profileDir: profile });
+    const scope = service.chatScope(chatPanel(platform));
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+    const call = async (name: string, input: unknown): Promise<{ text: string; isError: boolean }> => {
+      const result = await tools.find((tool) => tool.name === name)!.execute('it', input);
+      return { text: result.content.map((c) => c.text ?? '').join('\n'), isError: result.isError === true };
+    };
+    const pages = (service as unknown as { pages: Map<unknown, { readonly controller: { evaluate(expression: string): Promise<{ value?: unknown }> } }> }).pages;
+    try {
+      const opened = await call('BrowserOpen', { url: `${baseUrl}/next` });
+      expect(opened.isError, opened.text).toBe(false);
+      const page = scope.getCurrentPage()!;
+      const session = await page.context().newCDPSession(page);
+      const disabledByPreference: boolean[] = [];
+      session.on('Preload.preloadEnabledStateUpdated', (event) => disabledByPreference.push(event.disabledByPreference));
+      const prefetches = new Map<string, string>();
+      session.on('Preload.prefetchStatusUpdated', (event) => prefetches.set(new URL(event.prefetchUrl).pathname, event.prefetchStatus));
+      await session.send('Preload.enable');
+      expect((await call('BrowserIntercept', { action: 'add', pattern: '**/pre/*', type: 'modify', headers: { 'x-it-preload': '1' } })).isError).toBe(false);
+      await untilRuleAnswers(async () => {
+        preloadRequests.length = 0;
+        await page.evaluate("fetch('/pre/probe').then(() => undefined)");
+        return preloadRequests[0]?.rule;
+      }, '1');
+
+      preloadRequests.length = 0;
+      const host = await call('BrowserNavigate', { url: `${baseUrl}/pre/host` });
+      expect(host.isError, host.text).toBe(false);
+      await expect.poll(() => Object.fromEntries(prefetches), { timeout: 10_000 }).toEqual({ '/pre/rendered': 'PrefetchNotEligiblePreloadingDisabled', '/pre/fetched': 'PrefetchNotEligiblePreloadingDisabled' });
+      expect(disabledByPreference).toEqual([true]);
+      const clicked = await call('BrowserClick', { selector: '#rendered' });
+      expect(clicked.isError, clicked.text).toBe(false);
+      await expect.poll(() => page.url()).toBe(`${baseUrl}/pre/rendered`);
+      const loaded = await pages.get(page)!.controller.evaluate("document.title + ', ' + performance.getEntriesByType('navigation')[0].deliveryType");
+      expect(loaded.value).toBe('preload target, ');
+      expect(preloadRequests).toEqual([{ path: '/pre/host', purpose: undefined, rule: '1' }, { path: '/pre/rendered', purpose: undefined, rule: '1' }]);
+    } finally {
+      await service.dispose();
+      await fsp.rm(profile, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
 
   // Chromium 152+ crashed the browser on this second download while History held the first one's row
   // (microsoft/playwright#42506); clearDownloadHistory runs before each launch to prevent it.

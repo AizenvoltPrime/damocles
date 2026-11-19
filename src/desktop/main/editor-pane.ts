@@ -1194,6 +1194,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     await this.closeTabs([tab.id], { ask: true });
   }
 
+  /** Whether a document of the file at filePath on authority holds unsaved changes, once the shell's last edits arrived. */
+  async isFileDirty(authority: string, filePath: string): Promise<boolean> {
+    await this.flush();
+    return this.deps.documents.isFileDirty(authority, filePath);
+  }
+
   /**
    * The unsaved documents of files on this computer's disk, once the shell's last edits arrived (the save-before-commit
    * prompt); a remote file's path is its host's, so it never matches a local repository's.

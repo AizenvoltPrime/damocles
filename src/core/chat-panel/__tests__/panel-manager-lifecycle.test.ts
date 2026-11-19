@@ -152,6 +152,23 @@ describe('PanelManager routes nothing a webview sent after its ready until the r
     expect(routedTypes()).toEqual(['ready', 'sendMessage', 'cancelSession']);
   });
 
+  it('routes the messages held behind the first ready before it tells a browser chat-owners listener the chat readied', async () => {
+    h = createHarness([folderEntry(A)]);
+    const host = makeFakeHost();
+    await h.manager.initializeHost(host);
+    let readied!: () => void;
+    h.holdReady.gate = new Promise<void>((resolve) => { readied = resolve; });
+    const seen: string[][] = [];
+    h.manager.browserChatOwners().onDidChange(() => seen.push(routedTypes()));
+
+    host.send({ type: 'ready', panelToken: PANEL_TOKEN });
+    host.send({ type: 'sendMessage', content: 'first', sessionId: null });
+    readied();
+    await tick();
+
+    expect(seen).toEqual([['ready', 'sendMessage']]);
+  });
+
   it('settles whenReadied once the first ready was handled, and for a panel that closed before one came', async () => {
     h = createHarness([folderEntry(A)]);
     const host = makeFakeHost();
@@ -403,5 +420,16 @@ describe('design chats (PD-1, PD-50)', () => {
     await instance.permissionHandler.activatePlanMode();
     expect(instance.permissionHandler.getPermissionMode()).toBe('default');
     expect(instance.permissionHandler.modeFixed()).toBe(true);
+  });
+
+  // whether the Workspace settings section can be written follows trust in both directions
+  it('sends a panel its settings again on a trust grant and on a revoke', async () => {
+    const sent = vi.fn(async () => undefined);
+    h = createHarness([folderEntry(A)], { sendCurrentSettings: sent });
+    await h.manager.initializeHost(makeFakeHost());
+    sent.mockClear();
+    h.platform.trust.grantTrust();
+    h.platform.trust.revokeTrust();
+    expect(sent).toHaveBeenCalledTimes(2);
   });
 });

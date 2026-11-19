@@ -134,6 +134,21 @@ const sentinelOptions: BundleOptions = {
   plugins: nodePlugins,
 };
 
+const walkChildOptions: BundleOptions = {
+  entryPoints: ['src/core/search-walk/walk-child.ts'],
+  bundle: true,
+  outfile: EXTENSION_BUNDLE_FILES.walkChild,
+  // the walk places a `.git` file's pointer through koffi on Windows (dos-devices.ts), which resolves its native module itself
+  external: ['koffi'],
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: isWatch,
+  minify: !isWatch,
+  logLevel: 'info',
+  plugins: nodePlugins,
+};
+
 /** The extension build's bundles, one per `EXTENSION_BUNDLE_FILES` entry, which the VSIX ships from dist/. */
 export const EXTENSION_BUNDLES: BundleOptions[] = [
   extensionOptions,
@@ -144,6 +159,7 @@ export const EXTENSION_BUNDLES: BundleOptions[] = [
   voiceExtractWorkerOptions,
   processLauncherWorkerOptions,
   sentinelOptions,
+  walkChildOptions,
 ];
 
 const desktopMainOptions: BundleOptions = {
@@ -302,7 +318,8 @@ export function copyCliScripts(dir = 'dist/bin'): void {
 
 /**
  * The bundles a server package carries in dist/ (scripts/build-server.ts): the daemon, Damocles Core, the hosts the daemon
- * forks, every worker in CoreInit.paths.workers, the watch worker, the askpass helper and the terminals' damocles command.
+ * forks, every worker in CoreInit.paths.workers (the walk process's included), the watch worker, the askpass helper and the terminals'
+ * damocles command.
  */
 export const SERVER_BUNDLES: BundleOptions[] = [
   daemonOptions,
@@ -317,6 +334,7 @@ export const SERVER_BUNDLES: BundleOptions[] = [
   workerOptions,
   voiceExtractWorkerOptions,
   watchWorkerOptions,
+  walkChildOptions,
   askpassMainOptions,
   cliRemoteOptions,
 ];
@@ -327,6 +345,7 @@ export const DESKTOP_BUNDLES: BundleOptions[] = [
   ptyHostOptions,
   quickOpenWorkerOptions,
   watchWorkerOptions,
+  walkChildOptions,
   askpassMainOptions,
   cliOptions,
   cliRemoteOptions,

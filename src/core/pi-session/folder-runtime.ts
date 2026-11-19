@@ -54,7 +54,7 @@ import type { TrustService } from '../../platform/trust-service';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingInspection } from '../../platform/settings-store';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
-import { worktreeWalkOf } from '../worktrees/personal-config';
+import { personalFilesTrusted, worktreeWalkOf } from '../worktrees/personal-config';
 import { modelInPlan, notInPlanClause } from './pi-models';
 import { clearTerminatedCalls } from './terminated-calls';
 import { readSessionFileEntries } from './session-store/session-file-entries';
@@ -223,7 +223,7 @@ export class FolderRuntime {
    *  rename map) skips a rerun with the same inputs. */
   private _ruleMigration: Promise<void> = Promise.resolve();
   private _ruleMigrationSignature = '';
-  private readonly _trustGrantListener: Disposable;
+  private readonly _trustListener: Disposable;
   /** Config-driven hooks (loads/watches `~/.damocles/hooks.json` + `<folder>/.damocles/hooks.json`). */
   private readonly _hooksConfig: HooksConfigService;
   /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
@@ -298,7 +298,7 @@ export class FolderRuntime {
       this.refreshActiveTools();
       this.queueRenamedToolRuleMigration();
     });
-    this._trustGrantListener = options.trust.onDidGrantTrust(() => this.queueRenamedToolRuleMigration());
+    this._trustListener = options.trust.onDidChangeTrust(() => this.queueRenamedToolRuleMigration());
     this._hooksConfig = new HooksConfigService(options.cwd, options.trust, options.fileWatchers);
     // a daemon's core: the browser tools join ToolSearch's menu when the first client attaches and leave it with the last
     let browserReach = browserReachable();
@@ -385,8 +385,8 @@ export class FolderRuntime {
           agentsFiles: overrideGlobalContextFile(base.agentsFiles, {
             agentDir: this._agentDir,
             homeDir: os.homedir(),
-            // Read per call, never captured: the trust-grant reload re-runs this closure, and that is
-            // what surfaces the project instructions file with no window reload.
+            // Read per call, never captured: a trust-change reload re-runs this closure, and that is
+            // what surfaces or withdraws the project instructions file with no window reload.
             trusted: this._trust.isTrusted(this.cwd),
             ...worktreeWalkOf(this.cwd),
           }),
@@ -448,20 +448,21 @@ export class FolderRuntime {
    * the personal scopes' `damocles.tools.disabled`, and queue a one-time notice for what it must not rewrite:
    * other files, agent `disallowed_tools`, the project scope's `damocles.tools.disabled`, and a folder server's
    * retired tools in places other folders share. Runs whenever the folder's tools change, so a server that
-   * connects later is handled then, and on a trust grant. Folder files and the local scope are read or touched
-   * only in a trusted folder. A run whose personal-list rewrite failed is not done, so the next one retries it.
+   * connects later is handled then, and on a trust change. Folder files and the local scope are read or touched
+   * only in a trusted folder, and its personal files only while personalFilesTrusted admits them. A run whose personal-list rewrite failed is not done, so the next one retries it.
    */
   private queueRenamedToolRuleMigration(): void {
-    // Inputs are read in the queued step, after every trust-grant listener (the agent registry's reload) ran.
+    // Inputs are read in the queued step, after every trust listener (the agent registry's reload) ran.
     this._ruleMigration = this._ruleMigration
       .then(async () => {
         if (this._disposed) return;
         const input = this._mcpView.legacyToolNameInput();
         const renames = toolRenames(legacyToCurrentToolNames(input), retiredResourceToolNames(input));
         if (renames.rules.size === 0) return;
-        const folder = this._trust.isTrusted(this.cwd) ? this.cwd : null;
+        const isTrusted = (target: string): boolean => this._trust.isTrusted(target);
+        const folder = isTrusted(this.cwd) ? { path: this.cwd, personalFiles: personalFilesTrusted(isTrusted, this.cwd) } : null;
         const entries = (map: ReadonlyMap<string, string>) => [...map].map(([legacy, current]) => `${legacy}>${current}`).sort();
-        const signature = [`trusted=${folder !== null}`, ...entries(renames.rules), 'shared:', ...entries(renames.shared.rules)].join('\n');
+        const signature = [`trusted=${folder !== null}`, `personal=${folder?.personalFiles === true}`, ...entries(renames.rules), 'shared:', ...entries(renames.shared.rules)].join('\n');
         if (signature === this._ruleMigrationSignature) return;
         const lists = this.agentDisallowedToolLists();
         const projectDisabled = folder ? this._projectDisabledTools() : null;
@@ -691,7 +692,7 @@ export class FolderRuntime {
   }
 
   /**
-   * Reload with no session about to bind (asset edits, trust grant, plugin swaps), so this runtime owns
+   * Reload with no session about to bind (asset edits, trust change, plugin swaps), so this runtime owns
    * retiring the instance it mints. Pending provider registrations stay on the loader for the caller.
    */
   reloadBare(): Promise<void> {
@@ -980,7 +981,7 @@ export class FolderRuntime {
     this._workspaceAgents?.dispose();
     this._workspaceAgents = null;
     this._mcpUnsubscribe();
-    this._trustGrantListener.dispose();
+    this._trustListener.dispose();
     this._browserReachListener?.dispose();
     this._ruleNoticePosters.clear();
     this._mcpView.dispose();

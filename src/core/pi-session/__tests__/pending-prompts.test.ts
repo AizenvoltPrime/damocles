@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parsePatch } from 'diff';
 import { installFakePlatform } from '../../../__mocks__/fake-platform';
 import { installLogSink } from '../../logger';
@@ -43,6 +44,13 @@ describe('pending prompt summaries', () => {
     const { patch } = filePatch('src/a.ts', before, after) as { patch: string };
     expect(summaryOf(permission({ filePath: path.join(CWD, 'src', 'a.ts'), patch }))).toBe(`edit ${path.join('src', 'a.ts')} (+3 −1)`);
     expect(summaryOf(permission({ filePath: 'src/a.ts', patchOmitted: 'tooLarge' }))).toBe(`edit ${path.join('src', 'a.ts')}`);
+  });
+
+  it.each([
+    ['an @ path', '@src/a.ts'],
+    ['a file: URL', pathToFileURL(path.join(CWD, 'src', 'a.ts')).href],
+  ])('names an edit of %s by the file the tool resolves it to', (_label, written) => {
+    expect(summaryOf(permission({ filePath: written, patchOmitted: 'tooLarge' }))).toBe(`edit ${path.join('src', 'a.ts')}`);
   });
 
   it('names a new file by the lines it creates, and a file outside the chat folder by its absolute path', () => {

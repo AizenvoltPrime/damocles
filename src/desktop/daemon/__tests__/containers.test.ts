@@ -26,6 +26,8 @@ function fakeChild(): { child: LaunchedProcess; stdin: Buffer[]; kills: Array<Ki
   return {
     child: {
       pid: Promise.resolve(7),
+      pauseOutput: () => undefined,
+      resumeOutput: () => undefined,
       onData: (stream, listener) => void listeners[stream].push(listener),
       write: async (chunk) => void stdin.push(Buffer.from(chunk)),
       end: () => {

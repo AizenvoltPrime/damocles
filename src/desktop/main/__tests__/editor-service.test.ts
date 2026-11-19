@@ -100,19 +100,6 @@ describe('editor documents', () => {
     expect(textBody(`${'é'.repeat(3000)}\0`, 'plaintext')).toEqual({ kind: 'binary' });
   });
 
-  it('reads a file as text for the editor, refusing what it cannot show', async () => {
-    const huge = path.join(dir, 'huge-read.log');
-    const handle = fs.openSync(huge, 'w');
-    fs.ftruncateSync(handle, EDITOR_CONFIRM_DOCUMENT_BYTES + 1);
-    fs.closeSync(handle);
-    const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined, () => Promise.resolve(), englishText);
-
-    await expect(service.readText(write('read.ts', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('const a = 1;\n')])))).resolves.toBe('const a = 1;\n');
-    await expect(service.readText(huge)).rejects.toThrow('over the');
-    await expect(service.readText(write('read.bin', Buffer.from([1, 0, 2])))).rejects.toThrow('binary');
-    await expect(service.readText(path.join(dir, 'absent-read.ts'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
   it('maps file names to Monaco language ids', () => {
     expect(languageIdForName('constructor')).toBe('plaintext');
     expect(languageIdForName('toString')).toBe('plaintext');
@@ -169,6 +156,10 @@ describe('desktop editor service (D15 routing)', () => {
       openSettingsFile: async (scope: string, key?: string) => {
         pane.push(`settings:${scope}:${key ?? ''}`);
       },
+      isFileDirty: async (authority: string, filePath: string) => {
+        pane.push(`isFileDirty:${authority}:${path.basename(filePath)}`);
+        return path.basename(filePath) === 'dirty.ts';
+      },
     } as unknown as EditorPane;
     const activate = (context: ActiveEditorContext, authority: string | undefined): void => {
       active = { context, authority };
@@ -176,6 +167,13 @@ describe('desktop editor service (D15 routing)', () => {
     };
     return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }, () => Promise.resolve(), englishText), delivered, posted, pane, settingsOpened, activate };
   }
+
+  it('answers whether the pane holds unsaved changes to a file on this computer', async () => {
+    const { editor, pane } = service();
+    expect(await editor.isDirty('/w/dirty.ts')).toBe(true);
+    expect(await editor.isDirty('/w/clean.ts')).toBe(false);
+    expect(pane).toEqual(['isFileDirty:local:dirty.ts', 'isFileDirty:local:clean.ts']);
+  });
 
   it('opens files in the editor pane, focused only when the caller did not set preserveFocus, at a valid line only', async () => {
     const { editor, delivered, pane } = service();
@@ -237,11 +235,6 @@ describe('desktop editor service (D15 routing)', () => {
     await view.close();
     await view.close();
     expect(posted).toEqual([['host-3', { type: 'editorCloseView', viewId: message.viewId }]]);
-  });
-
-  it('reads the disk text, never an unsaved buffer', async () => {
-    const { editor } = service();
-    await expect(editor.readText(write('disk.ts', 'on disk\n'))).resolves.toBe('on disk\n');
   });
 
   it('tells a local core about the active file only while it is on this computer, at a read and on every change', () => {

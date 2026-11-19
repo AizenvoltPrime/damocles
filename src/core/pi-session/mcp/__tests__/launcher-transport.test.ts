@@ -117,6 +117,8 @@ function fakeChild(write: (line: string) => Promise<void> = async () => undefine
     exited,
     closed,
     leftRunning: closed.then(() => false),
+    pauseOutput: () => undefined,
+    resumeOutput: () => undefined,
     onData: (stream, listener) => {
       if (stream === 'stdout') stdout = listener;
     },

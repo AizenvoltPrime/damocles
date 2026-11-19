@@ -40,7 +40,7 @@ function relay(overrides: Partial<BrowserRelayDeps> = {}) {
       },
     }),
     policy: () => ({ allowedPorts: [5174, SERVED_PORT], allowLocalNetwork: false }),
-    served: { grant, mappings: () => [{ origin: SERVED, displayRoot: '/home/u/proj' }] },
+    served: { grant, mappings: () => [{ origin: SERVED, displayRoot: '/home/u/proj' }], viewOrigins: () => [SERVED] },
     run,
     ...overrides,
   };
@@ -53,7 +53,7 @@ describe('a remote chat\'s browser tool on this computer', () => {
   it('opens the target\'s loopback address on its forward and answers in the target\'s form', async () => {
     const { deps, run, attached } = relay();
     const answer = await relayBrowserTool(deps, request('BrowserNavigate', { url: 'http://localhost:5173/app' }), new AbortController().signal);
-    expect(run).toHaveBeenCalledWith({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'chat', tool: 'BrowserNavigate', input: { url: 'http://localhost:5174/app' } }, expect.any(AbortSignal));
+    expect(run).toHaveBeenCalledWith({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'chat', tool: 'BrowserNavigate', input: { url: 'http://localhost:5174/app' }, servedOrigins: [SERVED] }, expect.any(AbortSignal));
     expect(attached).toEqual(['view-1']);
     expect(answer.content[0]).toEqual({ type: 'text', text: 'Navigated to: http://localhost:5173/app\n[URL] http://localhost:5173/app ws://127.0.0.1:5173/hmr' });
     expect(answer.content[1]).toEqual({ type: 'image', data: 'AAAA', mimeType: 'image/jpeg' });
@@ -70,7 +70,7 @@ describe('a remote chat\'s browser tool on this computer', () => {
   it("moves DesignParity's capture address to its forward and guards it as an open", async () => {
     const { deps, run } = relay();
     await relayBrowserTool(deps, { viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5173/contacts', width: 768 } }, new AbortController().signal);
-    expect(run).toHaveBeenCalledWith({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5174/contacts', width: 768 } }, expect.any(AbortSignal));
+    expect(run).toHaveBeenCalledWith({ authority: 'ssh+host-1', viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://localhost:5174/contacts', width: 768 }, servedOrigins: [SERVED] }, expect.any(AbortSignal));
     run.mockClear();
     const refused = await relayBrowserTool(deps, { viewId: 'view-1', scope: 'design-parity-1', tool: PARITY_CAPTURE_TOOL, input: { url: 'http://10.0.0.5:8080/', width: 768 } }, new AbortController().signal);
     expect(refused.isError).toBe(true);
@@ -131,6 +131,22 @@ describe('a remote chat\'s browser tool on this computer', () => {
     const text = (answer.content[0] as { text: string }).text;
     expect(text).toBe('Opened browser: file:///home/u/proj/docs/index.html\n[URL] file:///home/u/proj/docs/index.html\nconsole: file:///home/u/proj/docs/app.js:3');
     expect(text).not.toMatch(/TOKEN|localhost/);
+  });
+
+  it("sends the view's own grant origins with the call, a grant it just made included, and no other view's", async () => {
+    const origins = new Map<string, string[]>([['view-1', []], ['view-2', [`http://${'b'.repeat(32)}.localhost:${SERVED_PORT}`]]]);
+    const { deps, run } = relay({ served: {
+      grant: async (granted) => {
+        origins.get(granted.viewId)!.push(SERVED);
+        return { origin: SERVED, open: (relPath: string) => `${SERVED}/__damocles_preview/open?${new URLSearchParams({ t: 'TOKEN', p: relPath }).toString()}` };
+      },
+      mappings: (viewId) => (origins.get(viewId) ?? []).map((origin) => ({ origin, displayRoot: '/home/u/proj' })),
+      viewOrigins: (viewId) => origins.get(viewId) ?? [],
+    } });
+    await relayBrowserTool(deps, request('BrowserNavigate', { url: 'http://localhost:5173/app' }), new AbortController().signal);
+    expect(run.mock.calls[0]?.[0].servedOrigins).toEqual([]);
+    await relayBrowserTool(deps, { ...request('BrowserOpen', { url: 'file:///home/u/proj/a.html' }), served: { kind: 'project', relPath: 'a.html', displayRoot: '/home/u/proj' } }, new AbortController().signal);
+    expect(run.mock.calls[1]?.[0].servedOrigins).toEqual([SERVED]);
   });
 
   it('carries the address\'s query into the one-time open and its fragment onto it, and answers with both in file:// form', async () => {
@@ -246,7 +262,7 @@ describe('a remote chat\'s granted folder, from its core\'s gate to this compute
     });
     try {
       const { deps, run } = relay({
-        served: { grant: (request) => served.grant({ authority: 'ssh+host-1', ...request }), mappings: (viewId) => served.mappings('ssh+host-1', viewId) },
+        served: { grant: (request) => served.grant({ authority: 'ssh+host-1', ...request }), mappings: (viewId) => served.mappings('ssh+host-1', viewId), viewOrigins: (viewId) => served.viewOrigins('ssh+host-1', viewId) },
         policy: () => ({ allowedPorts: served.servedPorts('ssh+host-1'), allowLocalNetwork: false }),
       });
       let opened = '';
@@ -271,6 +287,13 @@ describe('a remote chat\'s granted folder, from its core\'s gate to this compute
       const origin = new URL(opened).origin;
       expect((await get(`${origin}${exchange.headers.location}`, { cookie })).body).toBe('<p>week</p>');
       expect(reads).toEqual([['ssh+host-1|/home/u/reports', 'week/a.html']]);
+      expect(run.mock.calls.at(-1)?.[0].servedOrigins).toEqual([origin]);
+      // a grant of the view with no display path is still one of its origins, though no answer maps it
+      const bare = await served.grant({ authority: 'ssh+host-1', root: { kind: 'design', designId: 'd1' }, viewId: 'view-1' });
+      if ('refused' in bare) throw new Error(bare.refused);
+      expect(served.mappings('ssh+host-1', 'view-1').map((mapping) => mapping.origin)).toEqual([origin]);
+      await relayBrowserTool(deps, request('BrowserDownloads', {}), new AbortController().signal);
+      expect([...run.mock.calls.at(-1)![0].servedOrigins!].sort()).toEqual([origin, bare.origin].sort());
       // another view of the host holds nothing of it, and the core cannot grant it to a view this host does not have
       expect(await served.grant({ authority: 'ssh+host-1', root: { kind: 'folder', folder: '/home/u/reports' }, viewId: 'view-2' })).toHaveProperty('refused');
     } finally {

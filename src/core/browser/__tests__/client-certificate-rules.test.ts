@@ -17,7 +17,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrowserService } from '../index';
-import { writeClientCertificateRules } from '../client-certificate-rules';
+import { writeLaunchPreferences } from '../client-certificate-rules';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { PanelHost } from '../../../platform/window-service';
 import type { ClientCertificateFilter } from '../../../shared/client-certificate';
@@ -49,13 +49,13 @@ function seedPreferences(value: unknown): void {
 
 const chat = (): PanelHost => platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
 
-describe('writeClientCertificateRules', () => {
+describe('writeLaunchPreferences', () => {
   it('replaces the auto-selection key with exactly the rules and keeps every other preference', async () => {
     seedPreferences({
       browser: { has_seen_welcome_page: true },
       profile: { name: 'Person 1', content_settings: { exceptions: { cookies: { 'https://a.test:443,*': { setting: 1 } }, auto_select_certificate: { 'https://old.test:443,*': { setting: { filters: [{ SUBJECT: { CN: 'old' } }] } } } } } },
     });
-    await writeClientCertificateRules(profile, new Map([['https://intranet.test:8443', FILTER]]));
+    await writeLaunchPreferences(profile, new Map([['https://intranet.test:8443', FILTER]]));
     const written = JSON.parse(readFileSync(preferencesFile(), 'utf8'));
     expect(ruleOf(written)).toEqual({ 'https://intranet.test:8443,*': { setting: { filters: [FILTER] } } });
     expect(written.browser).toEqual({ has_seen_welcome_page: true });
@@ -64,12 +64,12 @@ describe('writeClientCertificateRules', () => {
   });
 
   it('makes the Preferences of a profile Chrome never ran', async () => {
-    await writeClientCertificateRules(profile, new Map([['https://[::1]:9443', FILTER]]));
+    await writeLaunchPreferences(profile, new Map([['https://[::1]:9443', FILTER]]));
     expect(ruleOf(JSON.parse(readFileSync(preferencesFile(), 'utf8')))).toEqual({ 'https://[::1]:9443,*': { setting: { filters: [FILTER] } } });
   });
 
   it('refuses a filter naming no field, which Chrome would match to any certificate the site is offered', async () => {
-    await expect(writeClientCertificateRules(profile, new Map([['https://intranet.test:443', { ISSUER: {}, SUBJECT: {} }]]))).rejects.toThrow('names no field');
+    await expect(writeLaunchPreferences(profile, new Map([['https://intranet.test:443', { ISSUER: {}, SUBJECT: {} }]]))).rejects.toThrow('names no field');
     const service = new BrowserService(platform, { profileDir: profile });
     await expect(service.useClientCertificate('https://intranet.test:443', { ISSUER: {}, SUBJECT: {} })).rejects.toThrow('names no field');
     await expect(service.openNewPageForChat(chat())).rejects.toThrow('no browser in this test');
@@ -77,11 +77,11 @@ describe('writeClientCertificateRules', () => {
   });
 
   it('refuses an origin that is not the exact https form, and a Preferences file that is not JSON', async () => {
-    await expect(writeClientCertificateRules(profile, new Map([['https://[*.]corp.test:443', FILTER]]))).rejects.toThrow('is not an https origin');
+    await expect(writeLaunchPreferences(profile, new Map([['https://[*.]corp.test:443', FILTER]]))).rejects.toThrow('is not an https origin');
     seedPreferences([]);
-    await expect(writeClientCertificateRules(profile, new Map())).rejects.toThrow('does not hold a JSON object');
+    await expect(writeLaunchPreferences(profile, new Map())).rejects.toThrow('does not hold a JSON object');
     writeFileSync(preferencesFile(), '{');
-    await expect(writeClientCertificateRules(profile, new Map())).rejects.toThrow();
+    await expect(writeLaunchPreferences(profile, new Map())).rejects.toThrow();
     expect(readFileSync(preferencesFile(), 'utf8')).toBe('{');
   });
 });
@@ -93,6 +93,14 @@ describe('BrowserService client certificates', () => {
     await expect(service.openNewPageForChat(chat())).rejects.toThrow('no browser in this test');
     expect(launched).toHaveLength(1);
     expect(ruleOf(launched[0])).toEqual({});
+  });
+
+  // Chrome's speculation-rules preloads bypass each page's network guard (pinned in patchright-launch.integration.test.ts).
+  it('launches with Chrome\'s page preloading off, whatever the profile held, keeping its other network preferences', async () => {
+    seedPreferences({ net: { network_prediction_options: 0, http_server_properties: { version: 5 } } });
+    const service = new BrowserService(platform, { profileDir: profile });
+    await expect(service.openNewPageForChat(chat())).rejects.toThrow('no browser in this test');
+    expect((launched[0] as { net: unknown }).net).toEqual({ network_prediction_options: 2, http_server_properties: { version: 5 } });
   });
 
   it('launches with the rules chosen while no browser ran', async () => {
@@ -167,6 +175,7 @@ describe('BrowserService client certificates', () => {
     const binding = service.bindServedPages(owner, {
       toFile: (url) => url.replace('http://127.0.0.1:51234/', 'file:///c:/project/'),
       restoreTarget,
+      ownsOrigin: () => true,
     });
     const restore = vi.spyOn(service, 'restoreChatPages').mockResolvedValue();
 

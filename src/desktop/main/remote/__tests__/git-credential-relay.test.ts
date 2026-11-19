@@ -41,6 +41,8 @@ function recordingLauncher(stdout: (spec: SpawnSpec) => string = () => ''): { sp
       });
       return {
         pid: Promise.resolve(1),
+        pauseOutput: () => undefined,
+        resumeOutput: () => undefined,
         onData: (stream, listener) => {
           if (stream === 'stdout') listeners.push(listener);
         },

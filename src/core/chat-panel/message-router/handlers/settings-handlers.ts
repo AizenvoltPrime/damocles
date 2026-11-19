@@ -2,7 +2,7 @@ import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../ty
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
 import type { SettingsScope } from "../../../../platform/settings-store";
-import { parseCacheWarmingMode } from "../../../../shared/types/constants";
+import { parseCacheWarmingMode, UPLOAD_FOLDER_MAX_ENTRIES_SETTING, UPLOAD_FOLDER_MAX_SIZE_SETTING } from "../../../../shared/types/constants";
 import { McpWriteError } from "../../settings-manager/managers/mcp-config-write";
 import { MCP_REMOTE_AVAILABLE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, RELAYABLE_SOURCES, type McpToolExposureScope } from "../../../../shared/types/mcp";
 import { settingsViewScope } from "../../settings-view-scope";
@@ -446,6 +446,20 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setBrowserHeadless") return;
       await writeSetting(deps, ctx, "damocles.browser.headless", (detail) => l("Failed to save the headless browser setting: {0}", detail), () =>
         settingsManager.handleSetBrowserHeadless(msg.headless));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setBrowserUploadFolderMaxEntries: async (msg, ctx) => {
+      if (msg.type !== "setBrowserUploadFolderMaxEntries") return;
+      await writeSetting(deps, ctx, UPLOAD_FOLDER_MAX_ENTRIES_SETTING, (detail) => l("Failed to save the folder upload entry limit: {0}", detail), () =>
+        settingsManager.handleSetBrowserUploadFolderMaxEntries(msg.count));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setBrowserUploadFolderMaxSize: async (msg, ctx) => {
+      if (msg.type !== "setBrowserUploadFolderMaxSize") return;
+      await writeSetting(deps, ctx, UPLOAD_FOLDER_MAX_SIZE_SETTING, (detail) => l("Failed to save the folder upload size limit: {0}", detail), () =>
+        settingsManager.handleSetBrowserUploadFolderMaxSize(msg.mebibytes));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 

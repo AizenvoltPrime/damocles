@@ -15,24 +15,35 @@ import { createEditTool } from '../edit-tool';
  */
 const ours = vi.hoisted(() => ({ calls: [] as string[], dir: '' }));
 
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
+const recording = vi.hoisted(() => <T extends object>(actual: T, relative: (file: string) => string): T => {
   const recorded = { ...actual };
   for (const name of ['access', 'realpath', 'open', 'readFile', 'writeFile', 'mkdir', 'stat'] as const) {
-    const original = actual[name] as (...args: unknown[]) => Promise<unknown>;
+    const original = (actual as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
     (recorded as Record<string, unknown>)[name] = (file: unknown, ...rest: unknown[]) => {
-      if (ours.dir && String(file).startsWith(ours.dir)) ours.calls.push(`${name} ${path.relative(ours.dir, String(file))}`);
+      if (ours.dir && String(file).startsWith(ours.dir)) ours.calls.push(`${name} ${relative(String(file))}`);
       return original(file, ...rest);
     };
   }
   return recorded;
 });
 
+vi.mock('node:fs/promises', async (importOriginal) => recording(await importOriginal<typeof import('node:fs/promises')>(), (file) => path.relative(ours.dir, file)));
+
+// the bundle maps node:fs to original-fs as it maps node:fs/promises, so a call through its promises is the overrides' own too
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const promises = recording(actual.promises, (file) => path.relative(ours.dir, file));
+  return { ...actual, promises, default: { ...actual, promises } };
+});
+
+/** The real `fs`, which pi's tools import and `watchPiFs` patches. */
+const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+
 const FS_NAMES = ['access', 'realpath', 'open', 'readFile', 'writeFile', 'mkdir', 'stat', 'lstat'] as const;
 
 /** Records each call the real `fs` gets for a path under `dir` while `run` runs, which only pi's own code makes here. */
 async function watchPiFs<T>(dir: string, run: () => Promise<T>): Promise<{ result: T; calls: string[] }> {
-  const promises = fs.promises as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const promises = realFs.promises as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
   const originals = new Map(FS_NAMES.map((name) => [name, promises[name]!]));
   const calls: string[] = [];
   for (const [name, original] of originals) {
@@ -140,7 +151,7 @@ describe("the file tools' operations", () => {
     expect(result).toEqual(pis);
     expect(fs.readFileSync(path.join(cwd, name))).toEqual(fs.readFileSync(path.join(theirs, name)));
     expect(calls).toEqual([]);
-    expect(ours.calls).toEqual(expect.arrayContaining([`realpath ${path.normalize(name)}`, `writeFile ${path.normalize(name)}`]));
+    expect(ours.calls).toEqual(expect.arrayContaining([`realpath ${path.normalize(name)}`, `open ${path.normalize(name)}`]));
   });
 
   it('Edit makes one replacement as pi\'s edit does, reaching the file only through its own operations', async () => {
@@ -156,7 +167,7 @@ describe("the file tools' operations", () => {
     expect(result).toEqual(pis);
     expect(fs.readFileSync(path.join(cwd, 'a.txt'))).toEqual(fs.readFileSync(path.join(theirs, 'a.txt')));
     expect(calls).toEqual([]);
-    expect(ours.calls).toEqual(['realpath a.txt', 'access a.txt', 'readFile a.txt', 'writeFile a.txt']);
+    expect(ours.calls).toEqual(['stat a.txt', 'realpath a.txt', 'access a.txt', 'open a.txt', 'open a.txt']);
   });
 
   it('Edit replace_all reaches the file only through its own operations', async () => {
@@ -168,7 +179,7 @@ describe("the file tools' operations", () => {
     expect(result.content).toEqual([{ type: 'text', text: 'Successfully replaced 1 block(s) in a.txt.' }]);
     expect(fs.readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('y one\r\ny\n');
     expect(calls).toEqual([]);
-    expect(ours.calls).toEqual(['realpath a.txt', 'access a.txt', 'readFile a.txt', 'writeFile a.txt']);
+    expect(ours.calls).toEqual(['stat a.txt', 'realpath a.txt', 'access a.txt', 'open a.txt', 'open a.txt']);
   });
 
   it('Edit fails on a missing file as pi\'s edit does, asking only its own operations', async () => {
@@ -180,6 +191,6 @@ describe("the file tools' operations", () => {
 
     expect(result).toEqual(pis);
     expect(calls).toEqual([]);
-    expect(ours.calls).toEqual(['realpath gone.txt', 'access gone.txt']);
+    expect(ours.calls).toEqual(['stat gone.txt', 'realpath gone.txt', 'access gone.txt']);
   });
 });

@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import * as vscode from 'vscode';
+import { __trustEmitter } from 'vscode';
 import { RELOCATION_NOTICE_CODES, RELOCATION_PAUSE_CODES, RELOCATION_REFUSAL_CODES, RELOCATION_WAIT_CODES, type MovedFromCandidate, type PreflightAnswer, type RelocationView } from '../../core/project-relocation/types';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import { DECLINED_KEY, failureText, registerRelocationOffer, RelocationOffer } from '../relocation-offer';
@@ -99,6 +100,33 @@ describe('RelocationOffer', () => {
     expect(fake.relocate).toHaveBeenCalledWith({ from: OLD, to: TO, listed: [TO] });
     expect(info).toHaveBeenCalledTimes(2);
     expect(registered).toHaveLength(1);
+  });
+
+  // core reads the opened folder's root commits only once the workspace is trusted, so a grant can find a match
+  it('looks again when the workspace is trusted and offers what it finds, but never a pair the user declined', async () => {
+    __trustEmitter.clear();
+    const fake = relocations([]);
+    const state = memento();
+    vi.spyOn(vscode.commands, 'registerCommand').mockImplementation(() => ({ dispose: () => undefined }));
+    // the activation's lookup, made while the folder was untrusted, is still running when the grant comes
+    let untrustedLookup!: (found: MovedFromCandidate[]) => void;
+    fake.movedFrom.mockImplementationOnce(() => new Promise((resolve) => { untrustedLookup = resolve; }));
+    const context = { subscriptions: [] as vscode.Disposable[], globalState: state };
+    registerRelocationOffer(context as unknown as vscode.ExtensionContext, fake);
+    await vi.waitFor(() => expect(fake.movedFrom).toHaveBeenCalledTimes(1));
+
+    fake.movedFrom.mockImplementation(async () => [{ from: OLD, chats: 3 }]);
+    answer(info, 'Not Now');
+    __trustEmitter.fire();
+    await vi.waitFor(() => expect(state.values.get(DECLINED_KEY)).toEqual([`${folderKey(OLD)}\n${folderKey(TO)}`]));
+    expect(info.mock.calls[0]).toEqual([`Move the chats of ${OLD} here?`, 'Move Chats', 'Not Now']);
+    untrustedLookup([]);
+
+    __trustEmitter.fire();
+    await vi.waitFor(() => expect(fake.movedFrom).toHaveBeenCalledTimes(3));
+    expect(info).toHaveBeenCalledTimes(1);
+    for (const subscription of context.subscriptions) subscription.dispose();
+    expect(__trustEmitter.cbs).toEqual([]);
   });
 
   it('remembers Not Now for the pair: a later check does not ask, the command asks again', async () => {

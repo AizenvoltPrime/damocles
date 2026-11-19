@@ -1280,6 +1280,8 @@ function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
     rangedReads: false,
     outside: false,
     listing: false,
+    walks: true,
+    searchUnsupported: () => 'Update the Damocles server on this host to search it.',
     openStream: () => { throw new Error('no transfer streams in this suite'); },
     log: () => undefined,
   });

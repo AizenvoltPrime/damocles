@@ -70,7 +70,7 @@ function desktopStore(): DesktopSettingsStore {
     contributed: parseContributedConfiguration({ contributes: { configuration: { properties } } }),
     fileWatchers: fake.fileWatchers,
     projects: fake.workspaceFolders,
-    trust: { isTrusted: () => true, onDidGrantTrust: () => ({ dispose: () => undefined }), requestTrust: () => Promise.resolve(true) },
+    trust: { isTrusted: () => true, onDidChangeTrust: () => ({ dispose: () => undefined }), requestTrust: () => Promise.resolve(true) },
     defaultProject: { folder: () => folder, onDidChange: () => ({ dispose: () => undefined }) },
     chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: fake.notifications,

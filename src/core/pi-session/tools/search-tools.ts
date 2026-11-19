@@ -1,17 +1,14 @@
 import { existsSync } from 'node:fs';
-import { access, open, stat } from 'node:fs/promises';
+import { access, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import picomatch from 'picomatch';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FindOperations, FindToolDetails, GrepToolDetails, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AnyToolDefinition } from './any-tool-definition';
-import { processLauncher, type LaunchedProcess } from '../../process-launcher';
 import type { PiCodingAgentModule } from '../pi-loader';
-import { overrideRules } from './rg-ignore';
-import { insideGitRepo, walkFiles } from './search-walk';
+import { ALL_IGNORE_FILES, batchLineBudget, decodeRgText, runRg, runWalkedRg, walkHost, type RgLineEvent, type RgRunEnd, type WalkStream } from '../../search-walk';
 
 /**
  * Damocles' `grep` runs the ripgrep binary Damocles ships, and its `find` lists through the walk. pi's own
@@ -97,109 +94,12 @@ function aborted(): Error {
   return new Error('Operation aborted');
 }
 
-/** rg prints an error for every file it cannot open, which can run to megabytes; the first ones name the cause. */
-const STDERR_LIMIT = 8 * 1024;
+// Of the files rg could not read, the ones Grep's notice names, each name cut to MAX_UNREADABLE_NAME_CHARS.
+const MAX_UNREADABLE_NAMED = 5;
+const MAX_UNREADABLE_NAME_CHARS = 200;
 
-function captureStderr(child: LaunchedProcess): () => string {
-  let text = '';
-  child.onData('stderr', (chunk) => {
-    if (text.length < STDERR_LIMIT) text += chunk.toString().slice(0, STDERR_LIMIT - text.length);
-  });
-  return () => text;
-}
-
-/** pi 1.5.2's `decodeRgText` (`dist/core/tools/grep.js:31`): rg sends non-UTF-8 text base64-encoded in `bytes`. */
-function decodeRgText(data: { text?: string; bytes?: string } | undefined): string {
-  if (typeof data?.text === 'string') return data.text;
-  if (typeof data?.bytes === 'string') return Buffer.from(data.bytes, 'base64').toString('utf-8');
-  return '';
-}
-
-interface RgLineEvent {
-  type?: string;
-  data?: { path?: { text?: string; bytes?: string }; line_number?: number; absolute_offset?: number; lines?: { text?: string; bytes?: string }; binary_offset?: number | null };
-}
-
-// rg's read buffer (grep-searcher's DEFAULT_BUFFER_CAPACITY): its walk reports nothing from the buffer holding a file's first NUL on.
-const BINARY_BUFFER = 64 * 1024;
-
-/** How much of a file is known: `clean` bytes from its start hold no NUL, `nul` is the first one's offset, `end` that it was read whole. */
-interface FileScan {
-  clean: number;
-  nul?: number;
-  end: boolean;
-}
-
-/**
- * Reads file, a regular file the walk listed, from scan.clean on until `until`, its end or a NUL. rg decodes a file opening with a
- * UTF-16 byte order mark before it looks for a NUL, so such a file is read to its end or its first U+0000, which counts at offset 0.
- */
-async function scanFile(file: string, scan: FileScan, until: number): Promise<void> {
-  const handle = await open(file, 'r');
-  try {
-    const buffer = Buffer.alloc(BINARY_BUFFER);
-    if (scan.clean === 0) {
-      const { bytesRead } = await handle.read(buffer, 0, 2, 0);
-      const utf16 = bytesRead === 2 && buffer[0] === 0xff && buffer[1] === 0xfe ? 'utf-16le' : bytesRead === 2 && buffer[0] === 0xfe && buffer[1] === 0xff ? 'utf-16be' : undefined;
-      if (utf16 !== undefined) {
-        const decoder = new TextDecoder(utf16);
-        for (let position = 2; ; ) {
-          const { bytesRead: read } = await handle.read(buffer, 0, BINARY_BUFFER, position);
-          if (decoder.decode(buffer.subarray(0, read), { stream: read > 0 }).includes('\0')) {
-            scan.nul = 0;
-            return;
-          }
-          if (read === 0) break;
-          position += read;
-        }
-        scan.end = true;
-        return;
-      }
-    }
-    while (scan.clean < until) {
-      const { bytesRead } = await handle.read(buffer, 0, BINARY_BUFFER, scan.clean);
-      const nul = buffer.subarray(0, bytesRead).indexOf(0);
-      if (nul >= 0) {
-        scan.nul = scan.clean + nul;
-        return;
-      }
-      scan.clean += bytesRead;
-      if (bytesRead < BINARY_BUFFER) {
-        scan.end = true;
-        return;
-      }
-    }
-  } finally {
-    await handle.close();
-  }
-}
-
-// The byte after an event's line, from where its line starts.
-const lineEnd = (event: RgLineEvent): number => (event.data?.absolute_offset ?? 0) + (typeof event.data?.lines?.bytes === 'string' ? Buffer.from(event.data.lines.bytes, 'base64').length : Buffer.byteLength(event.data?.lines?.text ?? ''));
-
-// A batch's whole rg command line in UTF-16 units, NUL included: headroom below CreateProcessW's 32,767, near which process
-// creation stalls for seconds (measured, docs/invariants.md "Tool overrides").
-const BATCH_COMMAND_LINE = 32000;
-
-/** The length libuv gives arg on a Windows command line (`quote_cmd_arg`): quoted when it holds a space, tab or `"`, or is empty. */
-export function commandLineLength(arg: string): number {
-  if (arg === '') return 2;
-  if (!/[ \t"]/.test(arg)) return arg.length;
-  if (!/["\\]/.test(arg)) return arg.length + 2;
-  let extra = 2;
-  let backslashes = 0;
-  for (const char of arg) {
-    if (char === '\\') {
-      backslashes++;
-      continue;
-    }
-    // backslashes before a quote are doubled, and the quote is escaped
-    if (char === '"') extra += backslashes + 1;
-    backslashes = 0;
-  }
-  // and so are those before the closing quote
-  return arg.length + extra + backslashes;
-}
+// rg's stderr line for a file it could not read: `rg: <path>: <the OS's message> (os error <n>)`.
+const UNREADABLE_LINE = /^rg: (.+): [^:]*\(os error \d+\)$/;
 
 async function runGrep(
   pi: PiCodingAgentModule,
@@ -240,11 +140,10 @@ async function runGrep(
     return path.basename(filePath);
   };
 
-  // --no-config, as in pi's grep: a RIPGREP_CONFIG_PATH file must not change what the tool's options mean.
-  const args = ['--no-config', '--json', '--line-number', '--color=never', '--hidden'];
-  if (ignoreCase) args.push('--ignore-case');
-  if (literal) args.push('--fixed-strings');
-  if (contextValue > 0) args.push('--context', String(contextValue));
+  const flags = ['--json', '--line-number', '--color=never', '--hidden'];
+  if (ignoreCase) flags.push('--ignore-case');
+  if (literal) flags.push('--fixed-strings');
+  if (contextValue > 0) flags.push('--context', String(contextValue));
   // rg never matches a glob starting with `./`; a leading `!` still negates.
   const globLine = glob ? glob.replace(/^(!?)(?:\.\/)+/, '$1') : undefined;
 
@@ -302,159 +201,50 @@ async function runGrep(
     if (matchLimitReached && !(inWindow && lineNumber < trailingContextEnd)) done = true;
   };
 
-  let killedDueToLimit = false;
-  // walked: rg searches the files the walk listed, each named on its command line, and so past a NUL, where its own walk
-  // reports nothing from the read buffer holding the NUL on (64 KiB, BINARY_BUFFER); a file's events are held until its end,
-  // or, once they would end the search or pass the output cap, until a read of the file shows no NUL up to their buffers.
-  const search = (rgArgs: readonly string[], walked: boolean): Promise<void> => new Promise<void>((resolve, reject) => {
-    // an aborted signal fires no abort event, so a run started after the abort would go to its end
-    if (signal?.aborted) return reject(aborted());
-    const child = processLauncher().launch({ file: rgPath, args: rgArgs, ...(isDirectory ? { cwd: searchPath } : {}), stdio: ['ignore', 'pipe', 'pipe'] });
-    const stderr = captureStderr(child);
-    const onAbort = (): void => {
-      child.kill();
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    const decoder = new StringDecoder('utf8');
-    let pending = '';
-    let file: { path: string; held: RgLineEvent[]; matches: number; bytes: number; scan: FileScan; mode: 'hold' | 'stream' | 'drop' } | undefined;
-    // lines that arrive while a file's first buffer is read wait here, in order
-    let waiting: string[] | undefined;
-    let checking: Promise<void> = Promise.resolve();
-    let failure: { error: unknown } | undefined;
-    const stopIfDone = (): void => {
-      if (done && !killedDueToLimit) {
-        killedDueToLimit = true;
-        child.kill();
-      }
-    };
-    const onFileEvent = (event: RgLineEvent): void => {
-      if (event.type === 'begin') {
-        file = { path: decodeRgText(event.data?.path), held: [], matches: 0, bytes: 0, scan: { clean: 0, end: false }, mode: 'hold' };
-        return;
-      }
-      if (file === undefined) return;
-      if (event.type === 'end') {
-        const binaryOffset = event.data?.binary_offset;
-        if (file.mode === 'hold') {
-          const before = binaryOffset == null ? Infinity : binaryOffset - BINARY_BUFFER;
-          for (const kept of file.held) if (lineEnd(kept) <= before) onEvent(kept);
-        }
-        file = undefined;
-        return;
-      }
-      if (event.type !== 'match' && event.type !== 'context') return;
-      if (file.mode === 'stream') return onEvent(event);
-      if (file.mode === 'drop') return;
-      file.held.push(event);
-      if (event.type === 'match') file.matches++;
-      file.bytes += decodeRgText(event.data?.lines).length;
-      // once the hold would end the search or outgrow the output cap, the file is read far enough to release it
-      if ((event.type === 'match' && matchCount + file.matches > effectiveLimit) || file.bytes > pi.DEFAULT_MAX_BYTES) {
-        const checked = file;
-        waiting = [];
-        const until = checked.held.reduce((last, kept) => Math.max(last, kept.data?.absolute_offset ?? 0), 0) + BINARY_BUFFER;
-        checking = scanFile(path.resolve(searchPath, checked.path), checked.scan, until).then(() => {
-          const { nul, end, clean } = checked.scan;
-          // a line shows when no buffer up to its own holds a NUL: rg's walk stops at the buffer holding the first one
-          const shows = (kept: RgLineEvent): boolean => (nul !== undefined ? lineEnd(kept) <= nul - BINARY_BUFFER : end || (kept.data?.absolute_offset ?? 0) + BINARY_BUFFER <= clean);
-          const released = checked.held.filter(shows);
-          checked.held = nul !== undefined || end ? [] : checked.held.filter((kept) => !shows(kept));
-          checked.matches = checked.held.filter((kept) => kept.type === 'match').length;
-          checked.bytes = checked.held.reduce((sum, kept) => sum + decodeRgText(kept.data?.lines).length, 0);
-          if (nul !== undefined) checked.mode = 'drop';
-          else if (end) checked.mode = 'stream';
-          for (const kept of released) onEvent(kept);
-          const queued = waiting ?? [];
-          waiting = undefined;
-          stopIfDone();
-          for (const line of queued) onLine(line);
-        }, (error: unknown) => {
-          failure = { error };
-          waiting = undefined;
-          child.kill();
-        });
-      }
-    };
-    const onLine = (line: string): void => {
-      if (waiting) return void waiting.push(line);
-      if (done || !line.trim()) return;
-      let event: RgLineEvent;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (walked) onFileEvent(event);
-      else onEvent(event);
-      stopIfDone();
-    };
-    child.onData('stdout', (chunk) => {
-      const lines = (pending + decoder.write(chunk)).split(/\r?\n/);
-      pending = lines.pop() ?? '';
-      for (const line of lines) onLine(line);
-    });
-    Promise.all([child.exited, child.closed]).then(async ([{ code }]) => {
-      onLine(pending + decoder.end());
-      // a check started by the last lines settles before the run does
-      for (let settled = checking; ; settled = checking) {
-        await settled;
-        if (settled === checking) break;
-      }
-      signal?.removeEventListener('abort', onAbort);
-      if (failure) return reject(failure.error);
-      if (signal?.aborted) return reject(aborted());
-      if (!killedDueToLimit && code !== 0 && code !== 1) return reject(new Error(stderr().trim() || `ripgrep exited with code ${code}`));
-      resolve();
-    }, (error: Error) => {
-      signal?.removeEventListener('abort', onAbort);
-      reject(new Error(`Failed to run ripgrep: ${error.message}`));
-    });
-  });
-
-  if (!isDirectory) {
-    // a file named on rg's command line is searched whatever --glob says
-    await search([...args, ...(globLine ? ['--glob', globLine] : []), '--', pattern, searchPath], false);
-  } else {
-    // --no-ignore: rg reads no ignore file, git folder or git config for the files it is given; --no-mmap: every file is read
-    // as rg's own walk reads it, whatever the batch's size
-    const fixed = [...args, '--no-ignore', '--no-mmap', '--', pattern];
-    const fixedLength = [rgPath, ...fixed].reduce((sum, arg) => sum + commandLineLength(arg) + 1, 0);
-    const walk = walkFiles({ root: searchPath, requireGit: true, overrides: overrideRules(globLine ? [globLine] : []), allowedHosts, signal });
-    let batch: string[] = [];
-    let length = fixedLength;
-    // one rg at a time, searching its batch on its own threads, while the walk goes on
-    let running: Promise<void> = Promise.resolve();
-    let failure: { error: unknown } | undefined;
-    const start = (files: string[]): void => {
-      running = search([...fixed, ...files], true).catch((error: unknown) => {
-        failure = { error };
-      });
-    };
-    try {
-      for await (const file of walk.files) {
-        const cost = commandLineLength(file) + 1;
-        if (length + cost > BATCH_COMMAND_LINE && batch.length > 0) {
-          await running;
-          if (failure || done) break;
-          start(batch);
-          batch = [];
-          length = fixedLength;
-        }
-        batch.push(file);
-        length += cost;
-      }
-      await running;
-      if (!failure && !done && batch.length > 0) start(batch);
-    } finally {
-      // a walk that fails leaves its rg to finish (an abort kills it) before the error reaches the caller
-      await running;
+  // rg exits 2 after a search that could not read some files, naming each on stderr: Grep keeps the matches and names those files
+  const unreadable: string[] = [];
+  let unreadableMore = false;
+  const runEnded = ({ code, stderr, summary }: RgRunEnd): Error | undefined => {
+    if (code === 0 || code === 1) return undefined;
+    // no summary: rg searched nothing (a regex it refused), which fails Grep as it fails pi's grep
+    if (code !== 2 || !summary) return new Error(stderr || `ripgrep exited with code ${code}`);
+    for (const line of stderr.split(/\r?\n/)) {
+      const name = UNREADABLE_LINE.exec(line)?.[1];
+      if (name === undefined) continue;
+      if (isCovered(name)) leftOut = true;
+      else if (unreadable.length < MAX_UNREADABLE_NAMED) unreadable.push(formatPath(name).slice(0, MAX_UNREADABLE_NAME_CHARS));
+      else unreadableMore = true;
     }
-    if (failure) throw failure.error;
-    if (!killedDueToLimit && walk.errors.length > 0) throw new Error(walk.errors.join('\n'));
-  }
+    return undefined;
+  };
 
-  if (matchCount === 0) return { content: [{ type: 'text', text: leftOut ? `No matches found\n\n[${LEFT_OUT_NOTICE}]` : 'No matches found' }], details: undefined };
+  const engine = { rgPath, signal, onEvent, done: () => done, runEnded };
+  if (!isDirectory) {
+    // --no-config, as in pi's grep: a RIPGREP_CONFIG_PATH file must not change what the tool's options mean; a file named on
+    // rg's command line is searched whatever --glob says
+    await runRg({ ...engine, args: ['--no-config', ...flags, ...(globLine ? ['--glob', globLine] : []), '--', pattern, searchPath] });
+  } else {
+    let walk: WalkStream | undefined;
+    await runWalkedRg({
+      ...engine,
+      cwd: searchPath,
+      flags,
+      pattern,
+      batches: async function* (listing) {
+        walk = walkHost().walk({ root: searchPath, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: globLine ? [globLine] : [], allowedHosts: await walkHosts(allowedHosts), lineBudget: Math.max(1, batchLineBudget(rgPath, flags, pattern)) }, listing);
+        yield* walk;
+      },
+      // once the hold would end the search or outgrow the output cap
+      mustRelease: (held) => matchCount + held.matches > effectiveLimit || held.bytes > pi.DEFAULT_MAX_BYTES,
+    });
+    if (!done && walk !== undefined && walk.errors.length > 0) throw new Error(walk.errors.join('\n'));
+  }
+  const unreadableNotice = unreadable.length === 0 ? undefined : `ripgrep could not read ${unreadable.join(', ')}${unreadableMore ? ' and other files' : ''}`;
+
+  if (matchCount === 0) {
+    const notices = [...(unreadableNotice ? [unreadableNotice] : []), ...(leftOut ? [LEFT_OUT_NOTICE] : [])];
+    return { content: [{ type: 'text', text: notices.length > 0 ? `No matches found\n\n[${notices.join('. ')}]` : 'No matches found' }], details: undefined };
+  }
 
   const truncation = pi.truncateHead(outputLines.join('\n'), { maxLines: Number.MAX_SAFE_INTEGER });
   truncation.totalLines = outputLineCount;
@@ -470,6 +260,7 @@ async function runGrep(
     notices.push(`${pi.formatSize(pi.DEFAULT_MAX_BYTES)} limit reached`);
     details.truncation = truncation;
   }
+  if (unreadableNotice) notices.push(unreadableNotice);
   if (leftOut) notices.push(LEFT_OUT_NOTICE);
   if (linesTruncated) {
     notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
@@ -479,9 +270,14 @@ async function runGrep(
   return { content: [{ type: 'text', text: output }], details: Object.keys(details).length > 0 ? details : undefined };
 }
 
+// networkReach places a .git file's pointer only on win32, so elsewhere the chat's hosts, a realpath of its folders, are not read.
+async function walkHosts(allowedHosts: () => Promise<ReadonlySet<string>>): Promise<string[]> {
+  return process.platform === 'win32' ? [...(await allowedHosts())] : [];
+}
+
 /**
  * pi's `grep` (name, schema, description, renderers) with an `execute` that runs the bundled rg as pi runs its own: on a file
- * named by `path` itself, else on the files the walk lists (`walkFiles`). allowedNetworkHosts: the chat's hosts, onto which a
+ * named by `path` itself, else on the files the walk process lists (`walkHost`). allowedNetworkHosts: the chat's hosts, onto which a
  * `.git` file's pointer may lead.
  */
 export function createGrepTool(pi: PiCodingAgentModule, cwd: string, resolveRgPath: ResolveRgPath, readRuleFilter: ReadRuleFilter, allowedNetworkHosts: () => Promise<ReadonlySet<string>>): ToolDefinition {
@@ -556,10 +352,9 @@ async function listMatchingPaths(
   if (!(await stat(searchPath)).isDirectory()) throw new Error(`Search path is not a directory: ${searchPath}`);
   if (options.limit <= 0) return [];
   if (signal?.aborted) throw aborted();
-  // fd applies .gitignore outside a repository only with --no-require-git, and pi passes it there.
-  const requireGit = await insideGitRepo(searchPath);
-  // pi's node_modules and .git excludes match the path below the search root, so a root inside either still lists.
-  const walk = walkFiles({ root: searchPath, requireGit, overrides: overrideRules(options.ignore.map((glob) => `!${glob}`)), allowedHosts, signal });
+  // fd applies .gitignore outside a repository only with --no-require-git, and pi passes it there ('insideRepo'). pi's
+  // node_modules and .git excludes match the path below the search root, so a root inside either still lists.
+  const walk = walkHost().walk({ root: searchPath, requireGit: 'insideRepo', ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: options.ignore.map((glob) => `!${glob}`), allowedHosts: await walkHosts(allowedHosts) }, signal);
   const matches = fdGlobMatcher(pattern);
   const seenDirectories = new Set<string>();
   const results: string[] = [];
@@ -567,24 +362,27 @@ async function listMatchingPaths(
   const add = (entry: string): void => {
     if (results.length < options.limit) results.push(entry);
   };
-  for await (const entry of walk.files) {
+  listing: for await (const batch of walk) {
     listedAny = true;
-    const file = path.join(searchPath, entry);
-    const relative = path.dirname(entry);
-    if (relative !== '.') {
-      let directory = searchPath;
-      for (const segment of relative.split(path.sep)) {
-        directory = path.join(directory, segment);
-        if (seenDirectories.has(directory)) continue;
-        seenDirectories.add(directory);
-        if (matches(directory)) add(directory + path.sep);
+    for (const listed of batch) {
+      const entry = path.sep === '/' ? listed : listed.replaceAll('/', path.sep);
+      const file = path.join(searchPath, entry);
+      const relative = path.dirname(entry);
+      if (relative !== '.') {
+        let directory = searchPath;
+        for (const segment of relative.split(path.sep)) {
+          directory = path.join(directory, segment);
+          if (seenDirectories.has(directory)) continue;
+          seenDirectories.add(directory);
+          if (matches(directory)) add(directory + path.sep);
+        }
       }
+      if (matches(file)) {
+        if (covered(file)) onLeftOut();
+        else add(file);
+      }
+      if (results.length >= options.limit) break listing;
     }
-    if (matches(file)) {
-      if (covered(file)) onLeftOut();
-      else add(file);
-    }
-    if (results.length >= options.limit) break;
   }
   // a folder that could not be read is a partial walk; with nothing listed it is the answer
   if (!listedAny && walk.errors.length > 0) throw new Error(walk.errors.join('\n'));

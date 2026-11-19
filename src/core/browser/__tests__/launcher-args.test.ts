@@ -14,7 +14,7 @@ const require = createRequire(import.meta.url);
  * only capture the options handed to `launchPersistentContext`.
  */
 
-type CapturedOpts = { args: string[]; ignoreDefaultArgs?: string[]; headless: boolean; chromiumSandbox?: boolean };
+type CapturedOpts = { args: string[]; ignoreDefaultArgs?: string[]; headless: boolean; chromiumSandbox?: boolean; serviceWorkers?: string; proxy?: unknown };
 
 const launchPersistentContext = vi.fn<(userDataDir: string, opts: CapturedOpts) => Promise<unknown>>(async () => ({}));
 
@@ -62,6 +62,16 @@ describe('launchBrowserContext — audio / headless args', () => {
       expect(opts.args).not.toContain('--no-sandbox');
     });
   }
+
+  // 'block' rewrites navigator.serviceWorker.register in every page, which sites can detect and trip over; each page's
+  // guard session bypasses workers inside Chrome instead (page-network-guard.ts).
+  it('leaves service worker registration to the page, for local and remote contexts alike', async () => {
+    await launchBrowserContext({ ...baseOpts, headless: true });
+    await launchBrowserContext({ ...baseOpts, headless: false, network: { server: 'http://127.0.0.1:9', args: [] } });
+    expect(capturedOpts(0).serviceWorkers).toBeUndefined();
+    expect(capturedOpts(1).proxy).toEqual({ server: 'http://127.0.0.1:9' });
+    expect(capturedOpts(1).serviceWorkers).toBeUndefined();
+  });
 
   it('does no headless/mute special-casing when headful', async () => {
     await launchBrowserContext({ ...baseOpts, headless: false });

@@ -3,6 +3,7 @@ import { log } from '../../logger';
 import { PiStreamAdapter } from '../pi-stream-adapter';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
+import { englishText } from '../../../shared/localized-text';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
@@ -230,18 +231,42 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     expect(out.find((m) => m.type === 'thinkingDroppedNotice')).toEqual({
       type: 'thinkingDroppedNotice',
       count: 1,
-      reasons: ['the conversation changed since the reasoning was written'],
+      reasons: [{ text: { message: 'the conversation changed since the reasoning was written' }, count: 1 }],
       timestamp: 1_700_000_000_000,
     });
     // The cost gate is off by default and must not be what decides this. A correctness signal ships on.
     expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
-    // The log line is what tells a drop apart from a 400 or a compaction in a user's log.
+    // The log line is what tells a drop apart from a 400 or a compaction in a user's log, by Anthropic's own code.
     expect(log).toHaveBeenCalledWith(
       '[PiStreamAdapter] anthropic dropped %d new thinking block(s), %d in the request: %s',
       1,
       1,
-      'the conversation changed since the reasoning was written',
+      'prefix_binding_mismatch x1',
     );
+  });
+
+  it('sends each distinct reason once with its count, in the order Anthropic first gave it', () => {
+    vi.mocked(log).mockClear();
+    const drop = (index: number, reason: string) => ({ type: 'thinking_dropped', path: `messages.${index}.content.0`, reason });
+    const prefixDrops = [1, 3, 5, 7, 9].map((index) => drop(index, 'prefix_binding_mismatch'));
+    const out = drive([
+      assistantMessageEnd([
+        {
+          type: 'anthropic_input_transformations',
+          timestamp: 1,
+          details: { transformations: [prefixDrops[0], drop(2, 'model_binding_mismatch'), ...prefixDrops.slice(1), drop(11, 'model_binding_mismatch')] },
+        },
+      ]),
+    ]);
+
+    expect(out.find((m) => m.type === 'thinkingDroppedNotice')).toMatchObject({
+      count: 7,
+      reasons: [
+        { text: { message: 'the conversation changed since the reasoning was written' }, count: 5 },
+        { text: { message: 'a different model wrote the reasoning, and the requested model may not read it' }, count: 2 },
+      ],
+    });
+    expect(log).toHaveBeenCalledWith(expect.any(String), 7, 7, 'prefix_binding_mismatch x5, model_binding_mismatch x2');
   });
 
   it('explains all four binding-check codes rather than printing the enum', () => {
@@ -266,14 +291,14 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     expect(notice).toMatchObject({
       count: 4,
       reasons: [
-        'a different model wrote the reasoning, and the requested model may not read it',
-        'the conversation changed since the reasoning was written',
-        'the reasoning was written under a different organization',
-        'the reasoning was written for a different end user',
+        { text: { message: 'a different model wrote the reasoning, and the requested model may not read it' }, count: 1 },
+        { text: { message: 'the conversation changed since the reasoning was written' }, count: 1 },
+        { text: { message: 'the reasoning was written under a different organization' }, count: 1 },
+        { text: { message: 'the reasoning was written for a different end user' }, count: 1 },
       ],
     });
     // No raw code and no wire path survives into what the user reads.
-    const rendered = (notice as { reasons: string[] }).reasons.join(' ');
+    const rendered = notice?.type === 'thinkingDroppedNotice' ? notice.reasons.map((reason) => englishText(reason.text)).join(' ') : '';
     expect(rendered).not.toContain('_binding_mismatch');
     expect(rendered).not.toContain('messages.');
   });
@@ -293,7 +318,7 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     // stated reason. The code is at least greppable.
     expect(out.find((m) => m.type === 'thinkingDroppedNotice')).toMatchObject({
       count: 1,
-      reasons: ['some_future_mismatch'],
+      reasons: [{ text: { message: '{0}', args: ['some_future_mismatch'] }, count: 1 }],
     });
   });
 
@@ -305,7 +330,7 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     expect(out.some((m) => m.type === 'tokenUsageUpdate' || m.type === 'assistant')).toBe(true);
   });
 
-  it('renders three drops as three reason strings', () => {
+  it('sends three drops of three reasons as three reasons', () => {
     const out = drive([
       assistantMessageEnd([
         {
@@ -327,9 +352,9 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     expect(out.find((m) => m.type === 'thinkingDroppedNotice')).toMatchObject({
       count: 3,
       reasons: [
-        'the reasoning was written under a different organization',
-        'a different model wrote the reasoning, and the requested model may not read it',
-        'unknown reason',
+        { text: { message: 'the reasoning was written under a different organization' }, count: 1 },
+        { text: { message: 'a different model wrote the reasoning, and the requested model may not read it' }, count: 1 },
+        { text: { message: 'unknown reason' }, count: 1 },
       ],
     });
   });
@@ -445,6 +470,6 @@ describe('PiStreamAdapter: a dropped thinking block is reported once', () => {
       [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0', undefined))],
     );
 
-    expect(notice(out)).toMatchObject({ count: 1, reasons: ['the conversation changed since the reasoning was written'] });
+    expect(notice(out)).toMatchObject({ count: 1, reasons: [{ text: { message: 'the conversation changed since the reasoning was written' }, count: 1 }] });
   });
 });

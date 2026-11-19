@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
+import { OPEN_READ_NONBLOCKING } from '../../../core/file-bytes';
 import type { Project } from '../../local-services/confine';
 import { createFileSystem, WriteRefusedError, type WorkspaceFileSystem } from '../file-system';
 import { namePrefixMatches } from '../outside-listing';
@@ -534,7 +535,7 @@ describe('files outside every project', () => {
       beforeOpen = undefined;
       const open = fs.promises.open.bind(fs.promises);
       vi.spyOn(fs.promises, 'open').mockImplementation((async (target: fs.PathLike, flags?: string | number) => {
-        if (String(target) === file && flags === 'r' && beforeOpen) {
+        if (String(target) === file && flags === OPEN_READ_NONBLOCKING && beforeOpen) {
           const swap = beforeOpen;
           beforeOpen = undefined;
           swap();

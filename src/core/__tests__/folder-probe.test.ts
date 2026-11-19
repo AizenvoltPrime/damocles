@@ -69,3 +69,33 @@ describe('createFolderProbe', () => {
     expect(access.mock.calls.map(([folder]) => folder)).toEqual(['P:\\', 'Q:\\', 'Y:\\', 'R:\\']);
   });
 });
+
+describe('createHungGate', () => {
+  it('tells its listeners once a hung check settles and it admits again, and not when it admitted all along', async () => {
+    let now = 0;
+    const gate = createHungGate(2, () => now);
+    const admitted = vi.fn();
+    gate.onDidAdmit(admitted);
+    const settles: Array<() => void> = [];
+    const check = (): Promise<void> => new Promise<void>((resolve) => settles.push(resolve));
+    gate.track(check(), 1000);
+    gate.track(check(), 1000);
+    gate.track(check(), 1000);
+    now = 1000;
+    expect(gate.admits()).toBe(false);
+    // three hung: one settling leaves two, so the gate still admits none
+    settles[0]!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(admitted).not.toHaveBeenCalled();
+    settles[1]!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(gate.admits()).toBe(true);
+    expect(admitted).toHaveBeenCalledOnce();
+    settles[2]!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(admitted).toHaveBeenCalledOnce();
+  });
+});

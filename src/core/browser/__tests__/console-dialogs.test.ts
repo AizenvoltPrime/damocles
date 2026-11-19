@@ -398,19 +398,22 @@ interface Priv {
 }
 const priv = (s: BrowserService): Priv => s as unknown as Priv;
 
-const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+// A chat's scope: every page belongs to a chat.
+const SCOPE = 'chat-scope';
 
-/** A real BrowserService with a registered fake page bound to the primary scope. */
+/** A real BrowserService with a registered fake page bound to a chat's scope. */
 async function makeServiceWithPage(url?: string): Promise<{
   service: BrowserService;
   page: Record<string, unknown>;
   handlers: Map<string, Handler>;
 }> {
-  const service = new BrowserService(createFakePlatform());
+  const platform = createFakePlatform();
+  const service = new BrowserService(platform);
+  service.createAgentScope(SCOPE, platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] }));
   priv(service).context = { newCDPSession: async () => fakeSession };
   const { obj: page, handlers } = fakePage(url);
-  await priv(service).registerPage(page, PRIMARY);
-  priv(service).scopes.get(PRIMARY)!.currentPage = page;
+  await priv(service).registerPage(page, SCOPE);
+  priv(service).scopes.get(SCOPE)!.currentPage = page;
   return { service, page, handlers };
 }
 
@@ -448,7 +451,7 @@ describe('acceptance criterion 3 — onConsole feeds the originating tab\'s coll
       { level: 'warn', text: 'deprecated API' },
     ]));
 
-    const messages = service.getConsoleMessages(PRIMARY);
+    const messages = service.getConsoleMessages(SCOPE);
     expect(messages).toHaveLength(3);
     expect(messages.map((m) => m.level)).toEqual(['log', 'error', 'warn']);
     expect(messages[0]!.text).toBe('hello from the page');
@@ -461,7 +464,7 @@ describe('acceptance criterion 3 — onConsole feeds the originating tab\'s coll
   it('attributes entries per-tab: a second page\'s payload lands ONLY in the second page\'s buffer', async () => {
     const { service, page: pageA } = await makeServiceWithPage('http://a.test/');
     const { obj: pageB } = fakePage('http://b.test/');
-    await priv(service).registerPage(pageB, PRIMARY);
+    await priv(service).registerPage(pageB, SCOPE);
     const onConsole = consoleBindingHandler(service);
 
     onConsole(pageA, JSON.stringify([{ level: 'log', text: 'from-A' }]));
@@ -479,12 +482,12 @@ describe('acceptance criterion 3 — onConsole feeds the originating tab\'s coll
     const onConsole = consoleBindingHandler(service);
 
     expect(() => onConsole(page, '{not json at all')).not.toThrow();
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(0);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(0);
 
     // POSITIVE CONTROL: the handler still works afterwards — it rejected the bad payload, it did not
     // wedge the bridge.
     onConsole(page, JSON.stringify([{ level: 'log', text: 'still-alive' }]));
-    expect(service.getConsoleMessages(PRIMARY).map((m) => m.text)).toEqual(['still-alive']);
+    expect(service.getConsoleMessages(SCOPE).map((m) => m.text)).toEqual(['still-alive']);
   });
 
   it('ignores a well-formed but non-array payload without throwing and without recording', async () => {
@@ -494,11 +497,11 @@ describe('acceptance criterion 3 — onConsole feeds the originating tab\'s coll
     expect(() => onConsole(page, JSON.stringify({ level: 'log', text: 'not-an-array' }))).not.toThrow();
     expect(() => onConsole(page, JSON.stringify('a bare string'))).not.toThrow();
     expect(() => onConsole(page, JSON.stringify(null))).not.toThrow();
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(0);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(0);
 
     // POSITIVE CONTROL: a valid array on the same handler DOES record.
     onConsole(page, JSON.stringify([{ level: 'log', text: 'valid' }]));
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(1);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(1);
   });
 
   it('skips malformed ITEMS but keeps the well-formed ones in the same payload', async () => {
@@ -514,7 +517,7 @@ describe('acceptance criterion 3 — onConsole feeds the originating tab\'s coll
       { level: 'warn', text: 'good-2' },
     ]))).not.toThrow();
 
-    expect(service.getConsoleMessages(PRIMARY).map((m) => m.text)).toEqual(['good-1', 'good-2']);
+    expect(service.getConsoleMessages(SCOPE).map((m) => m.text)).toEqual(['good-1', 'good-2']);
   });
 
   it('ignores an unknown or undefined page without throwing', async () => {
@@ -524,7 +527,7 @@ describe('acceptance criterion 3 — onConsole feeds the originating tab\'s coll
 
     expect(() => onConsole(undefined, JSON.stringify([{ level: 'log', text: 'orphan' }]))).not.toThrow();
     expect(() => onConsole(strangerPage, JSON.stringify([{ level: 'log', text: 'orphan' }]))).not.toThrow();
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(0);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(0);
   });
 
   it('the dead page.on(\'console\') wiring is gone (brief step 6 — it would double-record)', async () => {
@@ -590,7 +593,7 @@ describe('the page bridge is bounded and validated HOST-side', () => {
     // exercises the PER-ENTRY bound rather than being rejected at the door.
     send({ kind: 'console', value: [{ level: 'log', text: 'z'.repeat(100_000) }] });
 
-    const [message] = service.getConsoleMessages(PRIMARY);
+    const [message] = service.getConsoleMessages(SCOPE);
     expect(message).toBeDefined();
     expect(message!.text.length).toBeLessThan(10_000);
   });
@@ -598,7 +601,7 @@ describe('the page bridge is bounded and validated HOST-side', () => {
   it('rejects a payload too large to be worth parsing at all', async () => {
     const { service, send } = await withBinding();
     send({ kind: 'console', value: [{ level: 'log', text: 'z'.repeat(500_000) }] });
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(0);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(0);
   });
 
   it('caps a forged console BATCH, however many entries the page sends', async () => {
@@ -607,7 +610,7 @@ describe('the page bridge is bounded and validated HOST-side', () => {
     // In-page MAX_QUEUE is 50; this is what arrives once that cap is edited out.
     send({ kind: 'console', value: Array.from({ length: 5000 }, (_, i) => ({ level: 'log', text: `forged-${i}` })) });
 
-    expect(service.getConsoleMessages(PRIMARY).length).toBeLessThanOrEqual(100);
+    expect(service.getConsoleMessages(SCOPE).length).toBeLessThanOrEqual(100);
   });
 
   it('bounds a forged title and strips newlines, since it becomes the editor tab label', async () => {
@@ -634,7 +637,7 @@ describe('the page bridge is bounded and validated HOST-side', () => {
 
     // POSITIVE CONTROL: it was delivered at all, so the count is dedup rather than a rejected payload.
     expect(titles).toEqual(['once']);
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(0);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(0);
   });
 
   it('ignores a malformed envelope, an oversized payload and an unknown kind', async () => {
@@ -648,7 +651,7 @@ describe('the page bridge is bounded and validated HOST-side', () => {
 
     expect(titles).toEqual([]);
     expect(cursors).toEqual([]);
-    expect(service.getConsoleMessages(PRIMARY)).toHaveLength(0);
+    expect(service.getConsoleMessages(SCOPE)).toHaveLength(0);
 
     // POSITIVE CONTROL: the binding is live and a well-formed payload still lands.
     send({ kind: 'title', value: 'good' });
@@ -701,7 +704,7 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
     // The dialog is still ACCEPTED — never hang a flow (brief step 7).
     expect(accept).toHaveBeenCalledTimes(1);
 
-    const dialogs = service.getDialogs(PRIMARY);
+    const dialogs = service.getDialogs(SCOPE);
     expect(dialogs).toHaveLength(1);
     expect(dialogs[0]!.type).toBe('confirm');
     expect(dialogs[0]!.message).toBe('Delete this item?');
@@ -714,13 +717,13 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
 
     await fire(fakeDialog('alert', 'Saved', async () => { throw new Error('dialog superseded'); }));
 
-    const dialogs = service.getDialogs(PRIMARY);
+    const dialogs = service.getDialogs(SCOPE);
     expect(dialogs).toHaveLength(1);
     expect(dialogs[0]!.answered).toBe('accept-failed');
     // POSITIVE CONTROL: an accepting dialog on the same ledger records 'accepted', so the value above
     // is an outcome, not a constant.
     await fire(fakeDialog('alert', 'Second', async () => {}));
-    expect(service.getDialogs(PRIMARY)[1]!.answered).toBe('accepted');
+    expect(service.getDialogs(SCOPE)[1]!.answered).toBe('accepted');
   });
 
   it('caps the message at 200 chars (a page controls this string and it re-enters context)', async () => {
@@ -728,7 +731,7 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
 
     await fire(fakeDialog('alert', 'M'.repeat(5000)));
 
-    const stored = service.getDialogs(PRIMARY)[0]!.message;
+    const stored = service.getDialogs(SCOPE)[0]!.message;
     expect(stored.startsWith('M'.repeat(200))).toBe(true);
     // Bounded AND marked, so the agent cannot read a clipped prompt as the dialog's full text.
     expect(stored).toContain('truncated');
@@ -740,7 +743,7 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
 
     for (let i = 0; i < 25; i++) await fire(fakeDialog('alert', `dialog-${i}`));
 
-    const dialogs = service.getDialogs(PRIMARY);
+    const dialogs = service.getDialogs(SCOPE);
     expect(dialogs).toHaveLength(20);
     // Identity of both boundaries: dropping the NEWEST would also satisfy a length-only assertion.
     expect(dialogs[0]!.message).toBe('dialog-5');
@@ -751,14 +754,14 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
     const { service, fire } = await withDialogs();
     await fire(fakeDialog('confirm', 'Delete this item?'));
 
-    const first = service.takeUnreportedDialogs(PRIMARY);
+    const first = service.takeUnreportedDialogs(SCOPE);
     expect(first).toHaveLength(1);
     // Draining: the second call reports nothing new.
-    expect(service.takeUnreportedDialogs(PRIMARY)).toEqual([]);
+    expect(service.takeUnreportedDialogs(SCOPE)).toEqual([]);
 
     // Non-draining: getDialogs still sees it, twice in a row.
-    expect(service.getDialogs(PRIMARY)).toHaveLength(1);
-    expect(service.getDialogs(PRIMARY)).toHaveLength(1);
+    expect(service.getDialogs(SCOPE)).toHaveLength(1);
+    expect(service.getDialogs(SCOPE)).toHaveLength(1);
   });
 
   it('keeps the watermark correct ACROSS a trim — no duplicates and no skips', async () => {
@@ -766,14 +769,14 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
 
     // 25 recorded → 5 trimmed away, 20 retained (dialog-5 … dialog-24).
     for (let i = 0; i < 25; i++) await fire(fakeDialog('alert', `d-${i}`));
-    const firstDrain = service.takeUnreportedDialogs(PRIMARY);
+    const firstDrain = service.takeUnreportedDialogs(SCOPE);
     expect(firstDrain.map((d) => d.message)).toEqual(
       Array.from({ length: 20 }, (_, i) => `d-${i + 5}`),
     );
 
     // More dialogs after the drain; each one trims another from the front.
     for (let i = 25; i < 30; i++) await fire(fakeDialog('alert', `d-${i}`));
-    const secondDrain = service.takeUnreportedDialogs(PRIMARY);
+    const secondDrain = service.takeUnreportedDialogs(SCOPE);
 
     // Exactly the 5 new ones: no repeats of the first drain (the watermark tracked the shifts) and
     // no gaps (it was not over-decremented). This is why the marker is a COUNT, not an index.
@@ -782,7 +785,7 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
     expect(new Set(seen).size).toBe(seen.length);
 
     // A third drain with nothing new is empty.
-    expect(service.takeUnreportedDialogs(PRIMARY)).toEqual([]);
+    expect(service.takeUnreportedDialogs(SCOPE)).toEqual([]);
   });
 
   it('returns [] for an unknown scope rather than throwing', async () => {
@@ -793,7 +796,7 @@ describe('acceptance criterion 8 — the dialog ledger', () => {
 
   it('exposes both methods on BrowserAgentScope (what the tools call — contract §4)', async () => {
     const { service, fire } = await withDialogs();
-    const scope = service.createAgentScope(PRIMARY);
+    const scope = service.createAgentScope(SCOPE);
     await fire(fakeDialog('prompt', 'Your name?'));
 
     expect(scope.getDialogs()).toHaveLength(1);
@@ -819,7 +822,7 @@ interface ToolLike {
 
 /** The REAL tool closures over a REAL agent scope; the page's snapshot read is canned. */
 function buildToolsOverScope(service: BrowserService, page: unknown, documentUrl = 'http://fixture.test/'): Map<string, ToolLike> {
-  const scope = service.createAgentScope(PRIMARY);
+  const scope = service.createAgentScope(SCOPE);
   const snapshotData = {
     snapshot: '[0] button "OK"',
     refCount: 1,
@@ -909,7 +912,7 @@ describe('acceptance criterion 8 end-to-end — the dialog surfaces to the agent
     expect(dialogLines[0]).not.toContain('\r');
 
     // The ledger itself stays byte-faithful to what the page said (storage is not rewritten).
-    expect(service.getDialogs(PRIMARY)[0]!.message).toContain('\n');
+    expect(service.getDialogs(SCOPE)[0]!.message).toContain('\n');
   });
 
   it('collapses CR and CRLF too, not just LF', async () => {

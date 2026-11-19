@@ -12,7 +12,7 @@ export class MessageBus {
     this.teamId = teamId;
   }
 
-  send(from: string, to: string, content: string): TeamMessage {
+  send(from: string, to: string, content: string, marker?: Pick<TeamMessage, 'pendingDispatchNudge'>): TeamMessage {
     const message: TeamMessage = {
       messageId: crypto.randomUUID(),
       teamId: this.teamId,
@@ -20,6 +20,7 @@ export class MessageBus {
       from,
       to,
       content,
+      ...(marker?.pendingDispatchNudge ? { pendingDispatchNudge: true } : {}),
     };
     this.appendMessage(message);
     this.notifySubscribers(message);

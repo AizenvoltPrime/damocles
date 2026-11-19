@@ -63,6 +63,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         ...(msg.imageModel !== undefined && { imageModel: msg.imageModel }),
         ...(msg.patch !== undefined && { patch: msg.patch }),
         ...(msg.patchOmitted !== undefined && { patchOmitted: msg.patchOmitted }),
+        ...(msg.unsavedChanges === true && { unsavedChanges: true as const }),
         ...(msg.command !== undefined && { command: msg.command }),
         ...(parentToolUseId !== undefined && { parentToolUseId }),
         ...(agentDescription !== undefined && { agentDescription }),

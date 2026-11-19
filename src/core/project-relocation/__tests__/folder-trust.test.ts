@@ -22,7 +22,7 @@ afterEach(() => {
   fs.rmSync(base, { recursive: true, force: true });
 });
 
-const windowTrusted = { isTrusted: () => true, onDidGrantTrust: () => ({ dispose: () => undefined }) };
+const windowTrusted = { isTrusted: () => true, onDidChangeTrust: () => ({ dispose: () => undefined }) };
 
 describe('folderTrust', () => {
   it('a window-wide trust runs no repair git in a moved folder the window does not have open', async () => {

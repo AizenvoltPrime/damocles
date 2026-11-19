@@ -15,7 +15,7 @@ vi.mock('../../paths', async () => {
 import { SessionManager, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { TeamService } from '../index';
-import { buildInterruptedResumePrompt } from '../prompts';
+import { buildInterruptedResumePrompt, buildPendingDispatchNudge } from '../prompts';
 import { TeamRunner } from '../team-runner';
 import { TeamPersistence } from '../persistence';
 import type { CoverageView, ReviewCoverage } from '../review-coverage';
@@ -189,6 +189,11 @@ async function status(h: Harness, name: string, expected: TeamAgent['status']): 
 
 function statusUpdates(h: Harness, agentId: string): string[] {
   return h.webview.flatMap((m) => (m.type === 'teamAgentStatusUpdate' && m.agentId === agentId ? [m.status] : []));
+}
+
+/** Each nudge the lead was sent about roster specialists it never started. */
+function dispatchNudges(h: Harness): string[] {
+  return h.bus().getAllMessages().filter((m) => m.to === 'Lead' && m.content.startsWith('[SPECIALISTS NEVER STARTED]')).map((m) => m.content);
 }
 
 function logEntries(h: Harness): Array<Record<string, unknown>> {
@@ -1057,15 +1062,73 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
   });
 
   it('leaves completed, cancelled and pending members untouched and opens no session for them', async () => {
-    const { after, done } = await resumed('plan-unchanged');
+    // B keeps running, so the lead that ends its turn waits on it and is not nudged about D.
+    const { after, done } = await resumed('plan-unchanged', { Lead: endTurn, B: holdTurn });
     await (await opened(after, 'B')).whenPrompted(1);
+    await status(after, 'Lead', 'monitoring');
 
     expect(['D', 'E', 'G', 'H'].map((n) => after.agent(n).status)).toEqual(['pending', 'completed', 'cancelled', 'cancelled']);
     expect(after.opened.filter((o) => ['D', 'E', 'G', 'H'].includes(o.name))).toEqual([]);
     for (const n of ['D', 'E', 'G', 'H']) expect(statusUpdates(after, after.agent(n).agentId)).toEqual([]);
+    expect(dispatchNudges(after)).toEqual([]);
 
     after.runner.cancel('user');
     await done;
+  });
+
+  /** A lead that cancels every member still active, and on the dispatch nudge does what `onNudge` says. */
+  function cancellingLead(onNudge: (hh: Harness) => void = () => undefined): Behaviour {
+    const cancelled = new Set<string>();
+    return (text, s, hh) => {
+      for (const n of ['A', 'B', 'C', 'F']) {
+        if (cancelled.has(n) || !['running', 'awaiting-review', 'standby'].includes(hh.agent(n).status)) continue;
+        cancelled.add(n);
+        hh.runner.cancelSpecialist(n);
+      }
+      if (text.includes(buildPendingDispatchNudge(['D']))) onNudge(hh);
+      if (hh.agent('D').status === 'awaiting-review') hh.runner.approveSpecialist('D');
+      void s.endTurn();
+    };
+  }
+
+  it('nudges a lead with nothing left to wait on once about the member it never started, then completes with it cancelled', async () => {
+    const { after, done } = await resumed('plan-never-dispatched', { Lead: cancellingLead() });
+
+    // Without the nudge the lead parks here for good, so this wait would time out.
+    await vi.waitFor(() => expect(dispatchNudges(after)).toEqual([buildPendingDispatchNudge(['D'])]), { timeout: 3_000 });
+    const result = await done;
+
+    expect(dispatchNudges(after)).toHaveLength(1);
+    expect(after.session('Lead').prompts).toContain(`[Message from system]: ${buildPendingDispatchNudge(['D'])}`);
+    expect(result.status).toBe('completed');
+    expect(result.text).toContain('Never dispatched (cancelled): the lead never started these roster specialists, so they did no work:\n- D\n');
+    expect(after.agent('D').status).toBe('cancelled');
+    expect(after.opened.filter((o) => o.name === 'D')).toEqual([]);
+    // The first run's stop wrote the earlier team-completed entry.
+    const completed = logEntries(after).filter((e) => e['type'] === 'team-completed').map((e) => e['status']);
+    expect(completed).toEqual(['cancelled', 'completed']);
+    const ended = logEntries(after).filter((e) => e['type'] === 'team-completed').at(-1)!;
+    expect((ended['agentResults'] as Array<{ name: string; status: string }>).find((r) => r.name === 'D')!.status).toBe('cancelled');
+    expect(await checkpointOf(persistenceOf(after), after.teamId)).toBeNull();
+    expect(await persistenceOf(after).resumableStop(after.teamId)).toBeNull();
+  });
+
+  it('runs a member the lead spawns after the nudge as any other, and completes with nothing listed as never dispatched', async () => {
+    const reportOnce: Behaviour = (_t, s, hh) => {
+      if (s.prompts.length === 1) hh.runner.reportComplete('D', 'D done');
+      void s.endTurn();
+    };
+    const lead = cancellingLead((hh) => hh.runner.startSpecialist('D', 'Test label', 'task for D, described in full'));
+    const { after, done } = await resumed('plan-dispatch-after-nudge', { Lead: lead, D: reportOnce });
+
+    await vi.waitFor(() => expect(dispatchNudges(after)).toHaveLength(1), { timeout: 3_000 });
+    const result = await done;
+
+    expect(dispatchNudges(after)).toHaveLength(1);
+    expect((await opened(after, 'D')).prompts[0]).toBe('task for D, described in full');
+    expect(after.agent('D').status).toBe('completed');
+    expect(result.status).toBe('completed');
+    expect(result.text).not.toContain('Never dispatched');
   });
 
   it('starts a member with no session file afresh from its agent-spawned task, as a new file', async () => {
@@ -1137,6 +1200,157 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
 
     after.runner.cancel('user');
     await done;
+  });
+});
+
+describe('TeamRunner.resume keeps whether the lead was sent the pending-dispatch nudge', () => {
+  interface Stopped { h: Harness; log: TeamEventLog; checkpoint: TeamCheckpoint; files: Map<string, string> }
+
+  /** A lead and a member D it never starts, stopped while the lead is in its first turn, or in the turn the nudge opened. */
+  async function stoppedTeam(label: string, nudged: boolean): Promise<Stopped> {
+    const h = makeTeam({
+      cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['D'],
+      behave: { Lead: (_t, s) => { if (nudged && s.prompts.length === 1) void s.endTurn(); } },
+    });
+    const run = h.runner.run();
+    const lead = await opened(h, 'Lead');
+    await lead.whenPrompted(nudged ? 2 : 1);
+    expect(dispatchNudges(h)).toHaveLength(nudged ? 1 : 0);
+    h.runner.cancel('user');
+    await run;
+    const persistence = persistenceOf(h);
+    return {
+      h,
+      log: await persistence.readEventLog(h.teamId),
+      checkpoint: (await checkpointOf(persistence, h.teamId))!,
+      files: new Map([[h.agent('Lead').agentId, lead.sessionFile!]]),
+    };
+  }
+
+  /** Resumes with a lead that ends every turn, and returns the result and the nudges the resumed run sent. */
+  async function resumeEndingTurns(stopped: Stopped, checkpoint: TeamCheckpoint, log = stopped.log): Promise<{ result: { status: string; text: string }; nudges: string[] }> {
+    const after = makeTeam({ cwd: stopped.h.cwd, teamId: stopped.h.teamId, specialists: ['D'], behave: { Lead: endTurn } });
+    after.runner.restore(log, checkpoint, stopped.files);
+    const result = await after.runner.resume('tc-resume');
+    // The restored bus holds the stopped run's messages, so only the ones after them were sent by the resumed run.
+    return { result, nudges: dispatchNudges(after).slice(dispatchNudges(stopped.h).length) };
+  }
+
+  const NEVER_DISPATCHED_D = 'Never dispatched (cancelled): the lead never started these roster specialists, so they did no work:\n- D\n';
+
+  it('completes the team when a lead nudged before the stop ends its turn after the resume, with no second nudge', async () => {
+    const stopped = await stoppedTeam('nudged-before-stop', true);
+    expect(stopped.checkpoint.review.pendingDispatchNudged).toBe(true);
+
+    const { result, nudges } = await resumeEndingTurns(stopped, stopped.checkpoint);
+
+    expect(nudges).toEqual([]);
+    expect(result.status).toBe('completed');
+    expect(result.text).toContain(NEVER_DISPATCHED_D);
+  });
+
+  it('completes the team when the nudge was logged after the live checkpoint a crash left, with no second nudge', async () => {
+    const stopped = await stoppedTeam('nudge-after-live-checkpoint', true);
+    const marked = logEntries(stopped.h).filter((e) => e['type'] === 'agent-message' && 'pendingDispatchNudge' in e);
+    expect(marked.map((e) => [e['pendingDispatchNudge'], e['content']])).toEqual([[true, buildPendingDispatchNudge(['D'])]]);
+    // The snapshot taken at the lead's first turn end: it accounts for no message from the nudge on and holds no flag.
+    const nudgeAt = stopped.log.messages.findIndex((m) => m.pendingDispatchNudge === true);
+    const before = stopped.log.messages[nudgeAt - 1];
+    const { stoppedBy: _cause, messagesThrough: _through, ...rest } = stopped.checkpoint;
+    const { pendingDispatchNudged: _flag, ...review } = rest.review;
+    const live: TeamCheckpoint = {
+      ...rest, live: true, review,
+      ...(before ? { messagesThrough: before.messageId } : {}),
+      members: rest.members.map((m) => ({ ...m, undelivered: [] })),
+    };
+
+    const { result, nudges } = await resumeEndingTurns(stopped, live);
+
+    expect(nudges).toEqual([]);
+    expect(result.status).toBe('completed');
+    expect(result.text).toContain(NEVER_DISPATCHED_D);
+  });
+
+  it('nudges again a lead whose logged nudge a pending member\'s start followed, once it runs out of work', async () => {
+    const h = makeTeam({
+      cwd: newCwd('nudge-then-start'), teamId: crypto.randomUUID(), specialists: ['D', 'E'],
+      behave: {
+        Lead: (_t, s, hh) => {
+          if (s.prompts.length === 2) hh.runner.startSpecialist('D', 'Test label', 'task for D, described in full');
+          void s.endTurn();
+        },
+        D: holdTurn,
+      },
+    });
+    const run = h.runner.run();
+    await opened(h, 'D');
+    expect(dispatchNudges(h)).toEqual([buildPendingDispatchNudge(['D', 'E'])]);
+    h.runner.cancel('user');
+    await run;
+    const persistence = persistenceOf(h);
+    const log = await persistence.readEventLog(h.teamId);
+    const checkpoint = (await checkpointOf(persistence, h.teamId))!;
+    expect(log.messages.some((m) => m.pendingDispatchNudge === true)).toBe(true);
+
+    const after = makeTeam({
+      cwd: h.cwd, teamId: h.teamId, specialists: ['D', 'E'],
+      behave: {
+        Lead: (_t, s, hh) => {
+          if (s.prompts.length === 1) hh.runner.cancelSpecialist('D');
+          void s.endTurn();
+        },
+        D: holdTurn,
+      },
+    });
+    after.runner.restore(log, { ...checkpoint, review: { ...checkpoint.review, pendingDispatchNudged: false } }, new Map([
+      [h.agent('Lead').agentId, h.session('Lead').sessionFile!],
+      [h.agent('D').agentId, h.session('D').sessionFile!],
+    ]));
+    const result = await after.runner.resume('tc-resume');
+
+    expect(dispatchNudges(after).slice(dispatchNudges(h).length)).toEqual([buildPendingDispatchNudge(['E'])]);
+    expect(result.status).toBe('completed');
+  });
+
+  it.each([
+    ['a lead not nudged before the stop', false, (s: Stopped): [TeamCheckpoint, TeamEventLog] => [s.checkpoint, s.log]],
+    ['a log and checkpoint written before the nudge was recorded', true, (s: Stopped): [TeamCheckpoint, TeamEventLog] => {
+      const { pendingDispatchNudged: _dropped, ...review } = s.checkpoint.review;
+      const messages = s.log.messages.map(({ pendingDispatchNudge: _marker, ...m }) => m);
+      return [{ ...s.checkpoint, review }, { ...s.log, messages }];
+    }],
+  ])('nudges %s once after the resume, then completes the team', async (_label, nudged, recordsOfStop) => {
+    const stopped = await stoppedTeam(nudged ? 'unrecorded-nudge' : 'not-nudged-before-stop', nudged);
+    expect(stopped.checkpoint.review.pendingDispatchNudged).toBe(nudged);
+
+    const { result, nudges } = await resumeEndingTurns(stopped, ...recordsOfStop(stopped));
+
+    expect(nudges).toEqual([buildPendingDispatchNudge(['D'])]);
+    expect(result.status).toBe('completed');
+    expect(result.text).toContain(NEVER_DISPATCHED_D);
+  });
+
+  it.each([
+    ['clears the flag of a live snapshot when the log starts a pending member after it', true, false],
+    ['keeps the flag of a live snapshot when the log starts no pending member after it', false, true],
+  ])('%s', async (_label, startD, expected) => {
+    const { h, run } = await interruptedTeam(newCwd('nudge-live-tail'), crypto.randomUUID());
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    const [key] = await checkpointTimes(h);
+    const snapshot = (await persistenceOf(h).readCheckpoint(h.teamId, key!))!;
+    expect(snapshot.live).toBe(true);
+    expect(snapshot.members.find((m) => m.name === 'D')!.status).toBe('pending');
+    if (startD) {
+      h.runner.startSpecialist('D', 'Test label', 'task for D, described in full');
+      await opened(h, 'D');
+    }
+    h.runner.cancel('user');
+    await run;
+
+    const restored = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'], behave: {} });
+    restored.runner.restore(await persistenceOf(h).readEventLog(h.teamId), { ...snapshot, review: { ...snapshot.review, pendingDispatchNudged: true } }, new Map());
+
+    expect((restored.runner as unknown as { pendingDispatchNudged: boolean }).pendingDispatchNudged).toBe(expected);
   });
 });
 

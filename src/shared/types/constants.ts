@@ -440,6 +440,29 @@ export function clampSubagentConcurrency(value: unknown): number {
   return Math.min(SUBAGENT_CONCURRENCY_MAX, Math.max(SUBAGENT_CONCURRENCY_MIN, Math.floor(value)));
 }
 
+/** A setting's whole-number range; its package.json `minimum`, `maximum` and `default` must equal these. */
+export interface WholeNumberRange {
+  readonly min: number;
+  readonly max: number;
+  readonly default: number;
+}
+
+/** Bytes in one MiB. */
+export const MIB: number = 1024 * 1024;
+
+/** Counts every entry below the folder: files, folders, links and any other entry. */
+export const UPLOAD_FOLDER_MAX_ENTRIES_SETTING = 'damocles.browser.uploadFolderMaxEntries';
+export const UPLOAD_FOLDER_MAX_ENTRIES: WholeNumberRange = { min: 1, max: 100_000, default: 10_000 };
+/** In MiB. */
+export const UPLOAD_FOLDER_MAX_SIZE_SETTING = 'damocles.browser.uploadFolderMaxSize';
+export const UPLOAD_FOLDER_MAX_SIZE: WholeNumberRange = { min: 1, max: 10_240, default: 500 };
+
+/** The value a stored whole-number setting runs with: clamped into range, and the default for a value that is no number. */
+export function clampWholeNumber(value: unknown, range: WholeNumberRange): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return range.default;
+  return Math.min(range.max, Math.max(range.min, Math.floor(value)));
+}
+
 /** `damocles.assetSourcePrecedence`'s values, in the order the settings UI offers them; package.json's enum must match. */
 export const ASSET_SOURCE_PRECEDENCES: readonly ['claude', 'codex'] = ['claude', 'codex'];
 

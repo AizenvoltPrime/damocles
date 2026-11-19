@@ -48,31 +48,28 @@ describe('buildCustomTools — build gate is service-presence, not enablement', 
     for (const tool of MEMORY_PI_TOOL_NAMES) expect(names).toContain(tool);
   });
 
-  it('builds browser tools whenever the (inert) browser service is present', () => {
-    const names = buildNames({
-      pi: fakePi(),
-      cwd: '/cwd',
-      permissionHandler,
-      // Tools bind to a scope handle whose methods are only invoked at execute time, so a bare stub is
-      // enough to build the (inert) tool definitions.
-      browserService: { createAgentScope: () => ({}), chatScope: () => ({}) } as never,
-      getSessionId: () => 'sid',
-    });
+  it('builds browser tools whenever the (inert) browser service is present for a chat', () => {
+    // Tools bind to a scope handle whose methods are only invoked at execute time, so a bare stub is
+    // enough to build the (inert) tool definitions.
+    const service = { createAgentScope: () => ({}), chatScope: () => ({}) } as never;
+    const names = buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, browser: { service, chat: { chat: 'host' } as never }, getSessionId: () => 'sid' });
     for (const tool of BROWSER_PI_TOOL_NAMES) expect(names).toContain(tool);
+    const none = buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, getSessionId: () => 'sid' });
+    for (const tool of BROWSER_PI_TOOL_NAMES) expect(none).not.toContain(tool);
   });
 
   it("binds the browser tools to the passed browserScopeId, falling back to the chat's human scope", () => {
     // Tab isolation lives entirely in WHICH scope the tools bind to: a stub that discards the arguments
     // would keep every agent collapsed onto the human's tab with the suite still green.
     const scopes: unknown[][] = [];
-    const browserService = {
+    const service = {
       createAgentScope: (id: string, chat: unknown) => { scopes.push(['agent', id, chat]); return {}; },
       chatScope: (chat: unknown) => { scopes.push(['chat', chat]); return {}; },
     } as never;
     const browserChat = { chat: 'host' } as never;
 
-    buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, browserService, browserChat, getSessionId: () => 'sid' });
-    buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, browserService, browserScopeId: 'agent-7', browserChat, getSessionId: () => 'sid' });
+    buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, browser: { service, chat: browserChat }, getSessionId: () => 'sid' });
+    buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, browser: { service, chat: browserChat }, browserScopeId: 'agent-7', getSessionId: () => 'sid' });
 
     expect(scopes).toEqual([['chat', browserChat], ['agent', 'agent-7', browserChat]]);
   });
@@ -81,9 +78,9 @@ describe('buildCustomTools — build gate is service-presence, not enablement', 
     const fake = createFakeRemoteHost();
     vi.mocked(fake.remote.browserTool).mockResolvedValue({ content: [{ type: 'text', text: 'from the client' }] });
     const browserChat = { chat: 'host' } as never;
-    const browserService = { createAgentScope: () => ({}), chatScope: () => ({}) } as never;
+    const service = { createAgentScope: () => ({}), chatScope: () => ({}) } as never;
     const build = (relayed: boolean) => buildCustomTools({
-      pi: fakePi(), cwd: '/cwd', permissionHandler, browserService, browserChat, browserScopeId: 'agent-7', getSessionId: () => 'sid',
+      pi: fakePi(), cwd: '/cwd', permissionHandler, browser: { service, chat: browserChat }, browserScopeId: 'agent-7', getSessionId: () => 'sid',
       ...(relayed ? { browserRelay: fake.remote } : {}),
       getShellOptions: () => ({}), allowedNetworkHosts: () => Promise.resolve(new Set()), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined,
     }).find((tool) => tool.name === 'BrowserDownloads')!;

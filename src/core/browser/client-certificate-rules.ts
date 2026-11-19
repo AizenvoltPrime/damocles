@@ -5,12 +5,16 @@ import { isClientCertificateOrigin, namesCertificate, type ClientCertificateFilt
 /** This app session's chosen certificates of one browser profile, by `https://host:port` origin. */
 export type ClientCertificateRules = ReadonlyMap<string, ClientCertificateFilter>;
 
+// NetworkPredictionOptions::kDisabled, Chrome's "Preload pages" off (chrome/browser/preloading/preloading_prefs.h).
+const NO_PRELOADING = 2;
+
 /**
- * Replaces `profile.content_settings.exceptions.auto_select_certificate` in the profile's Default/Preferences with exactly
- * `rules`, keeping every other preference; Damocles owns that key ("Browser" in docs/invariants.md).
+ * Prepares the profile's Default/Preferences for a launch, keeping every other preference. Damocles owns two keys ("Browser"
+ * in docs/invariants.md): `profile.content_settings.exceptions.auto_select_certificate`, replaced with exactly `rules`, and
+ * `net.network_prediction_options`, set to no preloading.
  * Chrome rewrites the file from memory when it exits, so call this only while no Chrome runs on the profile.
  */
-export async function writeClientCertificateRules(userDataDir: string, rules: ClientCertificateRules): Promise<void> {
+export async function writeLaunchPreferences(userDataDir: string, rules: ClientCertificateRules): Promise<void> {
   const folder = join(userDataDir, 'Default');
   const file = join(folder, 'Preferences');
   let text: string | undefined;
@@ -31,6 +35,8 @@ export async function writeClientCertificateRules(userDataDir: string, rules: Cl
   const contentSettings = objectAt(profile, 'content_settings');
   const allExceptions = objectAt(contentSettings, 'exceptions');
   allExceptions['auto_select_certificate'] = exceptions;
+  // Chrome fetches a page's speculation-rules prefetch or prerender from no page's own session, so no guard or rule sees it.
+  objectAt(preferences, 'net')['network_prediction_options'] = NO_PRELOADING;
   await fsp.mkdir(folder, { recursive: true });
   // a rename replaces the file whole, so Chrome never reads half of it
   const staged = `${file}.damocles-${process.pid}`;

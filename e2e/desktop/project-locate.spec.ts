@@ -5,12 +5,15 @@ import * as lockfile from 'proper-lockfile';
 import type { ShellProject } from '../../src/desktop/preload/shell-channels';
 import { mainLog, readyCorePid, type DesktopApp } from './support/app';
 import { activeChat, chatById, expect, nextChat, test } from './support/fixtures';
+import { git, initRepo } from './support/git';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
+import { answerConfirm, confirmDialog, readyOverlay } from './support/overlay';
 import { shownProjectOrder } from './support/projects';
 import { recordedToasts, recordToasts, shellState } from './support/shell';
-import { clickChat, cssString, listChats, readyShell } from './support/shell-ui';
+import { clickChat, cssString, listChats, projectRow, readyShell } from './support/shell-ui';
 import { addProject, answerDialogs, answerOpenDialog, askedDialogs, chatInput, clickMenu, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
+import { scmSection } from './support/scm';
 
 // piSessionDir's encoding of a folder (src/core/pi-session/session-store/session-dir.ts).
 const sessionDirName = (folder: string): string => `--${folder.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
@@ -180,7 +183,10 @@ test('Locate moves a renamed project\'s chats to the picked untrusted folder: tr
     const confirm = asked.find((dialog) => dialog.message.includes(CONFIRM_TITLE));
     expect(confirm?.message).toContain(moved);
     expect(confirm?.answered).toBe('Move Chats');
-    expect(asked.some((dialog) => dialog.message.startsWith(TRUST_PROMPT) && `${dialog.message} ${dialog.detail ?? ''}`.includes(path.basename(moved)) && dialog.answered === 'Trust Folder')).toBe(true);
+    // asked before the preflight that reads identities, so it reads the new folder's root commits
+    const trustAsked = asked.findIndex((dialog) => dialog.message.startsWith(TRUST_PROMPT) && `${dialog.message} ${dialog.detail ?? ''}`.includes(path.basename(moved)) && dialog.answered === 'Trust Folder');
+    expect(trustAsked).toBeGreaterThanOrEqual(0);
+    expect(trustAsked).toBeLessThan(asked.indexOf(confirm!));
     await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message)).toContain(`Moved 3 chats of ${path.basename(home.project)} to ${moved}.`);
 
     const project = (await projectAt(app, moved))!;
@@ -464,6 +470,11 @@ test('preflight refuses the same folder, a folder inside ~/.damocles, a chat ano
     expect(chatFiles(home)).toEqual(before);
     expect(fs.existsSync(path.join(home.damoclesDir, 'project-relocations.json'))).toBe(false);
     expect((await askedDialogs(app)).filter((dialog) => dialog.message.includes(CONFIRM_TITLE))).toEqual([]);
+    // none of these refusals needs trust, so Locate asks nothing before it refuses; the old path stays trusted, as before
+    expect((await askedDialogs(app)).filter((dialog) => dialog.message.startsWith(TRUST_PROMPT))).toEqual([]);
+    expect(trustedFolders(home)).not.toContain(moved);
+    expect(trustedFolders(home)).not.toContain(inside);
+    expect(trustedFolders(home)).toContain(home.project);
 
     // a selection checks the folder again
     await shell.evaluate((key) => window.damoclesShell!.selectProject(key), seeded.key);
@@ -519,6 +530,75 @@ test('locating a project into another listed project merges its chats there and 
     await expect.poll(async () => (await listChats(relaunched.app, betaKey)).chats.length, { timeout: 30_000 }).toBeGreaterThan(0);
     expect((await shellState(relaunched.app)).projects.map((p) => p.key)).toEqual([...seeded.order.filter((key) => key !== seeded.key), readded.key]);
     expect(trustedFolders(home)).toContain(home.project);
+  } finally {
+    await stub.close();
+  }
+});
+
+test('a Cancel after trusting a listed untrusted project at Locate leaves its row Untrusted again', async ({ home, launch }) => {
+  test.setTimeout(300_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const beta = path.join(path.dirname(home.project), 'beta');
+    const seeded = await seedProject(home, launch, 1, beta);
+    const file = path.join(home.userData, 'trusted-folders.json');
+    const allowlist = JSON.parse(fs.readFileSync(file, 'utf8')) as { version: number; folders: string[] };
+    fs.writeFileSync(file, JSON.stringify({ ...allowlist, folders: allowlist.folders.filter((folder) => folder !== beta) }));
+    fs.renameSync(home.project, `${home.project}-gone`);
+
+    const { app } = await launch();
+    const shell = await readyShell(app);
+    const betaKey = (await projectAt(app, beta))!.key;
+    // the row's badge follows the state main pushes, which only a trust change listener sends
+    const badge = projectRow(shell, betaKey).getByTestId('untrusted-badge');
+    await expect(badge).toHaveText('Untrusted');
+    await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
+    await locate(app, seeded.key, beta);
+    const overlay = await readyOverlay(app);
+    await expect(confirmDialog(overlay)).toContainText(CONFIRM_TITLE.trim(), { timeout: 30_000 });
+    await expect(badge).toHaveCount(0);
+    await answerConfirm(app, false);
+
+    await expect(badge).toHaveText('Untrusted');
+    expect(trustedFolders(home)).not.toContain(beta);
+    // core heard the revoke too: Source control shows the Trust card, not what the grant discovered
+    await projectRow(shell, betaKey).click();
+    await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(betaKey);
+    await expect(scmSection(shell).getByTestId('scm-state')).toHaveAttribute('data-state', 'untrusted', { timeout: 30_000 });
+  } finally {
+    await stub.close();
+  }
+});
+
+// The repositories share no remote, so only the picked folder's first commit, which core reads once it is trusted, tells them apart.
+test('Locate onto an unrelated repository asks trust first and warns it looks like another one, and a Cancel leaves the folder untrusted', async ({ home, launch }) => {
+  test.setTimeout(300_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    await initRepo(home, home.project);
+    const seeded = await seedProject(home, launch, 1, path.join(path.dirname(home.project), 'beta'));
+    const other = path.join(path.dirname(home.project), 'unrelated');
+    await initRepo(home, other, { 'other.txt': 'another history\n' });
+    // core recorded the project's first commit while it was trusted and there
+    const root = await git(home, home.project, 'rev-list', '--max-parents=0', 'HEAD');
+    expect(fs.readFileSync(path.join(home.damoclesDir, 'folder-identities.json'), 'utf8')).toContain(root);
+    fs.rmSync(home.project, { recursive: true, force: true });
+
+    const { app } = await launch();
+    await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
+    await locate(app, seeded.key, other);
+    const overlay = await readyOverlay(app);
+    await expect(confirmDialog(overlay)).toContainText(`The new folder looks like another repository: it shares no remote and no first commit with ${home.project}.`, { timeout: 30_000 });
+    const trust = (await askedDialogs(app)).filter((dialog) => dialog.message.startsWith(TRUST_PROMPT));
+    expect(trust.map((dialog) => dialog.answered)).toEqual(['Trust Folder']);
+    expect(trustedFolders(home)).toContain(other);
+    await answerConfirm(app, false);
+
+    await expect.poll(() => trustedFolders(home)).not.toContain(other);
+    expect((await projectAt(app, home.project))?.presence).toBe('missing');
+    expect(fs.existsSync(path.join(home.damoclesDir, 'project-relocations.json'))).toBe(false);
   } finally {
     await stub.close();
   }

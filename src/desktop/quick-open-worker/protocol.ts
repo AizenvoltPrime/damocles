@@ -23,16 +23,11 @@ export interface WorkerQueryContext {
   readonly scope?: { readonly projectKey: string; readonly folder: string };
 }
 
-/** ripgrep's argv for a project's file list: no config file, no link following, excludes as negated globs, the root after '--'. */
-export function ripgrepFileArgs(root: string, ignoreArgs: readonly string[], excludes: readonly string[]): string[] {
-  return ['--files', '--hidden', '--no-config', ...ignoreArgs, ...excludes.flatMap((glob) => ['-g', `!${glob}`]), '--', root];
-}
-
 /**
  * main → worker. query: one keystroke's query of the open request `search`; a newer `generation` of the same search makes
  * the worker stop the older one. The projects are main's current ones. invalidate: drop one project's list, or every list.
- * end: the open request closed, so its cache goes. listOutput and listEnd: ripgrep's output for a listing the worker asked
- * for, then its end, with the reason when it failed.
+ * end: the open request closed, so its cache goes. listFiles and listEnd: a batch of a listing the worker asked for, as
+ * '/'-separated paths below its project's root, then its end, with the reason when it failed.
  */
 export type WorkerRequest =
   | {
@@ -46,7 +41,7 @@ export type WorkerRequest =
   }
   | { readonly kind: 'invalidate'; readonly projectKey?: string }
   | { readonly kind: 'end'; readonly search: number }
-  | { readonly kind: 'listOutput'; readonly listing: number; readonly data: Uint8Array }
+  | { readonly kind: 'listFiles'; readonly listing: number; readonly files: readonly string[] }
   | { readonly kind: 'listEnd'; readonly listing: number; readonly error?: string };
 
 export interface WorkerResult {
@@ -59,8 +54,8 @@ export interface WorkerResult {
 
 /**
  * worker → main. superseded: a newer query of the same search arrived first. failed: the query threw. progress: a listing
- * printed a file or scoring finished a batch since the last one, which is how main tells a slow worker from a stuck one.
- * list: run ripgrep for a project's files, so main holds every ripgrep and kills them with the worker.
+ * sent a batch or scoring finished a batch since the last one, which is how main tells a slow worker from a stuck one.
+ * list: list a project's files, so main holds every listing and stops them with the worker.
  */
 export type WorkerReply =
   | { readonly kind: 'answer'; readonly id: number; readonly results: readonly WorkerResult[] }

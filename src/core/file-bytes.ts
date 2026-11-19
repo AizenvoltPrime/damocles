@@ -1,8 +1,11 @@
-import { promises as fs } from 'node:fs';
-import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { constants, promises as fs } from 'node:fs';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../shared/types/messages';
 
 // Read size once a file outgrows its stat.
 const READ_CHUNK_BYTES = 64 * 1024;
+
+// O_NONBLOCK where it exists, so a FIFO swapped in after the stat opens at once instead of blocking a thread; win32 has none.
+export const OPEN_READ_NONBLOCKING: number = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 // sessionFile: a session file of its machine's engine, which only that engine writes (WorkspaceFileSystem.read, readOutside)
 export type FileBytes =
@@ -19,12 +22,12 @@ function errnoCode(err: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-function unreadable(err: unknown): FileBytes {
+function unreadable(err: unknown): Extract<FileBytes, { readonly kind: 'unreadable' }> {
   const code = errnoCode(err);
   return { kind: 'unreadable', error: err instanceof Error ? err.message : String(err), ...(code !== undefined ? { code } : {}) };
 }
 
-function notAFile(stat: { isDirectory(): boolean }): FileBytes {
+function notAFile(stat: { isDirectory(): boolean }): Extract<FileBytes, { readonly kind: 'notAFile' }> {
   return { kind: 'notAFile', folder: stat.isDirectory() };
 }
 
@@ -40,7 +43,7 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
   }
   let handle: fs.FileHandle;
   try {
-    handle = await fs.open(filePath, 'r');
+    handle = await fs.open(filePath, OPEN_READ_NONBLOCKING);
   } catch (err) {
     return errnoCode(err) === 'ENOENT' ? { kind: 'missing' } : unreadable(err);
   }
@@ -52,7 +55,7 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
 }
 
 /** The bytes of a file already opened, up to the document limit, read from its handle, which the caller closes. */
-export async function readOpenedFile(handle: fs.FileHandle, limitBytes: number = EDITOR_CONFIRM_DOCUMENT_BYTES): Promise<FileBytes> {
+export async function readOpenedFile(handle: fs.FileHandle, limitBytes: number = EDITOR_CONFIRM_DOCUMENT_BYTES): Promise<Exclude<FileBytes, { readonly kind: 'missing' }>> {
   try {
     // The path may have been replaced or grown since the caller's stat; the read stops one byte past the limit.
     const stat = await handle.stat();

@@ -1,14 +1,16 @@
-// Locate… for a project whose folder was moved or renamed: the new folder is picked, core's preflight checks the move,
-// the user confirms, Remove Project's terminal question and the editor's unsaved-editors question are asked, the new folder is
-// asked for trust as Add Project asks, the project's loaded chats close, and core runs the journaled relocation
-// (docs/desktop-app.md "Locate"). A remote project's core is its host's, and its paths are the host's.
+// Locate… for a project whose folder was moved or renamed: the new folder is picked, the refusals that need no trust are checked,
+// the folder is asked for trust as Add Project asks, so preflight reads its root commits, core's preflight checks the move, the
+// user confirms, Remove Project's terminal question and the editor's unsaved-editors question are asked, the project's loaded
+// chats close, and core runs the journaled relocation (docs/desktop-app.md "Locate"). A remote project's core is its host's, and
+// its paths are the host's.
 import * as path from 'node:path';
 import type { Coded, PreflightAnswer, PreflightRequest, RelocationRequest } from '../../core/project-relocation/types';
-import type { PathPresence } from '../../core/workspace-folders/folder-presence-probe';
+import type { PathCheck } from '../../core/workspace-folders/folder-presence-probe';
 import { visibleText } from '../../shared/visible-text';
 import type { RootCloseAnswers } from './editor-pane';
 import type { ProjectPresence } from './project-presence';
 import type { RemoveProjectDeps } from './remove-project';
+import { undoOnThrow, type TrustAnswer } from './trust-store';
 
 type Translate = (message: string, ...args: string[]) => string;
 
@@ -36,8 +38,8 @@ export interface LocateProjectDeps {
   readonly presence: (key: string) => ProjectPresence;
   // every listed project's path, which preflight reads for the merge mode and the insideProject notice
   readonly listed: () => readonly string[];
-  // what the path is, its volume asked first, within the presence deadline
-  readonly pathPresence: (fsPath: string) => Promise<PathPresence>;
+  // what the path is, its volume asked first, within the presence deadline; unchecked once the wait for the hung gate ran out
+  readonly pathPresence: (fsPath: string) => Promise<PathCheck>;
   // the path rules of the project's machine
   readonly pathFlavor: path.PlatformPath;
   readonly pickFolder: (defaultPath: string | undefined) => Promise<string | undefined>;
@@ -48,9 +50,10 @@ export interface LocateProjectDeps {
   // the editor's Save, Don't Save or Cancel for each dirty tab of the root; undefined: cancelled
   readonly confirmCloseRoot: (key: string) => Promise<RootCloseAnswers | undefined>;
   readonly terminals: Pick<RemoveProjectDeps['terminals'], 'idsIn' | 'confirmKill'>;
-  readonly isTrusted: (fsPath: string) => boolean;
-  // Add Project's trust question; resolves whether the folder is trusted afterwards
-  readonly requestTrust: (fsPath: string) => Promise<boolean>;
+  // Add Project's trust question
+  readonly askTrust: (fsPath: string) => Promise<TrustAnswer>;
+  // a remote host's core reads trust only from main's mirror, which lists the picked folder until the returned release
+  readonly holdTrust?: (fsPath: string) => () => void;
   // closes the project's loaded chats keeping their saved state, settling once core let their sessions go; they wait with the
   // chats the missing folder kept closed, until the folder is back or the move is done
   readonly closeChats: (key: string) => Promise<void>;
@@ -69,9 +72,12 @@ export type LocateOutcome =
   | { readonly kind: 'started'; readonly id: string };
 
 /**
- * Locate… on a missing or unavailable project; every refusal also goes to the row through deps.refused. `offered` is the
- * folder a re-add offer named, whose own question and trust question were asked already, so neither the picker, the
- * confirmation nor the trust question is asked.
+ * Locate… on a missing or unavailable project; every refusal also goes to the row through deps.refused, once the grant it takes
+ * back is undone. `offered` is the folder a re-add offer named, whose own question and trust question were asked already, so
+ * neither the picker, the confirmation nor the trust question is asked. Otherwise each refusal that needs no trust (busy, and
+ * preflight without the identity read) comes before the trust question, which is asked only for a move that can go ahead. Any
+ * end but a started move takes back the grant Locate's trust question made, except a throw once relocate was sent, after which
+ * core may run the move.
  */
 export async function locateProject(key: string, deps: LocateProjectDeps, offered?: string): Promise<LocateOutcome> {
   const project = deps.project(key);
@@ -82,33 +88,66 @@ export async function locateProject(key: string, deps: LocateProjectDeps, offere
   };
   if (deps.presence(key) === 'present') return refuse({ code: 'fromExists' });
   // a volume that does not answer would hold every ancestor's stat until its deadline
-  const to = offered ?? await deps.pickFolder(deps.presence(key) === 'unavailable' ? undefined : await nearestExistingAncestor(project.fsPath, deps.pathPresence, deps.pathFlavor));
+  const start = offered !== undefined || deps.presence(key) === 'unavailable' ? undefined : await nearestExistingAncestor(project.fsPath, deps.pathPresence, deps.pathFlavor);
+  if (start === 'unchecked') return refuse({ code: 'checksBusy' });
+  const to = offered ?? await deps.pickFolder(start);
   if (to === undefined) return { kind: 'cancelled' };
-  if (await deps.busy(key)) return refuse({ code: 'busy' });
-  const request = (): RelocationRequest => ({ from: project.fsPath, to, listed: deps.listed() });
+  if (offered === undefined) {
+    const early = await refusalBeforeTrust(key, project, to, deps);
+    if (early) return refuse(early);
+  }
+  // declining trust keeps the move going, as Add Project keeps the folder
+  const asked = offered === undefined ? await deps.askTrust(to) : undefined;
+  let release: (() => void) | undefined;
+  try {
+    const ready = await undoOnThrow(asked?.undo, () => {
+      release = asked && deps.holdTrust?.(to);
+      return prepareMove(key, project, to, deps, offered);
+    });
+    if ('kind' in ready) {
+      await asked?.undo?.();
+      return ready.kind === 'refused' ? refuse(ready.refusal) : ready;
+    }
+    const prepared: LocatePrepared = { key, from: project.fsPath, to, answers: ready.answers };
+    let started: Awaited<ReturnType<LocateProjectDeps['relocate']>>;
+    try {
+      started = await deps.relocate({ from: project.fsPath, to, listed: deps.listed() });
+    } catch (err) {
+      deps.interrupted(prepared);
+      throw err;
+    }
+    if ('refusal' in started) {
+      await asked?.undo?.();
+      return refuse(started.refusal);
+    }
+    deps.started(started.id, prepared);
+    return { kind: 'started', id: started.id };
+  } finally {
+    release?.();
+  }
+}
+
+// The refusals that need no trust: a busy project, and preflight's checks short of the identity read, which trust may change.
+async function refusalBeforeTrust(key: string, project: { readonly fsPath: string }, to: string, deps: LocateProjectDeps): Promise<Coded | undefined> {
+  if (await deps.busy(key)) return { code: 'busy' };
+  const answer = await deps.preflight({ from: project.fsPath, to, listed: deps.listed(), heldHere: 'ignore', identity: 'skip' });
+  return answer.ok ? undefined : answer.refusal;
+}
+
+// From the busy check to the closed chats: the editors' answers once every question agreed, else how Locate ended.
+async function prepareMove(key: string, project: { readonly name: string; readonly fsPath: string }, to: string, deps: LocateProjectDeps, offered: string | undefined): Promise<LocateOutcome | { readonly answers: RootCloseAnswers }> {
+  if (await deps.busy(key)) return { kind: 'refused', refusal: { code: 'busy' } };
   // the project's chats loaded here close before relocate, which checks every holder again
-  const answer = await deps.preflight({ ...request(), heldHere: 'ignore' });
-  if (!answer.ok) return refuse(answer.refusal);
+  const answer = await deps.preflight({ from: project.fsPath, to, listed: deps.listed(), heldHere: 'ignore' });
+  if (!answer.ok) return { kind: 'refused', refusal: answer.refusal };
   if (offered === undefined && !(await deps.confirm(locateConfirm(project, to, answer, deps.t)))) return { kind: 'cancelled' };
   const answers = await deps.confirmCloseRoot(key);
   if (!answers) return { kind: 'cancelled' };
   if (!(await deps.terminals.confirmKill(deps.terminals.idsIn(key)))) return { kind: 'cancelled' };
-  // declining trust keeps the move going, as Add Project keeps the folder
-  if (offered === undefined && !deps.isTrusted(to)) await deps.requestTrust(to);
   // a turn may have started while the questions were open
-  if (await deps.busy(key)) return refuse({ code: 'busy' });
+  if (await deps.busy(key)) return { kind: 'refused', refusal: { code: 'busy' } };
   await deps.closeChats(key);
-  const prepared: LocatePrepared = { key, from: project.fsPath, to, answers };
-  let started: Awaited<ReturnType<LocateProjectDeps['relocate']>>;
-  try {
-    started = await deps.relocate(request());
-  } catch (err) {
-    deps.interrupted(prepared);
-    throw err;
-  }
-  if ('refusal' in started) return refuse(started.refusal);
-  deps.started(started.id, prepared);
-  return { kind: 'started', id: started.id };
+  return { answers };
 }
 
 /** Runs one Locate of a project at a time; another request for it meanwhile is cancelled, asking nothing. */
@@ -154,12 +193,13 @@ export function preparedMove(prepared: LocatePrepared, view: { readonly from: st
 
 /**
  * The folder the picker opens at: the nearest ancestor of the old path that is a directory now; undefined once an ancestor does
- * not answer, or none is a directory.
+ * not answer, or none is a directory; unchecked once the hung gate refused an ancestor's check.
  */
-export async function nearestExistingAncestor(fsPath: string, pathPresence: (candidate: string) => Promise<PathPresence>, flavor: path.PlatformPath): Promise<string | undefined> {
+export async function nearestExistingAncestor(fsPath: string, pathPresence: (candidate: string) => Promise<PathCheck>, flavor: path.PlatformPath): Promise<string | undefined | 'unchecked'> {
   for (let candidate = flavor.dirname(fsPath); ; candidate = flavor.dirname(candidate)) {
     const found = await pathPresence(candidate);
     if (found === 'directory') return candidate;
+    if (found === 'unchecked') return found;
     if (found === 'unreachable' || flavor.dirname(candidate) === candidate) return undefined;
   }
 }
@@ -217,6 +257,7 @@ export function relocationText(coded: Coded, project: { readonly name: string; r
     case 'fromExists': return t('{0} still exists. Locate moves the chats of a folder that was moved or renamed.', oldPath);
     case 'toMissing': return t('The folder you picked no longer exists.');
     case 'toNotDirectory': return t('What you picked is not a folder.');
+    case 'checksBusy': return t('Damocles can\'t check these folders right now: its drive checks are busy. Try again in a moment.');
     case 'sameFolder': return t('You picked the project\'s own folder.');
     case 'insideDamocles': return t('You picked a folder inside Damocles\' own data folder.');
     case 'otherAuthority': return t('You picked a folder on another host than the project\'s.');

@@ -80,7 +80,7 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
     endpoint.close(`Damocles Core broke the protocol (${error.message})`);
     child.kill();
   }, undefined, deps.render);
-  const trust = { trustedKeys: () => deps.trust.trustedFolders().map((folder) => folderKey(folder)), onDidGrant: deps.trust.onDidGrant.bind(deps.trust), onDidRevoke: deps.trust.onDidRevoke.bind(deps.trust), requestTrust: deps.trust.requestTrust.bind(deps.trust) };
+  const trust = { trustedKeys: () => deps.trust.trustedFolders().map((folder) => folderKey(folder)), onDidChange: deps.trust.onDidChange.bind(deps.trust), requestTrust: deps.trust.requestTrust.bind(deps.trust) };
   const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, ...(start.restarted === true ? { restarted: true } : {}), worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set() });
   // The init is the channel's first message; core parses everything after it with the protocol's tables.
   child.transport.post(hostServices.init);

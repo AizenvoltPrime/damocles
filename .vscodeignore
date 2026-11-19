@@ -161,6 +161,7 @@ dist/!(webview)/**
 !dist/voice-extract-worker.js
 !dist/process-launcher-worker.js
 !dist/sentinel.js
+!dist/walk-child.js
 # <<< AUTO-GENERATED dist allowlist
 src/**
 scripts/**

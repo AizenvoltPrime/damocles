@@ -18,6 +18,12 @@ export interface FilePermissions {
   root: string;
 }
 
+/** The folder whose project files are read, and whether its personal files are too (personalFilesTrusted). */
+export interface PermissionWorkspace {
+  readonly path: string;
+  readonly personalFiles: boolean;
+}
+
 const RULE_KEYS = ["allow", "ask", "deny"] as const;
 
 /** Tools whose rule argument is a path pattern. */
@@ -172,7 +178,8 @@ async function readPermissionsFromPath(filePath: string, root: string): Promise<
 /**
  * Reads permission files most-specific first: `local > project > global`, and within each tier
  * `.damocles` before `.claude` (Claude Code's files are read as a courtesy, so a Damocles rule at
- * the same tier must be able to override one). With no workspace the four workspace paths drop out.
+ * the same tier must be able to override one). With no workspace the four workspace paths drop out, and
+ * without `personalFiles` the two `settings.local.json` ones.
  * Files that yield no rules are omitted so an empty file cannot occupy a precedence slot.
  *
  * A `/path` rule is relative to the project folder in a project file and to the file's own directory in
@@ -183,16 +190,17 @@ async function readPermissionsFromPath(filePath: string, root: string): Promise<
  * lifts a client's deny.
  */
 export async function loadPermissionsByPriority(
-  workspacePath: string | null,
+  workspace: PermissionWorkspace | null,
   clientRules?: readonly PermissionRuleLists[],
 ): Promise<FilePermissions[]> {
   const result: FilePermissions[] = [];
   const home = os.homedir();
+  const workspacePath = workspace?.path ?? null;
 
   const project = (dir: string, file: string): { file: string; root: string } | null =>
     workspacePath ? { file: path.join(workspacePath, dir, file), root: workspacePath } : null;
   // D34: a worktree chat's personal files are its project's, live; relative rule paths still match the working folder.
-  const personalRoot = workspacePath ? personalConfigRoot(workspacePath) : null;
+  const personalRoot = workspacePath && workspace?.personalFiles === true ? personalConfigRoot(workspacePath) : null;
   const personal = (dir: string, file: string): { file: string; root: string } | null =>
     personalRoot && workspacePath ? { file: path.join(personalRoot, dir, file), root: workspacePath } : null;
   const user = (dir: string, file: string): { file: string; root: string } => ({ file: path.join(home, dir, file), root: path.join(home, dir) });

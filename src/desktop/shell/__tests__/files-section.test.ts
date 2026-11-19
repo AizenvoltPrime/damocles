@@ -21,13 +21,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountFiles(options: { platform?: 'win32' | 'linux' | 'darwin'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string; remote?: boolean; offline?: boolean; transfersUnsupportedOn?: string; files?: readonly string[]; folders?: readonly string[] } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
+async function mountFiles(options: { platform?: 'win32' | 'linux' | 'darwin'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string; remote?: boolean; offline?: boolean; transfersUnsupportedOn?: string; files?: readonly string[]; folders?: readonly string[]; presence?: 'missing' | 'unavailable' } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
   const files = options.files ?? ['notes.txt', 'todo.md'];
   const api = fakeShellApi([], {
     listFiles: vi.fn(async () => ({ ok: true as const, entries: [...(options.folders ?? ['src']).map((name) => ({ name, kind: 'dir' as const })), ...files.map((name) => ({ name, kind: 'file' as const }))] })),
   });
   const wrapper = mount(FilesSection, {
-    props: { api, projectKey: options.projectKey ?? 'home', projectName: 'Home', platform: options.platform ?? 'win32', projectPlatform: options.projectPlatform ?? options.platform ?? 'win32', trash: options.trash ?? true, collapsed: false, remote: options.remote ?? false, offline: options.offline ?? false, ...(options.shown ? { shown: options.shown } : {}), ...(options.transfersUnsupportedOn !== undefined ? { transfersUnsupportedOn: options.transfersUnsupportedOn } : {}) },
+    props: { api, projectKey: options.projectKey ?? 'home', projectName: 'Home', platform: options.platform ?? 'win32', projectPlatform: options.projectPlatform ?? options.platform ?? 'win32', trash: options.trash ?? true, collapsed: false, remote: options.remote ?? false, offline: options.offline ?? false, ...(options.shown ? { shown: options.shown } : {}), ...(options.transfersUnsupportedOn !== undefined ? { transfersUnsupportedOn: options.transfersUnsupportedOn } : {}), ...(options.presence ? { presence: options.presence } : {}) },
     global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
     attachTo: document.body,
   });
@@ -195,6 +195,34 @@ describe('Files folder expand', () => {
     await flushPromises();
     expect(row(wrapper, 'renamed.txt').exists()).toBe(true);
     expect(row(wrapper, 'made.txt').exists()).toBe(false);
+  });
+});
+
+describe('Files of a project whose folder is not there', () => {
+  it('says the folder was not found, lists nothing and offers no retry, then lists the folder once it is back', async () => {
+    const { wrapper, api } = await mountFiles({ presence: 'missing' });
+    expect(api.listFiles).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('Folder not found');
+    expect(wrapper.text()).not.toContain('could not list');
+    expect(wrapper.find('[data-tree-path]').exists()).toBe(false);
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Try again')).toBe(false);
+    api.filesChanged({ projectKey: 'home', relativeDirs: [''] });
+    await flushPromises();
+    expect(api.listFiles).not.toHaveBeenCalled();
+
+    await wrapper.setProps({ presence: undefined });
+    await flushPromises();
+    expect(api.listFiles).toHaveBeenCalledWith({ projectKey: 'home', relativeDir: '' });
+    expect(wrapper.text()).not.toContain('Folder not found');
+    expect(row(wrapper, 'notes.txt').exists()).toBe(true);
+  });
+
+  it('drops the listed rows when the folder goes, and names an unavailable drive', async () => {
+    const { wrapper } = await mountFiles();
+    expect(row(wrapper, 'notes.txt').exists()).toBe(true);
+    await wrapper.setProps({ presence: 'unavailable' });
+    expect(row(wrapper, 'notes.txt').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Not available');
   });
 });
 

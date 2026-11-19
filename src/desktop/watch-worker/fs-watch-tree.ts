@@ -42,7 +42,7 @@ export function lstatNow(fsPath: string, log: Log): fs.BigIntStats | undefined {
   try {
     return fs.lstatSync(fsPath, { bigint: true, throwIfNoEntry: false });
   } catch (err) {
-    log(`[watcher] could not stat ${fsPath}: ${errorText(err)}`);
+    if (!isGoneError(err)) log(`[watcher] could not stat ${fsPath}: ${errorText(err)}`);
     return undefined;
   }
 }

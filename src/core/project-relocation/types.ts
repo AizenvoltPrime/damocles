@@ -69,6 +69,9 @@ export interface RelocationRequest {
 /** ignore: a chat a panel of this core holds does not refuse, since the host closes those chats before it relocates. */
 export interface PreflightRequest extends RelocationRequest {
   readonly heldHere?: 'ignore';
+  // skip: neither folder's repository identity is read, so the answer has no otherRepository notice (feature
+  // projects.preflightSkipIdentity; an older core ignores it and reads them)
+  readonly identity?: 'skip';
 }
 
 export interface RelocationView {
@@ -123,7 +126,7 @@ export type RelocationWait =
 export const RELOCATION_REFUSAL_CODES = [
   'otherAuthority', 'sameFolder', 'insideDamocles', 'chatWorktree', 'fromExists', 'toMissing', 'toNotDirectory', 'pendingRelocation',
   'chatHeld', 'registryUnreadable', 'worktreeFinishing', 'worktreeHandOff', 'repositoryLayout', 'noRepository', 'notPaused', 'relocationRunning',
-  'agentRunHeld',
+  'agentRunHeld', 'checksBusy',
 ] as const;
 export type RelocationRefusalCode = (typeof RELOCATION_REFUSAL_CODES)[number];
 

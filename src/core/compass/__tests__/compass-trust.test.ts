@@ -139,18 +139,59 @@ describe('CompassService workspace trust', () => {
 		expect(created).toHaveLength(0);
 	});
 
-	it('starts only on a trust grant that lists its own folder', async () => {
-		fake.trust.setTrusted(false);
+	it('starts only once its own folder is trusted, whatever folders the change names', async () => {
+		const trusted = new Set<string>();
+		vi.spyOn(fake.trust, 'isTrusted').mockImplementation(folder => trusted.has(folder));
 		service = new CompassService('/ws', fake, factory);
 		await service.ensureInitialized();
 
+		trusted.add('/ws-a');
 		fake.trust.grantTrust(['/ws-a']);
 		await new Promise(resolve => setTimeout(resolve, 10));
 		expect(created).toHaveLength(0);
 
-		fake.trust.grantTrust(['/ws']);
+		// a remote client's attach can trust a folder with a change that names none
+		trusted.add('/ws');
+		fake.trust.grantTrust([]);
 		await vi.waitFor(() => expect(created).toHaveLength(1));
-		expect(fake.trust.checkedPaths).toContain('/ws');
+	});
+
+	it('stops a running service when its workspace loses trust, and starts it again on a later grant', async () => {
+		service = new CompassService('/ws', fake, factory);
+		const statuses: string[] = [];
+		service.onStatusChange(status => statuses.push(status.state));
+		await service.ensureInitialized();
+		expect(created).toHaveLength(1);
+		const terminate = vi.spyOn(created[0]!, 'terminate');
+		expect(fake.fileWatchers.watchers.some(w => !w.disposed)).toBe(true);
+
+		fake.trust.revokeTrust(['/ws']);
+
+		expect(terminate).toHaveBeenCalledOnce();
+		expect(fake.fileWatchers.watchers.every(w => w.disposed)).toBe(true);
+		expect(service.getStatus().state).toBe('idle');
+		expect(statuses.at(-1)).toBe('idle');
+
+		fake.trust.grantTrust(['/ws']);
+		await vi.waitFor(() => expect(created).toHaveLength(2));
+	});
+
+	it('leaves a start that a revoke cut short idle, with no watcher and no error', async () => {
+		const silent: CompassWorkerFactory = () => {
+			const w = makeWorker();
+			w.postMessage = (message: unknown) => { w.messages.push(message); };
+			created.push(w);
+			return w;
+		};
+		service = new CompassService('/ws', fake, silent);
+		const starting = service.ensureInitialized();
+
+		fake.trust.revokeTrust(['/ws']);
+
+		await expect(starting).rejects.toThrow('the workspace is no longer trusted');
+		expect(service.getStatus().state).toBe('idle');
+		expect(service.getStatus().error).toBeUndefined();
+		expect(fake.fileWatchers.watchers).toHaveLength(0);
 	});
 });
 

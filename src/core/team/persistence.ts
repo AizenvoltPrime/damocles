@@ -503,6 +503,7 @@ export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
     && isPairArray(review['briefConflicts'], isString)
     && isCount(review['conflictNudges'])
     && isCount(review['leadReviewStalls'])
+    && (review['pendingDispatchNudged'] === undefined || typeof review['pendingDispatchNudged'] === 'boolean')
     && (review['lastReviewRoundNotification'] === null || isString(review['lastReviewRoundNotification']))
     && (review['coverage'] === undefined || isCoverage(review['coverage']))
     && (review['rejectedCalls'] === undefined || isPairArray(review['rejectedCalls'], isTerminatedCall));
@@ -637,6 +638,8 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
         const kind = e['kind'];
         if (to !== null && !isString(to)) throw new TeamLogError(teamId, lineNo, '"to" is invalid');
         if (kind !== undefined && kind !== 'scratchpad-notice' && kind !== 'ledger-notice') throw new TeamLogError(teamId, lineNo, '"kind" is invalid');
+        const nudge = e['pendingDispatchNudge'];
+        if (nudge !== undefined && typeof nudge !== 'boolean') throw new TeamLogError(teamId, lineNo, '"pendingDispatchNudge" is invalid');
         messages.push({
           messageId: str('messageId'),
           teamId,
@@ -645,6 +648,7 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
           to,
           content: str('content'),
           ...(kind ? { kind } : {}),
+          ...(nudge === true ? { pendingDispatchNudge: true } : {}),
         });
         break;
       }

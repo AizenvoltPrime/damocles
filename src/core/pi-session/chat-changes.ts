@@ -69,7 +69,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // The record a successful Edit, Write or GenerateImage result makes, from its call's arguments and its details. Each path
-// resolves as its tool resolved it: pi's write through resolveToCwd, Edit and GenerateImage's details against the folder.
+// resolves as its tool resolved it: pi's write and Edit through resolveToCwd, GenerateImage's details against the folder.
 function recordOf(toolName: string, args: Record<string, unknown> | undefined, details: unknown, turn: string, folder: string): ChangeRecord | undefined {
   const named = (key: string): string | undefined => (typeof args?.[key] === 'string' ? (args[key] as string) : undefined);
   const resolve = (file: string | undefined): string | undefined => (file === undefined || file === '' ? undefined : path.resolve(folder, file));
@@ -78,8 +78,9 @@ function recordOf(toolName: string, args: Record<string, unknown> | undefined, d
     return file === undefined ? undefined : { turn, folder, file, binary: true, generated: true };
   }
   if (toolName === TOOL_EDIT) {
-    const file = resolve(named('file_path'));
-    if (file === undefined) return undefined;
+    const written = named('file_path');
+    if (written === undefined || written === '') return undefined;
+    const file = resolveToCwd(written, folder);
     const patch = isRecord(details) && typeof details['patch'] === 'string' ? details['patch'] : undefined;
     return { turn, folder, file, ...(patch !== undefined ? { patch } : {}) };
   }

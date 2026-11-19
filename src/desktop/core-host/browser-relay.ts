@@ -3,7 +3,7 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Check } from 'typebox/value';
 import { join } from 'node:path';
-import { remoteProfileDir, type BrowserAgentScope, type BrowserServices } from '../../core/browser';
+import { remoteProfileDir, type BrowserAgentScope, type BrowserService, type BrowserServices } from '../../core/browser';
 import { l } from '../../core/l10n';
 import type { PiCodingAgentModule } from '../../core/pi-session/pi-loader';
 import { buildBrowserPiTools } from '../../core/pi-session/tools/browser-tools';
@@ -22,7 +22,8 @@ export interface RemoteBrowsersDeps {
 }
 
 export interface RemoteBrowsers {
-  tool(params: { readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, signal: AbortSignal): Promise<BrowserToolAnswer>;
+  // servedOrigins: the grant origins main serves the view, which its pages alone may reach; absent, the view holds none
+  tool(params: { readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown; readonly servedOrigins?: readonly string[] }, signal: AbortSignal): Promise<BrowserToolAnswer>;
   // an agent's scope of the view ended on the remote core: disposed here as a local agent's is at its settle; a discard, at
   // the end of the conversation that handed the scope out, also closes the tabs a failed agent left open
   release(authority: string, agentScope: { readonly viewId: string; readonly scope: string; readonly closeTabs: boolean; readonly discard?: boolean }): void;
@@ -32,10 +33,12 @@ export interface RemoteBrowsers {
 
 export function createRemoteBrowsers(deps: RemoteBrowsersDeps): RemoteBrowsers {
   // authority, view and scope -> that scope's tools; a closed view's proxy is a new host, so its entry is rebuilt
-  const built = new Map<string, { readonly authority: string; readonly host: PanelHost; readonly tools: ReadonlyMap<string, ToolDefinition> }>();
+  const built = new Map<string, { readonly authority: string; readonly host: PanelHost; readonly tools: ReadonlyMap<string, ToolDefinition>; readonly pages: ViewServedPages }>();
+  // each view proxy's served pages in its authority's current service
+  const viewPages = new Map<PanelHost, ViewServedPages>();
   let calls = 0;
   return {
-    tool: async ({ authority, viewId, scope, tool, input }, signal) => {
+    tool: async ({ authority, viewId, scope, tool, input, servedOrigins }, signal) => {
       if (!deps.enabled()) throw new LocalizedError(l('The browser is off on the computer that shows this chat. Turn it on in Damocles\' Settings there.'));
       const view = deps.foreign(viewId);
       if (!view || view.authority !== authority) throw new Error(FOREIGN_VIEW_NOT_ATTACHED);
@@ -49,12 +52,14 @@ export function createRemoteBrowsers(deps: RemoteBrowsersDeps): RemoteBrowsers {
         const service = deps.browsers.forAuthority(authority);
         const agentScope: BrowserAgentScope = scope === CHAT_BROWSER_SCOPE ? service.chatScope(view.host) : service.createAgentScope(agentScopeId(viewId, scope), view.host);
         const definitions = [...buildBrowserPiTools({ pi, scope: agentScope }), createParityCaptureTool(pi, agentScope)];
-        entry = { authority, host: view.host, tools: new Map(definitions.map((definition) => [definition.name, definition])) };
+        entry = { authority, host: view.host, tools: new Map(definitions.map((definition) => [definition.name, definition])), pages: bindViewPages(viewPages, view.host, service) };
         built.set(key, entry);
         view.host.onDispose(() => {
           if (built.get(key) === entry) built.delete(key);
         });
       }
+      // the grant origins main sent with the view's latest call
+      entry.pages.origins = new Set(servedOrigins ?? []);
       const definition = entry.tools.get(tool);
       if (!definition) throw new Error(`${tool.slice(0, 64)} is not a browser tool`);
       // the target's pi checked the input; it is checked again before it reaches this computer's browser
@@ -95,3 +100,32 @@ export function createRemoteBrowsers(deps: RemoteBrowsersDeps): RemoteBrowsers {
 }
 
 const agentScopeId = (viewId: string, scope: string): string => `${viewId}/${scope}`;
+
+interface ViewServedPages {
+  readonly service: BrowserService;
+  readonly binding: { dispose(): void };
+  origins: ReadonlySet<string>;
+}
+
+// The view proxy's served pages, bound in service, the authority's live one: main serves and maps a remote chat's pages, so they
+// map to no file: address here and never reopen from this core.
+function bindViewPages(viewPages: Map<PanelHost, ViewServedPages>, host: PanelHost, service: BrowserService): ViewServedPages {
+  const held = viewPages.get(host);
+  if (held?.service === service) return held;
+  held?.binding.dispose();
+  if (!held) host.onDispose(() => {
+    viewPages.get(host)?.binding.dispose();
+    viewPages.delete(host);
+  });
+  const pages: ViewServedPages = {
+    service,
+    binding: service.bindServedPages(host, {
+      toFile: (url) => url,
+      restoreTarget: async () => ({ refused: "a remote chat's served page reopens only through its host" }),
+      ownsOrigin: (origin) => pages.origins.has(origin),
+    }),
+    origins: new Set(),
+  };
+  viewPages.set(host, pages);
+  return pages;
+}

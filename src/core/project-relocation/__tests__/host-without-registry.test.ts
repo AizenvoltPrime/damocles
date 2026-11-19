@@ -27,7 +27,7 @@ beforeEach(() => {
     metaIndex: { move: async () => undefined, meta: async () => null },
     memory: { relocateWorkspace: async () => ({}) },
     hostState: { mcp: { relocateFolders: async () => undefined } },
-    trust: { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+    trust: { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) },
     projectFolders: () => [P_NEW],
     log: () => undefined,
     file: path.join(tmp, 'project-relocations.json'),

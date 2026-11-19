@@ -127,6 +127,8 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('integrations', 'damocles.compass.enabled', 'compass', ['damocles.compass.enabled']),
   row('integrations', 'damocles.browser.enabled', 'browser', ['damocles.browser.enabled']),
   row('integrations', 'damocles.browser.headless', 'browserHeadless', ['damocles.browser.headless']),
+  row('integrations', 'damocles.browser.uploadFolderMaxEntries', 'browserUploadFolderMaxEntries', ['damocles.browser.uploadFolderMaxEntries']),
+  row('integrations', 'damocles.browser.uploadFolderMaxSize', 'browserUploadFolderMaxSize', ['damocles.browser.uploadFolderMaxSize']),
   row('integrations', 'damocles.pi.webSearch.enabled', 'webSearch', ['damocles.pi.webSearch.enabled']),
   row('integrations', 'damocles.design.enabled', 'design', ['damocles.design.enabled']),
   row('integrations', 'damocles.imageGeneration.enabled', 'imageGeneration', ['damocles.imageGeneration.enabled']),

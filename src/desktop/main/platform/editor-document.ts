@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import type { DiffSide } from '../../../platform/editor-service';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES, type EditorDocument, type EditorDocumentBody } from '../../../shared/types/messages';
-import { readFileBytes } from '../../local-services/file-bytes';
+import { readFileBytes } from '../../../core/file-bytes';
 import type { TextEncoding } from '../../workspace/search/types';
 
 // Git's rule: a NUL byte in the first 8000 bytes marks the content binary.
@@ -169,17 +169,6 @@ export function withEol(text: string, eol: '\n' | '\r\n'): string {
 export async function fileBody(filePath: string, languageId: string): Promise<EditorDocumentBody> {
   const body = await readBody(filePath, languageId);
   return body === 'missing' ? { kind: 'text', content: '', languageId } : body;
-}
-
-/** A file's text under the same size, binary and encoding rules as a document; rejects when it is missing or cannot be shown as text. */
-export async function readFileText(filePath: string): Promise<string> {
-  const body = await readBody(filePath, 'plaintext');
-  if (body === 'missing') throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), { code: 'ENOENT' });
-  if (body.kind === 'text') return body.content;
-  if (body.kind === 'tooLarge') throw new Error(`${filePath} is ${body.bytes} bytes, over the ${body.limitBytes}-byte limit`);
-  if (body.kind === 'binary') throw new Error(`${filePath} is a binary file`);
-  if (body.kind === 'notAFile') throw new Error(`${filePath} is not a file`);
-  throw new Error(body.error);
 }
 
 export async function fileDocument(filePath: string): Promise<EditorDocument> {

@@ -144,7 +144,7 @@ describe('thinkingDroppedNotice reaches the transcript', () => {
       {
         type: 'thinkingDroppedNotice',
         count: 2,
-        reasons: ['signature mismatch at content[0]', 'unknown reason'],
+        reasons: [{ text: { message: 'signature mismatch at content[0]' }, count: 1 }, { text: { message: 'unknown reason' }, count: 1 }],
         timestamp: 777,
       },
       ctx,
@@ -152,7 +152,7 @@ describe('thinkingDroppedNotice reaches the transcript', () => {
 
     expect(useSessionStore().thinkingDroppedNotices[0]).toMatchObject({
       count: 2,
-      reasons: ['signature mismatch at content[0]', 'unknown reason'],
+      reasons: [{ text: { message: 'signature mismatch at content[0]' }, count: 1 }, { text: { message: 'unknown reason' }, count: 1 }],
       timestamp: 777,
     });
   });
@@ -201,7 +201,7 @@ describe('compactBoundary carries the trigger and the billed usage', () => {
   it('keeps every notice when the boundary carries no summary, because nothing was removed', () => {
     const ctx = context();
     dispatch({ type: 'compactionAborted', trigger: 'threshold', willRetry: true, timestamp: 1 }, ctx);
-    dispatch({ type: 'thinkingDroppedNotice', count: 1, reasons: ['unknown reason'], timestamp: 2 }, ctx);
+    dispatch({ type: 'thinkingDroppedNotice', count: 1, reasons: [{ text: { message: 'unknown reason' }, count: 1 }], timestamp: 2 }, ctx);
     dispatch({ type: 'compactBoundary', preTokens: 90_000, trigger: 'threshold', timestamp: 3 }, ctx);
 
     expect(useSessionStore().compactionAbortedNotices).toHaveLength(1);
@@ -225,7 +225,7 @@ describe('what a compaction summary removes from the transcript', () => {
   it('drops the notices anchored to the messages the summary removed', () => {
     const ctx = context();
     dispatch({ type: 'cacheMissNotice', missedTokens: 900, missedCost: 0.01, idleMs: 1000, modelChanged: false, timestamp: 2 }, ctx);
-    dispatch({ type: 'thinkingDroppedNotice', count: 1, reasons: ['unknown reason'], timestamp: 2 }, ctx);
+    dispatch({ type: 'thinkingDroppedNotice', count: 1, reasons: [{ text: { message: 'unknown reason' }, count: 1 }], timestamp: 2 }, ctx);
     dispatch({ type: 'compactBoundary', preTokens: 90_000, trigger: 'threshold', timestamp: 5 }, ctx);
     dispatch({ type: 'compactSummary', summary: 'what the run did so far' }, ctx);
 
@@ -235,7 +235,7 @@ describe('what a compaction summary removes from the transcript', () => {
 
   it('keeps a notice that landed after the boundary the summary cut at', () => {
     const ctx = context();
-    dispatch({ type: 'thinkingDroppedNotice', count: 1, reasons: ['unknown reason'], timestamp: 9 }, ctx);
+    dispatch({ type: 'thinkingDroppedNotice', count: 1, reasons: [{ text: { message: 'unknown reason' }, count: 1 }], timestamp: 9 }, ctx);
     dispatch({ type: 'compactBoundary', preTokens: 90_000, trigger: 'threshold', timestamp: 5 }, ctx);
     dispatch({ type: 'compactSummary', summary: 'what the run did so far' }, ctx);
 

@@ -4,12 +4,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { createWorkspaceHandlers, isPlanFileCandidate } from '../workspace-handlers';
 import { createFakePlatform, type FakePlatform } from '../../../../../__mocks__/fake-platform';
-import type { FileResult } from '../../../ripgrep';
+import type { FileResult } from '../../../workspace-files';
 import type { ExtensionToWebviewMessage } from '../../../../../shared/types/messages';
 
 const H = vi.hoisted(() => ({ listed: [] as FileResult[], logged: [] as unknown[][] }));
 
-vi.mock('../../../ripgrep', () => ({ listWorkspaceFiles: vi.fn(async () => H.listed) }));
+vi.mock('../../../workspace-files', () => ({ listWorkspaceFiles: vi.fn(async () => H.listed) }));
 vi.mock('../../../../logger', () => ({ log: (...args: unknown[]) => void H.logged.push(args) }));
 
 type Candidates = Extract<ExtensionToWebviewMessage, { type: 'planFileCandidates' }>;
@@ -46,6 +46,7 @@ function harness(sessionId: string | null = 's1') {
   const deps = {
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message),
     getPanels: () => panels,
+    workspaceManager: { listingSignal: () => new AbortController().signal },
     platform,
   } as unknown as Parameters<typeof createWorkspaceHandlers>[0];
   // As the router builds it: a snapshot of the panel at dispatch time.
@@ -116,7 +117,7 @@ describe('requestPlanFileCandidates', () => {
     const first = await list();
     const staleId = first.files[0]!.id;
 
-    const { listWorkspaceFiles } = await import('../../../ripgrep');
+    const { listWorkspaceFiles } = await import('../../../workspace-files');
     vi.mocked(listWorkspaceFiles).mockRejectedValueOnce(new Error('rg crashed'));
     const failed = await list();
 
@@ -147,7 +148,7 @@ describe('requestPlanFileCandidates', () => {
   it('registers one dispose hook per panel however often a listing fails', async () => {
     workspaceFile('plans/a.md', 1);
     const h = harness();
-    const { listWorkspaceFiles } = await import('../../../ripgrep');
+    const { listWorkspaceFiles } = await import('../../../workspace-files');
 
     for (let i = 0; i < 3; i++) {
       await h.list();

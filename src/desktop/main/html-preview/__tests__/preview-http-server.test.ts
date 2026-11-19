@@ -510,6 +510,25 @@ describe('grants of one served root', () => {
     expect(h.server.grant('view:a', 'own').origin).not.toBe(a.origin);
   });
 
+  it('refuses a service worker\'s script on a grant host after the Host check, and leaves the loopback grant\'s alone', async () => {
+    const a = h.server.grant('view:a', 'own');
+    const aCookie = await grantCookie(a);
+    const aHost = new URL(a.origin).host;
+    const script = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'same-origin', 'Sec-Fetch-Dest': 'serviceworker' };
+    const refused = await request('/index.html', { Host: aHost, Cookie: aCookie, ...script, 'Service-Worker': 'script' });
+    expect(refused.status).toBe(403);
+    expect(refused.body).toBe('');
+    expect((await request('/index.html', { Host: aHost, Cookie: aCookie, ...script })).status).toBe(200);
+    // the one-time open on that host is refused too, before its token is spent
+    const open = new URL(a.openUrl('index.html'));
+    expect((await request(`${open.pathname}${open.search}`, { Host: aHost, 'Service-Worker': 'script' })).status).toBe(403);
+    expect((await request(`${open.pathname}${open.search}`, { Host: aHost })).status).toBe(303);
+    // a Host no grant answers is still 421
+    expect((await request('/index.html', { Host: `${'c'.repeat(32)}.localhost:${h.server.port}`, Cookie: aCookie, 'Service-Worker': 'script' })).status).toBe(421);
+    // Open in Browser's loopback grant is the user's own browser's, unchanged
+    expect((await request('/index.html', { Cookie: await cookie(), ...script, 'Service-Worker': 'script' })).status).toBe(200);
+  });
+
   it.runIf(Object.values(os.networkInterfaces()).flat().some((info) => info?.address === '::1'))('holds its port on ::1 too, where Chrome connects a *.localhost name first', async () => {
     const grant = h.server.grant('view:a', 'own');
     const jar = await grantCookie(grant);

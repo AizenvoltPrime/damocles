@@ -229,7 +229,9 @@ describe.skipIf(!HAS_GIT)('reads against real git', { timeout: 120_000 }, () => 
     await expect(h.service.commitInput(repoId)).rejects.toBeInstanceOf(GitQueueDisposedError);
     expect(h.service.repository(repoId)).toBeUndefined();
     expect(gone).toEqual([repoId]);
-    expect(viewOf(h, 'w')).toMatchObject({ state: 'noRepository', repos: [] });
+    // the project folder went with it, so the project shows absent, with nothing to initialize
+    await waitFor(() => viewOf(h, 'w').state === 'absent', 'the project labelled absent');
+    expect(viewOf(h, 'w')).toMatchObject({ state: 'absent', presence: 'missing', repos: [] });
     h.service.dispose();
   });
 });

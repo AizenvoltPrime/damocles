@@ -138,7 +138,7 @@ function trackLoader(): LoaderProbe {
     probe.skillPaths = [...additional];
     mint();
     return {
-      ...fakeServices(),
+      ...fakeServices(createdTrust(options)),
       resourceLoader: {
         getExtensions: noExtensions,
         reload: vi.fn(async () => {
@@ -162,11 +162,21 @@ function watcherFor(base: string, glob: string): FakeFileWatcher {
 
 const noExtensions = () => ({ errors: [], runtime: { pendingProviderRegistrations: [] } });
 
-function fakeServices() {
+// The project trust pi's SettingsManager was created with, as createAgentSessionServices receives it.
+const createdTrust = (options: unknown): boolean => (options as { settingsManager?: { options?: { projectTrusted?: boolean } } }).settingsManager?.options?.projectTrusted ?? true;
+
+// The settings manager keeps its project trust until setProjectTrusted changes it, as pi's does.
+function fakeServices(projectTrusted = true) {
+  const settingsManager = {
+    projectTrusted,
+    getPackages: () => [],
+    setProjectTrusted: vi.fn((trusted: boolean) => { settingsManager.projectTrusted = trusted; }),
+    isProjectTrusted: vi.fn(() => settingsManager.projectTrusted),
+  };
   return {
     cwd: '/cwd',
     agentDir: '/agent',
-    settingsManager: { getPackages: () => [], setProjectTrusted: vi.fn(), isProjectTrusted: vi.fn(() => true) },
+    settingsManager,
     modelRuntime: { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) },
     resourceLoader: { getExtensions: noExtensions, extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
     diagnostics: [],
@@ -188,7 +198,7 @@ describe('PiRuntime.init lifecycle', () => {
     H.agentSettings.loadError = null;
     H.createServicesSpy.mockReset();
     H.settingsCreateSpy.mockClear();
-    H.createServicesSpy.mockResolvedValue(fakeServices());
+    H.createServicesSpy.mockImplementation(async (options: unknown) => fakeServices(createdTrust(options)));
     fake = installFakePlatform();
     H.home = tempDir('pi-home-');
   });
@@ -687,7 +697,7 @@ describe('PiRuntime.init lifecycle', () => {
       } };
     };
     fake.settings.onDidChange = counted('settings', fake.settings.onDidChange.bind(fake.settings));
-    fake.trust.onDidGrantTrust = counted('trust', fake.trust.onDidGrantTrust.bind(fake.trust));
+    fake.trust.onDidChangeTrust = counted('trust', fake.trust.onDidChangeTrust.bind(fake.trust));
     const inspect = fake.settings.inspect.bind(fake.settings);
     vi.spyOn(fake.settings, 'inspect').mockImplementation(((key: string) => {
       if (key === 'damocles.tools.disabled') throw new Error('settings unreadable');
@@ -829,9 +839,12 @@ describe('PiRuntime.init lifecycle', () => {
 
   it('trusts the project layer before the trust-grant reload', async () => {
     setTrusted(false);
-    const services = fakeServices();
+    const services = fakeServices(false);
     const order: string[] = [];
-    services.settingsManager.setProjectTrusted.mockImplementation(() => void order.push('trusted'));
+    services.settingsManager.setProjectTrusted.mockImplementation((trusted: boolean) => {
+      services.settingsManager.projectTrusted = trusted;
+      order.push('trusted');
+    });
     services.resourceLoader.reload.mockImplementation(async () => void order.push('reload'));
     H.createServicesSpy.mockResolvedValue(services);
     const runtime = PiRuntime.get('/agent');
@@ -878,8 +891,11 @@ describe('PiRuntime.init lifecycle', () => {
     setTrusted(false);
     const order: string[] = [];
     const servicesFor = (label: string) => {
-      const services = fakeServices();
-      services.settingsManager.setProjectTrusted.mockImplementation(() => void order.push(`trusted:${label}`));
+      const services = fakeServices(false);
+      services.settingsManager.setProjectTrusted.mockImplementation((trusted: boolean) => {
+        services.settingsManager.projectTrusted = trusted;
+        order.push(`trusted:${label}`);
+      });
       services.resourceLoader.reload.mockImplementation(async () => void order.push(`reload:${label}`));
       return services;
     };
@@ -921,6 +937,11 @@ describe('PiRuntime.init lifecycle', () => {
         path.join(H.home, '.damocles', 'skills'),
       ]),
     );
+
+    // a revoke drops the project dir again
+    setTrusted(false);
+    fake.trust.revokeTrust([cwd]);
+    await vi.waitFor(() => expect(probe.skillPaths).toEqual([path.join(H.home, '.damocles', 'skills')]));
   });
 
   // Same inversion, reached without a trust grant: a project skills dir created after init only
@@ -968,11 +989,14 @@ describe('PiRuntime.init lifecycle', () => {
     expect(probe.fired).toEqual(['instance-2']);
     expect(registeredCount(folder)).toBe(1);
 
-    // A second grant-driven reload has to retire instance-2 in turn, which it can only do if the
-    // first one was adopted rather than stranded.
+    // A second trust-driven reload, the revoke's, has to retire instance-2 in turn, which it can only do
+    // if the first one was adopted rather than stranded.
     probe.fired.length = 0;
-    grantTrust();
-    await vi.waitFor(() => expect(probe.extendCalls).toBe(2));
+    const reloaded = vi.spyOn(folder, 'reloadBare');
+    setTrusted(false);
+    fake.trust.revokeTrust();
+    expect(reloaded).toHaveBeenCalledOnce();
+    await reloaded.mock.results[0]!.value;
 
     folder.republishToolSearch();
     expect(probe.fired).toEqual(['instance-3']);
@@ -992,8 +1016,9 @@ describe('PiRuntime.init lifecycle', () => {
     expect(probe.extendCalls).toBe(0);
   });
 
-  it('reloads only the folders a trust grant lists', async () => {
-    setTrusted(false);
+  it('reloads only the folders whose trust a change turned', async () => {
+    const trusted = new Set<string>();
+    vi.spyOn(fake.trust, 'isTrusted').mockImplementation((folder) => trusted.has(folder));
     trackLoader();
     const runtime = PiRuntime.get('/agent');
     const a = await runtime.folder('/a');
@@ -1001,10 +1026,56 @@ describe('PiRuntime.init lifecycle', () => {
     const reloadA = vi.spyOn(a, 'reloadBare');
     const reloadB = vi.spyOn(b, 'reloadBare');
 
+    trusted.add('/a');
     fake.trust.grantTrust(['/a']);
 
+    expect(a.services.settingsManager.isProjectTrusted()).toBe(true);
     expect(reloadA).toHaveBeenCalledTimes(1);
     expect(reloadB).not.toHaveBeenCalled();
+  });
+
+  // repository-authored settings apply only while the folder is trusted, so a revoke takes the project layer away again
+  it('turns the project layer off and reloads a folder whose trust a revoke took back, and only that folder', async () => {
+    const trusted = new Set(['/a', '/b']);
+    vi.spyOn(fake.trust, 'isTrusted').mockImplementation((folder) => trusted.has(folder));
+    trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const a = await runtime.folder('/a');
+    const b = await runtime.folder('/b');
+    const reloadA = vi.spyOn(a, 'reloadBare');
+    const reloadB = vi.spyOn(b, 'reloadBare');
+    expect(a.services.settingsManager.isProjectTrusted()).toBe(true);
+
+    trusted.delete('/a');
+    fake.trust.revokeTrust(['/a']);
+
+    expect(a.services.settingsManager.setProjectTrusted).toHaveBeenLastCalledWith(false);
+    expect(a.services.settingsManager.isProjectTrusted()).toBe(false);
+    expect(b.services.settingsManager.isProjectTrusted()).toBe(true);
+    expect(reloadA).toHaveBeenCalledTimes(1);
+    expect(reloadB).not.toHaveBeenCalled();
+  });
+
+  it('turns the project layer off for a folder whose creation was still running when its trust was taken back', async () => {
+    let trusted = true;
+    vi.spyOn(fake.trust, 'isTrusted').mockImplementation(() => trusted);
+    let created!: () => void;
+    const services = fakeServices(true);
+    H.createServicesSpy.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { created = resolve; });
+      return services;
+    });
+    const runtime = PiRuntime.get('/agent');
+
+    const creating = runtime.folder('/cwd');
+    await vi.waitFor(() => expect(H.createServicesSpy).toHaveBeenCalled());
+    trusted = false;
+    fake.trust.revokeTrust(['/cwd']);
+    created();
+    const folder = await creating;
+
+    expect(folder.services.settingsManager.isProjectTrusted()).toBe(false);
+    expect(services.resourceLoader.reload).toHaveBeenCalled();
   });
 
   // Each loader's .claude and .codex roots are ordered by the precedence, and only a reload recomputes them.

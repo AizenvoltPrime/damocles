@@ -4,7 +4,7 @@ import type { Platform } from "../../platform/platform";
 import * as path from "path";
 import { SlashCommandService } from "./slash-command-service";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
-import { listWorkspaceFiles, type FileResult } from "./ripgrep";
+import { listWorkspaceFiles, type FileResult } from "./workspace-files";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type {
   CustomSlashCommandInfo,
@@ -42,6 +42,8 @@ export class WorkspaceManager {
   private readonly platform: Platform;
   /** One per folder a panel has targeted, keyed by folder key; each watches only its own project dirs. */
   private readonly slashCommandServices = new Map<string, SlashCommandService>();
+  /** Per panel, the folder its @ list walks run in and their controller. */
+  private readonly folderListings = new WeakMap<HostInstance, { readonly folderKey: string; readonly controller: AbortController }>();
 
   constructor(config: WorkspaceManagerConfig) {
     this.postMessage = config.postMessage;
@@ -123,29 +125,49 @@ export class WorkspaceManager {
     this.postMessage(host, { type: "customAgents", agents: [] });
   }
 
-  async getWorkspaceFiles(folder: FolderTarget): Promise<WorkspaceFileInfo[]> {
+  /**
+   * What the panel's @ list walks of folder run under: aborted once the panel closes or lists another folder, and already
+   * aborted when the panel closed or left folder. Every folder change asks for the new folder's first (`sendFolderState`).
+   */
+  listingSignal(instance: HostInstance, folder: FolderTarget): AbortSignal {
+    if (instance.folder.key !== folder.key || ![...this.getPanels().values()].includes(instance)) return AbortSignal.abort();
+    const current = this.folderListings.get(instance);
+    if (current?.folderKey === folder.key) return current.controller.signal;
+    current?.controller.abort();
+    if (!current) instance.disposables.push({ dispose: () => this.folderListings.get(instance)?.controller.abort() });
+    const controller = new AbortController();
+    this.folderListings.set(instance, { folderKey: folder.key, controller });
+    return controller.signal;
+  }
+
+  async getWorkspaceFiles(folder: FolderTarget, signal: AbortSignal): Promise<WorkspaceFileInfo[]> {
     if (!folder.projectScope) {
       log("[WorkspaceManager] getWorkspaceFiles: no workspace folder open, returning []");
       return [];
     }
-    const files = await listWorkspaceFiles(this.platform, folder.fsPath);
+    const files = await listWorkspaceFiles(this.platform, folder.fsPath, signal);
     return files.map((f: FileResult) => ({
       relativePath: f.relativePath,
       isDirectory: f.isDirectory,
     }));
   }
 
-  async workspaceFilesMessage(folder: FolderTarget): Promise<ExtensionToWebviewMessage> {
+  /** The panel's @ list of folder; undefined once the panel closed or left folder, which stops the walk. */
+  async workspaceFilesMessage(instance: HostInstance, folder: FolderTarget): Promise<ExtensionToWebviewMessage | undefined> {
+    const signal = this.listingSignal(instance, folder);
     try {
-      return { type: "workspaceFiles", files: await this.getWorkspaceFiles(folder) };
+      return { type: "workspaceFiles", files: await this.getWorkspaceFiles(folder, signal) };
     } catch (err) {
+      if (signal.aborted) return undefined;
       log("[WorkspaceManager] Error fetching workspace files:", err);
       return { type: "workspaceFiles", files: [] };
     }
   }
 
-  async sendWorkspaceFiles(host: PanelHost, folder: FolderTarget): Promise<void> {
-    this.postMessage(host, await this.workspaceFilesMessage(folder));
+  async sendWorkspaceFiles(instance: HostInstance): Promise<void> {
+    const { folder } = instance;
+    const message = await this.workspaceFilesMessage(instance, folder);
+    if (message && instance.folder.key === folder.key) this.postMessage(instance.host, message);
   }
 
   /** `relocated`: the path was already mapped through the relocation aliases, which happens once. */

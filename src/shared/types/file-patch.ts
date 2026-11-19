@@ -1,5 +1,8 @@
-/** Why a file change carries no patch; its card says which instead of showing invented line numbers. */
-export type FilePatchOmitted = 'tooLarge' | 'binary';
+/**
+ * Why a file change carries no patch; its card says which instead of showing invented line numbers. binary: the content holds a NUL;
+ * unreadable: the file could not be read; notAFile: a folder, FIFO or device, which is never opened.
+ */
+export type FilePatchOmitted = 'tooLarge' | 'binary' | 'unreadable' | 'notAFile';
 
 /**
  * A file change's diff data, in a Write result's `details` and an Edit or Write approval: a unified patch

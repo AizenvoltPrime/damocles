@@ -5,7 +5,7 @@ import type { TrustStore } from '../trust-store';
 export function createDesktopTrustService(store: TrustStore): TrustService {
   return {
     isTrusted: (folderPath) => store.isTrusted(folderPath),
-    onDidGrantTrust: (cb) => store.onDidGrant(cb),
+    onDidChangeTrust: (cb) => store.onDidChange(cb),
     requestTrust: (folderPath) => store.requestTrust(folderPath),
   };
 }

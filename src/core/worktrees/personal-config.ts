@@ -21,9 +21,22 @@ export function installWorktreeProjectLookup(next: WorktreeProjectLookup): Dispo
   return { dispose: () => { if (lookup === next) lookup = undefined; } };
 }
 
+/**
+ * Whether a chat's settings file applies: its project file while the chat's folder is trusted, its local file (the project's
+ * for a worktree chat) while that folder and `personalPath` both are, so no file applies where isTrusted says untrusted.
+ */
+export function settingsFileTrusted(isTrusted: (folder: string) => boolean, folder: { readonly path: string; readonly personalPath?: string }, scope: 'project' | 'local'): boolean {
+  return isTrusted(folder.path) && (scope === 'project' || folder.personalPath === undefined || isTrusted(folder.personalPath));
+}
+
 /** The project for a chat worktree's folder, and the folder itself otherwise. */
 export function personalConfigRoot(folder: string): string {
   return lookup?.projectOf(folder) ?? folder;
+}
+
+/** Whether the personal files under personalConfigRoot(folder) apply to a chat in `folder`: settingsFileTrusted's local file. */
+export function personalFilesTrusted(isTrusted: (folder: string) => boolean, folder: string): boolean {
+  return settingsFileTrusted(isTrusted, { path: folder, personalPath: personalConfigRoot(folder) }, 'local');
 }
 
 /**

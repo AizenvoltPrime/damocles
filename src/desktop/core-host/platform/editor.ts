@@ -23,7 +23,7 @@ export function createEditorProxy(endpoint: CoreEndpoint, init: CoreInit, client
   return {
     openFile: (path, options) => endpoint.request('editor.openFile', { path, ...(options ? { options } : {}) }),
     openUntitled: (content, language, opts) => endpoint.request('editor.openUntitled', { content, language, ...(opts?.panelId !== undefined ? { panelId: opts.panelId } : {}) }),
-    readText: (path) => endpoint.request('editor.readText', { path }),
+    isDirty: (path) => endpoint.request('editor.isDirty', { path }),
     showDiff: async ({ title, ...req }) => {
       // the title is a function of the file's current name, so main gets it as a template it fills in
       const { viewId } = await endpoint.request('editor.showDiff', { ...req, titleTemplate: title(DIFF_TITLE_NAME) });

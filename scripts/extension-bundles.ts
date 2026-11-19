@@ -13,6 +13,7 @@ export const EXTENSION_BUNDLE_FILES = {
   voiceExtractWorker: 'dist/voice-extract-worker.js',
   processLauncherWorker: 'dist/process-launcher-worker.js',
   sentinel: 'dist/sentinel.js',
+  walkChild: 'dist/walk-child.js',
 } as const;
 
 /** The webview build's output folder below dist/; vite.config.ts writes it (`outDir`). */

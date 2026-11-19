@@ -1487,7 +1487,9 @@
     "noNewline": "No newline at end of file",
     "omitted": {
       "tooLarge": "Diff too large to show",
-      "binary": "Binary file"
+      "binary": "Binary file",
+      "unreadable": "File could not be read",
+      "notAFile": "Not a regular file"
     },
     "empty": {
       "emptyFile": "Empty file",
@@ -1568,6 +1570,7 @@
   "thinkingDropped": {
     "titleOne": "Anthropic dropped a thinking block",
     "titleMany": "Anthropic dropped {count} thinking blocks",
+    "reasonCount": "{reason} ({count})",
     "meaning": "The model lost part of its reasoning chain on this turn."
   },
   "refusal": {
@@ -2668,7 +2671,9 @@
       "unlimited": "unlimited"
     },
     "units": {
-      "days": "days"
+      "days": "days",
+      "entries": "entries",
+      "mebibytes": "MiB"
     },
     "invalid": {
       "integerRange": "Enter a whole number from {min} to {max}.",
@@ -2962,6 +2967,14 @@
       "browserHeadless": {
         "label": "Headless browser",
         "description": "Run Chrome with no window. Off runs a real window kept off screen, which fewer sites detect as automation. Applies the next time the browser starts."
+      },
+      "browserUploadFolderMaxEntries": {
+        "label": "Folder upload entry limit",
+        "description": "The most entries (files, folders and links) the agent's upload of one folder to a page may copy. A folder with more is refused before anything is copied."
+      },
+      "browserUploadFolderMaxSize": {
+        "label": "Folder upload size limit",
+        "description": "The most the agent's upload of one folder to a page may copy, in MiB. A larger folder is refused before anything is copied, and so is one the disk has no room for."
       },
       "webSearch": {
         "label": "Web search",
@@ -3373,6 +3386,7 @@
       "changedLines": "+{added} −{removed} lines",
       "newLines": "{n} line | {n} lines",
       "openDiff": "Open diff",
+      "unsavedChanges": "Has unsaved changes; this diff shows the file on disk.",
       "yesAcceptAll": "Yes, and accept all edits this session",
       "feedbackPlaceholder": "Or tell Damocles what to do instead…"
     }

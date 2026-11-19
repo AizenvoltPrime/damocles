@@ -33,7 +33,7 @@ export interface ToolStatusDeps {
   memoryService?: MemoryService;
   /** `this.options.compassService`. */
   compassService?: CompassService;
-  /** `!!this.options.browserService`. */
+  /** `this.options.browser` is set: the session has a browser and a chat for its pages. */
   browserAvailable: boolean;
   /** `this.isBrowserEnabled()`. */
   browserEnabled: boolean;
@@ -103,7 +103,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
     ...moduleToolNames({
       ...(deps.memoryService ? { memoryService: deps.memoryService } : {}),
       ...(deps.compassService ? { compassService: deps.compassService } : {}),
-      browserEnabled: deps.browserEnabled,
+      browserEnabled: deps.browserAvailable && deps.browserEnabled,
       imageEligible: deps.imageEnabled && deps.imageAvailability.available,
       forgeEligible: deps.forgeAvailable && deps.forgeEnabled,
     }),

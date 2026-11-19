@@ -1,39 +1,30 @@
-import { mkdir, readFile, stat, writeFile } from 'fs/promises';
+import { promises as fs } from 'node:fs';
+import { mkdir } from 'fs/promises';
 import type { ToolDefinition, WriteToolInput } from '@earendil-works/pi-coding-agent';
 import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { WriteDetails } from '../../../shared/types/file-patch';
 import { log } from '../../logger';
-import { FILE_PATCH_MAX_BYTES, filePatch } from './file-patch';
-import { queueKeyOf } from './local-file-operations';
+import { filePatch, readTextForPatch } from './file-patch';
+import { notARegularFileToWrite, queueKeyOf, writeRegularFile } from './local-file-operations';
+import { resolveToCwd } from './search-tools';
 
-
-function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-}
 
 /** What the change does to the file: its patch, why there is none, or that the write creates it. */
 async function writeDetails(path: string, absolutePath: string, content: string): Promise<WriteDetails> {
-  let size: number;
-  try {
-    size = (await stat(absolutePath)).size;
-  } catch (error) {
-    if (isMissing(error)) return { created: true };
-    throw error;
-  }
-  // Read only a file the diff could use, so a huge one is never loaded into memory.
-  if (size > FILE_PATCH_MAX_BYTES) return { patchOmitted: 'tooLarge' };
-  return filePatch(path, (await readFile(absolutePath)).toString('utf-8'), content);
+  const before = await readTextForPatch(absolutePath);
+  if (before === undefined) return { created: true };
+  return typeof before === 'string' ? filePatch(path, before, content) : before;
 }
 
 /**
  * The `write` override: pi's own write does the write, and its schema and prompt text reach the model
- * unchanged. A write that replaces a file also records its patch; a new file records `created` instead,
- * since the tool input holds every line of it. Details that cannot be computed are left out, and
- * `writeFile` alone decides the outcome.
+ * unchanged. A write that replaces a file also records its patch, or why it has none (`readTextForPatch`);
+ * a new file records `created` instead, since the tool input holds every line of it. The write alone decides
+ * the outcome; a path that is not a regular file is refused, in every mode, and nothing is written to it.
  * The name stays the literal lowercase `write`, which is what replaces pi's built-in, and it is never
  * paired with an `excludeTools` entry, which would drop the replacement too ("Tool overrides").
- * The old content is read through pi's `operations`, inside the write's mutation queue slot. A second
+ * The old content is read in pi's `writeFile` operation, inside the write's mutation queue slot. A second
  * `withFileMutationQueue` around `execute` would deadlock, since pi's call queues behind it on that key.
  * Sequential, so pi runs any batch holding a write one call at a time, in the model's order.
  */
@@ -43,6 +34,9 @@ export function createWriteTool(pi: PiCodingAgentModule, cwd: string): ToolDefin
     ...metadata,
     executionMode: 'sequential',
     execute: async (toolCallId, params: WriteToolInput, signal, onUpdate, ctx) => {
+      // Refused here in the path's own spelling; the write refuses one swapped in after this stat from its handle. A stat error is the write's to report.
+      const entry = await fs.stat(resolveToCwd(params.path, ctx?.cwd || cwd)).catch(() => undefined);
+      if (entry !== undefined && !entry.isFile()) throw new Error(notARegularFileToWrite(params.path));
       let details: WriteDetails | undefined;
       // pi's default local operations (`write.js`) on the bundle's fs, built per call so the read lands in this call's slot.
       const write: AnyToolDefinition = pi.createWriteToolDefinition(cwd, {
@@ -56,7 +50,7 @@ export function createWriteTool(pi: PiCodingAgentModule, cwd: string): ToolDefin
               log('[write] no diff recorded for %s: %O', absolutePath, error);
               return undefined;
             });
-            await writeFile(absolutePath, content, 'utf-8');
+            await writeRegularFile(absolutePath, content, notARegularFileToWrite(absolutePath));
           },
         },
       });

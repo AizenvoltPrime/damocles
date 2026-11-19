@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sendCliRequest, type CliAnswer } from '../../cli/cli-protocol';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
+import { WALK_CLOSE_WAIT_MS, type WalkChild } from '../../../core/search-walk/walk-host';
 import type { HostStarters, PtyHostProcess } from '../../workspace/host-starters';
 import type { TerminalPost } from '../../workspace/messages';
 import { CLI_HOOK_ENV } from '../../workspace/terminal/terminal-env';
@@ -189,6 +190,35 @@ describe('daemon shutdown', () => {
     await fs.rm(daemon.paths.lockFile, { recursive: true });
     await fs.rm(daemon.paths.pidFile);
   }, LOCK_UPDATE_MS * 3);
+
+  it('kills a walk process stuck in a read when it lost its lock, and waits WALK_CLOSE_WAIT_MS for it at most', async () => {
+    const lines: string[] = [];
+    let kills = 0;
+    let asked!: () => void;
+    const walking = new Promise<void>((resolve) => (asked = resolve));
+    // a process whose read never returns, which no kill ends
+    const stuck: WalkChild = {
+      onReply: () => undefined,
+      onStderr: () => undefined,
+      send: async (request) => {
+        if (request.kind === 'walk') asked();
+      },
+      exited: new Promise(() => undefined),
+      kill: () => void kills++,
+    };
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, walkChild: () => stuck, log: (line) => lines.push(line) });
+    const client = await connectClient(await daemon.connect());
+    await client.workspace.request('quickOpen.list', { runId: 1, root: home, ignore: { files: true, global: true, parents: true }, excludes: [] });
+    await walking;
+    const started = Date.now();
+    void daemon.daemon.lockLost('the daemon lock was compromised');
+    expect(await daemon.exitCode).toBe(EXIT_LOCK_LOST);
+    expect(Date.now() - started).toBeLessThan(WALK_CLOSE_WAIT_MS + 2_000);
+    expect(kills).toBeGreaterThan(0);
+    expect(lines).toContain(`[walk] a walk process did not exit within ${WALK_CLOSE_WAIT_MS} ms of its kill`);
+    await fs.rm(daemon.paths.lockFile, { recursive: true });
+    await fs.rm(daemon.paths.pidFile);
+  });
 
   it('leaves a pid file another daemon wrote when it shuts down', async () => {
     const daemon = await startInProcessDaemon({ starters: NO_HOSTS });

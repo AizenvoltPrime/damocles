@@ -11,6 +11,7 @@ import { stripBom } from '../../core/config/bom';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { mergeSettingValues, parseSettingsText, type SettingsObject } from '../../core/config/settings-file';
 import { folderKey } from '../../core/workspace-folders/folder-key';
+import { settingsFileTrusted } from '../../core/worktrees/personal-config';
 import { DESKTOP_CONFIGURATION } from './desktop-configuration';
 import { Emitter } from './emitter';
 import { l } from '../../core/l10n';
@@ -79,16 +80,16 @@ export type DesktopSettingsStoreDeps = StoreDeps & (
 
 interface Layers {
   readonly user: SettingsObject;
-  // present only while the folder's personal path is trusted
+  // each present only while settingsFileTrusted admits its file
   readonly project?: SettingsObject;
   readonly local?: SettingsObject;
 }
 
-/** One folder's project and local layers, read only while its personal path was trusted. */
+/** One folder's project and local layers, each read only while settingsFileTrusted admitted its file. */
 interface FolderEntry {
-  // the working folder, whose .damocles/settings.json is the project layer
+  // the working folder, whose .damocles/settings.json is the project layer and whose trust gates both
   readonly path: string;
-  // the folder whose .damocles/settings.local.json is the local layer and whose trust gates both (D34)
+  // the folder whose .damocles/settings.local.json is the local layer, which its trust gates too (D34)
   readonly personalPath: string;
   project?: SettingsObject;
   local?: SettingsObject;
@@ -154,9 +155,9 @@ function resolved(folder: SettingsFolder): { path: string; personalPath: string 
 
 /**
  * `damocles.*` keys, flat beside the `permissions` object, in three files: user `~/.damocles/settings.json` always, and
- * for a folder its project `<path>/.damocles/settings.json` and local `<personalPath>/.damocles/settings.local.json`
- * only while `personalPath` is trusted. A read with no folder uses the default project's, and a daemon's core has none,
- * so there it reads no project file. Precedence local > project >
+ * for a folder its project `<path>/.damocles/settings.json` while `path` is trusted and local
+ * `<personalPath>/.damocles/settings.local.json` while `path` and `personalPath` both are. A read with no folder uses the
+ * default project's, and a daemon's core has none, so there it reads no project file. Precedence local > project >
  * user > package.json default, with object values merged across layers; user-only keys never come from a project or
  * local file. A file that stops parsing keeps the layer it last parsed. Each folder's layers are cached and watched
  * while the default project or a loaded chat uses it. See docs/invariants.md "Desktop host".
@@ -198,7 +199,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
       userWatcher,
       deps.projects.onDidChange(windowChange),
       deps.chatFolders.onDidChange(() => this.releaseUnused()),
-      deps.trust.onDidGrantTrust(() => this.reloadAll(false)),
+      deps.trust.onDidChangeTrust(() => this.reloadAll(false)),
     );
     if (deps.defaultProject !== undefined) this.subscriptions.push(deps.defaultProject.onDidChange(windowChange));
     const remote = deps.remote;
@@ -307,14 +308,21 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   private layersFor(folder: SettingsFolder | undefined): Layers {
     const target = this.targetFolder(folder);
     if (target === undefined) return { user: this.user };
-    const entry = this.entry(target);
-    // Checked on every read as well as at load: a layer read while trusted applies only while the folder still is.
-    if (!this.deps.trust.isTrusted(entry.personalPath)) return { user: this.user };
+    return this.applying(this.entry(target));
+  }
+
+  // Checked on every read as well as at load: a layer read while trusted applies only while its folders still are.
+  private applying(entry: FolderEntry | undefined): Layers {
+    if (entry === undefined) return { user: this.user };
     return {
       user: this.user,
-      ...(entry.project !== undefined ? { project: entry.project } : {}),
-      ...(entry.local !== undefined ? { local: entry.local } : {}),
+      ...(entry.project !== undefined && this.fileTrusted(entry, 'project') ? { project: entry.project } : {}),
+      ...(entry.local !== undefined && this.fileTrusted(entry, 'local') ? { local: entry.local } : {}),
     };
+  }
+
+  private fileTrusted(folder: { readonly path: string; readonly personalPath: string }, scope: FileScope): boolean {
+    return settingsFileTrusted((candidate) => this.deps.trust.isTrusted(candidate), folder, scope);
   }
 
   private entry(target: { path: string; personalPath: string }): FolderEntry {
@@ -339,13 +347,10 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   }
 
   private readFolderLayers(entry: FolderEntry, acceptEmpty: boolean): void {
-    if (!this.deps.trust.isTrusted(entry.personalPath)) {
-      delete entry.project;
-      delete entry.local;
-      return;
+    for (const scope of ['project', 'local'] as const) {
+      if (this.fileTrusted(entry, scope)) entry[scope] = this.readProjectLayer(projectFile(entry, scope), acceptEmpty);
+      else delete entry[scope];
     }
-    entry.project = this.readProjectLayer(projectFile(entry, 'project'), acceptEmpty);
-    entry.local = this.readProjectLayer(projectFile(entry, 'local'), acceptEmpty);
   }
 
   private snapshot(entry: FolderEntry | undefined): Layers {
@@ -363,8 +368,9 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     }
     const target = this.targetFolder(folder);
     if (target === undefined) throw new Error(`No project is open, so ${key} cannot be written to ${scope} settings`);
-    if (!this.deps.trust.isTrusted(target.personalPath)) {
-      throw new Error(`${target.personalPath} is not trusted, so ${key} cannot be written to its ${scope} settings`);
+    if (!this.fileTrusted(target, scope)) {
+      const untrusted = this.deps.trust.isTrusted(target.path) ? target.personalPath : target.path;
+      throw new Error(`${untrusted} is not trusted, so ${key} cannot be written to its ${scope} settings`);
     }
     return projectFile(target, scope);
   }
@@ -507,10 +513,10 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   /** The default project may have changed: window-level reads then come from another folder, whose differing keys change. */
   private windowFolderChanged(): void {
     const previous = this.windowKey === undefined ? undefined : this.folders.get(this.windowKey);
-    const before = this.snapshot(previous !== undefined && this.deps.trust.isTrusted(previous.personalPath) ? previous : undefined);
+    const before = this.applying(previous);
     const current = this.windowEntry();
     this.windowKey = current === undefined ? undefined : entryKey(current);
-    const after = this.snapshot(current !== undefined && this.deps.trust.isTrusted(current.personalPath) ? current : undefined);
+    const after = this.applying(current);
     this.releaseUnused();
     this.fire(changedKeys(before, after));
   }

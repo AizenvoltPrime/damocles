@@ -1,34 +1,61 @@
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import type { WorktreeHostServices } from '../../../core/worktrees/host';
+import { liveWorkingFolders } from '../../../core/worktrees/records';
+import type { WorktreeRegistry } from '../../../core/worktrees/registry';
+import { isEmptyTrustChange, mergeTrustChanges, workingFolderTrust } from '../../local-services/working-folder-trust';
 import type { Disposable } from '../../../platform/disposable';
 import type { KeyValueState, Memento } from '../../../platform/key-value-state';
-import type { TrustService } from '../../../platform/trust-service';
+import type { TrustChange, TrustService } from '../../../platform/trust-service';
 import type { OpenFolder, WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { CoreEndpoint, CoreInit, StateScope } from '../../core-protocol';
 import { Listeners } from './listeners';
 
 // Mirrored services: synchronous reads of the copy main pushes, writes by RPC.
 
-/** A live chat worktree's working folder answers with its project's trust, as main's TrustStore does (AD12). */
-export function createTrustMirror(endpoint: CoreEndpoint, init: CoreInit, worktrees: () => WorktreeHostServices | undefined): TrustService & Disposable {
+export type TrustRegistry = Pick<WorktreeRegistry, 'records' | 'liveChatRecordAt' | 'onDidChange'>;
+
+export interface TrustMirror extends TrustService, Disposable {
+  // the worktree registry, once core built it; its working folders' answers follow it from then on
+  followRegistry(registry: TrustRegistry): void;
+}
+
+/**
+ * A live chat worktree's working folder answers with its project's trust, as main's TrustStore does (AD12), and a change of
+ * that answer fires onDidChangeTrust naming the folder, whether main's patch or a registry change made it.
+ */
+export function createTrustMirror(endpoint: CoreEndpoint, init: CoreInit): TrustMirror {
   let keys = new Set(init.mirrors.trust.keys);
-  const granted = new Listeners<[readonly string[]]>('trust grant');
+  let registry: TrustRegistry | undefined;
+  let registrySubscription: Disposable | undefined;
+  const changed = new Listeners<[TrustChange]>('trust change');
+  const direct = (folderPath: string): boolean => keys.has(folderKey(folderPath));
+  const isTrusted = (folderPath: string): boolean => {
+    if (direct(folderPath)) return true;
+    const project = registry?.liveChatRecordAt(folderPath)?.projectPath;
+    return project !== undefined && direct(project);
+  };
+  const workingFolders = workingFolderTrust(() => liveWorkingFolders(registry?.records() ?? []), isTrusted, direct);
+  const fireWorkingFolders = (): void => {
+    const change = workingFolders();
+    if (!isEmptyTrustChange(change)) changed.fire(change);
+  };
   const subscription = endpoint.onMirror('trust', (patch) => {
     keys = new Set(patch.keys);
-    // a revoke fires with no folder, so a listener that read trust once at load reads it again
-    granted.fire(patch.granted);
+    changed.fire(mergeTrustChanges({ granted: patch.granted, revoked: patch.revoked ?? [] }, workingFolders()));
   });
   return {
-    isTrusted: (folderPath) => {
-      if (keys.has(folderKey(folderPath))) return true;
-      const project = worktrees()?.registry.liveChatRecordAt(folderPath)?.projectPath;
-      return project !== undefined && keys.has(folderKey(project));
-    },
-    onDidGrantTrust: (cb) => granted.add(cb),
+    isTrusted,
+    onDidChangeTrust: (cb) => changed.add(cb),
     requestTrust: (folderPath) => endpoint.request('trust.request', { folderPath }),
+    followRegistry: (next) => {
+      registrySubscription?.dispose();
+      registry = next;
+      registrySubscription = next.onDidChange(fireWorkingFolders);
+      fireWorkingFolders();
+    },
     dispose: () => {
       subscription.dispose();
-      granted.clear();
+      registrySubscription?.dispose();
+      changed.clear();
     },
   };
 }

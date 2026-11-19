@@ -152,7 +152,7 @@ describe('useVirtualizedMessages thinking-dropped interleaving', () => {
     const dropped: ThinkingDroppedNotice = {
       id: '200-0',
       count: 2,
-      reasons: ['signature mismatch at content[0]', 'unknown reason'],
+      reasons: [{ text: { message: 'signature mismatch at content[0]' }, count: 1 }, { text: { message: 'unknown reason' }, count: 1 }],
       timestamp: 200,
     };
 
@@ -166,7 +166,7 @@ describe('useVirtualizedMessages thinking-dropped interleaving', () => {
 
   it('emits a trailing thinking-dropped-notice when it lands after the last message', () => {
     const only: ChatMessage = { id: 'u1', role: 'user', content: 'hello', timestamp: 100 };
-    const dropped: ThinkingDroppedNotice = { id: '500-0', count: 1, reasons: ['unknown reason'], timestamp: 500 };
+    const dropped: ThinkingDroppedNotice = { id: '500-0', count: 1, reasons: [{ text: { message: 'unknown reason' }, count: 1 }], timestamp: 500 };
 
     const { items } = build([only], [], { thinkingDroppedNotices: [dropped] });
 
@@ -240,7 +240,7 @@ describe('useVirtualizedMessages ordering inside one message gap', () => {
   it('orders two notices of different types by timestamp', () => {
     const first: ChatMessage = { id: 'u1', role: 'user', content: 'first', timestamp: 100 };
     const second: ChatMessage = { id: 'u2', role: 'user', content: 'second', timestamp: 300 };
-    const dropped: ThinkingDroppedNotice = { id: '110-0', count: 1, reasons: ['unknown reason'], timestamp: 110 };
+    const dropped: ThinkingDroppedNotice = { id: '110-0', count: 1, reasons: [{ text: { message: 'unknown reason' }, count: 1 }], timestamp: 110 };
     const aborted: CompactionAbortedNotice = { id: '290-0', trigger: 'threshold', willRetry: true, timestamp: 290 };
 
     const { items } = build([first, second], [], { compactionAbortedNotices: [aborted], thinkingDroppedNotices: [dropped] });

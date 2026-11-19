@@ -1,0 +1,50 @@
+name: Browser integration nightly
+
+# The real-Chrome integration test of the agent's browser, which pins the Chrome behaviour its network guard, service-worker
+# bypass and preload setting rest on. Windows, where most apps register a URL scheme a redirect could open (docs/release.md
+# "Browser integration nightly").
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-chrome:
+    runs-on: windows-latest
+    # npm ci and the test step (docs/release.md "Browser integration nightly").
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Test homes leave the Windows OS disk, as in remote-e2e-nightly.yml; job-level env cannot read the runner context.
+      - name: Point TEMP at the runner's temp folder
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The runner image updates its Chrome on its own schedule, so a failure names the version it ran.
+      - name: Chrome version
+        run: (Get-Item "$env:ProgramFiles\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
+
+      # Patchright drives that installed Chrome (channel 'chrome') headless: nothing is downloaded and no display is needed.
+      - name: Real-Chrome browser integration test
+        timeout-minutes: 20
+        env:
+          DAMOCLES_PATCHRIGHT_IT: '1'
+        run: npx vitest run src/core/browser/__tests__/patchright-launch.integration.test.ts

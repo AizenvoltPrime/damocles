@@ -18,6 +18,8 @@ const H = vi.hoisted(() => ({
   gate: undefined as Promise<void> | undefined,
   recursive: [] as RecursiveWatch[],
   statted: [] as string[],
+  // Every synchronous fs call that names a path, as "<kind> <path>".
+  calls: [] as string[],
 }));
 
 // Windows must never load @parcel/watcher; the factory runs only if something imports it.
@@ -32,8 +34,29 @@ vi.mock('node:fs', async (importOriginal) => {
     ...actual,
     lstatSync: ((p: import('node:fs').PathLike, options?: unknown) => {
       H.statted.push(String(p));
+      H.calls.push(`lstat ${String(p)}`);
       return actual.lstatSync(p, options as never);
     }) as typeof actual.lstatSync,
+    statSync: ((p: import('node:fs').PathLike, options?: unknown) => {
+      H.calls.push(`stat ${String(p)}`);
+      return actual.statSync(p, options as never);
+    }) as typeof actual.statSync,
+    existsSync: ((p: import('node:fs').PathLike) => {
+      H.calls.push(`exists ${String(p)}`);
+      return actual.existsSync(p);
+    }) as typeof actual.existsSync,
+    realpathSync: Object.assign(
+      (p: import('node:fs').PathLike, options?: unknown) => {
+        H.calls.push(`realpath ${String(p)}`);
+        return actual.realpathSync(p, options as never);
+      },
+      {
+        native: (p: import('node:fs').PathLike, options?: unknown) => {
+          H.calls.push(`realpath ${String(p)}`);
+          return actual.realpathSync.native(p, options as never);
+        },
+      },
+    ) as typeof actual.realpathSync,
     promises: {
       ...actual.promises,
       lstat: ((p: import('node:fs').PathLike, options?: unknown) => {
@@ -123,6 +146,7 @@ beforeEach(() => {
   H.gate = undefined;
   H.recursive.length = 0;
   H.statted.length = 0;
+  H.calls.length = 0;
 });
 
 afterEach(async () => {
@@ -297,6 +321,22 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
 
     expect(events.filter((event) => event.includes('node_modules') || event.includes('objects'))).toEqual([]);
     expect(H.statted.filter((p) => p.includes('node_modules') || p.includes(`${path.sep}objects`))).toEqual([]);
+  });
+
+  it('reports a dangling junction in a shallow watch as created and deleted, touching it only with lstat', async () => {
+    const watcher = factory.watch(dir, '*');
+    await watcher.ready;
+    const events = record(watcher);
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-junction-target-'));
+    const link = path.join(dir, 'link');
+    fs.symlinkSync(target, link, 'junction');
+    fs.rmSync(target, { recursive: true, force: true });
+    await vi.waitFor(() => expect(events).toContain('create link'), WAIT);
+    fs.rmdirSync(link);
+    await vi.waitFor(() => expect(events).toContain('delete link'), WAIT);
+
+    expect(H.calls.filter((call) => call.endsWith(link)).every((call) => call.startsWith('lstat '))).toBe(true);
+    expect(H.calls).toContain(`lstat ${link}`);
   });
 
   it('reports the files of a deleted root, closes its handle, and reports what the recreated root holds once', async () => {

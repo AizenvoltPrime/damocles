@@ -14,14 +14,14 @@ export interface ScopeTabInfo {
 
 /**
  * A per-agent handle over the shared {@link BrowserService}. Created once per `buildCustomTools`
- * invocation (main agent → the primary scope, each subagent/team agent → its own id) and closed over by
+ * invocation (main agent → its chat's human scope, each subagent/team agent → its own id) and closed over by
  * that agent's browser-tool closures. It holds NO page state of its own — ownership lives in
  * `BrowserService` (keyed by `id`) so async popups can be attributed to the scope whose page spawned
  * them. Every method delegates to a scope-aware `BrowserService` method, so two concurrent agents each
  * drive their OWN current tab instead of a single global `activePage`.
  *
- * Context-wide resources stay shared (one Chromium context): `getDownloads` and the intercept-rule
- * methods forward straight to the service — an agent's downloads/intercepts affect the whole context.
+ * Downloads and intercept rules belong to the scope's chat: `getDownloads` lists the chat's downloads, and a rule
+ * an agent adds applies to every page of its chat, its subagents' and team agents' pages included.
  */
 export class BrowserAgentScope {
   private readonly svc: BrowserService;
@@ -79,8 +79,12 @@ export class BrowserAgentScope {
     this.svc.stagePendingUpload(this.id, paths);
   }
 
-  newUploadFolder(): Promise<string> {
-    return this.svc.newUploadFolder(this.id);
+  uploadTarget(): { readonly volume: string; readonly create: () => Promise<string> } {
+    return this.svc.uploadTarget(this.id);
+  }
+
+  uploadFolderCaps(): { readonly maxEntries: number; readonly maxBytes: number } {
+    return this.svc.uploadFolderCaps();
   }
 
   /** Bring this scope's current tab to the human's screencast focus. */
@@ -107,18 +111,18 @@ export class BrowserAgentScope {
   }
 
   getDownloads(): DownloadEntry[] {
-    return this.svc.getDownloads();
+    return this.svc.getDownloads(this.id);
   }
 
   addInterceptRule(rule: Omit<InterceptRule, 'id'>): string {
-    return this.svc.addInterceptRule(rule);
+    return this.svc.addInterceptRule(this.id, rule);
   }
 
   listInterceptRules(): RedactedInterceptRule[] {
-    return this.svc.listInterceptRules();
+    return this.svc.listInterceptRules(this.id);
   }
 
   clearInterceptRules(): void {
-    this.svc.clearInterceptRules();
+    this.svc.clearInterceptRules(this.id);
   }
 }

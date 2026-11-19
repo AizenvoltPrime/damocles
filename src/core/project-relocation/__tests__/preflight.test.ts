@@ -2,14 +2,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as lockfile from 'proper-lockfile';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { takeAgentFile } from '../../pi-session/agent-file-owner';
+import { folderPresenceProbe } from '../../pi-session/folder-presence';
 import { piSessionDir } from '../../pi-session/session-store/session-dir';
 import { SESSION_LEASE_DIR, sessionLeasePath } from '../../pi-session/session-store/session-lease';
 import { worktreeFolderFor } from '../../worktrees/records';
 import type { ChatWorktreeRecord } from '../../worktrees/registry';
-import type { PathPresence } from '../../workspace-folders/folder-presence-probe';
+import type { PathCheck } from '../../workspace-folders/folder-presence-probe';
 import { ProjectRelocations } from '../index';
 import { chatWorktreeOwner, planWorktrees, runPreflight, type PreflightDeps } from '../preflight';
 import { RELOCATION_STEPS, type PreflightRequest, type RelocationRecord } from '../types';
@@ -29,8 +30,8 @@ function chat(id: string, branch: string, extra: Partial<ChatWorktreeRecord> = {
   return { id, kind: 'chat', repositoryRoot: p('old'), worktreeRoot, workingFolder: path.join(worktreeRoot, 'acme'), projectPath: from, branch, index: 1, baseCommit: 'a'.repeat(40), createdAt: 1, ...extra };
 }
 
-function deps(overrides: Partial<PreflightDeps> & { present?: Record<string, PathPresence> } = {}): PreflightDeps {
-  const present: Record<string, PathPresence> = { [to]: 'directory', ...overrides.present };
+function deps(overrides: Partial<PreflightDeps> & { present?: Record<string, PathCheck> } = {}): PreflightDeps {
+  const present: Record<string, PathCheck> = { [to]: 'directory', ...overrides.present };
   return {
     records: () => [],
     foreignPending: () => [],
@@ -69,6 +70,11 @@ describe('runPreflight', () => {
     expect(unreachable).toMatchObject({ ok: true, notices: [{ code: 'unreachable', params: { root: volume } }] });
     const onSystemRoot = await runPreflight(request(), deps({ present: { [from]: 'unreachable' }, volumeOf: async () => undefined }));
     expect(onSystemRoot).toMatchObject({ ok: true, notices: [{ code: 'unreachable', params: { root: path.parse(from).root } }] });
+  });
+
+  it('refuses as busy when the hung gate refused the check of either folder, never reading the old one as gone or the new one as missing', async () => {
+    expect(await runPreflight(request(), deps({ present: { [from]: 'unchecked' } }))).toEqual({ ok: false, refusal: { code: 'checksBusy' } });
+    expect(await runPreflight(request(), deps({ present: { [to]: 'unchecked' } }))).toEqual({ ok: false, refusal: { code: 'checksBusy' } });
   });
 
   it('refuses the same folder, a folder inside ~/.damocles, a missing target and a file', async () => {
@@ -241,7 +247,7 @@ describe('preflight of a chat whose agent files are held', () => {
       metaIndex: { move: async () => undefined, meta: async () => null },
       memory: { relocateWorkspace: async () => ({}) },
       hostState: { mcp: { relocateFolders: async () => undefined } },
-      trust: { isTrusted: () => false, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+      trust: { isTrusted: () => false, onDidChangeTrust: () => ({ dispose: () => undefined }) },
       projectFolders: () => [P_NEW],
       log: () => undefined,
       file: path.join(tmp, 'project-relocations.json'),
@@ -254,6 +260,32 @@ describe('preflight of a chat whose agent files are held', () => {
     relocations.dispose();
     fs.rmSync(piSessionDir(P), { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('checks a folder the hung gate refused again once it admits, and refuses as busy when it still refuses', async () => {
+    const real = folderPresenceProbe.path;
+    let refusing = true;
+    const probePath = vi.spyOn(folderPresenceProbe, 'path').mockImplementation((target) => (refusing && target === P ? Promise.resolve('unchecked') : real(target)));
+    // admits at once, as a hung check that settles while the first one is refused
+    const admit = vi.spyOn(folderPresenceProbe, 'onDidAdmit').mockImplementation((listener) => {
+      queueMicrotask(listener);
+      return { dispose: () => undefined };
+    });
+    try {
+      expect(await relocations.preflight({ from: P, to: P_NEW, listed: [P_NEW] })).toEqual({ ok: false, refusal: { code: 'checksBusy' } });
+      expect(probePath.mock.calls.filter(([target]) => target === P)).toHaveLength(2);
+      probePath.mockClear();
+      probePath.mockImplementation((target) => {
+        const answer = refusing && target === P ? Promise.resolve<'unchecked'>('unchecked') : real(target);
+        if (target === P) refusing = false;
+        return answer;
+      });
+      expect(await relocations.preflight({ from: P, to: P_NEW, listed: [P_NEW] })).toMatchObject({ ok: true, chats: 1 });
+      expect(probePath.mock.calls.filter(([target]) => target === P)).toHaveLength(2);
+    } finally {
+      probePath.mockRestore();
+      admit.mockRestore();
+    }
   });
 
   const held = (holder: 'otherProcess' | 'thisProcess'): unknown => ({ ok: false, refusal: { code: 'agentRunHeld', params: { sessionId: CHAT, title: '', holder } } });

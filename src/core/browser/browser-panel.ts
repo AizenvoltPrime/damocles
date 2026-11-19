@@ -3,6 +3,12 @@ import type { PanelHost, WindowService } from '../../platform/window-service';
 import { isNotSecurePage } from '../../shared/typed-address';
 import type { ElementOverlayInfo } from './types';
 
+/** owner: the token of the page's chat; file: a served page's file: address, which reopens at a fresh served address. */
+export interface SavedPageState {
+  readonly owner?: string;
+  readonly file?: string;
+}
+
 export class BrowserPanel {
   private readonly window: WindowService;
   private panel: PanelHost | null = null;
@@ -175,8 +181,9 @@ export class BrowserPanel {
     this.panel?.postMessage({ type: 'viewport', width, height });
   }
 
-  updateUrl(url: string): void {
-    this.panel?.postMessage({ type: 'urlChanged', url, notSecure: isNotSecurePage(url) });
+  // saved: what the page keeps in its state for a VS Code window reload to restore it from (BrowserService.savedPageState).
+  updateUrl(url: string, saved?: SavedPageState): void {
+    this.panel?.postMessage({ type: 'urlChanged', url, notSecure: isNotSecurePage(url), ...saved });
   }
 
   // For a host that draws a page's navigation chrome itself (chatBrowserPane); the page script ignores it.

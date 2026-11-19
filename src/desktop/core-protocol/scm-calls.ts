@@ -6,7 +6,7 @@ import type { LeftoverFinding } from '../../core/worktrees/leftovers';
 import type { AdoptInput } from '../../core/worktrees/registry';
 
 export const SCM_CALLS = [
-  'setProjects', 'setAutofetchProject', 'autofetchNow', 'refresh', 'init', 'openFolder', 'close', 'reopen', 'openParents', 'trustUnsafe',
+  'setProjects', 'setAutofetchProject', 'autofetchNow', 'refresh', 'rediscover', 'init', 'openFolder', 'close', 'reopen', 'openParents', 'trustUnsafe',
   'stage', 'stageAll', 'unstage', 'discard', 'discardAll', 'currentStatus', 'commitInput', 'undoLastCommit', 'move', 'remove',
   'abortOperation', 'addToGitignore', 'artifacts', 'checkout', 'fastForward', 'createBranch', 'renameBranch', 'deleteBranch',
   'deleteRemoteRef', 'remoteTags', 'integrate', 'stash', 'stashApply', 'stashDrop', 'stashClear', 'diffStash', 'diffRefs', 'entryPatch',

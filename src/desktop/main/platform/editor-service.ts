@@ -5,7 +5,7 @@ import type { ActiveEditorContext, DiffRequest, DiffView, EditorService } from '
 import type { WindowService } from '../../../platform/window-service';
 import type { ChatReviewScope, ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { EditorPane } from '../editor-pane';
-import { knownLanguageId, readFileText, sideDocument } from './editor-document';
+import { knownLanguageId, sideDocument } from './editor-document';
 import type { LocalizedText } from '../../../shared/localized-text';
 
 export interface ChatTabMessenger {
@@ -55,8 +55,7 @@ export function createDesktopEditorService(
       pane().openUntitled(content, `untitled.${language}`, knownLanguageId(language), { focus: true });
       return Promise.resolve();
     },
-    // The disk text: desktop's unsaved buffers are the user's, and the agent's tools read and write the disk.
-    readText: (filePath) => readFileText(filePath),
+    isDirty: (filePath) => pane().isFileDirty('local', filePath),
     showDiff: async (req): Promise<HostDiffView> => {
       if (req.approvalId === undefined) {
         const view = await pane().showDiff((fileName) => render(req.title(fileName)), req.filePath, req.left, req.right, { focus: req.preserveFocus !== true });

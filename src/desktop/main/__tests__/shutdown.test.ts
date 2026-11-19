@@ -22,6 +22,7 @@ function steps(overrides: Partial<ShutdownSteps> = {}): { steps: ShutdownSteps; 
       flushStores: step('flushStores'),
       disposeTerminals: step('disposeTerminals'),
       closeWatchers: step('closeWatchers'),
+      closeWalks: step('closeWalks'),
       closeTimeoutMs: 3_000,
       timeoutMs: 10_000,
       log: (line) => lines.push(line),
@@ -52,7 +53,7 @@ describe('shutDown', () => {
     closed.resolve();
     await done;
     expect(order.slice(0, 2)).toEqual(['closeWindows', 'windowsClosed']);
-    expect(order.slice(2).sort()).toEqual(['closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
+    expect(order.slice(2).sort()).toEqual(['closeWalks', 'closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
   });
 
   it('flushes the stores only once the core has disposed, which can still write them', async () => {
@@ -108,7 +109,7 @@ describe('shutDown', () => {
     expect(order).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await done;
-    expect(order.sort()).toEqual(['closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
+    expect(order.sort()).toEqual(['closeWalks', 'closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
     expect(lines).toEqual(['[shutdown] the window\'s requests did not settle within 30 ms; disposing anyway']);
   });
 

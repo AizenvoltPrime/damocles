@@ -42,7 +42,7 @@ describe.runIf(HAS_GIT)('a repository id across a core restart', { timeout: 60_0
     const first = harness({ trusted: [a.repo, b.repo] });
     const second = harness({ trusted: [a.repo, b.repo] });
     let running: CoreClient | undefined;
-    const scm = createScmClient({ core: (_authority, _label, work) => work(running!), gitVersion: undefined, log: quiet });
+    const scm = createScmClient({ core: (_authority, _label, work) => work(running!), gitVersion: undefined, log: quiet, features: () => undefined });
     try {
       first.service.setProjects([{ key: 'a', path: a.repo }]);
       const held = (await ready(first, 1, 'a')).repos[0]!.repoId;

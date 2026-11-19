@@ -10,6 +10,7 @@ const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   memoryIntegrity: 'memory-integrity-worker.js',
   sessionMetaIndex: 'session-meta-index-worker.js',
   voiceExtract: 'voice-extract-worker.js',
+  walkChild: 'walk-child.js',
 };
 
 export type DesktopLayout =

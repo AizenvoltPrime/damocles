@@ -956,6 +956,15 @@ describe('TeamPersistence checkpoint files', () => {
     expect(isTeamCheckpoint(rejected([['dev', { toolCallId: 'c1', cause: 'hook' }]]))).toBe(false);
   });
 
+  it('accepts the pending-dispatch nudge flag as a boolean or absent, and rejects any other value', () => {
+    const nudged = (pendingDispatchNudged: unknown): unknown => ({ ...checkpoint(), review: { ...checkpoint().review, pendingDispatchNudged } });
+    expect(isTeamCheckpoint(nudged(true))).toBe(true);
+    expect(isTeamCheckpoint(nudged(false))).toBe(true);
+    expect(isTeamCheckpoint(checkpoint())).toBe(true);
+    expect(isTeamCheckpoint(nudged('true'))).toBe(false);
+    expect(isTeamCheckpoint(nudged(1))).toBe(false);
+  });
+
   describe('live checkpoints', () => {
     const live = (cancelledAt = CANCELLED_AT): TeamCheckpoint => ({
       ...checkpoint(cancelledAt),
@@ -1169,5 +1178,23 @@ describe('parseTeamEventLog reviewer pairs', () => {
     ['pairs with no kind', { reviews: ['backend'] }],
   ])('refuses %s', (_label, spawn) => {
     expect(() => parseTeamEventLog(TEAM_ID, lines(spawn))).toThrow('line 2: "reviews" is invalid');
+  });
+});
+
+describe('parseTeamEventLog pending-dispatch nudge marker', () => {
+  const lines = (marker: Record<string, unknown>): string => [
+    { type: 'team-created', teamId: TEAM_ID, title: 't', brief: 'b', toolUseId: 'tu', agents: [{ name: 'Lead', role: 'lead' }], timestamp: '2026-09-01T10:00:00.000Z' },
+    { type: 'agent-message', teamId: TEAM_ID, messageId: 'm1', from: 'system', to: 'Lead', content: 'start them', timestamp: '2026-09-01T10:00:01.000Z', ...marker },
+  ].map((e) => JSON.stringify(e)).join('\n');
+  const message = { messageId: 'm1', teamId: TEAM_ID, timestamp: Date.parse('2026-09-01T10:00:01.000Z'), from: 'system', to: 'Lead', content: 'start them' };
+
+  it('reads a marked nudge with its marker, and an unmarked or false-marked message as before', () => {
+    expect(parseTeamEventLog(TEAM_ID, lines({ pendingDispatchNudge: true })).messages).toEqual([{ ...message, pendingDispatchNudge: true }]);
+    expect(parseTeamEventLog(TEAM_ID, lines({})).messages).toEqual([message]);
+    expect(parseTeamEventLog(TEAM_ID, lines({ pendingDispatchNudge: false })).messages).toEqual([message]);
+  });
+
+  it.each([['a string', 'true'], ['a number', 1], ['null', null]])('refuses a marker that is %s', (_label, value) => {
+    expect(() => parseTeamEventLog(TEAM_ID, lines({ pendingDispatchNudge: value }))).toThrow('line 2: "pendingDispatchNudge" is invalid');
   });
 });

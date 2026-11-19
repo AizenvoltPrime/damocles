@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -142,6 +143,16 @@ afterEach(() => {
   service.dispose();
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+/** Lets a read open that waits on the FIFO at `fifo` go on, so a failing run leaves no thread blocked. */
+function releaseFifo(fifo: string): void {
+  try {
+    fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+  } catch (err) {
+    // ENXIO: nothing waits on it
+    if ((err as NodeJS.ErrnoException).code !== 'ENXIO') throw err;
+  }
+}
 
 function write(relativePath: string, content: string | Buffer): string {
   const file = path.join(projectDir, ...relativePath.split('/'));
@@ -327,6 +338,33 @@ describe('save, conflicts and reloads', () => {
     const document = await open('touch.ts');
     fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
     expect(await saveText(document, 'new')).toEqual({ ok: true });
+  });
+
+  it('answers whether a file of an authority has a document with unsaved changes, by the path as that host compares it', async () => {
+    const file = write('d.ts', 'disk');
+    const document = await open('d.ts');
+    expect(await service.isFileDirty('local', file)).toBe(false);
+    service.edit(document.id, { version: document.version, seq: 1, text: 'mine', overReload: false });
+    expect(await service.isFileDirty('local', file)).toBe(true);
+    expect(await service.isFileDirty('local', process.platform === 'win32' ? file.toUpperCase() : file)).toBe(true);
+    expect(await service.isFileDirty('ssh+h1', file)).toBe(false);
+    expect(await service.isFileDirty('local', write('e.ts', 'other'))).toBe(false);
+  });
+
+  it('answers for a file of a project whose folder is a link, named in the link\'s spelling, as the file its document opened', async () => {
+    const link = path.join(root, 'proj-link');
+    fs.symlinkSync(projectDir, link, process.platform === 'win32' ? 'junction' : 'dir');
+    project = { key: folderKey(link), fsPath: link, name: 'proj' };
+    const file = write('d.ts', 'disk');
+    write('e.ts', 'clean');
+    const document = await open('d.ts');
+    expect(folderKey(document.location!.path)).toBe(folderKey(file));
+    service.edit(document.id, { version: document.version, seq: 1, text: 'mine', overReload: false });
+
+    expect(await service.isFileDirty('local', path.join(link, 'd.ts'))).toBe(true);
+    expect(await service.isFileDirty('local', path.join(link, 'src', '..', 'd.ts'))).toBe(true);
+    expect(await service.isFileDirty('local', file)).toBe(true);
+    expect(await service.isFileDirty('local', path.join(link, 'e.ts'))).toBe(false);
   });
 
   it('reloads a clean buffer in place on a watcher event and flags a dirty one', async () => {
@@ -2141,6 +2179,28 @@ describe('save failure messages (textFileSaveErrorHandler.ts genericSaveError)',
     fs.mkdirSync(file);
     expect(await service.overwrite(settings.id)).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'settings.json\': The path is a folder.' });
     expect(logged.some((line) => line.includes(file))).toBe(true);
+  });
+
+  it('refuses an overwrite of a settings file grown past the editor\'s hard limit, never reading it whole', async () => {
+    const file = write('.damocles/settings.json', '{}');
+    const settings = (await service.openSettingsFile('project')) as TextDocument;
+    fs.truncateSync(file, EDITOR_HARD_MAX_DOCUMENT_BYTES + 1);
+    expect(await service.overwrite(settings.id)).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'settings.json\': The file on disk is too large for the editor.' });
+    expect(settingsSaves).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses an overwrite of a settings file a FIFO replaced, never waiting for a writer', async () => {
+    const file = write('.damocles/settings.json', '{}');
+    const settings = (await service.openSettingsFile('project')) as TextDocument;
+    fs.rmSync(file);
+    execFileSync('mkfifo', [file]);
+    try {
+      const overwritten = await Promise.race([service.overwrite(settings.id), new Promise((resolve) => setTimeout(() => resolve('still waiting after 2 s'), 2000))]);
+      expect(overwritten).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'settings.json\': The path is not a file.' });
+      expect(settingsSaves).toEqual([]);
+    } finally {
+      releaseFifo(file);
+    }
   });
 
   it('words a settings file whose write failed by its errno code, and keeps the settings writer\'s own refusals', async () => {

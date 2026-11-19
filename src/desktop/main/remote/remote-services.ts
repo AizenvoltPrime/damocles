@@ -8,12 +8,11 @@ import type { OpenFolder } from '../../../platform/workspace-folders';
 import type { SecretsStore } from '../../../platform/secrets-store';
 import type { Project } from '../../local-services/confine';
 import { REMOTE_CHAT_LOCAL_POSTS, VOICE_VIEW_POSTS } from '../../../shared/remote-user';
-import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import type { HostPlatform, HostServicesDeps, HostState, HostTrust, HostUi, HostUser } from '../core-services/host-services';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import type { ActiveEditorContext, DiffRequest } from '../../../platform/editor-service';
 import type { ChatReviewScope, SettingsFileScope } from '../../../shared/types/messages';
-import { authorityKeyOfProject, isAbsoluteOn, isInsideFolder, targetFolderKeyOf } from '../../../shared/project-location';
+import { authorityKeyOfProject, isInsideFolder, targetFolderKeyOf } from '../../../shared/project-location';
 import type { SpawnSpec } from '../../../core/process-launcher';
 import { windowsExplorer } from '../../../core/system-tools';
 import type { PickOptions } from './remote-hosts';
@@ -29,8 +28,6 @@ export interface RemoteServicesDeps {
   readonly wslDistro?: string;
   // the host's name as this computer's host store names it; a target never names itself
   readonly hostName: () => string;
-  // the host's OS, whose rules its paths follow
-  readonly os: () => NodeJS.Platform;
   // the core's own shell.openExternal: OpenUrl.coreOpenExternal, which always asks the user first
   readonly openLink: (url: string) => Promise<boolean>;
   // main's own platform, whose services the allowed requests use
@@ -43,7 +40,6 @@ export interface RemoteServicesDeps {
   readonly fileRoots: () => readonly Project[];
   // the authority's project list changed (remote-hosts.json)
   readonly onProjectsChanged: (listener: () => void) => Disposable;
-  readonly workspace: () => ProjectWorkspace;
   // the editor pane's active context of any machine (EditorPane.activeContext), which ownContext filters; the platform's
   // editor already withholds every context that is not this computer's
   readonly activeContext: () => ActiveEditorContext | undefined;
@@ -52,6 +48,8 @@ export interface RemoteServicesDeps {
   // opens any absolute path of the host editable through its workspace (EditorPane.openNamedPath); throws RefusedPathError
   // for a path the host's outside rule refuses, and OutsideFilesUnsupportedError for a daemon without files.outside
   readonly openNamedPath: (targetPath: string, line: number | undefined, focus: boolean) => Promise<void>;
+  // whether the editor pane holds unsaved changes to the host's file at targetPath (EditorPane.isFileDirty)
+  readonly isDirty: (targetPath: string) => Promise<boolean>;
   // an Edit/Write approval or checkpoint diff, its target paths resolved through this host's roots, else as host paths
   readonly showDiff: (request: DiffRequest) => Promise<HostDiffView>;
   // a rendered Markdown preview of text the core sent, titled after its file on the target, which main never reads
@@ -146,13 +144,7 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
       });
     },
     openUntitled: (content, language, opts) => platform.editor.openUntitled(content, language, opts),
-    // any absolute host path, as the agent's tools read it; the bytes go only to the host's own core
-    readText: async (filePath) => {
-      if (!isAbsoluteOn({ os: deps.os() }, filePath)) throw new Error(`${filePath} is not an absolute path`);
-      const text = await deps.workspace().files.readText(filePath);
-      if (text === undefined) throw new Error(`${filePath} cannot be opened as text`);
-      return text;
-    },
+    isDirty: (filePath) => deps.isDirty(filePath),
     showDiff: (request) => deps.showDiff(request),
     showMarkdownPreview: (filePath, opts) => (opts?.content === undefined ? refused('A Markdown preview of a file on the host') : deps.showMarkdown(filePath, opts.content)),
     getActiveContext: () => ownContext(deps.activeContext()),

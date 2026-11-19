@@ -16,7 +16,7 @@ import { DesktopSettingsStore } from '../../local-services/settings-store';
 import { remoteSettings } from '../local';
 
 const contributed = parseContributedConfiguration({ contributes: { configuration: { properties: { 'damocles.model': { default: '' } } } } });
-const trustAll: TrustService = { isTrusted: () => true, onDidGrantTrust: () => ({ dispose: () => undefined }), requestTrust: () => Promise.resolve(true) };
+const trustAll: TrustService = { isTrusted: () => true, onDidChangeTrust: () => ({ dispose: () => undefined }), requestTrust: () => Promise.resolve(true) };
 
 let dir: string | undefined;
 const disposables: Array<{ dispose(): void }> = [];

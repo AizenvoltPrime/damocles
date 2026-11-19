@@ -5,6 +5,8 @@ import { CLI_RELAY, CLI_RELAY_ANSWER, type CliRelay, type CliRelayAnswer } from 
 import type { Call, Contract, Tables } from '../core-protocol/messages';
 import { MAX_DATA_CHARS, MAX_ITEMS, MAX_KEY_CHARS, MAX_MESSAGE_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
 import { arr, bool, bytes, data, dict, either, finite, int, INVALID, maybe, nonEmpty, none, num, obj, oneOf, opt, str, streamId, type Parser } from '../core-protocol/schema';
+import type { WalkIgnore } from '../../core/search-walk';
+import { isRelativeFilePath } from '../../shared/relative-path';
 import type { Confined, Project } from '../local-services/confine';
 import { isValidFileName } from '../preload/file-names';
 import type { FileEntry } from '../preload/shell-channels';
@@ -15,12 +17,13 @@ import { OUTSIDE_LISTING_MAX_ENTRIES, type BrowseResult, type DeleteResult, type
 import type { FormatResolution } from './format/formatter';
 import type { HostOutcome, HostRoot } from './format/formatter-hosts';
 import { MAX_NAME_PREFIX_LENGTH } from './outside-listing';
-import type { RgEvent, SearchRunEnd } from './search/search-runner';
+import type { RgEvent, SearchRequest, SearchRunEnd } from './search/search-runner';
 import type { ProjectFileLocation } from './search/types';
 import type { ShellInjectionRequest } from './terminal/terminal-backend';
 import type { TerminalProfile } from './terminal/profiles';
 import type { LiveTerminal } from './terminal/terminal-backend';
 import type { FolderListing } from './tree-listing';
+import { WALK_BATCH_FILES } from '../../core/search-walk/walk-protocol';
 import { MOVE_LEFT_LISTED, WALK_PAGE_ENTRIES, type Clash, type ClashesResult, type MoveResult, type TransferFailure, type TransferKind, type TransferResult } from './transfer-ops';
 
 // The largest message: a terminal screen of MAX_TERMINAL_SCREEN_CHARS UTF-16 units and its kept shell sequences'
@@ -100,7 +103,6 @@ export interface WorkspaceRequests {
   // folderKey(path) on the host, for the project's key; reads no disk
   'files.folderKey': Call<{ readonly path: string }, string>;
   'files.read': Call<{ readonly path: string; readonly limitBytes?: number }, WireFileBytes>;
-  'files.readText': Call<{ readonly path: string }, string | undefined>;
   // fails with WriteRefusedError by name, with its refusal; sessionFile only from a daemon listing sessionFiles
   'files.writeInPlace': Call<{ readonly project: Project; readonly location: ProjectFileLocation; readonly bytes: Uint8Array }, number>;
   // the host's own ~/.damocles/settings.json, which the host names itself
@@ -146,9 +148,11 @@ export interface WorkspaceRequests {
   'files.verifyLink': Call<{ readonly project: Project; readonly relativePath: string; readonly within: string }, TransferResult>;
   'files.removeFolder': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity }, TransferResult>;
   'tree.list': Call<{ readonly project: Project; readonly relativeDir: string; readonly excludes: readonly string[] }, FolderListing>;
-  'search.run': Call<{ readonly runId: number; readonly cwd: string; readonly args: readonly string[] }, void>;
+  // (feature search.walk) the host's walk lists the files below cwd and rg matches them with match, its matching flags, and pattern
+  'search.run': Call<{ readonly runId: number; readonly cwd: string; readonly match: readonly string[]; readonly pattern: string; readonly walk: SearchRequest['walk'] }, void>;
   'search.kill': Call<{ readonly runId: number }, void>;
-  'quickOpen.list': Call<{ readonly runId: number; readonly root: string; readonly ignoreArgs: readonly string[]; readonly excludes: readonly string[] }, void>;
+  // (feature quickOpen.walk) the host's walk lists the files, sent as quickOpen.files
+  'quickOpen.list': Call<{ readonly runId: number; readonly root: string; readonly ignore: WalkIgnore; readonly excludes: readonly string[] }, void>;
   'quickOpen.kill': Call<{ readonly runId: number }, void>;
   'format.resolve': Call<{ readonly root: string; readonly file: string; readonly untrusted: readonly string[] }, FormatResolution>;
   'format.format': Call<{ readonly target: HostRoot; readonly request: { readonly prettier: string; readonly config: string | null; readonly file: string; readonly text: string } }, HostOutcome>;
@@ -180,7 +184,8 @@ export interface WorkspaceHostEvents {
   'search.event': { readonly runId: number; readonly event: RgEvent };
   'search.dropped': { readonly runId: number };
   'search.end': { readonly runId: number; readonly end: SearchRunEnd };
-  'quickOpen.data': { readonly runId: number; readonly chunk: Uint8Array };
+  // '/'-separated paths below the listing's root, at most WALK_BATCH_FILES
+  'quickOpen.files': { readonly runId: number; readonly files: readonly string[] };
   'quickOpen.end': { readonly runId: number; readonly error?: string };
   // a pty host message for a terminal this connection spawned or attached
   'terminals.message': { readonly message: HostMessage };
@@ -224,6 +229,9 @@ const decimal: Parser<string> = (raw) => (typeof raw === 'string' && /^-?\d{1,40
 const env = dict(str(32_767), 32_767, 4096);
 const args = arr(str(MAX_PATH_CHARS), MAX_ITEMS);
 const globs = arr(str(MAX_PATH_CHARS), MAX_ITEMS);
+const walkIgnore: Parser<WalkIgnore> = obj({ files: bool, global: bool, parents: bool });
+// a file a listing names, which main joins to its root
+const relativeFile: Parser<string> = (raw) => (isRelativeFilePath(raw) ? raw : INVALID);
 
 // one entry name, checked against the platform of the host that joins it to a folder
 const fileName: Parser<string> = (raw) => (isValidFileName(raw, process.platform) ? raw : INVALID);
@@ -325,7 +333,6 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.realpath': method(obj({ target: filePath }), maybe(filePath)),
     'files.folderKey': method(obj({ path: filePath }), filePath),
     'files.read': method(obj({ path: filePath, limitBytes: opt(int(0, MAX_DATA_CHARS)) }), fileBytes),
-    'files.readText': method(obj({ path: filePath }), maybe(str(MAX_DATA_CHARS))),
     'files.writeInPlace': method(obj({ project, location, bytes: bytes(MAX_DATA_CHARS) }), num),
     'files.readHostSettings': method(nothing, obj({ path: filePath, read: either(fileBytes, obj({ kind: lit('outside') })) })),
     'files.writeHostSettings': method(obj({ bytes: bytes(MAX_DATA_CHARS) }), num),
@@ -357,9 +364,9 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.verifyLink': method(obj({ project, relativePath: relative, within: relative }), transferResult),
     'files.removeFolder': method(obj({ project, relativePath: relative, confirmed: identity }), transferResult),
     'tree.list': method(obj({ project, relativeDir: relative, excludes: globs }), folderListing),
-    'search.run': method(obj({ runId, cwd: filePath, args }), done),
+    'search.run': method(obj({ runId, cwd: filePath, match: args, pattern: str(MAX_PATH_CHARS), walk: obj({ ignore: walkIgnore, overrides: globs }) }), done),
     'search.kill': method(obj({ runId }), done),
-    'quickOpen.list': method(obj({ runId, root: filePath, ignoreArgs: args, excludes: globs }), done),
+    'quickOpen.list': method(obj({ runId, root: filePath, ignore: walkIgnore, excludes: globs }), done),
     'quickOpen.kill': method(obj({ runId }), done),
     'format.resolve': method(obj({ root: filePath, file: filePath, untrusted: arr(filePath, MAX_ITEMS) }), formatResolution),
     'format.format': method(
@@ -394,7 +401,7 @@ export const WORKSPACE_TO_CLIENT: Tables<WorkspaceToClient> = {
     'search.event': obj({ runId, event: rgEvent }),
     'search.dropped': obj({ runId }),
     'search.end': obj({ runId, end: searchEnd }),
-    'quickOpen.data': obj({ runId, chunk: bytes(MAX_DATA_CHARS) }),
+    'quickOpen.files': obj({ runId, files: arr(relativeFile, WALK_BATCH_FILES, 1) }),
     'quickOpen.end': obj({ runId, error: opt(message) }),
     'terminals.message': obj({ message: hostMessage }),
     'terminals.hostExit': obj({ code: exitCode, reason: either(message, nul), error: either(message, nul) }),

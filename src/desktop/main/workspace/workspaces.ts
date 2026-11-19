@@ -1,4 +1,4 @@
-import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import type { LocalWorkspace, ProjectWorkspace } from '../../workspace/project-workspace';
 import { authorityKeyOfProject } from '../../../shared/project-location';
 
 // the served pages' reader answers its own class with 503, so main throws that class
@@ -7,7 +7,7 @@ export { NotConnectedError } from '../../../core/not-connected-error';
 /** The workspace of each authority, by project. */
 export interface Workspaces {
   // this computer's: the home folder, files core names by path, and every local project
-  readonly local: ProjectWorkspace;
+  readonly local: LocalWorkspace;
   // the workspace serving a project's root key; null names the home folder
   forProject(projectKey: string | null): ProjectWorkspace;
   // the workspace of an authority key, for its host's own files outside every project
@@ -17,7 +17,7 @@ export interface Workspaces {
 
 // remote: the connected workspace of an authority key other than local; it throws NotConnectedError while that authority is not
 // connected
-export function createWorkspaces(local: ProjectWorkspace, remote: (authorityKey: string) => ProjectWorkspace): Workspaces {
+export function createWorkspaces(local: LocalWorkspace, remote: (authorityKey: string) => ProjectWorkspace): Workspaces {
   const forAuthority = (authorityKey: string): ProjectWorkspace => (authorityKey === 'local' ? local : remote(authorityKey));
   return {
     local,

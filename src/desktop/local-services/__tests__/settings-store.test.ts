@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform, type FakeFileWatcherFactory, type FakeNotificationService, type FakeWorkspaceFolders } from '../../../__mocks__/fake-platform';
 import type { Disposable } from '../../../platform/disposable';
-import type { TrustService } from '../../../platform/trust-service';
+import type { TrustChange, TrustService } from '../../../platform/trust-service';
 import type { SettingsFolder } from '../../../platform/settings-store';
 import { parseContributedConfiguration, settingTypeFits } from '../../../core/config/contributed-configuration';
 import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
@@ -42,11 +42,11 @@ let projectB: string;
 
 class FolderTrust implements TrustService {
   readonly trusted = new Set<string>();
-  private readonly listeners = new Set<(folders: readonly string[]) => void>();
+  private readonly listeners = new Set<(change: TrustChange) => void>();
   isTrusted(folderPath: string): boolean {
     return this.trusted.has(folderPath);
   }
-  onDidGrantTrust(cb: (folders: readonly string[]) => void): Disposable {
+  onDidChangeTrust(cb: (change: TrustChange) => void): Disposable {
     this.listeners.add(cb);
     return { dispose: () => { this.listeners.delete(cb); } };
   }
@@ -55,7 +55,11 @@ class FolderTrust implements TrustService {
   }
   grant(folder: string): void {
     this.trusted.add(folder);
-    for (const cb of [...this.listeners]) cb([folder]);
+    for (const cb of [...this.listeners]) cb({ granted: [folder], revoked: [] });
+  }
+  revoke(folder: string): void {
+    this.trusted.delete(folder);
+    for (const cb of [...this.listeners]) cb({ granted: [], revoked: [folder] });
   }
 }
 
@@ -393,6 +397,19 @@ describe('DesktopSettingsStore project and local scopes', () => {
     expect(store.get('damocles.model')).toBe('project');
   });
 
+  it('takes a revoked project\'s layers away live and reports the keys whose layers changed', () => {
+    writeJson(userFile, { 'damocles.model': 'user' });
+    writeJson(projectFile(projectA), { 'damocles.model': 'project' });
+    const { store, trust } = harness({ trusted: [projectA] });
+    expect(store.get('damocles.model')).toBe('project');
+    const listener = vi.fn();
+    store.onDidChange('damocles', listener);
+    trust.revoke(projectA);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect((listener.mock.calls[0]![0] as { affects(key: string): boolean }).affects('damocles.model')).toBe(true);
+    expect(store.get('damocles.model')).toBe('user');
+  });
+
   it('follows the default project and reports the keys whose layers changed', () => {
     writeJson(projectFile(projectA), { 'damocles.model': 'a', 'damocles.debug': true });
     writeJson(projectFile(projectB), { 'damocles.model': 'b', 'damocles.debug': true });
@@ -629,16 +646,23 @@ describe('DesktopSettingsStore per-folder reads (D38)', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  it('splits a worktree chat: the project layer from the worktree, the local layer and trust from the project folder (D34)', async () => {
+  it('splits a worktree chat: the project layer from the worktree, the local layer from the project folder, each under its folder\'s trust (D34)', async () => {
     const worktree = path.join(dir, 'worktree');
     writeJson(projectFile(worktree), { 'damocles.model': 'worktree-project' });
     writeJson(localFile(worktree), { 'damocles.maxIndexedFiles': 99 });
     writeJson(localFile(projectA), { 'damocles.maxIndexedFiles': 4 });
     const folder = { path: worktree, personalPath: projectA };
-    const untrusted = harness({ trusted: [worktree] });
-    expect(untrusted.store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model' });
+    // a working folder no live record gives its project's trust
+    const projectOnly = harness({ trusted: [projectA] });
+    expect(projectOnly.store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model' });
+    expect(projectOnly.store.inspect('damocles.maxIndexedFiles', folder)).toStrictEqual({ defaultValue: 100 });
+    const worktreeOnly = harness({ trusted: [worktree] });
+    expect(worktreeOnly.store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model', projectValue: 'worktree-project' });
+    expect(worktreeOnly.store.inspect('damocles.maxIndexedFiles', folder)).toStrictEqual({ defaultValue: 100 });
+    await expect(worktreeOnly.store.update('damocles.maxIndexedFiles', 5, 'local', folder)).rejects.toThrow(`${projectA} is not trusted`);
 
-    const { store } = harness({ trusted: [projectA] });
+    // a live record's working folder answers with its project's trust
+    const { store } = harness({ trusted: [projectA, worktree] });
     expect(store.get('damocles.model', undefined, folder)).toBe('worktree-project');
     expect(store.inspect('damocles.maxIndexedFiles', folder)).toStrictEqual({ defaultValue: 100, localValue: 4 });
     await store.update('damocles.maxIndexedFiles', 5, 'local', folder);
@@ -646,6 +670,29 @@ describe('DesktopSettingsStore per-folder reads (D38)', () => {
     expect(readJson(localFile(worktree))).toEqual({ 'damocles.maxIndexedFiles': 99 });
     expect(store.scopeFile('project', folder)).toBe(projectFile(worktree));
     expect(store.scopeFile('local', folder)).toBe(localFile(projectA));
+  });
+
+  it('follows a working folder\'s trust answer: its layers go with a change event when its record is deleted, and come back with one', () => {
+    const worktree = path.join(dir, 'worktree');
+    writeJson(projectFile(worktree), { 'damocles.model': 'worktree-project' });
+    writeJson(localFile(projectA), { 'damocles.maxIndexedFiles': 4 });
+    const folder = { path: worktree, personalPath: projectA };
+    const { store, trust, setChatFolders } = harness({ trusted: [projectA, worktree] });
+    setChatFolders([folder]);
+    expect(store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model', projectValue: 'worktree-project' });
+    const changed: string[][] = [];
+    store.onDidChange('damocles', (change) => changed.push(['damocles.model', 'damocles.maxIndexedFiles'].filter((key) => change.affects(key))));
+
+    // the record is deleted: the working folder answers untrusted while its project stays trusted
+    trust.revoke(worktree);
+    expect(store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model' });
+    expect(store.inspect('damocles.maxIndexedFiles', folder)).toStrictEqual({ defaultValue: 100 });
+    expect(changed).toEqual([['damocles.model', 'damocles.maxIndexedFiles']]);
+
+    trust.grant(worktree);
+    expect(store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model', projectValue: 'worktree-project' });
+    expect(store.inspect('damocles.maxIndexedFiles', folder)).toStrictEqual({ defaultValue: 100, localValue: 4 });
+    expect(changed).toEqual([['damocles.model', 'damocles.maxIndexedFiles'], ['damocles.model', 'damocles.maxIndexedFiles']]);
   });
 
   it('writes a folder\'s local value into that folder, and refuses one for an untrusted folder', async () => {

@@ -48,8 +48,8 @@ export class WorkspaceAgentRegistry {
     this.parseFrontmatter = parseFrontmatter;
     this.reload();
     this.setupWatchers();
-    // Reload when the user grants workspace trust so project agents appear without a window reload.
-    this.trustListener = trust.onDidGrantTrust(() => this.reload());
+    // Project agents come and go with trust, without a window reload.
+    this.trustListener = trust.onDidChangeTrust(() => this.reload());
   }
 
   /** The shared, mutated-in-place registry. AgentManagers hold this same instance across reloads. */

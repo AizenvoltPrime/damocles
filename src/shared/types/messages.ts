@@ -32,6 +32,7 @@ import type {
   CompactionTrigger,
   ToolResultOwner,
   ToolAbandonReason,
+  ThinkingDroppedReason,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
 import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
@@ -119,6 +120,9 @@ export type WebviewToExtensionMessage =
   | { type: "setMemoryProfile"; enabled: boolean }
   | { type: "setMemoryInjectRerank"; enabled: boolean }
   | { type: "setBrowserHeadless"; headless: boolean }
+  | { type: "setBrowserUploadFolderMaxEntries"; count: number }
+  /** Whole MiB. */
+  | { type: "setBrowserUploadFolderMaxSize"; mebibytes: number }
   /** Whole days, 0 keeps checkpoints forever. */
   | { type: "setCheckpointRetentionDays"; days: number }
   | { type: "setPermissionMode"; mode: PermissionMode }
@@ -759,7 +763,7 @@ export type ExtensionToWebviewMessage =
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: CompactionTrigger; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string; billedTokens?: number; billedCost?: number }
   | { type: "compactionAborted"; trigger: CompactionTrigger; willRetry: boolean; errorMessage?: string; timestamp: number }
   | { type: "cacheMissNotice"; missedTokens: number; missedCost: number; idleMs: number; modelChanged: boolean; timestamp: number }
-  | { type: "thinkingDroppedNotice"; count: number; reasons: string[]; timestamp: number }
+  | { type: "thinkingDroppedNotice"; count: number; reasons: ThinkingDroppedReason[]; timestamp: number }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "subscriptionUsage"; data: SubscriptionUsageData }
@@ -799,6 +803,8 @@ export type ExtensionToWebviewMessage =
       /** Edit and Write: the change's patch with real line numbers, as its result records it (`FilePatch`). */
       patch?: string;
       patchOmitted?: import('./file-patch').FilePatchOmitted;
+      /** Edit and Write: the host's editor holds unsaved changes to the file, which the diff of the file on disk leaves out. */
+      unsavedChanges?: true;
       command?: string;
       /** GenerateImage only: the text sent to the image model. A GenerateImage request carries no diff. */
       prompt?: string;

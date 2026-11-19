@@ -9,7 +9,8 @@ import { initPiLoader } from '../pi-loader';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { inGreek } from '../../../__mocks__/greek-locale';
 import { englishText } from '../../../shared/localized-text';
-import { assertFolderPresent, folderPresenceProbe, folderPresent, FolderMissingError, FolderUnavailableError } from '../folder-presence';
+import { assertFolderPresent, FolderChecksBusyError, folderPresenceProbe, folderPresent, FolderMissingError, FolderUnavailableError } from '../folder-presence';
+import { ADMIT_WAIT_MS } from '../../workspace-folders/folder-presence-probe';
 import type { WorktreeHostServices } from '../../worktrees/host';
 import type { ChatWorktreeRecord } from '../../worktrees/registry';
 
@@ -152,6 +153,40 @@ describe('a chat in a missing folder', () => {
 describe('folder presence', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('waits for the hung gate, then refuses a folder it still did not check as busy, never as unavailable', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const folder = process.platform === 'win32' ? 'Q:\\work\\app' : '/media/me/USB/app';
+    const presence = vi.spyOn(folderPresenceProbe, 'presence').mockResolvedValue('unchecked');
+    const failure = assertFolderPresent(folder).then(() => undefined, (err: unknown) => err);
+    await vi.advanceTimersByTimeAsync(ADMIT_WAIT_MS - 1);
+    expect(presence).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await failure;
+    expect(err).toBeInstanceOf(FolderChecksBusyError);
+    expect(err).not.toBeInstanceOf(FolderUnavailableError);
+    expect(presence).toHaveBeenCalledTimes(2);
+    const text = (err as FolderChecksBusyError).text;
+    expect(englishText(text)).toBe(`Damocles can't check the folder ${folder} right now: its drive checks are busy. Try again in a moment.`);
+    expect(inGreek(text)).toBe(`Το Damocles δεν μπορεί να ελέγξει τον φάκελο ${folder} αυτή τη στιγμή: οι έλεγχοι των μονάδων δίσκου είναι απασχολημένοι. Δοκιμάστε ξανά σε λίγο.`);
+  });
+
+  it('checks again once the hung gate admits, and lets the start go on in a folder that is there', async () => {
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-presence-admit-')));
+    const real = folderPresenceProbe.presence;
+    const presence = vi.spyOn(folderPresenceProbe, 'presence').mockResolvedValueOnce('unchecked').mockImplementation(real);
+    vi.spyOn(folderPresenceProbe, 'onDidAdmit').mockImplementation((listener) => {
+      queueMicrotask(listener);
+      return { dispose: () => undefined };
+    });
+    try {
+      await expect(assertFolderPresent(folder)).resolves.toBeUndefined();
+      expect(presence).toHaveBeenCalledTimes(2);
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
   });
 
   it('states a folder once for checks that run at the same time', async () => {

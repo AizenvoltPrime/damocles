@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, onTestFinished } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { BrowserService, DOWNLOAD_MAX_BYTES, DOWNLOAD_LAUNCH_MAX_BYTES } from '../index';
-import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
+import type { PanelHost } from '../../../platform/window-service';
 import { buildBrowserPiTools } from '../../pi-session/tools/browser-tools';
 
 /**
@@ -23,12 +24,13 @@ function fakePage(url = 'about:blank'): { obj: Record<string, unknown>; handlers
     on: (event: string, handler: Handler) => { handlers.set(event, handler); },
     url: () => url,
     opener: async () => null,
+    close: async () => {},
   };
   return { obj, handlers };
 }
 
-/** A fake CDPSession — registerPage only calls `.on(...)` on it. */
-const fakeSession = { on: () => {} };
+/** A fake CDPSession — registerPage only listens on it and starts the navigation guard. */
+const fakeSession = { on: () => {}, send: async () => ({}) };
 
 /**
  * Create a REAL file of `bytes` via `truncate`, so `fsp.stat(await download.path()).size` in the
@@ -69,22 +71,37 @@ function downloadsPriv(service: BrowserService): { downloadsDir: string; downloa
   return (service as unknown as { downloadManager: { downloadsDir: string; downloadedBytes: number } }).downloadManager;
 }
 
+/** A new chat of `platform` with one registered page; `onDownload` is the REAL `download` handler registerPage installed on it. */
+async function chatWithPage(service: BrowserService, platform: FakePlatform): Promise<{ chat: PanelHost; scopeId: string; onDownload: Handler }> {
+  const { obj: page, handlers } = fakePage();
+  const chat = platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+  const scope = service.chatScope(chat);
+  await (service as unknown as { registerPage: (p: unknown, owner: string) => Promise<unknown> }).registerPage(page, scope.id);
+  return { chat, scopeId: scope.id, onDownload: handlers.get('download')! };
+}
+
 /** A service wired with a fake context + downloads dir, and the REAL `download` handler off registerPage. */
 async function serviceWithDownloads(downloadsDir: string): Promise<{
   service: BrowserService;
+  platform: FakePlatform;
+  chat: PanelHost;
+  scopeId: string;
   onDownload: Handler;
   budget: (bytes: number) => void;
   spent: () => number;
 }> {
-  const service = new BrowserService(createFakePlatform());
+  const platform = createFakePlatform();
+  const service = new BrowserService(platform);
   (service as unknown as { context: unknown }).context = { newCDPSession: async () => fakeSession };
   downloadsPriv(service).downloadsDir = downloadsDir;
-  const { obj: page, handlers } = fakePage();
-  await (service as unknown as { registerPage: (p: unknown) => Promise<unknown> }).registerPage(page);
+  const { chat, scopeId, onDownload } = await chatWithPage(service, platform);
   const priv = downloadsPriv(service);
   return {
     service,
-    onDownload: handlers.get('download')!,
+    platform,
+    chat,
+    scopeId,
+    onDownload,
     // Seed bytes "already saved this launch". The positive control that this mirrors real accumulation
     // is the test below asserting real saveAs calls move the same counter.
     budget: (bytes: number) => { priv.downloadedBytes = bytes; },
@@ -112,7 +129,7 @@ describe('Slice 5 — downloads ring buffer', () => {
   });
 
   it('caps at DOWNLOADS_MAX (50), dropping the oldest, and reports absolute saved paths', async () => {
-    const { service, onDownload } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(downloadsDir);
 
     // Drive 60 downloads through the REAL handler.
     for (let i = 0; i < 60; i++) {
@@ -120,7 +137,7 @@ describe('Slice 5 — downloads ring buffer', () => {
       await onDownload(fakeDownload({ filename: name, tempPath: sourceFile }).download);
     }
 
-    const downloads = service.getDownloads();
+    const downloads = service.getDownloads(scopeId);
     expect(downloads.length).toBe(50);
     // 60 pushed, first 10 shifted → f10..f59 remain.
     expect(downloads[0]!.filename).toBe('f10.txt');
@@ -131,13 +148,13 @@ describe('Slice 5 — downloads ring buffer', () => {
 
   it('marks state "failed" when saveAs rejects (fail-soft, still recorded)', async () => {
     const dir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-'));
-    const { service, onDownload } = await serviceWithDownloads(dir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(dir);
 
     const { download } = fakeDownload({ filename: 'boom.bin', tempPath: sourceFile });
     download.saveAs = async () => { throw new Error('disk full'); };
     await onDownload(download);
 
-    const downloads = service.getDownloads();
+    const downloads = service.getDownloads(scopeId);
     expect(downloads).toHaveLength(1);
     expect(downloads[0]!.state).toBe('failed');
     expect(downloads[0]!.filename).toBe('boom.bin');
@@ -148,13 +165,97 @@ describe('Slice 5 — downloads ring buffer', () => {
 
   it('getDownloads returns a copy (external mutation cannot corrupt the buffer)', async () => {
     const dir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-'));
-    const { service, onDownload } = await serviceWithDownloads(dir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(dir);
     await onDownload(fakeDownload({ filename: 'a.txt', tempPath: sourceFile }).download);
 
-    const copy = service.getDownloads();
+    const copy = service.getDownloads(scopeId);
     copy.push({ filename: 'evil', savedPath: '/tmp/evil', url: 'http://evil', state: 'completed' });
-    expect(service.getDownloads()).toHaveLength(1);
+    expect(service.getDownloads(scopeId)).toHaveLength(1);
     await fsp.rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe('downloads belong to the chat whose page made them', () => {
+  let downloadsDir = '';
+  let sourceDir = '';
+  let sourceFile = '';
+
+  beforeEach(async () => {
+    downloadsDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-chat-'));
+    sourceDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-chat-src-'));
+    sourceFile = await sparseFile(sourceDir, 'src.bin', 16);
+  });
+  afterEach(async () => {
+    await fsp.rm(downloadsDir, { recursive: true, force: true });
+    await fsp.rm(sourceDir, { recursive: true, force: true });
+  });
+
+  it('lists a download only to its page\'s chat, through BrowserDownloads too', async () => {
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> };
+    const a = await serviceWithDownloads(downloadsDir);
+    const b = await chatWithPage(a.service, a.platform);
+    await a.onDownload(fakeDownload({ filename: 'a.txt', tempPath: sourceFile }).download);
+
+    expect(a.service.getDownloads(a.scopeId).map((d) => d.filename)).toEqual(['a.txt']);
+    expect(a.service.getDownloads(b.scopeId)).toEqual([]);
+    const listing = async (scopeId: string): Promise<string> => {
+      const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope: a.service.createAgentScope(scopeId) } as never) as unknown as ToolLike[];
+      return (await tools.find((t) => t.name === 'BrowserDownloads')!.execute('d', {})).content[0]!.text!;
+    };
+    expect(await listing(b.scopeId)).toBe('No downloads captured.');
+    expect(await listing(a.scopeId)).toContain('a.txt');
+    // a subagent of chat A lists its chat's downloads; a scope with no chat lists none
+    expect(a.service.createAgentScope('sub-a', a.chat).getDownloads().map((d) => d.filename)).toEqual(['a.txt']);
+    expect(a.service.createAgentScope('no-chat').getDownloads()).toEqual([]);
+  });
+
+  it('keeps each chat\'s 50 newest, so one chat\'s downloads never push out another\'s', async () => {
+    const a = await serviceWithDownloads(downloadsDir);
+    const b = await chatWithPage(a.service, a.platform);
+    await b.onDownload(fakeDownload({ filename: 'b.txt', tempPath: sourceFile }).download);
+    for (let i = 0; i < 51; i++) await a.onDownload(fakeDownload({ filename: `a${i}.txt`, tempPath: sourceFile }).download);
+
+    expect(a.service.getDownloads(b.scopeId).map((d) => d.filename)).toEqual(['b.txt']);
+    const own = a.service.getDownloads(a.scopeId);
+    expect(own).toHaveLength(50);
+    expect(own[0]!.filename).toBe('a1.txt');
+  });
+
+  it('charges every chat\'s downloads to the one launch budget', async () => {
+    const a = await serviceWithDownloads(downloadsDir);
+    const b = await chatWithPage(a.service, a.platform);
+    a.budget(DOWNLOAD_LAUNCH_MAX_BYTES);
+    const { download, calls } = fakeDownload({ filename: 'b.txt', tempPath: sourceFile });
+    await b.onDownload(download);
+
+    expect(a.service.getDownloads(b.scopeId)[0]!.state).toBe('rejected');
+    expect(calls.cancel).toBe(1);
+    expect(a.service.getDownloads(a.scopeId)).toEqual([]);
+  });
+
+  it('drops a chat\'s downloads when the chat closes', async () => {
+    const a = await serviceWithDownloads(downloadsDir);
+    const b = await chatWithPage(a.service, a.platform);
+    await a.onDownload(fakeDownload({ filename: 'a.txt', tempPath: sourceFile }).download);
+    await b.onDownload(fakeDownload({ filename: 'b.txt', tempPath: sourceFile }).download);
+
+    a.chat.close();
+    expect((a.service as unknown as { downloadManager: { downloads: unknown[] } }).downloadManager.downloads).toHaveLength(1);
+    expect(a.service.getDownloads(b.scopeId).map((d) => d.filename)).toEqual(['b.txt']);
+  });
+
+  it('records nothing for a download that finishes after its chat closed', async () => {
+    const a = await serviceWithDownloads(downloadsDir);
+    let finish!: (path: string) => void;
+    const { download } = fakeDownload({ filename: 'late.txt', tempPath: sourceFile });
+    download.path = () => new Promise((resolve) => { finish = resolve; });
+    const handled = a.onDownload(download);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+
+    a.chat.close();
+    finish(sourceFile);
+    await handled;
+    expect((a.service as unknown as { downloadManager: { downloads: unknown[] } }).downloadManager.downloads).toEqual([]);
   });
 });
 
@@ -189,13 +290,13 @@ describe('Slice 5 — download size budget (S3)', () => {
   });
 
   it('(f) POSITIVE CONTROL — a normal small download still lands on disk as completed with its size', async () => {
-    const { service, onDownload, spent } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload, spent } = await serviceWithDownloads(downloadsDir);
     const temp = await sparseFile(tempDir, 'ok-small.bin', 5 * MB);
     const { download, calls } = fakeDownload({ filename: 'ok-small.bin', tempPath: temp });
 
     await onDownload(download);
 
-    const entry = service.getDownloads()[0]!;
+    const entry = service.getDownloads(scopeId)[0]!;
     expect(entry.state).toBe('completed');
     expect(entry.sizeBytes).toBe(5 * MB);
     expect(entry.savedPath).toBe(join(downloadsDir, 'ok-small.bin'));
@@ -211,14 +312,14 @@ describe('Slice 5 — download size budget (S3)', () => {
   });
 
   it('(a) a file over the 100 MB per-file cap is deleted, never saved, and recorded rejected WITH its size', async () => {
-    const { service, onDownload, spent } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload, spent } = await serviceWithDownloads(downloadsDir);
     const oversized = DOWNLOAD_MAX_BYTES + 1;
     const temp = await sparseFile(tempDir, 'huge.bin', oversized);
     const { download, calls } = fakeDownload({ filename: 'huge.bin', tempPath: temp });
 
     await onDownload(download);
 
-    const entry = service.getDownloads()[0]!;
+    const entry = service.getDownloads(scopeId)[0]!;
     expect(entry.state).toBe('rejected');
     expect(entry.sizeBytes).toBe(oversized);
     expect(entry.savedPath).toBe('');
@@ -236,7 +337,7 @@ describe('Slice 5 — download size budget (S3)', () => {
     const atCap = await serviceWithDownloads(downloadsDir);
     const atCapTemp = await sparseFile(tempDir, 'at-cap.bin', DOWNLOAD_MAX_BYTES);
     await atCap.onDownload(fakeDownload({ filename: 'at-cap.bin', tempPath: atCapTemp }).download);
-    expect(atCap.service.getDownloads()[0]!.state).toBe('completed');
+    expect(atCap.service.getDownloads(atCap.scopeId)[0]!.state).toBe('completed');
     expect(await dirEntries()).toEqual(['at-cap.bin']);
 
     const overDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-budget-'));
@@ -244,12 +345,12 @@ describe('Slice 5 — download size budget (S3)', () => {
     const over = await serviceWithDownloads(overDir);
     const overTemp = await sparseFile(tempDir, 'over-cap.bin', DOWNLOAD_MAX_BYTES + 1);
     await over.onDownload(fakeDownload({ filename: 'over-cap.bin', tempPath: overTemp }).download);
-    expect(over.service.getDownloads()[0]!.state).toBe('rejected');
+    expect(over.service.getDownloads(over.scopeId)[0]!.state).toBe('rejected');
     expect(await fsp.readdir(overDir)).toEqual([]);
   });
 
   it('(b) a download that would cross the remaining launch budget is rejected even though it is under the per-file cap', async () => {
-    const { service, onDownload, budget } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload, budget } = await serviceWithDownloads(downloadsDir);
     // 460 MB already saved this launch → only 40 MB remains. A 50 MB file is well under the 100 MB
     // per-file cap, so ONLY the launch-budget arm of the check can refuse it.
     budget(460 * MB);
@@ -258,7 +359,7 @@ describe('Slice 5 — download size budget (S3)', () => {
 
     await onDownload(download);
 
-    const entry = service.getDownloads()[0]!;
+    const entry = service.getDownloads(scopeId)[0]!;
     expect(entry.state).toBe('rejected');
     expect(entry.sizeBytes).toBe(50 * MB);
     expect(entry.savedPath).toBe('');
@@ -269,24 +370,24 @@ describe('Slice 5 — download size budget (S3)', () => {
 
   it('(b) POSITIVE CONTROL — the same 50 MB file IS saved when the remaining budget covers it', async () => {
     // Proves the previous test discriminates on the budget, not on the file itself.
-    const { service, onDownload } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(downloadsDir);
     downloadsPriv(service).downloadedBytes = 400 * MB; // 100 MB remains
     const temp = await sparseFile(tempDir, 'fits.bin', 50 * MB);
     await onDownload(fakeDownload({ filename: 'fits.bin', tempPath: temp }).download);
 
-    expect(service.getDownloads()[0]!.state).toBe('completed');
+    expect(service.getDownloads(scopeId)[0]!.state).toBe('completed');
     expect(await dirEntries()).toEqual(['fits.bin']);
   });
 
   it('(c) once the launch budget is exhausted a subsequent download is CANCELLED and recorded rejected', async () => {
-    const { service, onDownload } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(downloadsDir);
     downloadsPriv(service).downloadedBytes = DOWNLOAD_LAUNCH_MAX_BYTES;
     const temp = await sparseFile(tempDir, 'after-exhausted.bin', 1 * MB);
     const { download, calls } = fakeDownload({ filename: 'after-exhausted.bin', tempPath: temp });
 
     await onDownload(download);
 
-    const entry = service.getDownloads()[0]!;
+    const entry = service.getDownloads(scopeId)[0]!;
     expect(entry.state).toBe('rejected');
     // Cancelled before measurement, so there is no size to report — the renderer uses this to pick
     // the "budget exhausted" reason instead of a size-based one.
@@ -301,20 +402,20 @@ describe('Slice 5 — download size budget (S3)', () => {
   });
 
   it('(d) download.failure() non-null is recorded as failed (not rejected, not completed)', async () => {
-    const { service, onDownload } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(downloadsDir);
     const temp = await sparseFile(tempDir, 'net-fail.bin', 1 * MB);
     const { download, calls } = fakeDownload({ filename: 'net-fail.bin', tempPath: temp, failure: 'net::ERR_ABORTED' });
 
     await onDownload(download);
 
-    const entry = service.getDownloads()[0]!;
+    const entry = service.getDownloads(scopeId)[0]!;
     expect(entry.state).toBe('failed');
     expect(calls.saveAs).toEqual([]);
     expect(await dirEntries()).toEqual([]);
   });
 
   it('(e) the teardown state reset clears the launch budget so a fresh launch downloads again', async () => {
-    const { service, onDownload, spent } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload, spent } = await serviceWithDownloads(downloadsDir);
     downloadsPriv(service).downloadedBytes = DOWNLOAD_LAUNCH_MAX_BYTES;
 
     // Slice 6 folded the four teardown paths into one; cleanup() is now resetState().
@@ -330,7 +431,7 @@ describe('Slice 5 — download size budget (S3)', () => {
     await onDownload(download);
 
     expect(calls.cancel).toBe(0);
-    expect(service.getDownloads()[0]!.state).toBe('completed');
+    expect(service.getDownloads(scopeId)[0]!.state).toBe('completed');
     expect(await dirEntries()).toEqual(['fresh-launch.bin']);
   });
 
@@ -339,7 +440,7 @@ describe('Slice 5 — download size budget (S3)', () => {
     // per-agent tabs, downloads really do overlap: three 200 MB files each read `downloadedBytes === 0`,
     // each passed the 500 MB check, and 600 MB landed on disk. `reserveDownloadPath` already used
     // claim-then-probe for exactly this reason; the budget did not.
-    const { service, onDownload, spent } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload, spent } = await serviceWithDownloads(downloadsDir);
     const temps = await Promise.all([
       sparseFile(tempDir, 'race-a.bin', 90 * MB),
       sparseFile(tempDir, 'race-b.bin', 90 * MB),
@@ -352,7 +453,7 @@ describe('Slice 5 — download size budget (S3)', () => {
       onDownload(fakeDownload({ filename: `race-${'abc'[i]}.bin`, tempPath }).download),
     ));
 
-    const states = service.getDownloads().map((d) => d.state);
+    const states = service.getDownloads(scopeId).map((d) => d.state);
     expect(states.filter((s) => s === 'completed')).toHaveLength(1);
     expect(states.filter((s) => s === 'rejected')).toHaveLength(2);
     expect(spent()).toBe(450 * MB);
@@ -363,25 +464,25 @@ describe('Slice 5 — download size budget (S3)', () => {
   it('releases the claimed budget when the save itself fails', async () => {
     // Claim-then-release: a claim that is never given back leaks the budget, so a launch that hit a
     // few disk errors would start refusing downloads that fit.
-    const { service, onDownload, spent } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload, spent } = await serviceWithDownloads(downloadsDir);
     const temp = await sparseFile(tempDir, 'save-fails.bin', 10 * MB);
     const { download } = fakeDownload({ filename: 'save-fails.bin', tempPath: temp });
     download.saveAs = async () => { throw new Error('EACCES'); };
 
     await onDownload(download);
 
-    expect(service.getDownloads()[0]!.state).toBe('failed');
+    expect(service.getDownloads(scopeId)[0]!.state).toBe('failed');
     expect(spent()).toBe(0);
   });
 
   it('rejected entries still flow through the ring buffer and never carry a saved path', async () => {
-    const { service, onDownload } = await serviceWithDownloads(downloadsDir);
+    const { service, scopeId, onDownload } = await serviceWithDownloads(downloadsDir);
     const small = await sparseFile(tempDir, 'mix-small.bin', 1 * MB);
     const big = await sparseFile(tempDir, 'mix-big.bin', DOWNLOAD_MAX_BYTES + 1);
     await onDownload(fakeDownload({ filename: 'mix-small.bin', tempPath: small }).download);
     await onDownload(fakeDownload({ filename: 'mix-big.bin', tempPath: big }).download);
 
-    const [ok, refused] = service.getDownloads();
+    const [ok, refused] = service.getDownloads(scopeId);
     expect(ok!.state).toBe('completed');
     expect(refused!.state).toBe('rejected');
     expect(refused!.savedPath).toBe('');
@@ -480,11 +581,11 @@ describe('Slice 5 — sanitizeDownloadFilename', () => {
       // End-to-end positive control for the criterion, not just the pure sanitizer.
       const downloadsDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-con-'));
       const tempDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-con-src-'));
-      const { service, onDownload } = await serviceWithDownloads(downloadsDir);
+      const { service, scopeId, onDownload } = await serviceWithDownloads(downloadsDir);
       const temp = await sparseFile(tempDir, 'source.bin', 1024);
       await onDownload(fakeDownload({ filename: 'CON', tempPath: temp }).download);
 
-      const entry = service.getDownloads()[0]!;
+      const entry = service.getDownloads(scopeId)[0]!;
       expect(entry.state).toBe('completed');
       expect(entry.filename).toBe('_CON');
       expect(await fsp.readdir(downloadsDir)).toEqual(['_CON']);
@@ -626,20 +727,20 @@ describe('Slice 5 — download filename collisions', () => {
 
 describe('Slice 5 — listTabs formatting (scope-scoped)', () => {
   it('enumerates a scope\'s own tabs in order with 0-based index, tracked title/url, and the active flag', () => {
-    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const CHAT_SCOPE = 'chat-scope';
     const service = new BrowserService(createFakePlatform());
     const p1 = { url: () => 'http://a/live' };
     const p2 = { url: () => 'http://b/live' };
     const pages = new Map<unknown, unknown>();
-    pages.set(p1, { page: p1, ownerScopeId: PRIMARY, lastTitle: 'Alpha', lastUrl: 'http://a/tracked' });
-    pages.set(p2, { page: p2, ownerScopeId: PRIMARY, lastTitle: null, lastUrl: null });
+    pages.set(p1, { page: p1, ownerScopeId: CHAT_SCOPE, lastTitle: 'Alpha', lastUrl: 'http://a/tracked' });
+    pages.set(p2, { page: p2, ownerScopeId: CHAT_SCOPE, lastTitle: null, lastUrl: null });
     (service as unknown as { pages: unknown }).pages = pages;
     // The scope's CURRENT tab (p2) is the active one — independent of the human `activePage`.
     (service as unknown as { scopes: Map<string, { currentPage: unknown }> }).scopes = new Map([
-      [PRIMARY, { currentPage: p2 }],
+      [CHAT_SCOPE, { currentPage: p2 }],
     ]);
 
-    expect(service.listTabs(PRIMARY)).toEqual([
+    expect(service.listTabs(CHAT_SCOPE)).toEqual([
       { index: 0, title: 'Alpha', url: 'http://a/tracked', active: false },
       // lastTitle null → '', lastUrl null → falls back to page.url().
       { index: 1, title: '', url: 'http://b/live', active: true },
@@ -705,5 +806,78 @@ describe('Slice 5 — BrowserUpload path validation (fail-soft, no browser)', ()
     expect(res.isError).toBeFalsy();
     expect(res.content[0]!.text).toContain('Uploaded 1 file(s)');
     expect(res.content[0]!.text).toMatch(/Screenshot unavailable|navigated/i);
+  });
+});
+
+describe('BrowserUpload of a folder: the caps from user settings', () => {
+  type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+
+  /** A real service with one chat page whose file input records what it was given, and the profile its copies go under. */
+  async function upload(): Promise<{ platform: FakePlatform; profile: string; given: string[][]; tool: ToolLike }> {
+    const platform = createFakePlatform();
+    const service = new BrowserService(platform);
+    (service as unknown as { context: unknown }).context = { newCDPSession: async () => fakeSession };
+    const profile = await fsp.mkdtemp(join(tmpdir(), 'damocles-profile-'));
+    onTestFinished(() => fsp.rm(profile, { recursive: true, force: true }));
+    (service as unknown as { userDataDir: string }).userDataDir = profile;
+    const given: string[][] = [];
+    const { obj: page } = fakePage();
+    page.locator = () => ({ first: () => ({ setInputFiles: async (files: string[]) => { given.push(files); } }) });
+    const chat = platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+    const scope = service.chatScope(chat);
+    await (service as unknown as { registerPage: (p: unknown, owner: string) => Promise<unknown> }).registerPage(page, scope.id);
+    (service as unknown as { setScopeCurrentPage: (owner: string, p: unknown) => boolean }).setScopeCurrentPage(scope.id, page);
+    const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
+    return { platform, profile, given, tool: tools.find((t) => t.name === 'BrowserUpload')! };
+  }
+
+  async function folderOf(files: number): Promise<string> {
+    const folder = join(await fsp.mkdtemp(join(tmpdir(), 'damocles-up-')), 'pictures');
+    onTestFinished(() => fsp.rm(join(folder, '..'), { recursive: true, force: true }));
+    await fsp.mkdir(folder);
+    for (let i = 0; i < files; i++) await fsp.writeFile(join(folder, `p${i}.txt`), 'x');
+    return folder;
+  }
+
+  const copiesOf = (profile: string): Promise<string[]> => fsp.readdir(join(profile, 'damocles-uploads')).catch(() => []);
+
+  it('refuses a folder over the entry cap with nothing under damocles-uploads, and takes it once the setting is raised', async () => {
+    const { platform, profile, given, tool } = await upload();
+    const folder = await folderOf(3);
+    await platform.settings.update('damocles.browser.uploadFolderMaxEntries', 2, 'user');
+    const refused = await tool.execute('u', { selector: '#f', paths: [folder] });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toContain(`The folder ${folder} holds more than 2 entries`);
+    expect(refused.content[0]!.text).toContain('damocles.browser.uploadFolderMaxEntries');
+    expect(await copiesOf(profile)).toEqual([]);
+    expect(given).toEqual([]);
+
+    await platform.settings.update('damocles.browser.uploadFolderMaxEntries', 3, 'user');
+    const taken = await tool.execute('u', { selector: '#f', paths: [folder] });
+    expect(taken.isError).toBeFalsy();
+    expect(taken.content[0]!.text).toContain(`Uploaded the folder ${folder} (3 file(s))`);
+    expect(await copiesOf(profile)).toHaveLength(1);
+    expect(given).toHaveLength(1);
+  });
+
+  it('refuses a folder over the size cap with nothing under damocles-uploads', async () => {
+    const { platform, profile, tool } = await upload();
+    const folder = await folderOf(0);
+    await sparseFile(folder, 'big.bin', 2 * MB);
+    await platform.settings.update('damocles.browser.uploadFolderMaxSize', 1, 'user');
+    const refused = await tool.execute('u', { selector: '#f', paths: [folder] });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toContain(`The folder ${folder} holds more than 1 MiB`);
+    expect(refused.content[0]!.text).toContain('damocles.browser.uploadFolderMaxSize');
+    expect(await copiesOf(profile)).toEqual([]);
+  });
+
+  it('clamps a hand-edited cap to its bounds', async () => {
+    const { platform, tool } = await upload();
+    const folder = await folderOf(2);
+    await platform.settings.update('damocles.browser.uploadFolderMaxEntries', 0, 'user');
+    expect((await tool.execute('u', { selector: '#f', paths: [folder] })).content[0]!.text).toContain('holds more than 1 entry,');
+    await platform.settings.update('damocles.browser.uploadFolderMaxEntries', '2', 'user');
+    expect((await tool.execute('u', { selector: '#f', paths: [folder] })).isError).toBeFalsy();
   });
 });

@@ -216,6 +216,34 @@ describe('a VS Code chat\'s served roots', () => {
     const secret = path.join(outside, 'secret.html');
     expect(await files.localTarget(pathToFileURL(secret).href)).toEqual({ refused: outsideRootsRefusal(chatRoots, fileUrlPath(pathToFileURL(secret).href)!) });
   });
+
+  it('gives two chats of one root each its own grant origin, which only that chat holds', async () => {
+    const [a, b] = [fakeChat(), fakeChat()];
+    const chatRoots: ServedFileRoots = { project, designs: [{ designId: 'd1', folder: design }] };
+    const filesA = new ChatServedFiles({ roots: () => chatRoots, serve: (file, root) => roots.url(a, file, root) });
+    const filesB = new ChatServedFiles({ roots: () => chatRoots, serve: (file, root) => roots.url(b, file, root) });
+    const page = pathToFileURL(path.join(project, 'docs', 'index.html')).href;
+    const [targetA, targetB] = [await filesA.localTarget(page), await filesB.localTarget(page)];
+    if (!('url' in targetA) || !('url' in targetB)) throw new Error('not served');
+    const [originA, originB] = [new URL(targetA.url).origin, new URL(targetB.url).origin];
+    expect(originA).not.toBe(originB);
+    expect([filesA.ownsOrigin(originA), filesA.ownsOrigin(originB)]).toEqual([true, false]);
+    expect([filesB.ownsOrigin(originB), filesB.ownsOrigin(originA)]).toEqual([true, false]);
+    const screen = await filesA.localTarget(pathToFileURL(path.join(design, 'screens', 'S1.html')).href);
+    if (!('url' in screen)) throw new Error(screen.refused);
+    expect(filesA.ownsOrigin(new URL(screen.url).origin)).toBe(true);
+    expect(filesB.ownsOrigin(new URL(screen.url).origin)).toBe(false);
+  });
+
+  it('refuses a service worker\'s script on a chat\'s grant host, whatever its cookie and Fetch Metadata', async () => {
+    trusted = true;
+    const answer = await roots.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    const script = { cookie, 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'same-origin', 'sec-fetch-dest': 'serviceworker' };
+    expect((await get(`${origin}/docs/app.js`, { ...script, 'service-worker': 'script' })).status).toBe(403);
+    expect((await get(`${origin}/docs/app.js`, script)).status).toBe(200);
+  });
 });
 
 describe('a VS Code chat\'s granted folder', () => {

@@ -9,6 +9,10 @@ import { useEditorStore } from '@/stores/useEditorStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import type { PermissionUpdate, PromptOwner } from '@shared/types/permissions';
+import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import { usePermissionStore } from '@/stores/usePermissionStore';
+import { createPermissionHandlers } from '@/composables/message-handler/handlers/permission-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
 import { i18n } from '@/i18n';
 
 /**
@@ -253,6 +257,35 @@ describe('what the card says about the change', () => {
 
     expect(wrapper.get('[data-testid="permission-title"]').text()).toBe(i18n.global.t('prompts.permission.allowEdit'));
     expect(wrapper.get('[data-testid="permission-subtitle"]').text()).toBe('src/a.bin');
+  });
+
+  it.each([
+    ['unreadable', 'File could not be read'],
+    ['notAFile', 'Not a regular file'],
+  ])('asks to allow editing a file whose approval has no diff (%s), never creating it, and has words for why', (reason, words) => {
+    const wrapper = card({ toolName: 'Write', toolInput: { file_path: 'src/a.txt', content: 'x\n' }, filePath: 'src/a.txt', patch: undefined, patchOmitted: reason });
+
+    expect(wrapper.get('[data-testid="permission-title"]').text()).toBe(i18n.global.t('prompts.permission.allowEdit'));
+    expect(i18n.global.t(`diffView.omitted.${reason}`)).toBe(words);
+  });
+
+  it('notes unsaved editor changes on an Edit or Write card, and only when there are some', () => {
+    const dirty = card({ unsavedChanges: true });
+    expect(dirty.get('[data-testid="permission-unsaved-changes"]').text()).toBe('Has unsaved changes; this diff shows the file on disk.');
+    const clean = card();
+    expect(clean.find('[data-testid="permission-unsaved-changes"]').exists()).toBe(false);
+  });
+
+  it('keeps the unsaved changes the request names for the card', () => {
+    const store = usePermissionStore();
+    const ctx = { stores: { permissionStore: store, streamingStore: { addToolCall: () => {}, updateToolStatus: () => {} }, sessionStore: { trackFileAccess: () => {} }, subagentStore: {} } } as unknown as HandlerContext;
+    const request = (toolUseId: string, unsaved: boolean): Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }> => ({
+      type: 'requestPermission', toolUseId, toolName: 'Edit', toolInput: {}, filePath: 'src/a.ts', patch: PATCH, owner: { kind: 'main' }, ...(unsaved ? { unsavedChanges: true as const } : {}),
+    });
+    createPermissionHandlers().requestPermission!(request('t-1', true), ctx);
+    createPermissionHandlers().requestPermission!(request('t-2', false), ctx);
+    expect(store.pendingPermissions['t-1']!.unsavedChanges).toBe(true);
+    expect(store.pendingPermissions['t-2']).not.toHaveProperty('unsavedChanges');
   });
 
   it('still shows the card when the approval\'s patch does not parse, with the change unnumbered', () => {

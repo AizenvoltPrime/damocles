@@ -95,11 +95,11 @@ describe('useSessionStore transcript notices', () => {
 
   it('stores the dropped-thinking reasons untouched', () => {
     const store = useSessionStore();
-    store.addThinkingDroppedNotice(2, ['signature mismatch at content[0]', 'unknown reason'], 900);
+    store.addThinkingDroppedNotice(2, [{ text: { message: 'signature mismatch at content[0]' }, count: 1 }, { text: { message: 'unknown reason' }, count: 1 }], 900);
 
     expect(store.thinkingDroppedNotices[0]).toMatchObject({
       count: 2,
-      reasons: ['signature mismatch at content[0]', 'unknown reason'],
+      reasons: [{ text: { message: 'signature mismatch at content[0]' }, count: 1 }, { text: { message: 'unknown reason' }, count: 1 }],
       timestamp: 900,
     });
   });
@@ -107,7 +107,7 @@ describe('useSessionStore transcript notices', () => {
   it('clears both new notice lists with the rest of the session data', () => {
     const store = useSessionStore();
     store.addCompactionAbortedNotice('manual', true, 1);
-    store.addThinkingDroppedNotice(1, ['unknown reason'], 2);
+    store.addThinkingDroppedNotice(1, [{ text: { message: 'unknown reason' }, count: 1 }], 2);
     store.clearSessionData();
 
     expect(store.compactionAbortedNotices).toHaveLength(0);

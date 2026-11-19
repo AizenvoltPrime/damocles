@@ -4,12 +4,13 @@ import { homedir } from 'os';
 import { get as httpGet } from 'http';
 import type { Platform } from '../../platform/platform';
 import type { PanelHost } from '../../platform/window-service';
+import type { Disposable } from '../../platform/disposable';
 import type { BrowserContext, Page, CDPSession, Dialog, Request } from 'patchright';
 import { launchBrowserContext } from './launcher';
 import { REMOTE_CONTEXT_CHROME_ARGS, startClientNetworkProxy, type ClientNetworkProxy } from './client-network-proxy';
 import { CLOSED_CLIENT_NETWORK, type ClientNetworkPolicy } from './client-network-policy';
 import { PageController } from './page-controller';
-import { BrowserPanel, type NavigationState } from './browser-panel';
+import { BrowserPanel, type NavigationState, type SavedPageState } from './browser-panel';
 import { ScreencastHealth } from './screencast-health';
 import { ConsoleCollector, NetworkCollector } from './collectors';
 import { ElementPicker } from './element-picker';
@@ -22,12 +23,13 @@ import {
 } from './page-scripts';
 import { fetchIconPinned, fetchIconThroughContext, resolveFavicon } from './favicon';
 import { agentNavigationRefusal, isNavigableUrl } from './net-guard';
+import { grantRefusalMessage, installPageNetworkGuard, redirectRefusalMessage, type PageNetworkGuard } from './page-network-guard';
 import { httpFallbackUrl } from './https-fallback';
 import { typedAddress } from '../../shared/typed-address';
 import { isFileUrl, isServedGrantHost } from '../../shared/served-file-url';
 import { loadedFileUrl } from './loaded-file-url';
 import { DownloadManager } from './downloads';
-import { writeClientCertificateRules } from './client-certificate-rules';
+import { writeLaunchPreferences } from './client-certificate-rules';
 import { isClientCertificateOrigin, namesCertificate, type ClientCertificateFilter } from '../../shared/client-certificate';
 import { InterceptManager } from './intercept';
 import { ScreencastController, MAX_DEVICE_SCALE } from './screencast';
@@ -36,20 +38,37 @@ import { log } from '../logger';
 import { l } from '../l10n';
 import { browserUnavailableReason, userScopeRemote } from '../user-scope';
 import { LocalizedError } from '../../shared/localized-text';
+import { clampWholeNumber, MIB, UPLOAD_FOLDER_MAX_ENTRIES, UPLOAD_FOLDER_MAX_ENTRIES_SETTING, UPLOAD_FOLDER_MAX_SIZE, UPLOAD_FOLDER_MAX_SIZE_SETTING } from '../../shared/types/constants';
 import type { BrowserSessionState, InterceptRule, RedactedInterceptRule } from './types';
 import type { ElementAttachment, ConsoleEntry, NetworkError, DownloadEntry, BrowserDialogRecord } from '../../shared/types/browser';
 
 export { BrowserAgentScope } from './agent-scope';
 export type { ScopeTabInfo } from './agent-scope';
 
-/** How a local chat's served project and design pages map back to their file: addresses and reopen (`ChatServedFiles`). */
+/**
+ * A chat's served project, design and granted folder pages: which grant origins it holds, how they map back to their file:
+ * addresses and reopen (`ChatServedFiles`; a remote chat's view proxy, its origins as main sent them).
+ */
 export interface ChatServedPages {
   /** The file: address of a URL served on one of the chat's origins, any other URL unchanged. */
   toFile(url: string): string;
   /** A fresh one-time served URL for a file: address of the chat's roots, or why it does not reopen. */
   restoreTarget(url: string): Promise<{ readonly url: string } | { readonly refused: string }>;
+  /** Whether the served grant origin (http://<label>.localhost:<port>) is one of the chat's own. */
+  ownsOrigin(origin: string): boolean;
+}
+
+/** How a page names its chat in the state a VS Code window reload restores it from: the chat webview's `ready.panelToken`. */
+export interface BrowserChatOwners {
+  /** The token of the chat's webview, undefined until its first `ready` was handled. */
+  tokenOf(chat: PanelHost): string | undefined;
+  /** The open chat whose webview readied with `token`. */
+  readiedChat(token: string): PanelHost | undefined;
+  /** Fires when a chat's first `ready` was handled. */
+  onDidChange(listener: () => void): Disposable;
 }
 export { DOWNLOAD_MAX_BYTES, DOWNLOAD_LAUNCH_MAX_BYTES } from './downloads';
+export { PickCancelledError } from './element-picker';
 export { STREAM_JPEG_QUALITY, TOOL_JPEG_QUALITY, MAX_DEVICE_SCALE, FRAME_ACK_FALLBACK_MS } from './screencast';
 
 /**
@@ -59,7 +78,7 @@ export { STREAM_JPEG_QUALITY, TOOL_JPEG_QUALITY, MAX_DEVICE_SCALE, FRAME_ACK_FAL
  * and the CDP viewport are tracked per page (panels can differ in size under split view). The favicon
  * token guards this page's icon against a superseded same-page navigation.
  *
- * `ownerScopeId` attributes the tab to the agent scope that opened it (the primary scope for the main
+ * `ownerScopeId` attributes the tab to the agent scope that opened it (its chat's human scope for the main
  * agent + human, or a subagent/team-agent id) so per-agent tab isolation and success-only auto-close
  * work. The console/network collectors are per-tab (each tab records into its OWN buffers, unconditional
  * of which tab the human is watching), and `pendingUploadPaths` stages this tab's next native chooser.
@@ -68,6 +87,7 @@ interface PageEntry {
   page: Page;
   session: CDPSession;
   controller: PageController;
+  guard: PageNetworkGuard;
   picker: ElementPicker;
   panel: BrowserPanel;
   /** The last address the main frame loaded; Chromium's error page never replaces it. */
@@ -106,8 +126,8 @@ interface PageEntry {
   faviconToken: number;
   ownerScopeId: string;
   /** The chat panel that owns this page, fixed at registration. Separate from `ownerScopeId` because a
-   *  subagent scope dies while the tabs it kept stay open in its chat. Undefined for the shared primary scope. */
-  readonly chat: PanelHost | undefined;
+   *  subagent scope dies while the tabs it kept stay open in its chat. */
+  readonly chat: PanelHost;
   /** Back/forward availability and whether the main frame is loading, for a host that draws the chrome. */
   navigation: NavigationState;
   /** HTTP status of the main frame's last navigation response. Chromium sends that response before it answers Page.navigate. */
@@ -132,7 +152,7 @@ interface PageEntry {
 
 interface ScopeState {
   currentPage: Page | null;
-  /** The chat panel whose agents use this scope; undefined for the shared primary scope. */
+  /** The chat panel whose agents use this scope; a scope made with none owns no page. */
   readonly chat: PanelHost | undefined;
 }
 
@@ -401,10 +421,6 @@ function jsButtonToCdp(button: number): 'left' | 'middle' | 'right' | 'none' {
 }
 
 export class BrowserService {
-  /** The shared scope id for the main agent + human. Every panel's main agent and every human-initiated
-   *  open resolve through it, so "the human opens a page, the main agent continues on it" keeps working. */
-  static readonly PRIMARY_SCOPE_ID = '__primary__';
-
   private readonly platform: Platform;
   private readonly profileDir: string | undefined;
   private readonly network: (() => Promise<{ server: string; args: readonly string[] }>) | undefined;
@@ -426,24 +442,20 @@ export class BrowserService {
   // visibility / presentPanel / a human-driven reveal; NEVER moves a scope's current tab (decision #2).
   private activePage: Page | null = null;
   private pages = new Map<Page, PageEntry>();
-  // Per-agent scope registry: id → its current tab. The primary scope (main + human) is pre-registered;
+  // Per-agent scope registry: id → its current tab. Each chat's human scope is registered on first use;
   // subagent/team scopes are added on demand (createAgentScope) and removed on agent completion
   // (disposeScope). Globally-unique ids never collide on the one shared service.
-  private scopes = new Map<string, ScopeState>([
-    [BrowserService.PRIMARY_SCOPE_ID, { currentPage: null, chat: undefined }],
-  ]);
-  // With a chat browser pane, each chat panel's main agent + human share this chat's own scope instead of
-  // the primary one. Registered for the chat's lifetime and kept across teardown, as the primary scope is.
+  private scopes = new Map<string, ScopeState>();
+  // Each chat panel's main agent + human share this chat's own scope. Registered for the chat's lifetime and kept across teardown.
   private readonly chatScopeIds = new Map<PanelHost, string>();
   private nextChatScope = 0;
   // A page that registers for a closed chat is closed instead of shown.
   private readonly releasedChats = new WeakSet<PanelHost>();
+  // Chats whose dispose releases them here, each hooked once.
+  private readonly watchedChats = new WeakSet<PanelHost>();
   // The owner an explicit opener claimed, read by a racing context.on('page') registration before it
   // resolves an owner itself, so the page's panel opens beside the right chat.
   private readonly explicitOwners = new WeakMap<Page, string>();
-  // The scope that triggered the context launch, captured for popup owner-attribution fallback (a popup
-  // whose opener maps to no known tab is attributed here, then to the primary scope). Cleared on cleanup.
-  private launchOwnerScopeId: string | null = null;
   // In-flight page registrations keyed by Page. A single popup can surface via BOTH context.on('page')
   // and page.on('popup'), and an explicit openNewTab races context.on('page') for its own page; sharing
   // one registration promise per page keeps registerPage idempotent (one CDPSession, one listener set).
@@ -452,9 +464,16 @@ export class BrowserService {
   // The editor column the browser tabs live in. Captured from the first tab and reused for the rest, so
   // every browser tab groups together (the "group with active editor" placement).
   private browserColumn: number | undefined = undefined;
-  // Guards restore so only the first persisted browser tab relaunches the session; extras are disposed.
-  private restoreClaimed = false;
-  private broadcastToChat: ((element: ElementAttachment, chat: PanelHost | undefined) => void) | null = null;
+  private chatOwners: BrowserChatOwners | undefined;
+  private chatOwnersSubscription: Disposable | undefined;
+  // Pages a VS Code window reload restored whose chat has not readied yet, each with its chat's token. Kept for the window's
+  // life: a background chat tab, and the sidebar, ready only once shown.
+  private pendingRestores: Array<{ readonly url: string; readonly owner: string }> = [];
+  // Each chat's restore tail, so one chat's restores open their tabs, and reveal their active one, in the order they were asked.
+  private readonly restoreChains = new WeakMap<PanelHost, Promise<void>>();
+  // The page an element pick armed through pickElement, until that pick settles.
+  private armedPick: PageEntry | null = null;
+  private broadcastToChat: ((element: ElementAttachment, chat: PanelHost) => void) | null = null;
   // The live context's one user-agent read, started at launch: the clean user agent to apply, or null when none is needed.
   private userAgentCheck: Promise<string | null> | null = null;
   // Most-recent viewport, used to size the NEXT launch context. Deliberately NOT used to seed a new
@@ -475,17 +494,31 @@ export class BrowserService {
   // set by dispose(): nothing launches again, and a launch still in flight closes the context it gets
   private disposed = false;
   private readonly downloadManager: DownloadManager;
-  // Active network-interception rules (BrowserIntercept), cleared on cleanup() (close + dispose).
-  private readonly interceptManager = new InterceptManager(() => this.context);
+  // Active network-interception rules (BrowserIntercept), each its chat's, cleared on cleanup() (close + dispose).
+  private readonly interceptManager = new InterceptManager(
+    () => this.context,
+    (page) => this.pageChat(page),
+    (chat, origin) => this.servedPages.get(chat)?.ownsOrigin(origin) === true,
+  );
   // The certificate Chrome sends each origin without asking, chosen by the user in this app session; never persisted.
   private readonly clientCertificateRules = new Map<string, ClientCertificateFilter>();
-  // each local chat's served pages, so a relaunch of the browser alone reopens them as a restart of the app does
+  // each chat's served pages: the grant origins its pages may reach, and for a local chat the reopen a relaunch of the browser
+  // alone needs, as a restart of the app does
   private readonly servedPages = new Map<PanelHost, ChatServedPages>();
 
   /** Registers `chat`'s served pages until the returned binding is disposed. */
   bindServedPages(chat: PanelHost, pages: ChatServedPages): { dispose(): void } {
     this.servedPages.set(chat, pages);
     return { dispose: () => { if (this.servedPages.get(chat) === pages) this.servedPages.delete(chat); } };
+  }
+
+  /** The panel manager's chats, which a page names in its saved state and a restored page reopens into. */
+  setChatOwners(owners: BrowserChatOwners): void {
+    this.chatOwnersSubscription?.dispose();
+    this.chatOwners = owners;
+    this.chatOwnersSubscription = owners.onDidChange(() => {
+      this.settleRestores().catch((err) => log(`[Browser] Restoring a page into its chat failed — ${err instanceof Error ? err.message : String(err)}`));
+    });
   }
 
   isConnected(): boolean {
@@ -513,43 +546,53 @@ export class BrowserService {
 
   /** Register the scope id (if new) and return a thin handle over this service for it. This is the ONLY
    *  place a registry entry is born — see {@link setScopeCurrentPage}. Idempotent, so a rebuild (per
-   *  session / per subagent spawn / per team agent) reuses the entry. Primary is pre-registered. */
+   *  session / per subagent spawn / per team agent) reuses the entry. A chat's human scope comes from {@link chatScope}. */
   createAgentScope(id: string, chat?: PanelHost): BrowserAgentScope {
+    // a closed chat's late scope registers nothing, so every call on it fails as disposed
+    if (chat && this.releasedChats.has(chat)) return new BrowserAgentScope(this, id);
     if (!this.scopes.has(id)) this.scopes.set(id, { currentPage: null, chat });
+    // a remote chat's agent may build its scope before the chat's own, and the chat's close still ends its pages and rules
+    if (chat) this.watchChat(chat);
     return new BrowserAgentScope(this, id);
   }
 
-  /** The scope a chat panel's main agent and its human share: the primary scope, or with a chat browser
-   *  pane (`WindowService.chatBrowserPane`) the chat's own. */
-  chatScope(chat: PanelHost | undefined): BrowserAgentScope {
+  /** The scope a chat panel's main agent and its human share, the chat's own. */
+  chatScope(chat: PanelHost): BrowserAgentScope {
     return new BrowserAgentScope(this, this.humanScopeId(chat));
   }
 
   /** Get or register the chat's human scope id. A closed chat gets an id nothing registers, so every
    *  mutating call on it fails as disposed. */
-  private humanScopeId(chat: PanelHost | undefined): string {
-    if (!chat || !this.platform.window.chatBrowserPane) return BrowserService.PRIMARY_SCOPE_ID;
+  private humanScopeId(chat: PanelHost): string {
     const known = this.chatScopeIds.get(chat);
     if (known !== undefined) return known;
     const id = `chat-${++this.nextChatScope}`;
     if (this.releasedChats.has(chat)) return id;
     this.chatScopeIds.set(chat, id);
     this.scopes.set(id, { currentPage: null, chat });
-    chat.onDispose(() => this.releaseChat(chat));
+    this.watchChat(chat);
     return id;
   }
 
-  /** The primary scope and every chat's human scope: they follow the human's focus and are never disposed by an agent. */
-  private isHumanScope(scopeId: string): boolean {
-    return scopeId === BrowserService.PRIMARY_SCOPE_ID || [...this.chatScopeIds.values()].includes(scopeId);
+  private watchChat(chat: PanelHost): void {
+    if (this.watchedChats.has(chat) || this.releasedChats.has(chat)) return;
+    this.watchedChats.add(chat);
+    chat.onDispose(() => this.releaseChat(chat));
   }
 
-  /** A chat panel with its own scope closed: its scopes go and every page it owns closes with it, including
+  /** Every chat's human scope: they follow the human's focus and are never disposed by an agent. */
+  private isHumanScope(scopeId: string): boolean {
+    return [...this.chatScopeIds.values()].includes(scopeId);
+  }
+
+  /** A chat panel closed: its scopes, intercept rules and downloads list go and every page it owns closes with it, including
    *  the tabs a failed subagent kept for inspection, so no page outlives the chat it is shown beside. */
   private releaseChat(chat: PanelHost): void {
     this.releasedChats.add(chat);
     this.chatScopeIds.delete(chat);
     for (const [id, state] of this.scopes) if (state.chat === chat) this.scopes.delete(id);
+    this.interceptManager.clear(chat);
+    this.downloadManager.forgetChat(chat);
     for (const entry of this.pages.values()) {
       if (entry.chat !== chat) continue;
       entry.closing = true;
@@ -668,7 +711,7 @@ export class BrowserService {
     return tabs;
   }
 
-  /** Switch a scope's current tab by its per-scope index. Only a human scope (primary, or a chat's own)
+  /** Switch a scope's current tab by its per-scope index. Only a chat's human scope
    * also reveals the tab: a background subagent switching its own tab must not yank the human's
    * screencast away from whatever they are watching (same rule as `openForScope`). */
   async selectTab(scopeId: string, index: number): Promise<void> {
@@ -734,10 +777,13 @@ export class BrowserService {
     // Chrome gets the href the allowlist read, never raw text a second parser could read otherwise
     const target = url === 'about:blank' ? url : new URL(url).href;
     entry.documentStatus = undefined;
-    const { errorText, isDownload } = await this.raceAbort(entry.controller.navigate(target), signal);
+    const { errorText, isDownload, loaderId } = await this.raceAbort(entry.controller.navigate(target), signal);
     if (isDownload) {
       throw new NavigationFailedError(`${navigationOrigin(target)} started a download instead of loading a page; BrowserDownloads lists it`);
     }
+    const refused = errorText !== undefined ? entry.guard.refusal(loaderId) : undefined;
+    if (refused?.kind === 'redirect') throw new NavigationFailedError(redirectRefusalMessage(navigationOrigin(refused.hop), refused));
+    if (refused?.kind === 'foreignGrant') throw new NavigationFailedError(grantRefusalMessage(navigationOrigin(refused.url)));
     // An empty-bodied HTTP error still is the server's answer, so its status is reported like any other.
     const answeredByServer = errorText === HTTP_RESPONSE_CODE_FAILURE && entry.documentStatus !== undefined;
     if (errorText !== undefined && !answeredByServer) {
@@ -824,8 +870,23 @@ export class BrowserService {
     this.setActivePage(page);
   }
 
+  /** Where a folder upload's copy to the SCOPE's current tab goes: the profile's volume, and a fresh folder made on demand. */
+  uploadTarget(scopeId: string): { readonly volume: string; readonly create: () => Promise<string> } {
+    if (!this.getScopePage(scopeId) || !this.userDataDir) throw new Error('Browser is not connected. Use BrowserOpen first.');
+    return { volume: this.userDataDir, create: () => this.newUploadFolder(scopeId) };
+  }
+
+  /** The caps a folder upload's copy runs with, read at each call from user settings only (application scope), clamped to their bounds. */
+  uploadFolderCaps(): { readonly maxEntries: number; readonly maxBytes: number } {
+    const settings = this.platform.settings;
+    return {
+      maxEntries: clampWholeNumber(settings.get<unknown>(UPLOAD_FOLDER_MAX_ENTRIES_SETTING, UPLOAD_FOLDER_MAX_ENTRIES.default), UPLOAD_FOLDER_MAX_ENTRIES),
+      maxBytes: clampWholeNumber(settings.get<unknown>(UPLOAD_FOLDER_MAX_SIZE_SETTING, UPLOAD_FOLDER_MAX_SIZE.default), UPLOAD_FOLDER_MAX_SIZE) * MIB,
+    };
+  }
+
   /** A fresh folder for a folder upload's copy to the SCOPE's current tab, removed when that tab or the browser closes. */
-  async newUploadFolder(scopeId: string): Promise<string> {
+  private async newUploadFolder(scopeId: string): Promise<string> {
     const page = this.scopes.get(scopeId)?.currentPage;
     const entry = page ? this.pages.get(page) : undefined;
     if (!entry || !this.userDataDir) throw new Error('Browser is not connected. Use BrowserOpen first.');
@@ -850,29 +911,39 @@ export class BrowserService {
     if (entry) entry.pendingUploadPaths = paths;
   }
 
-  /** A copy of the captured-downloads ring buffer (newest last). */
-  getDownloads(): DownloadEntry[] {
-    return this.downloadManager.list();
+  /** The downloads the scope's chat made this launch (newest last). */
+  getDownloads(scopeId: string): DownloadEntry[] {
+    return this.downloadManager.list(this.scopes.get(scopeId)?.chat);
   }
 
-  /** Register a network-interception rule (BrowserIntercept). Throws if the browser is not connected
-   *  or the rule is malformed; returns the new rule id. */
-  addInterceptRule(rule: Omit<InterceptRule, 'id'>): string {
-    return this.interceptManager.add(rule);
+  /** Register a network-interception rule (BrowserIntercept) for the scope's chat, applied to that chat's pages only.
+   *  Throws if the scope is gone or has no chat, the browser is not connected or the rule is malformed; returns the new rule id. */
+  addInterceptRule(scopeId: string, rule: Omit<InterceptRule, 'id'>): string {
+    const state = this.scopes.get(scopeId);
+    if (!state) throw BrowserService.disposedScopeError(scopeId);
+    if (!state.chat) throw new Error(`Browser scope ${scopeId} belongs to no chat, and an intercept rule applies to its chat's pages.`);
+    return this.interceptManager.add(rule, state.chat);
   }
 
-  /** A REDACTED view of the active intercept rules — the raw fulfill body is never returned (bodyBytes only). */
-  listInterceptRules(): RedactedInterceptRule[] {
-    return this.interceptManager.list();
+  /** A REDACTED view of the scope's chat's intercept rules — the raw fulfill body is never returned (bodyBytes only). */
+  listInterceptRules(scopeId: string): RedactedInterceptRule[] {
+    const chat = this.scopes.get(scopeId)?.chat;
+    return chat ? this.interceptManager.list(chat) : [];
   }
 
-  /** Remove every intercept rule (unroute each pattern/handler) and empty the registry. Null-safe. */
-  clearInterceptRules(): void {
-    this.interceptManager.clear();
+  /** Remove the scope's chat's intercept rules (unroute each pattern/handler). Null-safe. */
+  clearInterceptRules(scopeId: string): void {
+    const chat = this.scopes.get(scopeId)?.chat;
+    if (chat) this.interceptManager.clear(chat);
   }
 
-  // chat is the picked page's own chat with a chat browser pane, else undefined (the active chat receives it).
-  onElementPickedFromToolbar(handler: (element: ElementAttachment, chat: PanelHost | undefined) => void): void {
+  /** The chat that owns `page`; undefined until its registration completes. A route never waits for that registration:
+   *  holding a popup's first document while it runs makes the navigation guard's Fetch.enable fail, and the popup close. */
+  private pageChat(page: Page): PanelHost | undefined {
+    return this.pages.get(page)?.chat;
+  }
+
+  onElementPickedFromToolbar(handler: (element: ElementAttachment, pageChat: PanelHost) => void): void {
     this.broadcastToChat = handler;
   }
 
@@ -953,11 +1024,16 @@ export class BrowserService {
    * `damocles.browser.enabled` is off; an address that is not navigable is skipped. A saved `file:` address reopens only
    * at the address `servedTarget` resolves it to, asked as its turn comes, since a served URL is valid once and briefly.
    */
-  async restoreChatPages(chat: PanelHost, urls: readonly string[], activeIndex: number | undefined, servedTarget?: (url: string) => Promise<{ readonly url: string } | { readonly refused: string }>): Promise<void> {
+  restoreChatPages(chat: PanelHost, urls: readonly string[], activeIndex: number | undefined, servedTarget?: (url: string) => Promise<{ readonly url: string } | { readonly refused: string }>): Promise<void> {
+    const run = (this.restoreChains.get(chat) ?? Promise.resolve()).then(() => this.restoreChatPagesNow(chat, urls, activeIndex, servedTarget));
+    this.restoreChains.set(chat, run.then(() => {}, () => {}));
+    return run;
+  }
+
+  private async restoreChatPagesNow(chat: PanelHost, urls: readonly string[], activeIndex: number | undefined, servedTarget?: (url: string) => Promise<{ readonly url: string } | { readonly refused: string }>): Promise<void> {
     if (!this.readEnabledSetting()) return;
     const scopeId = this.humanScopeId(chat);
     let active: Page | null = null;
-    const restored = new Set<Page>();
     for (const [index, saved] of urls.entries()) {
       try {
         const target = servedTarget && isFileUrl(saved) ? await servedTarget(saved) : { url: saved };
@@ -971,12 +1047,10 @@ export class BrowserService {
           log('[Browser] Not restoring a page whose saved address is not http, https or about:blank');
           continue;
         }
-        await this.ensureContext(scopeId);
-        // Only the blank tab a launch adopted for this scope is reused; a page the chat already has open is
+        // Only the blank tab this call's launch adopted for the scope is reused; a page the chat already has open is
         // never navigated away.
-        const current = this.scopes.get(scopeId)?.currentPage ?? null;
-        const blank = current !== null && !restored.has(current) && this.pages.get(current)?.lastUrl === 'about:blank';
-        if (!blank) await this.openTabForScope(scopeId, url);
+        const launched = await this.ensureContext(scopeId);
+        if (!launched) await this.openTabForScope(scopeId, url);
         else if (url !== 'about:blank') await this.openForScope(scopeId, url);
       } catch (err) {
         // A page whose load failed keeps its tab, showing Chromium's error page when there is one, so it still counts as restored.
@@ -986,9 +1060,7 @@ export class BrowserService {
         }
         log(`[Browser] A restored page did not load: ${err.message}`);
       }
-      const page = this.scopes.get(scopeId)?.currentPage ?? null;
-      if (page) restored.add(page);
-      if (index === activeIndex) active = page;
+      if (index === activeIndex) active = this.scopes.get(scopeId)?.currentPage ?? null;
     }
     if (!active || !this.pages.has(active)) return;
     this.setScopeCurrentPage(scopeId, active);
@@ -1078,10 +1150,12 @@ export class BrowserService {
     return url === 'about:blank' ? undefined : this.navigateEntry(entry, url, signal);
   }
 
-  // Called once per persisted browser editor tab when the window reloads. Only the first restored panel
-  // relaunches the session; extras are disposed, since the fresh Chromium context cannot be reconnected
-  // to the previously-open pages.
-  async restorePanel(panel: PanelHost, url: string): Promise<void> {
+  /**
+   * Called once per persisted browser editor tab a VS Code window reload revives, with the token of the chat its state names
+   * and, for a served page, the file: address it was saved at. The page reopens in that chat as {@link restoreChatPages}
+   * reopens a chat's pages, once the chat's webview readied with the token, however late; until then it waits, with no tab.
+   */
+  async restorePanel(panel: PanelHost, url: string, owner: string | undefined, file?: string): Promise<void> {
     // Always disposed, never adopted: a panel persisted by an older extension version carries that
     // version's WebviewPanelOptions (notably retainContextWhenHidden), which is fixed at creation time
     // and cannot be reassigned. Recreating costs one flash on window reload and buys exactly one
@@ -1096,16 +1170,28 @@ export class BrowserService {
       log(`[Browser] Not restoring a browser tab whose saved address is not http, https or about:blank`);
       return;
     }
-    if (this.context || this.restoreClaimed) return;
-    this.restoreClaimed = true;
-    this.currentUrl = url;
-    try {
-      // The primary scope owns the restored tab (main agent + human share it).
-      await this.openForScope(BrowserService.PRIMARY_SCOPE_ID, url);
-    } catch (err) {
-      // A page whose load failed is still restored, as in restoreChatPages.
-      if (err instanceof NavigationFailedError) log(`[Browser] A restored page did not load: ${err.message}`);
-      else log(`[Browser] Failed to restore browser session — ${err instanceof Error ? err.message : String(err)}`);
+    if (owner === undefined) {
+      log('[Browser] Not restoring a browser tab whose saved state names no chat');
+      return;
+    }
+    this.pendingRestores.push({ url: file !== undefined && isFileUrl(file) ? file : url, owner });
+    await this.settleRestores();
+  }
+
+  // Each waiting page whose chat readied reopens in it, a served page at a fresh address of its chat's served files.
+  private async settleRestores(): Promise<void> {
+    const owners = this.chatOwners;
+    const claimed = new Map<PanelHost, string[]>();
+    const waiting: Array<{ readonly url: string; readonly owner: string }> = [];
+    for (const restore of this.pendingRestores) {
+      const chat = owners?.readiedChat(restore.owner);
+      if (chat) claimed.set(chat, [...(claimed.get(chat) ?? []), restore.url]);
+      else waiting.push(restore);
+    }
+    this.pendingRestores = waiting;
+    for (const [chat, urls] of claimed) {
+      const served = this.servedPages.get(chat);
+      await this.restoreChatPages(chat, urls, urls.length - 1, served ? (url) => served.restoreTarget(url) : undefined);
     }
   }
 
@@ -1126,7 +1212,7 @@ export class BrowserService {
       const reopen = this.chatPages();
       if (this.context) await this.teardown(true);
       // a profile prepared for a launch that failed is not prepared again
-      else if (this.userDataDir) await writeClientCertificateRules(this.userDataDir, this.clientCertificateRules);
+      else if (this.userDataDir) await writeLaunchPreferences(this.userDataDir, this.clientCertificateRules);
       return reopen;
     });
     this.openChain = run.then(() => {}, () => {});
@@ -1140,7 +1226,7 @@ export class BrowserService {
   private chatPages(): Array<{ readonly chat: PanelHost; readonly urls: string[]; active: number | undefined }> {
     const byChat = new Map<PanelHost, { readonly chat: PanelHost; readonly urls: string[]; active: number | undefined }>();
     for (const entry of this.pages.values()) {
-      if (!entry.chat || entry.closing) continue;
+      if (entry.closing) continue;
       let pages = byChat.get(entry.chat);
       if (!pages) {
         pages = { chat: entry.chat, urls: [], active: undefined };
@@ -1154,26 +1240,34 @@ export class BrowserService {
     return [...byChat.values()];
   }
 
-  /** Pick on the page the human is watching ({@link BrowserService.watchedEntry}). */
-  async pickElement(chat?: PanelHost): Promise<ElementAttachment> {
+  /** Pick on the page the human is watching ({@link BrowserService.watchedEntry}), shown first: in VS Code every chat's
+   *  pages share one editor column, so that page may be a background tab. */
+  async pickElement(chat: PanelHost): Promise<ElementAttachment> {
     const active = this.watchedEntry(chat);
     if (!active) {
       throw new Error('Browser is not connected — element picking requires an active page');
     }
-    return active.picker.startPicking();
+    active.panel.reveal();
+    this.setActivePage(active.page);
+    this.armedPick = active;
+    try {
+      return await active.picker.startPicking();
+    } finally {
+      if (this.armedPick === active) this.armedPick = null;
+    }
   }
 
-  /** The page the human is watching. With a chat browser pane and a requesting chat, only that chat's own
-   *  page qualifies: the watched page when it is the chat's, else the chat's current tab. */
-  private watchedEntry(chat: PanelHost | undefined): PageEntry | null {
+  /** The page the human is watching in `chat`, whose own page alone qualifies: the watched page when it is the chat's, else
+   *  the chat's current tab. */
+  private watchedEntry(chat: PanelHost): PageEntry | null {
     const active = this.getActiveEntry();
-    if (!chat || !this.platform.window.chatBrowserPane || active?.chat === chat) return active;
+    if (active?.chat === chat) return active;
     const current = this.scopes.get(this.humanScopeId(chat))?.currentPage;
     return current ? this.pages.get(current) ?? null : null;
   }
 
   async cancelPicking(): Promise<void> {
-    await this.getActiveEntry()?.picker.stopPicking();
+    await this.armedPick?.picker.stopPicking();
   }
 
   private async ensureUserDataDir(): Promise<void> {
@@ -1181,7 +1275,7 @@ export class BrowserService {
     const dir = this.profileDir ?? localProfileDir();
     await fsp.mkdir(dir, { recursive: true });
     // before every launch, the first of an app session included, so a rule another session wrote never applies
-    await writeClientCertificateRules(dir, this.clientCertificateRules);
+    await writeLaunchPreferences(dir, this.clientCertificateRules);
     this.userDataDir = dir;
     const iconDir = join(dir, 'tab-icons');
     await fsp.mkdir(iconDir, { recursive: true });
@@ -1225,9 +1319,6 @@ export class BrowserService {
       this.userAgentCheck = readCleanUserAgent(context);
       // Chrome now holds the profile, so no other process's tab reads a copy left in it
       await removeUploadCopies([uploadCopiesRoot(this.userDataDir!)]);
-      // Capture the launching scope for popup owner-attribution fallback. Set BEFORE wiring
-      // context.on('page') so a spontaneous popup can resolve it.
-      this.launchOwnerScopeId = launchScopeId;
 
       // Context-level observers: the cursor, title and console bindings and their init scripts install
       // once for every current and future page/frame — no per-page Runtime.addBinding /
@@ -1253,11 +1344,10 @@ export class BrowserService {
       if (!entry) throw new Error('Failed to initialise the first browser page');
       // The launching agent can settle while Chromium is still starting. The context is up and must keep
       // exactly one live tab (closing the last one tears the session down), so hand the adopted tab to
-      // the human's primary scope rather than leaving it owned by a scope that no longer exists.
+      // its chat's human scope rather than leaving it owned by a scope that no longer exists.
       const owner = this.setScopeCurrentPage(launchScopeId, initial) ? launchScopeId : this.humanScopeId(entry.chat);
       if (owner !== launchScopeId) this.setScopeCurrentPage(owner, initial);
       entry.ownerScopeId = owner;
-      this.launchOwnerScopeId = owner;
       this.setActivePage(initial);
 
       // NOTE: no navigation here — the caller (openForScope) navigates the adopted tab after this
@@ -1269,9 +1359,8 @@ export class BrowserService {
       await this.releaseContext();
       this.closing = false;
       this.state = 'disconnected';
-      this.launchOwnerScopeId = null;
       this.userAgentCheck = null;
-      // currentUrl is intentionally preserved: the caller (openForScope / restorePanel) decides
+      // currentUrl is intentionally preserved: the caller (openForScope) decides
       // whether to clear it, and a kept-alive recovery panel needs it so Reload can relaunch.
       throw err;
     }
@@ -1320,24 +1409,17 @@ export class BrowserService {
   /**
    * Resolve the owner for a page registered WITHOUT an explicit scope (a spontaneous popup via
    * context.on('page') / page.on('popup')): the popup belongs to the chat whose page spawned it, and to the
-   * opener's scope while that scope lives. Undefined when, with chat-owned pages, there is no chat to show the page
-   * in (opener unknown, or its chat closed), so the caller closes the page instead of re-attributing it.
+   * opener's scope while that scope lives. Undefined when there is no chat to show the page in (opener unknown, or its
+   * chat closed), so the caller closes the page instead of re-attributing it.
    */
   private async resolveOwner(page: Page, openerHint: PageEntry | undefined): Promise<PageOwner | undefined> {
     const opener = openerHint ?? await this.openerEntry(page);
-    const pane = this.platform.window.chatBrowserPane;
-    if (opener) {
-      // Inherit only a LIVE scope. A tab kept open for inspection after its agent failed can still
-      // spawn popups; attributing those to the dead id would create a tab nothing can list, drive, or
-      // close, so they fall through to the human instead.
-      if (this.scopes.has(opener.ownerScopeId)) return { scopeId: opener.ownerScopeId, chat: opener.chat };
-      if (pane) return opener.chat && !this.releasedChats.has(opener.chat) ? { scopeId: this.humanScopeId(opener.chat), chat: opener.chat } : undefined;
-    }
-    if (pane) return undefined;
-    const launchOwner = this.launchOwnerScopeId;
-    const launchScope = launchOwner === null ? undefined : this.scopes.get(launchOwner);
-    if (launchOwner !== null && launchScope) return { scopeId: launchOwner, chat: launchScope.chat };
-    return { scopeId: BrowserService.PRIMARY_SCOPE_ID, chat: undefined };
+    if (!opener) return undefined;
+    // Inherit only a LIVE scope. A tab kept open for inspection after its agent failed can still
+    // spawn popups; attributing those to the dead id would create a tab nothing can list, drive, or
+    // close, so they fall through to the human instead.
+    if (this.scopes.has(opener.ownerScopeId)) return { scopeId: opener.ownerScopeId, chat: opener.chat };
+    return this.releasedChats.has(opener.chat) ? undefined : { scopeId: this.humanScopeId(opener.chat), chat: opener.chat };
   }
 
   private async openerEntry(page: Page): Promise<PageEntry | undefined> {
@@ -1360,23 +1442,34 @@ export class BrowserService {
       session = await context.newCDPSession(page);
     } catch (err) {
       log(`[Browser] newCDPSession failed — ${err instanceof Error ? err.message : String(err)}`);
+      // A page with no session of its own has no guard, so it is never left open.
+      await page.close().catch((closeErr) => log(`[Browser] Closing an unguarded page failed — ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`));
       return null;
     }
 
     const explicit = ownerScopeId ?? this.explicitOwners.get(page);
-    const owner: PageOwner | undefined = explicit !== undefined
-      ? { scopeId: explicit, chat: this.scopes.get(explicit)?.chat }
-      : await this.resolveOwner(page, openerHint);
+    // The guard reads the page's chat at each request: until the owner resolves the page holds none and reaches no grant host.
+    let chat = explicit !== undefined ? this.scopes.get(explicit)?.chat : undefined;
+    const controller = new PageController(page, session);
+    // Started before anything else awaits, and awaited before the tab is presented, so every agent navigation and typed
+    // address of the page is guarded. A served grant's host is reached only by a page whose own chat holds that grant.
+    const guardInstall = installPageNetworkGuard(session, controller, (origin) => chat !== undefined && this.servedPages.get(chat)?.ownsOrigin(origin) === true)
+      .catch((err: unknown) => {
+        log(`[Browser] Navigation guard did not install — ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      });
+    const owner: PageOwner | undefined = explicit !== undefined ? { scopeId: explicit, chat } : await this.resolveOwner(page, openerHint);
+    chat = owner?.chat;
 
     // Headless Chrome reports HeadlessChrome in its user agent (system Chrome 155 under --headless=new included). The
     // rewrite is applied before the tab is presented, so a typed address's first request carries it.
-    const controller = new PageController(page, session);
     const cleanUserAgent = await this.userAgentCheck;
     if (cleanUserAgent) {
       await controller.setUserAgentOverride(cleanUserAgent).catch((err) =>
         log(`[Browser] UA override failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     }
+    const guard = await guardInstall;
 
     // Every await above can straddle a teardown (teardownContext clears `pages` and disposes every
     // panel). Committing now would re-populate the map with an entry nobody will ever dispose and open a
@@ -1386,8 +1479,14 @@ export class BrowserService {
       await session.detach().catch(() => {});
       return null;
     }
-    // With chat-owned pages (chatBrowserPane) a page shows only among its chat's, so a page with no open chat is never shown.
-    if (!owner || (this.platform.window.chatBrowserPane && (!owner.chat || this.releasedChats.has(owner.chat)))) {
+    // A page whose redirects are not checked is never shown.
+    if (!guard) {
+      await session.detach().catch(() => {});
+      await page.close().catch((err) => log(`[Browser] Closing an unguarded page failed — ${err instanceof Error ? err.message : String(err)}`));
+      return null;
+    }
+    // A page belongs to its chat and closes with it, so a page with no open chat is never shown.
+    if (!owner || !chat || this.releasedChats.has(chat)) {
       log('[Browser] Closing a page that no open chat owns');
       await session.detach().catch(() => {});
       await page.close().catch((err) => log(`[Browser] Closing an unowned page failed — ${err instanceof Error ? err.message : String(err)}`));
@@ -1400,6 +1499,7 @@ export class BrowserService {
       page,
       session,
       controller,
+      guard,
       picker,
       panel: new BrowserPanel(this.platform.window),
       lastUrl: page.url() || null,
@@ -1422,7 +1522,7 @@ export class BrowserService {
       viewport: { ...this.launchViewport },
       faviconToken: 0,
       ownerScopeId: owner.scopeId,
-      chat: owner.chat,
+      chat,
       navigation: { loading: false, canGoBack: false, canGoForward: false },
       documentStatus: undefined,
       closing: false,
@@ -1501,7 +1601,7 @@ export class BrowserService {
       }
     });
 
-    page.on('download', (download) => this.downloadManager.handleDownload(download));
+    page.on('download', (download) => this.downloadManager.handleDownload(download, entry.chat));
 
     // Bind this page's own editor tab (toolbar/input/screencast) and show it. presentPanel adopts a
     // restored panel when one is pending, otherwise opens a new editor tab in the browser column.
@@ -1527,6 +1627,14 @@ export class BrowserService {
     const entry = this.pages.get(page);
     if (!entry) return;
     if (entry.lastUrl) this.currentUrl = entry.lastUrl;
+  }
+
+  // A host with chatBrowserPane restores pages from its own record, so only a VS Code page keeps this state.
+  private savedPageState(entry: PageEntry, url: string): SavedPageState | undefined {
+    if (this.platform.window.chatBrowserPane) return undefined;
+    const owner = this.chatOwners?.tokenOf(entry.chat);
+    const file = this.servedPages.get(entry.chat)?.toFile(url);
+    return { ...(owner !== undefined ? { owner } : {}), ...(file !== undefined && isFileUrl(file) ? { file } : {}) };
   }
 
   private handlePageClosed(page: Page): void {
@@ -1620,7 +1728,8 @@ export class BrowserService {
     // A main-frame navigation invalidates the old title and favicon; clear the title so the URL shows
     // until the title binding reports the new one, and refetch the favicon.
     entry.lastTitle = null;
-    entry.panel.updateUrl(shownUrl(entry) ?? '');
+    const shown = shownUrl(entry) ?? '';
+    entry.panel.updateUrl(shown, this.savedPageState(entry, shown));
     this.applyTabIdentity(entry);
     // a remote authority's icons go through its context's proxy, as its pages do; only a local context fetches from Node
     const fetchIcon = this.network ? fetchIconThroughContext(() => this.context?.request) : fetchIconPinned();
@@ -1845,7 +1954,8 @@ export class BrowserService {
       const address = typedAddress(typed);
       if (!address || !isNavigableUrl(address.url)) {
         log(address ? `[Browser] Refused address-bar navigation to a non-web address: ${navigationOrigin(address.url)}` : '[Browser] Refused address-bar text that is not an address');
-        panel.updateUrl(shownUrl(entry) ?? this.currentUrl ?? '');
+        const shown = shownUrl(entry) ?? this.currentUrl ?? '';
+        panel.updateUrl(shown, this.savedPageState(entry, shown));
         return;
       }
       const navUrl = address.url;
@@ -1892,7 +2002,7 @@ export class BrowserService {
             boundingBox: attachment.boundingBox,
             padding: attachment.computedStyles['padding'] ?? '',
           });
-          this.broadcastToChat?.(attachment, this.platform.window.chatBrowserPane ? entry.chat : undefined);
+          this.broadcastToChat?.(attachment, entry.chat);
         })
         .catch((err) => {
           panel.setPickingState(false);
@@ -1905,8 +2015,8 @@ export class BrowserService {
       );
     });
     panel.onTabNew(() => {
-      // `+` is a HUMAN action, so the tab belongs to the human's primary scope regardless of which
-      // panel it was clicked on. Opening it in the panel's own scope would re-point a running
+      // `+` is a HUMAN action, so the tab belongs to the human scope of the page's chat regardless of which
+      // scope owns the page it was clicked on. Opening it in the panel's own scope would re-point a running
       // subagent's current tab at a blank page the human, not the agent, asked for.
       this.openNewTab(this.humanScopeId(entry.chat)).catch(err =>
         log(`[Browser] New tab failed — ${err instanceof Error ? err.message : String(err)}`),
@@ -1957,7 +2067,8 @@ export class BrowserService {
    *  a panel can go through any number of hide→show→ready cycles. */
   private resyncPanel(entry: PageEntry): void {
     const panel = entry.panel;
-    panel.updateUrl(shownUrl(entry) ?? this.currentUrl ?? '');
+    const shown = shownUrl(entry) ?? this.currentUrl ?? '';
+    panel.updateUrl(shown, this.savedPageState(entry, shown));
     panel.updateViewport(entry.viewport.width, entry.viewport.height);
     panel.setPickingState(entry.picker.isPicking);
     panel.setCursor(entry.lastCursor ?? 'default');
@@ -2172,13 +2283,11 @@ export class BrowserService {
    *  context or the pages — {@link BrowserService.teardown} owns those. */
   private resetState(): void {
     // Collectors + upload staging are per-tab (disposed with their entries) — nothing service-level to
-    // clear. Reset the scope registry to the human scopes (primary plus every open chat's own), which live
-    // as long as their chat and are built into its agent's tools once; orphaned subagent scopes drop out.
-    this.scopes = new Map<string, ScopeState>([
-      [BrowserService.PRIMARY_SCOPE_ID, { currentPage: null, chat: undefined }],
-      ...[...this.chatScopeIds].map(([chat, id]): [string, ScopeState] => [id, { currentPage: null, chat }]),
-    ]);
-    this.launchOwnerScopeId = null;
+    // clear. Reset the scope registry to every open chat's human scope, which lives as long as its chat
+    // and is built into its agent's tools once; orphaned subagent scopes drop out.
+    this.scopes = new Map<string, ScopeState>(
+      [...this.chatScopeIds].map(([chat, id]): [string, ScopeState] => [id, { currentPage: null, chat }]),
+    );
     this.userAgentCheck = null;
     this.state = 'disconnected';
     // Must follow the state reset above (and teardown's pages.clear()): syncWatchdog reads both, and
@@ -2187,7 +2296,6 @@ export class BrowserService {
     this.screencast.syncWatchdog();
     this.currentUrl = null;
     this.browserColumn = undefined;
-    this.restoreClaimed = false;
     this.userDataDir = null;
     this.iconCacheDir = null;
     this.downloadManager.reset();
@@ -2199,6 +2307,8 @@ export class BrowserService {
    *  launch still in flight, whose context closes as it arrives, so nothing holds the profile once this settles. */
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.chatOwnersSubscription?.dispose();
+    this.pendingRestores = [];
     await this.teardown(true);
     await this.openChain;
   }

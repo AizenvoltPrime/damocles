@@ -6,7 +6,7 @@ import { NotConnectedError } from '../../workspace/workspaces';
 
 const connect = vi.hoisted(() => vi.fn());
 vi.mock('../connection', () => ({ connect }));
-vi.mock('../../workspace/remote-workspace', () => ({ createRemoteWorkspace: () => ({}), WATCH_READY_FEATURE: 'files.watchReady', OUTSIDE_LISTING_FEATURE: 'files.listOutside', RANGED_READS_FEATURE: 'files.readFileRange', carriesTransfers: () => true, carriesOutsideFiles: () => true }));
+vi.mock('../../workspace/remote-workspace', () => ({ createRemoteWorkspace: () => ({}), WATCH_READY_FEATURE: 'files.watchReady', OUTSIDE_LISTING_FEATURE: 'files.listOutside', RANGED_READS_FEATURE: 'files.readFileRange', carriesTransfers: () => true, carriesOutsideFiles: () => true, carriesWalks: () => true }));
 
 // A connection whose close fires its listeners once; closedAlready: it closed before anyone listened.
 function connection(closedAlready?: string) {
@@ -52,6 +52,7 @@ function authorities(transport: () => Promise<PassThrough> = async () => new Pas
       attached.push(connection);
     },
     notConnected: (key) => new NotConnectedError(`${key} is not connected.`),
+    searchUnsupported: () => 'Update the Damocles server on this host to search it.',
     log: () => undefined,
   });
   return { subject, changes, attached };

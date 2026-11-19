@@ -9,7 +9,8 @@ import { folderKey } from '../../core/workspace-folders/folder-key';
 import { confineEntry, confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type ConfineFailure, type Confined, type Project } from '../local-services/confine';
 import { isUncOrDevicePath } from '../../shared/project-location';
 import { isUnsafeWindowsName } from '../../shared/relative-path';
-import { readFileBytes, readOpenedFile, type FileBytes } from '../local-services/file-bytes';
+import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { OPEN_READ_NONBLOCKING, readFileBytes, readOpenedFile, type FileBytes } from '../../core/file-bytes';
 import type { ProjectFileLocation } from './search/types';
 import { namePrefixMatches } from './outside-listing';
 import { createdThroughLink, createTransferOps, type TransferOps } from './transfer-ops';
@@ -103,8 +104,6 @@ export interface WorkspaceFileSystem extends TransferOps {
   realpath(target: string): Promise<string | undefined>;
   // sessionFile on an existing file of this host's session store, by its canonical path
   read(filePath: string, limitBytes?: number): Promise<FileBytes>;
-  // undefined: missing
-  readText(filePath: string): Promise<string | undefined>;
   // resolves the written file's mtime; throws WriteRefusedError for a write Damocles refuses itself, a session file included
   writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer): Promise<number>;
   // the host's ~/.damocles/settings.json and nothing else: a link that leads anywhere but that file reads as outside
@@ -132,6 +131,15 @@ export interface WorkspaceFileSystem extends TransferOps {
   browse(folder: string): Promise<BrowseResult>;
   // ready: FileWatcher.ready's contract (src/platform/file-watcher.ts)
   watch(base: string, glob: string, listener: (event: WatchEvent) => void): Disposable & { readonly ready: Promise<void> };
+}
+
+// A whole file's text read as UTF-8, or why it has none
+export type TextRead = { readonly kind: 'text'; readonly text: string } | Exclude<FileBytes, { readonly kind: 'bytes' }>;
+
+// This computer's file system; no wire carries its whole-file text read
+export interface LocalFileSystem extends WorkspaceFileSystem {
+  // through readFileBytes, up to the editor's hard limit
+  readText(filePath: string): Promise<TextRead>;
 }
 
 export interface FileSystemDeps {
@@ -401,7 +409,7 @@ async function readOutside(filePath: string, limitBytes?: number): Promise<FileB
   if (!checked.isFile()) return { kind: 'notAFile', folder: checked.isDirectory() };
   let handle: fs.FileHandle;
   try {
-    handle = await fs.open(filePath, 'r');
+    handle = await fs.open(filePath, OPEN_READ_NONBLOCKING);
   } catch (err) {
     return isGone(err) ? { kind: 'missing' } : unreadableOf(err);
   }
@@ -625,7 +633,7 @@ async function isAnotherEntry(target: string, entry: string): Promise<boolean> {
   return found.dev !== own.dev || found.ino !== own.ino;
 }
 
-export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
+export function createFileSystem(deps: FileSystemDeps): LocalFileSystem {
   const remove = deps.remove ?? ((target: string) => fs.rm(target, { recursive: true }));
   const sessionsRoot = sessionsRootIn(piAgentDirIn(deps.damoclesHome));
   return {
@@ -655,12 +663,8 @@ export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
       return read.kind === 'bytes' ? withSessionFlag(read, filePath, sessionsRoot) : read;
     },
     async readText(filePath) {
-      try {
-        return await fs.readFile(filePath, 'utf8');
-      } catch (err) {
-        if (isMissing(err)) return undefined;
-        throw err;
-      }
+      const read = await readFileBytes(filePath, EDITOR_HARD_MAX_DOCUMENT_BYTES);
+      return read.kind === 'bytes' ? { kind: 'text', text: read.bytes.toString('utf8') } : read;
     },
     writeInPlace: (project, location, bytes) => writeInPlace(project, location, bytes, deps.log, sessionsRoot),
     readHostSettings: () => readHostSettings(deps.damoclesHome),

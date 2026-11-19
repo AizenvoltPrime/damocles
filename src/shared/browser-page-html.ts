@@ -229,7 +229,9 @@ export const BROWSER_WEBVIEW_SCRIPT: string = `
           if (notSecure.hidden) urlInput.removeAttribute('aria-describedby');
           else urlInput.setAttribute('aria-describedby', 'not-secure');
         }
-        vscode.setState({ url: d.url });
+        // owner: the token of the page's chat, which a VS Code window reload restores the page into (restoredBrowserOwner);
+        // file: a served page's file: address, which it reopens from (restoredBrowserFile).
+        vscode.setState({ url: d.url, owner: d.owner, file: d.file });
       } else if (d.type === 'pickingStateChanged') {
         isPicking = d.picking;
         if (btnPick) btnPick.classList.toggle('active', d.picking);

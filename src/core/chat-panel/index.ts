@@ -18,7 +18,7 @@ import { WebviewPrompts } from "./webview-prompts";
 import { MemoryService } from "../memory";
 import { folderTrust, ProjectRelocations } from "../project-relocation";
 import { currentRelocations } from "../project-relocation/current";
-import { BrowserService } from "../browser";
+import { BrowserService, PickCancelledError } from "../browser";
 import type { CompassService } from "../compass";
 import { CompassRegistry } from "../compass/compass-registry";
 import { VoiceService } from "../voice/service";
@@ -45,7 +45,7 @@ import type { FolderTarget } from "../workspace-folders/folder-registry";
 import type { CompassViewsHandle, CompassViewsOptions } from "./types";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
-import { headlineOf, l } from "../l10n";
+import { errorTextOf, headlineOf, l } from "../l10n";
 import type { LocalizedText } from "../../shared/localized-text";
 import { log } from "../logger";
 import { perfSpan } from "../perf";
@@ -373,8 +373,7 @@ export class ChatPanelProvider {
     this.compassRegistry.onDidChangeServices(() => this.refreshCompassViews());
     this.browserService.onElementPickedFromToolbar((element, chat) => {
       const message = { type: 'browserElementPicked', element } as const;
-      const delivered = chat === undefined ? this.panelManager.postToActivePanel(message) : this.postToChat(chat, message);
-      if (!delivered) {
+      if (!this.postToChat(chat, message)) {
         platform.notifications
           .warn(l("Damocles: No chat panel is open. Open one to receive picked elements."))
           .catch((err: unknown) => log("[ChatPanelProvider] Could not show the no-panel notice:", err));
@@ -501,12 +500,14 @@ export class ChatPanelProvider {
       getInitialMessages: (folder) => this.compassStatusMessages(folder.key),
       onActivePanelChanged: () => this.refreshCompassViews(),
       sendFolderState: async (instance) => {
+        // stops the @ list of the folder the panel left before anything here can wait on the new one
+        this.workspaceManager.listingSignal(instance, instance.folder);
         await this.workspaceManager.sendCustomSlashCommands(instance.host, instance.folder);
         this.settingsManager.sendToolStatus(instance.session, instance.host);
         this.settingsManager.sendMcpConfig(instance.host, instance.folder.key);
         for (const msg of this.compassStatusMessages(instance.folder.key)) this.panelManager.postMessage(instance.host, msg);
         // The webview keeps the @-mention file list it already loaded until a new list replaces it.
-        await this.workspaceManager.sendWorkspaceFiles(instance.host, instance.folder);
+        await this.workspaceManager.sendWorkspaceFiles(instance);
       },
       releaseFolder: (key) => this.releaseFolder(key),
       inheritSettingsFromPanel: (sourcePanelId, newPanelId) => {
@@ -518,6 +519,7 @@ export class ChatPanelProvider {
       storedSessionsOf: (projectKey) => this.storageManager.sessionsOf(projectKey),
       completeStoredSessionsOf: (projectKey) => this.storageManager.completeSessionsOf(projectKey),
     });
+    this.browserService.setChatOwners(this.panelManager.browserChatOwners());
     // A chat created, deleted or handed off changes how many chats share a worktree, and which deleted records any chat uses.
     if (worktreeHost) this.subscriptions.push(this.storageManager.onDidChangeSessions(() => void this.panelManager.worktrees.storedSessionsChanged()));
     // A rename or an AI title of a main chat changes its design chat's header.
@@ -590,7 +592,7 @@ export class ChatPanelProvider {
       this.settingsManager.handleMcpFoldersChanged().catch((err) => log("[ChatPanelProvider] MCP reload after a working folder change failed:", err));
     }));
 
-    // Granting workspace trust unblocks workspace `.mcp.json` servers (M3). The re-read has to come
+    // A trust change loads or drops workspace `.mcp.json` servers (M3). The re-read has to come
     // first: trust decides what `loadConfig` samples, not only what the trust gate withholds
     // afterwards. It picks the fold that ranks repo-authored sources, runs the gitignore check that
     // an untrusted workspace skips, and records which sources actually outrank `~/.damocles/mcp.json`.
@@ -599,10 +601,10 @@ export class ChatPanelProvider {
     // nothing, so the broadcast can carry the pre-grant snapshot until that load's own change
     // notification lands.
     this.subscriptions.push(
-      this.platform.trust.onDidGrantTrust(() => {
+      this.platform.trust.onDidChangeTrust(() => {
         this.settingsManager.loadMcpConfig()
           .then(() => this.refeedMcpPanels())
-          .catch((err: unknown) => log("[ChatPanelProvider] MCP reload after a trust grant failed:", err));
+          .catch((err: unknown) => log("[ChatPanelProvider] MCP reload after a trust change failed:", err));
       }),
     );
 
@@ -1061,8 +1063,38 @@ export class ChatPanelProvider {
     });
   }
 
-  async restoreBrowserPanel(host: PanelHost, url: string): Promise<void> {
-    await this.browserService.restorePanel(host, url);
+  /** A browser page a window reload revived, with the token of the chat its saved state names and a served page's file: address. */
+  async restoreBrowserPanel(host: PanelHost, url: string, owner: string | undefined, file: string | undefined): Promise<void> {
+    await this.browserService.restorePanel(host, url, owner, file);
+  }
+
+  /** The element picker of the page the human watches in the active chat, whose pick goes to that chat. */
+  async pickBrowserElementForActiveChat(): Promise<void> {
+    const warn = (text: LocalizedText): void => {
+      this.platform.notifications.warn(text).catch((err: unknown) => log("[ChatPanelProvider] Could not show the pick notice:", err));
+    };
+    if (!this.browserService.isConnected()) {
+      warn(l("Damocles: No browser session active. Open a browser first."));
+      return;
+    }
+    const chat = this.panelManager.activePanelHost();
+    if (!chat) {
+      warn(l("Damocles: No chat panel is open. Open one to receive picked elements."));
+      return;
+    }
+    if (!this.browserService.holdsPages(chat)) {
+      warn(l("Damocles: The active chat has no browser page."));
+      return;
+    }
+    try {
+      const element = await this.browserService.pickElement(chat);
+      if (!this.postToChat(chat, { type: "browserElementPicked", element })) log("[ChatPanelProvider] A picked element's chat closed during the pick");
+    } catch (err) {
+      if (err instanceof PickCancelledError) return;
+      this.platform.notifications
+        .error(l("Damocles: Element pick failed: {0}", errorTextOf(err)))
+        .catch((notifyErr: unknown) => log("[ChatPanelProvider] Could not show the pick failure:", notifyErr));
+    }
   }
 
   newSession(): Promise<void> {

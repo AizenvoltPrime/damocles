@@ -94,7 +94,7 @@ export async function saveSettingsFileText(platform: Platform, scope: SettingsFi
 
 /**
  * Tells each panel that asked which of the three `.damocles` settings files apply (the settings modal's Edit settings.json
- * menu), again on every trust grant or project change until the panel is released.
+ * menu), again on every trust or project change until the panel is released.
  */
 export class SettingsFileAvailabilityFeed implements Disposable {
   private readonly platform: Platform;
@@ -106,7 +106,7 @@ export class SettingsFileAvailabilityFeed implements Disposable {
     this.platform = platform;
     this.post = post;
     const republish = (): void => this.republish();
-    this.subscriptions = [platform.trust.onDidGrantTrust(republish), platform.workspaceFolders.onDidChange(republish)];
+    this.subscriptions = [platform.trust.onDidChangeTrust(republish), platform.workspaceFolders.onDidChange(republish)];
   }
 
   /** Posts which files apply now; true on the panel's first request, so the caller ties release to the panel's lifetime. */

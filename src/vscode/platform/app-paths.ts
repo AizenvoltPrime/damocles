@@ -9,6 +9,7 @@ const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   memoryIntegrity: 'memory-integrity-worker.js',
   sessionMetaIndex: 'session-meta-index-worker.js',
   voiceExtract: 'voice-extract-worker.js',
+  walkChild: 'walk-child.js',
 };
 
 // Worker bundle names must match the esbuild.config.ts outfiles under dist/.

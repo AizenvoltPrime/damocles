@@ -5,7 +5,8 @@ import * as path from 'node:path';
 import { SessionManager, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { teamMembersDir } from '../agent-records';
-import { ChatReview, type ChatChangeTotals, type ChatReviewDeps, type ReviewSession } from '../chat-review';
+import { ChatReview, readDiskText, type ChatChangeTotals, type ChatReviewDeps, type ReviewSession } from '../chat-review';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY } from '../session-store/constants';
 import { filePatch } from '../tools/file-patch';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../__mocks__/spawn-budget';
@@ -379,3 +380,49 @@ describe('checkpoint baselines', () => {
     await chat.dispose();
   });
 });
+
+describe('the file on disk now', () => {
+  /** stat answers for `file` with what it found, after which `change` runs once: a racer changing the file before its read. */
+  function changeAfterStat(file: string, change: () => void): void {
+    const stat = fs.promises.stat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'stat').mockImplementationOnce((async (target: fs.PathLike) => {
+      const stats = await stat(target);
+      if (String(target) === file) change();
+      return stats;
+    }) as typeof fs.promises.stat);
+  }
+
+  it('reads a file grown past the review\'s bound after its stat as too large, never whole', async () => {
+    const file = path.join(tempFolder(), 'grown.txt');
+    fs.writeFileSync(file, 'small\n');
+    changeAfterStat(file, () => fs.truncateSync(file, EDITOR_CONFIRM_DOCUMENT_BYTES + 1));
+
+    expect(await readDiskText(file)).toEqual({ kind: 'tooLarge' });
+  });
+
+  it.runIf(process.platform !== 'win32')('reads a FIFO swapped in after its stat as no file, never waiting for a writer', async () => {
+    const file = path.join(tempFolder(), 'swapped');
+    fs.writeFileSync(file, 'regular\n');
+    changeAfterStat(file, () => {
+      fs.rmSync(file);
+      execFileSync('mkfifo', [file]);
+    });
+
+    try {
+      const read = await Promise.race([readDiskText(file), new Promise((resolve) => setTimeout(() => resolve('still waiting after 2 s'), 2000))]);
+      expect(read).toEqual({ kind: 'absent' });
+    } finally {
+      releaseFifo(file);
+    }
+  });
+});
+
+/** Lets a read open that waits on the FIFO at `fifo` go on, so a failing run leaves no thread blocked. */
+function releaseFifo(fifo: string): void {
+  try {
+    fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+  } catch (err) {
+    // ENXIO: nothing waits on it
+    if ((err as NodeJS.ErrnoException).code !== 'ENXIO') throw err;
+  }
+}

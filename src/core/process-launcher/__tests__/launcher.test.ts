@@ -294,6 +294,25 @@ async function heldShorts(launcher: Launcher, startLong: () => () => Promise<unk
   return held;
 }
 
+describe('a launched process\'s paused output', { timeout: SPAWN_TEST_TIMEOUT_MS * 2 }, () => {
+  it('stops near the unacknowledged bound while paused and runs to its end once resumed', async () => {
+    const total = 8 * MAX_UNACKED_BYTES;
+    const child = pool().launch(node(`const b = Buffer.alloc(${total}, 97); process.stdout.write(b);`));
+    child.pauseOutput();
+    const out = collect(child);
+    let closed = false;
+    void child.closed.then(() => (closed = true));
+    const received = (): number => out.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    await vi.waitFor(() => expect(received()).toBeGreaterThan(MAX_UNACKED_BYTES), { timeout: SPAWN_TEST_TIMEOUT_MS });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(received()).toBeLessThan(MAX_UNACKED_BYTES + 1024 * 1024);
+    expect(closed).toBe(false);
+    child.resumeOutput();
+    await child.closed;
+    expect(received()).toBe(total);
+  });
+});
+
 describe('a launcher worker', { timeout: SPAWN_TEST_TIMEOUT_MS }, () => {
   it('pauses a process\'s output past the unacknowledged bound until the client acknowledges it', async () => {
     const total = 8 * MAX_UNACKED_BYTES;

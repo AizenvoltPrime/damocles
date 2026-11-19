@@ -40,7 +40,7 @@ function open(): ProjectRelocations {
     metaIndex: { move: async () => undefined, meta: async () => null },
     memory: { relocateWorkspace: async () => ({}) },
     hostState: { mcp: { relocateFolders: async () => undefined } },
-    trust: { isTrusted: () => true, onDidGrantTrust: () => ({ dispose: () => undefined }) },
+    trust: { isTrusted: () => true, onDidChangeTrust: () => ({ dispose: () => undefined }) },
     projectFolders: () => [],
     log: () => undefined,
     file: journalFile,

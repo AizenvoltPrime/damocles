@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { restoredBrowserUrl } from '../extension';
+import { restoredBrowserFile, restoredBrowserOwner, restoredBrowserUrl } from '../extension';
 
 describe('S8 — a restored URL that is not http/https is not navigated to', () => {
   it('rejects every non-http(s) scheme and falls back to about:blank', () => {
@@ -38,11 +38,29 @@ describe('S8 — a restored URL that is not http/https is not navigated to', () 
     }
   });
 
+  it('reads the chat token the page saved, and nothing that is not a well-formed token', () => {
+    const owner = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+    expect(restoredBrowserOwner({ url: 'https://example.test/', owner })).toBe(owner);
+    for (const state of [null, undefined, {}, { url: 'https://example.test/' }, { owner: '' }, { owner: 'not-a-token' }, { owner: `${owner} ` }, { owner: 42 }, { owner: {} }, 'nonsense', []]) {
+      expect(restoredBrowserOwner(state)).toBeUndefined();
+    }
+  });
+
+  it('reads the file: address a served page saved, and nothing that is not a file: address', () => {
+    const file = 'file:///home/u/proj/docs/a.html';
+    expect(restoredBrowserFile({ url: 'http://x.localhost:5000/docs/a.html', file })).toBe(file);
+    for (const state of [null, undefined, {}, { file: '' }, { file: 'https://example.test/' }, { file: 'javascript:alert(1)' }, { file: 'not a url' }, { file: 42 }, 'nonsense', []]) {
+      expect(restoredBrowserFile(state)).toBeUndefined();
+    }
+  });
+
   it('the deserializer routes the persisted state through the validator, not through `|| about:blank`', () => {
     const src = readFileSync(join(__dirname, '..', 'extension.ts'), 'utf8');
     const deserializer = src.slice(src.indexOf('damocles-browser-view'));
 
     expect(deserializer).toContain('restoredBrowserUrl');
+    expect(deserializer.slice(0, 600)).toContain('restoredBrowserOwner(state)');
+    expect(deserializer.slice(0, 600)).toContain('restoredBrowserFile(state)');
     // The pre-slice check was `(state as {url?: string})?.url || 'about:blank'` — a scheme-blind
     // truthiness test. It must not survive alongside the validator.
     expect(deserializer.slice(0, 600)).not.toMatch(/\?\.url\s*\|\|\s*['"]about:blank['"]/);

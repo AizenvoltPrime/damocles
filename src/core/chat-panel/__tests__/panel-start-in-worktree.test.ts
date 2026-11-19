@@ -117,6 +117,45 @@ describe('a chat worktree open as a project of its own beside a chat of its proj
   });
 });
 
+// Desktop main tracks a restored chat under its project from the start (savedChatProjectKey); core must agree, or main reads
+// the chat as moved to the default project and forgets it as its project's last chat.
+describe('a chat restored in its working folder before any chat holds that folder', () => {
+  async function withDefaultElsewhere(): Promise<Awaited<ReturnType<typeof setup>>> {
+    const setUp = await setup();
+    const other = path.join(path.dirname(setUp.project), 'other');
+    fs.mkdirSync(other);
+    setUp.h.setFolders([folderEntry(other), folderEntry(setUp.project)]);
+    await vi.waitFor(() => expect(setUp.h.registry.resolve(folderKey(other))).toBeDefined());
+    expect(await setUp.h.registry.setDefault(folderKey(other))).toBe(true);
+    return setUp;
+  }
+
+  it("starts in the worktree's project, never in the default project", async () => {
+    const { h, project, record } = await withDefaultElsewhere();
+    await h.manager.restorePanel(makeFakeHost(), folderKey(record.workingFolder));
+    const [panelId] = [...h.manager.getPanels().keys()];
+    expect(h.sessions.map((s) => s.cwd)).toEqual([project]);
+    expect(h.instance(panelId!).folder).toMatchObject({ key: folderKey(project) });
+    expect(h.instance(panelId!).folder.ownerKey).toBeUndefined();
+  });
+
+  it("starts in the worktree's project after the worktree was deleted", async () => {
+    const { h, project, registry, record } = await withDefaultElsewhere();
+    await registry.markDeleted(record.id);
+    await h.manager.restorePanel(makeFakeHost(), folderKey(record.workingFolder));
+    expect(h.sessions.map((s) => s.cwd)).toEqual([project]);
+  });
+
+  it('starts in the default project when the worktree\'s project is not open', async () => {
+    const { h, project, record } = await withDefaultElsewhere();
+    const other = path.join(path.dirname(project), 'other');
+    h.setFolders([folderEntry(other)]);
+    await vi.waitFor(() => expect(h.registry.resolve(folderKey(project))).toBeUndefined());
+    await h.manager.restorePanel(makeFakeHost(), folderKey(record.workingFolder));
+    expect(h.sessions.map((s) => s.cwd)).toEqual([other]);
+  });
+});
+
 describe('a chat that moves into its working folder (AD12 wrong-copy guard)', () => {
   it('drops the editor\'s project-folder file from its IDE context, and takes it again back in the project folder', async () => {
     const { h, project, record } = await setup();

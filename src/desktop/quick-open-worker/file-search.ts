@@ -1,5 +1,3 @@
-import * as path from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 import { compareScoredItems, parseQuickOpenQuery, prepareQuery, scoreItem, type FuzzyItem, type ItemScore } from '../../core/quick-open/fuzzy-match';
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { MAX_QUICK_OPEN_RESULTS } from '../preload/overlay-channels';
@@ -12,42 +10,29 @@ const EMPTY_OTHER_PROJECT_FILES = 4;
 // message is read between batches.
 export const SCORE_BATCH = 10_000;
 
-export interface FileListReader {
-  write(data: Uint8Array): void;
+export interface FileListBuilder {
+  add(files: readonly string[]): void;
   // the files in path order
   end(): string[];
 }
 
 /**
- * A project's file list from the ripgrep output main streams in, as '/' separated paths relative to root in path order, so
- * the list is the same whatever order ripgrep's parallel walk prints it in. progress runs for every file ripgrep prints.
+ * A project's file list from the batches main relays, '/'-separated paths relative to its root in path order, so the list is
+ * the same whatever order the walk sends them in. A path outside the root is dropped rather than trusted; progress runs for
+ * every batch.
  */
-export function fileListReader(root: string, progress: () => void): FileListReader {
-  const decoder = new StringDecoder('utf8');
+export function fileListBuilder(progress: () => void): FileListBuilder {
   const files: string[] = [];
-  let partial = '';
-  const line = (raw: string): void => {
-    const printed = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    if (printed === '') return;
-    progress();
-    const relative = path.relative(root, printed).split(path.sep).join('/');
-    // ripgrep prints paths under the root it was given; anything else is dropped rather than trusted.
-    if (isRelativeFilePath(relative)) files.push(relative);
-  };
   return {
-    write: (data) => {
-      const lines = (partial + decoder.write(data)).split('\n');
-      partial = lines.pop()!;
-      for (const each of lines) line(each);
+    add: (batch) => {
+      progress();
+      for (const file of batch) if (isRelativeFilePath(file)) files.push(file);
     },
-    end: () => {
-      line(partial);
-      return files.sort();
-    },
+    end: () => files.sort(),
   };
 }
 
-/** A project's file list: main runs ripgrep and streams its output in. */
+/** A project's file list: main runs its listing and relays the batches. */
 export type ListFiles = (project: WorkerProject, progress: () => void) => Promise<string[]>;
 
 function itemOf(relativePath: string): FuzzyItem {
@@ -97,11 +82,11 @@ export function createQuickOpenFileSearch(post: (reply: WorkerReply) => void, li
   const lists = new Map<string, Promise<string[]>>();
   const searches = new Map<number, Search>();
   // the listings main runs for this worker, by listing id
-  const listings = new Map<number, { readonly reader: FileListReader; readonly resolve: (files: string[]) => void; readonly reject: (err: Error) => void }>();
+  const listings = new Map<number, { readonly builder: FileListBuilder; readonly resolve: (files: string[]) => void; readonly reject: (err: Error) => void }>();
   let nextListing = 0;
   const listFromMain: ListFiles = (project, onProgress) => new Promise((resolve, reject) => {
     const listing = nextListing++;
-    listings.set(listing, { reader: fileListReader(project.fsPath, onProgress), resolve, reject });
+    listings.set(listing, { builder: fileListBuilder(onProgress), resolve, reject });
     post({ kind: 'list', listing, projectKey: project.key });
   });
   const list = listFiles ?? listFromMain;
@@ -195,15 +180,15 @@ export function createQuickOpenFileSearch(post: (reply: WorkerReply) => void, li
       searches.delete(request.search);
       return;
     }
-    if (request.kind === 'listOutput') {
-      listings.get(request.listing)?.reader.write(request.data);
+    if (request.kind === 'listFiles') {
+      listings.get(request.listing)?.builder.add(request.files);
       return;
     }
     if (request.kind === 'listEnd') {
       const listing = listings.get(request.listing);
       if (!listing) return;
       listings.delete(request.listing);
-      if (request.error === undefined) listing.resolve(listing.reader.end());
+      if (request.error === undefined) listing.resolve(listing.builder.end());
       else listing.reject(new Error(request.error));
       return;
     }

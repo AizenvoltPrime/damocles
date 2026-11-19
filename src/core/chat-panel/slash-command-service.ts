@@ -49,9 +49,8 @@ export class SlashCommandService {
     this.workspacePath = workspacePath;
     this.platform = platform;
     this.setupFileWatchers();
-    // Both caches bake the `untrusted` flag in at scan time, so granting trust has to re-scan for the
-    // badges to clear.
-    this.trustListener = platform.trust.onDidGrantTrust(() => {
+    // Both caches bake the `untrusted` flag in at scan time, so a trust change has to re-scan.
+    this.trustListener = platform.trust.onDidChangeTrust(() => {
       this.invalidateAll();
     });
     // Precedence decides which source claims a contested name, and the winner is already in the cache.

@@ -63,10 +63,17 @@ export interface CompactionAbortedNotice {
   timestamp: number;
 }
 
+/** One reason Anthropic gave for dropping thinking blocks, and how many of the notice's blocks it dropped. */
+export interface ThinkingDroppedReason {
+  text: LocalizedText;
+  count: number;
+}
+
 export interface ThinkingDroppedNotice {
   id: string;
   count: number;
-  reasons: string[];
+  // each distinct reason once, in the order Anthropic first gave it
+  reasons: ThinkingDroppedReason[];
   timestamp: number;
 }
 

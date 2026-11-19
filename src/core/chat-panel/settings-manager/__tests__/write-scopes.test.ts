@@ -11,7 +11,7 @@ import { SettingsManager } from '../index';
 import type { HandlerDependencies } from '../../message-router/types';
 import { errorTextOf } from '../../../l10n';
 import type { HandlerContext } from '../../message-router/types';
-import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../../shared/types/messages';
 import type { FolderTarget } from '../../../workspace-folders/folder-registry';
 
 const A = '/ws/a';
@@ -77,6 +77,17 @@ describe('D37 write scopes', () => {
     expect(platform.settings.inspect('damocles.maxBudgetUsd', folderA)).toStrictEqual({});
     await manager.handleSetTaskBudget(3, undefined);
     expect(platform.settings.inspect('damocles.taskBudget')).toStrictEqual({ userValue: 3 });
+  });
+
+  it('refuses a worktree chat\'s Workspace write unless both its working folder and its project are trusted', async () => {
+    const W = '/wt/a';
+    const worktreeFolder = { path: W, personalPath: A };
+    const { platform, manager } = setup();
+    const isTrusted = vi.spyOn(platform.trust, 'isTrusted').mockImplementation((folder) => folder !== W);
+    await expect(manager.handleSetBudgetLimit(5, worktreeFolder)).rejects.toThrow('This folder is not trusted, so its workspace settings cannot be saved.');
+    isTrusted.mockImplementation((folder) => folder !== A);
+    await expect(manager.handleSetBudgetLimit(5, worktreeFolder)).rejects.toThrow('This folder is not trusted, so its workspace settings cannot be saved.');
+    expect(platform.settings.inspect('damocles.maxBudgetUsd', worktreeFolder)).toStrictEqual({});
   });
 
   it('tells the settings view whether the Workspace section can be written', async () => {
@@ -221,6 +232,69 @@ describe('subagent, notice, source, memory and browser setters', () => {
     // The row shows the limit the engine runs with, not a stored value outside it.
     expect(await sent({ [A]: { local: { 'damocles.subagents.maxConcurrent': 32 } } })).toMatchObject({ subagentsMaxConcurrent: 16 });
     expect(await sent({ [A]: { local: { 'damocles.subagents.maxConcurrent': '8' } } })).toMatchObject({ subagentsMaxConcurrent: 4 });
+  });
+});
+
+describe('the folder upload caps', () => {
+  const USER_FILE = '/home/me/.damocles/settings.json';
+  const permissionHandler = { getPermissionMode: () => 'default', getDangerouslySkipPermissions: () => false };
+
+  function handlers() {
+    const { platform, posted } = setup();
+    const postMessage = (_host: unknown, message: ExtensionToWebviewMessage) => void posted.push(message);
+    const settingsManager = new SettingsManager({ postMessage, platform, folders: () => [] });
+    const registry = createSettingsHandlers({ postMessage, platform, settingsManager, getPanels: () => new Map() } as unknown as HandlerDependencies);
+    const chat = { host: {}, reply: {}, folder: targetA, panelId: 'p1', permissionHandler } as unknown as HandlerContext;
+    const run = (message: WebviewToExtensionMessage) => (registry[message.type] as (m: unknown, c: HandlerContext) => Promise<void>)(message, chat);
+    return { platform, posted, run };
+  }
+
+  it('saves each cap in user settings and reports it saved there, then sends the settings', async () => {
+    const { platform, posted, run } = handlers();
+    await run({ type: 'setBrowserUploadFolderMaxEntries', count: 20000 });
+    await run({ type: 'setBrowserUploadFolderMaxSize', mebibytes: 2048 });
+    expect(platform.settings.inspect('damocles.browser.uploadFolderMaxEntries')).toStrictEqual({ userValue: 20000 });
+    expect(platform.settings.inspect('damocles.browser.uploadFolderMaxSize')).toStrictEqual({ userValue: 2048 });
+    expect(posted.filter((m) => m.type === 'settingWriteResult')).toStrictEqual([
+      { type: 'settingWriteResult', key: 'damocles.browser.uploadFolderMaxEntries', ok: true, scope: 'user', file: USER_FILE },
+      { type: 'settingWriteResult', key: 'damocles.browser.uploadFolderMaxSize', ok: true, scope: 'user', file: USER_FILE },
+    ]);
+    expect(posted.filter((m) => m.type === 'settingsUpdate')).toHaveLength(2);
+  });
+
+  it('saves each cap in user settings even where a project file holds it, since both are user-only', async () => {
+    const { platform, manager } = setup({}, { 'damocles.browser.uploadFolderMaxEntries': 3, 'damocles.browser.uploadFolderMaxSize': 4 });
+    expect(await manager.handleSetBrowserUploadFolderMaxEntries(20000)).toStrictEqual({ key: 'damocles.browser.uploadFolderMaxEntries', home: 'user' });
+    expect(await manager.handleSetBrowserUploadFolderMaxSize(2048)).toStrictEqual({ key: 'damocles.browser.uploadFolderMaxSize', home: 'user' });
+    expect(platform.settings.inspect('damocles.browser.uploadFolderMaxEntries')).toMatchObject({ userValue: 20000, projectValue: 3 });
+    expect(platform.settings.inspect('damocles.browser.uploadFolderMaxSize')).toMatchObject({ userValue: 2048, projectValue: 4 });
+  });
+
+  it('refuses a cap outside its range or not whole, and writes nothing', async () => {
+    const { platform, posted, run } = handlers();
+    for (const count of [0, 100001, 1.5, Number.NaN]) await run({ type: 'setBrowserUploadFolderMaxEntries', count });
+    for (const mebibytes of [0, 10241, 2.5]) await run({ type: 'setBrowserUploadFolderMaxSize', mebibytes });
+    expect(platform.settings.inspect('damocles.browser.uploadFolderMaxEntries')).toStrictEqual({});
+    expect(platform.settings.inspect('damocles.browser.uploadFolderMaxSize')).toStrictEqual({});
+    const failures = posted.filter((m) => m.type === 'settingWriteResult');
+    expect(failures).toHaveLength(7);
+    expect(failures.every((m) => m.type === 'settingWriteResult' && !m.ok)).toBe(true);
+    expect(failures[0]).toMatchObject({ error: { message: '{0} must be a whole number from {1} to {2}', args: ['damocles.browser.uploadFolderMaxEntries', 1, 100000] } });
+    expect(failures[4]).toMatchObject({ error: { message: '{0} must be a whole number from {1} to {2}', args: ['damocles.browser.uploadFolderMaxSize', 1, 10240] } });
+  });
+
+  it('sends the defaults, and a hand-edited value clamped to its bounds', async () => {
+    const sent = async (user: Record<string, unknown>) => {
+      const posted: ExtensionToWebviewMessage[] = [];
+      const manager = new ConfigManager((_host, message) => posted.push(message), createFakePlatform({ settings: { user } }));
+      await manager.sendCurrentSettings({} as never, permissionHandler as never, folderA);
+      const update = posted.find((m) => m.type === 'settingsUpdate');
+      if (update?.type !== 'settingsUpdate') throw new Error('no settingsUpdate posted');
+      return [update.settings.browserUploadFolderMaxEntries, update.settings.browserUploadFolderMaxSize];
+    };
+    expect(await sent({})).toStrictEqual([10000, 500]);
+    expect(await sent({ 'damocles.browser.uploadFolderMaxEntries': 0, 'damocles.browser.uploadFolderMaxSize': 99999 })).toStrictEqual([1, 10240]);
+    expect(await sent({ 'damocles.browser.uploadFolderMaxEntries': 250.7, 'damocles.browser.uploadFolderMaxSize': '8' })).toStrictEqual([250, 500]);
   });
 });
 

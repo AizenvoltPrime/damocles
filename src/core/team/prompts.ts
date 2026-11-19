@@ -116,6 +116,22 @@ export function buildFailedResumePrompt(message?: string): string {
   return withResumeNote(FAILED_RESUME_CONTEXT, message);
 }
 
+/** What ending the turn after the pending-dispatch nudge does; the lead's system prompt and the nudge both state it. */
+export const PENDING_DISPATCH_END_RULE: string =
+  "If you end your turn again while no specialist is working, the team completes: every specialist still not started is recorded as cancelled, " +
+  "and your last message becomes the team's result unless you called team_synthesize_result.";
+
+const PENDING_DISPATCH_NUDGE_MOVES =
+  "Start each one you still need with team_spawn_specialist, and cancel each one you do not need with team_cancel_specialist, " +
+  "which accepts a specialist that was never started. " +
+  "Once none is left to start and none you started is still working, call team_synthesize_result. " +
+  PENDING_DISPATCH_END_RULE;
+
+/** The lead's one message when its turn ends with nothing to wait for but roster specialists it never started. */
+export function buildPendingDispatchNudge(pending: readonly string[]): string {
+  return `[SPECIALISTS NEVER STARTED] You ended your turn while no specialist is working, and these roster specialists were never started: ${pending.join(", ")}. ${PENDING_DISPATCH_NUDGE_MOVES}`;
+}
+
 export function buildLeadSystemPrompt(
   title: string,
   brief: string,
@@ -310,7 +326,7 @@ The system uses a **keep-alive mechanism** to pause your turn while specialists 
 **What triggers your next turn:**
 - The \`[REVIEW ROUND READY]\` notification (all specialists settled)
 - A specialist sending you a direct message
-- The keep-alive timeout (you'll get a status summary)
+- One reminder naming the specialists you never started, when you end your turn while none is working. ${PENDING_DISPATCH_END_RULE}
 
 **The same pattern applies after requesting revisions.** Stop making tool calls and wait. The next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
 

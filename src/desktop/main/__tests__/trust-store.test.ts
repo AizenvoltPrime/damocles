@@ -14,6 +14,10 @@ import { createMessageAsker, type MessageOverlay } from '../message-dialog';
 import { OverlayHost } from '../overlay';
 import { OVERLAY_PAGE_URL } from '../protocol';
 import { TRUST_FILE, TrustStore } from '../trust-store';
+import { localRecord, WorktreeRecords } from '../worktrees/records';
+import { liveWorkingFolders, worktreeFolderFor } from '../../../core/worktrees/records';
+import type { ChatWorktreeRecord } from '../../../core/worktrees/registry';
+import type { TrustChange } from '../../../platform/trust-service';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
 
@@ -136,15 +140,15 @@ describe('TrustStore', () => {
     expect(store().isTrusted('relative/path')).toBe(false);
   });
 
-  it('grants through the dialog, fires onDidGrant with that folder, and asks once for concurrent requests', async () => {
+  it('grants through the dialog, fires onDidChange granting that folder, and asks once for concurrent requests', async () => {
     showMessageBox.mockResolvedValue({ response: TRUST_BUTTON, checkboxChecked: false });
     const trust = store();
-    const granted: Array<readonly string[]> = [];
-    trust.onDidGrant((folders) => granted.push(folders));
+    const changes: TrustChange[] = [];
+    trust.onDidChange((change) => changes.push(change));
     const [first, second] = await Promise.all([trust.requestTrust(project), trust.requestTrust(project)]);
     expect([first, second]).toEqual([true, true]);
     expect(showMessageBox).toHaveBeenCalledTimes(1);
-    expect(granted).toEqual([[project]]);
+    expect(changes).toEqual([{ granted: [project], revoked: [] }]);
     expect(await trust.requestTrust(project)).toBe(true);
     expect(showMessageBox).toHaveBeenCalledTimes(1);
   });
@@ -153,7 +157,7 @@ describe('TrustStore', () => {
     showMessageBox.mockResolvedValue({ response: DONT_TRUST_BUTTON, checkboxChecked: false });
     const trust = store();
     const listener = vi.fn();
-    trust.onDidGrant(listener);
+    trust.onDidChange(listener);
     expect(await trust.requestTrust(project)).toBe(false);
     expect(trust.isTrusted(project)).toBe(false);
     expect(listener).not.toHaveBeenCalled();
@@ -163,7 +167,7 @@ describe('TrustStore', () => {
   it('leaves the folder untrusted and fires nothing when the allowlist write fails, so a retry grants it', async () => {
     const trust = store();
     const listener = vi.fn();
-    trust.onDidGrant(listener);
+    trust.onDidChange(listener);
     fs.mkdirSync(path.join(userData, TRUST_FILE));
     await expect(trust.grant(project)).rejects.toThrow();
     expect(trust.isTrusted(project)).toBe(false);
@@ -172,7 +176,7 @@ describe('TrustStore', () => {
     fs.rmdirSync(path.join(userData, TRUST_FILE));
     await trust.grant(project);
     expect(trust.isTrusted(project)).toBe(true);
-    expect(listener).toHaveBeenCalledWith([project]);
+    expect(listener).toHaveBeenCalledWith({ granted: [project], revoked: [] });
     expect(store().isTrusted(project)).toBe(true);
   });
 
@@ -189,6 +193,79 @@ describe('TrustStore', () => {
   });
 });
 
+describe('TrustStore.askTrust', () => {
+  // the question stays open until the test answers it: 0 is Trust Folder, undefined Don't Trust
+  function asking() {
+    const answers: Array<(choice: number | undefined) => void> = [];
+    const ask = vi.fn(() => new Promise<number | undefined>((resolve) => { answers.push(resolve); }));
+    const trust = new TrustStore(userData, ask, (message) => message, () => undefined);
+    return { trust, ask, answer: (choice: number | undefined) => answers.shift()!(choice) };
+  }
+
+  it('gives the call whose question granted the folder an undo, which revokes that grant on disk and tells core', async () => {
+    const { trust, ask, answer } = asking();
+    const changes: TrustChange[] = [];
+    trust.onDidChange((change) => changes.push(change));
+    const asked = trust.askTrust(project);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    answer(0);
+    const granted = await asked;
+    expect(granted.trusted).toBe(true);
+    expect(store().isTrusted(project)).toBe(true);
+    await granted.undo!();
+    expect(trust.isTrusted(project)).toBe(false);
+    expect(store().isTrusted(project)).toBe(false);
+    expect(changes).toEqual([{ granted: [project], revoked: [] }, { granted: [], revoked: [project] }]);
+  });
+
+  it('gives no undo to a call that found the folder trusted, and asks nothing', async () => {
+    const { trust, ask } = asking();
+    await trust.grant(project);
+    expect(await trust.askTrust(project)).toEqual({ trusted: true });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('gives no undo when the question is declined', async () => {
+    const { trust, ask, answer } = asking();
+    const asked = trust.askTrust(project);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    answer(undefined);
+    expect(await asked).toEqual({ trusted: false });
+  });
+
+  it('gives no undo to a call that joined another call\'s pending question, nor to that call, so the joiner keeps its trust', async () => {
+    const { trust, ask, answer } = asking();
+    const first = trust.askTrust(project);
+    const joined = trust.askTrust(project);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    answer(0);
+    expect(await joined).toEqual({ trusted: true });
+    await (await first).undo?.();
+    expect(trust.isTrusted(project)).toBe(true);
+    expect(store().isTrusted(project)).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives no undo when the folder was granted elsewhere while its question was open', async () => {
+    const { trust, ask, answer } = asking();
+    const asked = trust.askTrust(project);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await trust.grant(project);
+    answer(0);
+    expect(await asked).toEqual({ trusted: true });
+  });
+
+  it('answers requestTrust from the same question', async () => {
+    const { trust, ask, answer } = asking();
+    const requested = trust.requestTrust(project);
+    const asked = trust.askTrust(project);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    answer(0);
+    expect(await requested).toBe(true);
+    expect(await asked).toEqual({ trusted: true });
+  });
+});
+
 describe('TrustStore.revoke', () => {
   it('untrusts the folder on disk and in memory, tells its listeners once, and leaves a child\'s own grant', async () => {
     const child = path.join(project, 'packages', 'child');
@@ -196,12 +273,56 @@ describe('TrustStore.revoke', () => {
     await trust.grant(project);
     await trust.grant(child);
     const revoked = vi.fn();
-    trust.onDidRevoke(revoked);
+    trust.onDidChange(revoked);
     await trust.revoke(`${project}${path.sep}`);
     await trust.revoke(project);
     expect(revoked).toHaveBeenCalledTimes(1);
+    expect(revoked).toHaveBeenCalledWith({ granted: [], revoked: [project] });
     expect(trust.isTrusted(project)).toBe(false);
     expect(store().isTrusted(project)).toBe(false);
     expect(store().isTrusted(child)).toBe(true);
+  });
+});
+
+describe('TrustStore and the worktree records core publishes', () => {
+  function chatRecord(root: string, id: string, projectPath: string): ChatWorktreeRecord {
+    const worktreeRoot = worktreeFolderFor(root, projectPath, id);
+    return { id, kind: 'chat', index: 1, projectPath, repositoryRoot: projectPath, worktreeRoot, workingFolder: worktreeRoot, branch: `damocles/${id}`, baseCommit: 'a'.repeat(40), createdAt: 1 };
+  }
+
+  it('fires a change naming a working folder whose answer a records change moved, and none for a change that moves no answer', async () => {
+    const root = path.join(userData, 'worktrees');
+    const other = path.join(userData, 'other');
+    const trust = store();
+    await trust.grant(project);
+    const records = new WorktreeRecords(localRecord(root), () => undefined);
+    trust.setWorktrees({
+      projectOf: (folder) => records.liveChatRecordAt(folder)?.projectPath,
+      liveWorkingFolders: () => liveWorkingFolders(records.records()),
+      onDidChange: (listener) => records.onDidChange(listener),
+    });
+    const changes: TrustChange[] = [];
+    trust.onDidChange((change) => changes.push(change));
+    const live = chatRecord(root, 'aaaaaaaa', project);
+
+    records.apply([live]);
+    expect(trust.isTrusted(live.workingFolder)).toBe(true);
+    expect(changes).toEqual([{ granted: [live.workingFolder], revoked: [] }]);
+
+    // the records change, no answer does: a record marked used, a record of an untrusted project
+    changes.length = 0;
+    const untrusted = chatRecord(root, 'bbbbbbbb', other);
+    records.apply([{ ...live, usedAt: 5 }, untrusted]);
+    expect(records.records()).toHaveLength(2);
+    expect(changes).toEqual([]);
+
+    records.apply([{ ...live, usedAt: 5, deletedAt: 9 }, untrusted]);
+    expect(trust.isTrusted(live.workingFolder)).toBe(false);
+    expect(changes).toEqual([{ granted: [], revoked: [live.workingFolder] }]);
+
+    // a grant names the working folders whose answer it moved
+    changes.length = 0;
+    await trust.grant(other);
+    expect(changes).toEqual([{ granted: [other, untrusted.workingFolder], revoked: [] }]);
   });
 });

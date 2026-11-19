@@ -1,5 +1,6 @@
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { BrowserService } from "../../../browser";
+import { PickCancelledError } from "../../../browser/element-picker";
 import { log } from "../../../logger";
 import { browserUnavailableReason, userScopeRemote } from "../../../user-scope";
 import { errorTextOf, l } from "../../../l10n";
@@ -35,6 +36,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
         const element = await browserService.pickElement(ctx.host);
         postMessage(ctx.reply, { type: "browserElementPicked", element });
       } catch (err) {
+        if (err instanceof PickCancelledError) return;
         log("[BrowserHandlers] Element pick failed:", err);
         postMessage(ctx.reply, {
           type: "notification",

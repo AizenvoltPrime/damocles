@@ -18,6 +18,14 @@ function truncate(text: string): string {
  *  clicks leaves `pickElement()` pending forever. */
 const PICK_TIMEOUT_MS = 60_000;
 
+/** An armed pick was cancelled before the user picked an element. */
+export class PickCancelledError extends Error {
+  constructor() {
+    super('Element picking cancelled');
+    this.name = 'PickCancelledError';
+  }
+}
+
 export class ElementPicker {
   private picking = false;
   private pickResolve: ((attachment: ElementAttachment) => void) | null = null;
@@ -295,7 +303,7 @@ export class ElementPicker {
     const reject = this.pickReject;
     this.pickResolve = null;
     this.pickReject = null;
-    reject?.(new Error('Element picking cancelled'));
+    reject?.(new PickCancelledError());
     await this.cdp.setInspectMode('none').catch((err) =>
       log(`[Browser] Picker inspect-mode reset failed — ${err instanceof Error ? err.message : String(err)}`),
     );

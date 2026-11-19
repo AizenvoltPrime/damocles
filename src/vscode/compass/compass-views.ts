@@ -31,7 +31,7 @@ export class CompassViews implements CompassViewsHandle {
 	constructor(platform: Pick<CompassPlatform, 'settings' | 'trust'>, options: CompassViewsOptions) {
 		this.platform = platform;
 		this.options = options;
-		this.listeners.push(platform.trust.onDidGrantTrust(() => this.register()));
+		this.listeners.push(platform.trust.onDidChangeTrust(() => this.register()));
 		this.listeners.push(platform.settings.onDidChange('damocles.compass.enabled', () => this.register()));
 	}
 

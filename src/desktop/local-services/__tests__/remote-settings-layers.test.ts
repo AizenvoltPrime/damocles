@@ -31,7 +31,7 @@ const contributed = parseContributedConfiguration({
 
 const trustAll: TrustService = {
   isTrusted: () => true,
-  onDidGrantTrust: () => ({ dispose: () => undefined }),
+  onDidChangeTrust: () => ({ dispose: () => undefined }),
   requestTrust: () => Promise.resolve(true),
 };
 

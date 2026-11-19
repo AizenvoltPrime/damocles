@@ -16,7 +16,7 @@ function harness() {
   let release!: () => void;
   const listed = new Promise<void>((resolve) => { release = resolve; });
   const workspaceManager = {
-    workspaceFilesMessage: async (folder: FolderTarget) => {
+    workspaceFilesMessage: async (_instance: unknown, folder: FolderTarget) => {
       await listed;
       return { type: 'workspaceFiles', files: [{ relativePath: `${folder.key}/x.ts`, isDirectory: false }] };
     },

@@ -8,7 +8,7 @@ import { folderKeyOn } from '../../core/workspace-folders/folder-key';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { pathFor } from '../../shared/project-location';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
-import type { FileBytes } from '../local-services/file-bytes';
+import type { FileBytes } from '../../core/file-bytes';
 import type { Confined, Project } from '../local-services/confine';
 import type { OutsideRefusal, OutsideResolution } from '../workspace/file-system';
 import { isRemoteForm, joinPosition } from '../cli/args';

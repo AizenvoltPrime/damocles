@@ -20,10 +20,10 @@ export interface SettingsChange {
 
 /** The folder a chat reads its settings for (docs/invariants.md "Desktop settings come from three files"). */
 export interface SettingsFolder {
-  // the chat's working folder; its .damocles/settings.json is the project layer
+  // the chat's working folder; its .damocles/settings.json is the project layer, and its trust gates both layers
   readonly path: string;
-  // the folder whose .damocles/settings.local.json is the local layer and whose trust gates both layers: a worktree
-  // chat's project folder (D34); path when absent
+  // the folder whose .damocles/settings.local.json is the local layer, which its trust gates too: a worktree chat's
+  // project folder (D34); path when absent
   readonly personalPath?: string;
 }
 

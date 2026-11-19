@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { FolderTargetEntry } from '../../core-protocol';
 import type { WorktreeRecord } from '../../../core/worktrees/registry';
-import { chatProjectKey, savedChatProjectKey, type SavedChatProjectDeps } from '../chat-project';
+import { chatProjectKey, keptRemoteChatProjectKey, savedChatProjectKey, type SavedChatProjectDeps } from '../chat-project';
 
 const target = (key: string, ownerKey?: string): FolderTargetEntry => ({
   key,
@@ -89,5 +89,26 @@ describe('savedChatProjectKey', () => {
     expect(savedChatProjectKey('beta-moved', deps())).toBe('alpha');
     // a chat worktree of the moved project names the destination as its project once core re-pointed its record
     expect(savedChatProjectKey('wt-moved', { ...moved, records: [chatRecord('w5', 'beta-moved', 'wt-moved')] })).toBe('beta');
+  });
+});
+
+describe('keptRemoteChatProjectKey', () => {
+  const listed = (key: string): boolean => ['host/alpha', 'host/beta'].includes(key);
+  const movedFrom = (): string | undefined => undefined;
+
+  it('tracks a kept remote chat under its own listed project, not core\'s default target', () => {
+    expect(keptRemoteChatProjectKey({ projectKey: 'host/beta' }, { listed, movedFrom, defaultKey: 'host/alpha' })).toBe('host/beta');
+  });
+
+  it('falls back to core\'s default target for a project no longer listed or a record with none', () => {
+    expect(keptRemoteChatProjectKey({ projectKey: 'host/gone' }, { listed, movedFrom, defaultKey: 'host/alpha' })).toBe('host/alpha');
+    expect(keptRemoteChatProjectKey({}, { listed, movedFrom, defaultKey: 'host/alpha' })).toBe('host/alpha');
+  });
+
+  // a reconnect between relocateStores and replaceProject: the record names the destination, the list still the source
+  it('tracks a chat whose record a finished move re-keyed under the listed project the move left', () => {
+    const moved = (key: string): string | undefined => (key === 'host/beta-moved' ? 'host/beta' : undefined);
+    expect(keptRemoteChatProjectKey({ projectKey: 'host/beta-moved' }, { listed, movedFrom: moved, defaultKey: 'host/alpha' })).toBe('host/beta');
+    expect(keptRemoteChatProjectKey({ projectKey: 'host/gone' }, { listed, movedFrom: moved, defaultKey: 'host/alpha' })).toBe('host/alpha');
   });
 });

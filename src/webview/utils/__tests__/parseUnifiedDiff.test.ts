@@ -90,6 +90,12 @@ describe('which source a file change card renders', () => {
     expect(fileChangeSource(write({ metadata: { patchOmitted: 'tooLarge' } }), undefined)).toEqual({ kind: 'omitted', reason: 'tooLarge' });
   });
 
+  it.each(['unreadable', 'notAFile'] as const)('why an approval or result has no patch (%s), never a new file', (reason) => {
+    expect(fileChangeSource(write({ metadata: { patchOmitted: reason } }), undefined)).toEqual({ kind: 'omitted', reason });
+    expect(fileChangeSource(write({ status: 'awaiting_approval' }), { patchOmitted: reason })).toEqual({ kind: 'omitted', reason });
+    expect(fileChangeSource(write({ metadata: { patchOmitted: 'other' } }), undefined)).toEqual({ kind: 'change', oldText: '', newText: 'x\n' });
+  });
+
   it('the approval\'s patch while the call awaits it, and a new file\'s own lines', () => {
     expect(fileChangeSource(edit({ status: 'awaiting_approval' }), { patch: 'A' })).toEqual({ kind: 'patch', patch: 'A' });
     expect(fileChangeSource(write({ status: 'awaiting_approval' }), {})).toEqual({ kind: 'newFile', content: 'x\n' });

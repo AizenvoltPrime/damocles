@@ -221,6 +221,12 @@ export class ChatServedFiles {
     return servedToFile(text, [...this.origins.values()]);
   }
 
+  /** Whether `origin` is the live origin of a root or granted folder this chat's pages were served from. */
+  ownsOrigin(origin: string): boolean {
+    for (const held of this.origins.values()) if (held.origin === origin) return true;
+    return false;
+  }
+
   private grantOf(path: string): { readonly grant: FolderGrant; readonly relPath: string } | undefined {
     for (const grant of this.folders) {
       const relPath = relativeTo(grant.spelled, path) ?? relativeTo(grant.root, path);

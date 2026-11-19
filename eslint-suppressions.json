@@ -216,7 +216,7 @@
   },
   "src/desktop/local-services/file-watcher-factory.ts": {
     "damocles/no-sync": {
-      "count": 12
+      "count": 11
     }
   },
   "src/desktop/local-services/localization-service.ts": {

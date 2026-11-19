@@ -163,6 +163,8 @@ const filesWslNotice = computed(() => {
 // D31: Files, Search, Source control and Repositories read the folder shown for the selected project, by its root key.
 const shownFolder = computed(() => (selectedProject.value ? props.state.shownFolders[selectedProject.value.key] : undefined));
 const viewKey = computed(() => shownFolder.value?.rootKey ?? selectedProject.value?.key);
+// a worktree's folder of a project that is not there may still be there
+const filesPresence = computed(() => (viewKey.value === selectedProject.value?.key ? selectedProject.value?.presence : undefined));
 // The selected project's host as its banner shows it: away once a drop outlasted the grace, or while it is not connected at all.
 const selectedHost = computed(() => props.state.hosts.find((host) => host.authorityKey === selectedProject.value?.authority.key));
 const portsHost = computed(() => (selectedProject.value && selectedProject.value.authority.kind !== 'local' ? selectedHost.value : undefined));
@@ -399,6 +401,7 @@ defineExpose({
       :offline="selectedProject?.connection !== 'connected'"
       :transfers-unsupported-on="selectedProject?.transfersUnsupported ? selectedProject.authority.name : undefined"
       :wsl-notice="filesWslNotice"
+      :presence="filesPresence"
       @toggle="toggleSection('files')"
       @expand="expand('files')"
     />

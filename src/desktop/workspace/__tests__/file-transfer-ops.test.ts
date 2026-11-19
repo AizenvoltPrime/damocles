@@ -3,6 +3,8 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { OPEN_READ_NONBLOCKING } from '../../../core/file-bytes';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { Project } from '../../local-services/confine';
 import { createTreeListing } from '../tree-listing';
@@ -406,6 +408,21 @@ describe('readFile', () => {
     expect(await ops.readFile(project, 'src')).toEqual({ ok: false, reason: 'notAFile' });
   });
 
+  it.runIf(posix)('refuses a FIFO swapped in after confinement found a file, without waiting for a writer', async () => {
+    const file = at('src/a.ts');
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (opened, flags, mode) => {
+      if (String(opened) === fs.realpathSync(file)) {
+        fs.rmSync(file);
+        execFileSync('mkfifo', [file]);
+      }
+      return open(opened, flags, mode);
+    });
+    const read = ops.readFile(project, 'src/a.ts');
+    const hung = new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 2000).unref());
+    expect(await Promise.race([read, hung])).toEqual({ ok: false, reason: 'failed', code: 'ECHANGED' });
+  });
+
   it('yields only the size it answered, so a file still growing reads as a consistent prefix', async () => {
     const read = await ops.readFile(project, 'src/a.ts');
     if (!read.ok) throw new Error(read.reason);
@@ -651,7 +668,7 @@ describe('walk of a tree that changes while it is read', () => {
     });
     const open = fs.promises.open;
     vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
-      if (path.basename(String(file)).startsWith('f') && flags === 'r') throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      if (path.basename(String(file)).startsWith('f') && flags === OPEN_READ_NONBLOCKING) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
       return open(file, flags, mode);
     });
     const moved = await ops.move(project, 'src', project, 'dest', 'moved', false);

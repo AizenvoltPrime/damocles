@@ -104,7 +104,7 @@ export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
  * mutating ones), so its guarantee is "no Edit/Write outside the plan file and no unapproved shell", not "no
  * side effects anywhere". `BrowserEvaluate`, `BrowserUpload` and `BrowserIntercept` are the sharp edges
  * — arbitrary main-world JS against a live logged-in profile, an arbitrary local path to a remote
- * origin, and context-wide interception that reaches the human's own tabs. They are governed by the
+ * origin, and interception that reaches every tab of the chat, the human's included. They are governed by the
  * browser master switch (`damocles.browser.enabled`, on by default) and by settings deny rules, not by
  * plan mode. The accepted risk: docs/invariants.md, "Permissions and plan mode".
  */

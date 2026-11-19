@@ -1,17 +1,18 @@
 import type { Component } from 'vue';
-import { CopyPlus, GitBranchPlus, History, ShieldAlert, TriangleAlert } from 'lucide-vue-next';
+import { CopyPlus, FolderX, GitBranchPlus, History, ShieldAlert, TriangleAlert } from 'lucide-vue-next';
 import type { ScmRunRequest, ScmView } from '../../preload/scm-channels';
 import type { ShellPlatform } from '../../preload/shell-channels';
 
 // An empty or error state of a project's source control, shared by Source control and Repositories (D58: an untrusted
 // project shows Source control's trust state there too).
 export interface ScmStateCard {
-  readonly id: 'untrusted' | 'gitMissing' | 'unsafe' | 'parent' | 'closed' | 'noRepository';
+  readonly id: 'untrusted' | 'gitMissing' | 'absent' | 'unsafe' | 'parent' | 'closed' | 'noRepository';
   readonly icon: Component;
   readonly tone: 'warning' | 'faint';
   readonly title?: string;
   readonly text: string;
-  readonly primary: { readonly label: string; readonly run: () => unknown };
+  // none on the absent card: nothing can run in a folder that is not there
+  readonly primary?: { readonly label: string; readonly run: () => unknown };
   // the prototype's outlined second action (Clone Repository on the no-repository card)
   readonly secondary?: { readonly label: string; readonly icon: Component; readonly run: () => unknown };
 }
@@ -33,6 +34,9 @@ export function scmStateCard(view: ScmView | undefined, projectKey: string | und
   if (view.state === 'gitMissing') {
     const download = t(`scm.state.gitMissing.download.${platform === 'win32' ? 'windows' : platform === 'darwin' ? 'mac' : 'linux'}`);
     return { id: 'gitMissing', icon: TriangleAlert, tone: 'warning', text: t('scm.state.gitMissing.text'), primary: { label: download, run: () => run({ op: 'openGitDownload' }) } };
+  }
+  if (view.state === 'absent') {
+    return { id: 'absent', icon: FolderX, tone: 'warning', text: t(`scm.state.absent.${view.presence === 'unavailable' ? 'unavailable' : 'missing'}`) };
   }
   if (view.state === 'ready' && view.repos.length > 0) return undefined;
   if (view.unsafePaths.length > 0) {

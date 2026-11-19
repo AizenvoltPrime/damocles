@@ -429,6 +429,43 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(fake.prompts).toEqual(['do the task', '[Message from system]: SYNC nudge']);
   });
 
+  it("contract: wakes a lead whose turn-end clears the boundary's hold and defers its nudge, which lands after the wait is armed", async () => {
+    // The lead's dispatch nudge: keepAlive is false again while it waits, so only the deferred message can wake it.
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
+    const events: string[] = [];
+    let owed = false;
+    let nudged = false;
+    const config = baseConfig({
+      name: 'Lead',
+      role: 'lead',
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => owed,
+      onReconcileBeforeEnd: () => { if (!nudged) owed = true; },
+      onTurnEnd: () => {
+        events.push('turnEnd');
+        if (!owed) return;
+        owed = false;
+        nudged = true;
+        queueMicrotask(() => {
+          events.push('sent');
+          messageBus.send('system', 'Lead', 'DISPATCH NUDGE');
+        });
+      },
+      // The runner calls it right before it arms the wait.
+      onStateBoundary: () => { events.push('boundary'); },
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    const start = events.indexOf('turnEnd');
+    expect(events.slice(start, start + 3)).toEqual(['turnEnd', 'boundary', 'sent']);
+    expect(events.filter((e) => e === 'turnEnd')).toHaveLength(1);
+    expect(result.status).toBe('completed');
+    expect(fake.prompts).toEqual(['do the task', '[Message from system]: DISPATCH NUDGE']);
+  });
+
   it('reclaims a message pi still holds when the turn ends, instead of ending with it undelivered', async () => {
     // A steer pi accepts after a settling run last checked its queue stays queued once the run settles,
     // so the runner takes it back and prompts it. It was echoed when it was steered, and only then.

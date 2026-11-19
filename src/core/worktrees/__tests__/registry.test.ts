@@ -380,7 +380,7 @@ describe('personal files of a worktree chat (D34)', () => {
     fs.writeFileSync(path.join(record.workingFolder, '.damocles', 'settings.json'), JSON.stringify({ permissions: { allow: ['Read'] } }));
     const installed = installWorktreeProjectLookup(r);
     try {
-      const files = await loadPermissionsByPriority(record.workingFolder);
+      const files = await loadPermissionsByPriority({ path: record.workingFolder, personalFiles: true });
       expect(files[0]!.deny).toEqual(['Bash(rm:*)']);
       expect(files.every((f) => f.root !== project)).toBe(true);
       expect(files.some((f) => f.allow.includes('Read'))).toBe(true);
@@ -388,7 +388,7 @@ describe('personal files of a worktree chat (D34)', () => {
       expect(fs.readFileSync(path.join(project, '.damocles', 'settings.local.json'), 'utf8')).toContain('Bash(ls:*)');
       expect(fs.existsSync(path.join(record.workingFolder, '.damocles', 'settings.local.json'))).toBe(false);
       expect(localMcpConfigPath(record.workingFolder)).toBe(path.join(project, '.damocles', 'mcp.local.json'));
-      expect(ownedRuleFiles(record.workingFolder).at(-1)?.path).toBe(path.join(project, '.damocles', 'settings.local.json'));
+      expect(ownedRuleFiles({ path: record.workingFolder, personalFiles: true }).at(-1)?.path).toBe(path.join(project, '.damocles', 'settings.local.json'));
       const target = { key: record.workingFolder, fsPath: record.workingFolder, name: 'x', label: 'x', projectScope: true };
       expect(settingsFolderOf(target)).toEqual({ path: record.workingFolder, personalPath: project });
     } finally {

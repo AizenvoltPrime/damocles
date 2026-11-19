@@ -16,6 +16,8 @@ function scriptedLauncher(output: Array<[OutputStream, string | Buffer]>, code: 
       );
       return {
         pid: Promise.resolve(1),
+        pauseOutput: () => undefined,
+        resumeOutput: () => undefined,
         onData: (stream, listener) => void listeners[stream].push(listener),
         write: () => Promise.resolve(),
         end: () => undefined,

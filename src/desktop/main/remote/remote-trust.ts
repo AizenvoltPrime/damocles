@@ -1,6 +1,7 @@
 import type { Disposable } from '../../../platform/disposable';
 import type { HostTrust } from '../core-services/host-services';
 import type { AskMessage } from '../message-dialog';
+import type { PendingPrompt, PromptOutcome, TrustAnswer } from '../trust-store';
 import type { HostStore } from './host-store';
 import type { Project } from '../../local-services/confine';
 import { parseRootKey } from '../../preload/folder-root';
@@ -25,7 +26,10 @@ export interface RemoteTrustDeps {
 
 export interface RemoteTrust {
   isTrusted(target: RemoteTrustTarget): boolean;
+  // resolves whether the folder is trusted afterwards
   request(target: RemoteTrustTarget): Promise<boolean>;
+  // the call whose own question granted the folder gets an undo, which revokes that grant, unless another call joined the question
+  ask(target: RemoteTrustTarget): Promise<TrustAnswer>;
 }
 
 export interface ProjectTrustDeps {
@@ -56,11 +60,11 @@ export function createProjectTrust(deps: ProjectTrustDeps): { isTrusted(project:
 
 /** The trust question for a remote project, which names its host; a grant lands in remote-hosts.json, never trusted-folders.json. */
 export function createRemoteTrust(deps: RemoteTrustDeps): RemoteTrust {
-  const prompts = new Map<string, Promise<boolean>>();
+  const prompts = new Map<string, PendingPrompt>();
   const isTrusted = (target: RemoteTrustTarget): boolean => deps.store.isTrusted(target.authorityKey, target.folderKey);
 
   // Don't Trust is Cancel and takes focus first, so neither Enter nor Escape grants trust.
-  async function prompt(target: RemoteTrustTarget): Promise<boolean> {
+  async function prompt(target: RemoteTrustTarget): Promise<PromptOutcome> {
     const chosen = await deps.ask({
       severity: 'warning',
       message: deps.t('Do you trust the authors of the files in {0} on {1}?', target.fsPath, target.host),
@@ -70,24 +74,39 @@ export function createRemoteTrust(deps: RemoteTrustDeps): RemoteTrust {
     });
     if (chosen !== 0) {
       deps.log(`[trust] declined ${target.key}`);
-      return false;
+      return 'declined';
     }
-    await deps.store.grantTrust(target.authorityKey, target.folderKey);
+    if (!(await deps.store.grantTrust(target.authorityKey, target.folderKey))) return 'trusted';
     deps.log(`[trust] granted ${target.key}`);
-    return true;
+    return 'granted';
+  }
+
+  // asks once per pending request; a call that found the folder trusted or joined a pending question gets no undo, nor does the
+  // asking call once another joined
+  async function ask(target: RemoteTrustTarget): Promise<TrustAnswer> {
+    if (isTrusted(target)) return { trusted: true };
+    const pending = prompts.get(target.key);
+    if (pending) {
+      pending.joined = true;
+      return { trusted: (await pending.outcome) !== 'declined' };
+    }
+    const asked: PendingPrompt = { outcome: prompt(target).finally(() => prompts.delete(target.key)), joined: false };
+    prompts.set(target.key, asked);
+    const outcome = await asked.outcome;
+    if (outcome !== 'granted' || asked.joined) return { trusted: outcome !== 'declined' };
+    return {
+      trusted: true,
+      undo: async () => {
+        await deps.store.revokeTrust(target.authorityKey, target.folderKey);
+        deps.log(`[trust] revoked ${target.key}`);
+      },
+    };
   }
 
   return {
     isTrusted,
-    // asks once per pending request; resolves whether the folder is trusted afterwards
-    request(target) {
-      if (isTrusted(target)) return Promise.resolve(true);
-      const pending = prompts.get(target.key);
-      if (pending) return pending;
-      const asked = prompt(target).finally(() => prompts.delete(target.key));
-      prompts.set(target.key, asked);
-      return asked;
-    },
+    request: async (target) => (await ask(target)).trusted,
+    ask,
   };
 }
 
@@ -100,41 +119,31 @@ export interface HostTrustFolder {
 export interface RemoteHostTrustDeps {
   readonly authorityKey: string;
   readonly store: Pick<HostStore, 'isTrusted' | 'onDidChange'>;
-  // the authority's listed projects and the new folder of each move its core's relocations mirror names
+  // the authority's listed projects, the new folder of each move, and each folder a Locate or an add holds
   readonly folders: () => readonly HostTrustFolder[];
   readonly onDidChangeFolders: (listener: () => void) => Disposable;
   readonly requestTrust: (folderPath: string) => Promise<boolean>;
 }
 
 /**
- * The authority's trust as its core reads it: the folders the host store trusts, each a listed project or the new folder of a
- * move. A change that adds a key is a grant and one that takes a key out is a revoke, each republishing the whole set.
+ * The authority's trust as its core reads it: the folders the host store trusts among `folders`. A change grants the keys it
+ * adds and revokes the keys it takes out, each change republishing the whole set.
  */
 export function remoteHostTrust(deps: RemoteHostTrustDeps): HostTrust {
   const trusted = (): Map<string, string> => new Map(deps.folders().filter((folder) => deps.store.isTrusted(deps.authorityKey, folder.folderKey)).map((folder) => [folder.folderKey, folder.fsPath]));
-  const onChange = (listener: () => void): Disposable => {
-    const subscriptions = [deps.store.onDidChange(listener), deps.onDidChangeFolders(listener)];
-    return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); } };
-  };
   return {
     trustedKeys: () => [...trusted().keys()],
-    onDidGrant: (listener) => {
+    onDidChange: (listener) => {
       let before = trusted();
-      return onChange(() => {
+      const changed = (): void => {
         const now = trusted();
         const granted = [...now].filter(([key]) => !before.has(key)).map(([, fsPath]) => fsPath);
+        const revoked = [...before].filter(([key]) => !now.has(key)).map(([, fsPath]) => fsPath);
         before = now;
-        if (granted.length > 0) listener(granted);
-      });
-    },
-    onDidRevoke: (listener) => {
-      let before = trusted();
-      return onChange(() => {
-        const now = trusted();
-        const revoked = [...before.keys()].some((key) => !now.has(key));
-        before = now;
-        if (revoked) listener();
-      });
+        if (granted.length > 0 || revoked.length > 0) listener({ granted, revoked });
+      };
+      const subscriptions = [deps.store.onDidChange(changed), deps.onDidChangeFolders(changed)];
+      return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); } };
     },
     requestTrust: deps.requestTrust,
   };

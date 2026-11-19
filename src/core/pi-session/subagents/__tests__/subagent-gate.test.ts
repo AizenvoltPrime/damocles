@@ -79,7 +79,8 @@ describe('nested agents and the parent turn checkpoint', () => {
 
     await handlers['tool_call']!(ev('read', 'r1', { path: '/a.ts' }), hookCtx);
     let settled = false;
-    const edit = handlers['tool_call']!(ev('Edit', 'e1', { file_path: '/a', old_string: 'a', new_string: 'b' }), hookCtx).then(() => { settled = true; });
+    // not '/a', which pi reads on Windows as the Git Bash spelling of A:\
+    const edit = handlers['tool_call']!(ev('Edit', 'e1', { file_path: path.join(path.resolve('/'), 'a.txt'), old_string: 'a', new_string: 'b' }), hookCtx).then(() => { settled = true; });
     await vi.waitFor(() => expect(waited).toEqual(['Edit']));
     expect(settled).toBe(false);
     releaseBaseline();

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { Disposable } from '../../platform/disposable';
 import type { ActiveEditorContext, DiffRequest, DiffSide, DiffView, EditorService, OpenFileOptions } from '../../platform/editor-service';
 import { renderVsCode } from './localization-service';
+import { folderKey } from '../../core/workspace-folders/folder-key';
 
 const DIFF_SCHEMES: Readonly<Record<DiffRequest['purpose'], string>> = {
   proposal: 'claude-diff',
@@ -115,7 +116,11 @@ export function createVsCodeEditorService(subscriptions: Disposable[]): EditorSe
       await vscode.window.showTextDocument(document, { preview: true });
     },
 
-    readText: async (path) => (await vscode.workspace.openTextDocument(vscode.Uri.file(path))).getText(),
+    isDirty: (filePath) => {
+      const key = folderKey(filePath);
+      const document = vscode.workspace.textDocuments.find((open) => open.uri.scheme === 'file' && folderKey(open.uri.fsPath) === key);
+      return Promise.resolve(document?.isDirty === true);
+    },
 
     showDiff: async (req): Promise<DiffView> => {
       const scheme = DIFF_SCHEMES[req.purpose];

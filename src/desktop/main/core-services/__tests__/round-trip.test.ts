@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform, type FakePanelHost, type FakePlatform } from '../../../../__mocks__/fake-platform';
 import type { Disposable } from '../../../../platform/disposable';
+import type { TrustChange } from '../../../../platform/trust-service';
 import type { PanelOptions } from '../../../../platform/window-service';
 import { createCorePlatform, type CorePlatform } from '../../../core-host/platform';
 import { createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
@@ -75,25 +76,20 @@ function connect(options: { readonly trusted?: readonly string[]; readonly trust
   }
   const state = createDesktopKeyValueState(userData, () => undefined);
   const trusted = new Set(options.trusted ?? []);
-  const grants = new Set<(folders: readonly string[]) => void>();
+  const changes = new Set<(change: TrustChange) => void>();
   const grant = (folder: string): void => {
     trusted.add(folder);
-    for (const listener of [...grants]) listener([folder]);
+    for (const listener of [...changes]) listener({ granted: [folder], revoked: [] });
   };
-  const revokes = new Set<() => void>();
   const revoke = (folder: string): void => {
     trusted.delete(folder);
-    for (const listener of [...revokes]) listener();
+    for (const listener of [...changes]) listener({ granted: [], revoked: [folder] });
   };
   const trust: HostTrust = {
     trustedKeys: () => [...trusted].map((folder) => folderKey(folder)),
-    onDidGrant: (listener): Disposable => {
-      grants.add(listener);
-      return { dispose: () => { grants.delete(listener); } };
-    },
-    onDidRevoke: (listener): Disposable => {
-      revokes.add(listener);
-      return { dispose: () => { revokes.delete(listener); } };
+    onDidChange: (listener): Disposable => {
+      changes.add(listener);
+      return { dispose: () => { changes.delete(listener); } };
     },
     requestTrust: async (folder) => {
       await Promise.resolve();
@@ -224,7 +220,7 @@ describe('mirrored services', () => {
     expect(core.trust.isTrusted(trustedFolder)).toBe(true);
     expect(core.trust.isTrusted(asked)).toBe(false);
     const order: string[] = [];
-    core.trust.onDidGrantTrust((folders) => order.push(`granted ${folders.join(',')}`));
+    core.trust.onDidChangeTrust(({ granted }) => order.push(`granted ${granted.join(',')}`));
     const answer = core.trust.requestTrust(asked).then((trusted) => {
       order.push(`answered ${trusted} while trusted=${core.trust.isTrusted(asked)}`);
     });
@@ -235,22 +231,22 @@ describe('mirrored services', () => {
   it('a grant main makes reaches core', () => {
     const folder = path.resolve('/projects/b');
     const { core, grant } = connect();
-    const granted = vi.fn();
-    core.trust.onDidGrantTrust(granted);
+    const changed = vi.fn();
+    core.trust.onDidChangeTrust(changed);
     grant(folder);
-    expect(granted).toHaveBeenCalledWith([folder]);
+    expect(changed).toHaveBeenCalledWith({ granted: [folder], revoked: [] });
     expect(core.trust.isTrusted(folder)).toBe(true);
   });
 
-  it('a revoke main makes reaches core, and runs its grant listeners with no folder so they read trust again', () => {
+  it('a revoke main makes reaches core naming the folders it took back', () => {
     const folder = path.resolve('/projects/moved');
     const { core, revoke } = connect({ trusted: [folder] });
-    const granted = vi.fn();
-    core.trust.onDidGrantTrust(granted);
+    const changed = vi.fn();
+    core.trust.onDidChangeTrust(changed);
     expect(core.trust.isTrusted(folder)).toBe(true);
     revoke(folder);
     expect(core.trust.isTrusted(folder)).toBe(false);
-    expect(granted).toHaveBeenCalledWith([]);
+    expect(changed).toHaveBeenCalledWith({ granted: [], revoked: [folder] });
   });
 
   it('key-value state starts from main\'s values, updates locally at once and reaches main', async () => {
@@ -436,7 +432,6 @@ describe('proxied services', () => {
     fs.writeFileSync(file, 'disk text');
     await core.editor.openFile(file, { line: 3, preserveFocus: true, panelId: 'p1' });
     await core.editor.openUntitled('content', 'markdown', { panelId: 'p1' });
-    expect(await core.editor.readText(file)).toBe('disk text');
     await core.editor.showMarkdownPreview(file, { panelId: 'p1', content: '# text' });
     await core.editor.openHostSettings('damocles.x', 'chat');
     await core.editor.openSettingsFile('user', { key: 'damocles.x' });
@@ -449,6 +444,22 @@ describe('proxied services', () => {
     expect(main.editor.settingsFiles).toEqual([{ scope: 'user', key: 'damocles.x' }]);
     expect(main.editor.chatReviews).toEqual([{ panelId: 'p1', scope: 'turn' }]);
     expect(core.editor.isHostExtensionActive('ms-vscode.vscode-speech')).toBe(false);
+  });
+
+  it('answers whether main\'s editor holds unsaved changes to a file', async () => {
+    const { main, core } = connect();
+    const file = path.join(dirs[0]!, 'dirty.txt');
+    main.editor.dirtyPaths.add(file);
+    expect(await core.editor.isDirty(file)).toBe(true);
+    expect(await core.editor.isDirty(path.join(dirs[0]!, 'clean.txt'))).toBe(false);
+  });
+
+  it('refuses an older core\'s editor.readText as a plain error its read falls back from, and keeps the connection', async () => {
+    const { main, core } = connect();
+    const request = core.endpoint.request as (name: string, value: unknown) => Promise<unknown>;
+    await expect(request('editor.readText', { path: path.join(dirs[0]!, 'a.txt') })).rejects.toThrow('This app no longer reads the editor text for a core');
+    await core.editor.openUntitled('after', 'markdown');
+    expect(main.editor.untitled).toEqual([{ content: 'after', language: 'markdown' }]);
   });
 
   it('a diff\'s title follows its file\'s name on main, and closing it reaches main', async () => {
@@ -755,19 +766,19 @@ describe('a remote authority\'s trust, as its core reads it', () => {
 
   it('the new folder of a move core runs reads trusted there while the host store trusts it, granted once, and never otherwise', async () => {
     const { store, core, relocations } = await remote([a], [a]);
-    const granted = vi.fn();
-    core.trust.onDidGrantTrust(granted);
+    const changed = vi.fn();
+    core.trust.onDidChangeTrust(changed);
     relocations([c]);
     expect(core.trust.isTrusted(c)).toBe(false);
     await store.grantTrust(AUTHORITY, folderKey(c));
     expect(core.trust.isTrusted(c)).toBe(true);
-    expect(granted).toHaveBeenCalledWith([c]);
-    // the host part lists c and revokes a in one write; c stays trusted with no second grant
-    granted.mockClear();
+    expect(changed).toHaveBeenCalledWith({ granted: [c], revoked: [] });
+    // the host part lists c and revokes a in one write; c stays trusted with no second grant, and core hears a revoked
+    changed.mockClear();
     await store.replaceProject(AUTHORITY, move(a, c, 'r1'));
     expect(core.trust.isTrusted(c)).toBe(true);
     expect(core.trust.isTrusted(a)).toBe(false);
-    expect(granted.mock.calls.filter(([folders]) => (folders as string[]).length > 0)).toEqual([]);
+    expect(changed.mock.calls).toEqual([[{ granted: [], revoked: [a] }]]);
   });
 
   it('a stopped move\'s new folder, unlisted, leaves core\'s trust with the move', async () => {

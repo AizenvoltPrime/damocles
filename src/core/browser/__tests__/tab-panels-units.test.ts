@@ -29,9 +29,10 @@ function fakePage(url = 'about:blank'): { on: (e: string, h: Handler) => void; u
   };
 }
 
-const fakeSession = { on: () => {} };
+const fakeSession = { on: () => {}, send: async () => ({}) };
 
-const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+// The human scope of the one chat serviceWithChat registers, the first a service names.
+const CHAT_SCOPE = 'chat-1';
 
 type Priv = {
   context: unknown;
@@ -75,13 +76,23 @@ const priv = (s: BrowserService): Priv =>
     },
   });
 
-/** A primary-scope handle over the service (mirrors what buildCustomTools threads into the tools). */
-function scopeFor(service: BrowserService, id: string = PRIMARY) {
+/** A scope handle over the service (mirrors what buildCustomTools threads into the tools). */
+function scopeFor(service: BrowserService, id: string = CHAT_SCOPE) {
   return service.createAgentScope(id);
 }
 
+/** A service whose one chat's own scope is CHAT_SCOPE and owns the agent scopes these tests name; every page belongs to a chat. */
+function serviceWithChat(): BrowserService {
+  const platform = createFakePlatform();
+  const service = new BrowserService(platform);
+  const chat = platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+  expect(service.chatScope(chat).id).toBe(CHAT_SCOPE);
+  for (const id of ['sub-1', 'agent-a', 'agent-b']) service.createAgentScope(id, chat);
+  return service;
+}
+
 function serviceWith2Tabs(ctxExtra: Record<string, unknown> = {}): { service: BrowserService; pa: ReturnType<typeof fakePage>; pb: ReturnType<typeof fakePage> } {
-  const service = new BrowserService(createFakePlatform());
+  const service = serviceWithChat();
   priv(service).context = { newCDPSession: async () => fakeSession, ...ctxExtra };
   const pa = fakePage('http://a');
   const pb = fakePage('http://b');
@@ -95,8 +106,8 @@ afterEach(() => {
 describe('tab panels — one editor tab per page', () => {
   it('gives every registered page its own panel and lists them (scope-scoped)', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
-    await priv(service).registerPage(pb, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
+    await priv(service).registerPage(pb, CHAT_SCOPE);
 
     const entries = [...priv(service).pages.values()];
     expect(entries).toHaveLength(2);
@@ -107,7 +118,7 @@ describe('tab panels — one editor tab per page', () => {
 
   it('routes a page\'s frames to that page\'s own panel and caches lastFrame', async () => {
     const { service, pa } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     const entry = priv(service).pages.get(pa)!;
     const push = vi.spyOn(entry.panel, 'pushFrame');
 
@@ -121,8 +132,8 @@ describe('tab panels — one editor tab per page', () => {
 
   it('closing the active middle tab disposes only its panel and activates the right neighbor', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
-    await priv(service).registerPage(pb, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
+    await priv(service).registerPage(pb, CHAT_SCOPE);
     priv(service).setActivePage(pa);
     const entryA = priv(service).pages.get(pa)!;
     const disposeA = vi.spyOn(entryA.panel, 'dispose');
@@ -137,7 +148,7 @@ describe('tab panels — one editor tab per page', () => {
   it('closing the last tab tears the session down (context closed)', async () => {
     const ctxClose = vi.fn(async () => {});
     const { service, pa } = serviceWith2Tabs({ close: ctxClose });
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     priv(service).setActivePage(pa);
 
     priv(service).handlePageClosed(pa);
@@ -150,8 +161,8 @@ describe('tab panels — one editor tab per page', () => {
 
   it('selectTab reveals the target page\'s editor tab and marks it the scope\'s current + human active', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
-    await priv(service).registerPage(pb, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
+    await priv(service).registerPage(pb, CHAT_SCOPE);
     const revealA = vi.spyOn(priv(service).pages.get(pa)!.panel, 'reveal');
     const scope = scopeFor(service);
 
@@ -166,11 +177,11 @@ describe('tab panels — one editor tab per page', () => {
 describe('per-agent scope isolation', () => {
   it('tools resolve the SCOPE\'s current tab, not the human activePage, after a focus change', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
-    await priv(service).registerPage(pb, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
+    await priv(service).registerPage(pb, CHAT_SCOPE);
     const scope = scopeFor(service);
     // The scope's current tab is pa (what the agent drives).
-    priv(service).scopes.get(PRIMARY)!.currentPage = pa;
+    priv(service).scopes.get(CHAT_SCOPE)!.currentPage = pa;
 
     // The human focuses a DIFFERENT editor tab (pb) — exactly what onVisibilityChange does.
     priv(service).setActivePage(pb);
@@ -181,19 +192,19 @@ describe('per-agent scope isolation', () => {
     expect(scope.getController()).toBe(priv(service).pages.get(pa)!.controller);
   });
 
-  it('a subagent scope lists ONLY its own tabs, never the primary\'s', async () => {
+  it('a subagent scope lists ONLY its own tabs, never its chat\'s human scope\'s', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     await priv(service).registerPage(pb, 'sub-1');
     priv(service).scopes.set('sub-1', { currentPage: pb });
 
-    expect(scopeFor(service, PRIMARY).listTabs().map((t) => t.url)).toEqual(['http://a']);
+    expect(scopeFor(service, CHAT_SCOPE).listTabs().map((t) => t.url)).toEqual(['http://a']);
     expect(scopeFor(service, 'sub-1').listTabs().map((t) => t.url)).toEqual(['http://b']);
   });
 
   it('disposeScope(closeTabs=false) keeps an errored subagent\'s tab open and drops its registry entry', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     await priv(service).registerPage(pb, 'sub-1');
     priv(service).scopes.set('sub-1', { currentPage: pb });
 
@@ -206,7 +217,7 @@ describe('per-agent scope isolation', () => {
 
   it('disposeScope(closeTabs=true) closes a successful subagent\'s tabs', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     await priv(service).registerPage(pb, 'sub-1');
     priv(service).scopes.set('sub-1', { currentPage: pb });
 
@@ -216,20 +227,20 @@ describe('per-agent scope isolation', () => {
     expect(priv(service).scopes.has('sub-1')).toBe(false);
   });
 
-  it('disposeScope never removes or closes the primary scope', async () => {
+  it('disposeScope never removes or closes a chat\'s human scope', async () => {
     const { service, pa } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
-    priv(service).scopes.set(PRIMARY, { currentPage: pa });
+    await priv(service).registerPage(pa, CHAT_SCOPE);
+    priv(service).scopes.set(CHAT_SCOPE, { currentPage: pa });
 
-    service.disposeScope(PRIMARY, true);
+    service.disposeScope(CHAT_SCOPE, true);
 
     expect(pa.close).not.toHaveBeenCalled();
-    expect(priv(service).scopes.has(PRIMARY)).toBe(true);
+    expect(priv(service).scopes.has(CHAT_SCOPE)).toBe(true);
   });
 
   it('disposeScope is idempotent — a second call never closes tabs the first kept', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     await priv(service).registerPage(pb, 'sub-1');
     priv(service).scopes.set('sub-1', { currentPage: pb });
 
@@ -242,7 +253,7 @@ describe('per-agent scope isolation', () => {
 
   it('discardScope reclaims tabs a failed agent kept, even after its scope entry is gone', async () => {
     const { service, pa, pb } = serviceWith2Tabs();
-    await priv(service).registerPage(pa, PRIMARY);
+    await priv(service).registerPage(pa, CHAT_SCOPE);
     await priv(service).registerPage(pb, 'sub-1');
     priv(service).scopes.set('sub-1', { currentPage: pb });
 
@@ -293,10 +304,10 @@ describe('concurrent scopes', () => {
     await expect(scopeB.selectTab(1)).rejects.toThrow(/out of range/);
   });
 
-  it('only the primary scope steals the human screencast when selecting a tab', async () => {
+  it('only a chat\'s human scope steals the human screencast when selecting a tab', async () => {
     const { service } = serviceWith2Tabs();
     const [p1, p2, s1, s2] = [fakePage('http://p1'), fakePage('http://p2'), fakePage('http://s1'), fakePage('http://s2')];
-    for (const [page, owner] of [[p1, PRIMARY], [p2, PRIMARY], [s1, 'sub-1'], [s2, 'sub-1']] as const) {
+    for (const [page, owner] of [[p1, CHAT_SCOPE], [p2, CHAT_SCOPE], [s1, 'sub-1'], [s2, 'sub-1']] as const) {
       await priv(service).registerPage(page, owner);
     }
     priv(service).scopes.set('sub-1', { currentPage: s1 });
@@ -311,7 +322,7 @@ describe('concurrent scopes', () => {
     expect(revealS2).not.toHaveBeenCalled();
     expect(priv(service).activePage).toBe(p1); // the human keeps watching their own tab
 
-    await scopeFor(service, PRIMARY).selectTab(1);
+    await scopeFor(service, CHAT_SCOPE).selectTab(1);
     expect(revealP2).toHaveBeenCalled();
     expect(priv(service).activePage).toBe(p2);
   });
@@ -360,7 +371,7 @@ describe('concurrent scopes', () => {
 
 describe('first open adopts the launcher\'s initial page (no orphan tab)', () => {
   it('reuses context.pages()[0] and navigates it — never opens a second tab', async () => {
-    const service = new BrowserService(createFakePlatform());
+    const service = serviceWithChat();
     // Skip the real filesystem ensureUserDataDir work.
     priv(service).userDataDir = '/tmp/damocles-adopt';
     priv(service).iconCacheDir = '/tmp/damocles-adopt/icons';
@@ -386,7 +397,7 @@ describe('first open adopts the launcher\'s initial page (no orphan tab)', () =>
     };
     vi.mocked(launchBrowserContext).mockResolvedValue(fakeCtx as never);
 
-    await service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'http://a');
+    await service.openForScope(CHAT_SCOPE, 'http://a');
 
     // Exactly one tab (the adopted initial page), no orphan blank; newPage() was never called.
     expect(priv(service).pages.size).toBe(1);
@@ -401,7 +412,7 @@ describe('first open adopts the launcher\'s initial page (no orphan tab)', () =>
   });
 
   it("waits for the last tab's teardown before it launches again, so two contexts never share the profile", async () => {
-    const service = new BrowserService(createFakePlatform());
+    const service = serviceWithChat();
     priv(service).userDataDir = '/tmp/damocles-relaunch';
     priv(service).iconCacheDir = '/tmp/damocles-relaunch/icons';
     priv(service).downloadManager.downloadsDir = '/tmp/damocles-relaunch/dl';
@@ -421,10 +432,10 @@ describe('first open adopts the launcher\'s initial page (no orphan tab)', () =>
     vi.mocked(launchBrowserContext)
       .mockImplementationOnce(async () => { events.push('launch 1'); return context(first, () => new Promise<void>((resolve) => { closed = () => { events.push('closed 1'); resolve(); }; })) as never; })
       .mockImplementationOnce(async () => { events.push('launch 2'); return context(page(), async () => {}) as never; });
-    await service.openForScope(PRIMARY, 'http://a');
+    await service.openForScope(CHAT_SCOPE, 'http://a');
 
     priv(service).handlePageClosed(first);
-    const reopened = service.openForScope(PRIMARY, 'http://b');
+    const reopened = service.openForScope(CHAT_SCOPE, 'http://b');
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(events).toEqual(['launch 1']);
     closed();

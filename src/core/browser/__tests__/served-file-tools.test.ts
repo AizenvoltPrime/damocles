@@ -51,7 +51,24 @@ describe('a local chat\'s browser tools', () => {
     expect(shot.content[0]).toEqual({ type: 'text', text: 'Screenshot of: file:///home/u/proj/docs/index.html' });
   });
 
-  it('names another chat\'s served page in a context-wide answer (BrowserDownloads) without its host', async () => {
+  it('holds the served origin before the page opens, so the page\'s network guard lets the chat\'s own pages through', async () => {
+    const serve = vi.fn(async () => ({ url: `${ORIGIN}/__damocles_preview/open?t=TOKEN&p=docs%2Findex.html`, origin: ORIGIN }));
+    const served = new ChatServedFiles({ roots: () => ROOTS, serve });
+    const { tools: built, scope } = tools(served);
+    const heldAtOpen: boolean[] = [];
+    const open = scope.open.getMockImplementation()!;
+    scope.open.mockImplementation(async (url: string) => {
+      heldAtOpen.push(served.ownsOrigin(ORIGIN));
+      return open(url);
+    });
+    expect(served.ownsOrigin(ORIGIN)).toBe(false);
+    await built.get('BrowserOpen')!.execute('t', { url: 'file:///home/u/proj/docs/index.html' });
+    expect(heldAtOpen).toEqual([true]);
+    expect(served.ownsOrigin(ORIGIN)).toBe(true);
+    expect(served.ownsOrigin(`http://${'b'.repeat(32)}.localhost:52341`)).toBe(false);
+  });
+
+  it('names another chat\'s served page in a BrowserDownloads answer without its host', async () => {
     const serve = vi.fn(async () => ({ url: `${ORIGIN}/__damocles_preview/open?t=TOKEN&p=docs%2Findex.html`, origin: ORIGIN }));
     const { tools: built, scope } = tools(new ChatServedFiles({ roots: () => ROOTS, serve }));
     await built.get('BrowserOpen')!.execute('t', { url: 'file:///home/u/proj/docs/index.html' });

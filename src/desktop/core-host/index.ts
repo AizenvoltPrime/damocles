@@ -5,6 +5,7 @@ import { installLogSink, log } from '../../core/logger';
 import { installPlatform } from '../../core/platform-host';
 import { setEndedLeaseHolders } from '../../core/pi-session/session-store/session-lease';
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from '../../core/process-launcher';
+import { createWalkHost, installWalkHost, startWalkChild } from '../../core/search-walk';
 import { heldRepoLocksReleased } from '../../core/pi-session/checkpoints';
 import { tempFoldersSettled } from '../../core/worktrees/create';
 import type { Disposable } from '../../platform/disposable';
@@ -70,6 +71,9 @@ async function start(port: ParentChannel): Promise<void> {
   // Before the first process start; core's environment is main's after main merged the login shell's.
   lockThreadSpawns();
   installProcessLauncher(createLauncherPool({ workerPath: init.paths.workers.processLauncher, sentinelPath: init.paths.workers.sentinel }));
+  // the @ list's, Grep's and Glob's walks, on walk processes started as walks need them
+  const walks = createWalkHost(() => startWalkChild(init.paths.workers.walkChild), (line) => log(line));
+  installWalkHost(walks);
   // Before any TLS connection opens.
   await installCaCertificates((line) => log(line));
   const idleTimeoutMs = await httpIdleTimeoutMs((line) => log(line));
@@ -104,7 +108,7 @@ async function start(port: ParentChannel): Promise<void> {
       worktrees.dispose();
       scm.dispose();
       forge?.dispose();
-      await Promise.all([scm.close(), tempFoldersSettled(), heldRepoLocksReleased(), coreLocal.settings.flush(), coreLocal.fileWatchers.close()]);
+      await Promise.all([scm.close(), tempFoldersSettled(), heldRepoLocksReleased(), coreLocal.settings.flush(), coreLocal.fileWatchers.close(), walks.close()]);
       for (const disposable of owned.reverse()) disposable.dispose();
       coreLocal.dispose();
     },

@@ -15,6 +15,8 @@ class FakeChild implements LaunchedProcess {
     this.closed = this.exited.then(() => undefined);
     this.leftRunning = this.closed.then(() => false);
   }
+  pauseOutput(): void {}
+  resumeOutput(): void {}
   onData(): void {}
   write(): Promise<void> {
     return Promise.resolve();

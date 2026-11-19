@@ -1,4 +1,5 @@
 import { parseWakePhrase } from '@shared/wake-phrase';
+import type { WholeNumberRange } from '@shared/types/constants';
 import type { InputParse } from './controls/SettingInput.vue';
 
 type Translate = (key: string, named?: Record<string, unknown>) => string;
@@ -30,6 +31,11 @@ export function parseTaskBudget(raw: string, t: Translate): ReturnType<InputPars
 export function parseWakePhraseInput(raw: string, t: Translate): ReturnType<InputParse<string>> {
   const words = parseWakePhrase(raw);
   return words === null ? { ok: false, error: t('settingsModal.invalid.wakePhrase') } : { ok: true, value: words.join(' ') };
+}
+
+export function parseWholeNumberIn(raw: string, range: WholeNumberRange, t: Translate): ReturnType<InputParse<number>> {
+  const value = integerIn(raw, range.min, range.max);
+  return value === null ? { ok: false, error: t('settingsModal.invalid.integerRange', { min: range.min, max: range.max }) } : { ok: true, value };
 }
 
 /** 0 keeps checkpoints forever. */

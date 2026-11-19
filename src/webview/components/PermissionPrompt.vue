@@ -37,6 +37,8 @@ const props = defineProps<{
   imageModel?: string | undefined;
   patch?: string | undefined;
   patchOmitted?: FilePatchOmitted | undefined;
+  /** The host's editor holds unsaved changes to the file, which the diff of the file on disk leaves out. */
+  unsavedChanges?: true | undefined;
   command?: string | undefined;
   owner?: PromptOwner | undefined;
   agentDescription?: string | undefined;
@@ -79,6 +81,7 @@ const diffSource = computed(() => (isFileChange.value
   )
   : null));
 const isNewFile = computed(() => diffSource.value?.kind === 'newFile');
+const unsavedNote = computed(() => isFileChange.value && props.unsavedChanges === true);
 // Any tool without its own view, such as a Read an ask rule names, shows its name and input.
 const isGeneric = computed(() => !isShell.value && !isGenerateImage.value && !isFileChange.value);
 
@@ -375,7 +378,7 @@ watch(() => props.toolUseId, resetState);
     </header>
 
     <div
-      v-if="agentLine || isShell || isGeneric || isGenerateImage"
+      v-if="agentLine || unsavedNote || isShell || isGeneric || isGenerateImage"
       class="space-y-2 px-3 pt-2.5 text-12.5"
     >
       <div
@@ -383,6 +386,13 @@ watch(() => props.toolUseId, resetState);
         class="text-(--d-muted)"
       >
         {{ agentLine }}
+      </div>
+      <div
+        v-if="unsavedNote"
+        class="text-(--d-muted)"
+        data-testid="permission-unsaved-changes"
+      >
+        {{ t('prompts.permission.unsavedChanges') }}
       </div>
       <div
         v-if="isShell"

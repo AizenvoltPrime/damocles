@@ -4,6 +4,7 @@ import { ERROR_CODEC } from '../../core-protocol/errors';
 import { INVALID } from '../../core-protocol/schema';
 import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WorkspaceToClient } from '../../workspace/messages';
 import { MOVE_LEFT_LISTED } from '../../workspace/transfer-ops';
+import { WALK_BATCH_FILES } from '../../../core/search-walk';
 import type { TerminalHub } from '../terminal-hub';
 import { createWorkspaceHost, MAX_WALKS, type WorkspaceModules } from '../workspace-host';
 
@@ -156,5 +157,76 @@ describe('the transfer contract\'s parsers', () => {
     const move = CLIENT_TO_WORKSPACE.requests['files.move'].result;
     expect(move({ ok: true, left: ['a'], leftMore: 7 })).not.toBe(INVALID);
     expect(move({ ok: true, left: Array.from({ length: MOVE_LEFT_LISTED + 1 }, () => 'a') })).toBe(INVALID);
+  });
+});
+
+describe('Search\'s contract', () => {
+  const run = CLIENT_TO_WORKSPACE.requests['search.run'].params;
+
+  it('takes rg\'s matching flags, the pattern and the walk that lists the files, never an argv for rg\'s own walk', () => {
+    const walk = { ignore: { files: true, global: true, parents: false }, overrides: ['src/**', '!**/.git'] };
+    expect(run({ runId: 1, cwd: '/srv/app', match: ['--crlf', '--fixed-strings'], pattern: 'needle', walk })).not.toBe(INVALID);
+    expect(run({ runId: 1, cwd: '/srv/app', match: ['--crlf', '--fixed-strings'], walk })).toBe(INVALID);
+    expect(run({ runId: 1, cwd: '/srv/app', args: ['--json', '--', 'needle', '.'] })).toBe(INVALID);
+    expect(run({ runId: 1, cwd: '/srv/app', match: [], pattern: 'needle', walk: { overrides: [] } })).toBe(INVALID);
+  });
+
+  it('hands the daemon\'s runner the request as sent, and relays its events and end', async () => {
+    const requests: unknown[] = [];
+    const host = createWorkspaceHost({
+      search: {
+        run: (cwd: string, request: unknown, sink: { event(event: unknown): void; end(end: unknown): void }) => {
+          requests.push([cwd, request]);
+          setImmediate(() => {
+            sink.event({ type: 'begin', data: { path: { text: 'a.ts' } } });
+            sink.end({ code: 0, stderr: '' });
+          });
+          return { kill: () => undefined };
+        },
+      },
+      hub: { detach: () => undefined } as unknown as TerminalHub,
+      cli: { connected: () => ({ dispose: () => undefined }) },
+      watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
+    } as unknown as WorkspaceModules, () => undefined);
+    const [clientEnd, hostEnd] = channel();
+    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false);
+    const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log: () => undefined, errors: ERROR_CODEC });
+    const received: unknown[] = [];
+    const ended = new Promise<void>((resolve) => {
+      endpoint.onEvent('search.event', ({ event }) => received.push(event.type));
+      endpoint.onEvent('search.end', ({ end }) => {
+        received.push(end);
+        resolve();
+      });
+    });
+    try {
+      const walk = { ignore: { files: false, global: false, parents: false }, overrides: ['!**/gen'] };
+      await endpoint.request('search.run', { runId: 1, cwd: '/srv/app', match: ['--fixed-strings'], pattern: 'needle', walk });
+      await ended;
+      expect(requests).toEqual([['/srv/app', { match: ['--fixed-strings'], pattern: 'needle', walk }]]);
+      expect(received).toEqual(['begin', { code: 0, stderr: '' }]);
+    } finally {
+      endpoint.close('done');
+      served.dispose();
+    }
+  });
+});
+
+describe('the Quick Open listing\'s contract', () => {
+  const files = WORKSPACE_TO_CLIENT.events['quickOpen.files'];
+
+  it('takes the walk\'s switches and a batch of relative paths, at most a walk batch of them', () => {
+    expect(CLIENT_TO_WORKSPACE.requests['quickOpen.list'].params({ runId: 1, root: '/srv/app', ignore: { files: true, global: false, parents: true }, excludes: ['**/.git'] })).not.toBe(INVALID);
+    expect(CLIENT_TO_WORKSPACE.requests['quickOpen.list'].params({ runId: 1, root: '/srv/app', ignoreArgs: ['--no-ignore'], excludes: [] })).toBe(INVALID);
+    expect(files({ runId: 1, files: ['a.ts', 'src/b.ts', 'two\nlines.ts'] })).not.toBe(INVALID);
+    expect(files({ runId: 1, files: Array.from({ length: WALK_BATCH_FILES }, (_, index) => `f${index}`) })).not.toBe(INVALID);
+    expect(files({ runId: 1, files: Array.from({ length: WALK_BATCH_FILES + 1 }, (_, index) => `f${index}`) })).toBe(INVALID);
+    expect(files({ runId: 1, files: [] })).toBe(INVALID);
+  });
+
+  it('refuses a batch naming any path outside the listing\'s root', () => {
+    for (const outside of ['../secret.ts', '/etc/passwd', 'C:/Windows/win.ini', 'a/../../b', 'a\\b', 'a/./b', '', 'x'.repeat(4097)]) {
+      expect(files({ runId: 1, files: ['a.ts', outside] }), outside).toBe(INVALID);
+    }
   });
 });

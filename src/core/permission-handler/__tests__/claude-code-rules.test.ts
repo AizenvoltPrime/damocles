@@ -467,10 +467,26 @@ describe('Read and Edit: a Read deny rule also blocks the Edit and Write tools o
     expect(await rule('Write', path.join(ws, 'docs', 'a.md'))).toBe('allow');
   });
 
-  it('a Read ask or allow rule does not extend to edits', async () => {
-    settings('user', { ask: ['Read(secrets/**)'], allow: ['Read(src/**)'] });
-    expect(await rule('Edit', path.join(ws, 'secrets', 'k.txt'))).toBeNull();
+  it('a Read ask rule makes an Edit or Write of its paths ask with no preview, over an Edit allow rule; a Read allow rule does not extend to edits', async () => {
+    settings('user', { ask: ['Read(secrets/**)'], allow: ['Read(src/**)', 'Edit(secrets/**)', 'Edit(docs/**)'] });
+    const covered = path.join(ws, 'secrets', 'k.txt');
+    expect(await rule('Edit', covered)).toBe('ask');
+    expect(await rule('Write', path.join(ws, 'secrets', 'new.txt'))).toBe('ask');
+    expect(await rule('GenerateImage', path.join(ws, 'secrets', 'new.png'))).toBe('allow');
+    expect(await rule('Edit', path.join(ws, 'docs', 'a.md'))).toBe('allow');
     expect(await rule('Edit', path.join(ws, 'src', 'a.ts'))).toBeNull();
+    const asks = (tool: string, file: string): Promise<boolean> => evaluator().readAskCovers(tool, { file_path: file }, ws);
+    expect(await asks('Edit', covered)).toBe(true);
+    expect(await asks('Write', covered)).toBe(true);
+    expect(await asks('Read', covered)).toBe(false);
+    expect(await asks('Edit', path.join(ws, 'docs', 'a.md'))).toBe(false);
+    expect(await asks('Edit', path.join(ws, 'src', 'a.ts'))).toBe(false);
+  });
+
+  it('an Edit ask rule asks with the diff, since no Read rule covers the file', async () => {
+    settings('user', { ask: ['Edit(src/**)'] });
+    expect(await rule('Edit', path.join(ws, 'src', 'a.ts'))).toBe('ask');
+    expect(await evaluator().readAskCovers('Edit', { file_path: path.join(ws, 'src', 'a.ts') }, ws)).toBe(false);
   });
 });
 

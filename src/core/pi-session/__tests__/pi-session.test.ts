@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
-import type { SessionOptions } from '../../session-types';
+import type { SessionBrowser, SessionOptions } from '../../session-types';
 import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
 import { processLauncher, type LaunchedProcess } from '../../process-launcher';
 import type { ShellCredentialLease } from '../tools/shell-credentials';
@@ -550,8 +550,21 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-5-5',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
+    // every chat's session has a browser, as SessionManager builds it
+    browser: { service: inertBrowser(), chat: {} as SessionBrowser['chat'] },
     ...extra,
   };
+}
+
+/** A browser service whose tools build and whose served pages bind, and that is never driven. */
+function inertBrowser(): SessionBrowser['service'] {
+  return {
+    bindServedPages: () => ({ dispose: () => undefined }),
+    chatScope: () => ({}),
+    createAgentScope: () => ({}),
+    disposeScope: () => undefined,
+    discardScope: () => undefined,
+  } as unknown as SessionBrowser['service'];
 }
 
 /** A panel with `damocles.model` unset whose sessions report their model to its settings and start on what it holds, as `SessionManager` wires them. */
@@ -1064,6 +1077,23 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it('lists the browser in the Tools status and the ToolSearch menu exactly when it built the browser tools', async () => {
+    const cfg = vi.spyOn(testPlatform.settings, 'get').mockImplementation(settingsReader((key: string) => (key === 'damocles.browser.enabled' ? true : undefined)));
+    for (const withBrowser of [false, true]) {
+      const options = makeOptions([]);
+      if (!withBrowser) delete options.browser;
+      const session = new PiSession(options);
+      await session.initializeEarly();
+      const built = H.captured.customTools.some((tool) => BROWSER_PI_TOOL_NAMES.includes(tool.name));
+      const menu = (session as unknown as { deferrableNow: () => Set<string> }).deferrableNow();
+      expect(built).toBe(withBrowser);
+      expect(session.getToolStatus().groups.find((group) => group.group === 'browser')?.available).toBe(built);
+      for (const name of BROWSER_PI_TOOL_NAMES) expect(menu.has(name), name).toBe(built);
+      await session.dispose();
+    }
+    cfg.mockRestore();
+  });
+
   // --- MCP first-connect: reloadForMcpToolChange (frozen-allowlist fix) ------------------------------
   function seedMcpNames(names: string[]): void {
     stubPanelMcp({
@@ -1435,7 +1465,6 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const opts = makeOptions([]);
     opts.memoryService = { isEnabled: true } as never;
     opts.compassService = { isEnabled: false } as never;
-    opts.browserService = {} as never;
     const session = new PiSession(opts);
     const snap = session.getToolStatus();
     const group = (g: string) => snap.groups.find((x) => x.group === g);
@@ -4378,17 +4407,17 @@ describe('PiSession subagent records', () => {
     type ScopeEngine = { disposeBrowserScope: (scopeId: string, closeTabs: boolean) => void };
     const scopeEngineOf = (session: PiSession): ScopeEngine =>
       (session as unknown as { buildSubagentEngine: (pi: unknown) => ScopeEngine }).buildSubagentEngine(getPiCodingAgent());
-    const browserService = { disposeScope: vi.fn(), bindServedPages: () => ({ dispose: () => undefined }) } as unknown as NonNullable<SessionOptions['browserService']>;
-    const browserChat = {} as NonNullable<SessionOptions['browserChat']>;
+    const browserService = { disposeScope: vi.fn(), bindServedPages: () => ({ dispose: () => undefined }) } as unknown as SessionBrowser['service'];
+    const browserChat = {} as SessionBrowser['chat'];
     const fake = createFakeRemoteHost();
-    const remote = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: fake.remote }, browserService, browserChat }));
+    const remote = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: fake.remote }, browser: { service: browserService, chat: browserChat } }));
     await remote.initializeEarly();
     scopeEngineOf(remote).disposeBrowserScope('agent-1', true);
     expect(fake.remote.browserRelease).toHaveBeenCalledWith(browserChat, 'agent-1', true);
     expect(browserService.disposeScope).not.toHaveBeenCalled();
     await remote.dispose();
     await PiRuntime.disposeInstance();
-    const local = new PiSession(makeOptions([], { browserService, browserChat }));
+    const local = new PiSession(makeOptions([], { browser: { service: browserService, chat: browserChat } }));
     await local.initializeEarly();
     scopeEngineOf(local).disposeBrowserScope('agent-2', false);
     expect(browserService.disposeScope).toHaveBeenCalledWith('agent-2', false);
@@ -4397,17 +4426,17 @@ describe('PiSession subagent records', () => {
 
   it('discards the agents\' browser scopes it handed out on the client showing the chat when its conversation ends on a daemon\'s core, and in its own browser here', async () => {
     const owned = (session: PiSession): Set<string> => (session as unknown as { ownedBrowserScopes: Set<string> }).ownedBrowserScopes;
-    const browserService = { discardScope: vi.fn(), bindServedPages: () => ({ dispose: () => undefined }) } as unknown as NonNullable<SessionOptions['browserService']>;
-    const browserChat = {} as NonNullable<SessionOptions['browserChat']>;
+    const browserService = { discardScope: vi.fn(), bindServedPages: () => ({ dispose: () => undefined }) } as unknown as SessionBrowser['service'];
+    const browserChat = {} as SessionBrowser['chat'];
     const fake = createFakeRemoteHost();
-    const remote = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: fake.remote }, browserService, browserChat }));
+    const remote = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: fake.remote }, browser: { service: browserService, chat: browserChat } }));
     await remote.initializeEarly();
     owned(remote).add('agent-1');
     await remote.dispose();
     expect(fake.remote.browserDiscard).toHaveBeenCalledWith(browserChat, 'agent-1');
     expect(browserService.discardScope).not.toHaveBeenCalled();
     await PiRuntime.disposeInstance();
-    const local = new PiSession(makeOptions([], { browserService, browserChat }));
+    const local = new PiSession(makeOptions([], { browser: { service: browserService, chat: browserChat } }));
     await local.initializeEarly();
     owned(local).add('agent-2');
     await local.dispose();
@@ -8981,9 +9010,9 @@ describe('PiSession undelivered background results', () => {
 
     it('resolves a design page once the start under way bound the stored conversation that names the design', async () => {
       storedSessions([{ id: 'sess-D', branch: [role] }]);
-      const browserChat = {} as NonNullable<SessionOptions['browserChat']>;
+      const browserChat = {} as SessionBrowser['chat'];
       const url = vi.fn(async () => ({ url: 'http://127.0.0.1:5000/__damocles_preview/open?t=x&p=screens%2FS1.html', origin: 'http://127.0.0.1:5000' }));
-      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, browserServedFiles: { url } }, browserChat }));
+      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, browserServedFiles: { url } }, browser: { service: inertBrowser(), chat: browserChat } }));
       session.setResumeSession('sess-D');
       const starting = session.initializeEarly();
       const target = await session.browserRestoreTarget(screen);
@@ -8995,7 +9024,7 @@ describe('PiSession undelivered background results', () => {
 
     it('refuses a design page when no start bound a conversation naming the design, and never opens it from disk', async () => {
       const url = vi.fn();
-      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, browserServedFiles: { url } }, browserChat: {} as NonNullable<SessionOptions['browserChat']> }));
+      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, browserServedFiles: { url } }, browser: { service: inertBrowser(), chat: {} as SessionBrowser['chat'] } }));
       expect(await session.browserRestoreTarget(screen)).toEqual({ refused: 'its address is outside the chat\'s project and design folders' });
       expect(url).not.toHaveBeenCalled();
       await session.dispose();
@@ -9003,18 +9032,22 @@ describe('PiSession undelivered background results', () => {
 
     it('lends the browser its served pages for a relaunch of the browser alone, until the chat is disposed', async () => {
       storedSessions([{ id: 'sess-D', branch: [role] }]);
-      const browserChat = {} as NonNullable<SessionOptions['browserChat']>;
+      const browserChat = {} as SessionBrowser['chat'];
       const url = vi.fn(async () => ({ url: 'http://0123456789abcdef0123456789abcdef.localhost:5000/__damocles_preview/open?t=y&p=screens%2FS1.html', origin: 'http://0123456789abcdef0123456789abcdef.localhost:5000' }));
       const dispose = vi.fn();
-      let lent: { toFile(url: string): string; restoreTarget(url: string): Promise<unknown> } | undefined;
+      let lent: { toFile(url: string): string; restoreTarget(url: string): Promise<unknown>; ownsOrigin(origin: string): boolean } | undefined;
       const bindServedPages = vi.fn((_chat: unknown, pages: typeof lent) => { lent = pages; return { dispose }; });
-      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, browserServedFiles: { url } }, browserChat, browserService: { bindServedPages, chatScope: () => ({}) } as never }));
+      const session = new PiSession(makeOptions([], { platform: { ...testPlatform, browserServedFiles: { url } }, browser: { service: { bindServedPages, chatScope: () => ({}) } as never, chat: browserChat } }));
       expect(bindServedPages).toHaveBeenCalledWith(browserChat, expect.anything());
       session.setResumeSession('sess-D');
       await session.initializeEarly();
 
+      // the chat holds a grant origin only once one of its pages was served from it
+      expect(lent!.ownsOrigin('http://0123456789abcdef0123456789abcdef.localhost:5000')).toBe(false);
       expect(await lent!.restoreTarget(screen)).toEqual({ url: 'http://0123456789abcdef0123456789abcdef.localhost:5000/__damocles_preview/open?t=y&p=screens%2FS1.html&q=state%3Dempty#list' });
       expect(lent!.toFile('http://0123456789abcdef0123456789abcdef.localhost:5000/screens/S1.html#list')).toBe(screen.replace('?state=empty#list', '#list'));
+      expect(lent!.ownsOrigin('http://0123456789abcdef0123456789abcdef.localhost:5000')).toBe(true);
+      expect(lent!.ownsOrigin('http://fedcba9876543210fedcba9876543210.localhost:5000')).toBe(false);
       await session.dispose();
       expect(dispose).toHaveBeenCalledTimes(1);
     });

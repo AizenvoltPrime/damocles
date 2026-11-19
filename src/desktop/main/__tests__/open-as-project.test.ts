@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from '../open-as-project';
+import { folderProject, openAsProject, openFolderAsProject, type OpenAsProjectDeps } from '../open-as-project';
 import type { RootProject } from '../worktrees/roots';
 
 type Root = RootProject & { readonly os: NodeJS.Platform };
@@ -26,6 +26,7 @@ function fake(options: { roots?: Record<string, Root>; served?: (authority: stri
       calls.push(`add ${authority} ${folder} ${key} after ${after ?? '-'}`);
       projects.add(key);
     },
+    added: (authority) => { calls.push(`added ${authority}`); },
     requestTrust: async (key) => { calls.push(`trust ${key}`); },
     select: async (key) => { calls.push(`select ${key}`); },
     notFolder: (authority, folder) => new Error(`${folder} is no folder on ${authority}`),
@@ -40,6 +41,7 @@ describe('openAsProject', () => {
     expect(calls).toEqual([
       'isDirectory local C:\\work\\app\\src\\packages\\api',
       'add local C:\\work\\app\\src\\packages\\api c:\\work\\app\\src\\packages\\api after c:\\work\\app',
+      'added local',
       'trust c:\\work\\app\\src\\packages\\api',
       'select c:\\work\\app\\src\\packages\\api',
     ]);
@@ -91,5 +93,20 @@ describe('openFolderAsProject', () => {
     const { deps, calls } = fake();
     await openFolderAsProject(deps, 'ssh+h1', '/srv/billing');
     expect(calls[1]).toBe('add ssh+h1 /srv/billing ssh+h1|/srv/billing after -');
+  });
+});
+
+// Add Project asks the trust question between these reads and the add
+describe('folderProject', () => {
+  it('names the key a folder has as a project and whether it is one, adding, asking and selecting nothing', async () => {
+    const { deps, calls } = fake({ projects: ['ssh+h1|/srv/app'] });
+    expect(await folderProject(deps, 'ssh+h1', '/srv/billing')).toEqual({ projectKey: 'ssh+h1|/srv/billing', listed: false });
+    expect(await folderProject(deps, 'ssh+h1', '/srv/app')).toEqual({ projectKey: 'ssh+h1|/srv/app', listed: true });
+    expect(calls).toEqual(['isDirectory ssh+h1 /srv/billing', 'isDirectory ssh+h1 /srv/app']);
+  });
+
+  it('refuses a path that is no folder on the authority', async () => {
+    const { deps } = fake({ directories: [] });
+    await expect(folderProject(deps, 'ssh+h1', '/srv/README.md')).rejects.toThrow('/srv/README.md is no folder on ssh+h1');
   });
 });

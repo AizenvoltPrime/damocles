@@ -189,6 +189,22 @@ describe("granting trust to an open workspace", () => {
     expect(namesIn(postedB)).toEqual(["betaOnly", "github"]);
   });
 
+  it("re-feeds the live client the user-global definition once a revoke follows the grant", async () => {
+    const { fedToClient } = await harness();
+
+    platform.trust.grantTrust();
+    await vi.waitFor(() => expect(fedToClient.length).toBeGreaterThan(0));
+    const fedAfterGrant = fedToClient.length;
+
+    platform.trust.revokeTrust();
+    await vi.waitFor(() => expect(fedToClient.length).toBeGreaterThan(fedAfterGrant));
+
+    const last = fedToClient.at(-1)!;
+    expect(last.folder).toEqual({});
+    expect(last.userVisible).toContain("github");
+    expect(last.userUnion["github"]?.config).toEqual({ command: "user-github", cwd: fakeHome });
+  });
+
   it("withholds the repo servers before the grant, so the test above is not vacuous", async () => {
     const { provider } = await harness();
     const settings = provider as unknown as { settingsManager: { getEnabledMcpServers: (key: string) => McpScope } };
@@ -233,10 +249,64 @@ describe("a worktree chat's working folder", () => {
       fs.rmSync(personal, { force: true });
     }
   });
+
+  // docs/invariants.md "Worktree chats", Personal files: the project's mcp.local.json needs the project trusted too.
+  it("open as a project trusted on its own, applies its project's personal servers only while the project is trusted too", async () => {
+    const worktree = path.join(tmpRoot, "worktrees", "workspace-b-abcdef", "bbbbbbbb");
+    const worktreeKey = folderKey(worktree);
+    writeJson(path.join(worktree, ".mcp.json"), { mcpServers: { checkedOut: { command: "checked-out" } } });
+    const personal = path.join(fakeWorkspaceB, ".damocles", "mcp.local.json");
+    writeJson(personal, { mcpServers: { personal: { command: "personal" } } });
+    const lookup = installWorktreeProjectLookup({
+      projectOf: (folder) => (folderKey(folder) === worktreeKey ? fakeWorkspaceB : undefined),
+      recordsOfProject: () => [],
+      get: () => undefined,
+      chatRecordFor: () => undefined,
+    });
+    platform = installFakePlatform({
+      trusted: false,
+      folders: [{ fsPath: fakeWorkspace, name: "workspace" }, { fsPath: fakeWorkspaceB, name: "workspace-b" }, { fsPath: worktree, name: "bbbbbbbb" }],
+    });
+    const trusted = new Set([worktreeKey]);
+    vi.spyOn(platform.trust, "isTrusted").mockImplementation((folder) => trusted.has(folderKey(folder)));
+    try {
+      const { provider } = await harness();
+      const internals = provider as unknown as {
+        settingsManager: {
+          getEnabledMcpServers: (key: string) => McpScope;
+          getMcpServersForUI: (key: string) => { name: string; untrusted?: boolean }[];
+          mcpManager: { getLocalMcpUnignored: (key: string) => boolean };
+        };
+      };
+      const servers = (): string[] => Object.keys(internals.settingsManager.getEnabledMcpServers(worktreeKey).folder).sort();
+      const personalRow = () => internals.settingsManager.getMcpServersForUI(worktreeKey).find((row) => row.name === "personal");
+      expect(servers()).toEqual(["checkedOut"]);
+      expect(personalRow()?.untrusted).toBe(true);
+      // The leak check runs git in the project folder, so it waits for the project's trust; git here answers "committable".
+      expect(internals.settingsManager.mcpManager.getLocalMcpUnignored(worktreeKey)).toBe(false);
+
+      trusted.add(folderKey(fakeWorkspaceB));
+      platform.trust.grantTrust([fakeWorkspaceB]);
+      await vi.waitFor(() => expect(servers()).toEqual(["checkedOut", "personal"]));
+      expect(personalRow()?.untrusted).toBeUndefined();
+      // sampled by the reload the grant of the project starts
+      await vi.waitFor(() => expect(internals.settingsManager.mcpManager.getLocalMcpUnignored(worktreeKey)).toBe(true));
+
+      trusted.delete(folderKey(fakeWorkspaceB));
+      platform.trust.revokeTrust([fakeWorkspaceB]);
+      await vi.waitFor(() => expect(servers()).toEqual(["checkedOut"]));
+      expect(personalRow()?.untrusted).toBe(true);
+      await vi.waitFor(() => expect(internals.settingsManager.mcpManager.getLocalMcpUnignored(worktreeKey)).toBe(false));
+    } finally {
+      vi.restoreAllMocks();
+      lookup.dispose();
+      fs.rmSync(personal, { force: true });
+    }
+  });
 });
 
 describe("provider notices and listeners", () => {
-  it("logs a reload that fails after a trust grant instead of leaving the rejection unhandled", async () => {
+  it("logs a reload that fails after a trust change instead of leaving the rejection unhandled", async () => {
     const { provider } = await harness();
     const logged: string[] = [];
     installLogSink({ appendLine: (line) => void logged.push(line), show: () => undefined, dispose: () => undefined });
@@ -245,7 +315,7 @@ describe("provider notices and listeners", () => {
 
     platform.trust.grantTrust();
 
-    await vi.waitFor(() => expect(logged.join("\n")).toContain("MCP reload after a trust grant failed"));
+    await vi.waitFor(() => expect(logged.join("\n")).toContain("MCP reload after a trust change failed"));
   });
 
   it("sends the warning for an element picked with no chat panel open as text the host renders", async () => {

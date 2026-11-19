@@ -3,7 +3,7 @@
 import { folderKey } from '../workspace-folders/folder-key';
 import type { FolderIdentity } from './identity';
 import type { RecordedIdentity } from './identity-store';
-import type { PathPresence } from '../workspace-folders/folder-presence-probe';
+import type { PathCheck } from '../workspace-folders/folder-presence-probe';
 import type { MovedFromCandidate } from './types';
 
 export interface MovedFromDeps {
@@ -13,7 +13,7 @@ export interface MovedFromDeps {
   /** Whether the folder lies in a chat worktree, which is never relocated on its own (chatWorktreeOwner). */
   readonly inChatWorktree: (folder: string) => boolean;
   /** The path's presence, its volume asked first (folder-presence-probe.ts), so `missing` is a folder gone from a volume that answers. */
-  readonly presence: (target: string) => Promise<PathPresence>;
+  readonly presence: (target: string) => Promise<PathCheck>;
   readonly chatsOf: (from: string) => Promise<number>;
   /** The root commits of `to`; read only for a folder that can match by them alone, since git walks the history. */
   readonly rootsOfTarget: () => Promise<readonly string[]>;

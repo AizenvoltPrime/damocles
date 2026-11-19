@@ -27,8 +27,8 @@ let partSteps: number[];
 // the typed addresses a remote chat's page asked main to move to their forward, and what main answers
 let remoteAddresses: string[];
 let remoteAddressAnswer: (url: string) => string | undefined | Promise<string | undefined>;
-// the served roots local chats' views hold, as ServedRoots.mappings('local') lists them
-let served: ServedMapping[];
+// the served roots each local chat's view holds, by chat panel id, as ServedRoots.mappings('local', viewId) lists them
+let served: (chatPanelId: string) => ServedMapping[];
 
 // The editor pane as far as the browser tabs see it: one active tab, a file tab to fall back to, and the shell's focus requests.
 function fakeEditor(): BrowserTabsEditor & { active: string | null; focused: string[]; shown: number; republished: number; tabs: BrowserTabs | undefined; activateFile(): void; set(tabId: string | null): void } {
@@ -96,7 +96,7 @@ function setup(width = 1200) {
       return remoteAddressAnswer(url);
     },
     forwardedFrom: (_chat, url) => ({ hostId: 'host-1', hostName: 'prod-1', targetUrl: url.replace(':5174', ':5173') }),
-    servedMappings: () => served,
+    servedMappings: (chat) => served(chat.panelId),
   });
   editor.tabs = tabs;
   const views = new PanelViews({
@@ -152,7 +152,7 @@ beforeEach(() => {
   partSteps = [];
   remoteAddresses = [];
   remoteAddressAnswer = (url) => url;
-  served = [];
+  served = () => [];
 });
 
 describe('ownership', () => {
@@ -216,7 +216,7 @@ describe('ownership', () => {
   });
 
   it('saves and shows a local chat\'s page on a served root as its file:// address, and any other address as loaded', async () => {
-    served = [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: 'C:\\work\\my proj' }, { origin: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001', displayRoot: '/home/u/.damocles/designs/d1' }];
+    served = () => [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: 'C:\\work\\my proj' }, { origin: 'http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.localhost:5001', displayRoot: '/home/u/.damocles/designs/d1' }];
     const { tabs, chat, page, editor } = setup();
     const a = chat();
     const project = page(a, 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/docs/a.html?tab=2#intro');
@@ -239,8 +239,20 @@ describe('ownership', () => {
     expect(delivered).toEqual([]);
   });
 
+  it('saves and shows a page on another chat\'s served origin as loaded, so a restore never reopens that chat\'s file there', () => {
+    const { tabs, chat, page } = setup();
+    const a = chat();
+    const b = chat();
+    served = (chatPanelId) => (chatPanelId === a.panelId ? [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: '/home/u/proj' }] : []);
+    page(b, 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/web/served.html');
+    expect(states.get(b.panelId)?.browser).toEqual({ pages: ['http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/web/served.html'], activePage: 0 });
+    expect(tabs.tabs()[0]?.browser?.url).toBe('http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/web/served.html');
+    page(a, 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000/web/served.html');
+    expect(states.get(a.panelId)?.browser).toEqual({ pages: ['file:///home/u/proj/web/served.html'], activePage: 0 });
+  });
+
   it('shows a remote chat\'s page on a local served port as loaded', () => {
-    served = [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: '/home/u/proj' }];
+    served = () => [{ origin: 'http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost:5000', displayRoot: '/home/u/proj' }];
     const { tabs, views, page } = setup();
     const remote = views.create({ options: CHAT, authority: 'ssh+host-1' });
     views.show(remote.panelId, { focus: true });

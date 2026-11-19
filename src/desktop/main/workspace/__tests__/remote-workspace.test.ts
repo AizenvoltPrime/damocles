@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ALL_IGNORE_FILES } from '../../../../core/search-walk';
 import type { Endpoint } from '../../../core-protocol/endpoint';
 import type { ClientToWorkspace, WorkspaceToClient } from '../../../workspace/messages';
 import type { StreamChannel } from '../../../../remote/mux';
@@ -30,6 +31,8 @@ const workspaceOver = (answers: Record<string, unknown>, sent: Array<[string, un
   rangedReads: false,
   outside: false,
   listing: false,
+  walks: true,
+  searchUnsupported: () => 'Update the Damocles server on this host to search it.',
   openStream: () => { throw new Error('no transfer streams in this suite'); },
   log: () => undefined,
 });
@@ -79,6 +82,8 @@ describe('remote workspace client', () => {
       rangedReads: false,
       outside: false,
       listing: false,
+      walks: true,
+      searchUnsupported: () => 'Update the Damocles server on this host to search it.',
       openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
@@ -116,14 +121,16 @@ describe('remote workspace client', () => {
       rangedReads: false,
       outside: false,
       listing: false,
+      walks: true,
+      searchUnsupported: () => 'Update the Damocles server on this host to search it.',
       openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
     const ends: unknown[] = [];
-    workspace.search.run('/srv/app', ['--json'], { event: () => undefined, dropped: () => undefined, end: (end) => ends.push(['search', end]) });
-    workspace.quickOpen.list('/srv/app', [], [], { data: () => undefined, end: (error) => ends.push(['listing', error]) });
-    const killedSearch = workspace.search.run('/srv/app', ['--json'], { event: () => undefined, dropped: () => undefined, end: () => ends.push(['killed search']) });
-    const killedListing = workspace.quickOpen.list('/srv/app', [], [], { data: () => undefined, end: () => ends.push(['killed listing']) });
+    workspace.search.run('/srv/app', { match: [], pattern: 'x', walk: { ignore: ALL_IGNORE_FILES, overrides: [] } }, { event: () => undefined, dropped: () => undefined, end: (end) => ends.push(['search', end]) });
+    workspace.quickOpen.list('/srv/app', ALL_IGNORE_FILES, [], { files: () => undefined, end: (error) => ends.push(['listing', error]) });
+    const killedSearch = workspace.search.run('/srv/app', { match: [], pattern: 'x', walk: { ignore: ALL_IGNORE_FILES, overrides: [] } }, { event: () => undefined, dropped: () => undefined, end: () => ends.push(['killed search']) });
+    const killedListing = workspace.quickOpen.list('/srv/app', ALL_IGNORE_FILES, [], { files: () => undefined, end: () => ends.push(['killed listing']) });
     killedSearch.kill();
     killedListing.kill();
     await Promise.resolve();
@@ -161,6 +168,8 @@ describe('remote workspace client', () => {
       rangedReads: false,
       outside: false,
       listing: false,
+      walks: true,
+      searchUnsupported: () => 'Update the Damocles server on this host to search it.',
       openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
@@ -177,7 +186,7 @@ describe('remote workspace client', () => {
       ...fakeEndpoint({}, []),
       request: (method: string) => (method === 'files.watch' ? new Promise<void>((resolve, reject) => answers.push({ resolve, reject })) : Promise.resolve()),
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, rangedReads: false, outside: false, listing: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, rangedReads: false, outside: false, listing: false, walks: true, searchUnsupported: () => 'Update the Damocles server on this host to search it.', openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const settled = (ready: Promise<void>): { done: boolean } => {
       const state = { done: false };
       void ready.then(() => {
@@ -254,7 +263,7 @@ describe('remote workspace client', () => {
       const ended: number[] = [];
       const stream = { id: 7, closed: false, write: () => true, end: () => ended.push(7), onData: () => ({ dispose: () => undefined }), onEnd: () => ({ dispose: () => undefined }), onDrain: () => ({ dispose: () => undefined }), pause: () => undefined, resume: () => undefined } satisfies StreamChannel;
       const logged: string[] = [];
-      const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({ 'files.readFileRange': { ok: true, resolvedPath: 'media/clip.mp4', ...answer } }, []), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: true, outside: false, listing: false, openStream: () => stream, log: (line) => logged.push(line) });
+      const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({ 'files.readFileRange': { ok: true, resolvedPath: 'media/clip.mp4', ...answer } }, []), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: true, outside: false, listing: false, walks: true, searchUnsupported: () => 'Update the Damocles server on this host to search it.', openStream: () => stream, log: (line) => logged.push(line) });
       const read = await files.readFileRange(project, 'clip.mp4', offset, length);
       const label = JSON.stringify([offset, length, answer]);
       if (ok) {
@@ -272,14 +281,14 @@ describe('remote workspace client', () => {
   it('answers a folder as one, and a link or FIFO as no folder, from a daemon that may leave folder out', async () => {
     const stream = { id: 7, closed: false, write: () => true, end: () => undefined, onData: () => ({ dispose: () => undefined }), onEnd: () => ({ dispose: () => undefined }), onDrain: () => ({ dispose: () => undefined }), pause: () => undefined, resume: () => undefined } satisfies StreamChannel;
     for (const [answer, folder] of [[{ ok: false, reason: 'notAFile', folder: true }, true], [{ ok: false, reason: 'notAFile', folder: false }, false], [{ ok: false, reason: 'notAFile' }, false]] as const) {
-      const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({ 'files.readFileRange': answer }, []), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: true, outside: false, listing: false, openStream: () => stream, log: () => undefined });
+      const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({ 'files.readFileRange': answer }, []), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: true, outside: false, listing: false, walks: true, searchUnsupported: () => 'Update the Damocles server on this host to search it.', openStream: () => stream, log: () => undefined });
       expect(await files.readFileRange(project, 'docs', 0, 1)).toEqual({ ok: false, reason: 'notAFile', folder });
     }
   });
 
   it('sends no ranged read to a daemon that does not list files.readFileRange.resolvedPath', async () => {
     const sent: Array<[string, unknown]> = [];
-    const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({}, sent), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: false, outside: false, listing: false, openStream: () => { throw new Error('no stream for a refused read'); }, log: () => undefined });
+    const { files } = createRemoteWorkspace({ endpoint: fakeEndpoint({}, sent), authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: false, outside: false, listing: false, walks: true, searchUnsupported: () => 'Update the Damocles server on this host to search it.', openStream: () => { throw new Error('no stream for a refused read'); }, log: () => undefined });
     await expect(files.readFileRange(project, 'clip.mp4', 0, 1)).rejects.toBeInstanceOf(RangedReadsUnsupportedError);
     expect(sent).toEqual([]);
   });
@@ -293,7 +302,7 @@ describe('remote workspace client', () => {
         return { ok: true };
       },
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: false, outside: false, listing: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, rangedReads: false, outside: false, listing: false, walks: true, searchUnsupported: () => 'Update the Damocles server on this host to search it.', openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const controller = new AbortController();
     await files.makeFolder(project, '', 'lib', 0o700);
     await files.copy(project, 'a.ts', project, 'lib', 'a.ts', false, controller.signal);

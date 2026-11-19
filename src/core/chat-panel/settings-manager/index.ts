@@ -456,6 +456,14 @@ export class SettingsManager {
     return this.configManager.handleSetBrowserHeadless(headless);
   }
 
+  async handleSetBrowserUploadFolderMaxEntries(count: number): Promise<SettingWrite> {
+    return this.configManager.handleSetBrowserUploadFolderMaxEntries(count);
+  }
+
+  async handleSetBrowserUploadFolderMaxSize(mebibytes: number): Promise<SettingWrite> {
+    return this.configManager.handleSetBrowserUploadFolderMaxSize(mebibytes);
+  }
+
   async handleSetCheckpointRetentionDays(days: number): Promise<SettingWrite> {
     return this.configManager.handleSetCheckpointRetentionDays(days);
   }

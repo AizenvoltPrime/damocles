@@ -336,11 +336,14 @@ export interface ScmRepoSnapshot {
 }
 
 // loading: the project's discovery runs. noRepository covers closed ones too: closedCount tells the shell which text to show.
-export type ScmViewState = 'loading' | 'untrusted' | 'gitMissing' | 'noRepository' | 'ready';
+// absent: the project folder is not there, and presence says why.
+export type ScmViewState = 'loading' | 'untrusted' | 'gitMissing' | 'absent' | 'noRepository' | 'ready';
 
 export interface ScmView {
   readonly projectKey: string;
   readonly state: ScmViewState;
+  // set only while state is absent
+  readonly presence?: 'missing' | 'unavailable';
   // picker order: the repository holding the project folder first, then by path
   readonly repos: readonly ScmRepoSummary[];
   readonly selectedRepoId: string | null;

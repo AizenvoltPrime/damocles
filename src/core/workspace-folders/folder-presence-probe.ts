@@ -12,8 +12,17 @@ export type PathPresence = 'directory' | 'other' | 'missing' | 'unreachable';
 /** A folder: there; gone (moved, renamed or deleted) from a volume that answers; or on a drive, share, WSL distro or mount that does not answer. */
 export type FolderPresence = 'present' | 'missing' | 'unavailable';
 
+/** A folder's presence, or `unchecked` when the hung gate started no stat for it (`onDidAdmit` says when one may start). */
+export type FolderCheck = FolderPresence | 'unchecked';
+
+/** What a path is, or `unchecked` when the hung gate started no stat for it. */
+export type PathCheck = PathPresence | 'unchecked';
+
 // A share or drive that stopped answering can hold a stat for a minute; past this its path reads as unreachable.
 export const PRESENCE_TIMEOUT_MS = 3_000;
+
+// A user action whose check the gate refused waits no longer than one check may take before it answers busy.
+export const ADMIT_WAIT_MS: number = PRESENCE_TIMEOUT_MS;
 
 export interface PresenceStat {
   isDirectory(): boolean;
@@ -32,19 +41,22 @@ export interface FolderPresenceProbeOptions {
 }
 
 export interface FolderPresenceProbe {
-  presence(folder: string): Promise<FolderPresence>;
-  path(target: string): Promise<PathPresence>;
+  presence(folder: string): Promise<FolderCheck>;
+  path(target: string): Promise<PathCheck>;
   /** The drive, share, WSL distro or mount point the path's presence hangs on; undefined for a path on the system root. */
   volumeOf(target: string): Promise<string | undefined>;
   /** A folder whose check gave up on a stat that hung: that stat found its directory after all. Once per stat and folder. */
   onDidAnswerLate(listener: (folder: string) => void): Disposable;
+  /** A check the gate refused may start now. */
+  onDidAdmit(listener: () => void): Disposable;
 }
 
-type StatAnswer = { readonly presence: PathPresence; readonly dev?: number | bigint };
+type StatAnswer = { readonly presence: PathCheck; readonly dev?: number | bigint };
 type RunningStat = { readonly result: Promise<StatAnswer>; readonly startedAt: number; readonly gaveUp: Set<string> };
 type Volume = { readonly root: string; readonly mount: boolean };
 
 const UNREACHABLE: StatAnswer = { presence: 'unreachable' };
+const UNCHECKED: StatAnswer = { presence: 'unchecked' };
 
 // The folders macOS and the Linux desktops mount a removable or network volume at, read when no mount point is recorded.
 const CONVENTIONAL_MOUNT = /^(\/Volumes\/[^/]+|\/media\/[^/]+\/[^/]+|\/run\/media\/[^/]+\/[^/]+)(?:\/|$)/;
@@ -86,7 +98,7 @@ export function createFolderPresenceProbe(options: FolderPresenceProbeOptions = 
   // The stat's answer within the call's deadline and the stat's own; `folder` is the check it serves.
   const answer = async (target: string, deadline: number, folder: string): Promise<StatAnswer> => {
     const entry = started(target);
-    if (!entry) return UNREACHABLE;
+    if (!entry) return UNCHECKED;
     const left = Math.min(deadline, entry.startedAt + timeoutMs) - now();
     if (left <= 0) {
       entry.gaveUp.add(folder);
@@ -117,31 +129,73 @@ export function createFolderPresenceProbe(options: FolderPresenceProbeOptions = 
   };
 
   // A recorded mount point answers only while it is still one: a folder whose device differs from its parent's.
-  const volumeAnswers = async ({ root, mount }: Volume, deadline: number, folder: string): Promise<boolean> => {
+  const volumeAnswers = async ({ root, mount }: Volume, deadline: number, folder: string): Promise<boolean | 'unchecked'> => {
     const found = await answer(root, deadline, folder);
+    if (found.presence === 'unchecked') return 'unchecked';
     if (found.presence !== 'directory') return false;
     if (!mount) return true;
     const parent = await answer(path.posix.dirname(root), deadline, folder);
+    if (parent.presence === 'unchecked') return 'unchecked';
     return parent.presence === 'directory' && parent.dev !== found.dev;
   };
 
-  const pathPresence = async (target: string): Promise<PathPresence> => {
+  const pathCheck = async (target: string): Promise<PathCheck> => {
     const deadline = now() + timeoutMs;
     const on = await volume(target);
-    if (on && !(await volumeAnswers(on, deadline, target))) return 'unreachable';
+    const answers = on && (await volumeAnswers(on, deadline, target));
+    if (answers === 'unchecked') return 'unchecked';
+    if (on && !answers) return 'unreachable';
     if (on?.root === target) return 'directory';
     return (await answer(target, deadline, target)).presence;
   };
 
   return {
-    path: pathPresence,
-    presence: async (folder) => folderPresenceOf(await pathPresence(folder)),
+    path: pathCheck,
+    presence: async (folder) => {
+      const found = await pathCheck(folder);
+      return found === 'unchecked' ? 'unchecked' : folderPresenceOf(found);
+    },
     volumeOf: async (target) => (await volume(target))?.root,
     onDidAnswerLate: (listener) => {
       listeners.add(listener);
       return { dispose: () => { listeners.delete(listener); } };
     },
+    onDidAdmit: (listener) => gate.onDidAdmit(listener),
   };
+}
+
+export interface AdmitWaitOptions {
+  readonly waitMs?: number;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * `check`'s answer for a user action: when the gate refused it, `check` once more after the gate admits or `waitMs` passed,
+ * whichever comes first. An answer still `unchecked` then is the caller's to refuse as busy; an abort rejects with its reason.
+ */
+export async function checkWhenAdmitted<T extends string>(check: () => Promise<T>, gate: Pick<FolderPresenceProbe, 'onDidAdmit'>, options: AdmitWaitOptions = {}): Promise<T> {
+  const { signal } = options;
+  signal?.throwIfAborted();
+  let admitted = (): void => undefined;
+  const admission = new Promise<void>((resolve) => { admitted = resolve; });
+  // subscribed before the first check, so an admission while it runs is not missed
+  const subscription = gate.onDidAdmit(() => admitted());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let aborted = (): void => undefined;
+  try {
+    const first = await check();
+    if (first !== 'unchecked') return first;
+    signal?.throwIfAborted();
+    const expired = new Promise<void>((resolve) => { timer = setTimeout(resolve, options.waitMs ?? ADMIT_WAIT_MS); });
+    const abort = new Promise<never>((_, reject) => { aborted = () => reject(signal?.reason); });
+    signal?.addEventListener('abort', aborted, { once: true });
+    await Promise.race([admission, expired, abort]);
+    return await check();
+  } finally {
+    subscription.dispose();
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', aborted);
+  }
 }
 
 /** A folder's presence by what its path is: anything there but a directory is no project folder. */

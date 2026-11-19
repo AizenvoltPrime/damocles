@@ -59,6 +59,10 @@ export interface ExtensionSettings {
   memoryInjectRerank: boolean;
   /** `damocles.browser.headless` */
   browserHeadless: boolean;
+  /** `damocles.browser.uploadFolderMaxEntries`, from user settings only, clamped to its range. */
+  browserUploadFolderMaxEntries: number;
+  /** `damocles.browser.uploadFolderMaxSize` in MiB, from user settings only, clamped to its range. */
+  browserUploadFolderMaxSize: number;
   cacheWarming: CacheWarmingMode;
   /** `damocles.checkpoints.retentionDays`; 0 keeps checkpoints forever. */
   checkpointRetentionDays: number;

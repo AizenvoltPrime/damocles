@@ -200,7 +200,22 @@ export interface TeamMessage {
    *    pushing it would only re-prompt whole conversations to no effect. It is still broadcast so it
    *    reaches persistence, the webview timeline and `team_read_messages`. */
   kind?: 'scratchpad-notice' | 'ledger-notice';
+  /** The lead's pending-dispatch nudge, recorded so a resume can tell the lead was nudged. Never read for delivery. */
+  pendingDispatchNudge?: true;
 }
+
+/** A team event log `agent-message` entry: one bus message. A build that predates a field ignores it. */
+export type AgentMessageEntry = {
+  type: 'agent-message';
+  teamId: string;
+  messageId: string;
+  from: string;
+  to: string | null;
+  content: string;
+  kind?: TeamMessage['kind'];
+  pendingDispatchNudge?: true;
+  timestamp: string;
+};
 
 export interface ScratchpadEntry {
   section: string;
@@ -297,7 +312,7 @@ export interface AgentRunConfig {
   /** Called when a turn ends and the agent enters its wait state (emit monitoring/standby/awaiting-review). */
   onTurnEnd?: () => void;
   /**
-   * Specialist-only hook fired at the keepAlive-false boundary, BEFORE the wait loop breaks. It may arm
+   * Hook fired at the keepAlive-false boundary, BEFORE the wait loop breaks. It may arm
    * a grace hold that flips keepAlive back true (parking the agent for one more turn instead of ending).
    * The runner re-checks keepAlive immediately after; if still false, the session genuinely ends.
    */
@@ -431,6 +446,11 @@ export interface TeamCheckpoint {
     briefConflicts: Array<[string, string]>;
     conflictNudges: number;
     leadReviewStalls: number;
+    /**
+     * The lead was sent the pending-dispatch nudge since its last spawn (`TeamRunner.pendingDispatchNudged`); absent reads as false.
+     * A resume ORs it with the event log's marked nudge, which a live snapshot can trail.
+     */
+    pendingDispatchNudged?: boolean;
     lastReviewRoundNotification: string | null;
     /** Absent in checkpoints written before review coverage existed; their logs declare no pairs. */
     coverage?: ReviewCoverageState;

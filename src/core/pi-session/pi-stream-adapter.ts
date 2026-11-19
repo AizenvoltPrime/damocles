@@ -13,6 +13,7 @@ import { joinResultText, resultImageCount } from './tool-result-text';
 import { partialResultText } from './known-secret-masking';
 import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
+import { l, verbatim } from '../l10n';
 import { turnOutcomeOfError, type TurnChange, type TurnOutcome } from './session-state';
 import { usageOfEntry } from '../../shared/usage-accounting';
 import { publishedEffort, type EffortBadgeLevel } from '../../shared/effort-badge';
@@ -134,18 +135,20 @@ export function isNothingToCompact(message: string): boolean {
  * Rendering the raw code makes the user look up an API enum to read their own transcript, so each one
  * gets a sentence. An unrecognized code falls through as itself rather than being hidden.
  */
-function explainThinkingDroppedReason(reason: string): string {
+function explainThinkingDroppedReason(reason: string | undefined): LocalizedText {
   switch (reason) {
+    case undefined:
+      return l('unknown reason');
     case 'model_binding_mismatch':
-      return 'a different model wrote the reasoning, and the requested model may not read it';
+      return l('a different model wrote the reasoning, and the requested model may not read it');
     case 'prefix_binding_mismatch':
-      return 'the conversation changed since the reasoning was written';
+      return l('the conversation changed since the reasoning was written');
     case 'organization_binding_mismatch':
-      return 'the reasoning was written under a different organization';
+      return l('the reasoning was written under a different organization');
     case 'end_user_binding_mismatch':
-      return 'the reasoning was written for a different end user';
+      return l('the reasoning was written for a different end user');
     default:
-      return reason;
+      return verbatim(reason);
   }
 }
 
@@ -1094,20 +1097,21 @@ export class PiStreamAdapter {
       const seen = previouslyDroppedPaths(session);
       // A drop without a path cannot be matched to an earlier report, so it counts as new.
       // The path itself is never rendered: it indexes the wire request, not anything the reader can find.
-      const reasons = drops
-        .filter((drop) => drop.path === undefined || !seen.has(drop.path))
-        .map((drop) => (drop.reason === undefined ? 'unknown reason' : explainThinkingDroppedReason(drop.reason)));
-      if (reasons.length === 0) return;
+      const fresh = drops.filter((drop) => drop.path === undefined || !seen.has(drop.path));
+      if (fresh.length === 0) return;
+      // One reason usually drops every block at once, so each distinct code is sent once with its count.
+      const byCode = new Map<string | undefined, number>();
+      for (const drop of fresh) byCode.set(drop.reason, (byCode.get(drop.reason) ?? 0) + 1);
       log(
         '[PiStreamAdapter] anthropic dropped %d new thinking block(s), %d in the request: %s',
-        reasons.length,
+        fresh.length,
         drops.length,
-        reasons.join('; '),
+        [...byCode].map(([code, count]) => `${code ?? 'no reason'} x${count}`).join(', '),
       );
       this.emit({
         type: 'thinkingDroppedNotice',
-        count: reasons.length,
-        reasons,
+        count: fresh.length,
+        reasons: [...byCode].map(([code, count]) => ({ text: explainThinkingDroppedReason(code), count })),
         timestamp: message.timestamp,
       });
     } catch {

@@ -20,7 +20,7 @@ The MCP client is pi's own (`@earendil-works/pi-mcp`); Damocles runs the servers
 
 `.damocles/mcp.local.json` is meant to be personal and gitignored. When git is not ignoring it the panel warns and names the line to add, the warning clears as soon as you add it because `.gitignore` is watched too, and Damocles never edits your `.gitignore` itself. The check is skipped in a workspace you have not trusted, because running git there would run configuration the repository ships, and it gives up after ten seconds so a wedged filesystem cannot hold up session start.
 
-In a workspace you have not trusted, `.mcp.json` and `.damocles/mcp.local.json` servers are listed with an untrusted badge and do not connect, `.pi/mcp.json` is not read until you trust the folder, and the rest still connect.
+In a workspace you have not trusted, `.mcp.json` and `.damocles/mcp.local.json` servers are listed with an untrusted badge and do not connect, `.pi/mcp.json` is not read until you trust the folder, and the rest still connect. A chat working in a worktree reads `.damocles/mcp.local.json` from its main project folder, and treats it this way until the main project is trusted too, also when you trusted the worktree itself by opening it as a project.
 
 A config file that exists but cannot be parsed is reported by name and line with a button to open it at the fault, rather than its servers silently disappearing.
 

@@ -119,6 +119,8 @@ interface SetupOptions {
   // the host's offer to turn on agent forwarding, and the action a notice answers with
   agentForwarding?: ScmHostDeps['agentForwarding'];
   noticeChoice?: (actions: readonly string[]) => string | undefined;
+  // what core's view of project p says beyond its two open repositories
+  view?: Partial<ProjectView>;
 }
 
 function setup(overrides: SetupOptions = {}) {
@@ -129,6 +131,7 @@ function setup(overrides: SetupOptions = {}) {
     closedRoots: [],
     unsafe: [],
     parents: [],
+    ...overrides.view,
   };
   const repos = new Map([
     ['repo-1', Object.assign(fakeRepo(projectPath, overrides.status, overrides.show, overrides.gone, overrides.remote?.authority, overrides.remote?.answers), { repoId: 'repo-1' })],
@@ -358,6 +361,15 @@ function setup(overrides: SetupOptions = {}) {
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('source control host', () => {
+  it("passes on why an absent project's folder is not there and offers nothing to run in it, Clone aside", () => {
+    const { host } = setup({ view: { state: 'absent', presence: 'unavailable', repos: [] } });
+    expect(host.state().views[0]).toMatchObject({ state: 'absent', presence: 'unavailable', repos: [] });
+    expect(host.menuState()).toMatchObject({ available: false, openRepositoryCount: 0, gitFound: true });
+    const present = setup({ view: { state: 'noRepository', repos: [] } });
+    expect(present.host.state().views[0]!.presence).toBeUndefined();
+    expect(present.host.menuState().available).toBe(true);
+  });
+
   it('selects the repository holding the project folder by default, and a selection persists by root path', () => {
     const { host, saved } = setup();
     expect(host.state().views[0]!.selectedRepoId).toBe('repo-1');

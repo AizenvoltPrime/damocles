@@ -60,6 +60,8 @@ function fakeLauncher(): { launched: Launched[]; launcher: Launcher } {
       const text = (chunk: string | Uint8Array): string => (typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
       return {
         pid,
+        pauseOutput: () => undefined,
+        resumeOutput: () => undefined,
         onData: (stream, listener) => void listeners[stream].push(listener),
         write: (chunk) => {
           stdin.push(text(chunk));

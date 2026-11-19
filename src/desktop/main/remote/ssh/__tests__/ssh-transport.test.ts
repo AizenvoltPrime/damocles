@@ -56,6 +56,8 @@ class FakeSsh {
     this.settle = { exit, close, fail: (err) => { failExit(err); failClose(err); } };
     this.handle = {
       pid: Promise.resolve(42),
+      pauseOutput: () => undefined,
+      resumeOutput: () => undefined,
       onData: (stream, listener) => { this.listeners[stream].push(listener); },
       write: async (chunk) => {
         if (this.writeError) throw this.writeError;

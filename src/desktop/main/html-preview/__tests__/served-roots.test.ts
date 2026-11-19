@@ -240,13 +240,14 @@ describe('grants of chat views that share one browser profile', () => {
     expect(new URL(first.origin).hostname).toMatch(/^[0-9a-f]{32}\.localhost$/);
     expect(h.served.viewOrigins('local', 'v1')).toEqual([first.origin]);
     expect(h.served.viewOrigins('ssh+box', 'v1')).toEqual([]);
-    expect(h.served.mappings('local')).toEqual([{ origin: first.origin, displayRoot: LOCAL.fsPath }, { origin: second.origin, displayRoot: LOCAL.fsPath }]);
+    expect(h.served.mappings('local', 'v1')).toEqual([{ origin: first.origin, displayRoot: LOCAL.fsPath }]);
     expect(h.served.mappings('local', 'v2')).toEqual([{ origin: second.origin, displayRoot: LOCAL.fsPath }]);
     expect((await profile.navigate(first.open('docs/index.html'))).status).toBe(200);
     expect((await profile.navigate(second.open('docs/index.html'))).status).toBe(200);
     h.served.release('v1');
     expect(h.served.viewOrigins('local', 'v1')).toEqual([]);
-    expect(h.served.mappings('local')).toEqual([{ origin: second.origin, displayRoot: LOCAL.fsPath }]);
+    expect(h.served.mappings('local', 'v1')).toEqual([]);
+    expect(h.served.mappings('local', 'v2')).toEqual([{ origin: second.origin, displayRoot: LOCAL.fsPath }]);
     expect((await profile.navigate(`${first.origin}/docs/index.html`)).status).toBe(421);
     expect((await profile.navigate(`${second.origin}/docs/index.html`)).status).toBe(200);
   });
@@ -262,6 +263,19 @@ describe('grants of chat views that share one browser profile', () => {
     expect((await get(`${preview.origin}/docs/index.html`, { cookie: viewCookie })).status).toBe(403);
     expect((await get(`${view.origin}/docs/index.html`, { cookie: previewCookie })).status).toBe(403);
     expect((await get(`${view.origin}/docs/index.html`, { cookie: viewCookie })).status).toBe(200);
+  });
+
+  it('refuses a service worker\'s script on a view\'s grant host, local or remote, and serves Open in Browser\'s as before', async () => {
+    h.trusted.add(LOCAL.key);
+    const script = { 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'same-origin', 'sec-fetch-dest': 'serviceworker', 'service-worker': 'script' };
+    for (const view of [await granted('v1', LOCAL), await granted('v2', REMOTE)]) {
+      const cookie = await cookieOf(view, 'docs/index.html');
+      expect((await get(`${view.origin}/docs/app.js`, { cookie, ...script })).status, view.origin).toBe(403);
+      expect((await get(`${view.origin}/docs/app.js`, { cookie, 'sec-fetch-site': 'same-origin' })).status, view.origin).toBe(200);
+    }
+    const preview = await h.served.grantPreview(LOCAL);
+    const previewCookie = await cookieOf(preview, 'docs/index.html');
+    expect((await get(`${preview.origin}/docs/app.js`, { cookie: previewCookie, ...script })).status).toBe(200);
   });
 });
 
@@ -286,7 +300,7 @@ describe('a design root', () => {
     expect(head.status).toBe(200);
     expect(head.body).toBe('');
     expect(servedPathRefusal({ kind: 'design', designId: 'd1' }, 'manual.pdf')).toMatch(/serves only/);
-    expect(h.served.mappings('ssh+box')).toEqual([{ origin: grant.origin, displayRoot: '/home/u/.damocles/designs/d1' }]);
+    expect(h.served.mappings('ssh+box', 'v1')).toEqual([{ origin: grant.origin, displayRoot: '/home/u/.damocles/designs/d1' }]);
   });
 });
 
@@ -296,14 +310,18 @@ describe('file:// mappings', () => {
     const design = await h.served.grant({ authority: 'local', root: { kind: 'design', designId: 'd1' }, viewId: 'v1' });
     if ('refused' in design) throw new Error(design.refused);
     const local = [{ origin: project.origin, displayRoot: '/home/u/proj' }, { origin: design.origin, displayRoot: '/home/u/.damocles/designs/d1' }];
-    expect(h.served.mappings('local')).toEqual(local);
+    expect(h.served.mappings('local', 'v1')).toEqual(local);
     // an Open in Browser grant serves no chat page
     await h.served.grantPreview({ key: '/home/u/other', fsPath: '/home/u/other', name: 'other' });
-    expect(h.served.mappings('local')).toEqual(local);
+    expect(h.served.mappings('local', 'v1')).toEqual(local);
+    // another view's grant of the same roots maps none of v1's origins
+    const other = await granted('v3', LOCAL);
+    expect(h.served.mappings('local', 'v3')).toEqual([{ origin: other.origin, displayRoot: '/home/u/proj' }]);
+    expect(h.served.mappings('local', 'v1')).toEqual(local);
     await granted('v2', REMOTE);
-    expect(h.served.mappings('ssh+box')).toEqual([]);
+    expect(h.served.mappings('ssh+box', 'v2')).toEqual([]);
     h.served.release('v1');
-    expect(h.served.mappings('local')).toEqual([]);
+    expect(h.served.mappings('local', 'v1')).toEqual([]);
   });
 });
 

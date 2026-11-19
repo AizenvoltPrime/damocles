@@ -14,7 +14,8 @@ function grantedFolderPaths(): readonly string[] {
 export function createVsCodeTrustService(): TrustService {
   return {
     isTrusted: () => vscode.workspace.isTrusted,
-    onDidGrantTrust: (cb): Disposable => vscode.workspace.onDidGrantWorkspaceTrust(() => cb(grantedFolderPaths())),
+    // an extension host's workspace stays trusted once granted until the window reloads, so it hears no revoke
+    onDidChangeTrust: (cb): Disposable => vscode.workspace.onDidGrantWorkspaceTrust(() => cb({ granted: grantedFolderPaths(), revoked: [] })),
     requestTrust: async () => {
       await vscode.commands.executeCommand('workbench.trust.manage');
       return vscode.workspace.isTrusted;

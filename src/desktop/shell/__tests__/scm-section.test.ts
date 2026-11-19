@@ -282,6 +282,49 @@ describe('Source control commits', () => {
   });
 });
 
+describe('the state card', () => {
+  const absent = (presence: 'missing' | 'unavailable'): ScmView => ({ ...view([], ''), state: 'absent', presence, selectedRepoId: null });
+
+  async function mountView(shown: ScmView): Promise<Mounted> {
+    const scm = fakeScmApi({ views: [shown], snapshots: [], decorations: [], settings: SCM_SETTINGS, clone: NO_CLONE });
+    const shell = fakeShellApi();
+    const store = createScmStore(scm);
+    await store.start();
+    const wrapper = mount(ScmSection, {
+      props: { api: shell, projectKey: 'p1', projectName: 'alpha', platform: 'win32', viewMode: 'list', sortKey: 'path', collapsed: false },
+      global: { plugins: [shellI18n], provide: { [SCM_STORE]: store } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    return { wrapper, scm, shell, store };
+  }
+
+  it('says a missing project folder is not there and offers neither Initialize Repository nor Clone, until the folder is back', async () => {
+    const { wrapper, scm } = await mountView(absent('missing'));
+    const card = wrapper.get('[data-testid="scm-state"]');
+    expect(card.attributes('data-state')).toBe('absent');
+    expect(card.text()).toBe('Folder not found. It may have been moved, renamed or deleted. Source control shows its repositories again once the folder is back.');
+    expect(wrapper.find('[data-testid="scm-state-action"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="scm-state-secondary"]').exists()).toBe(false);
+
+    scm.pushView({ ...view([], ''), state: 'noRepository', selectedRepoId: null });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="scm-state"]').attributes('data-state')).toBe('noRepository');
+    expect(wrapper.get('[data-testid="scm-state-action"]').text()).toBe('Initialize Repository');
+    expect(wrapper.get('[data-testid="scm-state-secondary"]').text()).toBe('Clone Repository');
+  });
+
+  it("says an unavailable project folder's drive, share or distro did not answer, in the shell's language", async () => {
+    const { wrapper } = await mountView(absent('unavailable'));
+    expect(wrapper.get('[data-testid="scm-state"]').text()).toBe('Not available. Its drive, network share or WSL distro is not connected or did not answer. Source control shows its repositories again once it is back.');
+    shellI18n.global.locale.value = 'el';
+    await flushPromises();
+    expect(wrapper.get('[data-testid="scm-state"]').text()).toMatch(/^Μη διαθέσιμο\. /);
+    expect(wrapper.find('[data-testid="scm-state-action"]').exists()).toBe(false);
+  });
+});
+
 describe('the Stashes group', () => {
   const stash = (index: number, hash: string): ScmStashArtifact => ({ index, hash, description: `WIP ${hash.slice(0, 2)}`, branch: 'main', date: Date.now() - 60_000 });
   const listed = (rows: readonly ScmStashArtifact[]): ScmArtifactsResult => ({ ok: true, artifacts: { group: 'stashes', rows } });

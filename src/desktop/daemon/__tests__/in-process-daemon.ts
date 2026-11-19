@@ -46,6 +46,8 @@ export interface InProcessOptions {
   readonly forkCore?: DaemonDeps['forkCore'];
   // default: the built dist/watch-worker.js
   readonly watchWorker?: string;
+  // default: the built dist/walk-child.js
+  readonly walkChild?: DaemonDeps['walkChild'];
   readonly graceMs?: number;
   readonly maxHeldBytes?: number;
   readonly now?: () => number;
@@ -83,6 +85,7 @@ export async function startInProcessDaemon(options: InProcessOptions = {}): Prom
       starters: options.starters ?? daemonStarters(REPO_ROOT),
       ...(options.forkCore ? { forkCore: options.forkCore } : {}),
       ...(options.watchWorker !== undefined ? { watchWorker: options.watchWorker } : {}),
+      ...(options.walkChild !== undefined ? { walkChild: options.walkChild } : {}),
       ...(options.graceMs !== undefined ? { graceMs: options.graceMs } : {}),
       ...(options.maxHeldBytes !== undefined ? { maxHeldBytes: options.maxHeldBytes } : {}),
       ...(options.now !== undefined ? { now: options.now } : {}),

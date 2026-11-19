@@ -1003,11 +1003,12 @@ export class PiRuntime {
     } else if (local) {
       await this._unlistFailedPluginLoad(pi, folders, folder);
     }
-    // A trust grant during creation reached only the folders already published.
+    // A trust change during creation reached only the folders already published.
+    const trusted = this._platform.trust.isTrusted(folder.cwd);
     const settings = folder.services.settingsManager;
-    if (this._platform.trust.isTrusted(folder.cwd) && !settings.isProjectTrusted()) {
-      settings.setProjectTrusted(true);
-      await folder.reloadBare().catch((err) => log('[PiRuntime] trust-grant reload failed (%s): %O', folder.cwd, err));
+    if (trusted !== settings.isProjectTrusted()) {
+      settings.setProjectTrusted(trusted);
+      await folder.reloadBare().catch((err) => log('[PiRuntime] trust-change reload failed (%s): %O', folder.cwd, err));
     }
     // A folder removed mid-creation stays out of the map; `disposeFolder` disposes it once this resolves.
     if (isCurrent()) {
@@ -1397,15 +1398,16 @@ export class PiRuntime {
     });
     this._setupUserWatchers();
     this._setupAuthWatcher();
-    // Folder settings managers were created with the trust state of their creation, which excluded the
-    // project layer in a restricted window; each reload re-reads it once trusted.
+    // Folder settings managers were created with the trust state of their creation; the project layer and the folder's
+    // resources follow each later change, read per folder since a change's lists may not name every folder.
     this._trustListener?.dispose();
-    this._trustListener = this._platform.trust.onDidGrantTrust((folderPaths) => {
-      const granted = new Set(folderPaths.map(folderKey));
+    this._trustListener = this._platform.trust.onDidChangeTrust(() => {
       for (const folder of this.folders()) {
-        if (!granted.has(folder.key)) continue;
-        folder.services.settingsManager.setProjectTrusted(true);
-        folder.reloadBare().catch((err) => log('[PiRuntime] trust-grant reload failed (%s): %O', folder.cwd, err));
+        const trusted = this._platform.trust.isTrusted(folder.cwd);
+        const settings = folder.services.settingsManager;
+        if (trusted === settings.isProjectTrusted()) continue;
+        settings.setProjectTrusted(trusted);
+        folder.reloadBare().catch((err) => log('[PiRuntime] trust-change reload failed (%s): %O', folder.cwd, err));
       }
     });
     this._imageSettingsListener?.dispose();

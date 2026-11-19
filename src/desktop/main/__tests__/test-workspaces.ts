@@ -9,9 +9,11 @@ import { createWorkspaceHost, type WorkspaceModules } from '../../daemon/workspa
 import { createFileSystem, type FileSystemDeps } from '../../workspace/file-system';
 import type { Formatter } from '../../workspace/format/formatter';
 import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WorkspaceToClient } from '../../workspace/messages';
-import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import { createQuickOpenListing, type QuickOpenListingDeps } from '../../workspace/quick-open-listing';
-import { createSearchRunner, type SearchRunnerDeps } from '../../workspace/search/search-runner';
+import type { LocalWorkspace, ProjectWorkspace } from '../../workspace/project-workspace';
+import { createQuickOpenListing } from '../../workspace/quick-open-listing';
+import { createWalkHost, type WalkHost } from '../../../core/search-walk';
+import { InThreadWalkChild } from '../../../__mocks__/in-thread-walk-child';
+import { createSearchRunner, type SearchRunner } from '../../workspace/search/search-runner';
 import type { TerminalBackend } from '../../workspace/terminal/terminal-backend';
 import { createTreeListing } from '../../workspace/tree-listing';
 import { createRemoteWorkspace } from '../workspace/remote-workspace';
@@ -28,8 +30,10 @@ export interface TestWorkspaceOptions {
   // the workspace of an authority other than local; default: none connected
   readonly remote?: (authorityKey: string) => ProjectWorkspace;
   readonly rgPath?: () => Promise<string>;
-  readonly spawnSearchRg?: SearchRunnerDeps['spawnRg'];
-  readonly spawnListingRg?: QuickOpenListingDeps['spawnRg'];
+  // Search's runs; default: the walk and the bundled ripgrep
+  readonly search?: SearchRunner;
+  // the walks of Quick Open and Search; default: the walk process's body on this thread
+  readonly walks?: WalkHost;
   readonly format?: Formatter;
   readonly terminals?: TerminalBackend;
   // the daemon watcher's inotify limit reports; default: none
@@ -41,14 +45,15 @@ function unused<T extends object>(name: string): T {
   return new Proxy({} as T, { get: (_target, key) => { throw new Error(`the test workspace has no ${name} (${String(key)})`); } });
 }
 
-function localModules(options: TestWorkspaceOptions): ProjectWorkspace {
+function localModules(options: TestWorkspaceOptions): LocalWorkspace {
   const log = options.log ?? (() => undefined);
   const resolveRg = options.rgPath ?? (async () => rgPath);
+  const walks = options.walks ?? createWalkHost(() => new InThreadWalkChild(), log);
   return {
     files: createFileSystem({ watchers: options.watchers, trash: options.trash ?? (async () => { throw new Error('no trash in this test'); }), ...(options.remove ? { remove: options.remove } : {}), damoclesHome: options.damoclesHome ?? DAMOCLES_HOME_DIR, log }),
     tree: createTreeListing(log),
-    search: createSearchRunner({ rgPath: resolveRg, log, ...(options.spawnSearchRg ? { spawnRg: options.spawnSearchRg } : {}) }),
-    quickOpen: createQuickOpenListing({ rgPath: resolveRg, log, ...(options.spawnListingRg ? { spawnRg: options.spawnListingRg } : {}) }),
+    search: options.search ?? createSearchRunner({ rgPath: resolveRg, walks, log }),
+    quickOpen: createQuickOpenListing({ walks, log }),
     format: options.format ?? unused<Formatter>('formatter'),
     terminals: options.terminals ?? unused<TerminalBackend>('terminal backend'),
   };
@@ -64,7 +69,7 @@ export const noSessionFiles: SessionFileEngines = {
   write: () => Promise.reject(new Error('no session file in this test')),
 };
 
-/** The local workspace's real modules over the test's watchers and ripgrep, with the parts a test does not use refusing calls. */
+/** The local workspace's real modules over the test's watchers, ripgrep and walks, with the parts a test does not use refusing calls. */
 export function testWorkspaces(options: TestWorkspaceOptions): Workspaces {
   return createWorkspaces(localModules(options), options.remote ?? ((authorityKey) => { throw new NotConnectedError(`no ${authorityKey} workspace in this test`); }));
 }
@@ -125,6 +130,8 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
     rangedReads: false,
     outside: true,
     listing: true,
+    walks: true,
+    searchUnsupported: () => 'Update the Damocles server on this host to search it.',
     openStream: () => { throw new Error('no transfer streams in this suite'); },
     log,
   });

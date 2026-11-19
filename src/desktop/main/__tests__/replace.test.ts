@@ -11,6 +11,7 @@ import { DocumentService } from '../documents/document-service';
 import { createReplacer, keepMatchText, MAX_KEPT_MATCH_CHARS, planReplacements, planWithin, type ReplaceDeps } from '../../workspace/search/replace';
 import { searchRegExp } from '../../../shared/text-search';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
+import { ALL_IGNORE_FILES } from '../../../core/search-walk';
 import type { RecordedMatch, RecordedSearch } from '../../workspace/search/types';
 import { SearchService } from '../search/search-service';
 import { englishText } from '../../../shared/localized-text';
@@ -96,7 +97,7 @@ async function ripgrepSearch(search: SearchQuery): Promise<RecordedSearch> {
       osOf: () => process.platform,
       folder: () => ({ projectKey: project.key, fsPath: root }),
       workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
-      ignoreArgs: () => [],
+      ignore: () => ALL_IGNORE_FILES,
       excludeSettings: () => [],
       settings: () => ({ smartCase: false, maxResults: 20_000, debounceMs: 0, sortOrder: 'default' }),
       buffers: () => [],

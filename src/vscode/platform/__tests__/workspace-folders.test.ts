@@ -41,25 +41,25 @@ describe('createVsCodeWorkspaceFolders', () => {
 });
 
 describe('createVsCodeTrustService', () => {
-  it('fires onDidGrantTrust with every open file-scheme folder path', () => {
+  it('fires onDidChangeTrust granting every open file-scheme folder path', () => {
     setWorkspaceFolders([folder('/a', 'a'), folder('/remote', 'remote', 'vscode-remote'), folder('/b', 'b')]);
     const cb = vi.fn();
-    const subscription = createVsCodeTrustService().onDidGrantTrust(cb);
+    const subscription = createVsCodeTrustService().onDidChangeTrust(cb);
 
     __trustEmitter.fire();
 
-    expect(cb).toHaveBeenCalledExactlyOnceWith(['/a', '/b']);
+    expect(cb).toHaveBeenCalledExactlyOnceWith({ granted: ['/a', '/b'], revoked: [] });
     subscription.dispose();
   });
 
-  it('fires onDidGrantTrust with the home target when no file-scheme folder is open', () => {
+  it('fires onDidChangeTrust granting the home target when no file-scheme folder is open', () => {
     setWorkspaceFolders([folder('/remote', 'remote', 'vscode-remote')]);
     const cb = vi.fn();
-    const subscription = createVsCodeTrustService().onDidGrantTrust(cb);
+    const subscription = createVsCodeTrustService().onDidChangeTrust(cb);
 
     __trustEmitter.fire();
 
-    expect(cb).toHaveBeenCalledExactlyOnceWith([homeDirectory()]);
+    expect(cb).toHaveBeenCalledExactlyOnceWith({ granted: [homeDirectory()], revoked: [] });
     subscription.dispose();
   });
 

@@ -1,3 +1,4 @@
+import type { WalkIgnore } from '../../../core/search-walk';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { folderGlob, matchingPattern, MAX_SEARCH_RESULTS, replaceRegExp, type SearchQuery } from '../../../shared/text-search';
@@ -70,7 +71,7 @@ export interface SearchHostDeps {
   readonly workspaces: Workspaces;
   // the OS a project's files are on: this computer's, or its remote host's
   readonly osOf: (projectKey: string) => NodeJS.Platform;
-  readonly ignoreArgs: () => readonly string[];
+  readonly ignore: () => WalkIgnore;
   readonly excludeSettings: () => readonly string[];
   readonly ask: AskMessage;
   readonly t: (message: string, ...args: Array<string | number>) => string;
@@ -173,7 +174,7 @@ export class SearchHost {
       folder: () => deps.selectedFolder(),
       workspaces: deps.workspaces,
       osOf: (projectKey) => deps.osOf(projectKey),
-      ignoreArgs: () => deps.ignoreArgs(),
+      ignore: () => deps.ignore(),
       excludeSettings: () => deps.excludeSettings(),
       settings: () => this.searchSettings(),
       buffers: (projectKey) => searchBuffers(deps.documents, projectKey),

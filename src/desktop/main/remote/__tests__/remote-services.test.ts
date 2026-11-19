@@ -22,10 +22,10 @@ function services(wslDistro?: string, openNamed: (targetPath: string) => Promise
   const previews: unknown[] = [];
   const settingsFiles: unknown[] = [];
   const opened: unknown[] = [];
-  const reads: string[] = [];
   const shown: unknown[] = [];
   const notices: unknown[] = [];
   const diffs: unknown[] = [];
+  const dirtyAsks: string[] = [];
   const picks: unknown[] = [];
   const links: string[] = [];
   const runs: SpawnSpec[] = [];
@@ -34,7 +34,6 @@ function services(wslDistro?: string, openNamed: (targetPath: string) => Promise
     hostId: 'loopback',
     ...(wslDistro !== undefined ? { wslDistro } : {}),
     hostName: () => 'Local daemon',
-    os: () => 'linux',
     openLink: async (url) => {
       links.push(url);
       return false;
@@ -47,23 +46,19 @@ function services(wslDistro?: string, openNamed: (targetPath: string) => Promise
     projects: () => [PROJECT],
     fileRoots: () => [PROJECT],
     onProjectsChanged: none,
-    workspace: () => ({
-      files: {
-        readText: async (target: string) => {
-          reads.push(target);
-          return 'text';
-        },
-      },
-    }) as never,
     // the pane's own context of any machine, which the platform's editor already filters for this computer's core
     activeContext: () => main.editor.getActiveContext(),
     onDidChangeActiveContext: (listener) => main.editor.onDidChangeActiveContext(listener),
-    trust: { trustedKeys: () => [], onDidGrant: none, requestTrust: async () => false },
+    trust: { trustedKeys: () => [], onDidChange: none, requestTrust: async () => false },
     openNamedPath: async (...args) => {
       opened.push(args);
       await openNamed(args[0]);
     },
     showLog: (...args) => shown.push(args),
+    isDirty: async (targetPath) => {
+      dirtyAsks.push(targetPath);
+      return targetPath === '/srv/app/dirty.ts';
+    },
     showDiff: async (request) => {
       diffs.push(request.filePath);
       return { close: async () => undefined, closed: Promise.resolve() };
@@ -96,7 +91,7 @@ function services(wslDistro?: string, openNamed: (targetPath: string) => Promise
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },
     t: (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message),
   });
-  return { deps, main, opened, reads, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks, links, runs };
+  return { deps, main, opened, shown, notices, diffs, dirtyAsks, logged, reviews, previews, settingsFiles, picks, links, runs };
 }
 
 describe('a remote core\'s services', () => {
@@ -202,6 +197,13 @@ describe('a remote core\'s services', () => {
     expect(settingsFiles).toEqual([['user', 'damocles.model']]);
   });
 
+  it('answers whether the pane holds unsaved changes to a host file from the pane\'s documents of that host', async () => {
+    const { deps, dirtyAsks } = services();
+    expect(await deps.platform.editor.isDirty('/srv/app/dirty.ts')).toBe(true);
+    expect(await deps.platform.editor.isDirty('/srv/app/clean.ts')).toBe(false);
+    expect(dirtyAsks).toEqual(['/srv/app/dirty.ts', '/srv/app/clean.ts']);
+  });
+
   it('opens any host path through the host\'s workspace, never on this computer, and passes its refusal on as it is', async () => {
     const refusal = new RefusedPathError('/mnt/share/x', 'share');
     const { deps, opened } = services(undefined, async (target) => {
@@ -217,14 +219,6 @@ describe('a remote core\'s services', () => {
     const crossed = ERROR_CODEC.decode(ERROR_CODEC.encode(refused, () => undefined)!, 'editor.openFile');
     expect(crossed).toBeInstanceOf(LocalizedError);
     expect((crossed as LocalizedError).text).toEqual(refusal.text);
-  });
-
-  it('reads the text of any absolute host path through the host, and refuses a relative one', async () => {
-    const { deps, reads } = services();
-    await expect(deps.platform.editor.readText('/etc/passwd')).resolves.toBe('text');
-    await expect(deps.platform.editor.readText('/srv/app/a.ts')).resolves.toBe('text');
-    await expect(deps.platform.editor.readText('notes.txt')).rejects.toThrow('notes.txt is not an absolute path');
-    expect(reads).toEqual(['/etc/passwd', '/srv/app/a.ts']);
   });
 
   it('answers an old server\'s missing outside routes with an error that names no host, and says why in the log', async () => {

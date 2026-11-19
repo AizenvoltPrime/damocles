@@ -6,8 +6,11 @@ import { Scratchpad } from '../scratchpad';
 import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, AgentResult, TeamCheckpoint } from '../types';
 import type { ReviewCoverage } from '../review-coverage';
 import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
+import { buildTeamAgentPiTools } from '../../pi-session/tools/team-tools';
+import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
 import { stubCheckpointWriter } from './checkpoint-writer-stub';
+import { buildPendingDispatchNudge } from '../prompts';
 import { takeAgentFile } from '../../pi-session/agent-file-owner';
 import type { Stopwatch } from '../../../shared/team-stopwatch';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -3659,5 +3662,156 @@ describe('TeamRunner provider failures', () => {
     expect(disposedScopes.filter(([, closeTabs]) => closeTabs)).toEqual([]);
     expect(sentToLead.filter((m) => m.includes('completed'))).toEqual([]);
     expect(sentToLead).toContain('Specialist "A" cancelled. Read their scratchpad section for findings.');
+  });
+});
+
+describe('TeamRunner lead with roster specialists it never started', () => {
+  const settle = async (): Promise<void> => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+
+  function freshLead(names: string[]): { h: RedispatchHarness; lead: AgentRunConfig; completion: () => string | null } {
+    const h = makeRedispatchHarness(names);
+    let completion: string | null = null;
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+    const agent = Object.assign(h.agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
+    (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+      .launchLead(agent, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
+    return { h, lead: h.runs.get('Lead')!.config, completion: () => completion };
+  }
+
+  /** The agent runner's turn end: true when the lead parks, false when its run ends. */
+  function endLeadTurn(lead: AgentRunConfig): boolean {
+    if (!lead.keepAlive!()) {
+      lead.onReconcileBeforeEnd?.();
+      if (!lead.keepAlive!()) return false;
+    }
+    lead.onTurnEnd!();
+    return true;
+  }
+
+  const nudges = (h: RedispatchHarness): string[] => h.sentToLead.filter((m) => m.startsWith('[SPECIALISTS NEVER STARTED]'));
+
+  it('holds the lead for one deferred nudge naming them, then completes the team with them listed as never dispatched', async () => {
+    const { h, lead, completion } = freshLead(['A', 'B']);
+
+    expect(endLeadTurn(lead)).toBe(true);
+    // The lead's wait is armed only after its turn-end returns, so the nudge must not be sent yet.
+    expect(nudges(h)).toEqual([]);
+    await settle();
+    expect(nudges(h)).toEqual([buildPendingDispatchNudge(['A', 'B'])]);
+    expect(nudges(h)[0]).toContain('team_spawn_specialist');
+    expect(nudges(h)[0]).toContain('team_cancel_specialist');
+
+    lead.onKeepAliveResume!();
+    expect(endLeadTurn(lead)).toBe(false);
+    h.runs.get('Lead')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('Lead')!.agentId, finalResponse: 'the lead wrapped up' });
+    await settle();
+
+    expect(nudges(h)).toHaveLength(1);
+    expect(completion()).toBe(
+      'Never dispatched (cancelled): the lead never started these roster specialists, so they did no work:\n- A\n- B\n\n---\n\nthe lead wrapped up',
+    );
+  });
+
+  it('sends no nudge while a specialist it started is still running', async () => {
+    const { h, lead } = freshLead(['A', 'B']);
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+
+    expect(endLeadTurn(lead)).toBe(true);
+    await settle();
+    expect(nudges(h)).toEqual([]);
+
+    h.agents.get('A')!.status = 'completed';
+    lead.onKeepAliveResume!();
+    expect(endLeadTurn(lead)).toBe(true);
+    await settle();
+    expect(nudges(h)).toEqual([buildPendingDispatchNudge(['B'])]);
+  });
+
+  it('lets a spawn after the nudge run normally and earn one later nudge for the rest', async () => {
+    const { h, lead, completion } = freshLead(['A', 'B']);
+    endLeadTurn(lead);
+    await settle();
+    lead.onKeepAliveResume!();
+
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+    expect(h.agents.get('A')!.status).toBe('running');
+    expect(endLeadTurn(lead)).toBe(true);
+    await settle();
+    expect(nudges(h)).toHaveLength(1);
+
+    h.agents.get('A')!.status = 'completed';
+    lead.onKeepAliveResume!();
+    expect(endLeadTurn(lead)).toBe(true);
+    await settle();
+    expect(nudges(h)).toEqual([buildPendingDispatchNudge(['A', 'B']), buildPendingDispatchNudge(['B'])]);
+
+    lead.onKeepAliveResume!();
+    expect(endLeadTurn(lead)).toBe(false);
+    h.runs.get('Lead')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('Lead')!.agentId, finalResponse: 'done' });
+    await settle();
+    expect(completion()).toContain('roster specialists, so they did no work:\n- B\n\n---\n\ndone');
+  });
+
+  it('publishes no "Waiting for specialists" while it holds the lead for the nudge, only while a specialist it started runs', async () => {
+    const { h, lead } = freshLead(['A', 'B']);
+    const leadId = h.agents.get('Lead')!.agentId;
+    const waiting = (): unknown[] => h.statusUpdates.filter((u) => u.agentId === leadId && u.progressSummary === 'Waiting for specialists');
+
+    expect(endLeadTurn(lead)).toBe(true);
+    await settle();
+    expect(nudges(h)).toHaveLength(1);
+    expect(waiting()).toEqual([]);
+
+    lead.onKeepAliveResume!();
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+    expect(endLeadTurn(lead)).toBe(true);
+    expect(waiting()).toHaveLength(1);
+  });
+
+  describe('team_synthesize_result after team_cancel_specialist', () => {
+    type LeadTool = { execute: (id: string, input: Record<string, unknown>) => Promise<unknown> };
+    function leadTools(h: RedispatchHarness): Map<string, LeadTool> {
+      const ctx = (h.runner as unknown as { buildLeadContext: (agentId: string, scope: string, name: string, stop: AbortSignal) => AgentMcpContext })
+        .buildLeadContext(h.agents.get('Lead')!.agentId, 'lead-scope', 'Lead', new AbortController().signal);
+      const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+      const tools = buildTeamAgentPiTools(pi, ctx, { cwd: process.cwd(), isTrusted: () => false }) as unknown as Array<LeadTool & { name: string }>;
+      return new Map(tools.map((t) => [t.name, t]));
+    }
+
+    it('synthesizes at once after the lead cancels a member it never started', async () => {
+      const { h, completion } = freshLead(['A', 'B']);
+      h.agents.get('A')!.status = 'completed';
+      const tools = leadTools(h);
+
+      await tools.get('team_cancel_specialist')!.execute('c1', { name: 'B' });
+      expect(h.agents.get('B')!.status).toBe('cancelled');
+      await tools.get('team_synthesize_result')!.execute('s1', { result: 'final result' });
+
+      expect(completion()).toBe('final result');
+    });
+
+    it('still holds the synthesis for 30 seconds after the lead cancels a member that was running', async () => {
+      const { h, completion } = freshLead(['A', 'B']);
+      h.agents.get('A')!.status = 'completed';
+      h.runner.startSpecialist('B', 'Test label', 'task for B that is descriptive enough');
+      const tools = leadTools(h);
+
+      await tools.get('team_cancel_specialist')!.execute('c1', { name: 'B' });
+      h.runs.get('B')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('B')!.agentId, status: 'cancelled' });
+      await settle();
+      expect(h.agents.get('B')!.status).toBe('cancelled');
+
+      await expect(tools.get('team_synthesize_result')!.execute('s1', { result: 'final result' }))
+        .rejects.toThrow('Specialists were recently cancelled: B. Wait at least 30 seconds after cancelling a running specialist before synthesizing.');
+      expect(completion()).toBeNull();
+    });
+  });
+
+  it('lists none of them in the result of a stopped team, which stays resumable with them pending', () => {
+    const { h, completion } = freshLead(['A']);
+    h.runner.cancel('user');
+    expect(completion()).toContain('## Partial Team Results');
+    expect(completion()).not.toContain('Never dispatched');
+    expect(h.agents.get('A')!.status).toBe('pending');
   });
 });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHungGate } from '../../folder-probe';
-import { createFolderPresenceProbe, mountPointOf, PRESENCE_TIMEOUT_MS, type FolderPresenceProbeOptions } from '../folder-presence-probe';
+import { ADMIT_WAIT_MS, checkWhenAdmitted, createFolderPresenceProbe, mountPointOf, PRESENCE_TIMEOUT_MS, type FolderPresenceProbeOptions, type PathCheck } from '../folder-presence-probe';
 
 type Answer = { readonly dev: number; readonly directory?: boolean } | 'missing' | 'hung';
 
@@ -54,14 +54,24 @@ describe('createFolderPresenceProbe', () => {
     expect(stated(stat)).toEqual(['\\\\nas\\work\\']);
   });
 
-  it('starts no stat of another root while two hang past the deadline', async () => {
+  // no failure is reported for a stat that was not made
+  it('starts no stat of another root while two hang past the deadline, answering unchecked, and says when the gate admits again', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-    const { probe, stat } = probeOf({ 'P:\\': 'hung', 'Q:\\': 'hung', 'R:\\': { dev: 1 }, 'R:\\app': { dev: 1 } }, { platform: 'win32' });
+    const { probe, stat, release } = probeOf({ 'P:\\': 'hung', 'Q:\\': 'hung', 'R:\\': { dev: 1 }, 'R:\\app': { dev: 1 } }, { platform: 'win32' });
+    const admitted = vi.fn();
+    probe.onDidAdmit(admitted);
     const hung = [probe.presence('P:\\app'), probe.presence('Q:\\app')];
     await vi.advanceTimersByTimeAsync(PRESENCE_TIMEOUT_MS);
-    await Promise.all(hung);
-    expect(await probe.presence('R:\\app')).toBe('unavailable');
+    expect(await Promise.all(hung)).toEqual(['unavailable', 'unavailable']);
+    expect(await probe.presence('R:\\app')).toBe('unchecked');
+    expect(await probe.path('R:\\app')).toBe('unchecked');
     expect(stated(stat)).toEqual(['P:\\', 'Q:\\']);
+    expect(admitted).not.toHaveBeenCalled();
+
+    release('P:\\');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(admitted).toHaveBeenCalledOnce();
+    expect(await probe.presence('R:\\app')).toBe('present');
   });
 
   it('tells once, for each folder that gave up on it, that a hung stat answered after all', async () => {
@@ -110,6 +120,107 @@ describe('createFolderPresenceProbe', () => {
     expect(await probe.volumeOf('D:\\work\\app')).toBe('D:\\');
     expect(await probe.volumeOf('\\\\server\\share\\app')).toBe('\\\\server\\share\\');
     expect(await probe.volumeOf('\\\\wsl.localhost\\Ubuntu\\home\\me\\app')).toBe('\\\\wsl.localhost\\Ubuntu\\');
+  });
+});
+
+// A gate whose admission the test fires.
+function manualGate() {
+  const listeners = new Set<() => void>();
+  return {
+    onDidAdmit: (listener: () => void) => {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
+    },
+    admit: () => { for (const listener of [...listeners]) listener(); },
+    listening: () => listeners.size,
+  };
+}
+
+describe('checkWhenAdmitted', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('answers a counted check at once, starting no timer', async () => {
+    vi.useFakeTimers();
+    const gate = manualGate();
+    const check = vi.fn(async (): Promise<PathCheck> => 'missing');
+    expect(await checkWhenAdmitted(check, gate)).toBe('missing');
+    expect(check).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(gate.listening()).toBe(0);
+  });
+
+  it('checks again once the gate admits within the wait, and leaves no timer running', async () => {
+    vi.useFakeTimers();
+    const gate = manualGate();
+    const answers: PathCheck[] = ['unchecked', 'directory'];
+    const check = vi.fn(async (): Promise<PathCheck> => answers.shift()!);
+    const answer = checkWhenAdmitted(check, gate);
+    await vi.advanceTimersByTimeAsync(ADMIT_WAIT_MS / 2);
+    expect(check).toHaveBeenCalledOnce();
+    gate.admit();
+    expect(await answer).toBe('directory');
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(gate.listening()).toBe(0);
+  });
+
+  it('hears an admission that came while the first check ran', async () => {
+    vi.useFakeTimers();
+    const gate = manualGate();
+    const answers: PathCheck[] = ['unchecked', 'directory'];
+    const check = vi.fn(async (): Promise<PathCheck> => {
+      const found = answers.shift()!;
+      if (found === 'unchecked') gate.admit();
+      return found;
+    });
+    const answer = checkWhenAdmitted(check, gate);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await answer).toBe('directory');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('answers unchecked when the gate does not admit within the wait, after one more check', async () => {
+    vi.useFakeTimers();
+    const gate = manualGate();
+    const check = vi.fn(async (): Promise<PathCheck> => 'unchecked');
+    const answer = checkWhenAdmitted(check, gate);
+    await vi.advanceTimersByTimeAsync(ADMIT_WAIT_MS - 1);
+    expect(check).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await answer).toBe('unchecked');
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(gate.listening()).toBe(0);
+  });
+
+  it('rejects with the abort reason while it waits, checking no more and leaving no timer', async () => {
+    vi.useFakeTimers();
+    const gate = manualGate();
+    const check = vi.fn(async (): Promise<PathCheck> => 'unchecked');
+    const controller = new AbortController();
+    const settled = checkWhenAdmitted(check, gate, { signal: controller.signal }).then(() => 'answered', (err: unknown) => err);
+    await vi.advanceTimersByTimeAsync(10);
+    const reason = new Error('closed');
+    controller.abort(reason);
+    expect(await settled).toBe(reason);
+    expect(check).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(gate.listening()).toBe(0);
+  });
+
+  it('waits on the probe\'s own gate: a refused check reads present once a hung stat settles', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const { probe, release } = probeOf({ 'P:\\': 'hung', 'Q:\\': 'hung', 'R:\\': { dev: 1 }, 'R:\\app': { dev: 1 } }, { platform: 'win32' });
+    const hung = [probe.presence('P:\\app'), probe.presence('Q:\\app')];
+    await vi.advanceTimersByTimeAsync(PRESENCE_TIMEOUT_MS);
+    await Promise.all(hung);
+    const answer = checkWhenAdmitted(() => probe.presence('R:\\app'), probe);
+    await vi.advanceTimersByTimeAsync(10);
+    release('P:\\');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await answer).toBe('present');
   });
 });
 

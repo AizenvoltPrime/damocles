@@ -3,13 +3,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { rgPath } from '@vscode/ripgrep';
-import { runProcess } from '../../../process-launcher';
-import { GlobSyntaxError, overrideRules } from '../rg-ignore';
-import { insideGitRepo, walkFiles, walkTree } from '../search-walk';
+import { runProcess } from '../../process-launcher';
+import { ALL_IGNORE_FILES, GlobSyntaxError, insideGitRepo, overrideRules, walkFiles, walkTree, type WalkIgnore } from '..';
 
 // Parity with rg 15's own walk (`rg --files --hidden`), the walk Grep and Glob ran before they walked themselves: each case lists
-// a fixture tree with real rg and with walkFiles and requires the same files. Entries inside a `.git` folder are left out of
-// rg's list, since the walk skips that folder.
+// a fixture tree with real rg and with walkFiles and requires the same files. Unless the walk lists `.git` folders, entries
+// inside one are left out of rg's list.
 
 const noHosts = (): Promise<ReadonlySet<string>> => Promise.resolve(new Set());
 let base: string;
@@ -50,26 +49,34 @@ function tree(entries: Record<string, string | Buffer>): string {
   return root;
 }
 
+// rg's flags for the walk's ignore switches
+const rgIgnoreArgs = (ignore: WalkIgnore): string[] => [...(ignore.files ? [] : ['--no-ignore']), ...(ignore.global ? [] : ['--no-ignore-global']), ...(ignore.parents ? [] : ['--no-ignore-parent'])];
+
 const insideGitFolder = (file: string): boolean => file.split('/').slice(0, -1).includes('.git');
 
-async function rgFiles(root: string, globs: readonly string[] = [], requireGit = true): Promise<string[]> {
-  const args = ['--no-config', '--files', '--hidden', ...(requireGit ? [] : ['--no-require-git']), ...globs.flatMap((glob) => ['--glob', glob]), '--', '.'];
-  const { exit, stdout, stderr } = await runProcess({ file: rgPath, args, cwd: root, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (exit?.code !== 0 && exit?.code !== 1) throw new Error(`rg exited ${exit?.code}: ${stderr.toString()}`);
-  return stdout.toString('utf8').split('\n').filter(Boolean).map((line) => line.replace(/^\.[\\/]/, '').replaceAll('\\', '/')).filter((file) => !insideGitFolder(file)).sort();
+interface Switches {
+  readonly ignore?: WalkIgnore;
+  readonly gitFolders?: 'skip' | 'list';
 }
 
-async function walked(root: string, globs: readonly string[] = [], requireGit = true): Promise<string[]> {
+async function rgFiles(root: string, globs: readonly string[] = [], requireGit = true, { ignore = ALL_IGNORE_FILES, gitFolders = 'skip' }: Switches = {}): Promise<string[]> {
+  const args = ['--no-config', '--files', '--hidden', ...(requireGit ? [] : ['--no-require-git']), ...rgIgnoreArgs(ignore), ...globs.flatMap((glob) => ['--glob', glob]), '--', '.'];
+  const { exit, stdout, stderr } = await runProcess({ file: rgPath, args, cwd: root, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (exit?.code !== 0 && exit?.code !== 1) throw new Error(`rg exited ${exit?.code}: ${stderr.toString()}`);
+  return stdout.toString('utf8').split('\n').filter(Boolean).map((line) => line.replace(/^\.[\\/]/, '').replaceAll('\\', '/')).filter((file) => gitFolders === 'list' || !insideGitFolder(file)).sort();
+}
+
+async function walked(root: string, globs: readonly string[] = [], requireGit = true, { ignore = ALL_IGNORE_FILES, gitFolders = 'skip' }: Switches = {}): Promise<string[]> {
   const files: string[] = [];
-  const walk = walkFiles({ root, requireGit, overrides: overrideRules(globs), allowedHosts: noHosts, signal: undefined });
-  for await (const file of walk.files) files.push(file.replaceAll('\\', '/'));
+  const walk = walkFiles({ root, requireGit, ignore, gitFolders, overrides: overrideRules(globs), allowedHosts: noHosts, signal: undefined });
+  for await (const batch of walk.files) files.push(...batch.map((file) => file.replaceAll('\\', '/')));
   expect(walk.errors).toEqual([]);
   return files.sort();
 }
 
-async function parity(root: string, globs: readonly string[] = [], requireGit = true): Promise<string[]> {
-  const expected = await rgFiles(root, globs, requireGit);
-  expect(await walked(root, globs, requireGit), `globs ${JSON.stringify(globs)}, requireGit ${requireGit}`).toEqual(expected);
+async function parity(root: string, globs: readonly string[] = [], requireGit = true, switches: Switches = {}): Promise<string[]> {
+  const expected = await rgFiles(root, globs, requireGit, switches);
+  expect(await walked(root, globs, requireGit, switches), `globs ${JSON.stringify(globs)}, requireGit ${requireGit}, ${JSON.stringify(switches)}`).toEqual(expected);
   return expected;
 }
 
@@ -199,9 +206,104 @@ describe('the walk lists what rg 15 lists', () => {
     expect(await insideGitRepo(path.join(root, 'inner'))).toBe(true);
   });
 
+  // globset matches a whole-path literal, a basename literal and an extension by lookup and any other glob by regex: the last line
+  // that matches decides whichever way each is matched
+  it('the last matching line decides across literal, basename, extension and regex globs', async () => {
+    const files = { 'x.y': '', 'a.b.y': '', '.y': '', 'k.y': '', 'deep/er/x.y': '', 'deep/er/z.y': '', 'deep/x.y': '', 'er/k.y': '', 'é.y': '', 'sub/é.y': '' };
+    const root = tree({ '.git/': '', ...files });
+    for (const lines of [
+      ['*.y', '!x.y', '!/deep/er/z.y', 'deep/er/x.y'],
+      ['x.y', '!*.y', 'k*', '!**/er/*'],
+      ['**/er/*', '!z.y', '!*.b.y', '*.b.y', '!é.y'],
+      ['*.', '.y', '/x.y', '!deep/x.y', 'deep/**', '!*.y'],
+      ['*.y', '!sub/é.y', '!/k.y', '!a.b.y', '*.b.*'],
+    ]) {
+      fs.writeFileSync(path.join(root, '.gitignore'), `${lines.join('\n')}\n`);
+      await parity(root);
+      await parity(root, lines.map((line) => (line.startsWith('!') ? line.slice(1) : `!${line}`)));
+    }
+  });
+
   it('BOM, CRLF and a line that is not UTF-8, which ends the file', async () => {
     const gitignore = Buffer.concat([Buffer.from('\uFEFF*.bom\r\n*.crlf\r\n'), Buffer.from([0x78, 0xff, 0x0a]), Buffer.from('*.after\n')]);
     await parity(tree({ '.git/': '', '.gitignore': gitignore, 'a.bom': '', 'a.crlf': '', 'a.after': '', 'a.txt': '' }));
+  });
+});
+
+const SWITCHES: readonly WalkIgnore[] = [true, false].flatMap((files) => [true, false].flatMap((global) => [true, false].map((parents) => ({ files, global, parents }))));
+
+describe('the ignore switches list what rg lists with the same flags', () => {
+  const kinds = ['x.p', 'x.o', 'x.e', 'x.q', 'x.i', 'x.r', 'x.g', 'x.t', 'sub/y.q', 'sub/y.t'];
+  beforeEach(() => {
+    fs.writeFileSync(path.join(home, '.gitconfig'), `[core]\n\texcludesFile = ${path.join(home, 'global').replaceAll('\\', '/')}\n`);
+    fs.writeFileSync(path.join(home, 'global'), '*.g\n');
+  });
+
+  it('a root below a repository, whose folders above it hold rules', async () => {
+    const outer = tree({
+      '.git/info/exclude': '*.e\n', '.ignore': '*.p\n', '.gitignore': '*.o\n',
+      'root/.gitignore': '*.q\n', 'root/.ignore': '*.i\n', 'root/.rgignore': '*.r\n', 'root/sub/.gitignore': '!y.q\n',
+      ...Object.fromEntries(kinds.map((name) => [`root/${name}`, ''])),
+    });
+    const root = path.join(outer, 'root');
+    for (const ignore of SWITCHES) {
+      for (const globs of [[], ['!x.t'], ['*.q']]) await parity(root, globs, true, { ignore });
+    }
+    // the folders above still mark the repository, so the root's .gitignore applies
+    expect(await walked(root, [], true, { ignore: { ...ALL_IGNORE_FILES, parents: false } })).toEqual(['.gitignore', '.ignore', '.rgignore', 'sub/.gitignore', 'sub/y.q', 'sub/y.t', 'x.e', 'x.o', 'x.p', 'x.t']);
+  });
+
+  it('a root that is a repository', async () => {
+    const root = tree({
+      '.git/info/exclude': '*.e\n', '.gitignore': '*.q\n', '.ignore': '*.i\n', '.rgignore': '*.r\n', 'sub/.gitignore': '!y.q\n',
+      ...Object.fromEntries(kinds.map((name) => [name, ''])),
+    });
+    for (const ignore of SWITCHES) {
+      for (const globs of [[], ['!x.t'], ['*.q']]) await parity(root, globs, true, { ignore });
+    }
+    expect(await walked(root, [], true, { ignore: { ...ALL_IGNORE_FILES, global: false } })).toContain('x.g');
+    expect(await walked(root, [], true, { ignore: { files: false, global: true, parents: true } })).toEqual(expect.arrayContaining(kinds));
+  });
+});
+
+describe('gitFolders', () => {
+  const repository = (): string => tree({
+    '.git/HEAD': 'ref', '.git/objects/ab/cd': '', '.git/info/exclude': 'HEAD\n*.e\n', '.gitignore': '*.q\n',
+    'a.txt': '', 'x.e': '', 'x.q': '', 'inner/.git/config': '', 'inner/b.txt': '',
+  });
+
+  it('\'list\' walks a .git folder as rg does, its own info/exclude applying, under every switch', async () => {
+    const root = repository();
+    for (const ignore of SWITCHES) await parity(root, [], true, { ignore, gitFolders: 'list' });
+    const listed = await parity(root, [], true, { gitFolders: 'list' });
+    expect(listed).toEqual(expect.arrayContaining(['.git/info/exclude', '.git/objects/ab/cd', 'inner/.git/config']));
+    expect(listed).not.toContain('.git/HEAD');
+    expect(await parity(root, [], true, { ignore: { files: false, global: true, parents: true }, gitFolders: 'list' })).toContain('.git/HEAD');
+    expect(await parity(root, ['!**/.git'], true, { gitFolders: 'list' })).toEqual(['.gitignore', 'a.txt', 'inner/b.txt']);
+  });
+
+  it('\'skip\' lists nothing inside a .git folder, and its info/exclude still applies', async () => {
+    const root = repository();
+    for (const ignore of SWITCHES) {
+      const listed = await walked(root, [], true, { ignore, gitFolders: 'skip' });
+      expect(listed.filter((file) => insideGitFolder(file))).toEqual([]);
+      expect(listed.includes('x.e')).toBe(!ignore.files);
+    }
+  });
+});
+
+describe.runIf(process.platform === 'win32')('links under every switch (win32)', () => {
+  it('lists no link and enters none, a .git link included', async () => {
+    const root = tree({ 'a.txt': '', 'real/b.txt': '' });
+    const outside = tree({ 'c.txt': '', 'HEAD': '' });
+    fs.symlinkSync(outside, path.join(root, 'j'), 'junction');
+    fs.symlinkSync(outside, path.join(root, '.git'), 'junction');
+    fs.symlinkSync(path.join(root, 'nowhere'), path.join(root, 'dangling'), 'junction');
+    for (const ignore of SWITCHES) {
+      for (const gitFolders of ['skip', 'list'] as const) {
+        expect(await parity(root, [], true, { ignore, gitFolders })).toEqual(['a.txt', 'real/b.txt']);
+      }
+    }
   });
 });
 
@@ -259,11 +361,11 @@ describe.runIf(process.platform === 'win32')('a pointer whose place cannot be de
     process.on('unhandledRejection', onUnhandled);
     try {
       const root = loopTree();
-      const early = walkFiles({ root, requireGit: true, overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined });
+      const early = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined });
       // a's listing is awaited while y's, read ahead, fails
-      for (let next = await early.files.next(); next.value !== path.join('a', 'f.txt'); next = await early.files.next()) expect(next.done).toBe(false);
+      for (let next = await early.files.next(); !next.value?.includes(path.join('a', 'f.txt')); next = await early.files.next()) expect(next.done).toBe(false);
       await early.files.return();
-      const full = walkFiles({ root, requireGit: true, overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined });
+      const full = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined });
       await expect((async () => { for await (const _ of full.files) { /* drained */ } })()).rejects.toMatchObject({ code: 'ELOOP' });
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(unhandled).toEqual([]);
@@ -279,6 +381,42 @@ describe.runIf(process.platform === 'win32')('links (win32)', () => {
     fs.symlinkSync(path.join(root, 'real'), path.join(root, 'j'), 'junction');
     fs.symlinkSync(path.join(root, 'nowhere'), path.join(root, 'dangling'), 'junction');
     expect(await parity(root)).toEqual(['.gitignore', 'a.txt', 'real/b.txt']);
+  });
+});
+
+describe.runIf(process.platform !== 'win32')('a newline in a folder name (POSIX)', () => {
+  // globset's regexes match a newline wherever a glob's `**` or `*` may
+  it('is matched as rg matches it', async () => {
+    const root = tree({ '.git/': '', '.gitignore': '**/deep/*.md\n*.log\nnew*/b.md\n', 'new\nline/deep/a.md': '', 'new\nline/x.log': '', 'new\nline/b.md': '', 'new\nline/keep.txt': '' });
+    const { exit, stdout } = await runProcess({ file: rgPath, args: ['--no-config', '--files', '--hidden', '--null', '--', '.'], cwd: root, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(exit?.code).toBe(0);
+    const expected = stdout.toString('utf8').split('\0').filter(Boolean).map((line) => line.replace(/^\.\//, '')).sort();
+    expect(expected).toEqual(['.gitignore', 'new\nline/keep.txt']);
+    expect(await walked(root)).toEqual(expected);
+  });
+});
+
+describe.runIf(process.platform !== 'win32')('a name ending in a dot (POSIX)', () => {
+  // globset gives such a name its basename and extension (file_name is None only for an empty path or a `..` basename)
+  it('is matched as rg matches it, by a literal line and by an extension line', async () => {
+    const root = tree({ '.git/': '', 'x.': '', 'a/b.': '', 'a/x.': '', 'a/c.d': '', 'keep.txt': '' });
+    for (const lines of [['x.'], ['*.'], ['x.', '*.']]) {
+      fs.writeFileSync(path.join(root, '.gitignore'), `${lines.join('\n')}\n`);
+      await parity(root);
+      fs.rmSync(path.join(root, '.gitignore'));
+      await parity(root, lines);
+      await parity(root, lines.map((line) => `!${line}`));
+    }
+  });
+});
+
+describe('walkFiles batches', () => {
+  it('yields one batch per folder it lists, empty for a folder that lists no file', async () => {
+    const root = tree({ '.git/': '', '.gitignore': '*.log\n', 'a.txt': '', 'empty/': '', 'logs/x.log': '' });
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined });
+    const batches: string[][] = [];
+    for await (const batch of walk.files) batches.push(batch.map((file) => file.replaceAll('\\', '/')).sort());
+    expect(batches.sort((a, b) => b.length - a.length)).toEqual([['.gitignore', 'a.txt'], [], []]);
   });
 });
 

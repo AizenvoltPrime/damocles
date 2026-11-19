@@ -13,7 +13,7 @@ import {
   DEFAULT_MAX_UTTERANCE_MS,
 } from '@shared/types/voice';
 import { DEFAULT_WAKE_PHRASE } from '@shared/wake-phrase';
-import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY } from '@shared/types/constants';
+import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY, UPLOAD_FOLDER_MAX_ENTRIES, UPLOAD_FOLDER_MAX_SIZE } from '@shared/types/constants';
 import { ACCOUNT_PROVIDER_IDS, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type ProviderCredentialActive, type SignInProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import type { LocalizedText } from '@shared/localized-text';
@@ -72,6 +72,8 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   memoryProfile: true,
   memoryInjectRerank: false,
   browserHeadless: true,
+  browserUploadFolderMaxEntries: UPLOAD_FOLDER_MAX_ENTRIES.default,
+  browserUploadFolderMaxSize: UPLOAD_FOLDER_MAX_SIZE.default,
   cacheWarming: DEFAULT_CACHE_WARMING,
   dangerouslySkipPermissions: false,
   defaultDangerouslySkipPermissions: false,
