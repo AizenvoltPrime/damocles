@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { diffService } from '../../diff';
 import { log } from '../../logger';
 import { createGitRunner, type GitRunner } from '../../scm/git-runner';
 import { folder, git, GIT_PATH, HAS_GIT, makeRepo, useGitSandbox, write } from '../../scm/__tests__/git-harness';
@@ -66,6 +67,8 @@ function review(session: ReviewSession, published: number[] = []): ChatReview {
     pendingBaseline: () => Promise.resolve(undefined),
     publish: (totals) => published.push(totals.files),
     watchFolder: () => ({ dispose: () => undefined }),
+    watchTree: () => ({ dispose: () => undefined }),
+    diff: diffService(),
   });
 }
 

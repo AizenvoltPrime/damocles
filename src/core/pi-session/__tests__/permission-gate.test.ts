@@ -9,6 +9,7 @@ import { runPermissionGate, gateErrorFallback, callFactsOf, type PanelGateContex
 import { buildNestedMcpToolset } from '../tools/mcp-tools';
 import { browserUploadPath } from '../tools/browser-tools';
 import { createWriteTool } from '../tools/write-tool';
+import { diffService } from '../../diff';
 
 // The QueryDosDeviceW answer for a drive a test maps, by name (`Q:`); a thrown Error for a failing call; any other asks Windows.
 const dosDevices = vi.hoisted(() => new Map<string, string | Error>());
@@ -2660,7 +2661,7 @@ describe.runIf(process.platform !== 'win32')('a Write to a FIFO (POSIX)', () => 
       try {
         const decision = await within2s(runPermissionGate(ev('write', 'w1', { path: 'pipe', content: 'x\n' }), gate, undefined));
         const outcome = decision === undefined
-          ? await within2s(createWriteTool(getPiCodingAgent()!, dir).execute('w1', { path: 'pipe', content: 'x\n' } as never, undefined, undefined, { cwd: dir } as never).then(() => 'written', (error: Error) => error.message))
+          ? await within2s(createWriteTool(getPiCodingAgent()!, dir, diffService()).execute('w1', { path: 'pipe', content: 'x\n' } as never, undefined, undefined, { cwd: dir } as never).then(() => 'written', (error: Error) => error.message))
           : decision;
 
         expect(prompts).toEqual([]);

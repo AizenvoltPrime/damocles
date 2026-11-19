@@ -4,7 +4,8 @@ import { pathToFileURL } from 'node:url';
 import { parsePatch } from 'diff';
 import { installFakePlatform } from '../../../__mocks__/fake-platform';
 import { installLogSink } from '../../logger';
-import { filePatch } from '../tools/file-patch';
+import { filePatch } from '../../diff/jobs';
+import { FILE_PATCH_TIMEOUT_MS } from '../tools/file-patch';
 import { pendingPromptDescriber, promptOwnerOf, PROMPT_SUMMARY_MAX_CHARS, type PromptOwners } from '../pending-prompts';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PromptOwner } from '../../../shared/types/permissions';
@@ -41,7 +42,7 @@ describe('pending prompt summaries', () => {
   it('names an edit by its path inside the chat folder and the lines its patch changes', () => {
     const before = 'a\nb\nc\n';
     const after = 'a\nB\nc\nd\ne\n';
-    const { patch } = filePatch('src/a.ts', before, after) as { patch: string };
+    const { patch } = filePatch('src/a.ts', before, after, FILE_PATCH_TIMEOUT_MS) as { patch: string };
     expect(summaryOf(permission({ filePath: path.join(CWD, 'src', 'a.ts'), patch }))).toBe(`edit ${path.join('src', 'a.ts')} (+3 −1)`);
     expect(summaryOf(permission({ filePath: 'src/a.ts', patchOmitted: 'tooLarge' }))).toBe(`edit ${path.join('src', 'a.ts')}`);
   });
@@ -118,7 +119,7 @@ describe('pending prompt summaries', () => {
 
 describe('the pending prompt describer', () => {
   const edit = (id: string): RaisedPrompt => {
-    const { patch } = filePatch('src/a.ts', 'a\nb\n', 'a\nB\n') as { patch: string };
+    const { patch } = filePatch('src/a.ts', 'a\nb\n', 'a\nB\n', FILE_PATCH_TIMEOUT_MS) as { patch: string };
     return { id, kind: 'approval', request: permission({ toolUseId: id, filePath: 'src/a.ts', patch }) };
   };
   const question: RaisedPrompt = {

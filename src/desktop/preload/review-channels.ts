@@ -29,6 +29,7 @@ export const MAX_REVIEW_COMMENTS = 200;
 export const MAX_REVIEW_COMMENT_CHARS = 4000;
 export const MAX_REVIEW_PATH_LENGTH = 4096;
 export const MAX_REVIEW_LINE = 10_000_000;
+// a revision is chat-changes.ts revisionOf's SHA-256 hex digest
 export const MAX_REVIEW_REVISION_LENGTH = 64;
 
 // A changed file of the chat. path: '/' separated and relative to the chat's working folder, or absolute (native) for a file

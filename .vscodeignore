@@ -159,6 +159,7 @@ dist/!(webview)/**
 !dist/memory-integrity-worker.js
 !dist/session-meta-index-worker.js
 !dist/voice-extract-worker.js
+!dist/diff-worker.js
 !dist/process-launcher-worker.js
 !dist/sentinel.js
 !dist/walk-child.js

@@ -8,10 +8,11 @@ Each patch carries a fix that upstream has not released yet. Delete a patch in t
 
 The pi patches are generated from pi's build, never edited by hand. Each fix is a commit on a pi branch `damocles/1.5.2-<name>`, stacked on `v1.5.2` in the order of the patches; the `fix/<name>` branch named below carries the same fix on pi's main, for upstream. To make patch N, build `packages/coding-agent` at branch N, copy the `.js` and `.d.ts` files of its `dist` that differ from the published package into a scratch install of `@earendil-works/pi-coding-agent@1.5.2` that has patches 1 to N-1 applied, and run `npx patch-package @earendil-works/pi-coding-agent --append <name> --exclude "(\.map$|^package\.json$|^dist/bundle/)"`. Source maps and `dist/bundle` (the bundle of the `pi` command, which Damocles does not load) stay unpatched. Patch files keep LF line ends (`.gitattributes`).
 
-The patches change these files of pi's `dist/core`, with their `.d.ts` files:
+The patches change these files of pi's `dist/core`, and pi's `dist/index.js`, with their `.d.ts` files:
 
-- Lines added: `agent-session.js` (001, 002), `resolve-config-value.js` (003), `tools/read.js`, `tools/edit.js`, `tools/write.js`, `tools/path-utils.js` and `tools/file-mutation-queue.js` (004), `session-manager.js` (005).
-- Same line count: `auth-storage.js`, `model-registry.js`, `model-runtime.js` and `provider-composer.js` (003), `agent-session-runtime.js` (005).
+- Lines added: `agent-session.js` (001, 002), `resolve-config-value.js` (003), `tools/read.js`, `tools/edit.js`, `tools/write.js`, `tools/path-utils.js` and `tools/file-mutation-queue.js` (004), `session-manager.js` (005), `tools/edit-diff.js` (006).
+- Same line count: `auth-storage.js`, `model-registry.js`, `model-runtime.js` and `provider-composer.js` (003), `agent-session-runtime.js` (005), `dist/index.js` (006).
+- Lines removed: `tools/edit.js` (006).
 
 A `<file>.js:<line>` citation in Damocles' comments and docs refers to the published pi 1.5.2, not to the patched copy in `node_modules`.
 
@@ -47,3 +48,10 @@ A prompt or a `sendCustomMessage` with `triggerTurn` made while `agent_settled` 
 Adds `SessionManager.openAsync(path, sessionDir?, cwdOverride?, { signal })`, which reads a session file in 1 MB chunks without blocking the event loop; `AgentSessionRuntime` uses it to switch to, fork and import a session. The session reader also takes linear time on a line that spans many chunks, for `open()` too (one 100 MB line: about 2.4 s before, 0.3 s after). The newline that completes a torn last line goes only to the file that was read: the repair opens the path without creating it and writes only if it has the device and inode of the still-open read handle, so a session file deleted or replaced during the read is never recreated or written, by `open()` either. It also adds `createBranchedSessionAsync(leafId, { signal })`, which writes a fork's file in 1 MB chunks with the same bytes and resulting state as `createBranchedSession`, switches the manager only once the file is complete, and leaves no file and the manager unchanged on an abort, a failure or a path deleted meanwhile; `AgentSessionRuntime.fork` uses it. `openAsync` refuses a file that does not parse as a session itself, after an async `stat`, so the constructor never reads the file synchronously.
 
 - Upstream: [earendil-works/pi#11187](https://github.com/earendil-works/pi/issues/11187), branch `fix/open-async` (the two commits of `AizenvoltPrime/pi` `open-async-session`, then the repair fix, the async branch write and the refusal of a file that is not a session).
+
+## 006 edit-result-export
+
+pi's edit computed its whole result and its diff in one `execute`, so a host that runs the edit itself could reach pi's matching (its fuzzy match, BOM and line-ending rules and refusals) only by running the whole edit, diff included. The diff has no bound: a single edit that rewrites 3,000 lines took 4.3 s of jsdiff on the calling thread, 5,000 lines 12.8 s, where the text computation took 2 ms. Adds `computeEditResult(rawContent, edits, path)`, exported from the package, which returns `{ finalContent, baseContent, newContent, replacements }` and throws the edit's refusals; the edit's `execute` calls it, then diffs and writes as before. Damocles runs every single-replacement Edit through it (`replace_all` uses Damocles' own exact match) and computes the patch on its diff worker, and its approval preview calls it and runs no diff.
+
+- Upstream: not filed yet, branch `fix/edit-result-export` (`AizenvoltPrime/pi`).
+- Damocles' test: `src/core/pi-session/tools/__tests__/edit-tool.test.ts`, "leaves the bytes pi's edit leaves and answers as it does, for %s" (a single replacement) and "keeps the event loop responsive while it patches a single replacement that rewrites 5,000 lines"; `src/core/permission-handler/__tests__/proposal-diff-view.test.ts`, "refuses an old_string %s with pi's own message".

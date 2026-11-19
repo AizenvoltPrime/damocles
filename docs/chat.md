@@ -19,7 +19,7 @@ The pinned sticky header can be hidden entirely via the `×` button. When hidden
 
 - **Syntax highlighting.** Shiki-powered code blocks with VS Code-quality highlighting and one-click copy.
 - **Diff approval.** Review and approve file changes with syntax-highlighted unified diffs. Concurrent diffs are supported.
-- **Inline diff preview.** Edit and Write tool results show inline diff previews with a click-to-expand full-panel view. Lines carry their real numbers in the file: an Edit's come from the patch pi records, a Write that replaces a file records one too, a new file is numbered from 1, and a change awaiting approval is numbered from the file's current and proposed contents. A Write recorded by an earlier version shows its content without numbers, since nothing says whether it created or replaced the file. A change over 10 MiB or 1,000 changed lines, or to a binary file, shows no numbers rather than invented ones.
+- **Inline diff preview.** Edit and Write tool results show inline diff previews with a click-to-expand full-panel view. Lines carry their real numbers in the file: an Edit records its patch as pi's edit does, a Write that replaces a file records one too, a new file is numbered from 1, and a change awaiting approval gets the patch its result will record. A Write recorded by an earlier version shows its content without numbers, since nothing says whether it created or replaced the file. A change over 10 MiB, a Write or `replace_all` Edit over 1,000 changed lines, a diff that takes more than a second to compute, or a change to a binary file shows no numbers rather than invented ones.
 
 ## Tool calls
 

@@ -8,6 +8,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { ChatSession, LiveConversation, QueueDisposition, ResumeOutcome, SendOutcome, SendTicket, SlashInvocation, UserBroadcast } from "../chat-session";
 import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { Disposable } from "../../platform/disposable";
+import type { FileWatcherFactory } from "../../platform/file-watcher";
 import type { ExtensionToWebviewMessage, PromptReturnReason, QueuedPart } from "../../shared/types/messages";
 import type { ModelInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
@@ -124,6 +125,7 @@ import { buildCustomTools, type CustomToolDeps } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import type { UserInput } from "./tools/subagent-tools";
 import { processLauncher } from "../process-launcher";
+import { diffService } from "../diff";
 import { UnpersistedToolImages } from "./unpersisted-tool-images";
 import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
 import type { ShellOptions } from "./tools/bash-tool";
@@ -302,6 +304,13 @@ const PI_SPAWN_VARIABLES = ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "
 // The webview's contextInjection.viewContext button label; view-context-label.test.ts keeps every language's two equal.
 export const VIEW_CONTEXT_BUTTON = "View injected context";
 
+/** Calls onChange for every entry `glob` matches under base that is created, changed or deleted, until disposed. */
+function watchEntries(watchers: FileWatcherFactory, base: string, glob: string, onChange: (fsPath: string) => void): Disposable {
+  const watcher = watchers.watch(base, glob);
+  const subscriptions = [watcher.onDidCreate(onChange), watcher.onDidChange(onChange), watcher.onDidDelete(onChange)];
+  return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); watcher.dispose(); } };
+}
+
 /** Rebuilds each image from its validated fields so no extra property is persisted or forwarded; null when any image is invalid. */
 function parseSteerImages(images: unknown): ImageBlock[] | null {
   if (!Array.isArray(images) || images.length > MAX_IMAGES_PER_MESSAGE) return null;
@@ -451,6 +460,9 @@ interface OutgoingPrompt extends SendTicket {
   /** pi queued it, opened a run with it, or handled it. */
   accepted: boolean;
   withdrawn: boolean;
+  /** Settles `sent` once pi committed or queued it, before its run ends; else with the send's outcome when it ends. */
+  readonly delivered: Promise<SendOutcome>;
+  deliver: (outcome: SendOutcome) => void;
   /** When it was claimed, which is when the sending view's turn clock starts (`App.vue` `handleSendMessage`). */
   readonly claimedAt: number;
   /** Returns it to the composer, `returnText` and then its chips, unless it already went back. */
@@ -970,11 +982,9 @@ export class PiSession implements ChatSession {
       },
       pendingBaseline: () => this.checkpointService?.pendingBaseline() ?? Promise.resolve(undefined),
       publish: (totals, generation) => this.publishChatChanges(totals, generation),
-      watchFolder: (folder, onChange) => {
-        const watcher = options.platform.fileWatchers.watch(folder, "*");
-        const subscriptions = [watcher.onDidCreate(onChange), watcher.onDidChange(onChange), watcher.onDidDelete(onChange)];
-        return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); watcher.dispose(); } };
-      },
+      watchFolder: (folder, onChange) => watchEntries(options.platform.fileWatchers, folder, "*", onChange),
+      watchTree: (root, onChange) => watchEntries(options.platform.fileWatchers, root, "**", onChange),
+      diff: diffService(),
     });
     this.adapter = new PiStreamAdapter({
       onMessage: (message) => {
@@ -1765,6 +1775,7 @@ export class PiSession implements ChatSession {
     } finally {
       // a prompt that never committed saves no reference; its numbers stay unused
       if (outcome !== "sent" && correlationId !== undefined) this.plannedReferences.delete(correlationId);
+      outgoing.deliver(outcome);
       this.endSend(outgoing);
     }
   }
@@ -1777,13 +1788,20 @@ export class PiSession implements ChatSession {
   private claimSend(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, onWithdrawn: (() => void) | undefined, prompt?: ContentInput): OutgoingPrompt | null {
     if (this.processingFlag || this.compacting) return null;
     const controller = new AbortController();
+    let deliver!: (outcome: SendOutcome) => void;
+    const delivered = new Promise<SendOutcome>((resolve) => { deliver = resolve; });
     const outgoing: OutgoingPrompt = {
       signal: controller.signal,
       stop: () => controller.abort(),
-      end: () => this.endSend(outgoing),
+      end: () => {
+        deliver("unsent");
+        this.endSend(outgoing);
+      },
       inPi: false,
       accepted: false,
       withdrawn: false,
+      delivered,
+      deliver,
       claimedAt: Date.now(),
       withdraw: (returnText) => {
         if (outgoing.withdrawn) return;
@@ -2178,6 +2196,7 @@ export class PiSession implements ChatSession {
     let accepted: PromptDisposition | null = null;
     // The prompt's own entry is the earliest point its turn's checkpoint baseline can start.
     const committed = watchPromptEntry(session, (entry) => {
+      outgoing.deliver("sent");
       if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length, correlationId);
       const service = this.checkpointService;
       if (service?.sessionId === session.sessionId) service.startTurn(session.sessionManager, entry.id, entry.text);
@@ -2213,6 +2232,7 @@ export class PiSession implements ChatSession {
             this.steerRunStartContext(session, hookContext);
           }
           if (disposition === "queued") {
+            outgoing.deliver("sent");
             const queued = this.queuedPrompts.add(session, images, hookContext, {
               onCommitted: (entry) => {
                 if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length, correlationId);
@@ -7561,8 +7581,13 @@ export class PiSession implements ChatSession {
       if (disposition === "queued") this.emit({ type: "messageQueued", message: queued });
       return disposition === "queued" || disposition === "flushed" ? "queued" : "unsent";
     }
-    const outcome = await this.sendMessage(text, target, `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`, { content: text });
-    return outcome === "sent" ? "sent" : "unsent";
+    const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const broadcast: UserBroadcast = { content: text };
+    const outgoing = this.claimSend(correlationId, broadcast, undefined, text);
+    if (!outgoing) return "unsent";
+    // The drafts go once the conversation has the message, not once its reply ends, so the run is not awaited.
+    this.sendMessage(text, target, correlationId, broadcast, undefined, outgoing).catch((err: unknown) => log("[PiSession] sending the review comments failed: %O", err));
+    return (await outgoing.delivered) === "sent" ? "sent" : "unsent";
   }
 
   /**

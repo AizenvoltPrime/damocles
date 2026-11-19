@@ -443,6 +443,7 @@ describe('verifyPackage', () => {
       'dist/session-meta-index-worker.js',
       'dist/voice-extract-worker.js',
       'dist/walk-child.js',
+      'dist/diff-worker.js',
       'dist/formatter-host.js',
       'dist/pty-host.js',
       'dist/quick-open-worker.js',

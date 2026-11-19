@@ -3,6 +3,7 @@ import type { Platform } from '../../platform/platform';
 import type { PiCodingAgentModule } from '../pi-session/pi-loader';
 import type { SettingsFolder } from '../../platform/settings-store';
 import { DiffManager } from './diff-manager';
+import { diffService } from '../diff';
 import { PermissionState } from './state';
 import { ApprovalManager } from './managers/approval-manager';
 import { QuestionManager } from './managers/question-manager';
@@ -53,7 +54,7 @@ export class PermissionHandler {
   constructor(platform: Platform, pi: () => PiCodingAgentModule | null, panelId?: string, settingsFolder?: SettingsFolder) {
     this.platform = platform;
     this.state = new PermissionState();
-    this.diffManager = new DiffManager(platform.editor, panelId, pi);
+    this.diffManager = new DiffManager(platform.editor, panelId, pi, diffService());
 
     const getPostMessage = () => this.state.postMessageToWebview;
 
@@ -330,7 +331,7 @@ export class PermissionHandler {
 
   /** The session cwd, which a tool resolves a relative path against. */
   sessionCwd(): string {
-    return this.evaluatorManager.sessionCwd();
+    return this.state.sessionCwd();
   }
 
   /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO; `requiresUser` and `asksUnlessRuled` as `EvaluatorManager.decide`. */

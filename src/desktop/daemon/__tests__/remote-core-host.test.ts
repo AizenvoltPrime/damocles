@@ -4,7 +4,8 @@ import { INVALID } from '../../core-protocol/schema';
 import type { CoreAttach, CoreState } from '../control-messages';
 import type { DaemonState } from '../daemon-state';
 import type { ForkedChild } from '../process-starts';
-import { createRemoteCoreHost, MAX_DETACHED_LANGUAGES } from '../remote-core-host';
+import { createRemoteCoreHost, MAX_DETACHED_LANGUAGES, WORKER_BUNDLES } from '../remote-core-host';
+import { SERVER_BUNDLES } from '../../../../esbuild.config.ts';
 import { createRunRegistry } from '../run-registry';
 import { runPaths } from '../token';
 
@@ -231,4 +232,10 @@ describe('remote core host', () => {
     expect(next.remote?.agentFolder).toBe('/tmp/damocles-agent2');
     expect(next.paths.askpass.credentialRelay?.handle).toBe('/tmp/damocles-relay2/askpass.sock');
   });
+});
+
+// A worker the daemon's core starts runs from the server package's dist/, which holds only the SERVER_BUNDLES outfiles.
+it('names only workers a server package carries', () => {
+  const outfiles = SERVER_BUNDLES.map((bundle) => bundle.outfile);
+  for (const [name, file] of Object.entries(WORKER_BUNDLES)) expect(outfiles, name).toContain(`dist/${file}`);
 });

@@ -141,7 +141,6 @@ const H = vi.hoisted(() => {
     ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
-    createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: {}, execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     createGrepToolDefinition: vi.fn(() => ({ name: 'grep', label: 'grep', description: 'pi grep', parameters: {}, execute: vi.fn() })),

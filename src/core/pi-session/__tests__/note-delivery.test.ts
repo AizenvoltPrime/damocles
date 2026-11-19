@@ -150,7 +150,6 @@ function teamContext(agentName: string, deliverUserNote: ReturnType<typeof vi.fn
 function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
-    createEditToolDefinition: vi.fn(() => ({ execute: vi.fn() })),
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: '', parameters: {}, execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }

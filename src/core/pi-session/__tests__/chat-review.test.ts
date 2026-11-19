@@ -5,16 +5,43 @@ import * as path from 'node:path';
 import { SessionManager, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { teamMembersDir } from '../agent-records';
-import { ChatReview, readDiskText, type ChatChangeTotals, type ChatReviewDeps, type ReviewSession } from '../chat-review';
+import { ChatReview, readDiskText, type ChatChangeTotals, type ChatReviewDeps, type DraftComment, type ReviewSession } from '../chat-review';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY } from '../session-store/constants';
-import { filePatch } from '../tools/file-patch';
+import { filePatch } from '../../diff/jobs';
+import { FILE_PATCH_TIMEOUT_MS } from '../tools/file-patch';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../__mocks__/spawn-budget';
 import { gitExecutable } from '../../git-executable';
 import { installProcessLauncher, processLauncher, type Launcher } from '../../process-launcher';
 import { folderIdFor, getFolderRepoDir } from '../checkpoints';
+import { diffService, type DiffService, type LineDiff, type LineDiffJob } from '../../diff';
+import { installLogSink } from '../../logger';
+import { reviewDiffJob, type FileText, type WorktreeGit } from '../chat-changes';
 
 /** The review recomputes when a file the chat changed changes on disk, so a file back at its baseline drops out by itself. */
+
+// Each checkpoint reader set the review opens and closes, in order.
+const readerEvents = vi.hoisted((): string[] => []);
+vi.mock('../checkpoints/blob-reader', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../checkpoints/blob-reader')>();
+  return {
+    ...actual,
+    createBlobReaders: (...args: Parameters<typeof actual.createBlobReaders>) => {
+      const readers = actual.createBlobReaders(...args);
+      readerEvents.push('open');
+      return {
+        read: readers.read,
+        close: async () => {
+          readerEvents.push('close');
+          await readers.close();
+        },
+      };
+    },
+  };
+});
+
+const logged: string[] = [];
+installLogSink({ appendLine: (line) => void logged.push(line), show: () => undefined, dispose: () => undefined });
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -33,7 +60,7 @@ function tempFolder(prefix = 'dam-review-'): string {
 }
 
 const patchOf = (file: string, before: string, after: string): string => {
-  const made = filePatch(file, before, after);
+  const made = filePatch(file, before, after, FILE_PATCH_TIMEOUT_MS);
   if (!('patch' in made)) throw new Error('no patch');
   return made.patch;
 };
@@ -55,12 +82,48 @@ function review(session: () => ReviewSession | undefined, deps: Partial<ChatRevi
     pendingBaseline: () => Promise.resolve(undefined),
     publish: () => undefined,
     watchFolder: () => ({ dispose: () => undefined }),
+    watchTree: () => ({ dispose: () => undefined }),
+    diff: diffService(),
     ...deps,
   });
 }
 
 const lines = (count: number, at = 1): string[] => Array.from({ length: count }, (_, index) => `line ${index + at}`);
 const text = (values: readonly string[]): string => `${values.join('\n')}\n`;
+
+// A worktree chat whose files changed against bases, read live from disk; baseReads names each base read, in order.
+function worktreeChat(root: string, bases: Record<string, string>, deps: Partial<ChatReviewDeps> = {}, atBase?: (relative: string) => Promise<void>): { readonly chat: ChatReview; readonly baseReads: string[] } {
+  const baseReads: string[] = [];
+  const git: WorktreeGit = {
+    changedSinceBase: async () => Object.keys(bases).map((file) => ({ status: 'M' as const, path: file })),
+    untracked: async () => [],
+    atBase: async (_base, relative): Promise<FileText> => {
+      baseReads.push(relative);
+      await atBase?.(relative);
+      return { kind: 'text', text: bases[relative]! };
+    },
+  };
+  const chat = review(() => ({ branch: [], sessionId: 's', sessionFile: path.join(root, 's.jsonl'), sessionDir: root, cwd: root, fileCheckpoints: false, worktree: { root, baseCommit: 'a'.repeat(40), git, sharedWith: async () => 0 } }), deps);
+  return { chat, baseReads };
+}
+
+// Line diffs held until the test answers each one; a job queued at dispose answers too large when its signal aborts.
+function heldDiffs(): { readonly diff: Pick<DiffService, 'lineDiff'>; readonly jobs: Array<{ readonly job: LineDiffJob; readonly answer: () => Promise<void> }>; readonly sent: () => string[] } {
+  const jobs: Array<{ readonly job: LineDiffJob; readonly answer: () => Promise<void> }> = [];
+  return {
+    jobs,
+    sent: () => jobs.map((held) => held.job.after),
+    diff: {
+      lineDiff: (job, options) =>
+        new Promise<LineDiff>((resolve) => {
+          jobs.push({ job, answer: async () => resolve(await diffService().lineDiff(job)) });
+          options?.signal?.addEventListener('abort', () => resolve({ kind: 'tooLarge' }));
+        }),
+    },
+  };
+}
+
+const tick = (ms = 20): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('the chat review', () => {
   it('watches the folders of the files the chat changed and recomputes when one changes on disk', async () => {
@@ -114,14 +177,54 @@ describe('the chat review', () => {
     chat.dispose();
   });
 
+  it('watches a worktree chat\'s whole working folder, so a change from outside the chat recomputes it, but not git\'s own folders', async () => {
+    const root = tempFolder('dam-review-wt-');
+    const changed: string[] = [];
+    const git: WorktreeGit = {
+      changedSinceBase: async () => changed.map((file) => ({ status: 'A' as const, path: file })),
+      untracked: async () => [],
+      atBase: async () => ({ kind: 'absent' as const }),
+    };
+    const published: ChatChangeTotals[] = [];
+    const trees: Array<{ readonly root: string; readonly onChange: (fsPath: string) => void }> = [];
+    const disposed: string[] = [];
+    const watchFolder = vi.fn(() => ({ dispose: () => undefined }));
+    const chat = review(() => ({ branch: [], sessionId: 's', sessionFile: path.join(root, 's.jsonl'), sessionDir: root, cwd: root, fileCheckpoints: false, worktree: { root, baseCommit: 'a'.repeat(40), git, sharedWith: async () => 0 } }), {
+      publish: (totals) => published.push(totals),
+      watchFolder,
+      watchTree: (tree, onChange) => {
+        trees.push({ root: tree, onChange });
+        return { dispose: () => disposed.push(tree) };
+      },
+    });
+    chat.schedule();
+    await vi.waitFor(() => expect(published).toEqual([{ added: 0, removed: 0, files: 0 }]), { timeout: 5000 });
+    expect(trees.map((tree) => tree.root)).toEqual([root]);
+    // a terminal's file, which no tool record holds
+    fs.writeFileSync(path.join(root, 'outside.txt'), 'x\n');
+    changed.push('outside.txt');
+    trees[0]!.onChange(path.join(root, '.git'));
+    trees[0]!.onChange(path.join(root, 'nested', '.git', 'index'));
+    await tick(700);
+    expect(published).toHaveLength(1);
+    trees[0]!.onChange(path.join(root, 'outside.txt'));
+    await vi.waitFor(() => expect(published.at(-1)).toEqual({ added: 1, removed: 0, files: 1 }), { timeout: 5000 });
+    expect(trees).toHaveLength(1);
+    expect(watchFolder).not.toHaveBeenCalled();
+    chat.dispose();
+    expect(disposed).toEqual([root]);
+  }, 20_000);
+
   it('computes and watches nothing while the host has no chat review', async () => {
     const watchFolder = vi.fn();
+    const watchTree = vi.fn();
     const publish = vi.fn();
-    const chat = new ChatReview({ enabled: () => false, session: () => undefined, pendingBaseline: () => Promise.resolve(undefined), publish, watchFolder });
+    const chat = new ChatReview({ enabled: () => false, session: () => undefined, pendingBaseline: () => Promise.resolve(undefined), publish, watchFolder, watchTree, diff: diffService() });
     chat.schedule();
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(publish).not.toHaveBeenCalled();
     expect(watchFolder).not.toHaveBeenCalled();
+    expect(watchTree).not.toHaveBeenCalled();
     chat.dispose();
   });
 });
@@ -138,7 +241,13 @@ describe('the snapshot each scope keeps', () => {
     const reads = stat.mock.calls.length;
     expect(reads).toBeGreaterThan(0);
     const revision = first.files[0]!.revision;
+    // the list carries no texts or hunks; they stay in core for the file's diff, anchors and Send
+    expect(first.files[0]).toEqual({ path: 'a.txt', absolute: file, status: 'M', added: 1, removed: 1, binary: false, outsideEdits: false, revision, commentable: true });
     expect(await chat.fileDiff('chat', 'a.txt')).toMatchObject({ kind: 'patch', revision });
+    const patchNow = async (): Promise<string> => {
+      const diff = await chat.fileDiff('chat', 'a.txt');
+      return diff.kind === 'patch' ? diff.patch : '';
+    };
     const anchor = await chat.anchorOf({ path: 'a.txt', line: 2, side: 'added', scope: 'chat', revision });
     expect(await chat.compose([{ path: 'a.txt', line: 2, side: 'added', scope: 'chat', text: 'why?', anchor }])).toMatchObject({ ok: true });
     expect((await chat.compute('chat')).generation).toBe(first.generation);
@@ -149,19 +258,131 @@ describe('the snapshot each scope keeps', () => {
     chat.schedule();
     const edited = await chat.compute('chat');
     expect(edited.generation).toBeGreaterThan(first.generation);
-    expect(edited.files[0]!.diff).toMatchObject({ after: 'one\nTWO\nthree\n' });
+    expect(await patchNow()).toMatch(/^[ +]three$/m);
     // a new entry on the branch, which no watcher reports
     branch = [...branch, ...edit('c2', file, 'one\nTWO\nthree\n', 'one\nTWO\nTHREE\n')];
     fs.writeFileSync(file, 'one\nTWO\nTHREE\n');
     const appended = await chat.compute('chat');
     expect(appended.generation).toBeGreaterThan(edited.generation);
-    expect(appended.files[0]!.diff).toMatchObject({ after: 'one\nTWO\nTHREE\n' });
+    expect(await patchNow()).toMatch(/^\+THREE$/m);
 
     // a change no event reports is in a fresh read, as a user's open asks for
     fs.writeFileSync(file, 'one\nTWO\nTHREE\nfour\n');
-    expect((await chat.compute('chat')).files[0]!.diff).toMatchObject({ after: 'one\nTWO\nTHREE\n' });
-    expect((await chat.compute('chat', { fresh: true })).files[0]!.diff).toMatchObject({ after: 'one\nTWO\nTHREE\nfour\n' });
+    await chat.compute('chat');
+    expect(await patchNow()).not.toContain('four');
+    await chat.compute('chat', { fresh: true });
+    expect(await patchNow()).toMatch(/^[ +]four$/m);
     chat.dispose();
+  });
+
+  it('diffs texts once while they stay unchanged, and keeps only the diffs the newest reads used', async () => {
+    const root = tempFolder('dam-review-wt-');
+    const b = path.join(root, 'b.txt');
+    fs.writeFileSync(path.join(root, 'a.txt'), 'A\n');
+    fs.writeFileSync(b, 'B\n');
+    const git = {
+      changedSinceBase: async () => [{ status: 'M' as const, path: 'a.txt' }, { status: 'M' as const, path: 'b.txt' }],
+      untracked: async () => [],
+      atBase: async (_base: string, relative: string) => ({ kind: 'text' as const, text: relative === 'a.txt' ? 'a\n' : 'b\n' }),
+    };
+    const diffed: string[] = [];
+    const counting: Pick<DiffService, 'lineDiff'> = {
+      lineDiff: (job, options) => {
+        diffed.push(job.after);
+        return diffService().lineDiff(job, options);
+      },
+    };
+    const chat = review(() => ({ branch: [], sessionId: 's', sessionFile: path.join(root, 's.jsonl'), sessionDir: root, cwd: root, fileCheckpoints: false, worktree: { root, baseCommit: 'a'.repeat(40), git, sharedWith: async () => 0 } }), { diff: counting });
+    await chat.compute('chat', { fresh: true });
+    await chat.compute('chat', { fresh: true });
+    expect(diffed).toEqual(['A\n', 'B\n']);
+    // b's new texts are diffed; a's are not
+    fs.writeFileSync(b, 'BB\n');
+    await chat.compute('chat', { fresh: true });
+    expect(diffed).toEqual(['A\n', 'B\n', 'BB\n']);
+    // b's old texts were dropped with the read that used them, so going back diffs them again
+    fs.writeFileSync(b, 'B\n');
+    await chat.compute('chat', { fresh: true });
+    expect(diffed).toEqual(['A\n', 'B\n', 'BB\n', 'B\n']);
+    await chat.dispose();
+  });
+
+  it('answers a disposed review\'s queued diffs too large without running them', async () => {
+    const cwd = tempFolder();
+    const file = path.join(cwd, 'a.txt');
+    fs.writeFileSync(file, 'A\n');
+    const branch = [user('t1'), ...edit('c1', file, 'a\n', 'A\n')];
+    const signals: AbortSignal[] = [];
+    const chat = review(() => ({ branch, sessionId: 's', sessionFile: path.join(cwd, 's.jsonl'), sessionDir: cwd, cwd, fileCheckpoints: false }), {
+      diff: {
+        lineDiff: (_job, options) => {
+          signals.push(options!.signal!);
+          return new Promise((resolve) => options!.signal!.addEventListener('abort', () => resolve({ kind: 'tooLarge' })));
+        },
+      },
+    });
+    const reading = chat.compute('chat');
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    await chat.dispose();
+    const { files } = await reading;
+    expect(signals[0]!.aborted).toBe(true);
+    expect(files.map((listed) => [listed.commentable, listed.added, listed.removed])).toEqual([[false, 0, 0]]);
+  });
+
+  it('closes the checkpoint readers once the reads are done, before a slow diff settles', async () => {
+    const cwd = tempFolder();
+    const file = path.join(cwd, 'a.txt');
+    fs.writeFileSync(file, 'A\n');
+    const branch = [user('t1'), ...edit('c1', file, 'a\n', 'A\n')];
+    const held = heldDiffs();
+    const chat = review(() => ({ branch, sessionId: 's', sessionFile: path.join(cwd, 's.jsonl'), sessionDir: cwd, cwd, fileCheckpoints: false }), { diff: held.diff });
+    readerEvents.length = 0;
+    const reading = chat.compute('chat');
+    await vi.waitFor(() => expect(held.jobs).toHaveLength(1));
+    await vi.waitFor(() => expect(readerEvents).toEqual(['open', 'close']));
+    await held.jobs[0]!.answer();
+    expect((await reading).files.map((listed) => [listed.path, listed.added, listed.removed])).toEqual([['a.txt', 1, 1]]);
+    await chat.dispose();
+  });
+
+  it('lists a file whose diff job threw as too large, keeps the other files\' counts, and asks for it again on the next read', async () => {
+    const root = tempFolder('dam-review-wt-');
+    fs.writeFileSync(path.join(root, 'a.txt'), 'A\n');
+    fs.writeFileSync(path.join(root, 'b.txt'), 'B\n');
+    let releaseB: () => void = () => undefined;
+    const bRead = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const sent: string[] = [];
+    const { chat } = worktreeChat(root, { 'a.txt': 'a\n', 'b.txt': 'b\n' }, {
+      diff: {
+        lineDiff: (job, options) => {
+          sent.push(job.after);
+          return job.after === 'A\n' ? Promise.reject(new Error('the job threw')) : diffService().lineDiff(job, options);
+        },
+      },
+    }, (relative) => (relative === 'b.txt' ? bRead : Promise.resolve()));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      logged.length = 0;
+      const reading = chat.compute('chat');
+      await vi.waitFor(() => expect(sent).toEqual(['A\n']));
+      // a's job rejects while b's base read is still pending
+      await tick(50);
+      releaseB();
+      const { files } = await reading;
+      expect(files.map((listed) => [listed.path, listed.commentable, listed.added, listed.removed])).toEqual([['a.txt', false, 0, 0], ['b.txt', true, 1, 1]]);
+      expect(await chat.fileDiff('chat', 'a.txt')).toEqual({ kind: 'tooLarge' });
+      expect(logged.filter((line) => line.includes('[ChatReview] a line diff failed') && line.includes('the job threw'))).toHaveLength(1);
+      await chat.compute('chat', { fresh: true });
+      expect(sent).toEqual(['A\n', 'B\n', 'A\n']);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await chat.dispose();
+    }
   });
 
   it('runs one recompute for every change made while another waits, never one per change', async () => {
@@ -211,6 +432,159 @@ describe('the snapshot each scope keeps', () => {
     expect(pendingBaseline).toHaveBeenCalledTimes(1);
     chat.dispose();
     second.dispose();
+  });
+});
+
+describe('the line diffs the review keeps', () => {
+  it('runs the review\'s line diff with 3 lines of context, the 20,000-edit bound and a 3 s budget', () => {
+    expect(reviewDiffJob('a\n', 'b\n')).toMatchObject({ kind: 'lineDiff', context: 3, maxEditLength: 20_000, timeoutMs: 3_000 });
+  });
+
+  it('joins a diff in flight for the same texts instead of sending another job', async () => {
+    const root = tempFolder('dam-review-wt-');
+    fs.writeFileSync(path.join(root, 'a.txt'), 'A\n');
+    const held = heldDiffs();
+    const { chat, baseReads } = worktreeChat(root, { 'a.txt': 'a\n' }, { diff: held.diff });
+    const first = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(held.jobs).toHaveLength(1));
+    const second = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(baseReads).toHaveLength(2));
+    await tick();
+    expect(held.jobs).toHaveLength(1);
+    await held.jobs[0]!.answer();
+    const [older, newer] = await Promise.all([first, second]);
+    expect(newer.generation).toBeGreaterThan(older.generation);
+    expect(newer.files.map((listed) => [listed.path, listed.added, listed.removed])).toEqual([['a.txt', 1, 1]]);
+    await chat.dispose();
+  });
+
+  it('keeps the newest read\'s diffs when an older read of the scope settles after it', async () => {
+    const root = tempFolder('dam-review-wt-');
+    const write = (name: string, content: string): void => fs.writeFileSync(path.join(root, name), content);
+    write('a.txt', 'A\n');
+    write('b.txt', 'B1\n');
+    write('c.txt', 'C1\n');
+    const held = heldDiffs();
+    const { chat } = worktreeChat(root, { 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' }, { diff: held.diff });
+    const older = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(held.sent()).toEqual(['A\n', 'B1\n', 'C1\n']));
+    write('b.txt', 'B2\n');
+    write('c.txt', 'C2\n');
+    const newer = chat.compute('chat', { fresh: true });
+    // a's texts are unchanged, so the newer read joins its job
+    await vi.waitFor(() => expect(held.sent()).toEqual(['A\n', 'B1\n', 'C1\n', 'B2\n', 'C2\n']));
+    for (const index of [0, 3, 4]) await held.jobs[index]!.answer();
+    await newer;
+    for (const index of [1, 2]) await held.jobs[index]!.answer();
+    await older;
+    // b as the newer read had it is reused; c as only the older read had it was dropped
+    write('c.txt', 'C1\n');
+    const third = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(held.sent()).toHaveLength(6));
+    expect(held.sent()[5]).toBe('C1\n');
+    await held.jobs[5]!.answer();
+    expect((await third).files.map((listed) => [listed.path, listed.added])).toEqual([['a.txt', 1], ['b.txt', 1], ['c.txt', 1]]);
+    expect(held.jobs).toHaveLength(6);
+    await chat.dispose();
+  });
+
+  it('keeps the diffs of a read in flight while another read settles', async () => {
+    const root = tempFolder('dam-review-wt-');
+    const write = (name: string, content: string): void => fs.writeFileSync(path.join(root, name), content);
+    write('a.txt', 'A\n');
+    write('b.txt', 'B1\n');
+    const held = heldDiffs();
+    const { chat, baseReads } = worktreeChat(root, { 'a.txt': 'a\n', 'b.txt': 'b\n' }, { diff: held.diff });
+    const older = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(held.sent()).toEqual(['A\n', 'B1\n']));
+    write('b.txt', 'B2\n');
+    const newer = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(held.sent()).toEqual(['A\n', 'B1\n', 'B2\n']));
+    for (const index of [0, 2]) await held.jobs[index]!.answer();
+    await newer;
+    // the older read's b is still in flight, so a read of the same texts joins it
+    write('b.txt', 'B1\n');
+    const third = chat.compute('chat', { fresh: true });
+    await vi.waitFor(() => expect(baseReads.filter((read) => read === 'b.txt')).toHaveLength(3));
+    await tick();
+    expect(held.jobs).toHaveLength(3);
+    await held.jobs[1]!.answer();
+    await Promise.all([older, third]);
+    expect(held.jobs).toHaveLength(3);
+    await chat.dispose();
+  });
+});
+
+describe('a disposed review', () => {
+  const projectChat = (deps: Partial<ChatReviewDeps> = {}, session?: (held: ReviewSession) => ReviewSession): ChatReview => {
+    const cwd = tempFolder();
+    const file = path.join(cwd, 'a.txt');
+    fs.writeFileSync(file, 'one\nTWO\n');
+    const held: ReviewSession = { branch: [user('t1'), ...edit('c1', file, 'one\ntwo\n', 'one\nTWO\n')], sessionId: 's', sessionFile: path.join(cwd, 's.jsonl'), sessionDir: cwd, cwd, fileCheckpoints: false };
+    return review(() => (session ? session(held) : held), deps);
+  };
+
+  it('fails every read asked after dispose', async () => {
+    const chat = projectChat();
+    const { files } = await chat.compute('chat');
+    const place = { path: 'a.txt', line: 2, side: 'added' as const, scope: 'chat' as const, revision: files[0]!.revision };
+    const draft: DraftComment = { ...place, text: 'why?', anchor: await chat.anchorOf(place) };
+    await chat.dispose();
+    await expect(chat.compute('chat')).rejects.toThrow('disposed');
+    await expect(chat.fileDiff('chat', 'a.txt')).rejects.toThrow('disposed');
+    await expect(chat.anchorOf(place)).rejects.toThrow('disposed');
+    await expect(chat.staleDrafts([draft])).rejects.toThrow('disposed');
+    await expect(chat.compose([draft])).rejects.toThrow('disposed');
+  });
+
+  it('opens no checkpoint readers for a read that reaches them after dispose', async () => {
+    const chat = projectChat();
+    readerEvents.length = 0;
+    const reading = chat.compute('chat');
+    await chat.dispose();
+    await expect(reading).rejects.toThrow('disposed');
+    expect(readerEvents).toEqual([]);
+  });
+
+  it('ends a debounced recompute quietly when the review is disposed under it', async () => {
+    const published: ChatChangeTotals[] = [];
+    let disposeOnRead = false;
+    const chat: ChatReview = projectChat({ publish: (totals) => published.push(totals) }, (held) => {
+      if (disposeOnRead) {
+        disposeOnRead = false;
+        void chat.dispose();
+      }
+      return held;
+    });
+    logged.length = 0;
+    disposeOnRead = true;
+    chat.schedule();
+    await vi.waitFor(() => expect(disposeOnRead).toBe(false), { timeout: 5000 });
+    await chat.dispose();
+    expect(published).toEqual([]);
+    expect(logged.filter((line) => line.includes('[ChatReview]'))).toEqual([]);
+  });
+
+  it('keeps no diff of a read that settles after dispose, and sends none it asks for then', async () => {
+    const root = tempFolder('dam-review-wt-');
+    fs.writeFileSync(path.join(root, 'a.txt'), 'A\n');
+    fs.writeFileSync(path.join(root, 'b.txt'), 'B\n');
+    let releaseB: () => void = () => undefined;
+    const bRead = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const held = heldDiffs();
+    const { chat } = worktreeChat(root, { 'a.txt': 'a\n', 'b.txt': 'b\n' }, { diff: held.diff }, (relative) => (relative === 'b.txt' ? bRead : Promise.resolve()));
+    const reading = chat.compute('chat');
+    await vi.waitFor(() => expect(held.jobs).toHaveLength(1));
+    const disposing = chat.dispose();
+    releaseB();
+    const { files } = await reading;
+    await disposing;
+    expect(files.map((listed) => [listed.path, listed.commentable, listed.added])).toEqual([['a.txt', false, 0], ['b.txt', false, 0]]);
+    expect(held.jobs).toHaveLength(1);
+    const caches = chat as unknown as { readonly lineDiffs: ReadonlyMap<string, unknown>; readonly keptDiffs: ReadonlyMap<string, unknown> };
+    expect([caches.lineDiffs.size, caches.keptDiffs.size]).toEqual([0, 0]);
   });
 });
 
@@ -264,6 +638,28 @@ describe('stale review comments', () => {
     expect(await chat.compose([second, seventh])).toEqual({ ok: false, reason: 'stale', stale: [second] });
     chat.dispose();
   });
+
+  it('checks every draft of a scope against one snapshot, though a change is scheduled while the check runs', async () => {
+    const root = tempFolder('dam-review-wt-');
+    const file = path.join(root, 'c.ts');
+    const base = lines(8);
+    const edited = base.map((line, index) => (index === 1 || index === 6 ? `${line} edited` : line));
+    fs.writeFileSync(file, text(edited));
+    const { chat } = worktreeChat(root, { 'c.ts': text(base) });
+    const before = await chat.compute('chat');
+    const at = (line: number) => ({ path: 'c.ts', line, side: 'added' as const, scope: 'chat' as const, revision: before.files[0]!.revision });
+    const second: DraftComment = { ...at(2), text: 'why?', anchor: await chat.anchorOf(at(2)) };
+    const seventh: DraftComment = { ...at(7), text: 'why?', anchor: await chat.anchorOf(at(7)) };
+    const checking = chat.staleDrafts([second, seventh]);
+    const composing = chat.compose([second, seventh]);
+    // the chat changes line 7 again after both calls began
+    fs.writeFileSync(file, text(edited.map((line, index) => (index === 6 ? 'line 7 again' : line))));
+    chat.schedule();
+    expect(await checking).toEqual([]);
+    expect(await composing).toMatchObject({ ok: true });
+    expect(await chat.staleDrafts([second, seventh])).toEqual([seventh]);
+    await chat.dispose();
+  });
 });
 
 describe('records across a hand-off and a team', () => {
@@ -309,7 +705,8 @@ describe('records across a hand-off and a team', () => {
     ];
     const chat = review(() => ({ branch, sessionId, sessionFile: path.join(cwd, 'parent.jsonl'), sessionDir: cwd, cwd, fileCheckpoints: false }));
     const [changed] = (await chat.compute('chat')).files;
-    expect(changed).toMatchObject({ path: 'a.txt', status: 'M', outsideEdits: false, diff: { kind: 'texts', before: 'a\n', after: 'c\n' } });
+    expect(changed).toMatchObject({ path: 'a.txt', status: 'M', outsideEdits: false, commentable: true, added: 1, removed: 1 });
+    expect(await chat.fileDiff('chat', 'a.txt')).toMatchObject({ kind: 'patch', patch: expect.stringContaining('\n-a\n+c\n') });
     chat.dispose();
   });
 });

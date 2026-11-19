@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
@@ -11,9 +14,12 @@ import type { AgentRecord } from '../subagents/types';
 import { emptyAgentUsage } from '../../../shared/usage-accounting';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 
-type EditToolExecute = ReturnType<PiCodingAgentModule['createEditToolDefinition']>['execute'];
-
-const editExec = vi.fn<EditToolExecute>(async () => ({ content: [{ type: 'text', text: 'edited' }], details: { diff: 'd', patch: 'p' } }));
+// pi's edit computation, applying the first edit once.
+const computeEdit = vi.fn<PiCodingAgentModule['computeEditResult']>((raw, edits) => {
+  const { oldText, newText } = edits[0]!;
+  const finalContent = raw.replace(oldText, newText);
+  return { finalContent, baseContent: raw, newContent: finalContent, replacements: [{ matchIndex: raw.indexOf(oldText), matchLength: oldText.length, newText }] };
+});
 
 /** pi's shell schema, which both shell tools extend rather than replace. */
 function shellParameters(): unknown {
@@ -23,7 +29,8 @@ function shellParameters(): unknown {
 function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
-    createEditToolDefinition: vi.fn(() => ({ execute: editExec })),
+    computeEditResult: computeEdit,
+    withFileMutationQueue: (_path: string, fn: () => Promise<unknown>) => fn(),
     // The shell tools spread their metadata from a delegate built at construction and append the card
     // summary to its parameters, so these stubs must answer with a whole definition carrying pi's own
     // `command`/`timeout` properties, not just an `execute`.
@@ -156,11 +163,18 @@ describe('buildCustomTools — conformance', () => {
 });
 
 describe('buildCustomTools — behavior', () => {
-  it('Edit delegates the mutation to pi edit with the translated shape', async () => {
-    const { tool } = build();
-    await tool('Edit').execute('id', { file_path: '/a', old_string: 'x', new_string: 'y' }, undefined, undefined, {} as never);
-    expect(editExec).toHaveBeenCalled();
-    expect(editExec.mock.calls[0]![1]).toEqual({ path: '/a', edits: [{ oldText: 'x', newText: 'y' }] });
+  it('Edit matches a single replacement with pi\'s edit computation, in pi\'s edit shape, and writes its result', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-custom-edit-'));
+    try {
+      const file = path.join(dir, 'a.txt');
+      fs.writeFileSync(file, 'x\n');
+      const { tool } = build();
+      await tool('Edit').execute('id', { file_path: file, old_string: 'x', new_string: 'y' }, undefined, undefined, {} as never);
+      expect(computeEdit).toHaveBeenCalledWith('x\n', [{ oldText: 'x', newText: 'y' }], file);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('y\n');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('AskUserQuestion returns the full SDK output (questions + answers + annotations) the card and model read', async () => {

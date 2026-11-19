@@ -6,6 +6,7 @@ import { installLogSink, log, showLog } from "../core/logger";
 import { installPlatform } from "../core/platform-host";
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from "../core/process-launcher";
 import { createWalkHost, installWalkHost, startWalkChild, type WalkHost } from "../core/search-walk";
+import { createThreadDiffService, installDiffService } from "../core/diff";
 import { createVsCodePlatform } from "./platform";
 import { wrapBrowserPanel, wrapChatPanel } from "./panels/webview-hosts";
 import { CompassViews } from "./compass/compass-views";
@@ -70,6 +71,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // the @ list's, Grep's and Glob's walks, on walk processes started as walks need them
   walks = createWalkHost(() => startWalkChild(platform.paths.workerEntry("walkChild")), (line) => log(line));
   installWalkHost(walks);
+  const diff = createThreadDiffService(platform.paths.workerEntry("diff"));
+  installDiffService(diff);
+  context.subscriptions.push({ dispose: () => void diff.close() });
   const outputChannel = platform.logSinks.create("Damocles");
   installLogSink(outputChannel);
   context.subscriptions.push(outputChannel);

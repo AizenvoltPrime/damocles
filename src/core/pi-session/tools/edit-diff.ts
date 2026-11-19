@@ -1,19 +1,12 @@
-import * as Diff from 'diff';
-
 /**
- * Ports of pi's `applyReplacementsToOriginal` and `generateEditDiff` (pi-coding-agent 1.5.2
- * `dist/core/tools/edit-diff.js:18` and `:452`), which its package does not export.
+ * Ports of pi's `applyReplacementsToOriginal` and of the patch half of its `generateEditDiff` (pi-coding-agent 1.5.2
+ * `dist/core/tools/edit-diff.js:18` and `:452`), which its package does not export. The patch is split in two: the windows
+ * around the replacements, linear, which a host thread computes, and their line diffs, which only the diff worker runs
+ * (`windowedEditPatch`, `src/core/diff/jobs.ts`).
  */
 
 /** Replacement of `matchLength` characters at `matchIndex` with `newText`. */
 export type TextReplacement = { matchIndex: number; matchLength: number; newText: string };
-
-/** Display diff and unified patch of an edit, as pi's edit returns them in its details. */
-export interface EditDiff {
-  diff: string;
-  patch: string;
-  firstChangedLine: number | undefined;
-}
 
 export function normalizeToLF(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -99,11 +92,6 @@ function lineFeedsBefore(lineFeeds: Int32Array, offset: number): number {
   return low;
 }
 
-/** Number of lines as `text.split("\n").length` counts them, without building the array. */
-function countLines(text: string): number {
-  return countLineFeeds(text, 0, text.length) + 1;
-}
-
 function countLineFeeds(text: string, start: number, end: number): number {
   let count = 0;
   for (let index = text.indexOf('\n', start); index !== -1 && index < end; index = text.indexOf('\n', index + 1)) {
@@ -112,116 +100,38 @@ function countLineFeeds(text: string, start: number, end: number): number {
   return count;
 }
 
-/** Format jsdiff line parts as display diff lines, numbering from the given 1-based old and new lines. */
-function formatDisplayDiff(
-  parts: Diff.ChangeObject<string>[],
-  oldStartLine: number,
-  newStartLine: number,
-  lineNumWidth: number,
-  contextLines: number,
-): { output: string[]; firstChangedLine: number | undefined } {
-  const output: string[] = [];
-  let oldLineNum = oldStartLine;
-  let newLineNum = newStartLine;
-  let lastWasChange = false;
-  let firstChangedLine: number | undefined;
-  const pushContext = (line: string): void => {
-    output.push(` ${String(oldLineNum).padStart(lineNumWidth, ' ')} ${line}`);
-    oldLineNum++;
-    newLineNum++;
-  };
-  const skip = (count: number): void => {
-    output.push(` ${''.padStart(lineNumWidth, ' ')} ...`);
-    oldLineNum += count;
-    newLineNum += count;
-  };
-
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]!;
-    const raw = part.value.split('\n');
-    if (raw[raw.length - 1] === '') raw.pop();
-
-    if (part.added || part.removed) {
-      firstChangedLine ??= newLineNum;
-      for (const line of raw) {
-        if (part.added) {
-          output.push(`+${String(newLineNum).padStart(lineNumWidth, ' ')} ${line}`);
-          newLineNum++;
-        } else {
-          output.push(`-${String(oldLineNum).padStart(lineNumWidth, ' ')} ${line}`);
-          oldLineNum++;
-        }
-      }
-      lastWasChange = true;
-      continue;
-    }
-
-    const next = parts[i + 1];
-    const hasTrailingChange = next !== undefined && (next.added || next.removed);
-    if (lastWasChange && hasTrailingChange) {
-      if (raw.length <= contextLines * 2) {
-        raw.forEach(pushContext);
-      } else {
-        const trailingLines = raw.slice(raw.length - contextLines);
-        raw.slice(0, contextLines).forEach(pushContext);
-        skip(raw.length - contextLines - trailingLines.length);
-        trailingLines.forEach(pushContext);
-      }
-    } else if (lastWasChange) {
-      const shownLines = raw.slice(0, contextLines);
-      shownLines.forEach(pushContext);
-      if (raw.length > shownLines.length) skip(raw.length - shownLines.length);
-    } else if (hasTrailingChange) {
-      const skippedLines = Math.max(0, raw.length - contextLines);
-      if (skippedLines > 0) skip(skippedLines);
-      raw.slice(skippedLines).forEach(pushContext);
-    } else {
-      oldLineNum += raw.length;
-      newLineNum += raw.length;
-    }
-    lastWasChange = false;
-  }
-
-  return { output, firstChangedLine };
+/**
+ * The 1-based line of `newContent` holding the first character where the texts differ, undefined when they are equal: the
+ * line a line diff's first change starts on, since its first snake takes every equal leading line. Linear, so a host thread
+ * may run it.
+ */
+export function firstChangedLine(baseContent: string, newContent: string): number | undefined {
+  const shorter = Math.min(baseContent.length, newContent.length);
+  let index = 0;
+  while (index < shorter && baseContent.charCodeAt(index) === newContent.charCodeAt(index)) index++;
+  if (index === baseContent.length && index === newContent.length) return undefined;
+  return countLineFeeds(newContent, 0, index) + 1;
 }
 
 /** Unchanged lines diffed on each side of a replacement: well above the 4 context lines, so jsdiff aligns a change as over the whole file. */
 const DIFF_WINDOW_MARGIN_LINES = 32;
 
-/**
- * Diff an edit only around its replacements, so time and memory follow the size of the change instead of
- * the file. The result matches pi's `generateDiffString` and `generateUnifiedPatch` over the whole contents,
- * except that jsdiff may align runs of repeated lines differently within a window.
- */
-export function generateEditDiff(
-  path: string,
-  baseContent: string,
-  newContent: string,
-  replacements: readonly TextReplacement[],
-  contextLines = 4,
-): EditDiff {
-  const lineFeeds = lineFeedOffsets(baseContent);
-  const lineNumWidth = String(Math.max(lineFeeds.length + 1, countLines(newContent))).length;
-  const skipMarker = ` ${''.padStart(lineNumWidth, ' ')} ...`;
-  const output: string[] = [];
-  const hunks: Diff.StructuredPatchHunk[] = [];
-  let firstChangedLine: number | undefined;
-  for (const window of getDiffWindows(baseContent, lineFeeds, replacements)) {
-    const oldText = baseContent.slice(window.oldStart, window.oldEnd);
-    const newText = newContent.slice(window.newStart, window.newEnd);
-    const shown = formatDisplayDiff(Diff.diffLines(oldText, newText), window.oldLine + 1, window.newLine + 1, lineNumWidth, contextLines);
-    firstChangedLine ??= shown.firstChangedLine;
-    // Both windows around a run of unchanged lines mark it as skipped; the whole-file diff shows one marker.
-    if (output.at(-1) === skipMarker && shown.output[0] === skipMarker) shown.output.shift();
-    // A loop, not push(...lines): spreading a replacement of many lines overflows the call stack.
-    for (const line of shown.output) output.push(line);
-    const patch = Diff.structuredPatch(path, path, oldText, newText, undefined, undefined, { context: contextLines });
-    for (const hunk of patch.hunks) {
-      hunks.push({ ...hunk, oldStart: hunk.oldStart + window.oldLine, newStart: hunk.newStart + window.newLine });
-    }
-  }
-  const patch = Diff.formatPatch({ oldFileName: path, newFileName: path, oldHeader: undefined, newHeader: undefined, hunks }, Diff.FILE_HEADERS_ONLY);
-  return { diff: output.join('\n'), patch, firstChangedLine };
+/** The old and new text around one or more replacements, whole lines, with the 0-based line each starts on. */
+export interface EditWindow {
+  oldText: string;
+  newText: string;
+  oldLine: number;
+  newLine: number;
+}
+
+/** The windows an edit's patch diffs, so its cost follows the size of the change instead of the file. Linear, so a host thread may run it. */
+export function editDiffWindows(baseContent: string, newContent: string, replacements: readonly TextReplacement[]): EditWindow[] {
+  return getDiffWindows(baseContent, lineFeedOffsets(baseContent), replacements).map((window) => ({
+    oldText: baseContent.slice(window.oldStart, window.oldEnd),
+    newText: newContent.slice(window.newStart, window.newEnd),
+    oldLine: window.oldLine,
+    newLine: window.newLine,
+  }));
 }
 
 /** Matching ranges of the old and new contents around one or more replacements: offsets and 0-based first lines. */

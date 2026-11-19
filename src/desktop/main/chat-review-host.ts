@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatSession } from '../../core/chat-session';
 import type { ChatChangeTotals, ChatReviewSnapshot, DraftComment } from '../../core/pi-session/chat-review';
-import { isCommentable, type ChatScope } from '../../core/pi-session/chat-changes';
+import type { ChatScope } from '../../core/pi-session/chat-changes';
 import {
   parseReviewDrafts,
   parseReviewFileDiff,
@@ -285,7 +285,7 @@ export class ChatReviewHost {
         binary: file.binary,
         outsideEdits: file.outsideEdits,
         revision: file.revision,
-        commentable: isCommentable(file),
+        commentable: file.commentable,
       })),
       shellChangesNotListed: snapshot.shellChangesNotListed,
       draftsKey: this.draftKey(chatKey),

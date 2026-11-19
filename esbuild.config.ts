@@ -89,6 +89,13 @@ const memoryIntegrityWorkerOptions: BundleOptions = {
   outfile: EXTENSION_BUNDLE_FILES.memoryIntegrityWorker,
 };
 
+export const diffWorkerOptions: BundleOptions = {
+  ...memoryIntegrityWorkerOptions,
+  entryPoints: ['src/core/diff/worker.ts'],
+  outfile: EXTENSION_BUNDLE_FILES.diffWorker,
+  external: [],
+};
+
 const sessionMetaIndexWorkerOptions: BundleOptions = {
   ...usageStatsWorkerOptions,
   entryPoints: ['src/core/pi-session/session-store/meta-index/worker.ts'],
@@ -157,6 +164,7 @@ export const EXTENSION_BUNDLES: BundleOptions[] = [
   memoryIntegrityWorkerOptions,
   sessionMetaIndexWorkerOptions,
   voiceExtractWorkerOptions,
+  diffWorkerOptions,
   processLauncherWorkerOptions,
   sentinelOptions,
   walkChildOptions,
@@ -333,6 +341,7 @@ export const SERVER_BUNDLES: BundleOptions[] = [
   usageStatsWorkerOptions,
   workerOptions,
   voiceExtractWorkerOptions,
+  diffWorkerOptions,
   watchWorkerOptions,
   walkChildOptions,
   askpassMainOptions,
@@ -360,6 +369,7 @@ export const DESKTOP_BUNDLES: BundleOptions[] = [
   memoryIntegrityWorkerOptions,
   sessionMetaIndexWorkerOptions,
   voiceExtractWorkerOptions,
+  diffWorkerOptions,
   processLauncherWorkerOptions,
   sentinelOptions,
 ];

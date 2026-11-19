@@ -1,14 +1,13 @@
-import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import { access, stat } from 'fs/promises';
+import { stat } from 'fs/promises';
 import { Type } from 'typebox';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
-import type { ToolDefinition, EditOperations, EditToolDetails, EditToolInput } from '@earendil-works/pi-coding-agent';
+import type { ToolDefinition, EditToolDetails } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { FilePatch } from '../../../shared/types/file-patch';
 import { TOOL_EDIT } from '../../../shared/tool-names';
-import { applyReplacementsToOriginal, generateEditDiff, normalizeToLF, type TextReplacement } from './edit-diff';
-import { filePatch } from './file-patch';
+import type { DiffService } from '../../diff';
+import { log } from '../../logger';
+import { applyReplacementsToOriginal, firstChangedLine, normalizeToLF, type TextReplacement } from './edit-diff';
 import { couldNotEdit, editOperations, notARegularFile, onFileQueue } from './local-file-operations';
 import { resolveToCwd } from './search-tools';
 
@@ -32,9 +31,10 @@ const editSchema = Type.Object(
 );
 
 type EditParams = { file_path: string; old_string: string; new_string: string; replace_all?: boolean };
+type EditChange = Omit<EditParams, 'file_path'>;
 
-/** pi's `EditToolDetails`, with the patch bounded as a write's is. */
-type EditDetails = Pick<EditToolDetails, 'diff' | 'firstChangedLine'> & FilePatch;
+/** pi's `EditToolDetails` without the display diff, which nothing reads; no patch field when the patch job failed. */
+type EditDetails = Pick<EditToolDetails, 'firstChangedLine'> & Partial<FilePatch>;
 
 /** The Edit tool's refusal of an empty old_string, for either path, before anything else; its approval refuses with it too. */
 export const EDIT_EMPTY_OLD_STRING = 'Edit cannot create a file: old_string is empty. Use the Write tool to create a new file.';
@@ -48,7 +48,7 @@ export function replaceAllUnchanged(path: string): string {
   return `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`;
 }
 
-/** A `replace_all` Edit of a file's text. */
+/** An Edit of a file's text. */
 export interface ExactEdit {
   /** The text before and after, BOM split off and line endings LF, as pi's edit diffs them. */
   baseContent: string;
@@ -62,7 +62,7 @@ export interface ExactEdit {
  * Every occurrence of `oldString` replaced, matched exactly on pi's edit's normalization (BOM split off, CRLF and lone CR
  * as LF). Null when `oldString` is empty or absent. `replace_all` writes this result, and its approval diff shows it.
  */
-export function exactEdit(raw: string, oldString: string, newString: string): ExactEdit | null {
+function exactEdit(raw: string, oldString: string, newString: string): ExactEdit | null {
   const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
   const content = raw.slice(bom.length);
   const baseContent = normalizeToLF(content);
@@ -85,14 +85,40 @@ function everyOccurrence(content: string, oldText: string, newText: string): Tex
   return replacements;
 }
 
+/** The single replacement pi's edit makes: pi's own computation, its fuzzy matching, BOM and line-ending rules and refusals. */
+function piEdit(pi: PiCodingAgentModule, raw: string, filePath: string, oldString: string, newString: string): ExactEdit {
+  const { finalContent, baseContent, newContent, replacements } = pi.computeEditResult(raw, [{ oldText: oldString, newText: newString }], filePath);
+  return { baseContent, newContent, replacements, written: finalContent };
+}
+
+/** `replace_all`'s edit: Damocles' own message where nothing is found, pi's edit's refusal where nothing changes. */
+function replaceAllEdit(raw: string, path: string, oldString: string, newString: string): ExactEdit {
+  const edit = exactEdit(raw, oldString, newString);
+  if (!edit) throw new Error(replaceAllNotFound(path));
+  if (edit.baseContent === edit.newContent) throw new Error(replaceAllUnchanged(path));
+  return edit;
+}
+
+/** The edit `params` makes of `raw`, or the run's refusal thrown with its message; `path` is the path as the call wrote it. */
+function computeEdit(pi: PiCodingAgentModule, raw: string, path: string, params: EditChange): ExactEdit {
+  return params.replace_all ? replaceAllEdit(raw, path, params.old_string, params.new_string) : piEdit(pi, raw, path, params.old_string, params.new_string);
+}
+
+/** The patch an Edit records, on the tool lane: `replace_all`'s from `filePatch`, a single replacement's from its windows. */
+export function editPatchOf(diff: Pick<DiffService, 'filePatch' | 'editPatch'>, path: string, edit: ExactEdit, replaceAll: boolean | undefined, options: { signal?: AbortSignal }): Promise<FilePatch> {
+  return replaceAll ? diff.filePatch(path, edit.baseContent, edit.newContent, options) : diff.editPatch(path, edit.baseContent, edit.newContent, edit.replacements, options);
+}
+
+/** pi's edit's access check (`couldNotEdit`), naming the path as the call wrote it, when the file cannot be read and written. */
+export function editAccessRefusal(absolutePath: string, path: string): Promise<string | undefined> {
+  return editOperations.access(absolutePath).then(() => undefined, (error: unknown) => couldNotEdit(path, error));
+}
+
 /**
- * `replace_all`, which pi's edit lacks (it requires each `oldText` to be unique). The read, the replacement and the write all
- * run in one mutation queue slot, so a write or edit queued on the file lands wholly before or after it. The bytes and diff
- * are those of pi's edit given every occurrence as its own edit, the result text and errors those of pi's edit given the
- * whole file as one edit; `edit-tool.test.ts` holds them to both.
- * It matches exactly, where the single-edit path takes pi's whitespace-tolerant matching: a global replace must be exact.
+ * Every Edit: access check, read, match, patch and write in one mutation queue slot, with pi's edit's abort checks and messages,
+ * reading and writing through the checked handles of `editOperations` (docs/invariants.md "Every Edit runs in Damocles").
  */
-function replaceAll(pi: PiCodingAgentModule, cwd: string, params: EditParams, signal: AbortSignal | undefined): Promise<AgentToolResult<EditDetails>> {
+function runEdit(pi: PiCodingAgentModule, diff: Pick<DiffService, 'filePatch' | 'editPatch'>, cwd: string, params: EditParams, signal: AbortSignal | undefined): Promise<AgentToolResult<EditDetails>> {
   const path = params.file_path;
   const absolutePath = resolveToCwd(path, cwd);
   return onFileQueue(pi, absolutePath, async () => {
@@ -101,84 +127,55 @@ function replaceAll(pi: PiCodingAgentModule, cwd: string, params: EditParams, si
       if (signal?.aborted) throw new Error('Operation aborted');
     };
     throwIfAborted();
-    try {
-      await access(absolutePath, constants.R_OK | constants.W_OK);
-    } catch (error) {
-      throwIfAborted();
-      throw new Error(couldNotEdit(path, error));
-    }
+    const refusal = await editAccessRefusal(absolutePath, path);
     throwIfAborted();
+    if (refusal !== undefined) throw new Error(refusal);
     const raw = (await editOperations.readFile(absolutePath)).toString('utf-8');
     throwIfAborted();
-    const edit = exactEdit(raw, params.old_string, params.new_string);
-    if (!edit) throw new Error(replaceAllNotFound(path));
-    const { baseContent, newContent, replacements, written } = edit;
-    if (baseContent === newContent) throw new Error(replaceAllUnchanged(path));
-    // Before the write, so neither can fail after it.
-    const { diff, firstChangedLine } = generateEditDiff(path, baseContent, newContent, replacements);
-    const patch = filePatch(path, baseContent, newContent);
+    const edit = computeEdit(pi, raw, path, params);
+    const { baseContent, newContent, written } = edit;
+    // Before the write, so a Stop while the patch is queued leaves the file unchanged.
+    const patch = await editPatchOf(diff, path, edit, params.replace_all, signal ? { signal } : {}).catch((error: unknown) => {
+      log('[edit] no diff recorded for %s: %O', absolutePath, error);
+      return undefined;
+    });
+    const firstLine = firstChangedLine(baseContent, newContent);
     throwIfAborted();
     await editOperations.writeFile(absolutePath, written);
     throwIfAborted();
     return {
       content: [{ type: 'text', text: `Successfully replaced 1 block(s) in ${path}.` }],
-      details: { diff, ...(firstChangedLine === undefined ? {} : { firstChangedLine }), ...patch },
+      details: { ...(firstLine === undefined ? {} : { firstChangedLine: firstLine }), ...patch },
     };
   });
 }
 
-/** A single replacement in pi's edit's input shape. */
-function piEditInput(filePath: string, oldString: string, newString: string): EditToolInput {
-  return { path: filePath, edits: [{ oldText: oldString, newText: newString }] };
-}
-
-/** What pi's edit writes for a single replacement, and the first line it changes in the new text. */
-export interface EditPreview {
-  written: string;
+/** An Edit's change, and the first line it changes in the new text. */
+export interface EditPreview extends ExactEdit {
   firstChangedLine: number | undefined;
 }
 
 /**
- * pi's edit of a file holding `original` (undefined: no such file), run on an in-memory copy after the file's own access check: the
- * text it would write, or pi's own message where it refuses the edit (a missing file, one it cannot read and write, old_string empty,
- * absent or found more than once, or a change that changes nothing). `cwd` and `filePath` are the call's own, so a refusal names
- * the path as the model wrote it, as the tool's does.
+ * The Edit `params` makes of a file holding `original`, computed as the run computes it but without a diff: the text it would
+ * write, or the run's message where it refuses the change (absent, found more than once, or changing nothing).
  */
-export async function previewEdit(pi: PiCodingAgentModule, cwd: string, filePath: string, original: string | undefined, oldString: string, newString: string): Promise<EditPreview | { refused: string }> {
-  let written: string | undefined;
-  const queueKey = `damocles-edit-preview:${randomUUID()}`;
-  const operations: EditOperations = {
-    access: (absolutePath) => (original === undefined
-      ? Promise.reject(Object.assign(new Error(`ENOENT: no such file or directory, access '${absolutePath}'`), { code: 'ENOENT' }))
-      : editOperations.access(absolutePath)),
-    readFile: () => Promise.resolve(Buffer.from(original ?? '', 'utf-8')),
-    writeFile: (_path, content) => {
-      written = content;
-      return Promise.resolve();
-    },
-    // No file's key, so the preview neither waits behind nor holds up a write queued on the file.
-    realpath: () => Promise.resolve(queueKey),
-  };
-  const piEdit = pi.createEditTool(cwd, { operations });
-  // pi's edit rejects exactly where it refuses the edit; its message goes to the model unread.
-  const result: AgentToolResult<EditToolDetails | undefined> | { refused: string } = await piEdit
-    .execute('edit-preview', piEditInput(filePath, oldString, newString))
-    .then((value: AgentToolResult<EditToolDetails | undefined>) => value, (error: unknown) => ({ refused: error instanceof Error ? error.message : String(error) }));
-  if ('refused' in result) return result;
-  if (written === undefined) throw new Error('pi\'s edit returned without writing');
-  return { written, firstChangedLine: result.details?.firstChangedLine };
+export function previewEdit(pi: PiCodingAgentModule, path: string, original: string, params: EditChange): EditPreview | { refused: string } {
+  let edit: ExactEdit;
+  try {
+    edit = computeEdit(pi, original, path, params);
+  } catch (error) {
+    // the refusal goes to the model unread
+    return { refused: error instanceof Error ? error.message : String(error) };
+  }
+  return { ...edit, firstChangedLine: firstChangedLine(edit.baseContent, edit.newContent) };
 }
 
 /**
- * Build the custom `Edit` tool. A single replacement is delegated to pi's
- * `createEditToolDefinition` on pi's default operations written here (`editOperations`), translated to pi's shape, which reuses pi's `details.diff/patch`
- * (FR-4: no bespoke file-editing logic); `replace_all` runs here (`replaceAll`). The central gate
- * (`canUseTool` → diff approval) runs before `execute`, so this just performs the approved write.
+ * The `Edit` tool, replacing pi's `edit` with a Claude-Code-shaped schema; the gate and its diff approval run before `execute`.
  * Sequential, so pi runs any batch holding an Edit one call at a time, in the model's order ("Tool overrides").
  */
-export function createEditTool(pi: PiCodingAgentModule, cwd: string): ToolDefinition {
-  const piEdit = pi.createEditToolDefinition(cwd, { operations: editOperations });
-  return pi.defineTool<typeof editSchema, EditToolDetails | EditDetails | undefined>({
+export function createEditTool(pi: PiCodingAgentModule, cwd: string, diff: Pick<DiffService, 'filePatch' | 'editPatch'>): ToolDefinition {
+  return pi.defineTool<typeof editSchema, EditDetails>({
     name: TOOL_EDIT,
     label: 'Edit',
     description: 'Performs exact string replacement in a file. The old_string must uniquely identify the text to replace, unless replace_all is set. To create a new file, use the Write tool instead — Edit cannot create files.',
@@ -186,15 +183,14 @@ export function createEditTool(pi: PiCodingAgentModule, cwd: string): ToolDefini
     // `prefer` degrades to unconstrained sampling on providers without strict mode, where `require` throws.
     constrainedSampling: { type: 'json_schema', strict: 'prefer' },
     executionMode: 'sequential',
-    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-      // pi's edit rejects an empty `oldText`, and CC's empty-old_string "create file" idiom does not apply
-      // here — Write is the only text-file creation path.
+    execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+      // Write is the only text-file creation path.
       if (params.old_string === '') throw new Error(EDIT_EMPTY_OLD_STRING);
-      // Refused here in the path's own spelling; the operations refuse one swapped in after this stat from their handles. A stat error is pi's access check's to report.
-      const entry = await stat(resolveToCwd(params.file_path, ctx?.cwd || cwd)).catch(() => undefined);
+      const editCwd = ctx?.cwd || cwd;
+      // Refused here in the path's own spelling; the operations refuse one swapped in after this stat from their handles. A stat error is the access check's to report.
+      const entry = await stat(resolveToCwd(params.file_path, editCwd)).catch(() => undefined);
       if (entry !== undefined && !entry.isFile()) throw new Error(notARegularFile(params.file_path));
-      if (params.replace_all) return replaceAll(pi, ctx?.cwd || cwd, params, signal);
-      return piEdit.execute(toolCallId, piEditInput(params.file_path, params.old_string, params.new_string), signal, onUpdate, ctx);
+      return runEdit(pi, diff, editCwd, params, signal);
     },
   });
 }

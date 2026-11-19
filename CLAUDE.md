@@ -53,6 +53,7 @@ Generated files: run the command and commit its output. `generate:icons` (from `
 | `worktrees/` | Worktree chats (desktop): the registry, creation, Apply/Merge/Update/Delete, hand-off file moves, the leftover scan and `personalConfigRoot`; panel side in `chat-panel/panel-worktrees.ts`, session side in `pi-session/session-worktree.ts` |
 | `usage-stats/` | `/stats` spend index |
 | `process-launcher/` | Worker-thread pool that starts every process Damocles owns off the host thread (`docs/perf.md` lists the exceptions); session jobs, tree kill, `runProcess` |
+| `diff/` | The diff worker (`dist/diff-worker.js`): line diffs off the host thread, one queue and worker per lane with a time budget and a watchdog; lint refuses jsdiff's diff functions elsewhere on a host thread (`docs/perf.md` "Diff worker") |
 | `pi-session/web-access/` | Web tools (on by default); SSRF-guarded `safe-fetch.ts` |
 | `browser/` | Patchright browser + tools, scoped by `agent-scope.ts` (on by default) |
 | `team/` | Multi-agent teams (on by default) |

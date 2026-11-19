@@ -10,8 +10,9 @@
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
-import { applyPatch, diffLines, parsePatch, reversePatch, structuredPatch, type StructuredPatchHunk } from 'diff';
+import { applyPatch, parsePatch, reversePatch, type StructuredPatchHunk } from 'diff';
 import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE } from '../../shared/tool-names';
+import type { LineDiff, LineDiffJob } from '../diff';
 import { folderKey } from '../workspace-folders/folder-key';
 import { entryTimeOf } from '../worktrees/worktree-entry';
 import type { PersistedAgentMessage } from './agent-records';
@@ -22,6 +23,8 @@ import { resolveToCwd } from './tools/search-tools';
 const PI_WRITE = 'write';
 // Inserted plus deleted lines above which no line diff is computed (jsdiff's cost grows with the square of it).
 const MAX_DIFF_EDIT_LENGTH = 20_000;
+// A review line diff's time budget on the diff worker, past which the file lists as too large (VS Code's chat-edit value).
+export const REVIEW_DIFF_TIMEOUT_MS: number = 3_000;
 // Equals MAX_DIFF_BYTES in scm/repository.ts, the most of one file's diff source control sends the shell.
 export const MAX_PATCH_BYTES: number = 5 * 1024 * 1024;
 // The context lines of the review's unified diff, which the tab shows and comments name.
@@ -192,6 +195,13 @@ export interface ChatChangesIo {
   checkpoint(turn: string, relativePath: string, side: 'before' | 'after'): Promise<FileText | { readonly kind: 'tooLarge' }>;
   // the file on disk now; an unsaved buffer is not now
   disk(absolute: string): Promise<DiskRead>;
+  // the line diff of two texts on the diff worker; revision is the texts' own (unchanged texts, unchanged revision)
+  lineDiff(revision: string, before: string, after: string): Promise<LineDiff>;
+}
+
+/** The job a review's line diff runs on the diff worker. */
+export function reviewDiffJob(before: string, after: string): LineDiffJob {
+  return { kind: 'lineDiff', before, after, context: DIFF_CONTEXT, maxEditLength: MAX_DIFF_EDIT_LENGTH, timeoutMs: REVIEW_DIFF_TIMEOUT_MS };
 }
 
 /** How a changed file's diff is shown. */
@@ -231,23 +241,19 @@ function displayPath(absolute: string, currentFolder: string): string {
   return isInsideFolder(currentFolder, absolute) ? path.relative(currentFolder, absolute).split(path.sep).join('/') : absolute;
 }
 
-function lineCounts(before: string, after: string): { added: number; removed: number } | undefined {
-  const changes = diffLines(before, after, { maxEditLength: MAX_DIFF_EDIT_LENGTH });
-  if (!changes) return undefined;
-  let added = 0;
-  let removed = 0;
-  for (const change of changes) {
-    if (change.added) added += change.count;
-    else if (change.removed) removed += change.count;
-  }
-  return { added, removed };
-}
-
+// Each field is length-prefixed, since a text may hold NUL past the bytes classifyFileBytes probes. The 64 hex digits are
+// MAX_REVIEW_REVISION_LENGTH in desktop/preload/review-channels.ts.
 function revisionOf(diff: ChatFileDiff): string {
-  const hash = createHash('sha1').update(diff.kind);
-  if (diff.kind === 'texts') hash.update('\0').update(diff.before).update('\0').update(diff.after);
-  else if (diff.kind === 'patches') hash.update('\0').update(diff.patch);
-  return hash.digest('hex').slice(0, 16);
+  const hash = createHash('sha256');
+  const field = (value: string): void => {
+    hash.update(`${Buffer.byteLength(value)}:`).update(value);
+  };
+  field(diff.kind);
+  if (diff.kind === 'texts') {
+    field(diff.before);
+    field(diff.after);
+  } else if (diff.kind === 'patches') field(diff.patch);
+  return hash.digest('hex');
 }
 
 // Applies the records forward onto base (undefined: absent); undefined when one does not apply or carries no patch.
@@ -301,13 +307,37 @@ type FileFields = Omit<ChatChangeFile, 'revision'>;
 
 const withRevision = (file: FileFields): ChatChangeFile => ({ ...file, revision: revisionOf(file.diff) });
 
+// A file of two texts, once its line diff is back from the worker; its hunks stay in core, keyed by the file.
+async function textsFile(fields: Omit<FileFields, 'diff'>, before: string, after: string, io: Pick<ChatChangesIo, 'lineDiff'>): Promise<ChatChangeFile> {
+  const diff = { kind: 'texts', before, after } as const;
+  const revision = revisionOf(diff);
+  const lines = await io.lineDiff(revision, before, after);
+  if (lines.kind === 'tooLarge') return withRevision({ ...fields, diff: { kind: 'tooLarge' } });
+  const file: ChatChangeFile = { ...fields, added: lines.added, removed: lines.removed, diff, revision };
+  hunksByFile.set(file, lines.hunks);
+  return file;
+}
+
+// A file whose line diff was sent to the worker; the next file's reads go on meanwhile.
+interface Diffing {
+  readonly diffing: Promise<ChatChangeFile>;
+}
+
+/** Listed files, each pending while its line diff is on the worker. */
+export type PendingFiles = ReadonlyArray<ChatChangeFile | Promise<ChatChangeFile>>;
+
+/** The listed files once every line diff is back, by path. */
+export async function settledFiles(pending: PendingFiles): Promise<ChatChangeFile[]> {
+  return (await Promise.all(pending)).sort((a, b) => a.path.localeCompare(b.path));
+}
+
 /**
  * The changed files of a project-folder chat in a scope: the whole chat, or only latestTurn's records against the
  * checkpoint before it. Each file compares its baseline (the checkpoint before the first turn that changed it, else rebuilt
  * from the records) with the file on disk now; a file back at its baseline drops out. currentFolder: the chat's working
- * folder now.
+ * folder now. Every disk and checkpoint read is done when it resolves; only the line diffs may still be pending.
  */
-export async function projectChatChanges(records: readonly ChangeRecord[], scope: ChatScope, latestTurn: string | undefined, currentFolder: string, io: ChatChangesIo): Promise<ChatChangeFile[]> {
+export async function listProjectChatChanges(records: readonly ChangeRecord[], scope: ChatScope, latestTurn: string | undefined, currentFolder: string, io: ChatChangesIo): Promise<PendingFiles> {
   const scoped = scope === 'turn' ? records.filter((record) => record.turn === latestTurn) : records;
   const byFile = new Map<string, ChangeRecord[]>();
   for (const record of scoped) {
@@ -316,15 +346,20 @@ export async function projectChatChanges(records: readonly ChangeRecord[], scope
     if (held) held.push(record);
     else byFile.set(key, [record]);
   }
-  const out: ChatChangeFile[] = [];
+  const listed: Array<ChatChangeFile | Promise<ChatChangeFile>> = [];
   for (const fileRecords of byFile.values()) {
     const changed = await fileChange(fileRecords, currentFolder, io);
-    if (changed) out.push(withRevision(changed));
+    if (changed) listed.push('diffing' in changed ? changed.diffing : withRevision(changed));
   }
-  return out.sort((a, b) => a.path.localeCompare(b.path));
+  return listed;
 }
 
-async function fileChange(records: readonly ChangeRecord[], currentFolder: string, io: ChatChangesIo): Promise<FileFields | undefined> {
+/** `listProjectChatChanges` with every line diff back. */
+export async function projectChatChanges(records: readonly ChangeRecord[], scope: ChatScope, latestTurn: string | undefined, currentFolder: string, io: ChatChangesIo): Promise<ChatChangeFile[]> {
+  return settledFiles(await listProjectChatChanges(records, scope, latestTurn, currentFolder, io));
+}
+
+async function fileChange(records: readonly ChangeRecord[], currentFolder: string, io: ChatChangesIo): Promise<FileFields | Diffing | undefined> {
   const first = records[0]!;
   const last = records[records.length - 1]!;
   const absolute = nowPath(last, currentFolder);
@@ -377,10 +412,8 @@ async function fileChange(records: readonly ChangeRecord[], currentFolder: strin
     }
     outsideEdits = result !== undefined && result !== (nowText ?? '');
   }
-  const counts = lineCounts(baseline ?? '', nowText ?? '');
   const status = baseline === undefined ? 'A' : nowText === undefined ? 'D' : 'M';
-  if (!counts) return { ...base, status, outsideEdits, diff: { kind: 'tooLarge' } };
-  return { ...base, status, ...counts, outsideEdits, diff: { kind: 'texts', before: baseline ?? '', after: nowText ?? '' } };
+  return { diffing: textsFile({ ...base, status, outsideEdits }, baseline ?? '', nowText ?? '', io) };
 }
 
 /** Reads of a worktree chat's repository (D60's worktree rule). */
@@ -397,15 +430,15 @@ export interface WorktreeGit {
  * A worktree chat's changes: every change in its worktree against its base commit, committed or not, untracked files
  * included. Nothing else writes there (D62), so the set is exact and needs no outside-edit mark.
  */
-export async function worktreeChanges(folder: string, baseCommit: string, git: WorktreeGit, disk: ChatChangesIo['disk']): Promise<ChatChangeFile[]> {
+export async function worktreeChanges(folder: string, baseCommit: string, git: WorktreeGit, io: Pick<ChatChangesIo, 'disk' | 'lineDiff'>): Promise<ChatChangeFile[]> {
   const listed = new Map<string, 'A' | 'M' | 'D'>();
   for (const entry of await git.changedSinceBase(baseCommit)) listed.set(entry.path, entry.status);
   for (const file of await git.untracked()) if (!listed.has(file)) listed.set(file, 'A');
-  const out: ChatChangeFile[] = [];
+  const out: Array<ChatChangeFile | Promise<ChatChangeFile>> = [];
   for (const [relative, status] of listed) {
     const absolute = path.join(folder, ...relative.split('/'));
     const base = { path: relative, absolute, status, added: 0, removed: 0, binary: false, outsideEdits: false };
-    const now = status === 'D' ? ({ kind: 'absent' } as const) : await disk(absolute);
+    const now = status === 'D' ? ({ kind: 'absent' } as const) : await io.disk(absolute);
     if (now.kind === 'tooLarge' || now.kind === 'unreadable') {
       out.push(withRevision({ ...base, diff: { kind: now.kind } }));
       continue;
@@ -417,10 +450,9 @@ export async function worktreeChanges(folder: string, baseCommit: string, git: W
     }
     const beforeText = before.kind === 'text' ? normalized(before.text) : '';
     const nowText = now.kind === 'text' ? normalized(now.text) : '';
-    const counts = lineCounts(beforeText, nowText);
-    out.push(withRevision(counts ? { ...base, ...counts, diff: { kind: 'texts', before: beforeText, after: nowText } } : { ...base, diff: { kind: 'tooLarge' } }));
+    out.push(textsFile(base, beforeText, nowText, io));
   }
-  return out.sort((a, b) => a.path.localeCompare(b.path));
+  return settledFiles(out);
 }
 
 /** The counter's totals over the files. */
@@ -428,16 +460,11 @@ export function changeTotals(files: readonly ChatChangeFile[]): { added: number;
   return { added: files.reduce((sum, file) => sum + file.added, 0), removed: files.reduce((sum, file) => sum + file.removed, 0), files: files.length };
 }
 
-// Each file's hunks of its texts, computed once per file of a snapshot.
-const hunksByFile = new WeakMap<ChatChangeFile, readonly StructuredPatchHunk[] | null>();
+// Each texts file's hunks, from the diff worker's answer when the file was built; never sent with a snapshot.
+const hunksByFile = new WeakMap<ChatChangeFile, readonly StructuredPatchHunk[]>();
 
 function hunksOf(file: ChatChangeFile): readonly StructuredPatchHunk[] | null {
-  if (file.diff.kind !== 'texts') return null;
-  if (!hunksByFile.has(file)) {
-    const made = structuredPatch('', '', file.diff.before, file.diff.after, undefined, undefined, { context: DIFF_CONTEXT, maxEditLength: MAX_DIFF_EDIT_LENGTH });
-    hunksByFile.set(file, made ? made.hunks : null);
-  }
-  return hunksByFile.get(file)!;
+  return file.diff.kind === 'texts' ? (hunksByFile.get(file) ?? null) : null;
 }
 
 /** Whether the tab offers line comments on a file: only a diff of two rebuilt texts names lines core can check at send. */

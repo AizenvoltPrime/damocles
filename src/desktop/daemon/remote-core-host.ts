@@ -26,7 +26,7 @@ const CLOSE_TIMEOUT_MS = 3_000;
 export const MAX_DETACHED_LANGUAGES = 64;
 
 // the esbuild outfiles under dist/, as main's app paths name them
-const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
+export const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   compass: 'compass-worker.js',
   usageStats: 'usage-stats-worker.js',
   sentinel: 'sentinel.js',
@@ -35,6 +35,7 @@ const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   sessionMetaIndex: 'session-meta-index-worker.js',
   voiceExtract: 'voice-extract-worker.js',
   walkChild: 'walk-child.js',
+  diff: 'diff-worker.js',
 };
 
 export interface RemoteCoreHostDeps {

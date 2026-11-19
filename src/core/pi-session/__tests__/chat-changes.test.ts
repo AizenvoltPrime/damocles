@@ -12,6 +12,7 @@ import {
   lineAnchor,
   MAX_PATCH_BYTES,
   projectChatChanges,
+  reviewDiffJob,
   turnsOnBranch,
   unifiedDiff,
   worktreeChanges,
@@ -22,7 +23,10 @@ import {
   type WorktreeGit,
 } from '../chat-changes';
 import { checkpointCommitOf } from '../chat-review';
-import { filePatch } from '../tools/file-patch';
+import type { LineDiff } from '../../diff';
+import { createInlineDiffService } from '../../diff/inline';
+import { filePatch } from '../../diff/jobs';
+import { FILE_PATCH_TIMEOUT_MS } from '../tools/file-patch';
 import { MAX_DIFF_BYTES } from '../../scm/repository';
 import type { PersistedAgentMessage } from '../agent-records';
 import { foldAliases, relocatedPath, type RelocationAliases } from '../../project-relocation/aliases';
@@ -38,7 +42,7 @@ const user = (id: string, text = 'do it'): SessionEntry => ({ ...entry({ role: '
 const call = (id: string, name: string, args: Record<string, unknown>): Record<string, unknown> => ({ role: 'assistant', content: [{ type: 'toolCall', id, name, arguments: args }] });
 const result = (id: string, toolName: string, details: unknown, isError = false): Record<string, unknown> => ({ role: 'toolResult', toolCallId: id, toolName, content: [{ type: 'text', text: 'ok' }], details, isError });
 const patchOf = (file: string, before: string, after: string): string => {
-  const made = filePatch(file, before, after);
+  const made = filePatch(file, before, after, FILE_PATCH_TIMEOUT_MS);
   if (!('patch' in made)) throw new Error('no patch');
   return made.patch;
 };
@@ -52,11 +56,15 @@ function writeNew(callId: string, file: string, content: string): SessionEntry[]
   return [entry(call(callId, 'write', { path: file, content })), entry(result(callId, 'write', { created: true }))];
 }
 
-// A file system, checkpoints by turn and side, and the disk.
-function fakeIo(files: { disk: Record<string, string | DiskRead>; checkpoints?: Record<string, Record<string, FileText>> }): ChatChangesIo & { readonly asked: string[] } {
+const inline = createInlineDiffService();
+const lineDiff = (_revision: string, before: string, after: string): Promise<LineDiff> => inline.lineDiff(reviewDiffJob(before, after));
+
+// A file system, checkpoints by turn and side, the disk, and the line diffs (on this thread unless lineDiff answers them).
+function fakeIo(files: { disk: Record<string, string | DiskRead>; checkpoints?: Record<string, Record<string, FileText>>; lineDiff?: ChatChangesIo['lineDiff'] }): ChatChangesIo & { readonly asked: string[] } {
   const asked: string[] = [];
   return {
     asked,
+    lineDiff: files.lineDiff ?? lineDiff,
     checkpoint: async (turn, relativePath, side) => {
       asked.push(`${turn}:${side}:${relativePath}`);
       return files.checkpoints?.[`${turn}:${side}`]?.[relativePath] ?? { kind: 'unavailable' };
@@ -246,8 +254,8 @@ describe('the worktree rule', () => {
       untracked: async () => ['made-by-shell.txt'],
       atBase: async (_base, relative) => (relative === 'src/a.ts' ? text('a\n') : relative === 'gone.txt' ? text('bye\n') : { kind: 'absent' }),
     };
-    const disk = fakeIo({ disk: { [at('src/a.ts', worktree)]: 'A\n', [at('made-by-shell.txt', worktree)]: 'shell\n' } }).disk;
-    const files = await worktreeChanges(worktree, 'f'.repeat(40), git, disk);
+    const io = fakeIo({ disk: { [at('src/a.ts', worktree)]: 'A\n', [at('made-by-shell.txt', worktree)]: 'shell\n' } });
+    const files = await worktreeChanges(worktree, 'f'.repeat(40), git, io);
     expect(files.map((file) => [file.path, file.status, file.added, file.removed, file.outsideEdits])).toEqual([
       ['gone.txt', 'D', 0, 1, false],
       ['made-by-shell.txt', 'A', 1, 0, false],
@@ -330,6 +338,18 @@ describe('paths, bounds and unreadable files', () => {
     expect(io.asked).toEqual([]);
   });
 
+  it('lists a file whose line diff passed the edit or time bound as too large, with no counts', async () => {
+    const branch = [user('t1'), ...edit('e1', at('slow.txt'), 'slow\n', 'b\n'), ...edit('e2', at('quick.txt'), 'a\n', 'b\n')];
+    const io = fakeIo({
+      disk: { [at('slow.txt')]: 'b\n', [at('quick.txt')]: 'b\n' },
+      checkpoints: { 't1:before': { 'slow.txt': text('slow\n'), 'quick.txt': text('a\n') } },
+      lineDiff: (revision, before, after) => (before === 'slow\n' ? Promise.resolve({ kind: 'tooLarge' }) : lineDiff(revision, before, after)),
+    });
+    const files = await projectChatChanges(records(branch), 'chat', 't1', ROOT, io);
+    expect(files.map((file) => [file.path, file.diff.kind, file.added, file.removed])).toEqual([['quick.txt', 'texts', 1, 1], ['slow.txt', 'tooLarge', 0, 0]]);
+    expect(unifiedDiff(files[1]!)).toEqual({ kind: 'tooLarge' });
+  });
+
   it('lists a file that could not be read with no diff, and still lists the others', async () => {
     const branch = [user('t1'), ...edit('e1', at('locked.txt'), 'a\n', 'b\n'), ...edit('e2', at('free.txt'), 'a\n', 'b\n')];
     const io = fakeIo({ disk: { [at('locked.txt')]: { kind: 'unreadable' }, [at('free.txt')]: 'b\n' } });
@@ -396,6 +416,17 @@ describe('what the tab offers and reloads', () => {
     expect(atB!.revision).not.toBe(atC!.revision);
     const [again] = await projectChatChanges(records(second), 'chat', 't1', ROOT, fakeIo({ disk: { [at('a.txt')]: 'c\n' }, checkpoints }));
     expect(again!.revision).toBe(atC!.revision);
+  });
+
+  it('gives two text pairs different revisions when a NUL past the binary probe moves between them', async () => {
+    const worktree = path.resolve('/work/worktrees/project/chat');
+    // joined with NUL, both pairs read a\0b\n\0c\n
+    const pairs = { 'one.txt': ['a\0b\n', 'c\n'], 'two.txt': ['a', 'b\n\0c\n'] } as Record<string, [string, string]>;
+    const git: WorktreeGit = { changedSinceBase: async () => [{ status: 'M', path: 'one.txt' }, { status: 'M', path: 'two.txt' }], untracked: async () => [], atBase: async (_base, relative) => text(pairs[relative]![0]) };
+    const io = fakeIo({ disk: { [at('one.txt', worktree)]: text(pairs['one.txt']![1]), [at('two.txt', worktree)]: text(pairs['two.txt']![1]) } });
+    const [one, two] = await worktreeChanges(worktree, 'f'.repeat(40), git, io);
+    expect(one!.revision).toMatch(/^[0-9a-f]{64}$/);
+    expect(one!.revision).not.toBe(two!.revision);
   });
 });
 

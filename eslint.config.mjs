@@ -74,7 +74,42 @@ const sessionOpenAsync = {
     };
   },
 };
-const damoclesPlugin = { rules: { 'no-sync': noSync, 'json-import-attributes': jsonImportAttributes, 'session-open-async': sessionOpenAsync } };
+// jsdiff's value exports a host thread may import, all linear (docs/perf.md "Diff worker").
+export const JSDIFF_LINEAR_EXPORTS = ['applyPatch', 'applyPatches', 'parsePatch', 'reversePatch', 'formatPatch', 'INCLUDE_HEADERS', 'FILE_HEADERS_ONLY', 'OMIT_HEADERS', 'canonicalize', 'convertChangesToDMP', 'convertChangesToXML'];
+const hostDiff = {
+  meta: { type: 'problem', messages: { diff: 'Line diffs run on the diff worker (src/core/diff, docs/perf.md "Diff worker"), never on this thread.' }, schema: [] },
+  create(context) {
+    const report = (node) => context.report({ node, messageId: 'diff' });
+    const isJsdiff = (source) => source?.type === 'Literal' && source.value === 'diff';
+    const linear = (name) => JSDIFF_LINEAR_EXPORTS.includes(name.type === 'Identifier' ? name.name : name.value);
+    return {
+      ImportDeclaration: (node) => {
+        if (!isJsdiff(node.source) || node.importKind === 'type') return;
+        for (const specifier of node.specifiers) {
+          if (specifier.importKind === 'type') continue;
+          if (specifier.type !== 'ImportSpecifier' || !linear(specifier.imported)) report(specifier);
+        }
+      },
+      ExportNamedDeclaration: (node) => {
+        if (!isJsdiff(node.source) || node.exportKind === 'type') return;
+        for (const specifier of node.specifiers) if (specifier.exportKind !== 'type' && !linear(specifier.local)) report(specifier);
+      },
+      ExportAllDeclaration: (node) => {
+        if (isJsdiff(node.source) && node.exportKind !== 'type') report(node);
+      },
+      TSImportEqualsDeclaration: (node) => {
+        if (node.importKind !== 'type' && node.moduleReference.type === 'TSExternalModuleReference' && isJsdiff(node.moduleReference.expression)) report(node);
+      },
+      ImportExpression: (node) => {
+        if (isJsdiff(node.source)) report(node);
+      },
+      'CallExpression[callee.name="require"]': (node) => {
+        if (isJsdiff(node.arguments[0])) report(node);
+      },
+    };
+  },
+};
+const damoclesPlugin = { rules: { 'no-sync': noSync, 'json-import-attributes': jsonImportAttributes, 'session-open-async': sessionOpenAsync, 'host-diff': hostDiff } };
 // Files only worker threads load, where a synchronous call blocks no UI or chat thread. Listed one by one, because a
 // folder can hold a file the host imports (compass/detect.ts); scripts/__tests__/no-sync-lint-scope.test.ts fails when
 // a host bundle includes one.
@@ -109,6 +144,8 @@ export const WORKER_ONLY_FILES = [
   'src/core/compass/validation.ts',
   'src/core/compass/vite-alias-resolver.ts',
   'src/core/compass/worker-core.ts',
+  'src/core/diff/jobs.ts',
+  'src/core/diff/worker.ts',
   'src/core/memory/integrity-worker.ts',
   'src/core/pi-session/session-store/meta-index/store.ts',
   'src/core/pi-session/tools/shell-sentinel.ts',
@@ -117,6 +154,12 @@ export const WORKER_ONLY_FILES = [
   'src/core/usage-stats/indexer.ts',
   'src/core/usage-stats/queries.ts',
   'src/core/usage-stats/usage-stats-worker.ts',
+];
+// The files that may import jsdiff's diff functions: the diff worker's jobs, and main's `damocles diff`, which uses jsdiff's
+// yielding callback form.
+export const HOST_DIFF_ALLOWED = [
+  'src/core/diff/jobs.ts',
+  'src/desktop/main/cli-requests.ts',
 ];
 // UI-thread, extension-host and daemon code, where a synchronous call freezes the window, every chat or every remote client
 // (docs/perf.md).
@@ -281,7 +324,6 @@ export const MAIN_CORE_IMPORTS = [
   // the error main's workspaces throw for a host that is away, which a served root's reader answers 503
   'not-connected-error',
   'paths',
-  'pi-session/chat-changes',
   'pi-session/custom-providers',
   'pi-session/explore-providers',
   // the MCP OAuth callback port, which main's forwards never bind
@@ -778,6 +820,12 @@ export default [
     ignores: [...testsUnder('src'), ...WORKER_ONLY_FILES, 'src/core/pi-session/session-store/meta-index/parser.ts'],
     plugins: { damocles: damoclesPlugin },
     rules: { 'damocles/session-open-async': 'error' },
+  },
+  {
+    files: NO_SYNC_FILES,
+    ignores: [...testsUnder('src'), ...HOST_DIFF_ALLOWED],
+    plugins: { damocles: damoclesPlugin },
+    rules: { 'damocles/host-diff': 'error' },
   },
   {
     files: ['**/*.{ts,tsx,vue,mjs}'],

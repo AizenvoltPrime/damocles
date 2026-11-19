@@ -10,6 +10,7 @@ import type { Disposable } from '../../platform/disposable';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { readFileBytes } from '../file-bytes';
+import type { DiffService, LineDiff } from '../diff';
 import { log } from '../logger';
 import { folderKey } from '../workspace-folders/folder-key';
 import {
@@ -29,9 +30,12 @@ import {
   collectRecords,
   composeReviewMessage,
   diffLine,
+  isCommentable,
   lineAnchor,
+  listProjectChatChanges,
   nowPath,
-  projectChatChanges,
+  reviewDiffJob,
+  settledFiles,
   turnsOnBranch,
   unifiedDiff,
   worktreeChanges,
@@ -40,6 +44,7 @@ import {
   type ChatScope,
   type DiskRead,
   type HandOff,
+  type PendingFiles,
   type ReviewComment,
   type WorktreeGit,
 } from './chat-changes';
@@ -78,6 +83,10 @@ export interface ChatReviewDeps {
   readonly publish: (totals: ChatChangeTotals, generation: number) => void;
   // watches the files of one folder (non-recursively); onChange fires for any of its entries
   readonly watchFolder: (folder: string, onChange: (fsPath: string) => void) => Disposable;
+  // watches every entry under root, recursively
+  readonly watchTree: (root: string, onChange: (fsPath: string) => void) => Disposable;
+  // the line diffs, on the diff worker's review lane
+  readonly diff: Pick<DiffService, 'lineDiff'>;
 }
 
 export interface ChatChangeTotals {
@@ -86,9 +95,37 @@ export interface ChatChangeTotals {
   readonly files: number;
 }
 
+/** A changed file as the review's list shows it; its texts and hunks stay in core, read through fileDiff, anchorOf and compose. */
+export interface ChatReviewFile {
+  readonly path: string;
+  readonly absolute: string;
+  readonly status: ChatChangeFile['status'];
+  readonly added: number;
+  readonly removed: number;
+  readonly binary: boolean;
+  readonly outsideEdits: boolean;
+  readonly revision: string;
+  // the diff's lines take comments: only a diff of two rebuilt texts names lines core can check at send
+  readonly commentable: boolean;
+}
+
+function reviewFileOf(file: ChatChangeFile): ChatReviewFile {
+  return {
+    path: file.path,
+    absolute: file.absolute,
+    status: file.status,
+    added: file.added,
+    removed: file.removed,
+    binary: file.binary,
+    outsideEdits: file.outsideEdits,
+    revision: file.revision,
+    commentable: isCommentable(file),
+  };
+}
+
 /** A scope's files, and whether shell commands' changes are left out (a project-folder chat). */
 export interface ChatReviewSnapshot {
-  readonly files: readonly ChatChangeFile[];
+  readonly files: readonly ChatReviewFile[];
   readonly shellChangesNotListed: boolean;
   /** Other chats working in this chat's worktree, whose changes the worktree's list includes; absent when 0 or not a worktree chat. */
   readonly sharedWith?: number;
@@ -190,6 +227,14 @@ class WorktreeGoneError extends Error {
   }
 }
 
+// A read asked of, or reaching its checkpoint reads in, a disposed review.
+class ReviewDisposedError extends Error {
+  constructor() {
+    super('The chat review is disposed');
+    this.name = 'ReviewDisposedError';
+  }
+}
+
 // Only lstat's own answer that nothing is there; any other failure (a denied folder) proves nothing is gone.
 async function isMissing(absolute: string): Promise<boolean> {
   try {
@@ -213,6 +258,8 @@ interface Read {
   readonly generation: number;
   // every file the records changed (listed or back at its baseline), where it is now
   readonly watched: readonly string[];
+  // a worktree chat's working folder, whose list is every change under it (D60)
+  readonly watchedTree?: string;
 }
 
 /** One chat's review state on its live session. */
@@ -230,8 +277,18 @@ export class ChatReview {
   // the folders of every file the chat's records changed, watched so an edit on disk (back to the baseline, or from outside
   // the chat) recomputes the review; keyed by folder, holding the files it watches for
   private readonly watched = new Map<string, { files: ReadonlySet<string>; readonly watcher: Disposable }>();
+  // the working folder a worktree chat's list covers, watched recursively so a change from outside the chat recomputes it
+  private tree: { readonly root: string; readonly watcher: Disposable } | undefined;
   // the blob readers of the reads in flight, closed when their read ends or the review is disposed
   private readonly readers = new Set<BlobReaders>();
+  // each line diff by its texts' revision, in flight or answered, so texts are not diffed again while a kept read uses them
+  private readonly lineDiffs = new Map<string, Promise<LineDiff>>();
+  // the revisions the newest settled read of each scope used; a revision neither these nor a read in flight uses is dropped
+  private readonly keptDiffs = new Map<ChatScope, { readonly generation: number; readonly revisions: ReadonlySet<string> }>();
+  // the revisions of each read in flight, kept until it settles
+  private readonly diffsInFlight = new Set<ReadonlySet<string>>();
+  // aborts the review's queued diff jobs at dispose
+  private readonly diffAbort = new AbortController();
 
   constructor(deps: ChatReviewDeps) {
     this.deps = deps;
@@ -254,12 +311,14 @@ export class ChatReview {
         try {
           read = await this.read('chat');
         } catch (err) {
+          if (err instanceof ReviewDisposedError) return;
           if (!(err instanceof WorktreeGoneError)) throw err;
           log('[ChatReview] %s no longer exists, so the chat changes were not recomputed', err.root);
           return;
         }
         if (this.disposed) return;
         this.watch(read.watched);
+        this.watchTree(read.watchedTree);
         this.deps.publish(changeTotals(read.files), read.generation);
       });
     }, CHAT_CHANGES_DEBOUNCE_MS);
@@ -267,7 +326,7 @@ export class ChatReview {
 
   /**
    * A scope's changed files, from the snapshot of the current generation; fresh (a user's open or hand-off) first starts a
-   * new one, as a change no event reports (a terminal's file in a worktree) would not be in the snapshot.
+   * new one, as a change no watch reports (one made before the watches started, or one the OS dropped) would not be in it.
    */
   async compute(scope: ChatScope, opts: { readonly fresh?: boolean } = {}): Promise<ChatReviewSnapshot> {
     if (opts.fresh) this.schedule();
@@ -275,11 +334,13 @@ export class ChatReview {
     const worktree = scope === 'chat' ? this.deps.session()?.worktree : undefined;
     // D60 lists the whole worktree, so the changes of the other chats working in it are in the list too.
     const sharedWith = worktree ? await worktree.sharedWith() : 0;
-    return { files: read.files, shellChangesNotListed: read.shellChangesNotListed, generation: read.generation, ...(sharedWith > 0 ? { sharedWith } : {}) };
+    return { files: read.files.map(reviewFileOf), shellChangesNotListed: read.shellChangesNotListed, generation: read.generation, ...(sharedWith > 0 ? { sharedWith } : {}) };
   }
 
   // The scope's read at the current generation: the cached one, the one in flight, or a new one.
   private read(scope: ChatScope): Promise<Read> {
+    // a read after dispose would list every text file too large, its diffs aborted
+    if (this.disposed) throw new ReviewDisposedError();
     const session = this.deps.session();
     const key = sessionKeyOf(session);
     if (key !== this.sessionKey) {
@@ -289,28 +350,64 @@ export class ChatReview {
     const cached = this.reads.get(scope);
     if (cached?.generation === this.generation) return cached.read;
     const generation = this.generation;
-    const read = this.readNow(session, scope, generation);
+    const revisions = new Set<string>();
+    this.diffsInFlight.add(revisions);
+    const read = this.readNow(session, scope, generation, revisions);
     this.reads.set(scope, { generation, read });
-    // a failed read is not kept, so the next one reads again; its caller gets the failure
-    read.catch(() => {
-      if (this.reads.get(scope)?.read === read) this.reads.delete(scope);
-    });
+    read.then(
+      () => this.diffsSettled(revisions, { scope, generation }),
+      () => {
+        this.diffsSettled(revisions, undefined);
+        // a failed read is not kept, so the next one reads again; its caller gets the failure
+        if (this.reads.get(scope)?.read === read) this.reads.delete(scope);
+      },
+    );
     return read;
   }
 
-  private async readNow(session: ReviewSession | undefined, scope: ChatScope, generation: number): Promise<Read> {
+  // A superseded read is not cancelled: its diffs feed the newer read, which joins them. The answer never rejects.
+  private lineDiff(revisions: Set<string>): ChatChangesIo['lineDiff'] {
+    return (revision, before, after) => {
+      if (this.disposed) return Promise.resolve({ kind: 'tooLarge' });
+      revisions.add(revision);
+      const held = this.lineDiffs.get(revision);
+      if (held) return held;
+      // a job that threw fails only its own file, and is not kept, so the next read asks again
+      const made: Promise<LineDiff> = this.deps.diff.lineDiff(reviewDiffJob(before, after), { signal: this.diffAbort.signal }).catch((err: unknown) => {
+        log('[ChatReview] a line diff failed, so its file lists as too large: %O', err);
+        if (this.lineDiffs.get(revision) === made) this.lineDiffs.delete(revision);
+        return { kind: 'tooLarge' } as const;
+      });
+      this.lineDiffs.set(revision, made);
+      return made;
+    };
+  }
+
+  // Keeps the diffs of the newest settled read of each scope and of the reads in flight; an older read settling late
+  // never replaces a newer one's.
+  private diffsSettled(revisions: ReadonlySet<string>, settled: { readonly scope: ChatScope; readonly generation: number } | undefined): void {
+    if (this.disposed) return;
+    this.diffsInFlight.delete(revisions);
+    if (settled && (this.keptDiffs.get(settled.scope)?.generation ?? -1) <= settled.generation) this.keptDiffs.set(settled.scope, { generation: settled.generation, revisions });
+    const kept = new Set<string>();
+    for (const entry of this.keptDiffs.values()) for (const revision of entry.revisions) kept.add(revision);
+    for (const held of this.diffsInFlight) for (const revision of held) kept.add(revision);
+    for (const revision of this.lineDiffs.keys()) if (!kept.has(revision)) this.lineDiffs.delete(revision);
+  }
+
+  private async readNow(session: ReviewSession | undefined, scope: ChatScope, generation: number, revisions: Set<string>): Promise<Read> {
     if (!session) return { files: [], shellChangesNotListed: true, generation, watched: [] };
     if (session.worktree && scope === 'chat') {
       const { root } = session.worktree;
       let files: ChatChangeFile[];
       try {
-        files = await worktreeChanges(root, session.worktree.baseCommit, session.worktree.git, readDiskText);
+        files = await worktreeChanges(root, session.worktree.baseCommit, session.worktree.git, { disk: readDiskText, lineDiff: this.lineDiff(revisions) });
       } catch (err) {
         // git cannot start in a removed folder, which Node reports as an ENOENT naming git
         if (await isMissing(root)) throw new WorktreeGoneError(root, err);
         throw err;
       }
-      return { files, shellChangesNotListed: false, generation, watched: files.map((file) => file.absolute) };
+      return { files, shellChangesNotListed: false, generation, watched: [], watchedTree: root };
     }
     const records = collectRecords({
       branch: session.branch,
@@ -320,16 +417,21 @@ export class ChatReview {
       relocated: (recordedPath, recordedAt) => relocatedPath(currentRelocations().aliases, recordedPath, recordedAt) ?? recordedPath,
     });
     const latestTurn = turnsOnBranch(session.branch).at(-1);
+    // dispose closes only the readers it sees
+    if (this.disposed) throw new ReviewDisposedError();
     const readers = createBlobReaders();
     this.readers.add(readers);
+    let pending: PendingFiles;
     try {
-      const files = await projectChatChanges(records, scope, latestTurn, session.cwd, this.io(session, latestTurn, readers));
-      // tool records leave shell commands' changes out, in a worktree chat's Last turn too
-      return { files, shellChangesNotListed: true, generation, watched: records.map((record) => nowPath(record, session.cwd)) };
+      pending = await listProjectChatChanges(records, scope, latestTurn, session.cwd, this.io(session, latestTurn, readers, revisions));
     } finally {
+      // the reads are done, and the diffs may wait behind other chats' jobs
       this.readers.delete(readers);
       await readers.close();
     }
+    const files = await settledFiles(pending);
+    // tool records leave shell commands' changes out, in a worktree chat's Last turn too
+    return { files, shellChangesNotListed: true, generation, watched: records.map((record) => nowPath(record, session.cwd)) };
   }
 
   // Watches the folders of these files, and stops watching folders none of them is in.
@@ -359,6 +461,18 @@ export class ChatReview {
     }
   }
 
+  // Watches root and everything under it but git's own folders, as VS Code's git extension watches a repository; none when undefined.
+  private watchTree(root: string | undefined): void {
+    if (root !== undefined && this.tree !== undefined && folderKey(this.tree.root) === folderKey(root)) return;
+    this.tree?.watcher.dispose();
+    this.tree = undefined;
+    if (root === undefined) return;
+    const watcher = this.deps.watchTree(root, (changed) => {
+      if (!path.relative(root, changed).split(/[\\/]/).includes('.git')) this.schedule();
+    });
+    this.tree = { root, watcher };
+  }
+
   /** One file's diff in a scope, as git prints it, with the revision it shows; missing when the file is not in that scope's list. */
   async fileDiff(scope: ChatScope, filePath: string): Promise<ReviewFileDiff> {
     const file = (await this.read(scope)).files.find((candidate) => candidate.path === filePath);
@@ -375,21 +489,18 @@ export class ChatReview {
 
   /** The drafts whose line changed or left its scope's diff since they were made; the tab marks them and Send refuses them. */
   async staleDrafts(drafts: readonly DraftComment[]): Promise<DraftComment[]> {
-    const stale: DraftComment[] = [];
-    for (const draft of drafts) {
-      const file = (await this.read(draft.scope)).files.find((candidate) => candidate.path === draft.path);
-      if (isStale(file, draft)) stale.push(draft);
-    }
-    return stale;
+    const fileOf = await this.draftFiles(drafts);
+    return drafts.filter((draft) => isStale(fileOf(draft), draft));
   }
 
   /** The review message of the drafts: each line quoted from core's own diff of its scope; stale, naming each, when one moved or left it. */
   async compose(drafts: readonly DraftComment[]): Promise<ComposeResult> {
     if (drafts.length === 0) return { ok: false, reason: 'empty' };
+    const fileOf = await this.draftFiles(drafts);
     const comments: ReviewComment[] = [];
     const stale: DraftComment[] = [];
     for (const draft of drafts) {
-      const file = (await this.read(draft.scope)).files.find((candidate) => candidate.path === draft.path);
+      const file = fileOf(draft);
       if (isStale(file, draft)) {
         stale.push(draft);
         continue;
@@ -400,14 +511,31 @@ export class ChatReview {
     return { ok: true, message: composeReviewMessage(comments) };
   }
 
-  /** Starts no further run; settles once the run in flight, which may still read the working folder, has ended. */
+  // Each draft's file, from one read per scope taken before any draft is checked, so a schedule() meanwhile cannot give
+  // later drafts a newer snapshot than earlier ones.
+  private async draftFiles(drafts: readonly DraftComment[]): Promise<(draft: DraftComment) => ChatChangeFile | undefined> {
+    const scopes = [...new Set(drafts.map((draft) => draft.scope))];
+    const reads = new Map(await Promise.all(scopes.map(async (scope) => [scope, await this.read(scope)] as const)));
+    return (draft) => reads.get(draft.scope)?.files.find((candidate) => candidate.path === draft.path);
+  }
+
+  /**
+   * Starts no further run, fails every later read, and answers its queued diff jobs too large unrun; settles once the run in
+   * flight, which may still read the working folder, has ended.
+   */
   dispose(): Promise<void> {
     this.disposed = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     for (const held of this.watched.values()) held.watcher.dispose();
     this.watched.clear();
+    this.tree?.watcher.dispose();
+    this.tree = undefined;
     this.reads.clear();
+    this.diffAbort.abort();
+    this.lineDiffs.clear();
+    this.keptDiffs.clear();
+    this.diffsInFlight.clear();
     const readers = [...this.readers].map((held) => held.close());
     return Promise.all([this.chain, ...readers]).then(() => undefined);
   }
@@ -418,7 +546,7 @@ export class ChatReview {
 
   // Baselines from the checkpoint repo of the folder each turn ran in: a persisted entry first, and only for the latest
   // turn's before state the producer's in-memory before-commit, which waits while its baseline is still being taken.
-  private io(session: ReviewSession, latestTurn: string | undefined, readers: BlobReaders): ChatChangesIo {
+  private io(session: ReviewSession, latestTurn: string | undefined, readers: BlobReaders, revisions: Set<string>): ChatChangesIo {
     return {
       checkpoint: async (turn, relativePath, side) => {
         if (!session.fileCheckpoints) return { kind: 'unavailable' };
@@ -428,6 +556,7 @@ export class ChatReview {
         return source ? readers.read(source.repoDir, source.commit, relativePath) : { kind: 'unavailable' };
       },
       disk: readDiskText,
+      lineDiff: this.lineDiff(revisions),
     };
   }
 }

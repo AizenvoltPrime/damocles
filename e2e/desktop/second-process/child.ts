@@ -5,6 +5,7 @@ import { installFakePlatform, type FakePanelHost, type FakePlatform } from '../.
 import { ChatPanelProvider } from '../../../src/core/chat-panel';
 import { installLogSink } from '../../../src/core/logger';
 import { createLauncherPool, installProcessLauncher } from '../../../src/core/process-launcher';
+import { createThreadDiffService, installDiffService } from '../../../src/core/diff';
 import { PI_AGENT_DIR } from '../../../src/core/pi-session/agent-dir';
 import type { ChildCommand, ChildEvent, ChildReply } from './protocol';
 
@@ -29,6 +30,7 @@ const platform: FakePlatform = installFakePlatform({
 });
 // As each host does, before core's first process start; the workers are the app's built bundles.
 installProcessLauncher(createLauncherPool({ workerPath: platform.paths.workerEntry('processLauncher'), sentinelPath: platform.paths.workerEntry('sentinel') }));
+installDiffService(createThreadDiffService(platform.paths.workerEntry('diff')));
 
 const provider = new ChatPanelProvider(platform, {
   subscriptions: [],

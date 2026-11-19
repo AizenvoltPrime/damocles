@@ -1,10 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { applyPatch } from 'diff';
+import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { generateDiffString, generateUnifiedPatch } from '@earendil-works/pi-coding-agent';
-import { applyReplacementsToOriginal, generateEditDiff, normalizeToLF, type TextReplacement } from '../edit-diff';
+import { applyReplacementsToOriginal, editDiffWindows, firstChangedLine, normalizeToLF, type TextReplacement } from '../edit-diff';
+import { windowedEditPatch } from '../../../diff/jobs';
+
+/** The windowed patch with no time budget. */
+function editPatch(path: string, content: string, newContent: string, replacements: readonly TextReplacement[]): string {
+  const result = windowedEditPatch(path, editDiffWindows(content, newContent, replacements), Infinity);
+  if (!('patch' in result)) throw new Error(`no patch: ${result.patchOmitted}`);
+  return result.patch;
+}
 
 /** Small deterministic generator (mulberry32), using the high bits. */
 function createRandom(seed: number): (max: number) => number {
@@ -47,20 +54,24 @@ function randomCase(random: (max: number) => number, distinct: boolean) {
   return { content, replacements, newContent: applyReplacements(content, replacements) };
 }
 
+describe('firstChangedLine', () => {
+  it.each([true, false])('is the first changed line of pi\'s whole-file diff (distinct lines: %s)', (distinct) => {
+    const random = createRandom(distinct ? 3 : 4);
+    for (let run = 0; run < 2000; run++) {
+      const { content, newContent } = randomCase(random, distinct);
+      expect(firstChangedLine(content, newContent), `run ${run}`).toBe(content === newContent ? undefined : generateDiffString(content, newContent).firstChangedLine);
+    }
+  });
+});
+
 // pi 1.5.2 `test/edit-diff-window.test.ts:54`.
-describe('generateEditDiff', () => {
-  it('matches pi\'s whole-file diff and patch when lines are distinct', () => {
+describe('windowedEditPatch', () => {
+  it('matches pi\'s whole-file patch when lines are distinct', () => {
     const random = createRandom(1);
     for (let run = 0; run < 2000; run++) {
       const { content, replacements, newContent } = randomCase(random, true);
       if (content === newContent) continue;
-      const windowed = generateEditDiff('f.txt', content, newContent, replacements);
-      const whole = generateDiffString(content, newContent);
-      expect(windowed, `run ${run}`).toEqual({
-        diff: whole.diff,
-        patch: generateUnifiedPatch('f.txt', content, newContent),
-        firstChangedLine: whole.firstChangedLine,
-      });
+      expect(editPatch('f.txt', content, newContent, replacements), `run ${run}`).toBe(generateUnifiedPatch('f.txt', content, newContent));
     }
   });
 
@@ -69,34 +80,44 @@ describe('generateEditDiff', () => {
     for (let run = 0; run < 2000; run++) {
       const { content, replacements, newContent } = randomCase(random, false);
       if (content === newContent) continue;
-      const { patch } = generateEditDiff('f.txt', content, newContent, replacements);
-      expect(applyPatch(content, patch), `run ${run}`).toBe(newContent);
+      expect(applyPatch(content, editPatch('f.txt', content, newContent, replacements)), `run ${run}`).toBe(newContent);
     }
   });
 
   it('handles a replacement of many lines', () => {
     const newText = 'x\n'.repeat(150000);
-    const { patch } = generateEditDiff('f.txt', 'a\nb\n', `${newText}b\n`, [{ matchIndex: 0, matchLength: 2, newText }]);
+    const patch = editPatch('f.txt', 'a\nb\n', `${newText}b\n`, [{ matchIndex: 0, matchLength: 2, newText }]);
     expect(applyPatch('a\nb\n', patch)).toBe(`${newText}b\n`);
   });
 
-  it('diffs a small change in a 20 MB file with a 96 MB heap', () => {
-    // A child process, so a regression to diffing the whole file runs out of memory instead of passing.
-    const editDiffUrl = pathToFileURL(resolve(__dirname, '../edit-diff.ts')).href;
-    const script = `
-      import { generateEditDiff } from ${JSON.stringify(editDiffUrl)};
+  it('omits the patch as too large once its windows pass the time budget', () => {
+    const before = Array.from({ length: 3_000 }, (_, i) => `  const value${i} = compute(${i});`).join('\n');
+    const after = Array.from({ length: 3_000 }, (_, i) => `  let renamed${i} = other(${i * 7});`).join('\n');
+    const windows = editDiffWindows(before, after, [{ matchIndex: 0, matchLength: before.length, newText: after }]);
+    expect(windowedEditPatch('f.txt', windows, 50)).toEqual({ patchOmitted: 'tooLarge' });
+  });
+
+  it('diffs a small change in a 20 MB file with a 96 MB heap', async () => {
+    // A child process, so a regression to diffing the whole file runs out of memory instead of passing; bundled, since
+    // the sources' extensionless imports do not resolve under Node's own loader.
+    const contents = `
+      import { editDiffWindows } from "../edit-diff";
+      import { windowedEditPatch } from "../../../diff/jobs";
       const filler = "x".repeat(99) + "\\n";
       const half = filler.repeat(100000);
       const base = half + "TARGET = 1\\n" + half;
       const changed = half + "TARGET = 2\\n" + half;
-      const { diff } = generateEditDiff("big.txt", base, changed, [{ matchIndex: half.length, matchLength: 10, newText: "TARGET = 2" }]);
-      process.stdout.write(diff.split("\\n").filter((line) => /^[+-]/.test(line)).join("\\n"));
+      const windows = editDiffWindows(base, changed, [{ matchIndex: half.length, matchLength: 10, newText: "TARGET = 2" }]);
+      const { patch } = windowedEditPatch("big.txt", windows, Infinity);
+      process.stdout.write(patch.split("\\n").filter((line) => /^(@@|[+-]TARGET)/.test(line)).join("\\n"));
     `;
-    const output = execFileSync(process.execPath, ['--max-old-space-size=96', '--input-type=module', '--eval', script], {
+    const bundled = await build({ stdin: { contents, resolveDir: __dirname, loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'silent' });
+    const output = execFileSync(process.execPath, ['--max-old-space-size=96', '--input-type=module'], {
       encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      input: bundled.outputFiles[0]!.text,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-    expect(output).toBe('-100001 TARGET = 1\n+100001 TARGET = 2');
+    expect(output).toBe('@@ -99997,9 +99997,9 @@\n-TARGET = 1\n+TARGET = 2');
   });
 });
 
@@ -115,7 +136,7 @@ describe('many replacements on one long line', () => {
     const newContent = applyReplacements(content, replacements);
 
     const started = performance.now();
-    const { patch } = generateEditDiff('min.js', content, newContent, replacements);
+    const patch = editPatch('min.js', content, newContent, replacements);
     const written = applyReplacementsToOriginal(original, replacements);
     const elapsed = performance.now() - started;
 

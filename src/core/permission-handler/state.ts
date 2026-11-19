@@ -98,12 +98,13 @@ export class PermissionState {
   workspacePath: string | null = null;
   /** The folder the session's tools resolve relative paths against; file rules match relative to it. */
   cwd: string | null = null;
+
   /** Fired on every add and every remove so a listener re-derives from the maps, never from a count. */
   onPendingChanged: (() => void) | null = null;
   /** Resolves who raised a prompt from its `parentToolUseId`; the session that runs the nested agents supplies it. */
   promptOwnerResolver: ((parentToolUseId: string | null | undefined) => PromptOwner) | null = null;
 
-  /** `cwd`, which a file rule match and a file approval cannot do without. */
+  /** The cwd a file rule or a file approval resolves a relative path against; none set is a bug, so this throws. */
   sessionCwd(): string {
     if (this.cwd === null) throw new Error('File rules and approvals need the session cwd, and none is set');
     return this.cwd;

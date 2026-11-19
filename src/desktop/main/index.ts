@@ -1480,6 +1480,7 @@ class DesktopApp {
           sessionMetaIndex: worker('sessionMetaIndex'),
           voiceExtract: worker('voiceExtract'),
           walkChild: worker('walkChild'),
+          diff: worker('diff'),
         },
         watchWorker: watchWorkerPath(appPaths),
         remoteMirrors: path.join(this.userDataDir, 'remote'),

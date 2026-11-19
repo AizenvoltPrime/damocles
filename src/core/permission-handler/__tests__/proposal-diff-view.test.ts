@@ -9,11 +9,12 @@ import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-p
 import type { DiffSide } from '../../../platform/editor-service';
 import type { CanUseToolContext } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import { DiffManager } from '../diff-manager';
+import { DiffManager, type DiffInfo } from '../diff-manager';
 import { FILE_PATCH_MAX_BYTES } from '../../pi-session/tools/file-patch';
 import { createEditTool } from '../../pi-session/tools/edit-tool';
 import { createWriteTool } from '../../pi-session/tools/write-tool';
 import { getPiCodingAgent, initPiLoader, type PiCodingAgentModule } from '../../pi-session/pi-loader';
+import { diffService } from '../../diff';
 
 /** Paths whose access check (pi's edit's and replace_all's) fails, with the code, as a read-only or unreadable file fails it. */
 const deniedAccess = vi.hoisted(() => new Map<string, string>());
@@ -38,6 +39,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 let pi: PiCodingAgentModule;
+const running = new AbortController().signal;
 
 beforeAll(async () => {
   pi = (await initPiLoader())!;
@@ -58,8 +60,11 @@ function tempFile(content: string | Buffer | null, name = 'a.txt'): { dir: strin
   return { dir, file };
 }
 
+/** A file as the call wrote it and where it resolves, for an absolute path. */
+const at = (file: string): { path: string; absolute: string } => ({ path: file, absolute: file });
+
 function diffManager(platform: FakePlatform = createFakePlatform()): DiffManager {
-  return new DiffManager(platform.editor, 'host-1', () => pi);
+  return new DiffManager(platform.editor, 'host-1', () => pi, diffService());
 }
 
 function handlerFor(panelId: string): { handler: PermissionHandler; platform: FakePlatform; file: string } {
@@ -141,10 +146,10 @@ describe('proposal diff view', () => {
 describe('proposal diff content and title', () => {
   it('shows replacement patterns in new_string literally, as Edit writes them', async () => {
     const { file } = tempFile('const escaped = s;\r\nconst pid = 0;\r\n', 'a.ts');
-    const diff = await diffManager().prepareDiff('t1', 'Edit', file, {
+    const diff = await diffManager().prepareDiff('t1', 'Edit', at(file), {
       old_string: 'const escaped = s;\nconst pid = 0;',
       new_string: "const escaped = s.replace(/[.*]/g, '\\$&');\nconst pid = $$ + $` + $';",
-    });
+    }, running);
     expect(diff).toHaveProperty('proposedContent', "const escaped = s.replace(/[.*]/g, '\\$&');\r\nconst pid = $$ + $` + $';\r\n");
   });
 
@@ -158,8 +163,8 @@ describe('proposal diff content and title', () => {
       fs.writeFileSync(file, before);
       const input = { old_string: 'foo\nbar', new_string: 'baz\nqux', ...(replaceAll ? { replace_all: true } : {}) };
 
-      const diff = await diffManager().prepareDiff('t1', 'Edit', file, input);
-      await createEditTool(pi, dir).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never);
+      const diff = await diffManager().prepareDiff('t1', 'Edit', at(file), input, running);
+      await createEditTool(pi, dir, diffService()).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never);
 
       expect(diff).toHaveProperty('proposedContent', fs.readFileSync(file, 'utf8'));
     } finally {
@@ -175,7 +180,7 @@ describe('proposal diff content and title', () => {
   });
 });
 
-describe('the approval diff of a single Edit is pi\'s edit run on a copy', () => {
+describe('a single Edit\'s approval diff shows pi\'s own edit of the file, and its card the patch the result records', () => {
   const dirs: string[] = [];
 
   afterEach(() => {
@@ -190,17 +195,17 @@ describe('the approval diff of a single Edit is pi\'s edit run on a copy', () =>
     return { dir, file };
   }
 
-  /** What the Edit tool writes over a copy of `content`, with the line its result reports, or the message it refuses with. */
+  /** What pi's own edit writes over a copy of `content`, with the line its result reports, or the message it refuses with. */
   async function editWrites(content: string, input: { old_string: string; new_string: string }): Promise<{ written: string; line: number | undefined } | { refused: string }> {
     const { dir, file } = fileHolding(content);
-    return createEditTool(pi, dir).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never).then(
+    return pi.createEditToolDefinition(dir).execute('t1', { path: file, edits: [{ oldText: input.old_string, newText: input.new_string }] }, undefined, undefined, { cwd: dir } as never).then(
       (result) => ({ written: fs.readFileSync(file, 'utf8'), line: (result.details as { firstChangedLine?: number } | undefined)?.firstChangedLine }),
       (error: Error) => ({ refused: error.message }),
     );
   }
 
   async function approvalOf(content: string, input: { old_string: string; new_string: string }) {
-    return diffManager().prepareDiff('t1', 'Edit', fileHolding(content).file, input);
+    return diffManager().prepareDiff('t1', 'Edit', at(fileHolding(content).file), input, running);
   }
 
   it.each([
@@ -219,8 +224,8 @@ describe('the approval diff of a single Edit is pi\'s edit run on a copy', () =>
     const content = 'foo\nbar\nfoo\n';
     const input = { old_string: 'foo', new_string: 'baz' };
     const { dir, file } = fileHolding(content);
-    const refused = await createEditTool(pi, dir).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
-    expect(refused).toBeDefined();
+    const refused = await pi.createEditToolDefinition(dir).execute('t1', { path: file, edits: [{ oldText: input.old_string, newText: input.new_string }] }, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
+    expect(refused).toMatch(/^Found 2 occurrences/);
     const handler = new PermissionHandler(createFakePlatform(), () => pi, 'host-1');
     handler.setCwd(dir);
     handler.setPostMessage(() => undefined);
@@ -229,6 +234,18 @@ describe('the approval diff of a single Edit is pi\'s edit run on a copy', () =>
 
     expect(handler.pendingPrompts()).toEqual([]);
     expect(decision).toMatchObject({ behavior: 'deny', message: refused });
+  });
+
+  it.each([
+    ['absent', 'one\n', { old_string: 'two', new_string: 'TWO' }],
+    ['found twice', 'a\r\na\r\n', { old_string: 'a', new_string: 'b' }],
+    ['changing nothing', 'one\n', { old_string: 'one', new_string: 'one' }],
+  ])('refuses an old_string %s with pi\'s own message', async (_label, content, input) => {
+    const { dir, file } = fileHolding(content);
+    const refused = await pi.createEditToolDefinition(dir).execute('t1', { path: file, edits: [{ oldText: input.old_string, newText: input.new_string }] }, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
+    expect(refused).toBeDefined();
+
+    expect(await diffManager().prepareDiff('t1', 'Edit', at(file), input, running)).toEqual({ refused });
   });
 
   it.each([
@@ -247,13 +264,27 @@ describe('the approval diff of a single Edit is pi\'s edit run on a copy', () =>
     expect(diff).toMatchObject({ proposedContent: (written as { written: string }).written });
   });
 
+  it('gives the card the windowed patch the result records, past the whole-file patch\'s changed-line bound', async () => {
+    const before = Array.from({ length: 1_500 }, (_, i) => `  const value${i} = compute(${i});`).join('\n');
+    const after = Array.from({ length: 1_500 }, (_, i) => `  let renamed${i} = other(${i * 7});`).join('\n');
+    const { dir, file } = fileHolding(`header\n${before}\nfooter\n`);
+    const input = { old_string: before, new_string: after };
+    expect(await diffService().filePatch(file, before, after)).toEqual({ patchOmitted: 'tooLarge' });
+
+    const card = (await diffManager().prepareDiff('t1', 'Edit', at(file), input, running)) as DiffInfo;
+    const result = await createEditTool(pi, dir, diffService()).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never);
+
+    expect(card.patch).toHaveProperty('patch');
+    expect(card.patch).toEqual({ patch: (result.details as { patch: string }).patch });
+  });
+
   it('does not wait behind a write queued on the same file', async () => {
     const { file } = fileHolding('alpha\nbeta\n');
     let release!: () => void;
     const writeHeld = new Promise<void>((resolve) => (release = resolve));
     const held = pi.withFileMutationQueue(file, () => writeHeld);
     try {
-      const previewed = diffManager().prepareDiff('t1', 'Edit', file, { old_string: 'alpha', new_string: 'omega' }).then(() => 'previewed');
+      const previewed = diffManager().prepareDiff('t1', 'Edit', at(file), { old_string: 'alpha', new_string: 'omega' }, running).then(() => 'previewed');
       const waited = new Promise<string>((resolve) => setTimeout(() => resolve('waited behind the write'), 1000));
 
       expect(await Promise.race([previewed, waited])).toBe('previewed');
@@ -340,6 +371,79 @@ describe('the approval a file change raises', () => {
 
     expect(request).toMatchObject({ patch: expect.stringContaining('@@ -0,0 +1,1 @@\n+text') });
   });
+
+  it('numbers a replace_all whose old_string starts with a line break at the first line it changes, as its result does', async () => {
+    const before = 'a\nfoo\nb\nfoo\n';
+    let target = '';
+    const input = (file: string) => ({ file_path: file, old_string: '\nfoo', new_string: '\nbar', replace_all: true });
+    const { request } = await approvalOf('Edit', input, (file) => fs.writeFileSync((target = file), before));
+    const dir = path.dirname(target);
+    const result = await createEditTool(pi, dir, diffService()).execute('t1', input(target) as never, undefined, undefined, { cwd: dir } as never);
+
+    expect((result.details as { firstChangedLine: number }).firstChangedLine).toBe(2);
+    expect(request).toMatchObject({ editLineNumber: 2 });
+  });
+});
+
+describe('an approval whose patch job fails', () => {
+  const failing = { filePatch: () => Promise.reject(new Error('diff failed')), editPatch: () => Promise.reject(new Error('diff failed')) };
+
+  it.each([
+    ['a Write', 'Write', { content: 'omega\nbeta\n' }],
+    ['a single Edit', 'Edit', { old_string: 'alpha', new_string: 'omega' }],
+    ['a replace_all Edit', 'Edit', { old_string: 'alpha', new_string: 'omega', replace_all: true }],
+  ])('still asks, saying the diff could not be computed, for %s', async (_label, toolName, input) => {
+    const platform = createFakePlatform();
+
+    const card = await new DiffManager(platform.editor, 'host-1', () => pi, failing).prepareDiff('t1', toolName, at(tempFile('alpha\nbeta\n').file), input, running);
+
+    expect(card).toEqual({ originalContent: 'alpha\nbeta\n', proposedContent: 'omega\nbeta\n', editLineNumber: 1, patch: { patchOmitted: 'unavailable' } });
+  });
+});
+
+describe('an approval whose diff is still being prepared', () => {
+  /** A handler whose diff's last step, the editor's unsaved-changes check, waits until `read` is called. */
+  function heldRead(): { handler: PermissionHandler; platform: FakePlatform; messages: ExtensionToWebviewMessage[]; read: () => void; file: string } {
+    const platform = createFakePlatform();
+    let read!: () => void;
+    const held = new Promise<void>((resolve) => (read = resolve));
+    vi.spyOn(platform.editor, 'isDirty').mockImplementation(async () => {
+      await held;
+      return false;
+    });
+    const { dir, file } = tempFile('alpha\nbeta\n');
+    const handler = new PermissionHandler(platform, getPiCodingAgent, 'host-1');
+    handler.setCwd(dir);
+    const messages: ExtensionToWebviewMessage[] = [];
+    handler.setPostMessage((msg) => messages.push(msg));
+    return { handler, platform, messages, read, file };
+  }
+
+  it('opens no diff view and answers as an abort when the call is stopped meanwhile', async () => {
+    const { handler, platform, read, file } = heldRead();
+    const stop = new AbortController();
+    const decision = requestEdit(handler, file, 't1', stop.signal);
+    await waitFor(() => vi.mocked(platform.editor.isDirty).mock.calls.length > 0);
+
+    stop.abort();
+    read();
+
+    await expect(decision).resolves.toMatchObject({ behavior: 'deny', message: expect.stringContaining('aborted before this approval was answered') });
+    expect(platform.editor.diffs).toEqual([]);
+    expect(handler.pendingPrompts()).toEqual([]);
+  });
+
+  it('opens no diff view once the panel is disposed', async () => {
+    const { handler, platform, messages, read, file } = heldRead();
+    void requestEdit(handler, file, 't1');
+    await waitFor(() => vi.mocked(platform.editor.isDirty).mock.calls.length > 0);
+
+    await handler.dispose();
+    read();
+    await waitFor(() => messages.some((msg) => msg.type === 'requestPermission'));
+
+    expect(platform.editor.diffs).toEqual([]);
+  });
 });
 
 describe('the approval diff is the file pi edits, read as pi reads it, at the path pi resolves', () => {
@@ -368,7 +472,7 @@ describe('the approval diff is the file pi edits, read as pi reads it, at the pa
 
   /** What the Edit tool leaves in `file`, run on it as the approved call runs. */
   async function editToolWrites(dir: string, file: string, input: { old_string: string; new_string: string }): Promise<string> {
-    await createEditTool(pi, dir).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never);
+    await createEditTool(pi, dir, diffService()).execute('t1', { file_path: file, ...input }, undefined, undefined, { cwd: dir } as never);
     return fs.readFileSync(file, 'utf8');
   }
 
@@ -383,7 +487,7 @@ describe('the approval diff is the file pi edits, read as pi reads it, at the pa
     const { asked, platform } = call(dir, 'Edit', { file_path: spelled(file), old_string: 'alpha', new_string: 'omega' });
     const request = await asked();
 
-    expect(request.filePath).toBe(spelled(file));
+    expect(request.filePath).toBe(file);
     expect(request.patch).toContain('\n-alpha\n+omega\n');
     expect(sides(platform)).toEqual({ filePath: file, original: 'alpha\nbeta\n', proposed: 'omega\nbeta\n' });
   });
@@ -404,7 +508,7 @@ describe('the approval diff is the file pi edits, read as pi reads it, at the pa
   ])('refuses %s of a missing file with the message the Edit tool gives, asking nothing', async (_label, extra, relative) => {
     const { dir, file } = tempFile(null);
     const input = { file_path: relative ? path.basename(file) : file, old_string: 'alpha', new_string: 'omega', ...extra };
-    const toolRefusal = await createEditTool(pi, dir).execute('t1', input, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
+    const toolRefusal = await createEditTool(pi, dir, diffService()).execute('t1', input, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
     expect(toolRefusal).toContain('ENOENT');
 
     const { decision, handler, platform } = call(dir, 'Edit', input);
@@ -461,7 +565,7 @@ describe('the approval diff is the file pi edits, read as pi reads it, at the pa
     const input = { file_path: path.basename(file), old_string: 'alpha', new_string: 'omega' };
 
     const request = await call(dir, 'Edit', input).asked();
-    const result = await createEditTool(pi, dir).execute('t1', input, undefined, undefined, { cwd: dir } as never);
+    const result = await createEditTool(pi, dir, diffService()).execute('t1', input, undefined, undefined, { cwd: dir } as never);
 
     expect(request.patch).toBe((result.details as { patch?: string }).patch);
   });
@@ -491,7 +595,7 @@ describe('what an Edit approval refuses unasked, in the Edit tool\'s own words',
 
   /** The message the Edit tool itself refuses `input` with, run on the file as the approved call would run. */
   async function toolRefusal(dir: string, input: Record<string, unknown>): Promise<string | undefined> {
-    return createEditTool(pi, dir).execute('t1', input as never, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
+    return createEditTool(pi, dir, diffService()).execute('t1', input as never, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
   }
 
   /** stat answers for `file` as for a FIFO, as when a FIFO stands at the path. */
@@ -532,11 +636,24 @@ describe('what an Edit approval refuses unasked, in the Edit tool\'s own words',
     expect(platform.editor.diffs).toEqual([]);
   });
 
+  it('refuses an Edit of a folder unasked, with the tool\'s message', async () => {
+    const { dir } = tempFile(null);
+    fs.mkdirSync(path.join(dir, 'sub'));
+    const input = { file_path: 'sub', old_string: 'a', new_string: 'b' };
+    const refused = await toolRefusal(dir, input);
+    expect(refused).toBe('Could not edit file: sub. It is not a regular file.');
+
+    const { decision, handler } = call(dir, 'Edit', input);
+
+    expect(await decision).toMatchObject({ behavior: 'deny', message: refused });
+    expect(handler.pendingPrompts()).toEqual([]);
+  });
+
   it('refuses a Write over a path that is not a regular file unasked, with the tool\'s message, opening nothing', async () => {
     const { dir, file } = tempFile('never read');
     statAsFifo(file);
     const opens = opensOf(file);
-    const refused = await createWriteTool(pi, dir).execute('t1', { path: path.basename(file), content: 'x\n' } as never, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
+    const refused = await createWriteTool(pi, dir, diffService()).execute('t1', { path: path.basename(file), content: 'x\n' } as never, undefined, undefined, { cwd: dir } as never).then(() => undefined, (error: Error) => error.message);
     expect(refused).toBe(`Could not write file: ${path.basename(file)}. It is not a regular file.`);
 
     const { decision, handler, platform } = call(dir, 'Write', { file_path: path.basename(file), content: 'x\n' });

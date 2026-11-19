@@ -8,6 +8,7 @@ import { initPiLoader, type PiCodingAgentModule } from '../../pi-loader';
 import { createReadTool } from '../read-tool';
 import { createWriteTool } from '../write-tool';
 import { createEditTool } from '../edit-tool';
+import { diffService } from '../../../diff';
 
 /**
  * Every file call of the overrides' own operations, which the build gives `original-fs` under Electron. pi's tools, loaded from
@@ -146,7 +147,7 @@ describe("the file tools' operations", () => {
     const content = 'new\r\ncontent\n';
     const pis = await outcome(run(pi.createWriteToolDefinition(theirs), theirs, { path: name, content }));
 
-    const { result, calls } = await watchPiFs(cwd, () => outcome(run(createWriteTool(pi, cwd), cwd, { path: name, content })));
+    const { result, calls } = await watchPiFs(cwd, () => outcome(run(createWriteTool(pi, cwd, diffService()), cwd, { path: name, content })));
 
     expect(result).toEqual(pis);
     expect(fs.readFileSync(path.join(cwd, name))).toEqual(fs.readFileSync(path.join(theirs, name)));
@@ -162,9 +163,11 @@ describe("the file tools' operations", () => {
     fs.writeFileSync(path.join(theirs, 'a.txt'), 'one\r\ntwo\nthree\n');
     const pis = await run(pi.createEditToolDefinition(theirs), theirs, { path: 'a.txt', edits: [{ oldText: 'two', newText: 'TWO' }] });
 
-    const { result, calls } = await watchPiFs(cwd, () => run(createEditTool(pi, cwd), cwd, { file_path: 'a.txt', old_string: 'two', new_string: 'TWO' }));
+    const { result, calls } = await watchPiFs(cwd, () => run(createEditTool(pi, cwd, diffService()), cwd, { file_path: 'a.txt', old_string: 'two', new_string: 'TWO' }));
 
-    expect(result).toEqual(pis);
+    // pi's details carry a display diff, which Damocles' Edit does not compute since nothing reads it.
+    const { diff: _diff, ...details } = pis.details as { diff?: string };
+    expect(result).toEqual({ ...pis, details });
     expect(fs.readFileSync(path.join(cwd, 'a.txt'))).toEqual(fs.readFileSync(path.join(theirs, 'a.txt')));
     expect(calls).toEqual([]);
     expect(ours.calls).toEqual(['stat a.txt', 'realpath a.txt', 'access a.txt', 'open a.txt', 'open a.txt']);
@@ -174,7 +177,7 @@ describe("the file tools' operations", () => {
     const cwd = tempDir();
     fs.writeFileSync(path.join(cwd, 'a.txt'), 'x one\r\nx\n');
 
-    const { result, calls } = await watchPiFs(cwd, () => run(createEditTool(pi, cwd), cwd, { file_path: 'a.txt', old_string: 'x', new_string: 'y', replace_all: true }));
+    const { result, calls } = await watchPiFs(cwd, () => run(createEditTool(pi, cwd, diffService()), cwd, { file_path: 'a.txt', old_string: 'x', new_string: 'y', replace_all: true }));
 
     expect(result.content).toEqual([{ type: 'text', text: 'Successfully replaced 1 block(s) in a.txt.' }]);
     expect(fs.readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('y one\r\ny\n');
@@ -187,7 +190,7 @@ describe("the file tools' operations", () => {
     const pis = await outcome(run(pi.createEditToolDefinition(cwd), cwd, { path: 'gone.txt', edits: [{ oldText: 'a', newText: 'b' }] }));
     ours.calls = [];
 
-    const { result, calls } = await watchPiFs(cwd, () => outcome(run(createEditTool(pi, cwd), cwd, { file_path: 'gone.txt', old_string: 'a', new_string: 'b' })));
+    const { result, calls } = await watchPiFs(cwd, () => outcome(run(createEditTool(pi, cwd, diffService()), cwd, { file_path: 'gone.txt', old_string: 'a', new_string: 'b' })));
 
     expect(result).toEqual(pis);
     expect(calls).toEqual([]);

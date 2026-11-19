@@ -33,7 +33,8 @@ export type FileDiffSource =
   | { kind: 'change'; oldText: string; newText: string }
   | { kind: 'omitted'; reason: FilePatchOmitted };
 
-const OMITTED_REASONS: ReadonlySet<unknown> = new Set<FilePatchOmitted>(['tooLarge', 'binary', 'unreadable', 'notAFile']);
+const OMITTED_REASON_KEYS = { tooLarge: true, binary: true, unreadable: true, notAFile: true, unavailable: true } satisfies Record<FilePatchOmitted, true>;
+const OMITTED_REASONS: ReadonlySet<unknown> = new Set(Object.keys(OMITTED_REASON_KEYS));
 
 function isOmittedReason(value: unknown): value is FilePatchOmitted {
   return OMITTED_REASONS.has(value);

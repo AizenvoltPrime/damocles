@@ -11,6 +11,7 @@ export const EXTENSION_BUNDLE_FILES = {
   memoryIntegrityWorker: 'dist/memory-integrity-worker.js',
   sessionMetaIndexWorker: 'dist/session-meta-index-worker.js',
   voiceExtractWorker: 'dist/voice-extract-worker.js',
+  diffWorker: 'dist/diff-worker.js',
   processLauncherWorker: 'dist/process-launcher-worker.js',
   sentinel: 'dist/sentinel.js',
   walkChild: 'dist/walk-child.js',

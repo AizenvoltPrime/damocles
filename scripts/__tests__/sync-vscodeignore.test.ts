@@ -207,6 +207,7 @@ describe('forbiddenVsixEntries', () => {
       'extension/dist/memory-integrity-worker.js',
       'extension/dist/session-meta-index-worker.js',
       'extension/dist/voice-extract-worker.js',
+      'extension/dist/diff-worker.js',
       'extension/dist/webview/index.js',
       'extension/dist/webview/assets/index-abc.js',
       'extension/resources/grammars/tree-sitter-typescript.wasm',

@@ -100,7 +100,7 @@ async function readFileToEdit(absolutePath: string): Promise<Buffer> {
   }
 }
 
-/** pi's default edit operations (`edit.js`), reading and writing only through checked handles. */
+/** The Edit tool's file operations (`runEdit`), pi's edit defaults (`edit.js`) reading and writing only through checked handles. */
 export const editOperations: EditOperations = {
   readFile: readFileToEdit,
   writeFile: (absolutePath, content) => writeRegularFile(absolutePath, content, notARegularFile(absolutePath)),

@@ -2,10 +2,11 @@ import * as path from 'path';
 import type { DiffView, EditorService } from '../../platform/editor-service';
 import { TOOL_WRITE } from '../../shared/tool-names';
 import type { FilePatch } from '../../shared/types/file-patch';
-import { filePatch, readTextForPatch } from '../pi-session/tools/file-patch';
-import { EDIT_EMPTY_OLD_STRING, exactEdit, previewEdit, replaceAllNotFound, replaceAllUnchanged } from '../pi-session/tools/edit-tool';
-import { couldNotEdit, editOperations, notARegularFile, notARegularFileToWrite } from '../pi-session/tools/local-file-operations';
+import { readTextForPatch } from '../pi-session/tools/patch-text';
+import { EDIT_EMPTY_OLD_STRING, editAccessRefusal, editPatchOf, previewEdit } from '../pi-session/tools/edit-tool';
+import { notARegularFile, notARegularFileToWrite } from '../pi-session/tools/local-file-operations';
 import type { PiCodingAgentModule } from '../pi-session/pi-loader';
+import type { DiffService } from '../diff';
 import { l } from '../l10n';
 import { log } from '../logger';
 
@@ -15,7 +16,7 @@ export interface DiffInfo {
   /** Absent for an Edit of a file that cannot be read as text, whose new text is not known before it runs. */
   proposedContent?: string;
   editLineNumber?: number;
-  /** The change's real-numbered patch, as its result will record it, or why there is none; absent for a new file. */
+  /** The change's real-numbered patch, computed as its result computes it, or why there is none; absent for a new file. */
   patch?: FilePatch;
   /** The host's editor holds unsaved changes to the file, which the diff of the file on disk leaves out. */
   unsavedChanges?: true;
@@ -23,68 +24,65 @@ export interface DiffInfo {
 
 export class DiffManager {
   private activeDiffs: Map<string, DiffView> = new Map();
+  private disposed = false;
   private readonly editor: EditorService;
   private readonly panelId: string | undefined;
   private readonly pi: () => PiCodingAgentModule | null;
+  // the card's patch, on the diff worker's tool lane
+  private readonly diff: Pick<DiffService, 'filePatch' | 'editPatch'>;
 
-  constructor(editor: EditorService, panelId: string | undefined, pi: () => PiCodingAgentModule | null) {
+  constructor(editor: EditorService, panelId: string | undefined, pi: () => PiCodingAgentModule | null, diff: Pick<DiffService, 'filePatch' | 'editPatch'>) {
     this.editor = editor;
     this.panelId = panelId;
     this.pi = pi;
+    this.diff = diff;
   }
 
   /**
-   * `filePath` is absolute, resolved as the tool resolves it; the file is read as pi's edit reads it, never as an editor holds it.
-   * `call` is the tool call's own folder and path as written, which pi's refusals name.
+   * The approval of a change to `file`: `path` as the call wrote it, which the run's messages and patch name, and `absolute`, the
+   * file it resolves to. The file is read from disk as the run reads it, never as an editor holds it, and an Edit is refused here
+   * exactly where its run would refuse it, with the run's message.
    */
   async prepareDiff(
     _diffId: string,
     toolName: string,
-    filePath: string,
+    file: { readonly path: string; readonly absolute: string },
     input: { content?: string; old_string?: string; new_string?: string; replace_all?: boolean },
-    call: { readonly cwd: string; readonly path: string } = { cwd: path.dirname(filePath), path: filePath },
+    signal: AbortSignal
   ): Promise<DiffInfo | { refused: string }> {
-    const oldString = input.old_string ?? '';
-    if (toolName !== TOOL_WRITE && oldString === '') return { refused: EDIT_EMPTY_OLD_STRING };
-    const original = await readTextForPatch(filePath);
-    const originalContent = typeof original === 'string' ? original : '';
-
-    let proposedContent: string;
-    let editLineNumber: number | undefined;
-
     if (toolName === TOOL_WRITE) {
-      // The write tool refuses a non-regular file before it writes, in every mode.
-      if (typeof original !== 'string' && original?.patchOmitted === 'notAFile') return { refused: notARegularFileToWrite(call.path) };
-      proposedContent = input.content || '';
-      editLineNumber = 1;
-    } else if (original !== undefined && (typeof original !== 'string' || input.replace_all === true)) {
-      // The Edit tool refuses a non-regular file before pi's access check, which pi's edit and replace_all run next; a single edit of a text file gets it from previewEdit.
-      if (typeof original !== 'string' && original.patchOmitted === 'notAFile') return { refused: notARegularFile(call.path) };
-      const denied = await editOperations.access(filePath).then(() => undefined, (error: unknown) => couldNotEdit(call.path, error));
-      if (denied !== undefined) return { refused: denied };
+      const original = await readTextForPatch(file.absolute);
+      const proposedContent = input.content || '';
+      if (original === undefined) return this.withEditorState(file.absolute, { originalContent: '', proposedContent, editLineNumber: 1 });
       if (typeof original !== 'string') {
-        // Asked without a diff; the card names why.
-        return this.withEditorState(filePath, { patch: original });
+        // The write tool refuses a non-regular file before it writes, in every mode.
+        if (original.patchOmitted === 'notAFile') return { refused: notARegularFileToWrite(file.path) };
+        return this.withEditorState(file.absolute, { proposedContent, editLineNumber: 1, patch: original });
       }
-      const edit = exactEdit(original, oldString, input.new_string ?? '');
-      if (!edit) return { refused: replaceAllNotFound(call.path) };
-      if (edit.newContent === edit.baseContent) return { refused: replaceAllUnchanged(call.path) };
-      editLineNumber = edit.baseContent.slice(0, edit.replacements[0]!.matchIndex).split('\n').length;
-      proposedContent = edit.written;
-    } else {
-      const pi = this.pi();
-      if (!pi) throw new Error('An Edit approval needs pi\'s edit, which is not loaded');
-      // The edit pi runs, on the text this diff shows as the original; a missing file gets pi's own refusal.
-      const edit = await previewEdit(pi, call.cwd, call.path, original, oldString, input.new_string ?? '');
-      if ('refused' in edit) return edit;
-      editLineNumber = edit.firstChangedLine;
-      proposedContent = edit.written;
+      // the patch the write override records for the same change
+      const patch = await this.patchOrUnavailable(file.absolute, this.diff.filePatch(file.path, original, proposedContent, { signal }));
+      return this.withEditorState(file.absolute, { originalContent: original, proposedContent, editLineNumber: 1, patch });
     }
 
-    const lineNumber = editLineNumber !== undefined ? { editLineNumber } : {};
-    if (original === undefined) return this.withEditorState(filePath, { originalContent, proposedContent, ...lineNumber });
-    if (typeof original !== 'string') return this.withEditorState(filePath, { proposedContent, ...lineNumber, patch: original });
-    return this.withEditorState(filePath, { originalContent, proposedContent, ...lineNumber, patch: filePatch(call.path, originalContent, proposedContent) });
+    const change = { old_string: input.old_string ?? '', new_string: input.new_string ?? '', ...(input.replace_all === true ? { replace_all: true } : {}) };
+    if (change.old_string === '') return { refused: EDIT_EMPTY_OLD_STRING };
+    const original = await readTextForPatch(file.absolute);
+    // The run's checks in its order: a non-regular file, then the access check, which also refuses a missing file.
+    if (typeof original === 'object' && original.patchOmitted === 'notAFile') return { refused: notARegularFile(file.path) };
+    const denied = await editAccessRefusal(file.absolute, file.path);
+    if (denied !== undefined) return { refused: denied };
+    // Created since the read: asked with the requested change alone, and the run reads it again.
+    if (original === undefined) return this.withEditorState(file.absolute, {});
+    // Asked without a diff; the card names why.
+    if (typeof original !== 'string') return this.withEditorState(file.absolute, { patch: original });
+    const pi = this.pi();
+    if (!pi) throw new Error('An Edit approval needs pi\'s edit, which is not loaded');
+    const edit = previewEdit(pi, file.path, original, change);
+    if ('refused' in edit) return edit;
+    const lineNumber = edit.firstChangedLine !== undefined ? { editLineNumber: edit.firstChangedLine } : {};
+    // the patch `runEdit` records for the same change
+    const patch = await this.patchOrUnavailable(file.absolute, editPatchOf(this.diff, file.path, edit, change.replace_all, { signal }));
+    return this.withEditorState(file.absolute, { originalContent: original, proposedContent: edit.written, ...lineNumber, patch });
   }
 
   /** The diff, noting when the host's editor holds unsaved changes to the file, which the diff of the file on disk leaves out. */
@@ -92,8 +90,16 @@ export class DiffManager {
     return (await this.editor.isDirty(filePath)) ? { ...diff, unsavedChanges: true } : diff;
   }
 
-  // diffId is the tool use id the pending permission prompt is keyed by.
+  private patchOrUnavailable(filePath: string, patching: Promise<FilePatch>): Promise<FilePatch> {
+    return patching.catch((error: unknown): FilePatch => {
+      log('[DiffManager] no diff for the approval of %s: %O', filePath, error);
+      return { patchOmitted: 'unavailable' };
+    });
+  }
+
+  // diffId is the tool use id the pending permission prompt is keyed by. Opens nothing once disposed.
   async showDiffView(diffId: string, filePath: string, originalContent: string, proposedContent: string): Promise<void> {
+    if (this.disposed) return;
     const fileName = path.basename(filePath);
 
     const view = await this.editor.showDiff({
@@ -109,6 +115,7 @@ export class DiffManager {
       ...(this.panelId !== undefined ? { panelId: this.panelId } : {}),
     });
     this.activeDiffs.set(diffId, view);
+    if (this.disposed) await this.closeDiffView(diffId);
   }
 
   /** Close the view; a close the host fails is logged, since the prompt it belonged to is over either way. Never rejects. */
@@ -126,6 +133,7 @@ export class DiffManager {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
     await Promise.all([...this.activeDiffs.keys()].map((diffId) => this.closeDiffView(diffId)));
   }
 }

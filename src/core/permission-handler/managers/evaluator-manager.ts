@@ -325,22 +325,18 @@ export class EvaluatorManager {
 
   /** Whether `filePath`, resolved against the session cwd as the tools resolve it, is a plan file. */
   isPlanFile(filePath: string): boolean {
-    return filePath !== '' && isPlanFilePath(resolveToCwd(filePath, this.sessionCwd()));
+    return filePath !== '' && isPlanFilePath(resolveToCwd(filePath, this.state.sessionCwd()));
   }
 
   /** Whether `filePath` is inside the cwd as written but resolves outside it through a link or junction. */
   private linksOutOfCwd(filePath: string): boolean {
-    const cwd = this.sessionCwd();
+    const cwd = this.state.sessionCwd();
     const requested = resolveToCwd(filePath, cwd);
     const inside = (folder: string, target: string): boolean => {
       const relative = path.relative(folder, target);
       return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
     };
     return inside(spelledPath(cwd), spelledPath(requested)) && !inside(canonicalPath(path.resolve(cwd)), canonicalPath(requested));
-  }
-
-  sessionCwd(): string {
-    return this.state.sessionCwd();
   }
 
   /**
@@ -452,7 +448,7 @@ export class EvaluatorManager {
     const base = typeof input['path'] === 'string' && input['path'] ? input['path'] : '.';
     const searched = [{ target: base, contents: false }, { target: base, contents: true }];
     const named = toolName === TOOL_GREP ? input['glob'] : toolName === TOOL_GLOB ? input['pattern'] : undefined;
-    if (typeof named === 'string' && named) searched.push({ target: path.resolve(resolveToCwd(base, this.sessionCwd()), named), contents: false });
+    if (typeof named === 'string' && named) searched.push({ target: path.resolve(resolveToCwd(base, this.state.sessionCwd()), named), contents: false });
     return searched;
   }
 
@@ -494,7 +490,7 @@ export class EvaluatorManager {
   ): boolean {
     // A `!` rule only carves paths out of the rules listed before it.
     if (!filePath || specifier.startsWith('!')) return false;
-    const cwd = this.sessionCwd();
+    const cwd = this.state.sessionCwd();
 
     const windows = this.windowsPaths;
     const fold = (value: string): string => (windows ? value.toLowerCase() : value);

@@ -1,0 +1,105 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.d.ts
+index 7aca23e..d23dd7d 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.d.ts
+@@ -67,6 +67,16 @@ export declare function fuzzyFindText(content: string, oldText: string): FuzzyMa
+  * blocks keep their original bytes.
+  */
+ export declare function applyEditsToNormalizedContent(normalizedContent: string, edits: Edit[], path: string): AppliedEditsResult;
++export interface EditResult extends AppliedEditsResult {
++    /** The file's new text: its BOM and the line endings of untouched lines kept */
++    finalContent: string;
++}
++/**
++ * Apply one or more replacements to a file's text as the edit tool does, without reading, writing or diffing.
++ * Throws the edit tool's errors where it refuses the edits. `baseContent` and `newContent` are the texts the
++ * edit tool diffs: BOM removed, line endings LF.
++ */
++export declare function computeEditResult(rawContent: string, edits: Edit[], path: string): EditResult;
+ /** Generate a standard unified patch. */
+ export declare function generateUnifiedPatch(path: string, oldContent: string, newContent: string, contextLines?: number): string;
+ /**
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js
+index 485f6ad..2602786 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js
+@@ -304,6 +304,21 @@ export function applyEditsToNormalizedContent(normalizedContent, edits, path) {
+     }
+     return { baseContent, newContent, replacements };
+ }
++/**
++ * Apply one or more replacements to a file's text as the edit tool does, without reading, writing or diffing.
++ * Throws the edit tool's errors where it refuses the edits. `baseContent` and `newContent` are the texts the
++ * edit tool diffs: BOM removed, line endings LF.
++ */
++export function computeEditResult(rawContent, edits, path) {
++    // Strip BOM before matching. The model will not include an invisible BOM in oldText.
++    const { bom, text: content } = splitBom(rawContent);
++    const normalizedContent = normalizeToLF(content);
++    const { baseContent, newContent, replacements } = applyEditsToNormalizedContent(normalizedContent, edits, path);
++    // Splice into the original text, so untouched lines keep their line endings. Without any CR
++    // the original is the normalized text, and the normalized result is already final.
++    const finalContent = bom + (content === normalizedContent ? newContent : applyReplacementsToOriginal(content, replacements));
++    return { finalContent, baseContent, newContent, replacements };
++}
+ /** Generate a standard unified patch. */
+ export function generateUnifiedPatch(path, oldContent, newContent, contextLines = 4) {
+     return Diff.createTwoFilesPatch(path, path, oldContent, newContent, undefined, undefined, {
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js
+index 0e7688a..6b5aed4 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js
+@@ -1,8 +1,7 @@
+ import { constants } from "fs";
+ import { access as fsAccess, readFile as fsReadFile, realpath as fsRealpath, writeFile as fsWriteFile, } from "fs/promises";
+ import { Type } from "typebox";
+-import { splitBom } from "../../utils/text.js";
+-import { applyEditsToNormalizedContent, applyReplacementsToOriginal, generateEditDiff, normalizeToLF, } from "./edit-diff.js";
++import { computeEditResult, generateEditDiff } from "./edit-diff.js";
+ import { withFileMutationQueue } from "./file-mutation-queue.js";
+ import { resolveToCwd } from "./path-utils.js";
+ import { editRenderers } from "./renderers/edit.js";
+@@ -117,16 +116,10 @@ export function createEditToolDefinition(cwd, options) {
+                 const buffer = await ops.readFile(absolutePath);
+                 const rawContent = buffer.toString("utf-8");
+                 throwIfAborted();
+-                // Strip BOM before matching. The model will not include an invisible BOM in oldText.
+-                const { bom, text: content } = splitBom(rawContent);
+-                const normalizedContent = normalizeToLF(content);
+-                const { baseContent, newContent, replacements } = applyEditsToNormalizedContent(normalizedContent, edits, path);
++                const { finalContent, baseContent, newContent, replacements } = computeEditResult(rawContent, edits, path);
+                 // Diff before writing, so diff computation cannot fail after the write.
+                 const editDiff = generateEditDiff(path, baseContent, newContent, replacements);
+                 throwIfAborted();
+-                // Splice into the original text, so untouched lines keep their line endings. Without any CR
+-                // the original is the normalized text, and the normalized result is already final.
+-                const finalContent = bom + (content === normalizedContent ? newContent : applyReplacementsToOriginal(content, replacements));
+                 await ops.writeFile(absolutePath, finalContent);
+                 throwIfAborted();
+                 return {
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts
+index bb8acdb..9e8a2bb 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts
+@@ -22,7 +22,7 @@ export { type BranchSummaryEntry, buildContextEntries, buildSessionContext, buil
+ export { type CacheWarmingMode, type CompactionModelOverride, type CompactionSettings, type DefaultProjectTrust, type FullscreenExitOutput, type ImageSettings, type PackageSource, type QuietStartup, type RetrySettings, SettingsManager, type SettingsManagerCreateOptions, type TuiMode, } from "./core/settings-manager.ts";
+ export { formatSkillsForPrompt, type LoadSkillsFromDirOptions, type LoadSkillsResult, loadSkills, loadSkillsFromDir, type Skill, type SkillFrontmatter, } from "./core/skills.ts";
+ export { createSyntheticSourceInfo } from "./core/source-info.ts";
+-export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
++export { computeEditResult, type EditDiffResult, type EditResult, generateDiffString, generateUnifiedPatch, } from "./core/tools/edit-diff.ts";
+ export { type BashOperations, type BashSpawnContext, type BashSpawnHook, type BashToolDetails, type BashToolInput, type BashToolOptions, createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLocalBashOperations, createLocalPowerShellOperations, createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type EditOperations, type EditToolDetails, type EditToolInput, type EditToolOptions, type FindOperations, type FindToolDetails, type FindToolInput, type FindToolOptions, formatSize, type GrepOperations, type GrepToolDetails, type GrepToolInput, type GrepToolOptions, type LsOperations, type LsToolDetails, type LsToolInput, type LsToolOptions, type PowerShellOperations, type PowerShellSpawnContext, type PowerShellSpawnHook, type PowerShellToolDetails, type PowerShellToolInput, type PowerShellToolOptions, type ReadOperations, type ReadToolDetails, type ReadToolInput, type ReadToolOptions, type ToolsOptions, type TruncationOptions, type TruncationResult, truncateHead, truncateLine, truncateTail, type WriteOperations, type WriteToolInput, type WriteToolOptions, withFileMutationQueue, } from "./core/tools/index.ts";
+ export { formatReadLineRange } from "./core/tools/render-utils.ts";
+ export { hasTrustRequiringProjectResources, type ProjectTrustDecision, ProjectTrustStore, type ProjectTrustStoreEntry, type ProjectTrustUpdate, } from "./core/trust-manager.ts";
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/index.js b/node_modules/@earendil-works/pi-coding-agent/dist/index.js
+index ab5cfcc..64cc688 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/index.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/index.js
+@@ -25,7 +25,7 @@ export { SettingsManager, } from "./core/settings-manager.js";
+ // Skills
+ export { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, } from "./core/skills.js";
+ export { createSyntheticSourceInfo } from "./core/source-info.js";
+-export { generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.js";
++export { computeEditResult, generateDiffString, generateUnifiedPatch, } from "./core/tools/edit-diff.js";
+ // Tools
+ export { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLocalBashOperations, createLocalPowerShellOperations, createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead, truncateLine, truncateTail, withFileMutationQueue, } from "./core/tools/index.js";
+ export { formatReadLineRange } from "./core/tools/render-utils.js";

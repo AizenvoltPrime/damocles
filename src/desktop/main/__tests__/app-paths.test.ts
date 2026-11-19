@@ -9,6 +9,7 @@ vi.mock('electron', () => ({ app: { getVersion: () => '9.8.7' } }));
 import { createDesktopAppInfo } from '../platform/app-info';
 import { askpassPaths, coreHostEntryPath, createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath } from '../platform/app-paths';
 import { ASAR_UNPACK, asarUnpackFor, WATCHER_UNPACK } from '../platform/unpacked-assets';
+import { DESKTOP_BUNDLES } from '../../../../esbuild.config.ts';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const tempDirs: string[] = [];
@@ -31,6 +32,7 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('memoryIntegrity')).toBe(path.join(REPO_ROOT, 'dist', 'memory-integrity-worker.js'));
     expect(paths.workerEntry('sessionMetaIndex')).toBe(path.join(REPO_ROOT, 'dist', 'session-meta-index-worker.js'));
     expect(paths.workerEntry('voiceExtract')).toBe(path.join(REPO_ROOT, 'dist', 'voice-extract-worker.js'));
+    expect(paths.workerEntry('diff')).toBe(path.join(REPO_ROOT, 'dist', 'diff-worker.js'));
     expect(coreHostEntryPath(paths)).toBe(path.join(REPO_ROOT, 'dist', 'core-host.js'));
     expect(ptyHostPaths(paths)).toEqual({
       script: path.join(REPO_ROOT, 'dist', 'pty-host.js'),
@@ -59,6 +61,7 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('sessionMetaIndex')).toBe(path.join(unpacked, 'dist', 'session-meta-index-worker.js'));
     expect(paths.workerEntry('voiceExtract')).toBe(path.join(unpacked, 'dist', 'voice-extract-worker.js'));
     expect(paths.workerEntry('walkChild')).toBe(path.join(unpacked, 'dist', 'walk-child.js'));
+    expect(paths.workerEntry('diff')).toBe(path.join(unpacked, 'dist', 'diff-worker.js'));
     expect(quickOpenWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'quick-open-worker.js'));
     expect(watchWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'watch-worker.js'));
   });
@@ -116,7 +119,7 @@ describe('ASAR_UNPACK', () => {
   it('covers every path the packaged AppPaths promises under the unpacked root', () => {
     const paths = createDesktopAppPaths({ packaged: true, asarPath: '/app.asar' });
     const promised = [
-      ...(['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract', 'walkChild'] as const).map((name) => paths.workerEntry(name)),
+      ...(['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract', 'walkChild', 'diff'] as const).map((name) => paths.workerEntry(name)),
       ptyHostPaths(paths).script,
       quickOpenWorkerPath(paths),
       watchWorkerPath(paths),
@@ -127,6 +130,17 @@ describe('ASAR_UNPACK', () => {
     for (const file of promised) {
       expect(ASAR_UNPACK.some((pattern) => path.posix.matchesGlob(file, pattern)), file).toBe(true);
     }
+  });
+
+  it('names only workers the desktop build writes', () => {
+    const paths = createDesktopAppPaths({ packaged: false, repoRoot: REPO_ROOT });
+    const outfiles = DESKTOP_BUNDLES.map((bundle) => bundle.outfile);
+    const workers = [
+      ...(['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract', 'diff'] as const).map((name) => paths.workerEntry(name)),
+      quickOpenWorkerPath(paths),
+      watchWorkerPath(paths),
+    ];
+    for (const worker of workers) expect(outfiles).toContain(path.relative(REPO_ROOT, worker).split(path.sep).join('/'));
   });
 
   // The core bundle loads from app.asar: an unpacked copy would leave asar integrity and fail to resolve pi by bare specifier.

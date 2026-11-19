@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatSession } from '../../../core/chat-session';
-import type { ChatReviewSnapshot, DraftComment, ReviewSubmitOutcome } from '../../../core/pi-session/chat-review';
-import type { ChatChangeFile, ChatScope } from '../../../core/pi-session/chat-changes';
+import type { ChatReviewFile, ChatReviewSnapshot, DraftComment, ReviewSubmitOutcome } from '../../../core/pi-session/chat-review';
+import type { ChatScope } from '../../../core/pi-session/chat-changes';
 import type { ChatReviewComment, ChatReviewTab } from '../../preload/review-channels';
 import { ChatReviewHost } from '../chat-review-host';
 import type { EditorPane } from '../editor-pane';
 
 /** Main's side of the chat review (D60): review ids, draft keeping and anchors, send outcomes and refresh ordering. */
 
-const file = (path: string, revision = 'ab12'): ChatChangeFile => ({
+const file = (path: string, revision = 'ab12'): ChatReviewFile => ({
   path,
   absolute: `/work/${path}`,
   status: 'M',
@@ -16,8 +16,8 @@ const file = (path: string, revision = 'ab12'): ChatChangeFile => ({
   removed: 1,
   binary: false,
   outsideEdits: false,
-  diff: { kind: 'texts', before: 'a\n', after: 'b\n' },
   revision,
+  commentable: true,
 });
 
 const snapshot = (paths: readonly string[], generation: number): ChatReviewSnapshot => ({ files: paths.map((path) => file(path)), shellChangesNotListed: true, generation });

@@ -1956,6 +1956,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
       sessionMetaIndex: filePath,
       voiceExtract: filePath,
       walkChild: filePath,
+      diff: filePath,
     }),
     watchWorker: filePath,
     remoteMirrors: opt(filePath),

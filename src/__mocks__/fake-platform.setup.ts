@@ -1,3 +1,5 @@
+import { installDiffService } from '../core/diff';
+import { createInlineDiffService } from '../core/diff/inline';
 import { installProcessLauncher } from '../core/process-launcher';
 import { createInProcessLauncher } from '../core/process-launcher/in-process';
 import { createWalkHost, installWalkHost } from '../core/search-walk/walk-host';
@@ -10,3 +12,5 @@ installFakePlatform();
 installProcessLauncher(createInProcessLauncher());
 // Core's walks run on this thread, so a test's fs spies see them; a test of the walk process itself starts the built one.
 installWalkHost(createWalkHost(() => new InThreadWalkChild(), () => undefined));
+// Line diffs run on the test's own thread.
+installDiffService(createInlineDiffService());

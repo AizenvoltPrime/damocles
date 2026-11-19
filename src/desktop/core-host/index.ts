@@ -6,6 +6,7 @@ import { installPlatform } from '../../core/platform-host';
 import { setEndedLeaseHolders } from '../../core/pi-session/session-store/session-lease';
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from '../../core/process-launcher';
 import { createWalkHost, installWalkHost, startWalkChild } from '../../core/search-walk';
+import { createThreadDiffService, installDiffService } from '../../core/diff';
 import { heldRepoLocksReleased } from '../../core/pi-session/checkpoints';
 import { tempFoldersSettled } from '../../core/worktrees/create';
 import type { Disposable } from '../../platform/disposable';
@@ -74,6 +75,9 @@ async function start(port: ParentChannel): Promise<void> {
   // the @ list's, Grep's and Glob's walks, on walk processes started as walks need them
   const walks = createWalkHost(() => startWalkChild(init.paths.workers.walkChild), (line) => log(line));
   installWalkHost(walks);
+  const diff = createThreadDiffService(init.paths.workers.diff);
+  installDiffService(diff);
+  owned.push({ dispose: () => void diff.close() });
   // Before any TLS connection opens.
   await installCaCertificates((line) => log(line));
   const idleTimeoutMs = await httpIdleTimeoutMs((line) => log(line));

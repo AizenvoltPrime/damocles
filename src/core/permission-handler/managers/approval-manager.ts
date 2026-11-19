@@ -265,18 +265,18 @@ export class ApprovalManager {
     }
 
     const filePath = input.file_path;
+    // the file the run writes: a relative path resolves against the session cwd, as the tools resolve it
+    const absolutePath = resolveToCwd(filePath, this.state.sessionCwd());
     const editInput = input as FileEditInput;
     const diffInput = toolName === TOOL_WRITE
       ? { content: (input as FileWriteInput).content }
       : { old_string: editInput.old_string, new_string: editInput.new_string, ...(editInput.replace_all ? { replace_all: true } : {}) };
 
-    // The file the tool changes; the card and notice keep the path as the model wrote it.
-    const cwd = this.state.sessionCwd();
-    const absolutePath = resolveToCwd(filePath, cwd);
-    const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, absolutePath, diffInput, { cwd, path: filePath });
+    const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, { path: filePath, absolute: absolutePath }, diffInput, context.signal);
     if ('refused' in diffResult) return { approved: false, customMessage: diffResult.refused };
 
-    if (diffResult.originalContent !== undefined && diffResult.proposedContent !== undefined) {
+    // An abort during the diff is answered by registerAbortablePrompt below, so no view opens for it.
+    if (diffResult.originalContent !== undefined && diffResult.proposedContent !== undefined && !context.signal.aborted) {
       await this.diffManager.showDiffView(toolUseId, absolutePath, diffResult.originalContent, diffResult.proposedContent);
     }
 
@@ -303,7 +303,7 @@ export class ApprovalManager {
         toolUseId,
         toolName: toolName as 'Write' | 'Edit',
         toolInput: input as unknown as Record<string, unknown>,
-        filePath,
+        filePath: absolutePath,
         ...diffResult.patch,
         ...(diffResult.unsavedChanges ? { unsavedChanges: true as const } : {}),
         owner: this.state.promptOwner(context.parentToolUseId),
@@ -329,8 +329,8 @@ export class ApprovalManager {
           this.getNotifier()?.({
             toolName,
             toolInput: input as unknown as Record<string, unknown>,
-            message: `Damocles is waiting for your approval to ${toolName === TOOL_WRITE ? 'create' : 'edit'} ${filePath}`,
-            filePath,
+            message: `Damocles is waiting for your approval to ${toolName === TOOL_WRITE ? 'create' : 'edit'} ${absolutePath}`,
+            filePath: absolutePath,
             ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
           });
 

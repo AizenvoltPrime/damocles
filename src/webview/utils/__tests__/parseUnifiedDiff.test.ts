@@ -101,6 +101,10 @@ describe('which source a file change card renders', () => {
     expect(fileChangeSource(write({ status: 'awaiting_approval' }), {})).toEqual({ kind: 'newFile', content: 'x\n' });
   });
 
+  it('says so while the call awaits an approval whose diff could not be computed', () => {
+    expect(fileChangeSource(edit({ status: 'awaiting_approval' }), { patchOmitted: 'unavailable' })).toEqual({ kind: 'omitted', reason: 'unavailable' });
+  });
+
   it('a completed Write whose result records that it created its file', () => {
     expect(fileChangeSource(write({ metadata: { created: true } }), undefined)).toEqual({ kind: 'newFile', content: 'x\n' });
   });

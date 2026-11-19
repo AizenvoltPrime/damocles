@@ -982,6 +982,7 @@ const WORKER_FILES: Readonly<Record<WorkerName, string>> = {
   sessionMetaIndex: 'session-meta-index-worker.js',
   voiceExtract: 'voice-extract-worker.js',
   walkChild: 'walk-child.js',
+  diff: 'diff-worker.js',
 };
 
 const NO_WORKERS_ROOT = path.join(os.tmpdir(), `damocles-fake-platform-no-workers-${randomUUID()}`);

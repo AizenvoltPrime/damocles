@@ -27,6 +27,7 @@ export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly 
         sessionMetaIndex: dist('session-meta-index-worker.js'),
         voiceExtract: dist('voice-extract-worker.js'),
         walkChild: dist('walk-child.js'),
+        diff: dist('diff-worker.js'),
       },
       watchWorker: dist('watch-worker.js'),
       askpass: { askpass: dist('askpass/askpass.sh'), sshAskpass: dist('askpass/ssh-askpass.sh'), node: path.resolve('/app/node'), main: dist('askpass-main.js') },

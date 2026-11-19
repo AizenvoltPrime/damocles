@@ -14,7 +14,6 @@ vi.mock('../../../logger', () => ({ log: vi.fn() }));
 function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
-    createEditToolDefinition: vi.fn(() => ({ execute: vi.fn() })),
     // The shell and search overrides spread their metadata from a pi definition, so these stubs must
     // answer with a whole definition, not just an `execute`.
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn() })),

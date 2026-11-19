@@ -4,17 +4,18 @@ import type { ToolDefinition, WriteToolInput } from '@earendil-works/pi-coding-a
 import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { WriteDetails } from '../../../shared/types/file-patch';
+import type { DiffService } from '../../diff';
 import { log } from '../../logger';
-import { filePatch, readTextForPatch } from './file-patch';
+import { readTextForPatch } from './patch-text';
 import { notARegularFileToWrite, queueKeyOf, writeRegularFile } from './local-file-operations';
 import { resolveToCwd } from './search-tools';
 
 
 /** What the change does to the file: its patch, why there is none, or that the write creates it. */
-async function writeDetails(path: string, absolutePath: string, content: string): Promise<WriteDetails> {
+async function writeDetails(diff: Pick<DiffService, 'filePatch'>, path: string, absolutePath: string, content: string, signal: AbortSignal | undefined): Promise<WriteDetails> {
   const before = await readTextForPatch(absolutePath);
   if (before === undefined) return { created: true };
-  return typeof before === 'string' ? filePatch(path, before, content) : before;
+  return typeof before === 'string' ? diff.filePatch(path, before, content, signal ? { signal } : {}) : before;
 }
 
 /**
@@ -26,9 +27,10 @@ async function writeDetails(path: string, absolutePath: string, content: string)
  * paired with an `excludeTools` entry, which would drop the replacement too ("Tool overrides").
  * The old content is read in pi's `writeFile` operation, inside the write's mutation queue slot. A second
  * `withFileMutationQueue` around `execute` would deadlock, since pi's call queues behind it on that key.
+ * The patch is computed on the diff worker's tool lane within that slot, so the slot also waits for the jobs queued ahead on that lane.
  * Sequential, so pi runs any batch holding a write one call at a time, in the model's order.
  */
-export function createWriteTool(pi: PiCodingAgentModule, cwd: string): ToolDefinition {
+export function createWriteTool(pi: PiCodingAgentModule, cwd: string, diff: Pick<DiffService, 'filePatch'>): ToolDefinition {
   const metadata: AnyToolDefinition = pi.createWriteToolDefinition(cwd);
   return {
     ...metadata,
@@ -46,10 +48,12 @@ export function createWriteTool(pi: PiCodingAgentModule, cwd: string): ToolDefin
             await mkdir(dir, { recursive: true });
           },
           writeFile: async (absolutePath, content) => {
-            details = await writeDetails(params.path, absolutePath, content).catch((error: unknown) => {
+            details = await writeDetails(diff, params.path, absolutePath, content, signal).catch((error: unknown) => {
               log('[write] no diff recorded for %s: %O', absolutePath, error);
               return undefined;
             });
+            // pi's write checks the signal only around this operation, so a Stop during the patch must refuse the write here.
+            if (signal?.aborted) throw new Error('Operation aborted');
             await writeRegularFile(absolutePath, content, notARegularFileToWrite(absolutePath));
           },
         },

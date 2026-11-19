@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -8,8 +8,12 @@ import { AgentSession, SessionManager, createExtensionRuntime, type ToolDefiniti
 import { initPiLoader, type PiCodingAgentModule } from '../../pi-loader';
 import { createWriteTool } from '../write-tool';
 import { notARegularFileToWrite } from '../local-file-operations';
-import { FILE_PATCH_MAX_BYTES, FILE_PATCH_MAX_CHANGED_LINES, filePatch } from '../file-patch';
-import type { WriteDetails } from '../../../../shared/types/file-patch';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { FILE_PATCH_MAX_BYTES, FILE_PATCH_MAX_CHANGED_LINES, FILE_PATCH_TIMEOUT_MS } from '../file-patch';
+import { filePatch } from '../../../diff/jobs';
+import type { FilePatch, WriteDetails } from '../../../../shared/types/file-patch';
+import { createThreadDiffService, DIFF_WATCHDOG_GRACE_MS, diffService, type DiffService } from '../../../diff';
+import { buildDiffWorker } from '../../../diff/__tests__/worker-bundle';
 
 let pi: PiCodingAgentModule;
 const dirs: string[] = [];
@@ -55,7 +59,7 @@ describe('the write override', () => {
     fs.writeFileSync(path.join(cwd, 'big.txt'), before);
     const after = before.replace('line 120\n', 'changed 120\n');
 
-    const result = await run(createWriteTool(pi, cwd), cwd, { path: 'big.txt', content: after });
+    const result = await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'big.txt', content: after });
 
     const patch = (result.details as { patch: string }).patch;
     expect(patch).toContain('@@ -116,9 +116,9 @@');
@@ -65,7 +69,7 @@ describe('the write override', () => {
 
   it('records only that it created a new file, whose lines the tool input already holds', async () => {
     const cwd = tempDir();
-    const result = await run(createWriteTool(pi, cwd), cwd, { path: 'new.txt', content: 'a\nb\n' });
+    const result = await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'new.txt', content: 'a\nb\n' });
 
     expect(result.details).toEqual({ created: true });
     expect(fs.readFileSync(path.join(cwd, 'new.txt'), 'utf-8')).toBe('a\nb\n');
@@ -82,7 +86,7 @@ describe('the write override', () => {
       fs.writeFileSync(path.join(theirs, file), existing);
     }
 
-    const mine = await run(createWriteTool(pi, ours), ours, { path: file, content });
+    const mine = await run(createWriteTool(pi, ours, diffService()), ours, { path: file, content });
     const pis = await run(pi.createWriteToolDefinition(theirs) as unknown as ToolDefinition, theirs, { path: file, content });
 
     expect(fs.readFileSync(path.join(ours, file))).toEqual(fs.readFileSync(path.join(theirs, file)));
@@ -93,7 +97,7 @@ describe('the write override', () => {
     const cwd = tempDir();
     fs.writeFileSync(path.join(cwd, 'blob.bin'), Buffer.from([0x89, 0x50, 0x00, 0x01, 0x02]));
 
-    const result = await run(createWriteTool(pi, cwd), cwd, { path: 'blob.bin', content: 'text now\n' });
+    const result = await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'blob.bin', content: 'text now\n' });
 
     expect(result.details).toEqual({ patchOmitted: 'binary' });
     expect(fs.readFileSync(path.join(cwd, 'blob.bin'), 'utf-8')).toBe('text now\n');
@@ -104,7 +108,7 @@ describe('the write override', () => {
     const huge = path.join(cwd, 'huge.txt');
     fs.writeFileSync(huge, 'x'.repeat(FILE_PATCH_MAX_BYTES + 1));
 
-    const result = await run(createWriteTool(pi, cwd), cwd, { path: 'huge.txt', content: 'small\n' });
+    const result = await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'huge.txt', content: 'small\n' });
 
     expect(result.details).toEqual({ patchOmitted: 'tooLarge' });
     expect(fs.readFileSync(huge, 'utf-8')).toBe('small\n');
@@ -114,7 +118,7 @@ describe('the write override', () => {
     const cwd = tempDir();
     fs.writeFileSync(path.join(cwd, 'f.txt'), lines(FILE_PATCH_MAX_CHANGED_LINES, 'old'));
 
-    const result = await run(createWriteTool(pi, cwd), cwd, { path: 'f.txt', content: lines(FILE_PATCH_MAX_CHANGED_LINES, 'new') });
+    const result = await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'f.txt', content: lines(FILE_PATCH_MAX_CHANGED_LINES, 'new') });
 
     expect(result.details).toEqual({ patchOmitted: 'tooLarge' });
   });
@@ -125,11 +129,38 @@ describe('the write override', () => {
     fs.writeFileSync(file, 'old\n');
     refuseReadOf(file);
 
-    const result = await run(createWriteTool(pi, cwd), cwd, { path: 'f.txt', content: 'new\n' });
+    const result = await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'f.txt', content: 'new\n' });
 
     expect(result.details).toEqual({ patchOmitted: 'unreadable' });
     expect(result.content).toEqual([{ type: 'text', text: 'Successfully wrote to f.txt' }]);
     expect(fs.readFileSync(file, 'utf-8')).toBe('new\n');
+  });
+
+  it('answers as pi\'s write does and writes nothing when stopped while its patch is queued', async () => {
+    const cwd = tempDir();
+    const file = path.join(cwd, 'f.txt');
+    fs.writeFileSync(file, 'old\n');
+    const signals: Array<AbortSignal | undefined> = [];
+    let answer!: (patch: FilePatch) => void;
+    let queued!: () => void;
+    const patchQueued = new Promise<void>((resolve) => (queued = resolve));
+    const deferred = {
+      filePatch: (...args: Parameters<DiffService['filePatch']>): Promise<FilePatch> => {
+        signals.push(args[3]?.signal);
+        queued();
+        return new Promise((resolve) => (answer = resolve));
+      },
+    };
+    const stop = new AbortController();
+
+    const writing = createWriteTool(pi, cwd, deferred).execute('tc', { path: 'f.txt', content: 'new\n' } as never, stop.signal, undefined, { cwd } as never);
+    await patchQueued;
+    stop.abort();
+    answer({ patchOmitted: 'tooLarge' });
+
+    await expect(writing).rejects.toThrow('Operation aborted');
+    expect(signals).toEqual([stop.signal]);
+    expect(fs.readFileSync(file, 'utf-8')).toBe('old\n');
   });
 
   it('reads the old content in the write\'s own queue slot, after an edit queued before it', async () => {
@@ -138,7 +169,7 @@ describe('the write override', () => {
     const edit = pi.createEditToolDefinition(cwd);
 
     const edited = edit.execute('tc-edit', { path: 'f.txt', edits: [{ oldText: 'b', newText: 'B' }] }, undefined, undefined, { cwd } as never);
-    const written = run(createWriteTool(pi, cwd), cwd, { path: 'f.txt', content: 'a\nB\nC\n' });
+    const written = run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'f.txt', content: 'a\nB\nC\n' });
     await edited;
     const patch = ((await written).details as { patch: string }).patch;
 
@@ -149,7 +180,7 @@ describe('the write override', () => {
   it('replaces pi\'s write in a real pi session by name, with no excludeTools entry', async () => {
     const cwd = tempDir();
     fs.writeFileSync(path.join(cwd, 'f.txt'), 'one\n');
-    const ours = createWriteTool(pi, cwd);
+    const ours = createWriteTool(pi, cwd, diffService());
     const session = new AgentSession({
       agent: new Agent({ streamFn: (async () => { throw new Error('no network in tests'); }) as never }),
       sessionManager: SessionManager.inMemory(),
@@ -188,11 +219,11 @@ describe('filePatch', () => {
     const before = lines(60);
     const after = before.replace('line 3\n', 'line three\n').replace('line 50\n', '');
 
-    expect(filePatch('src/a.ts', before, after)).toEqual({ patch: pi.generateUnifiedPatch('src/a.ts', before, after) });
+    expect(filePatch('src/a.ts', before, after, FILE_PATCH_TIMEOUT_MS)).toEqual({ patch: pi.generateUnifiedPatch('src/a.ts', before, after) });
   });
 
   it('numbers lines as pi\'s edit does, with the BOM split off and CRLF read as LF', () => {
-    const patch = (filePatch('f', '\uFEFFa\r\nb\r\nc\r\n', 'a\nB\nc\n') as { patch: string }).patch;
+    const patch = (filePatch('f', '\uFEFFa\r\nb\r\nc\r\n', 'a\nB\nc\n', FILE_PATCH_TIMEOUT_MS) as { patch: string }).patch;
 
     expect(patch).toContain('@@ -1,3 +1,3 @@');
     expect(patch).not.toContain('\r');
@@ -217,7 +248,7 @@ describe('a write to a path that is not a regular file', () => {
     const cwd = tempDir();
     fs.mkdirSync(path.join(cwd, 'dir'));
 
-    expect(await within2s(run(createWriteTool(pi, cwd), cwd, { path: 'dir', content: 'x\n' }))).toEqual({ error: 'Could not write file: dir. It is not a regular file.' });
+    expect(await within2s(run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'dir', content: 'x\n' }))).toEqual({ error: 'Could not write file: dir. It is not a regular file.' });
     expect(fs.statSync(path.join(cwd, 'dir')).isDirectory()).toBe(true);
   });
 
@@ -227,7 +258,7 @@ describe('a write to a path that is not a regular file', () => {
     execFileSync('mkfifo', [fifo]);
 
     try {
-      expect(await within2s(run(createWriteTool(pi, cwd), cwd, { path: 'pipe', content: 'x\n' }))).toEqual({ error: notARegularFileToWrite('pipe') });
+      expect(await within2s(run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'pipe', content: 'x\n' }))).toEqual({ error: notARegularFileToWrite('pipe') });
     } finally {
       releaseFifo(fifo);
     }
@@ -246,7 +277,7 @@ describe('a write to a path that is not a regular file', () => {
     }) as typeof fs.promises.stat);
 
     try {
-      expect(await within2s(run(createWriteTool(pi, cwd), cwd, { path: 'swapped', content: 'x\n' }))).toEqual({ error: notARegularFileToWrite(file) });
+      expect(await within2s(run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'swapped', content: 'x\n' }))).toEqual({ error: notARegularFileToWrite(file) });
     } finally {
       releaseFifo(file);
     }
@@ -258,9 +289,52 @@ describe('a write to a path that is not a regular file', () => {
     fs.writeFileSync(file, 'a much longer old content\n');
     const before = fs.statSync(file).ino;
 
-    await run(createWriteTool(pi, cwd), cwd, { path: 'f.txt', content: 'short\n' });
+    await run(createWriteTool(pi, cwd, diffService()), cwd, { path: 'f.txt', content: 'short\n' });
 
     expect(fs.readFileSync(file, 'utf-8')).toBe('short\n');
     expect(fs.statSync(file).ino).toBe(before);
   });
+});
+
+describe('the write override on the diff worker', () => {
+  let workDir: string;
+  let bundle: string;
+
+  beforeAll(async () => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-write-worker-'));
+    bundle = await buildDiffWorker(workDir);
+  }, 60_000);
+
+  afterAll(() => {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  // Long lines make a patch within the changed-line bound costly, so it must run on the worker and leave core's thread free.
+  it('keeps the event loop responsive while it patches a 10 MB file of 2,000-character lines with 455 changed lines', async () => {
+    const cwd = tempDir();
+    const pad = 'x'.repeat(1_990);
+    const before = Array.from({ length: 5_000 }, (_, i) => `${pad}${i}\n`).join('');
+    fs.writeFileSync(path.join(cwd, 'big.txt'), before);
+    const after = Array.from({ length: 5_000 }, (_, i) => (i % 11 === 5 ? `${pad}${i}c\n` : `${pad}${i}\n`)).join('');
+    const diff = createThreadDiffService(bundle);
+    const delay = monitorEventLoopDelay({ resolution: 10 });
+    try {
+      delay.enable();
+      // the histogram records nothing before its first timer tick
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const start = performance.now();
+      const result = await run(createWriteTool(pi, cwd, diff), cwd, { path: 'big.txt', content: after });
+      const elapsed = performance.now() - start;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      delay.disable();
+
+      // within its budget the patch is recorded; a loaded machine may pass the budget, which omits it
+      expect(result.details).toSatisfy((details: WriteDetails) => ('patch' in details ? details.patch.startsWith('--- big.txt\n+++ big.txt\n@@ -2,9 +2,9 @@') : 'patchOmitted' in details && details.patchOmitted === 'tooLarge'));
+      expect(fs.readFileSync(path.join(cwd, 'big.txt'), 'utf-8')).toBe(after);
+      expect(delay.max / 1e6).toBeLessThan(250);
+      expect(elapsed).toBeLessThan(FILE_PATCH_TIMEOUT_MS + DIFF_WATCHDOG_GRACE_MS + 2_000);
+    } finally {
+      await diff.close();
+    }
+  }, 30_000);
 });

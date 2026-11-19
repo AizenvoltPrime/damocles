@@ -295,7 +295,6 @@ const H = vi.hoisted(() => {
     // a daemon's core loads its bundled subscription plugin at init; none here
     discoverAndLoadExtensions: vi.fn(async () => ({ extensions: [], errors: [], runtime: { pendingProviderRegistrations: [] } })),
     defineTool: vi.fn((tool: unknown) => tool),
-    createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     // The bash override spreads its metadata from a delegate built at construction, so this must answer
     // with a whole definition, not just an `execute`.
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: (...a: never[]) => bashExecute(...a) })),
@@ -14137,6 +14136,44 @@ describe('a send while a finish action holds the chat\'s worktree (D33)', () => 
     ]);
     expect(messages.some((m) => m.type === 'userMessage')).toBe(false);
     expect((H.getLastSession() as unknown as { prompt: ReturnType<typeof vi.fn> }).prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('answers a review sent on an idle chat once the conversation has it, before its reply ends', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const review = (session as unknown as { chatReview: { compose: (drafts: unknown) => Promise<unknown> } }).chatReview;
+    vi.spyOn(review, 'compose').mockResolvedValue({ ok: true, message: 'why this?' });
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    let endRun!: () => void;
+    const runEnded = new Promise<void>((resolve) => { endRun = resolve; });
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [{ type: 'message', id: 'u-review', message: { role: 'user', content: text } }]);
+      await runEnded;
+    });
+
+    expect(await session.submitReview([] as never)).toBe('sent');
+    expect(live.prompt).toHaveBeenCalledWith('why this?', expect.anything());
+
+    endRun();
+    await session.dispose();
+  });
+
+  it('keeps a review in its tab when pi refuses it before committing it', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const review = (session as unknown as { chatReview: { compose: (drafts: unknown) => Promise<unknown> } }).chatReview;
+    vi.spyOn(review, 'compose').mockResolvedValue({ ok: true, message: 'why this?' });
+    const live = H.getLastSession()!;
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('No API key for anthropic/claude'));
+
+    expect(await session.submitReview([] as never)).toBe('unsent');
+
     await session.dispose();
   });
 

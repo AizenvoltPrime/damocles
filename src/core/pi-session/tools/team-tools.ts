@@ -593,7 +593,7 @@ const teamSynthesizeResultSchema = Type.Object(
 
 /**
  * Build every `team_*` tool a team agent can call, both roles, closing over its `AgentMcpContext`. The
- * workspace is passed in (the `createEditTool(pi, cwd)` pattern) because `team_record_verification` computes
+ * workspace is passed in (the `createEditTool(pi, cwd, diff)` pattern) because `team_record_verification` computes
  * its own tree fingerprint from git state, the one team tool that needs to see the filesystem.
  *
  * Production calls `buildTeamAgentPiTools`, which filters this set by role. Keeping the two apart lets a

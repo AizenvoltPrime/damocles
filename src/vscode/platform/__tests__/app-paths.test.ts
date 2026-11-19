@@ -41,6 +41,10 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
     expect(paths.workerEntry('voiceExtract')).toBe(path.join(EXT, 'dist', 'voice-extract-worker.js'));
   });
 
+  it('diff worker: dist/diff-worker.js beside the extension bundle', () => {
+    expect(paths.workerEntry('diff')).toBe(path.join(EXT, 'dist', 'diff-worker.js'));
+  });
+
   it('sentinel: the sibling of dist/extension.cjs when packaged, and <repo>/dist/sentinel.js from source', () => {
     const packagedDirname = path.join(EXT, 'dist');
     expect(paths.workerEntry('sentinel')).toBe(path.join(packagedDirname, 'sentinel.js'));
@@ -52,7 +56,7 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
 
   it('every worker entry is an outfile esbuild.config.ts writes', () => {
     const outfiles = EXTENSION_BUNDLES.map((bundle) => bundle.outfile);
-    for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const) {
+    for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract', 'diff'] as const) {
       expect(outfiles).toContain(path.relative(EXT, paths.workerEntry(name)).split(path.sep).join('/'));
     }
   });
@@ -71,7 +75,7 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
 
   it('the fake platform resolves the same layout for the same root', () => {
     const fake = createFakePlatform({ appRoot: EXT }).paths;
-    for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const) {
+    for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract', 'diff'] as const) {
       expect(fake.workerEntry(name)).toBe(paths.workerEntry(name));
     }
     expect([fake.resourceRoot, fake.unpackedRoot]).toEqual([paths.resourceRoot, paths.unpackedRoot]);

@@ -21,6 +21,7 @@ import { createEditTool } from './edit-tool';
 import { createBashTool, type ShellOptions } from './bash-tool';
 import { createFindTool, createGrepTool } from './search-tools';
 import { createWriteTool } from './write-tool';
+import { diffService } from '../../diff';
 import { createLsTool } from './ls-tool';
 import { createReadTool } from './read-tool';
 import { resolveRgPath } from '../../chat-panel/ripgrep';
@@ -234,10 +235,10 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     createBashTool(pi, cwd, { getShellOptions, shellJob, ...(deps.shellCredentials ? { shellCredentials: deps.shellCredentials } : {}) }),
     createGrepTool(pi, cwd, rgPath, readRuleFilter, allowedNetworkHosts),
     createFindTool(pi, cwd, readRuleFilter, allowedNetworkHosts),
-    createWriteTool(pi, cwd),
+    createWriteTool(pi, cwd, diffService()),
     createLsTool(pi, cwd, allowedNetworkHosts),
     createReadTool(pi, cwd),
-    createEditTool(pi, cwd),
+    createEditTool(pi, cwd, diffService()),
     createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env, deps.shellCredentials),
     enterPlan,
     exitPlan,
